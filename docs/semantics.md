@@ -113,6 +113,11 @@ row. The reference interpreter executes it through Elisa's own
 `elisacore_fileio.elisa` runtime; it does not invoke a shell or Python. A
 source-defined `path_exists` function shadows the compiler-known operation.
 
+`read_text(path: Path) -> sview error[FileIoError]` reads a whole file without
+discarding embedded bytes. It contributes the same `File.Read` effect and adds
+`FileIoError` to the enclosing error row. Open, seek, read, and close failures
+remain errors; a failed read is never confused with a successfully read empty file.
+
 ## Compile-time validation
 
 `check_typed_literals.elisa` validates constant string payloads during the existing

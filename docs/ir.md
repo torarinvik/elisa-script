@@ -149,6 +149,12 @@ function's effect row. Lowering adds that effect automatically. The interpreter
 copies the path into a NUL-terminated Elisa-owned buffer before calling the
 self-hosted core file-I/O layer, so a length-delimited `sview` is never passed to
 libc as though it were a C string.
+`ReadText` extends that contract to whole-file input with verified signature
+`Named(Path) -> Text`. Its function must carry both `File.Read` and `FileIoError`;
+lowering supplies both and the verifier rejects either omission. The interpreter
+uses Elisa's stdio bindings, checks every open/seek/read/close transition, and
+returns one owned length-delimited buffer. Empty files return empty text, while any
+I/O failure becomes `InterpretError.FileIo` at the reference-interpreter boundary.
 Named direct-call arguments are resolved against predeclared parameter labels and
 then emitted in canonical signature order. Their expressions still execute once in
 source order. Missing parameters materialize their Elisa default expressions in
