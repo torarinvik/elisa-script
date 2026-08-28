@@ -102,6 +102,13 @@ and a matching result; remainder is integer-only; equality and ordering produce
 booleans over their supported operand families. Direct calls must name a declared
 function and match its parameter and return types exactly. There are no implicit
 integer-width or integer/float conversions at the IR boundary.
+Explicit integer suffixes (`u8`, `u16`, `u32`, `u64`, `usize`, `i8`, `i16`,
+`i32`, `i64`, and `isize`) lower to their exact signedness and bit width. The
+suffix is stored per AST literal rather than inferred from line metadata, so two
+differently suffixed literals on the same line cannot exchange types. `char` and
+`u8` are distinct IR families: characters participate in text operations, while
+`u8` is an unsigned numeric type. Unsuffixed integer literals remain `i64`, and
+no implicit widening occurs in arithmetic or comparisons.
 Compiler-known typed literals use `Named` constants with immutable text payloads.
 The verifier admits this representation explicitly, and the interpreter retains
 the text payload while all static compatibility decisions continue to use the

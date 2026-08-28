@@ -41,6 +41,11 @@ regex("(?<name>[a-z]+)")
 glob("src/**/*.elisa")
 ```
 
+Explicit integer suffixes are carried on the literal AST node itself. For example,
+`1u8 + 2u8` contains two `IntLitTyped` nodes, each with its own suffix. This avoids
+the old line-keyed metadata ambiguity when several differently typed literals occur
+on one source line; unsuffixed literals retain the compact `IntLit` representation.
+
 The representation is:
 
 ```text
