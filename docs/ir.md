@@ -305,7 +305,8 @@ and comparisons, direct calls, branches, loops, SSA edge arguments, and returns.
 `HandlerPush` and `HandlerPop` maintain a real runtime stack shared across direct-call
 frames. `Perform` searches it from innermost to outermost and invokes the exact typed
 operation clause of the nearest covering handler; linear clauses return one resumed
-value and execution continues. A callback may instead issue a typed tail `Resume`,
+value and execution continues. Handler lookup, clause selection, and callback
+invocation are explicit interpreter state-machine states. A callback may instead issue a typed tail `Resume`,
 which transfers its payload back to the suspended `Perform` through a runtime
 continuation frame. Handler contract metadata without an operation clause is
 deliberately not treated as executable behavior. Post-resume code, terminal
