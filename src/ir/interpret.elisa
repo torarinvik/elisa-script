@@ -51,11 +51,34 @@ extend EsIr:
             consumed: mutable bool
 
 
+        const enum ContinuationLookupState of u8:
+            Search
+            Done
+
+
+        struct ContinuationLookup:
+            state: mutable ContinuationLookupState
+            index: mutable usize
+            found: mutable bool
+
+
+        const enum ContinuationPolicyState of u8:
+            Select
+            Done
+
+
         const enum ContinuationDecisionKind of u8:
             Terminal
             LinearAvailable
             LinearConsumed
             MultiShot
+
+
+        struct ContinuationPolicyCursor:
+            state: mutable ContinuationPolicyState
+            policy: ContinuationPolicy
+            consumed: bool
+            result: mutable ContinuationDecisionKind
 
 
         struct ContinuationDecision:
@@ -527,22 +550,72 @@ extend EsIr:
 
 
         def continuation_decision(policy: ContinuationPolicy, consumed: bool) -> ContinuationDecisionKind:
-            return ContinuationDecisionKind.Terminal if policy == ContinuationPolicy.Terminal
-            if policy == ContinuationPolicy.Linear or policy == ContinuationPolicy.Affine:
-                return ContinuationDecisionKind.LinearConsumed if consumed else ContinuationDecisionKind.LinearAvailable
-            return ContinuationDecisionKind.MultiShot
+            cursor: mutable ContinuationPolicyCursor = ContinuationPolicyCursor{state: ContinuationPolicyState.Select, policy: policy, consumed: consumed, result: ContinuationDecisionKind.MultiShot}
+            machine over cursor.state:
+                state Select
+                start Select
+
+                Select, ContinuationPolicyState.Select if cursor.policy == ContinuationPolicy.Terminal:
+                    cursor.result <- ContinuationDecisionKind.Terminal
+                    cursor.state <- ContinuationPolicyState.Done
+                    -> Select
+                Select, ContinuationPolicyState.Select if cursor.policy == ContinuationPolicy.Linear and cursor.consumed:
+                    cursor.result <- ContinuationDecisionKind.LinearConsumed
+                    cursor.state <- ContinuationPolicyState.Done
+                    -> Select
+                Select, ContinuationPolicyState.Select if cursor.policy == ContinuationPolicy.Linear:
+                    cursor.result <- ContinuationDecisionKind.LinearAvailable
+                    cursor.state <- ContinuationPolicyState.Done
+                    -> Select
+                Select, ContinuationPolicyState.Select if cursor.policy == ContinuationPolicy.Affine and cursor.consumed:
+                    cursor.result <- ContinuationDecisionKind.LinearConsumed
+                    cursor.state <- ContinuationPolicyState.Done
+                    -> Select
+                Select, ContinuationPolicyState.Select if cursor.policy == ContinuationPolicy.Affine:
+                    cursor.result <- ContinuationDecisionKind.LinearAvailable
+                    cursor.state <- ContinuationPolicyState.Done
+                    -> Select
+                Select, ContinuationPolicyState.Select:
+                    cursor.result <- ContinuationDecisionKind.MultiShot
+                    cursor.state <- ContinuationPolicyState.Done
+                    -> Select
+
+                Select, ContinuationPolicyState.Done:
+                    break
+
+            return cursor.result
+
+
+        def lookup_continuation(frames: darray[ContinuationFrame]&, handler: sview) -> usize:
+            cursor: mutable ContinuationLookup = ContinuationLookup{state: ContinuationLookupState.Search, index: frames.count, found: false}
+            machine over cursor.state:
+                state Dispatch
+                start Dispatch
+
+                Dispatch, ContinuationLookupState.Search if cursor.index == 0:
+                    cursor.state <- ContinuationLookupState.Done
+                    -> Dispatch
+                Dispatch, ContinuationLookupState.Search if frames[cursor.index - 1].handler == handler:
+                    cursor.index <- cursor.index - 1
+                    cursor.found <- true
+                    cursor.state <- ContinuationLookupState.Done
+                    -> Dispatch
+                Dispatch, ContinuationLookupState.Search:
+                    cursor.index <- cursor.index - 1
+                    -> Dispatch
+
+                Dispatch, ContinuationLookupState.Done:
+                    break
+
+            return cursor.index if cursor.found else frames.count
 
 
         def request_continuation_resume(machine: mutable Machine&, instruction: Instruction, payload_id: u32, ids: darray[u32]&, values: darray[RuntimeValue]&) -> void:
             if instruction.operand_count != 1:
                 machine.failure <- InterpretFailure.InvalidContinuation
                 return
-            continuation_index: mutable usize = machine.continuations.count
-            found: mutable bool = false
-            while continuation_index > 0 and not found |continuation_index, found|:
-                continuation_index <- continuation_index - 1
-                found <- machine.continuations[continuation_index].handler == instruction.symbol
-            if not found:
+            continuation_index: usize = lookup_continuation(machine.continuations, instruction.symbol)
+            if continuation_index == machine.continuations.count:
                 machine.failure <- InterpretFailure.InvalidContinuation
                 return
             continuation: ContinuationFrame = machine.continuations[continuation_index]
