@@ -264,6 +264,8 @@ extend EsIr:
                         collect_assigned_names(else_body, names)
                     Stmt.While(condition, body, pos):
                         collect_assigned_names(body, names)
+                    Stmt.For(bind, variables, iterable, body, pos):
+                        collect_assigned_names(body, names)
                     Stmt.Block(kind, clause, binding, body, pos):
                         collect_assigned_names(body, names)
                     _:
@@ -837,6 +839,129 @@ extend EsIr:
 
                     state.current_block <- exit_block
                     state.terminated <- false
+                Stmt.For(bind, variables, iterable, body, pos):
+                    if bind != "" or variables.count != 1:
+                        add_issue(state, LowerIssueKind.UnsupportedStatement, pos.line, "initial for lowering supports one immutable array element binding")
+                    else:
+                        collection: LoweredValue = lower_expression(iterable, state)
+                        if not collection.valid:
+                            pass
+                        elif collection.type.kind != TypeKind.Array:
+                            add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "for iterable must have an array type")
+                        else:
+                            header_block: u32 = fresh_block(state)
+                            body_block: u32 = fresh_block(state)
+                            latch_block: u32 = fresh_block(state)
+                            exit_block: u32 = fresh_block(state)
+                            assigned_names: mutable darray[sview] = []
+                            collect_assigned_names(body, assigned_names)
+                            carried_indices: mutable darray[u32] = []
+                            for assigned_name in assigned_names |state, carried_indices|:
+                                assigned_index: usize = binding_index(state, assigned_name)
+                                carried_indices.push(assigned_index.u32()) if assigned_index < state.names.count
+                            context_start: u32 = state.loop_carried_indices.count.u32()
+                            state.loop_carried_indices.extend(carried_indices)
+                            state.loop_context_starts.push(context_start)
+                            state.loop_context_counts.push(carried_indices.count.u16())
+                            state.loop_handler_depths.push(state.active_handlers.count.u32())
+                            context: usize = state.loop_context_counts.count - 1
+
+                            index_type: Type = type_from_name("usize")
+                            initial_index: LoweredValue = emit_constant(state, index_type, 0, "", "", false, ir_span(pos))
+                            entry_args: (start: u32, count: u16) = append_context_arguments(state, context)
+                            state.edge_arg_pool.push(initial_index.value)
+                            state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: header_block, target_count: 1, edge0_arg_start: entry_args.start, edge0_arg_count: entry_args.count + 1, span: ir_span(pos)}
+                            finish_block(state)
+
+                            header_values: mutable darray[u32] = []
+                            latch_values: mutable darray[u32] = []
+                            exit_values: mutable darray[u32] = []
+                            for binding_u32 in carried_indices |state, header_block, latch_block, exit_block, header_values, latch_values, exit_values|:
+                                binding: usize = binding_u32.usize()
+                                header_value: u32 = fresh_value(state)
+                                latch_value: u32 = fresh_value(state)
+                                exit_value: u32 = fresh_value(state)
+                                state.pending_parameter_blocks.push(header_block)
+                                state.pending_parameters.push(Parameter{value: header_value, type: state.types[binding], name: state.names[binding]})
+                                state.pending_parameter_blocks.push(latch_block)
+                                state.pending_parameters.push(Parameter{value: latch_value, type: state.types[binding], name: state.names[binding]})
+                                state.pending_parameter_blocks.push(exit_block)
+                                state.pending_parameters.push(Parameter{value: exit_value, type: state.types[binding], name: state.names[binding]})
+                                header_values.push(header_value)
+                                latch_values.push(latch_value)
+                                exit_values.push(exit_value)
+                            index_value: u32 = fresh_value(state)
+                            state.pending_parameter_blocks.push(header_block)
+                            state.pending_parameters.push(Parameter{value: index_value, type: index_type, name: "for-index"})
+                            for offset in 0..<carried_indices.count |state, carried_indices, header_values|:
+                                state.values[carried_indices[offset].usize()] <- header_values[offset]
+
+                            state.current_block <- header_block
+                            state.terminated <- false
+                            length_result: u32 = fresh_value(state)
+                            length_operand_start: u32 = state.operand_pool.count.u32()
+                            state.operand_pool.push(collection.value)
+                            state.instructions.push(Instruction{opcode: Opcode.Length, result: length_result, result_type: index_type, operand_start: length_operand_start, operand_count: 1, span: ir_span(pos)})
+                            condition_result: u32 = fresh_value(state)
+                            condition_operand_start: u32 = state.operand_pool.count.u32()
+                            state.operand_pool.push(index_value)
+                            state.operand_pool.push(length_result)
+                            state.instructions.push(Instruction{opcode: Opcode.Less, result: condition_result, result_type: type_from_name("bool"), operand_start: condition_operand_start, operand_count: 2, span: ir_span(pos)})
+                            exit_args: (start: u32, count: u16) = append_context_arguments(state, context)
+                            state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: condition_result, operand_count: 1, target0: body_block, target1: exit_block, target_count: 2, edge1_arg_start: exit_args.start, edge1_arg_count: exit_args.count, span: ir_span(pos)}
+                            finish_block(state)
+
+                            outer_scope: usize = state.names.count
+                            state.structured_depth <- state.structured_depth + 1
+                            state.break_targets.push(exit_block)
+                            state.continue_targets.push(latch_block)
+                            state.current_block <- body_block
+                            state.terminated <- false
+                            element_result: u32 = fresh_value(state)
+                            element_operand_start: u32 = state.operand_pool.count.u32()
+                            state.operand_pool.push(collection.value)
+                            state.operand_pool.push(index_value)
+                            element_type: Type = array_element_type(collection.type)
+                            state.instructions.push(Instruction{opcode: Opcode.Index, result: element_result, result_type: element_type, operand_start: element_operand_start, operand_count: 2, span: ir_span(pos)})
+                            state.names.push(variables[0])
+                            state.values.push(element_result)
+                            state.types.push(element_type)
+                            for nested in body |state, return_type|:
+                                lower_statement(nested, return_type, state)
+                            if not state.terminated:
+                                body_args: (start: u32, count: u16) = append_context_arguments(state, context)
+                                state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: latch_block, target_count: 1, edge0_arg_start: body_args.start, edge0_arg_count: body_args.count, span: ir_span(pos)}
+                            finish_block(state)
+                            _ = state.break_targets.pop()
+                            _ = state.continue_targets.pop()
+                            state.names.truncate(outer_scope)
+                            state.values.truncate(outer_scope)
+                            state.types.truncate(outer_scope)
+                            for offset in 0..<carried_indices.count |state, carried_indices, latch_values|:
+                                state.values[carried_indices[offset].usize()] <- latch_values[offset]
+
+                            state.current_block <- latch_block
+                            state.terminated <- false
+                            one: LoweredValue = emit_constant(state, index_type, 1, "", "", false, ir_span(pos))
+                            next_index: u32 = fresh_value(state)
+                            increment_start: u32 = state.operand_pool.count.u32()
+                            state.operand_pool.push(index_value)
+                            state.operand_pool.push(one.value)
+                            state.instructions.push(Instruction{opcode: Opcode.Add, result: next_index, result_type: index_type, operand_start: increment_start, operand_count: 2, span: ir_span(pos)})
+                            backedge_args: (start: u32, count: u16) = append_context_arguments(state, context)
+                            state.edge_arg_pool.push(next_index)
+                            state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: header_block, target_count: 1, edge0_arg_start: backedge_args.start, edge0_arg_count: backedge_args.count + 1, span: ir_span(pos)}
+                            finish_block(state)
+
+                            state.structured_depth <- state.structured_depth - 1
+                            for offset in 0..<carried_indices.count |state, carried_indices, exit_values|:
+                                state.values[carried_indices[offset].usize()] <- exit_values[offset]
+                            _ = state.loop_context_starts.pop()
+                            _ = state.loop_context_counts.pop()
+                            _ = state.loop_handler_depths.pop()
+                            state.loop_carried_indices <- state.loop_carried_indices.truncate(context_start.usize())
+                            state.current_block <- exit_block
+                            state.terminated <- false
                 Stmt.Break(label, pos):
                     if label != "":
                         add_issue(state, LowerIssueKind.UnsupportedLoopLabel, pos.line, "labeled break is not in the initial IR lowering subset")

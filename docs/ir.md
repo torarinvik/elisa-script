@@ -146,6 +146,10 @@ type annotations, integer indexing, and the `.count` field. Empty literals use
 their expected array type in bindings, assignments, returns, and call arguments,
 so `[]` never introduces an untyped dynamic collection. Nested array literals
 remain explicit lowering errors until recursive IR type descriptors are defined.
+Plain single-binder `for value in array` loops lower to explicit header, body,
+latch, and exit blocks. The collection is evaluated once; length and indexing stay
+typed IR operations. `continue` targets the incrementing latch, `break` targets the
+exit, and mutations of outer bindings travel through typed loop parameters.
 Unlabeled `break` and `continue` resolve through nested loop-target stacks. It produces structured
 lowering issues for every unsupported construct; it never drops a statement or
 expression silently.
