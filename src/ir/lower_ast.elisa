@@ -149,12 +149,25 @@ extend EsIr:
                     return type_from_name(name)
                 Expr.Unary(operator, operand, pos):
                     return type_from_expression(operand)
+                Expr.Index(collection, element_expression, pos):
+                    match collection:
+                        Expr.Ident(name, collection_pos):
+                            if name == "array" or name == "Array" or name == "darray":
+                                element_type: Type = type_from_expression(element_expression)
+                                return array_ir_type(element_type)
+                        _:
+                            pass
+                    return unknown_ir_type()
                 _:
                     return unknown_ir_type()
 
 
         def array_ir_type(element: Type&) -> Type:
             return Type{kind: TypeKind.Array, element_kind: element.kind, element_name: element.name, element_bits: element.bits, element_signed: element.signed}
+
+
+        def owned_ir_type(value: Type&) -> Type:
+            return Type{kind: value.kind, name: value.name, bits: value.bits, signed: value.signed, element_kind: value.element_kind, element_name: value.element_name, element_bits: value.element_bits, element_signed: value.element_signed}
 
 
         def fresh_value(state: mutable LowerState&) -> u32:
@@ -521,21 +534,21 @@ extend EsIr:
                     if callee_name == "" or not signature.valid:
                         add_issue(state, LowerIssueKind.UnknownCallee, pos.line, "only known direct function calls are in the initial lowering subset")
                         return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+                    callee_index: usize = lowered_function_index(state, callee_name)
+                    expected_count: u16 = state.function_parameter_counts[callee_index]
+                    if arguments.count != expected_count.usize():
+                        add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "call argument count does not match the function signature")
+                        return LoweredValue{valid: false, value: 0, type: signature.type}
+                    parameter_start: usize = state.function_parameter_starts[callee_index].usize()
                     operands: mutable darray[u32] = []
                     operand_types: mutable darray[Type] = []
                     valid: mutable bool = true
-                    for argument in arguments |operands, operand_types, valid, state|:
-                        lowered_argument: LoweredValue = lower_expression(argument, state)
+                    for index in 0..<arguments.count |arguments, operands, operand_types, valid, state, parameter_start|:
+                        lowered_argument: LoweredValue = lower_expression_expected(arguments[index], state.function_parameter_types[parameter_start + index], state)
                         operands.push(lowered_argument.value) if lowered_argument.valid
                         operand_types.push(lowered_argument.type) if lowered_argument.valid
                         valid <- false if not lowered_argument.valid
                     LoweredValue{valid: false, value: 0, type: signature.type} return if not valid
-                    callee_index: usize = lowered_function_index(state, callee_name)
-                    expected_count: u16 = state.function_parameter_counts[callee_index]
-                    if operands.count != expected_count.usize():
-                        add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "call argument count does not match the function signature")
-                        return LoweredValue{valid: false, value: 0, type: signature.type}
-                    parameter_start: usize = state.function_parameter_starts[callee_index].usize()
                     for index in 0..<operands.count |state, operand_types, parameter_start, pos, valid|:
                         if not same_type(operand_types[index], state.function_parameter_types[parameter_start + index]):
                             add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "call argument does not match the function parameter type")
@@ -561,14 +574,27 @@ extend EsIr:
                     return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
 
 
+        def lower_expression_expected(expression: Ast::Expr, expected: Type&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+            match expression:
+                Expr.Array(elements, pos):
+                    if elements.count == 0 and expected.kind == TypeKind.Array:
+                        result: u32 = fresh_value(state)
+                        result_type: Type = owned_ir_type(expected)
+                        state.instructions.push(Instruction{opcode: Opcode.MakeArray, result: result, result_type: result_type, operand_start: state.operand_pool.count.u32(), operand_count: 0, span: ir_span(pos)})
+                        return LoweredValue{valid: true, value: result, type: result_type}
+                _:
+                    pass
+            return lower_expression(expression, state)
+
+
         def lower_statement(statement: Ast::Stmt, return_type: Type, state: mutable LowerState&) -> void can[Memory.Allocate, Abort.Panic]:
             if state.terminated:
                 return
             match statement:
                 Stmt.VarDecl(name, type_expression, value, pos):
-                    lowered: LoweredValue = lower_expression(value, state)
+                    declared: Type = type_from_expression(type_expression)
+                    lowered: LoweredValue = lower_expression(value, state) if type_expression is Expr.Invalid else lower_expression_expected(value, declared, state)
                     if lowered.valid:
-                        declared: Type = type_from_expression(type_expression)
                         binding_type: Type = lowered.type if type_expression is Expr.Invalid else declared
                         if type_expression is not Expr.Invalid and not same_type(declared, lowered.type):
                             add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "binding initializer does not match its declared type")
@@ -592,7 +618,7 @@ extend EsIr:
                         if operator != TokenKind.LArrow:
                             add_issue(state, LowerIssueKind.UnsupportedAssignmentTarget, pos.line, "initial SSA rebinding supports the Elisa mutation operator <-")
                         else:
-                            lowered: LoweredValue = lower_expression(value, state)
+                            lowered: LoweredValue = lower_expression_expected(value, state.types[index], state)
                             if lowered.valid:
                                 if not same_type(state.types[index], lowered.type):
                                     add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "assignment cannot change a binding's static type")
@@ -600,7 +626,7 @@ extend EsIr:
                                     state.values[index] <- lowered.value
                 Stmt.Return(value_opt, pos):
                     if value_opt is value:
-                        lowered: LoweredValue = lower_expression(value, state)
+                        lowered: LoweredValue = lower_expression_expected(value, return_type, state)
                         return_valid: mutable bool = lowered.valid
                         if lowered.valid and not same_type(return_type, lowered.type):
                             add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "return value does not match the function return type")

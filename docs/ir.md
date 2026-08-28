@@ -140,9 +140,11 @@ calls, unary numeric negation and boolean negation, the core arithmetic family
 (`+`, `-`, `*`, `/`, `%`), all six scalar comparisons, short-circuit `and`/`or`,
 conditional expressions, returns, structured `if` branches with
 fallthrough merges, and `while` loops with explicit headers/backedges/exits.
-It also lowers non-empty homogeneous immutable array literals, integer indexing,
-and the `.count` field. Empty and nested array literals remain explicit lowering
-errors until element type syntax and recursive IR type descriptors are defined.
+It also lowers homogeneous immutable array literals, scalar `darray[T]`/`array[T]`
+type annotations, integer indexing, and the `.count` field. Empty literals use
+their expected array type in bindings, assignments, returns, and call arguments,
+so `[]` never introduces an untyped dynamic collection. Nested array literals
+remain explicit lowering errors until recursive IR type descriptors are defined.
 Unlabeled `break` and `continue` resolve through nested loop-target stacks. It produces structured
 lowering issues for every unsupported construct; it never drops a statement or
 expression silently.
