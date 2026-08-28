@@ -150,6 +150,10 @@ Plain single-binder `for value in array` loops lower to explicit header, body,
 latch, and exit blocks. The collection is evaluated once; length and indexing stay
 typed IR operations. `continue` targets the incrementing latch, `break` targets the
 exit, and mutations of outer bindings travel through typed loop parameters.
+Integer ranges use the same CFG shape. `low..<high` is exclusive ascending,
+`low..=high` is inclusive ascending, and `high..>low` is strict descending.
+The range-owned stride spelling (`low..<high..step`) requires a positive constant;
+the latch adds or subtracts it according to direction, including after `continue`.
 Unlabeled `break` and `continue` resolve through nested loop-target stacks. It produces structured
 lowering issues for every unsupported construct; it never drops a statement or
 expression silently.
