@@ -195,6 +195,12 @@ fresh value storage. Text concatenation copies both byte views into permanent,
 length-aware Elisa runtime storage, so chained results and results involving
 empty text do not borrow temporary buffers. Mixed element or collection types are
 rejected statically.
+Exact-type scalar arrays also support structural `==` and `!=`. The interpreter
+compares lengths first and then elements deterministically from left to right;
+empty arrays, slices, concatenated arrays, separate equal allocations, and shared
+or copy-on-update storage therefore follow one value-semantic rule. Mixed array
+element types remain static errors, and nested structural equality awaits recursive
+IR type descriptors alongside nested arrays themselves.
 Statement-form `array.push(value)` and `array.extend(values)` are ownership-safe
 SSA updates rather than hidden aliasing mutations. `push` constructs a typed
 singleton and `extend` accepts the receiver's exact array type; both concatenate
