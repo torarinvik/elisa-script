@@ -38,6 +38,10 @@ text or values; identical runs return `DifferentialDifferenceKind.Equal`. The
 comparator is implemented as an explicit Elisa state machine, so it cannot skip a
 comparison phase or silently continue after a mismatch.
 
+Observation values include `Void`, `Bool`, `Int`, exact `Float`, and `Text` kinds.
+Float observations are compared exactly by default; a future tolerance policy can
+be layered on top without weakening the baseline comparator.
+
 The executable contract is `EsDifferential.DifferentialRunner`. It is a typed
 specification, not a command-string escape hatch: the target executable, optional entry point,
 working directory, stdin, protocol, timeout, required effects, and required errors
