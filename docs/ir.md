@@ -143,6 +143,12 @@ adds every unhandled callee effect to the caller effect row and propagates calle
 error sets independently. The verifier repeats this check from IR alone: a
 dynamically active handler may discharge a covered effect family, while errors
 must still appear explicitly in the caller's error row.
+`PathExists` is the first concrete filesystem opcode. Its verified signature is
+`Named(Path) -> Bool`, and verification also requires `File.Read` in the containing
+function's effect row. Lowering adds that effect automatically. The interpreter
+copies the path into a NUL-terminated Elisa-owned buffer before calling the
+self-hosted core file-I/O layer, so a length-delimited `sview` is never passed to
+libc as though it were a C string.
 Named direct-call arguments are resolved against predeclared parameter labels and
 then emitted in canonical signature order. Their expressions still execute once in
 source order. Missing parameters materialize their Elisa default expressions in

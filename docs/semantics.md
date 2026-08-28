@@ -104,6 +104,15 @@ empty text for an empty array. `join(split(text, separator), separator)` therefo
 round-trips text under the explicit-separator rules. Like `split`, a source-defined
 function with the same name takes precedence.
 
+## Filesystem capability
+
+The first executable filesystem primitive is
+`path_exists(path: Path) -> bool`. It accepts the nominal `Path` type rather than
+an arbitrary string and contributes `File.Read` to the enclosing function's effect
+row. The reference interpreter executes it through Elisa's own
+`elisacore_fileio.elisa` runtime; it does not invoke a shell or Python. A
+source-defined `path_exists` function shadows the compiler-known operation.
+
 ## Compile-time validation
 
 `check_typed_literals.elisa` validates constant string payloads during the existing
