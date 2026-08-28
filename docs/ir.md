@@ -144,6 +144,8 @@ calls, unary numeric negation and boolean negation, the core arithmetic family
 (`<<`, `>>`), all six scalar comparisons, short-circuit `and`/`or`,
 conditional expressions, returns, structured `if` branches with
 fallthrough merges, and `while` loops with explicit headers/backedges/exits.
+`pass` is a true lowering no-op: it advances through the surrounding structured
+control-flow state without manufacturing an instruction or runtime value.
 It also lowers homogeneous immutable array literals, scalar `darray[T]`/`array[T]`
 type annotations, integer indexing, and the `.count` field. Empty literals use
 their expected array type in bindings, assignments, returns, and call arguments,
