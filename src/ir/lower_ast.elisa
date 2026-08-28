@@ -1,0 +1,584 @@
+include "../../vendor/elisa-compiler/src/parser/parser.elisa"
+
+using Ast
+using Lexer
+
+
+extend EsIr:
+    public:
+        const enum LowerIssueKind of u8:
+            UnsupportedDeclaration
+            UnsupportedStatement
+            UnsupportedExpression
+            UnknownBinding
+            UnknownCallee
+            UnknownType
+            MissingReturn
+            LoopControlOutsideLoop
+            UnsupportedLoopLabel
+            UnsupportedAssignmentTarget
+            MutableMergePending
+
+
+        struct LowerIssue:
+            function: sview
+            message: sview
+            line: u32
+            kind: LowerIssueKind
+
+
+        struct LowerResult:
+            module: Module
+            issues: darray[LowerIssue]
+
+
+    private:
+        struct LoweredValue:
+            valid: bool
+            value: u32
+            type: Type
+
+
+        struct LowerState:
+            terminator: mutable Terminator
+            blocks: mutable darray[Block]
+            names: mutable darray[sview]
+            values: mutable darray[u32]
+            types: mutable darray[Type]
+            instructions: mutable darray[Instruction]
+            operand_pool: mutable darray[u32]
+            edge_arg_pool: mutable darray[u32]
+            issues: mutable darray[LowerIssue]
+            break_targets: mutable darray[u32]
+            continue_targets: mutable darray[u32]
+            pending_parameter_blocks: mutable darray[u32]
+            pending_parameters: mutable darray[Parameter]
+            block_parameter_pool: mutable darray[Parameter]
+            loop_context_starts: mutable darray[u32]
+            loop_context_counts: mutable darray[u16]
+            loop_carried_indices: mutable darray[u32]
+            function: sview
+            function_names: darray[sview]&
+            function_returns: darray[Type]&
+            next_value: mutable u32
+            current_block: mutable u32
+            next_block: mutable u32
+            instruction_start: mutable u32
+            structured_depth: mutable u32
+            terminated: mutable bool
+
+
+        def zero_span() -> SourceSpan:
+            return SourceSpan{file: "", line: 0, column: 0, end_line: 0, end_column: 0}
+
+
+        def ir_span(pos: Ast::Pos&) -> SourceSpan:
+            return SourceSpan{file: "", line: pos.line, column: pos.column, end_line: pos.end_line, end_column: pos.end_column}
+
+
+        def trace_hash_text(hash: u64, text: sview) -> u64:
+            value: mutable u64 = hash
+            for byte in text |value|:
+                value <- (value ^ byte.u64()) * 1099511628211
+            return value
+
+
+        def trace_site(state: LowerState&, label: sview, pos: Ast::Pos&) -> TraceSite:
+            hash: mutable u64 = trace_hash_text(1469598103934665603, state.function)
+            hash <- trace_hash_text(hash, label)
+            hash <- (hash ^ pos.line.u64()) * 1099511628211
+            hash <- (hash ^ pos.column.u64()) * 1099511628211
+            hash <- 1 if hash == 0
+            return TraceSite{id: hash, label: label}
+
+
+        def effect_family(reference: sview) -> sview:
+            for index in 0..<sview_len(reference) |reference|:
+                reference[0:index] return if sview_at(reference, index) == 46
+            return reference
+
+
+        def effect_operation(reference: sview) -> sview:
+            for index in 0..<sview_len(reference) |reference|:
+                reference[index + 1:sview_len(reference)] return if sview_at(reference, index) == 46
+            return "signal"
+
+
+        def void_ir_type() -> Type:
+            return Type{name: "", bits: 0, kind: TypeKind.Void, signed: false}
+
+
+        def unknown_ir_type() -> Type:
+            return Type{name: "", bits: 0, kind: TypeKind.Named, signed: false}
+
+
+        def type_from_name(name: sview) -> Type:
+            Type{name: "", bits: 0, kind: TypeKind.Void, signed: false} return if name == "void"
+            Type{name: "", bits: 1, kind: TypeKind.Bool, signed: false} return if name == "bool"
+            Type{name: "", bits: 8, kind: TypeKind.Char, signed: false} return if name == "char" or name == "u8"
+            Type{name: "", bits: 16, kind: TypeKind.Int, signed: false} return if name == "u16"
+            Type{name: "", bits: 32, kind: TypeKind.Int, signed: false} return if name == "u32"
+            Type{name: "", bits: 64, kind: TypeKind.Int, signed: false} return if name == "u64" or name == "usize"
+            Type{name: "", bits: 8, kind: TypeKind.Int, signed: true} return if name == "i8"
+            Type{name: "", bits: 16, kind: TypeKind.Int, signed: true} return if name == "i16"
+            Type{name: "", bits: 32, kind: TypeKind.Int, signed: true} return if name == "i32"
+            Type{name: "", bits: 64, kind: TypeKind.Int, signed: true} return if name == "i64" or name == "int"
+            Type{name: "", bits: 32, kind: TypeKind.Float, signed: true} return if name == "f32"
+            Type{name: "", bits: 64, kind: TypeKind.Float, signed: true} return if name == "f64" or name == "float"
+            Type{name: "", bits: 0, kind: TypeKind.Text, signed: false} return if name == "sview" or name == "cstr" or name == "dstr" or name == "Text"
+            return Type{name: name, bits: 0, kind: TypeKind.Named, signed: false}
+
+
+        def type_from_expression(expression: Ast::Expr) -> Type:
+            match expression:
+                Expr.Ident(name, pos):
+                    return type_from_name(name)
+                Expr.Unary(operator, operand, pos):
+                    return type_from_expression(operand)
+                _:
+                    return unknown_ir_type()
+
+
+        def fresh_value(state: mutable LowerState&) -> u32:
+            value: u32 = state.next_value
+            state.next_value <- state.next_value + 1
+            return value
+
+
+        def fresh_block(state: mutable LowerState&) -> u32:
+            block: u32 = state.next_block
+            state.next_block <- state.next_block + 1
+            return block
+
+
+        def finish_block(state: mutable LowerState&) -> void can[Memory.Allocate, Abort.Panic]:
+            parameter_start: u32 = state.block_parameter_pool.count.u32()
+            parameter_count: mutable u16 = 0
+            for index in 0..<state.pending_parameter_blocks.count |state, parameter_count|:
+                if state.pending_parameter_blocks[index] == state.current_block:
+                    state.block_parameter_pool.push(state.pending_parameters[index])
+                    parameter_count <- parameter_count + 1
+            state.blocks.push(Block{id: state.current_block, parameter_start: parameter_start, parameter_count: parameter_count, instruction_start: state.instruction_start, instruction_count: state.instructions.count.u32() - state.instruction_start, terminator: state.terminator})
+            state.terminator <- Terminator{kind: TerminatorKind.Unreachable, span: zero_span()}
+            state.current_block <- 0
+            state.instruction_start <- state.instructions.count.u32()
+
+
+        def add_issue(state: mutable LowerState&, kind: LowerIssueKind, line: u32, message: sview) -> void can[Memory.Allocate, Abort.Panic]:
+            state.issues.push(LowerIssue{kind: kind, function: state.function, line: line, message: message})
+
+
+        def lookup_binding(state: LowerState&, name: sview) -> LoweredValue:
+            while index > 0 |index: usize = state.names.count|:
+                index <- index - 1
+                LoweredValue{valid: true, value: state.values[index], type: state.types[index]} return if state.names[index] == name
+            return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+
+
+        def binding_index(state: LowerState&, name: sview) -> usize:
+            while index > 0 |index: usize = state.names.count|:
+                index <- index - 1
+                index return if state.names[index] == name
+            return state.names.count
+
+
+        def add_unique_name(names: mutable darray[sview]&, name: sview) -> void can[Memory.Allocate, Abort.Panic]:
+            names.push(name) if name != "" and not any existing in names where existing == name
+
+
+        def collect_assigned_names(statements: darray[Ast::Stmt]&, names: mutable darray[sview]&) -> void can[Memory.Allocate, Abort.Panic]:
+            for statement in statements |names|:
+                match statement:
+                    Stmt.Assign(target, operator, value, pos):
+                        match target:
+                            Expr.Ident(name, target_pos):
+                                add_unique_name(names, name) if operator == TokenKind.LArrow
+                            _:
+                                pass
+                    Stmt.If(condition, then_body, else_body, pos):
+                        collect_assigned_names(then_body, names)
+                        collect_assigned_names(else_body, names)
+                    Stmt.While(condition, body, pos):
+                        collect_assigned_names(body, names)
+                    Stmt.Block(kind, clause, binding, body, pos):
+                        collect_assigned_names(body, names)
+                    _:
+                        pass
+
+
+        def append_context_arguments(state: mutable LowerState&, context: usize) -> (start: u32, count: u16) can[Memory.Allocate, Abort.Panic]:
+            start: u32 = state.edge_arg_pool.count.u32()
+            carried_start: usize = state.loop_context_starts[context].usize()
+            count: u16 = state.loop_context_counts[context]
+            for offset in 0..<count.usize() |state, carried_start|:
+                binding: usize = state.loop_carried_indices[carried_start + offset].usize()
+                state.edge_arg_pool.push(state.values[binding])
+            return (start, count)
+
+
+        def lookup_return_type(state: LowerState&, name: sview) -> LoweredValue:
+            for index in 0..<state.function_names.count |state|:
+                LoweredValue{valid: true, value: 0, type: state.function_returns[index]} return if state.function_names[index] == name
+            return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+
+
+        def emit_constant(state: mutable LowerState&, type: Type, integer: i64, decimal: sview, text: sview, boolean: bool, span: SourceSpan) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+            result: u32 = fresh_value(state)
+            state.instructions.push(Instruction{opcode: Opcode.Constant, result: result, result_type: type, integer: integer, decimal: decimal, text: text, boolean: boolean, span: span})
+            return LoweredValue{valid: true, value: result, type: type}
+
+
+        def lower_expression(expression: Ast::Expr, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+            match expression:
+                Expr.IntLit(value):
+                    return emit_constant(state, type_from_name("i64"), value, "", "", false, zero_span())
+                Expr.FloatLit(text):
+                    return emit_constant(state, type_from_name("f64"), 0, text, "", false, zero_span())
+                Expr.StringLit(text):
+                    return emit_constant(state, type_from_name("sview"), 0, "", text, false, zero_span())
+                Expr.CharLit(text):
+                    return emit_constant(state, type_from_name("char"), 0, "", text, false, zero_span())
+                Expr.BoolLit(value):
+                    return emit_constant(state, type_from_name("bool"), 0, "", "", value, zero_span())
+                Expr.Ident(name, pos):
+                    binding: LoweredValue = lookup_binding(state, name)
+                    add_issue(state, LowerIssueKind.UnknownBinding, pos.line, "identifier has no lowered local binding") if not binding.valid
+                    return binding
+                Expr.Binary(left, operator, right, pos):
+                    lowered_left: LoweredValue = lower_expression(left, state)
+                    lowered_right: LoweredValue = lower_expression(right, state)
+                    LoweredValue{valid: false, value: 0, type: unknown_ir_type()} return if not lowered_left.valid or not lowered_right.valid
+                    opcode: mutable Opcode = Opcode.Add
+                    supported: mutable bool = true
+                    opcode <- Opcode.Add if operator == TokenKind.Plus
+                    opcode <- Opcode.Subtract if operator == TokenKind.Minus
+                    opcode <- Opcode.Multiply if operator == TokenKind.Star
+                    opcode <- Opcode.Divide if operator == TokenKind.Slash
+                    opcode <- Opcode.Equal if operator == TokenKind.EqEq
+                    opcode <- Opcode.Less if operator == TokenKind.Lt
+                    supported <- false if operator not in {TokenKind.Plus, TokenKind.Minus, TokenKind.Star, TokenKind.Slash, TokenKind.EqEq, TokenKind.Lt}
+                    if not supported:
+                        add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "binary operator is not in the initial IR lowering subset")
+                        return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+                    result_type: Type = type_from_name("bool") if operator == TokenKind.EqEq or operator == TokenKind.Lt else lowered_left.type
+                    result: u32 = fresh_value(state)
+                    operand_start: u32 = state.operand_pool.count.u32()
+                    state.operand_pool.push(lowered_left.value)
+                    state.operand_pool.push(lowered_right.value)
+                    state.instructions.push(Instruction{opcode: opcode, result: result, result_type: result_type, operand_start: operand_start, operand_count: 2, span: ir_span(pos)})
+                    return LoweredValue{valid: true, value: result, type: result_type}
+                Expr.Call(callee, arguments, argument_names, pos):
+                    callee_name: mutable sview = ""
+                    match callee:
+                        Expr.Ident(name, callee_pos):
+                            callee_name <- name
+                        _:
+                            pass
+                    if callee_name == "observe":
+                        if arguments.count != 1:
+                            add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "observe requires exactly one value")
+                            return LoweredValue{valid: false, value: 0, type: void_ir_type()}
+                        observed: LoweredValue = lower_expression(arguments[0], state)
+                        if observed.valid:
+                            operand_start: u32 = state.operand_pool.count.u32()
+                            state.operand_pool.push(observed.value)
+                            state.instructions.push(Instruction{opcode: Opcode.Observe, result: 0, result_type: void_ir_type(), operand_start: operand_start, operand_count: 1, trace: trace_site(state, "observe", pos), span: ir_span(pos)})
+                        return LoweredValue{valid: observed.valid, value: 0, type: void_ir_type()}
+                    signature: LoweredValue = lookup_return_type(state, callee_name)
+                    if callee_name == "" or not signature.valid:
+                        add_issue(state, LowerIssueKind.UnknownCallee, pos.line, "only known direct function calls are in the initial lowering subset")
+                        return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+                    operands: mutable darray[u32] = []
+                    valid: mutable bool = true
+                    for argument in arguments |operands, valid, state|:
+                        lowered_argument: LoweredValue = lower_expression(argument, state)
+                        operands.push(lowered_argument.value) if lowered_argument.valid
+                        valid <- false if not lowered_argument.valid
+                    LoweredValue{valid: false, value: 0, type: signature.type} return if not valid
+                    result: mutable u32 = 0
+                    result <- fresh_value(state) if signature.type.kind != TypeKind.Void
+                    operand_start: u32 = state.operand_pool.count.u32()
+                    for operand in operands |state|:
+                        state.operand_pool.push(operand)
+                    state.instructions.push(Instruction{opcode: Opcode.Call, result: result, result_type: signature.type, operand_start: operand_start, operand_count: operands.count.u16(), symbol: callee_name, span: ir_span(pos)})
+                    return LoweredValue{valid: true, value: result, type: signature.type}
+                _:
+                    add_issue(state, LowerIssueKind.UnsupportedExpression, 0, "expression is not in the initial IR lowering subset")
+                    return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+
+
+        def lower_statement(statement: Ast::Stmt, return_type: Type, state: mutable LowerState&) -> void can[Memory.Allocate, Abort.Panic]:
+            if state.terminated:
+                return
+            match statement:
+                Stmt.VarDecl(name, type_expression, value, pos):
+                    lowered: LoweredValue = lower_expression(value, state)
+                    if lowered.valid:
+                        declared: Type = type_from_expression(type_expression)
+                        binding_type: Type = lowered.type if type_expression is Expr.Invalid else declared
+                        state.names.push(name)
+                        state.values.push(lowered.value)
+                        state.types.push(binding_type)
+                Stmt.Expr(expression, pos):
+                    _ = lower_expression(expression, state)
+                Stmt.Assign(target, operator, value, pos):
+                    target_name: mutable sview = ""
+                    match target:
+                        Expr.Ident(name, target_pos):
+                            target_name <- name
+                        _:
+                            pass
+                    index: usize = binding_index(state, target_name)
+                    if target_name == "" or index == state.names.count:
+                        add_issue(state, LowerIssueKind.UnsupportedAssignmentTarget, pos.line, "initial SSA lowering supports assignment to a known local name")
+                    else:
+                        if operator != TokenKind.LArrow:
+                            add_issue(state, LowerIssueKind.UnsupportedAssignmentTarget, pos.line, "initial SSA rebinding supports the Elisa mutation operator <-")
+                        else:
+                            lowered: LoweredValue = lower_expression(value, state)
+                            if lowered.valid:
+                                state.values[index] <- lowered.value
+                                state.types[index] <- lowered.type
+                Stmt.Return(value_opt, pos):
+                    if value_opt is value:
+                        lowered: LoweredValue = lower_expression(value, state)
+                        state.terminator <- Terminator{kind: TerminatorKind.Return, operand: lowered.value, operand_count: 1, span: ir_span(pos)} if lowered.valid
+                    else:
+                        state.terminator <- Terminator{kind: TerminatorKind.Return, span: ir_span(pos)}
+                    state.terminated <- true
+                Stmt.If(condition, then_body, else_body, pos):
+                    condition_value: LoweredValue = lower_expression(condition, state)
+                    if condition_value.valid:
+                        then_block: u32 = fresh_block(state)
+                        else_block: u32 = fresh_block(state)
+                        merge_block: u32 = fresh_block(state)
+                        state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: condition_value.value, operand_count: 1, target0: then_block, target1: else_block, target_count: 2, span: ir_span(pos)}
+                        finish_block(state)
+
+                        scope_mark: usize = state.names.count
+                        state.structured_depth <- state.structured_depth + 1
+                        base_values: mutable darray[u32] = []
+                        base_values.extend(state.values)
+                        state.current_block <- then_block
+                        state.terminated <- false
+                        for nested in then_body |state, return_type|:
+                            lower_statement(nested, return_type, state)
+                        then_falls_through: bool = not state.terminated
+                        state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: merge_block, target_count: 1, span: ir_span(pos)} if then_falls_through
+                        then_values: mutable darray[u32] = []
+                        for index in 0..<scope_mark |state, then_values|:
+                            then_values.push(state.values[index])
+                        then_block_index: usize = state.blocks.count
+                        finish_block(state)
+                        state.names.truncate(scope_mark)
+                        state.values.truncate(scope_mark)
+                        state.types.truncate(scope_mark)
+                        for index in 0..<scope_mark |state, base_values|:
+                            state.values[index] <- base_values[index]
+
+                        state.current_block <- else_block
+                        state.terminated <- false
+                        for nested in else_body |state, return_type|:
+                            lower_statement(nested, return_type, state)
+                        else_falls_through: bool = not state.terminated
+                        state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: merge_block, target_count: 1, span: ir_span(pos)} if else_falls_through
+                        else_values: mutable darray[u32] = []
+                        for index in 0..<scope_mark |state, else_values|:
+                            else_values.push(state.values[index])
+                        else_block_index: usize = state.blocks.count
+                        finish_block(state)
+                        state.names.truncate(scope_mark)
+                        state.values.truncate(scope_mark)
+                        state.types.truncate(scope_mark)
+                        state.structured_depth <- state.structured_depth - 1
+
+                        if then_falls_through or else_falls_through:
+                            if then_falls_through and else_falls_through:
+                                then_edge_start: u32 = state.edge_arg_pool.count.u32()
+                                merge_count: mutable u16 = 0
+                                for index in 0..<scope_mark |state, then_values, else_values, merge_block, merge_count|:
+                                    if then_values[index] != else_values[index]:
+                                        state.edge_arg_pool.push(then_values[index])
+                                        merge_count <- merge_count + 1
+                                else_edge_start: u32 = state.edge_arg_pool.count.u32()
+                                for index in 0..<scope_mark |state, then_values, else_values|:
+                                    state.edge_arg_pool.push(else_values[index]) if then_values[index] != else_values[index]
+                                state.blocks[then_block_index].terminator <- Terminator{kind: TerminatorKind.Jump, target0: merge_block, target_count: 1, edge0_arg_start: then_edge_start, edge0_arg_count: merge_count, span: ir_span(pos)}
+                                state.blocks[else_block_index].terminator <- Terminator{kind: TerminatorKind.Jump, target0: merge_block, target_count: 1, edge0_arg_start: else_edge_start, edge0_arg_count: merge_count, span: ir_span(pos)}
+                                for index in 0..<scope_mark |state, then_values, else_values, merge_block|:
+                                    if then_values[index] != else_values[index]:
+                                        merged_value: u32 = fresh_value(state)
+                                        state.pending_parameter_blocks.push(merge_block)
+                                        state.pending_parameters.push(Parameter{value: merged_value, type: state.types[index], name: state.names[index]})
+                                        state.values[index] <- merged_value
+                                    else:
+                                        state.values[index] <- then_values[index]
+                            else:
+                                for index in 0..<scope_mark |state, then_values, else_values, then_falls_through|:
+                                    state.values[index] <- then_values[index] if then_falls_through else else_values[index]
+                            state.current_block <- merge_block
+                            state.terminated <- false
+                        else:
+                            state.terminated <- true
+                Stmt.While(condition, body, pos):
+                    header_block: u32 = fresh_block(state)
+                    body_block: u32 = fresh_block(state)
+                    exit_block: u32 = fresh_block(state)
+                    assigned_names: mutable darray[sview] = []
+                    collect_assigned_names(body, assigned_names)
+                    carried_indices: mutable darray[u32] = []
+                    for assigned_name in assigned_names |state, carried_indices|:
+                        assigned_index: usize = binding_index(state, assigned_name)
+                        carried_indices.push(assigned_index.u32()) if assigned_index < state.names.count
+                    context_start: u32 = state.loop_carried_indices.count.u32()
+                    state.loop_carried_indices.extend(carried_indices)
+                    state.loop_context_starts.push(context_start)
+                    state.loop_context_counts.push(carried_indices.count.u16())
+                    context: usize = state.loop_context_counts.count - 1
+
+                    entry_args: (start: u32, count: u16) = append_context_arguments(state, context)
+                    state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: header_block, target_count: 1, edge0_arg_start: entry_args.start, edge0_arg_count: entry_args.count, span: ir_span(pos)}
+                    finish_block(state)
+
+                    exit_values: mutable darray[u32] = []
+                    for binding_u32 in carried_indices |state, header_block, exit_block, exit_values|:
+                        binding: usize = binding_u32.usize()
+                        header_value: u32 = fresh_value(state)
+                        exit_value: u32 = fresh_value(state)
+                        state.pending_parameter_blocks.push(header_block)
+                        state.pending_parameters.push(Parameter{value: header_value, type: state.types[binding], name: state.names[binding]})
+                        state.pending_parameter_blocks.push(exit_block)
+                        state.pending_parameters.push(Parameter{value: exit_value, type: state.types[binding], name: state.names[binding]})
+                        state.values[binding] <- header_value
+                        exit_values.push(exit_value)
+
+                    state.current_block <- header_block
+                    state.terminated <- false
+                    condition_value: LoweredValue = lower_expression(condition, state)
+                    if condition_value.valid:
+                        exit_args: (start: u32, count: u16) = append_context_arguments(state, context)
+                        state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: condition_value.value, operand_count: 1, target0: body_block, target1: exit_block, target_count: 2, edge1_arg_start: exit_args.start, edge1_arg_count: exit_args.count, span: ir_span(pos)}
+                    finish_block(state)
+
+                    scope_mark: usize = state.names.count
+                    state.structured_depth <- state.structured_depth + 1
+                    state.break_targets.push(exit_block)
+                    state.continue_targets.push(header_block)
+                    state.current_block <- body_block
+                    state.terminated <- false
+                    for nested in body |state, return_type|:
+                        lower_statement(nested, return_type, state)
+                    if not state.terminated:
+                        backedge_args: (start: u32, count: u16) = append_context_arguments(state, context)
+                        state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: header_block, target_count: 1, edge0_arg_start: backedge_args.start, edge0_arg_count: backedge_args.count, span: ir_span(pos)}
+                    finish_block(state)
+                    _ = state.break_targets.pop()
+                    _ = state.continue_targets.pop()
+                    state.names.truncate(scope_mark)
+                    state.values.truncate(scope_mark)
+                    state.types.truncate(scope_mark)
+                    state.structured_depth <- state.structured_depth - 1
+                    for offset in 0..<carried_indices.count |state, carried_indices, exit_values|:
+                        state.values[carried_indices[offset].usize()] <- exit_values[offset]
+                    _ = state.loop_context_starts.pop()
+                    _ = state.loop_context_counts.pop()
+                    state.loop_carried_indices <- state.loop_carried_indices.truncate(context_start.usize())
+
+                    state.current_block <- exit_block
+                    state.terminated <- false
+                Stmt.Break(label, pos):
+                    if label != "":
+                        add_issue(state, LowerIssueKind.UnsupportedLoopLabel, pos.line, "labeled break is not in the initial IR lowering subset")
+                    else:
+                        if state.break_targets.count == 0:
+                            add_issue(state, LowerIssueKind.LoopControlOutsideLoop, pos.line, "break has no enclosing loop")
+                        else:
+                            target: u32 = state.break_targets[state.break_targets.count - 1]
+                            context: usize = state.loop_context_counts.count - 1
+                            edge_args: (start: u32, count: u16) = append_context_arguments(state, context)
+                            state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: target, target_count: 1, edge0_arg_start: edge_args.start, edge0_arg_count: edge_args.count, span: ir_span(pos)}
+                            state.terminated <- true
+                Stmt.Continue(label, pos):
+                    if label != "":
+                        add_issue(state, LowerIssueKind.UnsupportedLoopLabel, pos.line, "labeled continue is not in the initial IR lowering subset")
+                    else:
+                        if state.continue_targets.count == 0:
+                            add_issue(state, LowerIssueKind.LoopControlOutsideLoop, pos.line, "continue has no enclosing loop")
+                        else:
+                            target: u32 = state.continue_targets[state.continue_targets.count - 1]
+                            context: usize = state.loop_context_counts.count - 1
+                            edge_args: (start: u32, count: u16) = append_context_arguments(state, context)
+                            state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: target, target_count: 1, edge0_arg_start: edge_args.start, edge0_arg_count: edge_args.count, span: ir_span(pos)}
+                            state.terminated <- true
+                Stmt.Block(kind, clause, binding, body, pos):
+                    if kind == "signal":
+                        if clause.count == 0:
+                            add_issue(state, LowerIssueKind.UnsupportedStatement, pos.line, "signal must name an effect operation")
+                        else:
+                            reference: sview = clause[0]
+                            state.instructions.push(Instruction{opcode: Opcode.Perform, result: 0, result_type: void_ir_type(), effect_family: effect_family(reference), effect_operation: effect_operation(reference), trace: trace_site(state, reference, pos), span: ir_span(pos)})
+                    else:
+                        if kind == "can" or kind == "trusted":
+                            scope_mark: usize = state.names.count
+                            for nested in body |state, return_type|:
+                                lower_statement(nested, return_type, state)
+                            state.names.truncate(scope_mark)
+                            state.values.truncate(scope_mark)
+                            state.types.truncate(scope_mark)
+                        else:
+                            add_issue(state, LowerIssueKind.UnsupportedStatement, pos.line, "control block is not in the initial IR lowering subset")
+                _:
+                    add_issue(state, LowerIssueKind.UnsupportedStatement, 0, "statement is not in the initial IR lowering subset")
+
+
+        def lower_function(name: sview, params: darray[Ast::ParamDecl]&, return_type_opt: Ast::Expr?, body: darray[Ast::Stmt]&, effects: darray[sview]&, pos: Ast::Pos&, function_names: darray[sview]&, function_returns: darray[Type]&, outer_issues: mutable darray[LowerIssue]&) -> Function can[Memory.Allocate, Abort.Panic]:
+            return_type: mutable Type = void_ir_type()
+            return_type <- type_from_expression(return_expression) if return_type_opt is return_expression
+            state: mutable LowerState = LowerState{function: name, next_value: 1, current_block: 1, next_block: 2, instruction_start: 0, structured_depth: 0, blocks: [], names: [], values: [], types: [], instructions: [], operand_pool: [], edge_arg_pool: [], issues: [], break_targets: [], continue_targets: [], pending_parameter_blocks: [], pending_parameters: [], block_parameter_pool: [], loop_context_starts: [], loop_context_counts: [], loop_carried_indices: [], terminated: false, terminator: Terminator{kind: TerminatorKind.Unreachable, span: ir_span(pos)}, function_names: function_names, function_returns: function_returns}
+            lowered_params: mutable darray[Parameter] = []
+            for parameter in params |state, lowered_params|:
+                parameter_type: Type = type_from_expression(parameter.type_expression)
+                value: u32 = fresh_value(state)
+                lowered_params.push(Parameter{value: value, type: parameter_type, name: parameter.name})
+                state.names.push(parameter.name)
+                state.values.push(value)
+                state.types.push(parameter_type)
+            for statement in body |state, return_type|:
+                lower_statement(statement, return_type, state)
+            if not state.terminated:
+                if return_type.kind == TypeKind.Void:
+                    state.terminator <- Terminator{kind: TerminatorKind.Return, span: ir_span(pos)}
+                else:
+                    add_issue(state, LowerIssueKind.MissingReturn, pos.line, "non-void function did not lower to a return")
+            finish_block(state) if state.current_block != 0
+            for found in state.issues |outer_issues|:
+                outer_issues.push(found)
+            lowered_effects: mutable darray[sview] = []
+            lowered_effects.extend(effects)
+            return Function{name: name, parameters: lowered_params, return_type: return_type, effects: lowered_effects, operand_pool: state.operand_pool, edge_arg_pool: state.edge_arg_pool, block_parameter_pool: state.block_parameter_pool, instruction_pool: state.instructions, blocks: state.blocks, entry: 1}
+
+
+    public:
+        # Lower a semantically checked parser file. The caller must run Semantic::check first;
+        # this boundary assumes the source is well typed and reports only lowering coverage.
+        def lower_file(file: Ast::File&, module_name: sview) -> LowerResult can[Memory.Allocate, Abort.Panic]:
+            names: mutable darray[sview] = []
+            returns: mutable darray[Type] = []
+            for declaration in file.top_decls |names, returns|:
+                match declaration:
+                    Decl.Func(name, params, return_type_opt, body, effects, decorators, pos):
+                        return_type: mutable Type = void_ir_type()
+                        return_type <- type_from_expression(return_expression) if return_type_opt is return_expression
+                        names.push(name)
+                        returns.push(return_type)
+                    _:
+                        pass
+            functions: mutable darray[Function] = []
+            issues: mutable darray[LowerIssue] = []
+            for declaration in file.top_decls |functions, issues, names, returns|:
+                match declaration:
+                    Decl.Func(name, params, return_type_opt, body, effects, decorators, pos):
+                        functions.push(lower_function(name, params, return_type_opt, body, effects, pos, names, returns, issues))
+                    _:
+                        issues.push(LowerIssue{kind: LowerIssueKind.UnsupportedDeclaration, function: "", line: 0, message: "declaration is not in the initial IR lowering subset"})
+            return LowerResult{module: Module{name: module_name, functions: functions}, issues: issues}

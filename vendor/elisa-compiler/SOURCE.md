@@ -1,8 +1,9 @@
 # Vendored Elisa compiler sources
 
-This directory contains the reusable Elisa-language portions of the self-hosted
-Elisa compiler. The snapshot is the starting point for Elisascript's shared
-frontend and native backend.
+This directory began as a snapshot of the reusable Elisa-language portions of the
+self-hosted Elisa compiler. It is the starting point for Elisascript's shared
+frontend and native backend and now carries explicitly documented Elisascript
+adaptations.
 
 ## Source
 
@@ -26,8 +27,13 @@ layout intact. Existing relative `include` paths therefore continue to work.
 ## Deliberately excluded
 
 - The existing `elisac` driver: Elisascript will have its own `.elisascript` driver.
-- Compiler tests and generated build output: Elisascript will add focused parity and
-  differential tests separately.
+- The complete compiler test suite and generated build output: compatibility tests
+  needed by Elisascript are copied separately under `test/lexer/elisa_compat` and
+  `test/parser/elisa_compat`.
+
+Elisascript-specific additions currently include explicit shebang handling,
+call-shaped typed-literal parsing, nominal typed-literal builtins, and compile-time
+typed-literal validation. Their rationale and tests are documented under `docs/`.
 - Shell/Python build scripts: Elisascript should replace these rather than inherit them.
 
 ## Modification policy

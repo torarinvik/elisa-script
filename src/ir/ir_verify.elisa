@@ -1,0 +1,168 @@
+extend EsIr:
+    private:
+        def has_u32(values: darray[u32]&, wanted: u32) -> bool:
+            return any value in values where value == wanted
+
+
+        def has_u64(values: darray[u64]&, wanted: u64) -> bool:
+            return any value in values where value == wanted
+
+
+        def has_text(values: darray[sview]&, wanted: sview) -> bool:
+            return any value in values where value == wanted
+
+
+        def effect_granted(effects: darray[sview]&, family: sview) -> bool:
+            for effect in effects |family|:
+                true return if effect == family
+                if sview_len(effect) > sview_len(family) and effect[0:sview_len(family)] == family and sview_at(effect, sview_len(family)) == 46:
+                    return true
+            return false
+
+
+        def issue(kind: IssueKind, function: sview, block: u32, value: u32, trace: u64, message: sview) -> Issue:
+            return Issue{kind: kind, function: function, block: block, value: value, trace: trace, message: message}
+
+
+        def definition_block(values: darray[u32]&, blocks: darray[u32]&, value: u32) -> u32:
+            for index in 0..<values.count |values, blocks, value|:
+                blocks[index] return if values[index] == value
+            return 0
+
+
+        def definition_type(values: darray[u32]&, types: darray[Type]&, value: u32) -> Type:
+            for index in 0..<values.count |values, types, value|:
+                types[index] return if values[index] == value
+            return Type{kind: TypeKind.Void}
+
+
+        def same_type(left: Type&, right: Type&) -> bool:
+            return left.kind == right.kind and left.name == right.name and left.bits == right.bits and left.signed == right.signed
+
+
+        def verify_edge(fn: Function&, source: Block&, target_id: u32, argument_start: u32, argument_count: u16, defined: darray[u32]&, definition_blocks: darray[u32]&, definition_types: darray[Type]&, issues: mutable darray[Issue]&) -> void can[Memory.Allocate, Abort.Panic]:
+            for target in fn.blocks |fn, source, target_id, argument_start, argument_count, defined, definition_blocks, definition_types, issues|:
+                if target.id == target_id:
+                    issues.push(issue(IssueKind.EdgeArgumentArity, fn.name, source.id, 0, 0, "edge argument count does not match target block parameters")) if argument_count != target.parameter_count
+                    argument_end: usize = argument_start.usize() + argument_count.usize()
+                    if argument_end > fn.edge_arg_pool.count:
+                        issues.push(issue(IssueKind.EdgeArgumentArity, fn.name, source.id, 0, 0, "edge argument slice is outside the function pool"))
+                        return
+                    paired: usize = argument_count.usize() if argument_count < target.parameter_count else target.parameter_count.usize()
+                    for offset in 0..<paired |fn, source, target, argument_start, defined, definition_blocks, definition_types, issues|:
+                        value: u32 = fn.edge_arg_pool[argument_start.usize() + offset]
+                        if value == 0 or not has_u32(defined, value):
+                            issues.push(issue(IssueKind.UndefinedValue, fn.name, source.id, value, 0, "edge passes an undefined SSA value"))
+                        else:
+                            def_block: u32 = definition_block(defined, definition_blocks, value)
+                            issues.push(issue(IssueKind.NonDominatingValue, fn.name, source.id, value, 0, "edge argument definition does not dominate its source block")) if not block_dominates(fn, def_block, source.id)
+                            actual: Type = definition_type(defined, definition_types, value)
+                            parameter_index: usize = target.parameter_start.usize() + offset
+                            issues.push(issue(IssueKind.EdgeArgumentType, fn.name, source.id, value, 0, "edge argument type does not match target block parameter")) if parameter_index >= fn.block_parameter_pool.count or not same_type(actual, fn.block_parameter_pool[parameter_index].type)
+                    return
+
+
+        # A definition dominates USE when removing its block makes USE unreachable from
+        # entry. Same-block ordering is checked separately by the ordinary defined set.
+        def block_dominates(fn: Function&, definition: u32, use: u32) -> bool can[Memory.Allocate, Abort.Panic]:
+            true return if definition == use or definition == fn.entry
+            frontier: mutable darray[u32] = [fn.entry]
+            visited: mutable darray[u32] = []
+            while frontier.count > 0 |frontier, visited, fn, definition, use|:
+                current: u32 = frontier.pop()
+                continue if current == definition or has_u32(visited, current)
+                false return if current == use
+                visited.push(current)
+                for block in fn.blocks |frontier, current, visited, definition|:
+                    if block.id == current:
+                        frontier.push(block.terminator.target0) if block.terminator.target_count >= 1 and block.terminator.target0 != definition and not has_u32(visited, block.terminator.target0)
+                        frontier.push(block.terminator.target1) if block.terminator.target_count >= 2 and block.terminator.target1 != definition and not has_u32(visited, block.terminator.target1)
+            return true
+
+
+        def verify_terminator(fn: Function&, block: Block&, defined: darray[u32]&, definition_blocks: darray[u32]&, definition_types: darray[Type]&, block_ids: darray[u32]&, issues: mutable darray[Issue]&) -> void can[Memory.Allocate, Abort.Panic]:
+            issues.push(issue(IssueKind.UndefinedValue, fn.name, block.id, block.terminator.operand, 0, "terminator uses an undefined SSA value")) if block.terminator.operand_count == 1 and (block.terminator.operand == 0 or not has_u32(defined, block.terminator.operand))
+            if block.terminator.operand_count == 1 and has_u32(defined, block.terminator.operand):
+                def_block: u32 = definition_block(defined, definition_blocks, block.terminator.operand)
+                issues.push(issue(IssueKind.NonDominatingValue, fn.name, block.id, block.terminator.operand, 0, "terminator value definition does not dominate this block")) if not block_dominates(fn, def_block, block.id)
+            issues.push(issue(IssueKind.UnknownTarget, fn.name, block.id, block.terminator.target0, 0, "terminator targets an unknown block")) if block.terminator.target_count >= 1 and not has_u32(block_ids, block.terminator.target0)
+            issues.push(issue(IssueKind.UnknownTarget, fn.name, block.id, block.terminator.target1, 0, "terminator targets an unknown block")) if block.terminator.target_count >= 2 and not has_u32(block_ids, block.terminator.target1)
+            verify_edge(fn, block, block.terminator.target0, block.terminator.edge0_arg_start, block.terminator.edge0_arg_count, defined, definition_blocks, definition_types, issues) if block.terminator.target_count >= 1 and has_u32(block_ids, block.terminator.target0)
+            verify_edge(fn, block, block.terminator.target1, block.terminator.edge1_arg_start, block.terminator.edge1_arg_count, defined, definition_blocks, definition_types, issues) if block.terminator.target_count >= 2 and has_u32(block_ids, block.terminator.target1)
+            match block.terminator.kind:
+                TerminatorKind.Return:
+                    expected: usize = 0 if fn.return_type.kind == TypeKind.Void else 1
+                    issues.push(issue(IssueKind.InvalidTerminator, fn.name, block.id, 0, 0, "return has the wrong number of values")) if block.terminator.operand_count.usize() != expected or block.terminator.target_count != 0
+                TerminatorKind.Jump:
+                    issues.push(issue(IssueKind.InvalidTerminator, fn.name, block.id, 0, 0, "jump requires exactly one target")) if block.terminator.target_count != 1 or block.terminator.operand_count != 0
+                TerminatorKind.Branch:
+                    issues.push(issue(IssueKind.InvalidTerminator, fn.name, block.id, 0, 0, "branch requires a condition and two targets")) if block.terminator.operand_count != 1 or block.terminator.target_count != 2
+                TerminatorKind.Unreachable:
+                    issues.push(issue(IssueKind.InvalidTerminator, fn.name, block.id, 0, 0, "unreachable cannot carry operands or targets")) if block.terminator.operand_count != 0 or block.terminator.target_count != 0
+
+
+        def verify_function(fn: Function&, issues: mutable darray[Issue]&) -> void can[Memory.Allocate, Abort.Panic]:
+            block_ids: mutable darray[u32] = []
+            for block in fn.blocks |block_ids, issues|:
+                issues.push(issue(IssueKind.DuplicateBlock, fn.name, block.id, 0, 0, "block id is defined more than once")) if has_u32(block_ids, block.id)
+                block_ids.push(block.id)
+            issues.push(issue(IssueKind.MissingEntry, fn.name, fn.entry, 0, 0, "entry block does not exist")) if not has_u32(block_ids, fn.entry)
+
+            defined: mutable darray[u32] = []
+            definition_blocks: mutable darray[u32] = []
+            definition_types: mutable darray[Type] = []
+            traces: mutable darray[u64] = []
+            for parameter in fn.parameters |defined, definition_blocks, definition_types, issues|:
+                issues.push(issue(IssueKind.DuplicateValue, fn.name, fn.entry, parameter.value, 0, "parameter SSA value is duplicated or zero")) if parameter.value == 0 or has_u32(defined, parameter.value)
+                defined.push(parameter.value) if parameter.value != 0 and not has_u32(defined, parameter.value)
+                definition_blocks.push(fn.entry) if parameter.value != 0 and definition_blocks.count < defined.count
+                definition_types.push(parameter.type) if parameter.value != 0 and definition_types.count < defined.count
+            for block in fn.blocks |defined, definition_blocks, definition_types, traces, block_ids, issues|:
+                parameter_end: usize = block.parameter_start.usize() + block.parameter_count.usize()
+                issues.push(issue(IssueKind.EdgeArgumentArity, fn.name, block.id, 0, 0, "block parameter slice is outside the function pool")) if parameter_end > fn.block_parameter_pool.count
+                safe_parameter_end: usize = parameter_end if parameter_end <= fn.block_parameter_pool.count else fn.block_parameter_pool.count
+                for parameter_index in block.parameter_start.usize()..<safe_parameter_end |defined, definition_blocks, definition_types, issues, block, fn|:
+                    parameter: Parameter = fn.block_parameter_pool[parameter_index]
+                    issues.push(issue(IssueKind.DuplicateValue, fn.name, block.id, parameter.value, 0, "block parameter SSA value is duplicated or zero")) if parameter.value == 0 or has_u32(defined, parameter.value)
+                    defined.push(parameter.value) if parameter.value != 0 and not has_u32(defined, parameter.value)
+                    definition_blocks.push(block.id) if parameter.value != 0 and definition_blocks.count < defined.count
+                    definition_types.push(parameter.type) if parameter.value != 0 and definition_types.count < defined.count
+                instruction_end: usize = block.instruction_start.usize() + block.instruction_count.usize()
+                issues.push(issue(IssueKind.UndefinedValue, fn.name, block.id, 0, 0, "block instruction slice is outside the function pool")) if instruction_end > fn.instruction_pool.count
+                safe_instruction_end: usize = instruction_end if instruction_end <= fn.instruction_pool.count else fn.instruction_pool.count
+                for instruction_index in block.instruction_start.usize()..<safe_instruction_end |defined, traces, issues, block, fn|:
+                    instruction: Instruction = fn.instruction_pool[instruction_index]
+                    operand_end: usize = instruction.operand_start.usize() + instruction.operand_count.usize()
+                    issues.push(issue(IssueKind.UndefinedValue, fn.name, block.id, 0, instruction.trace.id, "instruction operand slice is outside the function pool")) if operand_end > fn.operand_pool.count
+                    safe_end: usize = operand_end if operand_end <= fn.operand_pool.count else fn.operand_pool.count
+                    for operand_index in instruction.operand_start.usize()..<safe_end |defined, issues, block, instruction, fn|:
+                        operand: u32 = fn.operand_pool[operand_index]
+                        issues.push(issue(IssueKind.UndefinedValue, fn.name, block.id, operand, instruction.trace.id, "instruction uses an undefined SSA value")) if operand == 0 or not has_u32(defined, operand)
+                        if operand != 0 and has_u32(defined, operand):
+                            def_block: u32 = definition_block(defined, definition_blocks, operand)
+                            issues.push(issue(IssueKind.NonDominatingValue, fn.name, block.id, operand, instruction.trace.id, "SSA value definition does not dominate this use")) if not block_dominates(fn, def_block, block.id)
+                    if instruction.result != 0:
+                        issues.push(issue(IssueKind.DuplicateValue, fn.name, block.id, instruction.result, instruction.trace.id, "instruction result violates SSA uniqueness")) if has_u32(defined, instruction.result)
+                        defined.push(instruction.result) if not has_u32(defined, instruction.result)
+                        definition_blocks.push(block.id) if definition_blocks.count < defined.count
+                        definition_types.push(instruction.result_type) if definition_types.count < defined.count
+                    if instruction.opcode == Opcode.Perform:
+                        issues.push(issue(IssueKind.InvalidPerform, fn.name, block.id, instruction.result, instruction.trace.id, "perform must name an effect family and operation")) if instruction.effect_family == "" or instruction.effect_operation == ""
+                        issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "performed effect is absent from the function effect row")) if instruction.effect_family != "" and not effect_granted(fn.effects, instruction.effect_family)
+                    if instruction.opcode == Opcode.Observe and instruction.result != 0:
+                        issues.push(issue(IssueKind.InvalidObserve, fn.name, block.id, instruction.result, instruction.trace.id, "observe records values but cannot define one"))
+                    if instruction.opcode == Opcode.Perform or instruction.opcode == Opcode.Observe:
+                        issues.push(issue(IssueKind.MissingTraceSite, fn.name, block.id, instruction.result, 0, "observable instruction requires a stable trace site")) if instruction.trace.id == 0
+                        issues.push(issue(IssueKind.DuplicateTraceSite, fn.name, block.id, instruction.result, instruction.trace.id, "trace site id is not unique within the function")) if instruction.trace.id != 0 and has_u64(traces, instruction.trace.id)
+                        traces.push(instruction.trace.id) if instruction.trace.id != 0 and not has_u64(traces, instruction.trace.id)
+                verify_terminator(fn, block, defined, definition_blocks, definition_types, block_ids, issues)
+
+
+    public:
+        # Verification is deterministic and target-independent. Backends must refuse a
+        # module with issues instead of attempting recovery differently.
+        def verify(module: Module&) -> darray[Issue] can[Memory.Allocate, Abort.Panic]:
+            issues: mutable darray[Issue] = []
+            for fn in module.functions |issues|:
+                verify_function(fn, issues)
+            return issues

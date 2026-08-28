@@ -1,0 +1,82 @@
+# Elisascript typed-literal validation. The parser lowers `prefix"payload"` to an
+# ordinary call, so this check recognizes the built-in literal constructors and
+# validates their constant StringLit argument during the normal expression walk.
+
+extend Semantic:
+    private:
+        def typed_literal_kind(name: sview) -> bool:
+            return name == "path" or name == "glob" or name == "regex" or name == "exe" or name == "url"
+
+
+        def typed_literal_balanced_reason(text: sview, check_parens: bool, check_braces: bool) -> sview:
+            parens: mutable i64 = 0
+            brackets: mutable i64 = 0
+            braces: mutable i64 = 0
+            escaped: mutable bool = false
+
+            for index in 0..<sview_len(text) |parens, brackets, braces, escaped|:
+                byte: u8 = sview_at(text, index)
+                if escaped:
+                    escaped <- false
+                    continue
+                if byte == 92:
+                    escaped <- true
+                    continue
+                brackets <- brackets + 1 if byte == 91
+                brackets <- brackets - 1 if byte == 93
+                parens <- parens + 1 if check_parens and brackets == 0 and byte == 40
+                parens <- parens - 1 if check_parens and brackets == 0 and byte == 41
+                braces <- braces + 1 if check_braces and brackets == 0 and byte == 123
+                braces <- braces - 1 if check_braces and brackets == 0 and byte == 125
+                "has an unmatched closing delimiter" return if brackets < 0 or parens < 0 or braces < 0
+
+            "ends with an incomplete escape" return if escaped
+            "has an unclosed character class" return if brackets != 0
+            "has unbalanced parentheses" return if parens != 0
+            "has unbalanced braces" return if braces != 0
+            return ""
+
+
+        def url_literal_reason(text: sview) -> sview:
+            "must include a scheme and authority" return if sview_len(text) < 6
+            colon: mutable i64 = -1
+            for index in 0..<sview_len(text) |colon|:
+                byte: u8 = sview_at(text, index)
+                colon <- index.i64() if colon < 0 and byte == 58
+            "must include a scheme followed by ://" return if colon <= 0
+            separator: usize = colon.usize()
+            "must include a scheme followed by ://" return if separator + 2 >= sview_len(text) or sview_at(text, separator + 1) != 47 or sview_at(text, separator + 2) != 47
+            "must include a non-empty authority" return if separator + 3 >= sview_len(text)
+            return ""
+
+
+        def typed_literal_reason(name: sview, payload: sview) -> sview:
+            "must not be empty" return if name != "regex" and sview_len(payload) == 0
+            if name == "exe":
+                "must be an executable name, not a path" return if sview_find_byte(payload, 47) >= 0 or sview_find_byte(payload, 92) >= 0
+                return ""
+            return url_literal_reason(payload) if name == "url"
+            return typed_literal_balanced_reason(payload, true, false) if name == "regex"
+            return typed_literal_balanced_reason(payload, false, true) if name == "glob"
+            return ""
+
+
+        def check_typed_literal_call(callee: Ast::Expr, arguments: darray[Ast::Expr], line: Ast::Pos, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                name: mutable sview = ""
+                match callee:
+                    Expr.Ident(callee_name, _):
+                        name <- callee_name
+                    _:
+                        return
+                return if not typed_literal_kind(name) or arguments.count != 1
+
+                payload: mutable sview = ""
+                match arguments[0]:
+                    Expr.StringLit(literal_payload):
+                        payload <- literal_payload
+                    _:
+                        return
+
+                reason: sview = typed_literal_reason(name, payload)
+                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.InvalidTypedLiteral, name: name, line: line.line, pos: line, expected: reason, actual: payload}) if reason != ""

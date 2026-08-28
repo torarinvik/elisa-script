@@ -1,0 +1,82 @@
+# Elisascript parser
+
+Elisascript retains Elisa's complete parser and AST. Scripting features should
+prefer desugaring into ordinary Elisa nodes so every later compiler stage can
+reuse existing traversal, typing, ownership, and code-generation machinery.
+
+## Retained parser
+
+All 36 files under `vendor/elisa-compiler/src/parser` are retained. Every file is
+in the `parser.elisa` include closure, and each belongs to syntax Elisascript keeps:
+
+- `parser_tokens.elisa`: AST node, annotation, error, and side-table model
+- `parser_core*`: parser state, token cursor, blocks, and recovery
+- `parser_expr*`: primary, postfix, unary, binary, query, and literal expressions
+- `parser_stmt*`: assignments, control flow, matching, effects, machines, and patterns
+- `parser_decl*`: modules, decorators, implementations, laws, and typestates
+- `parser_types*`: functions, structs, enums, errors, externs, and signatures
+- `preprocess_static_generate.elisa`: Elisa static-generation preprocessing
+- `parser.elisa`: the complete parser facade and public entry points
+
+Removing a parser file would remove part of Elisa rather than merely remove
+compiler-product tooling. Driver and backend reduction therefore happens outside
+this directory.
+
+## Typed literal desugaring
+
+An identifier immediately adjacent to a string literal is parsed as a one-argument
+ordinary Elisa call:
+
+```elisa
+path"src/main.elisa"
+regex"(?<name>[a-z]+)"
+glob"src/**/*.elisa"
+```
+
+becomes the same AST shape as:
+
+```elisa
+path("src/main.elisa")
+regex("(?<name>[a-z]+)")
+glob("src/**/*.elisa")
+```
+
+The representation is:
+
+```text
+Expr.Call(
+    Expr.Ident(prefix),
+    [Expr.StringLit(payload)],
+    [""]
+)
+```
+
+No `TypedLiteral` AST variant and no prefix-specific variants are introduced.
+This provides several useful properties:
+
+- Literal families are added by libraries and semantic validators, not parser edits.
+- Existing expression visitors already understand the result.
+- Name resolution determines which prefixes are in scope.
+- Static validation can specialize a known literal call later.
+- A normal user-defined function can participate in the syntax.
+
+Only direct byte adjacency enables the shorthand. Whitespace separates the
+identifier from the literal and does not trigger desugaring.
+
+## Deferred parser work
+
+The following features belong to later, explicitly designed changes:
+
+- Algebraic `effect` declarations
+- Handler declarations and installation blocks
+- Multiline/raw typed literals
+- Script-level dependency declarations if decorators are insufficient
+- CLI derivation rules for `@command`
+
+## Verification
+
+- `test/parser/elisascript_parser_test.elisa`: Elisascript typed-literal behavior
+- `test/parser/elisa_compat/parser_ast_test.elisa`: copied Elisa AST regression suite
+- `test/parser/elisa_compat/parser_smoke.elisa`: copied parser embedding/codegen surface
+
+Current result: 102 parser tests pass—100 inherited and 2 Elisascript-specific.

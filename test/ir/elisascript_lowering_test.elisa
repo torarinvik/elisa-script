@@ -1,0 +1,169 @@
+include "../../src/ir/ir.elisa"
+
+using Ast
+using EsIr
+
+
+def parse_for_ir(source: u8&) -> Ast::File:
+    can Memory.Allocate, Abort.Panic, Unsafe.PointerCast:
+        tokens: darray[Lexer::Token] = frontend_tokenize("test.elisascript", source)
+        file: Ast::File = frontend_parser_parse_file(source, tokens)
+        assert file.errors.count == 0
+        return file
+
+
+@test
+def lowers_typed_arithmetic_bindings_and_return() -> void:
+    can Memory.Allocate, Abort.Panic, Unsafe.PointerCast:
+        source: static u8& = "def add_twice(x: i64, y: i64) -> i64:\n    sum: i64 = x + y\n    return sum * 2\n"
+        file: Ast::File = parse_for_ir(source)
+        lowered: LowerResult = lower_file(file, "arithmetic")
+
+        assert lowered.issues.count == 0
+        assert lowered.module.functions.count == 1
+        assert lowered.module.functions[0].parameters.count == 2
+        assert lowered.module.functions[0].blocks[0].instruction_count == 3
+        assert lowered.module.functions[0].blocks[0].terminator.operand_count == 1
+        assert verify(lowered.module).count == 0
+
+
+@test
+def lowers_known_direct_calls() -> void:
+    can Memory.Allocate, Abort.Panic, Unsafe.PointerCast:
+        source: static u8& = "def inc(x: i64) -> i64:\n    return x + 1\n\ndef main() -> i64:\n    return inc(41)\n"
+        file: Ast::File = parse_for_ir(source)
+        lowered: LowerResult = lower_file(file, "calls")
+
+        assert lowered.issues.count == 0
+        assert lowered.module.functions.count == 2
+        assert lowered.module.functions[1].instruction_pool[1].opcode == Opcode.Call
+        assert lowered.module.functions[1].instruction_pool[1].symbol == "inc"
+        assert verify(lowered.module).count == 0
+
+
+@test
+def lowers_if_with_fallthrough_merge() -> void:
+    can Memory.Allocate, Abort.Panic, Unsafe.PointerCast:
+        source: static u8& = "def choose(x: bool) -> i64:\n    if x:\n        return 1\n    return 2\n"
+        file: Ast::File = parse_for_ir(source)
+        lowered: LowerResult = lower_file(file, "unsupported")
+
+        assert lowered.issues.count == 0
+        assert lowered.module.functions[0].blocks.count == 4
+        assert lowered.module.functions[0].blocks[0].terminator.kind == TerminatorKind.Branch
+        assert lowered.module.functions[0].blocks[1].terminator.kind == TerminatorKind.Return
+        assert lowered.module.functions[0].blocks[2].terminator.kind == TerminatorKind.Jump
+        assert lowered.module.functions[0].blocks[3].terminator.kind == TerminatorKind.Return
+        assert verify(lowered.module).count == 0
+
+
+@test
+def lowers_while_with_header_backedge_and_exit() -> void:
+    can Memory.Allocate, Abort.Panic, Unsafe.PointerCast:
+        source: static u8& = "def wait_or_return(ready: bool) -> i64:\n    while ready:\n        return 1\n    return 0\n"
+        file: Ast::File = parse_for_ir(source)
+        lowered: LowerResult = lower_file(file, "loop")
+
+        assert lowered.issues.count == 0
+        assert lowered.module.functions[0].blocks.count == 4
+        assert lowered.module.functions[0].blocks[0].terminator.kind == TerminatorKind.Jump
+        assert lowered.module.functions[0].blocks[1].terminator.kind == TerminatorKind.Branch
+        assert verify(lowered.module).count == 0
+
+
+@test
+def lowers_nested_break_and_continue_targets() -> void:
+    can Memory.Allocate, Abort.Panic, Unsafe.PointerCast:
+        source: static u8& = "def loop_control(outer: bool, inner: bool) -> i64:\n    while outer:\n        while inner:\n            continue\n        break\n    return 0\n"
+        file: Ast::File = parse_for_ir(source)
+        lowered: LowerResult = lower_file(file, "loop-control")
+
+        assert lowered.issues.count == 0
+        assert lowered.module.functions[0].blocks.count == 7
+        assert verify(lowered.module).count == 0
+
+
+@test
+def loop_control_outside_loop_is_reported() -> void:
+    can Memory.Allocate, Abort.Panic, Unsafe.PointerCast:
+        source: static u8& = "def invalid() -> void:\n    break\n"
+        file: Ast::File = parse_for_ir(source)
+        lowered: LowerResult = lower_file(file, "bad-loop-control")
+
+        assert lowered.issues.count == 1
+        assert lowered.issues[0].kind == LowerIssueKind.LoopControlOutsideLoop
+
+
+@test
+def straight_line_mutation_rebinds_an_ssa_name() -> void:
+    can Memory.Allocate, Abort.Panic, Unsafe.PointerCast:
+        source: static u8& = "def increment() -> i64:\n    value: mutable i64 = 40\n    value <- value + 2\n    return value\n"
+        file: Ast::File = parse_for_ir(source)
+        lowered: LowerResult = lower_file(file, "mutation")
+
+        assert lowered.issues.count == 0
+        assert lowered.module.functions[0].instruction_pool.count == 3
+        assert lowered.module.functions[0].blocks[0].terminator.operand == 3
+        assert verify(lowered.module).count == 0
+
+
+@test
+def branch_mutation_uses_typed_merge_parameter() -> void:
+    can Memory.Allocate, Abort.Panic, Unsafe.PointerCast:
+        source: static u8& = "def choose(change: bool) -> i64:\n    value: mutable i64 = 1\n    if change:\n        value <- 2\n    return value\n"
+        file: Ast::File = parse_for_ir(source)
+        lowered: LowerResult = lower_file(file, "mutation-merge")
+
+        assert lowered.issues.count == 0
+        assert lowered.module.functions[0].edge_arg_pool.count == 2
+        assert lowered.module.functions[0].blocks[3].parameter_count == 1
+        assert lowered.module.functions[0].block_parameter_pool[0].type.kind == TypeKind.Int
+        assert lowered.module.functions[0].blocks[3].terminator.operand == lowered.module.functions[0].block_parameter_pool[0].value
+        assert verify(lowered.module).count == 0
+
+
+@test
+def loop_mutation_uses_header_and_exit_parameters() -> void:
+    can Memory.Allocate, Abort.Panic, Unsafe.PointerCast:
+        source: static u8& = "def count(running: bool) -> i64:\n    value: mutable i64 = 0\n    while running:\n        value <- value + 1\n        break\n    return value\n"
+        file: Ast::File = parse_for_ir(source)
+        lowered: LowerResult = lower_file(file, "loop-mutation")
+
+        assert lowered.issues.count == 0
+        assert lowered.module.functions[0].block_parameter_pool.count == 2
+        assert lowered.module.functions[0].blocks[1].parameter_count == 1
+        assert lowered.module.functions[0].blocks[3].parameter_count == 1
+        assert lowered.module.functions[0].blocks[3].terminator.operand == lowered.module.functions[0].block_parameter_pool[1].value
+        verification: darray[Issue] = verify(lowered.module)
+        assert verification.count == 0
+
+
+@test
+def lowers_signal_to_traced_effect_operation() -> void:
+    can Memory.Allocate, Abort.Panic, Unsafe.PointerCast:
+        source: static u8& = "def tick() -> void can[Progress.Tick]:\n    signal Progress.Tick\n"
+        file: Ast::File = parse_for_ir(source)
+        lowered: LowerResult = lower_file(file, "effects")
+        instruction: Instruction = lowered.module.functions[0].instruction_pool[0]
+
+        assert lowered.issues.count == 0
+        assert instruction.opcode == Opcode.Perform
+        assert instruction.effect_family == "Progress"
+        assert instruction.effect_operation == "Tick"
+        assert instruction.trace.id != 0
+        assert verify(lowered.module).count == 0
+
+
+@test
+def lowers_observe_to_backend_independent_trace_point() -> void:
+    can Memory.Allocate, Abort.Panic, Unsafe.PointerCast:
+        source: static u8& = "def capture(value: i64) -> void:\n    observe(value)\n"
+        file: Ast::File = parse_for_ir(source)
+        lowered: LowerResult = lower_file(file, "observation")
+        instruction: Instruction = lowered.module.functions[0].instruction_pool[0]
+
+        assert lowered.issues.count == 0
+        assert instruction.opcode == Opcode.Observe
+        assert instruction.operand_count == 1
+        assert instruction.trace.id != 0
+        assert verify(lowered.module).count == 0
