@@ -353,12 +353,66 @@ module EsBytecode:
 
         def bytecode_direct_scalar_type(type: Type&) -> bool:
             return true if type.kind == TypeKind.Bool
-            return type.kind == TypeKind.Int and type.bits == 64 and type.signed
+            return type.kind == TypeKind.Int and type.bits == 64
 
 
-        # Evaluate the scalar subset through a state machine driven by the
-        # instruction cursor. Unsupported families never enter this path.
-        def bytecode_direct_instruction(instruction: Instruction, fn: BytecodeFunction&, ids: darray[u32]&, values: darray[RuntimeValue]&, observations: mutable darray[Observation]&) -> RuntimeValue error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+        def bytecode_direct_value_type(type: Type&) -> bool:
+            return true if bytecode_direct_scalar_type(type)
+            return type.kind == TypeKind.Array and (type.element_kind == TypeKind.Bool or (type.element_kind == TypeKind.Int and type.element_bits == 64))
+
+
+        def bytecode_direct_array_equal(storage: darray[RuntimeValue]&, left: RuntimeValue, right: RuntimeValue) -> bool:
+            false return if left.kind != RuntimeValueKind.Array or right.kind != RuntimeValueKind.Array
+            false return if left.array_count != right.array_count
+            for offset in 0..<left.array_count.usize() |storage, left, right|:
+                left_value: RuntimeValue = storage[left.array_start.usize() + offset]
+                right_value: RuntimeValue = storage[right.array_start.usize() + offset]
+                false return if left_value.kind != right_value.kind
+                false return if left_value.kind == RuntimeValueKind.Int and left_value.integer != right_value.integer
+                false return if left_value.kind == RuntimeValueKind.Bool and left_value.boolean != right_value.boolean
+            return true
+
+
+        def bytecode_direct_index(storage: darray[RuntimeValue]&, collection: RuntimeValue, index: RuntimeValue) -> RuntimeValue error[InterpretError]:
+            raise InterpretError.TypeMismatch if collection.kind != RuntimeValueKind.Array or index.kind != RuntimeValueKind.Int
+            raise InterpretError.IndexOutOfBounds if index.integer < 0 or index.integer >= collection.array_count.i64()
+            return storage[collection.array_start.usize() + index.integer.usize()]
+
+
+        def bytecode_direct_slice(collection: RuntimeValue, low: RuntimeValue, high: RuntimeValue) -> RuntimeValue error[InterpretError]:
+            raise InterpretError.TypeMismatch if collection.kind != RuntimeValueKind.Array or low.kind != RuntimeValueKind.Int or high.kind != RuntimeValueKind.Int
+            raise InterpretError.IndexOutOfBounds if low.integer < 0 or high.integer < low.integer or high.integer > collection.array_count.i64()
+            return runtime_array(collection.array_start + low.integer.u32(), (high.integer - low.integer).u32())
+
+
+        def bytecode_direct_set_index(storage: mutable darray[RuntimeValue]&, collection: RuntimeValue, index: RuntimeValue, replacement: RuntimeValue) -> RuntimeValue error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+            raise InterpretError.TypeMismatch if collection.kind != RuntimeValueKind.Array or index.kind != RuntimeValueKind.Int
+            raise InterpretError.IndexOutOfBounds if index.integer < 0 or index.integer >= collection.array_count.i64()
+            old_value: RuntimeValue = storage[collection.array_start.usize() + index.integer.usize()]
+            raise InterpretError.TypeMismatch if old_value.kind != replacement.kind
+            start: u32 = storage.count.u32()
+            storage.reserve(storage.count + collection.array_count.usize())
+            for offset in 0..<collection.array_count.usize() |storage, collection|:
+                storage.push(storage[collection.array_start.usize() + offset])
+            storage[start.usize() + index.integer.usize()] <- replacement
+            return runtime_array(start, collection.array_count)
+
+
+        def bytecode_direct_concat(storage: mutable darray[RuntimeValue]&, left: RuntimeValue, right: RuntimeValue) -> RuntimeValue error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+            raise InterpretError.TypeMismatch if left.kind != RuntimeValueKind.Array or right.kind != RuntimeValueKind.Array
+            start: u32 = storage.count.u32()
+            storage.reserve(storage.count + left.array_count.usize() + right.array_count.usize())
+            for offset in 0..<left.array_count.usize() |storage, left|:
+                storage.push(storage[left.array_start.usize() + offset])
+            for offset in 0..<right.array_count.usize() |storage, right|:
+                storage.push(storage[right.array_start.usize() + offset])
+            return runtime_array(start, left.array_count + right.array_count)
+
+
+        # Evaluate the scalar and one-level homogeneous-array subset through a
+        # state machine driven by the instruction cursor. Unsupported families
+        # never enter this path.
+        def bytecode_direct_instruction(instruction: Instruction, fn: BytecodeFunction&, ids: darray[u32]&, values: darray[RuntimeValue]&, storage: mutable darray[RuntimeValue]&, observations: mutable darray[Observation]&) -> RuntimeValue error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             operand: mutable RuntimeValue = runtime_void()
             if instruction.opcode == Opcode.Negate or instruction.opcode == Opcode.Not or instruction.opcode == Opcode.BitNot:
                 operand <- bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()])
@@ -368,12 +422,70 @@ module EsBytecode:
             raise InterpretError.IntegerOverflow if instruction.opcode == Opcode.Negate and operand.integer == -9223372036854775807 - 1
             left: mutable RuntimeValue = runtime_void()
             right: mutable RuntimeValue = runtime_void()
-            if instruction.opcode in {Opcode.Add, Opcode.Subtract, Opcode.Multiply, Opcode.Divide, Opcode.Equal, Opcode.Less, Opcode.Remainder, Opcode.NotEqual, Opcode.LessEqual, Opcode.Greater, Opcode.GreaterEqual, Opcode.BitAnd, Opcode.BitOr, Opcode.BitXor, Opcode.ShiftLeft, Opcode.ShiftRight}:
+            binary: bool = instruction.opcode in {Opcode.Add, Opcode.Subtract, Opcode.Multiply, Opcode.Divide, Opcode.Equal, Opcode.Less, Opcode.Remainder, Opcode.NotEqual, Opcode.LessEqual, Opcode.Greater, Opcode.GreaterEqual, Opcode.BitAnd, Opcode.BitOr, Opcode.BitXor, Opcode.ShiftLeft, Opcode.ShiftRight}
+            if binary:
                 left <- bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()])
                 right <- bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1])
             observed: mutable RuntimeValue = runtime_void()
             if instruction.opcode == Opcode.Observe:
                 observed <- bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()])
+            collection: mutable RuntimeValue = runtime_void()
+            index_value: mutable RuntimeValue = runtime_void()
+            low_value: mutable RuntimeValue = runtime_void()
+            high_value: mutable RuntimeValue = runtime_void()
+            needle: mutable RuntimeValue = runtime_void()
+            replacement: mutable RuntimeValue = runtime_void()
+            if instruction.opcode in {Opcode.Index, Opcode.Length, Opcode.Slice, Opcode.Contains, Opcode.SetIndex, Opcode.Concat}:
+                collection <- bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()])
+            if instruction.opcode == Opcode.Index or instruction.opcode == Opcode.SetIndex:
+                index_value <- bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1])
+            if instruction.opcode == Opcode.Slice:
+                low_value <- bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1])
+                high_value <- bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 2])
+            if instruction.opcode == Opcode.Contains:
+                needle <- bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()])
+                collection <- bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1])
+            if instruction.opcode == Opcode.SetIndex:
+                replacement <- bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 2])
+            array_value: mutable RuntimeValue = runtime_void()
+            if instruction.opcode == Opcode.MakeArray:
+                start: u32 = storage.count.u32()
+                for offset in 0..<instruction.operand_count.usize() |storage, fn, instruction, ids, values|:
+                    storage.push(bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + offset]))
+                array_value <- runtime_array(start, instruction.operand_count.u32())
+            indexed_value: mutable RuntimeValue = runtime_void()
+            if instruction.opcode == Opcode.Index:
+                indexed_value <- try bytecode_direct_index(storage, collection, index_value)
+            sliced_value: mutable RuntimeValue = runtime_void()
+            if instruction.opcode == Opcode.Slice:
+                sliced_value <- try bytecode_direct_slice(collection, low_value, high_value)
+            length_value: mutable RuntimeValue = runtime_void()
+            if instruction.opcode == Opcode.Length:
+                raise InterpretError.TypeMismatch if collection.kind != RuntimeValueKind.Array
+                length_value <- runtime_int(collection.array_count.i64())
+            contains_value: mutable RuntimeValue = runtime_void()
+            if instruction.opcode == Opcode.Contains:
+                raise InterpretError.TypeMismatch if collection.kind != RuntimeValueKind.Array
+                found: mutable bool = false
+                for offset in 0..<collection.array_count.usize() |storage, collection, needle, found|:
+                    element: RuntimeValue = storage[collection.array_start.usize() + offset]
+                    found <- found or (element.kind == needle.kind and ((element.kind == RuntimeValueKind.Int and element.integer == needle.integer) or (element.kind == RuntimeValueKind.Bool and element.boolean == needle.boolean)))
+                contains_value <- runtime_bool(found)
+            updated_value: mutable RuntimeValue = runtime_void()
+            if instruction.opcode == Opcode.SetIndex:
+                updated_value <- try bytecode_direct_set_index(storage, collection, index_value, replacement)
+            concatenated_value: mutable RuntimeValue = runtime_void()
+            if instruction.opcode == Opcode.Concat:
+                right <- bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1])
+                concatenated_value <- try bytecode_direct_concat(storage, collection, right)
+            binary_value: mutable RuntimeValue = runtime_void()
+            if binary:
+                if (instruction.opcode == Opcode.Equal or instruction.opcode == Opcode.NotEqual) and left.kind == RuntimeValueKind.Array:
+                    equal: bool = bytecode_direct_array_equal(storage, left, right)
+                    binary_value <- runtime_bool(equal) if instruction.opcode == Opcode.Equal
+                    binary_value <- runtime_bool(not equal) if instruction.opcode == Opcode.NotEqual
+                else:
+                    binary_value <- bytecode_direct_binary(instruction.opcode, left, right)
             cursor: mutable BytecodeValueCursor = BytecodeValueCursor{state: BytecodeValueState.Execute, opcode: instruction.opcode, value: runtime_void()}
             machine over cursor.state:
                 state Execute
@@ -404,7 +516,35 @@ module EsBytecode:
                     cursor.state <- BytecodeValueState.Done
                     -> Execute
                 Execute, BytecodeValueState.Execute if instruction.opcode in {Opcode.Add, Opcode.Subtract, Opcode.Multiply, Opcode.Divide, Opcode.Equal, Opcode.Less, Opcode.Remainder, Opcode.NotEqual, Opcode.LessEqual, Opcode.Greater, Opcode.GreaterEqual, Opcode.BitAnd, Opcode.BitOr, Opcode.BitXor, Opcode.ShiftLeft, Opcode.ShiftRight}:
-                    cursor.value <- bytecode_direct_binary(instruction.opcode, left, right)
+                    cursor.value <- binary_value
+                    cursor.state <- BytecodeValueState.Done
+                    -> Execute
+                Execute, BytecodeValueState.Execute if instruction.opcode == Opcode.MakeArray:
+                    cursor.value <- array_value
+                    cursor.state <- BytecodeValueState.Done
+                    -> Execute
+                Execute, BytecodeValueState.Execute if instruction.opcode == Opcode.Index:
+                    cursor.value <- indexed_value
+                    cursor.state <- BytecodeValueState.Done
+                    -> Execute
+                Execute, BytecodeValueState.Execute if instruction.opcode == Opcode.Length:
+                    cursor.value <- length_value
+                    cursor.state <- BytecodeValueState.Done
+                    -> Execute
+                Execute, BytecodeValueState.Execute if instruction.opcode == Opcode.Slice:
+                    cursor.value <- sliced_value
+                    cursor.state <- BytecodeValueState.Done
+                    -> Execute
+                Execute, BytecodeValueState.Execute if instruction.opcode == Opcode.Contains:
+                    cursor.value <- contains_value
+                    cursor.state <- BytecodeValueState.Done
+                    -> Execute
+                Execute, BytecodeValueState.Execute if instruction.opcode == Opcode.SetIndex:
+                    cursor.value <- updated_value
+                    cursor.state <- BytecodeValueState.Done
+                    -> Execute
+                Execute, BytecodeValueState.Execute if instruction.opcode == Opcode.Concat:
+                    cursor.value <- concatenated_value
                     cursor.state <- BytecodeValueState.Done
                     -> Execute
                 Execute, BytecodeValueState.Execute if instruction.opcode == Opcode.Observe:
@@ -423,20 +563,20 @@ module EsBytecode:
 
         def bytecode_direct_supported(module: BytecodeModule&) -> bool:
             for function in module.functions:
-                if function.return_type.kind != TypeKind.Void and not bytecode_direct_scalar_type(function.return_type):
+                if function.return_type.kind != TypeKind.Void and not bytecode_direct_value_type(function.return_type):
                     return false
                 for parameter in function.parameters:
-                    if not bytecode_direct_scalar_type(parameter.type):
+                    if not bytecode_direct_value_type(parameter.type):
                         return false
                 for parameter in function.block_parameter_pool:
-                    if not bytecode_direct_scalar_type(parameter.type):
+                    if not bytecode_direct_value_type(parameter.type):
                         return false
                 for instruction in function.instructions:
-                    if instruction.opcode not in {Opcode.Constant, Opcode.Copy, Opcode.Negate, Opcode.Not, Opcode.BitNot, Opcode.Add, Opcode.Subtract, Opcode.Multiply, Opcode.Equal, Opcode.Less, Opcode.NotEqual, Opcode.LessEqual, Opcode.Greater, Opcode.GreaterEqual, Opcode.BitAnd, Opcode.BitOr, Opcode.BitXor, Opcode.Observe}:
+                    if instruction.opcode not in {Opcode.Constant, Opcode.Copy, Opcode.Negate, Opcode.Not, Opcode.BitNot, Opcode.Add, Opcode.Subtract, Opcode.Multiply, Opcode.Equal, Opcode.Less, Opcode.NotEqual, Opcode.LessEqual, Opcode.Greater, Opcode.GreaterEqual, Opcode.BitAnd, Opcode.BitOr, Opcode.BitXor, Opcode.Observe, Opcode.MakeArray, Opcode.Index, Opcode.Length, Opcode.Slice, Opcode.Contains, Opcode.SetIndex, Opcode.Concat}:
                         return false
-                    if instruction.opcode == Opcode.Constant and instruction.result_type.kind != TypeKind.Bool and (instruction.result_type.kind != TypeKind.Int or instruction.result_type.bits != 64 or not instruction.result_type.signed):
+                    if instruction.opcode == Opcode.Constant and instruction.result_type.kind != TypeKind.Bool and (instruction.result_type.kind != TypeKind.Int or instruction.result_type.bits != 64):
                         return false
-                    if instruction.opcode != Opcode.Observe and not bytecode_direct_scalar_type(instruction.result_type):
+                    if instruction.opcode != Opcode.Observe and not bytecode_direct_value_type(instruction.result_type):
                         return false
             return true
 
@@ -483,7 +623,7 @@ module EsBytecode:
                     instruction_index: usize = fn.blocks[cursor.block_index].instruction_offset.usize() + cursor.instruction_index - 1
                     steps <- steps + 1
                     raise InterpretError.StepLimitExceeded if steps > step_limit
-                    value: RuntimeValue = try bytecode_direct_instruction(fn.instructions[instruction_index], fn, ids, values, observations)
+                    value: RuntimeValue = try bytecode_direct_instruction(fn.instructions[instruction_index], fn, ids, values, storage, observations)
                     if fn.instructions[instruction_index].opcode != Opcode.Observe:
                         bytecode_direct_set_frame_value(ids, values, fn.instructions[instruction_index].result, value)
                     cursor.state <- BytecodeControlState.Instruction
