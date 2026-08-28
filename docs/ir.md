@@ -341,8 +341,9 @@ surrounding interpreter loop, keeping the control machine independent of storage
 and effect-handler state.
 
 The verified bytecode facade uses the same program-counter machine for execution.
-Modules containing only the currently closed scalar, text, regex, and one-level
-homogeneous-array subset (boolean, 64-bit integer, or 64-bit float values, text/nominal constants,
+Modules containing only the currently closed scalar, text, regex, and homogeneous-array
+subset (boolean, 64-bit integer, or 64-bit float values, text/nominal constants,
+including one nested array level,
 array construction, nominal path/glob/regex/URL constructors, indexing, length, slicing, membership, concatenation, split,
 join, regex search/replacement, indexed updates, unary/binary operators,
 observations, pure direct calls, and typed filesystem/process operations) take a
@@ -355,7 +356,7 @@ wrappers as the oracle, while retaining the packed program-counter machine. Its
 value dispatcher is itself an explicit state machine, and its direct binary helper
 uses a typed selection machine that separates equality, floating-point, and integer
 operations before reaching a terminal value state. The eligibility gate rejects
-other widths, nested arrays, handlers, and continuations; failure-sensitive integer
+other widths, arrays nested deeper than two levels, handlers, and continuations; failure-sensitive integer
 divide/remainder/shift operations remain on the interpreter path, while `f64`
 division is direct.
 Process execution and capture (`RunProcess`, stdout/stderr
