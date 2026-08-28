@@ -57,6 +57,8 @@ extend EsIr:
             loop_context_starts: mutable darray[u32]
             loop_context_counts: mutable darray[u16]
             loop_carried_indices: mutable darray[u32]
+            loop_handler_depths: mutable darray[u32]
+            active_handlers: mutable darray[sview]
             function: sview
             function_names: darray[sview]&
             function_returns: darray[Type]&
@@ -196,6 +198,12 @@ extend EsIr:
                     state.required_effects.push(effect) if effect != "" and not has_text(state.required_effects, effect)
                 for error_set in state.handlers[index].errors |state|:
                     state.required_errors.push(error_set) if error_set != "" and not has_text(state.required_errors, error_set)
+
+
+        def emit_handler_unwind(state: mutable LowerState&, target_depth: usize, pos: Ast::Pos&) -> void can[Memory.Allocate, Abort.Panic]:
+            while handler_index > target_depth |handler_index: usize = state.active_handlers.count|:
+                handler_index <- handler_index - 1
+                state.instructions.push(Instruction{opcode: Opcode.HandlerPop, result: 0, result_type: void_ir_type(), symbol: state.active_handlers[handler_index], trace: trace_site(state, "handler-unwind", pos), span: ir_span(pos)})
 
 
         def collect_assigned_names(statements: darray[Ast::Stmt]&, names: mutable darray[sview]&) -> void can[Memory.Allocate, Abort.Panic]:
@@ -354,8 +362,10 @@ extend EsIr:
                 Stmt.Return(value_opt, pos):
                     if value_opt is value:
                         lowered: LoweredValue = lower_expression(value, state)
+                        emit_handler_unwind(state, 0, pos) if lowered.valid
                         state.terminator <- Terminator{kind: TerminatorKind.Return, operand: lowered.value, operand_count: 1, span: ir_span(pos)} if lowered.valid
                     else:
+                        emit_handler_unwind(state, 0, pos)
                         state.terminator <- Terminator{kind: TerminatorKind.Return, span: ir_span(pos)}
                     state.terminated <- true
                 Stmt.If(condition, then_body, else_body, pos):
@@ -446,6 +456,7 @@ extend EsIr:
                     state.loop_carried_indices.extend(carried_indices)
                     state.loop_context_starts.push(context_start)
                     state.loop_context_counts.push(carried_indices.count.u16())
+                    state.loop_handler_depths.push(state.active_handlers.count.u32())
                     context: usize = state.loop_context_counts.count - 1
 
                     entry_args: (start: u32, count: u16) = append_context_arguments(state, context)
@@ -494,6 +505,7 @@ extend EsIr:
                         state.values[carried_indices[offset].usize()] <- exit_values[offset]
                     _ = state.loop_context_starts.pop()
                     _ = state.loop_context_counts.pop()
+                    _ = state.loop_handler_depths.pop()
                     state.loop_carried_indices <- state.loop_carried_indices.truncate(context_start.usize())
 
                     state.current_block <- exit_block
@@ -507,6 +519,7 @@ extend EsIr:
                         else:
                             target: u32 = state.break_targets[state.break_targets.count - 1]
                             context: usize = state.loop_context_counts.count - 1
+                            emit_handler_unwind(state, state.loop_handler_depths[context].usize(), pos)
                             edge_args: (start: u32, count: u16) = append_context_arguments(state, context)
                             state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: target, target_count: 1, edge0_arg_start: edge_args.start, edge0_arg_count: edge_args.count, span: ir_span(pos)}
                             state.terminated <- true
@@ -519,6 +532,7 @@ extend EsIr:
                         else:
                             target: u32 = state.continue_targets[state.continue_targets.count - 1]
                             context: usize = state.loop_context_counts.count - 1
+                            emit_handler_unwind(state, state.loop_handler_depths[context].usize(), pos)
                             edge_args: (start: u32, count: u16) = append_context_arguments(state, context)
                             state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: target, target_count: 1, edge0_arg_start: edge_args.start, edge0_arg_count: edge_args.count, span: ir_span(pos)}
                             state.terminated <- true
@@ -534,6 +548,8 @@ extend EsIr:
                             handler_name: sview = clause[1]
                             add_handler_contract(state, handler_name)
                             state.instructions.push(Instruction{opcode: Opcode.HandlerPush, result: 0, result_type: void_ir_type(), symbol: handler_name, trace: trace_site(state, handler_name, pos), span: ir_span(pos)})
+                            handler_depth: usize = state.active_handlers.count
+                            state.active_handlers.push(handler_name)
                             scope_mark: usize = state.names.count
                             for nested in body |state, return_type|:
                                 lower_statement(nested, return_type, state)
@@ -541,6 +557,7 @@ extend EsIr:
                             state.values.truncate(scope_mark)
                             state.types.truncate(scope_mark)
                             state.instructions.push(Instruction{opcode: Opcode.HandlerPop, result: 0, result_type: void_ir_type(), symbol: handler_name, trace: trace_site(state, "handler-pop", pos), span: ir_span(pos)}) if not state.terminated
+                            state.active_handlers.truncate(handler_depth)
                         else:
                             if kind == "can" or kind == "trusted":
                                 scope_mark: usize = state.names.count
@@ -558,7 +575,7 @@ extend EsIr:
         def lower_function(name: sview, params: darray[Ast::ParamDecl]&, return_type_opt: Ast::Expr?, body: darray[Ast::Stmt]&, effects: darray[sview]&, declared_error: sview, pos: Ast::Pos&, function_names: darray[sview]&, function_returns: darray[Type]&, handlers: darray[Handler]&, outer_issues: mutable darray[LowerIssue]&) -> Function can[Memory.Allocate, Abort.Panic]:
             return_type: mutable Type = void_ir_type()
             return_type <- type_from_expression(return_expression) if return_type_opt is return_expression
-            state: mutable LowerState = LowerState{function: name, next_value: 1, current_block: 1, next_block: 2, instruction_start: 0, structured_depth: 0, blocks: [], names: [], values: [], types: [], instructions: [], operand_pool: [], edge_arg_pool: [], issues: [], break_targets: [], continue_targets: [], pending_parameter_blocks: [], pending_parameters: [], block_parameter_pool: [], loop_context_starts: [], loop_context_counts: [], loop_carried_indices: [], terminated: false, terminator: Terminator{kind: TerminatorKind.Unreachable, span: ir_span(pos)}, function_names: function_names, function_returns: function_returns, handlers: handlers, required_effects: [], required_errors: []}
+            state: mutable LowerState = LowerState{function: name, next_value: 1, current_block: 1, next_block: 2, instruction_start: 0, structured_depth: 0, blocks: [], names: [], values: [], types: [], instructions: [], operand_pool: [], edge_arg_pool: [], issues: [], break_targets: [], continue_targets: [], pending_parameter_blocks: [], pending_parameters: [], block_parameter_pool: [], loop_context_starts: [], loop_context_counts: [], loop_carried_indices: [], loop_handler_depths: [], active_handlers: [], terminated: false, terminator: Terminator{kind: TerminatorKind.Unreachable, span: ir_span(pos)}, function_names: function_names, function_returns: function_returns, handlers: handlers, required_effects: [], required_errors: []}
             state.required_effects.extend(effects)
             state.required_errors.push(declared_error) if declared_error != ""
             lowered_params: mutable darray[Parameter] = []

@@ -68,6 +68,9 @@ Installing a handler subtracts its handled families from the effects required at
 that program point. Effects introduced by running the handler and its explicit
 `error[...]` sets are propagated into the enclosing function's respective rows.
 The verifier checks both sides of this contract independently.
+Structured lowering emits explicit handler unwinding before `return`, `break`,
+and `continue`. Loop exits unwind only handlers installed inside that loop;
+handlers surrounding the loop remain active until their own lexical scope ends.
 
 Multi-shot behavior is never inferred. `MultiClone` requires every captured value
 to be classified `Unrestricted`; affine, linear, borrowed, region-bound, and opaque
