@@ -63,6 +63,19 @@ can cross exactly typed function boundaries and use exact nominal equality; they
 do not implicitly become `sview` or one another. Dynamic constructor payloads stay
 explicit lowering errors until the corresponding standard-library runtime parser exists.
 
+The first executable regex operation is the compiler-known, strongly typed search
+`matches(text, pattern) -> bool`, where `text` is `sview` and `pattern` is `Regex`:
+
+```elisa
+is_source: bool = matches("src/main.elisa", regex"^src/.*\\.elisa$")
+```
+
+Its initial runtime grammar supports literal characters, `.`, start/end anchors
+`^` and `$`, escaped literals, and the greedy quantifiers `*`, `+`, and `?`.
+Search is unanchored unless `^` is present. Character classes, alternation,
+grouping, captures, and replacement are reserved for the shared compiled regex
+engine; they are not silently delegated to a host regex implementation.
+
 ## Compile-time validation
 
 `check_typed_literals.elisa` validates constant string payloads during the existing

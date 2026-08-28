@@ -106,6 +106,11 @@ Compiler-known typed literals use `Named` constants with immutable text payloads
 The verifier admits this representation explicitly, and the interpreter retains
 the text payload while all static compatibility decisions continue to use the
 nominal IR type.
+`RegexSearch` is a separate semantic opcode with the exact signature
+`Text × Named(Regex) -> Bool`. The reference interpreter executes it through an
+explicit search machine with greedy backtracking; future bytecode, JIT, and native
+lowerings therefore share the operation contract without inheriting a host
+language's regex behavior.
 
 The AST-to-IR boundary reports the same mistakes as structured `TypeMismatch`
 lowering issues, before a backend sees the module. This covers declared binding
