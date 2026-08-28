@@ -5,6 +5,7 @@ error InterpretError:
     MissingValue
     TypeMismatch
     DivisionByZero
+    IntegerOverflow
     InvalidShift
     IndexOutOfBounds
     InvalidControlFlow
@@ -51,6 +52,7 @@ extend EsIr:
             MissingValue
             TypeMismatch
             DivisionByZero
+            IntegerOverflow
             InvalidShift
             IndexOutOfBounds
             InvalidControlFlow
@@ -266,9 +268,68 @@ extend EsIr:
                     return runtime_void()
 
 
-        def evaluate_negate(operand: RuntimeValue, machine: mutable Machine&) -> RuntimeValue:
+        def integer_min(type: Type&) -> i64:
+            return -128 if type.signed and type.bits == 8
+            return -32768 if type.signed and type.bits == 16
+            return -2147483648 if type.signed and type.bits == 32
+            return -9223372036854775807 - 1 if type.signed and type.bits == 64
+            return 0
+
+
+        def integer_max(type: Type&) -> i64:
+            return 127 if type.signed and type.bits == 8
+            return 32767 if type.signed and type.bits == 16
+            return 2147483647 if type.signed and type.bits == 32
+            return 9223372036854775807 if type.signed and type.bits == 64
+            return 255 if type.bits == 8
+            return 65535 if type.bits == 16
+            return 4294967295 if type.bits == 32
+            return 9223372036854775807
+
+
+        def checked_narrow_int(machine: mutable Machine&, value: i64, type: Type&) -> RuntimeValue:
+            if type.bits < 64 and (value < integer_min(type) or value > integer_max(type)):
+                machine.failure <- InterpretFailure.IntegerOverflow
+                return runtime_void()
+            return runtime_int(value)
+
+
+        def checked_narrow_arithmetic(machine: mutable Machine&, opcode: Opcode, left: i64, right: i64, type: Type&) -> RuntimeValue:
+            minimum: i64 = integer_min(type)
+            maximum: i64 = integer_max(type)
+            if opcode == Opcode.Add:
+                if type.bits < 64 and ((right > 0 and left > maximum - right) or (right < 0 and left < minimum - right)):
+                    machine.failure <- InterpretFailure.IntegerOverflow
+                    return runtime_void()
+                return runtime_int(left + right)
+            if opcode == Opcode.Subtract:
+                if type.bits < 64 and ((right < 0 and left > maximum + right) or (right > 0 and left < minimum + right)):
+                    machine.failure <- InterpretFailure.IntegerOverflow
+                    return runtime_void()
+                return runtime_int(left - right)
+            if opcode == Opcode.Multiply:
+                overflow: mutable bool = false
+                if type.bits < 64:
+                    if left > 0:
+                        overflow <- right > maximum / left if right > 0
+                        overflow <- right < minimum / left if right < 0
+                    elif left < 0:
+                        overflow <- left < minimum / right if right > 0
+                        overflow <- left != 0 and right < maximum / left if right < 0
+                if overflow:
+                    machine.failure <- InterpretFailure.IntegerOverflow
+                    return runtime_void()
+                return runtime_int(left * right)
+            machine.failure <- InterpretFailure.TypeMismatch
+            return runtime_void()
+
+
+        def evaluate_negate(operand: RuntimeValue, result_type: Type&, machine: mutable Machine&) -> RuntimeValue:
             match operand.kind:
                 RuntimeValueKind.Int:
+                    if result_type.signed and operand.integer == integer_min(result_type):
+                        machine.failure <- InterpretFailure.IntegerOverflow
+                        return runtime_void()
                     return runtime_int(-operand.integer)
                 RuntimeValueKind.Float:
                     return runtime_float(-operand.decimal)
@@ -284,10 +345,12 @@ extend EsIr:
             return runtime_bool(not operand.boolean)
 
 
-        def evaluate_bit_not(operand: RuntimeValue, machine: mutable Machine&) -> RuntimeValue:
+        def evaluate_bit_not(operand: RuntimeValue, result_type: Type&, machine: mutable Machine&) -> RuntimeValue:
             if operand.kind != RuntimeValueKind.Int:
                 machine.failure <- InterpretFailure.TypeMismatch
                 return runtime_void()
+            if not result_type.signed and result_type.bits < 64:
+                return runtime_int((~operand.integer) & integer_max(result_type))
             return runtime_int(~operand.integer)
 
 
@@ -321,24 +384,25 @@ extend EsIr:
                 return runtime_bool(equal) if opcode == Opcode.Equal
                 return runtime_bool(not equal)
             if left.kind == RuntimeValueKind.Int and right.kind == RuntimeValueKind.Int:
-                return runtime_int(left.integer & right.integer) if opcode == Opcode.BitAnd
-                return runtime_int(left.integer | right.integer) if opcode == Opcode.BitOr
-                return runtime_int(left.integer ^ right.integer) if opcode == Opcode.BitXor
+                return checked_narrow_int(machine, left.integer & right.integer, result_type) if opcode == Opcode.BitAnd
+                return checked_narrow_int(machine, left.integer | right.integer, result_type) if opcode == Opcode.BitOr
+                return checked_narrow_int(machine, left.integer ^ right.integer, result_type) if opcode == Opcode.BitXor
                 if opcode == Opcode.ShiftLeft or opcode == Opcode.ShiftRight:
                     if right.integer < 0 or right.integer >= result_type.bits.i64():
                         machine.failure <- InterpretFailure.InvalidShift
                         return runtime_void()
-                    return runtime_int(left.integer << right.integer.u32()) if opcode == Opcode.ShiftLeft
+                    if opcode == Opcode.ShiftLeft and result_type.bits < 64 and left.integer > integer_max(result_type) >> right.integer.u32():
+                        machine.failure <- InterpretFailure.IntegerOverflow
+                        return runtime_void()
+                    return checked_narrow_int(machine, left.integer << right.integer.u32(), result_type) if opcode == Opcode.ShiftLeft
                     return runtime_int(left.integer >> right.integer.u32())
-                return runtime_int(left.integer + right.integer) if opcode == Opcode.Add
-                return runtime_int(left.integer - right.integer) if opcode == Opcode.Subtract
-                return runtime_int(left.integer * right.integer) if opcode == Opcode.Multiply
+                return checked_narrow_arithmetic(machine, opcode, left.integer, right.integer, result_type) if opcode in {Opcode.Add, Opcode.Subtract, Opcode.Multiply}
                 if opcode == Opcode.Divide or opcode == Opcode.Remainder:
                     if right.integer == 0:
                         machine.failure <- InterpretFailure.DivisionByZero
                         return runtime_void()
-                    return runtime_int(left.integer / right.integer) if opcode == Opcode.Divide
-                    return runtime_int(left.integer % right.integer)
+                    return checked_narrow_int(machine, left.integer / right.integer, result_type) if opcode == Opcode.Divide
+                    return checked_narrow_int(machine, left.integer % right.integer, result_type)
                 return runtime_bool(left.integer < right.integer) if opcode == Opcode.Less
                 return runtime_bool(left.integer <= right.integer) if opcode == Opcode.LessEqual
                 return runtime_bool(left.integer > right.integer) if opcode == Opcode.Greater
@@ -754,7 +818,7 @@ extend EsIr:
 
                         Dispatch, Opcode.Negate:
                             operand: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
-                            dispatch.value <- evaluate_negate(operand, machine)
+                            dispatch.value <- evaluate_negate(operand, instruction.result_type, machine)
                             break
 
                         Dispatch, Opcode.Not:
@@ -764,7 +828,7 @@ extend EsIr:
 
                         Dispatch, Opcode.BitNot:
                             operand: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
-                            dispatch.value <- evaluate_bit_not(operand, machine)
+                            dispatch.value <- evaluate_bit_not(operand, instruction.result_type, machine)
                             break
 
                         Dispatch, Opcode.MakeArray:
@@ -910,6 +974,8 @@ extend EsIr:
                 raise InterpretError.TypeMismatch
             if failure == InterpretFailure.DivisionByZero:
                 raise InterpretError.DivisionByZero
+            if failure == InterpretFailure.IntegerOverflow:
+                raise InterpretError.IntegerOverflow
             if failure == InterpretFailure.InvalidShift:
                 raise InterpretError.InvalidShift
             if failure == InterpretFailure.IndexOutOfBounds:

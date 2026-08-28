@@ -112,6 +112,12 @@ no implicit widening occurs in arithmetic or comparisons. Narrow explicit litera
 must fit their suffix range. Signed minimum spellings are lowered atomically—such
 as `-128i8`—so the compiler never has to construct the invalid intermediate
 positive literal `128i8`; negating an explicitly unsigned literal is rejected.
+The reference interpreter applies checked fixed-width semantics to narrow integer
+addition, subtraction, multiplication, division results, left shifts, and signed
+negation. A result outside its declared type raises `InterpretError.IntegerOverflow`
+through Elisa's `error[...]` channel. Unsigned complement masks unused host bits, so
+`~1u8` is `254u8` rather than the host `i64` value `-2`. These checks happen before
+the host operation wherever the host intermediate could overflow.
 Compiler-known typed literals use `Named` constants with immutable text payloads.
 The verifier admits this representation explicitly, and the interpreter retains
 the text payload while all static compatibility decisions continue to use the
