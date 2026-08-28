@@ -24,13 +24,20 @@ module EsDifferential:
             Bool
             Int
             Float
+            Array
             Text
+            ProcessCapture
 
 
         struct DifferentialValue:
             text: sview = ""
             integer: i64 = 0
             decimal: f64 = 0.0
+            process_exit_status: i64 = 0
+            process_stdout: sview = ""
+            process_stderr: sview = ""
+            array_start: u32 = 0
+            array_count: u32 = 0
             kind: DifferentialValueKind
             boolean: bool = false
 
@@ -46,6 +53,7 @@ module EsDifferential:
             stdout: sview = ""
             stderr: sview = ""
             observations: darray[DifferentialObservation]
+            values: darray[DifferentialValue] = []
 
 
         const enum DifferentialCaptureState of u8:
@@ -59,10 +67,49 @@ module EsDifferential:
             result: mutable DifferentialRun
 
 
+        def differential_array_value(storage: mutable darray[DifferentialValue]&, values: darray[DifferentialValue]) -> DifferentialValue can[Memory.Allocate, Abort.Panic]:
+            start: u32 = storage.count.u32()
+            storage.extend(values)
+            return DifferentialValue{kind: DifferentialValueKind.Array, array_start: start, array_count: values.count.u32()}
+
+
+        # Convert an interpreter observation into the owned comparison value. Array
+        # elements are copied recursively so a comparison never depends on the
+        # interpreter's transient flat runtime storage.
+        def differential_value_from_runtime(storage: darray[EsIr::RuntimeValue]&, value: EsIr::RuntimeValue, values: mutable darray[DifferentialValue]&) -> DifferentialValue error[DifferentialRunnerError] can[Memory.Allocate, Abort.Panic]:
+            match value.kind:
+                EsIr::RuntimeValueKind.Void:
+                    return DifferentialValue{kind: DifferentialValueKind.Void}
+                EsIr::RuntimeValueKind.Bool:
+                    return DifferentialValue{kind: DifferentialValueKind.Bool, boolean: value.boolean}
+                EsIr::RuntimeValueKind.Int:
+                    return DifferentialValue{kind: DifferentialValueKind.Int, integer: value.integer}
+                EsIr::RuntimeValueKind.Float:
+                    return DifferentialValue{kind: DifferentialValueKind.Float, decimal: value.decimal}
+                EsIr::RuntimeValueKind.Text:
+                    return DifferentialValue{kind: DifferentialValueKind.Text, text: value.text}
+                EsIr::RuntimeValueKind.ProcessCapture:
+                    return DifferentialValue{kind: DifferentialValueKind.ProcessCapture, process_exit_status: value.process_exit_status, process_stdout: value.process_stdout, process_stderr: value.process_stderr}
+                EsIr::RuntimeValueKind.Array:
+                    end: usize = value.array_start.usize() + value.array_count.usize()
+                    raise DifferentialRunnerError.Invalid if end > storage.count
+                    start: u32 = values.count.u32()
+                    for offset in 0..<value.array_count.usize() |values|:
+                        values.push(DifferentialValue{kind: DifferentialValueKind.Void})
+                    for offset in 0..<value.array_count.usize() |storage, value, values, start|:
+                        values[start.usize() + offset] <- try differential_value_from_runtime(storage, storage[value.array_start.usize() + offset], values)
+                    return DifferentialValue{kind: DifferentialValueKind.Array, array_start: start, array_count: value.array_count}
+
+
+        def append_differential_observations_from_runtime(storage: darray[EsIr::RuntimeValue]&, observations: darray[EsIr::Observation], values: mutable darray[DifferentialValue]&, converted: mutable darray[DifferentialObservation]&) -> void error[DifferentialRunnerError] can[Memory.Allocate, Abort.Panic]:
+            for observation in observations |storage, values, converted|:
+                converted.push(DifferentialObservation{trace: observation.trace, value: try differential_value_from_runtime(storage, observation.value, values)})
+
+
         # Adapt one typed ProcessCapture snapshot into the comparison model. A
         # malformed value becomes a deterministic run error instead of exposing
         # partially populated stdout/stderr fields to the comparator.
-        def differential_run_from_process_capture(capture: EsIr::RuntimeValue&, observations: darray[DifferentialObservation]) -> DifferentialRun:
+        def differential_run_from_process_capture(capture: EsIr::RuntimeValue&, observations: darray[DifferentialObservation], values: darray[DifferentialValue] = []) -> DifferentialRun:
             cursor: mutable DifferentialCaptureCursor = DifferentialCaptureCursor{state: DifferentialCaptureState.Validate, result: DifferentialRun{observations: []}}
             machine over cursor.state:
                 state Adapt
@@ -77,7 +124,7 @@ module EsDifferential:
                     -> Adapt
 
                 Adapt, DifferentialCaptureState.Materialize:
-                    cursor.result <- DifferentialRun{exit_status: capture.process_exit_status, stdout: capture.process_stdout, stderr: capture.process_stderr, observations: observations}
+                    cursor.result <- DifferentialRun{exit_status: capture.process_exit_status, stdout: capture.process_stdout, stderr: capture.process_stderr, observations: observations, values: values}
                     cursor.state <- DifferentialCaptureState.Done
                     -> Adapt
 
@@ -347,19 +394,101 @@ module EsDifferential:
             result: mutable DifferentialComparison
 
 
-        def differential_values_equal(left: DifferentialValue&, right: DifferentialValue&) -> bool:
-            return false if left.kind != right.kind
-            match left.kind:
-                DifferentialValueKind.Void:
-                    return true
-                DifferentialValueKind.Bool:
-                    return left.boolean == right.boolean
-                DifferentialValueKind.Int:
-                    return left.integer == right.integer
-                DifferentialValueKind.Float:
-                    return left.decimal == right.decimal
-                DifferentialValueKind.Text:
-                    return left.text == right.text
+        const enum DifferentialValueEqualState of u8:
+            Select
+            Scalar
+            ArrayValidate
+            ArrayPush
+            Done
+
+
+        struct DifferentialValueEqualPair:
+            left: DifferentialValue
+            right: DifferentialValue
+
+
+        struct DifferentialValueEqualCursor:
+            state: mutable DifferentialValueEqualState
+            index: mutable usize
+            current: mutable DifferentialValueEqualPair
+            pending: mutable darray[DifferentialValueEqualPair]
+            equal: mutable bool
+
+
+        # Equality uses an explicit pair stack rather than recursive calls. This
+        # keeps arbitrarily nested arrays bounded by caller-owned storage and
+        # makes every comparison transition visible to the Elisa machine.
+        def differential_values_equal(left_storage: darray[DifferentialValue]&, left: DifferentialValue, right_storage: darray[DifferentialValue]&, right: DifferentialValue) -> bool can[Memory.Allocate, Abort.Panic]:
+            cursor: mutable DifferentialValueEqualCursor = DifferentialValueEqualCursor{state: DifferentialValueEqualState.Select, index: 0, current: DifferentialValueEqualPair{left: left, right: right}, pending: [DifferentialValueEqualPair{left: left, right: right}], equal: true}
+            machine over cursor.state while cursor.equal:
+                state Compare
+                start Compare
+
+                Compare, DifferentialValueEqualState.Select if cursor.pending.count == 0:
+                    cursor.state <- DifferentialValueEqualState.Done
+                    -> Compare
+                Compare, DifferentialValueEqualState.Select:
+                    cursor.current <- cursor.pending.pop()
+                    cursor.state <- DifferentialValueEqualState.ArrayValidate if cursor.current.left.kind == DifferentialValueKind.Array else DifferentialValueEqualState.Scalar
+                    -> Compare
+
+                Compare, DifferentialValueEqualState.Scalar if cursor.current.left.kind != cursor.current.right.kind:
+                    cursor.equal <- false
+                    cursor.state <- DifferentialValueEqualState.Done
+                    -> Compare
+                Compare, DifferentialValueEqualState.Scalar if cursor.current.left.kind == DifferentialValueKind.Void:
+                    cursor.state <- DifferentialValueEqualState.Select
+                    -> Compare
+                Compare, DifferentialValueEqualState.Scalar if cursor.current.left.kind == DifferentialValueKind.Bool:
+                    cursor.equal <- cursor.current.left.boolean == cursor.current.right.boolean
+                    cursor.state <- DifferentialValueEqualState.Select if cursor.equal else DifferentialValueEqualState.Done
+                    -> Compare
+                Compare, DifferentialValueEqualState.Scalar if cursor.current.left.kind == DifferentialValueKind.Int:
+                    cursor.equal <- cursor.current.left.integer == cursor.current.right.integer
+                    cursor.state <- DifferentialValueEqualState.Select if cursor.equal else DifferentialValueEqualState.Done
+                    -> Compare
+                Compare, DifferentialValueEqualState.Scalar if cursor.current.left.kind == DifferentialValueKind.Float:
+                    cursor.equal <- cursor.current.left.decimal == cursor.current.right.decimal
+                    cursor.state <- DifferentialValueEqualState.Select if cursor.equal else DifferentialValueEqualState.Done
+                    -> Compare
+                Compare, DifferentialValueEqualState.Scalar if cursor.current.left.kind == DifferentialValueKind.ProcessCapture:
+                    cursor.equal <- cursor.current.left.process_exit_status == cursor.current.right.process_exit_status and cursor.current.left.process_stdout == cursor.current.right.process_stdout and cursor.current.left.process_stderr == cursor.current.right.process_stderr
+                    cursor.state <- DifferentialValueEqualState.Select if cursor.equal else DifferentialValueEqualState.Done
+                    -> Compare
+                Compare, DifferentialValueEqualState.Scalar:
+                    cursor.equal <- cursor.current.left.text == cursor.current.right.text
+                    cursor.state <- DifferentialValueEqualState.Select if cursor.equal else DifferentialValueEqualState.Done
+                    -> Compare
+
+                Compare, DifferentialValueEqualState.ArrayValidate if cursor.current.left.kind != cursor.current.right.kind:
+                    cursor.equal <- false
+                    cursor.state <- DifferentialValueEqualState.Done
+                    -> Compare
+                Compare, DifferentialValueEqualState.ArrayValidate if cursor.current.left.array_count != cursor.current.right.array_count:
+                    cursor.equal <- false
+                    cursor.state <- DifferentialValueEqualState.Done
+                    -> Compare
+                Compare, DifferentialValueEqualState.ArrayValidate if cursor.current.left.array_start.usize() + cursor.current.left.array_count.usize() > left_storage.count or cursor.current.right.array_start.usize() + cursor.current.right.array_count.usize() > right_storage.count:
+                    cursor.equal <- false
+                    cursor.state <- DifferentialValueEqualState.Done
+                    -> Compare
+                Compare, DifferentialValueEqualState.ArrayValidate:
+                    cursor.index <- 0
+                    cursor.state <- DifferentialValueEqualState.ArrayPush
+                    -> Compare
+
+                Compare, DifferentialValueEqualState.ArrayPush if cursor.index >= cursor.current.left.array_count.usize():
+                    cursor.state <- DifferentialValueEqualState.Select
+                    -> Compare
+                Compare, DifferentialValueEqualState.ArrayPush:
+                    cursor.pending.push(DifferentialValueEqualPair{left: left_storage[cursor.current.left.array_start.usize() + cursor.index], right: right_storage[cursor.current.right.array_start.usize() + cursor.index]})
+                    cursor.index <- cursor.index + 1
+                    -> Compare
+
+                Compare, DifferentialValueEqualState.Done:
+                    break
+
+            return cursor.equal
 
 
         def differential_comparison(kind: DifferentialDifferenceKind, index: u32, reason: sview) -> DifferentialComparison:
@@ -422,7 +551,7 @@ module EsDifferential:
                 Compare, DifferentialCompareState.Observation if cursor.index >= reference.observations.count:
                     cursor.state <- DifferentialCompareState.Done
                     -> Compare
-                Compare, DifferentialCompareState.Observation if reference.observations[cursor.index].trace == candidate.observations[cursor.index].trace and differential_values_equal(reference.observations[cursor.index].value, candidate.observations[cursor.index].value):
+                Compare, DifferentialCompareState.Observation if reference.observations[cursor.index].trace == candidate.observations[cursor.index].trace and differential_values_equal(reference.values, reference.observations[cursor.index].value, candidate.values, candidate.observations[cursor.index].value):
                     cursor.index <- cursor.index + 1
                     -> Compare
                 Compare, DifferentialCompareState.Observation if reference.observations[cursor.index].trace != candidate.observations[cursor.index].trace:

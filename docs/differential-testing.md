@@ -38,9 +38,14 @@ text or values; identical runs return `DifferentialDifferenceKind.Equal`. The
 comparator is implemented as an explicit Elisa state machine, so it cannot skip a
 comparison phase or silently continue after a mismatch.
 
-Observation values include `Void`, `Bool`, `Int`, exact `Float`, and `Text` kinds.
-Float observations are compared exactly by default; a future tolerance policy can
-be layered on top without weakening the baseline comparator.
+Observation values include `Void`, `Bool`, `Int`, exact `Float`, `Text`, recursive
+`Array`, and structured `ProcessCapture` kinds. Arrays use a flat, owned value
+pool (`DifferentialRun.values`) with `(array_start, array_count)` slices, so nested
+observations remain deterministic without borrowing an interpreter's runtime
+storage. `append_differential_observations_from_runtime` performs that conversion
+and rejects out-of-bounds snapshots through `DifferentialRunnerError`. Float
+observations are compared exactly by default; a future tolerance policy can be
+layered on top without weakening the baseline comparator.
 
 The executable contract is `EsDifferential.DifferentialRunner`. It is a typed
 specification, not a command-string escape hatch: the target executable, optional entry point,
@@ -78,9 +83,10 @@ shell-free and keeps process failures in `error[ProcessError]`.
 
 `differential_run_from_process_capture` is the typed adapter for that boundary. It
 accepts the interpreter's `EsIr::RuntimeValue` snapshot plus structured observations
-and materializes one `DifferentialRun`; a non-`ProcessCapture` value becomes a stable
-adapter error. Its validation/materialization path is an explicit state machine, so
-the process result cannot be partially copied.
+and materializes one `DifferentialRun`; an optional `DifferentialRun.values` pool
+keeps any array observation indices attached to the same run. A non-`ProcessCapture`
+value becomes a stable adapter error. Its validation/materialization path is an
+explicit state machine, so the process result cannot be partially copied.
 
 ## Runner types
 
