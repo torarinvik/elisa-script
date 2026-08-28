@@ -318,9 +318,19 @@ extend EsIr:
             return LoweredValue{valid: true, value: result, type: result_type}
 
 
+        def emit_binary(state: mutable LowerState&, opcode: Opcode, left: u32, right: u32, result_type: Type, pos: Ast::Pos&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+            result: u32 = fresh_value(state)
+            operand_start: u32 = state.operand_pool.count.u32()
+            state.operand_pool.push(left)
+            state.operand_pool.push(right)
+            state.instructions.push(Instruction{opcode: opcode, result: result, result_type: result_type, operand_start: operand_start, operand_count: 2, span: ir_span(pos)})
+            return LoweredValue{valid: true, value: result, type: result_type}
+
+
         def lower_range_membership(needle: LoweredValue, range_expression: Ast::Expr, pos: Ast::Pos&, state: mutable LowerState&) -> RangeMembership can[Memory.Allocate, Abort.Panic]:
             low_expression: mutable Ast::Expr = Expr.Absent
             high_expression: mutable Ast::Expr = Expr.Absent
+            step_expression: mutable Ast::Expr = Expr.Absent
             operator: mutable TokenKind = TokenKind.Range
             recognized: mutable bool = false
             stepped: mutable bool = false
@@ -335,6 +345,10 @@ extend EsIr:
                         match low:
                             Expr.Binary(inner_low, inner_operator, inner_high, inner_pos):
                                 if inner_operator in {TokenKind.RangeLt, TokenKind.RangeLe, TokenKind.RangeGt}:
+                                    low_expression <- inner_low
+                                    high_expression <- inner_high
+                                    step_expression <- high
+                                    operator <- inner_operator
                                     recognized <- true
                                     stepped <- true
                             _:
@@ -342,19 +356,36 @@ extend EsIr:
                 _:
                     pass
             return RangeMembership{recognized: false, value: LoweredValue{valid: false, value: 0, type: type_from_name("bool")}} if not recognized
-            if stepped:
-                add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "membership in a strided range is not implemented yet")
-                return RangeMembership{recognized: true, value: LoweredValue{valid: false, value: 0, type: type_from_name("bool")}}
             low: LoweredValue = lower_expression_expected(low_expression, needle.type, state)
             high: LoweredValue = lower_expression_expected(high_expression, needle.type, state)
             if not low.valid or not high.valid or not same_type(needle.type, low.type) or not same_type(needle.type, high.type) or not numeric_type(needle.type):
                 add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "range membership requires matching numeric needle and bound types")
                 return RangeMembership{recognized: true, value: LoweredValue{valid: false, value: 0, type: type_from_name("bool")}}
+            step: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: needle.type}
+            if stepped:
+                positive_literal: mutable bool = false
+                match step_expression:
+                    Expr.IntLit(value):
+                        positive_literal <- value > 0
+                    _:
+                        pass
+                if needle.type.kind != TypeKind.Int or not positive_literal:
+                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "range membership stride must be a positive integer constant")
+                    return RangeMembership{recognized: true, value: LoweredValue{valid: false, value: 0, type: type_from_name("bool")}}
+                step <- lower_expression_expected(step_expression, needle.type, state)
+                if not step.valid or not same_type(step.type, needle.type):
+                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "range membership stride must match the needle type")
+                    return RangeMembership{recognized: true, value: LoweredValue{valid: false, value: 0, type: type_from_name("bool")}}
 
             upper_test_block: u32 = fresh_block(state)
             false_block: u32 = fresh_block(state)
             true_block: u32 = fresh_block(state)
             merge_block: u32 = fresh_block(state)
+            success_block: mutable u32 = true_block
+            alignment_block: mutable u32 = 0
+            if stepped:
+                alignment_block <- fresh_block(state)
+                success_block <- alignment_block
             first_opcode: Opcode = Opcode.LessEqual if operator == TokenKind.RangeGt else Opcode.GreaterEqual
             first: LoweredValue = emit_comparison(state, first_opcode, needle.value, low.value, pos)
             state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: first.value, operand_count: 1, target0: upper_test_block, target1: false_block, target_count: 2, span: ir_span(pos)}
@@ -364,8 +395,18 @@ extend EsIr:
             state.terminated <- false
             second_opcode: Opcode = Opcode.Greater if operator == TokenKind.RangeGt else (Opcode.LessEqual if operator == TokenKind.RangeLe else Opcode.Less)
             second: LoweredValue = emit_comparison(state, second_opcode, needle.value, high.value, pos)
-            state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: second.value, operand_count: 1, target0: true_block, target1: false_block, target_count: 2, span: ir_span(pos)}
+            state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: second.value, operand_count: 1, target0: success_block, target1: false_block, target_count: 2, span: ir_span(pos)}
             finish_block(state)
+
+            if stepped:
+                state.current_block <- alignment_block
+                state.terminated <- false
+                offset: LoweredValue = emit_binary(state, Opcode.Subtract, low.value, needle.value, needle.type, pos) if operator == TokenKind.RangeGt else emit_binary(state, Opcode.Subtract, needle.value, low.value, needle.type, pos)
+                remainder: LoweredValue = emit_binary(state, Opcode.Remainder, offset.value, step.value, needle.type, pos)
+                zero: LoweredValue = emit_constant(state, needle.type, 0, "", "", false, ir_span(pos))
+                aligned: LoweredValue = emit_comparison(state, Opcode.Equal, remainder.value, zero.value, pos)
+                state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: aligned.value, operand_count: 1, target0: true_block, target1: false_block, target_count: 2, span: ir_span(pos)}
+                finish_block(state)
 
             state.current_block <- true_block
             state.terminated <- false

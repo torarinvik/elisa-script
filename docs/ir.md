@@ -171,8 +171,10 @@ Numeric range membership lowers to ordered control-flow states rather than
 or `value <= high`; strict descending ranges first test `value <= start`, then
 `value > end`. Each bound is evaluated exactly once, and `not in` applies the
 ordinary typed boolean `Not` to the merged result. Strided range membership is
-currently an explicit unsupported-expression diagnostic until its divisibility
-and overflow behavior is specified.
+defined for positive integer constant strides. After the bounds states succeed,
+an alignment state tests `(value - start) % stride == 0` for ascending ranges or
+`(start - value) % stride == 0` for descending ranges. This state is never entered
+for an out-of-bounds needle, and zero or dynamic strides are rejected statically.
 Integer ranges use the same CFG shape. `low..<high` is exclusive ascending,
 `low..=high` is inclusive ascending, and `high..>low` is strict descending.
 The range-owned stride spelling (`low..<high..step`) requires a positive constant;
