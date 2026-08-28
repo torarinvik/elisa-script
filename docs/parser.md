@@ -22,6 +22,29 @@ Removing a parser file would remove part of Elisa rather than merely remove
 compiler-product tooling. Driver and backend reduction therefore happens outside
 this directory.
 
+## Canonical source loading
+
+File-based callers should use `EsIr.lower_elisascript_source` as the single
+typed source boundary. It accepts a NUL-terminated filename and source buffer,
+requires the filename to end in `.elisascript`, and performs the stages in a
+fixed order inside one caller-owned region:
+
+```elisa
+module: EsIr::Module = EsIr::lower_elisascript_source(
+    "tools/build.elisascript",
+    source,
+    "build"
+)
+```
+
+The boundary runs tokenization, parsing, the copied `Semantic::check`, IR
+lowering, and target-independent verification. Parse, semantic, lowering, and
+verification failures are raised through `ElisascriptSourceError`; there is no
+fallback module or `Result` sentinel. The extension predicate is itself an
+explicit state machine, so a wrong suffix is rejected before any source bytes
+are parsed. This gives future CLI, editor, and differential-test adapters one
+consistent contract instead of each reimplementing frontend sequencing.
+
 ## Typed literal desugaring
 
 An identifier immediately adjacent to a string literal is parsed as a one-argument

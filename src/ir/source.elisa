@@ -1,0 +1,78 @@
+# Canonical source boundary for `.elisascript` files.
+#
+# Callers should use this entry point when source text comes from a file or an
+# adapter. It keeps extension validation, parser diagnostics, lowering coverage,
+# and target-independent IR verification in one deterministic pipeline. Every
+# failure remains an Elisa error rather than a result-shaped sentinel.
+
+using Ast
+using Lexer
+
+include "../../vendor/elisa-compiler/src/semantic/semantic.elisa"
+
+
+error ElisascriptSourceError:
+    InvalidExtension
+    ParseFailed
+    SemanticFailed
+    LowerFailed
+    VerificationFailed
+
+
+extend EsIr:
+    public:
+        const enum ElisascriptSourceExtensionState of u8:
+            ValidateExtension
+            Done
+
+
+        struct ElisascriptSourceCursor:
+            state: mutable ElisascriptSourceExtensionState
+            valid: mutable bool
+
+
+        # The extension check is deliberately a small state machine. Keeping it
+        # separate makes the source loader's first refusal deterministic and
+        # prevents a path with a similar prefix from being accepted.
+        def elisascript_source_filename_valid(filename: u8&) -> bool:
+            cursor: mutable ElisascriptSourceCursor = ElisascriptSourceCursor{state: ElisascriptSourceExtensionState.ValidateExtension, valid: true}
+            name: sview = sview(filename, 0, -1)
+            machine over cursor.state:
+                state Validate
+                start Validate
+
+                Validate, ElisascriptSourceExtensionState.ValidateExtension if not sview_ends_with(name, ".elisascript"):
+                    cursor.valid <- false
+                    cursor.state <- ElisascriptSourceExtensionState.Done
+                    -> Validate
+
+                Validate, ElisascriptSourceExtensionState.ValidateExtension:
+                    cursor.state <- ElisascriptSourceExtensionState.Done
+                    -> Validate
+
+                Validate, ElisascriptSourceExtensionState.Done:
+                    break
+
+            return cursor.valid
+
+
+        def elisascript_source_validate_extension(filename: u8&) -> void error[ElisascriptSourceError]:
+            raise ElisascriptSourceError.InvalidExtension if not elisascript_source_filename_valid(filename)
+
+
+        # One typed source-to-IR boundary. Token storage is adopted by the
+        # parsed file, then by lowered IR, all inside one caller-owned region.
+        def lower_elisascript_source(filename: u8&, source: u8&, module_name: sview) -> Module error[ElisascriptSourceError] can[Memory.Allocate, Abort.Panic]:
+            try elisascript_source_validate_extension(filename)
+            source_length: usize = Lexer::cstring_length(source)
+            source_capacity: usize = source_length * 64 + 65536
+            region source_pipeline(source_capacity) using malloc:
+                tokens: darray[Token] = frontend_tokenize(filename, source)
+                file: Ast::File = frontend_parser_parse_file(source, tokens)
+                raise ElisascriptSourceError.ParseFailed if file.errors.count != 0
+                semantic: Semantic::SymbolTable = Semantic::check(file)
+                raise ElisascriptSourceError.SemanticFailed if semantic.diagnostics.count != 0
+                lowered: LowerResult = lower_file(file, module_name)
+                raise ElisascriptSourceError.LowerFailed if lowered.issues.count != 0
+                raise ElisascriptSourceError.VerificationFailed if verify(lowered.module).count != 0
+                return lowered.module
