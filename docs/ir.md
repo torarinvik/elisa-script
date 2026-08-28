@@ -168,6 +168,11 @@ interpreter failure or wrapped in a result value.
 requires `Process.Run` plus `ProcessError`. The interpreter executes it directly as
 a POSIX `fork`/`execvp`/`waitpid` state transition with a NUL-terminated argv. No
 command string or shell expansion exists between typed IR and the operating system.
+`CaptureProcessStdout` has the same operands, effect, and error row, with `Text` as
+its result. Its opcode is handled by the interpreter's exhaustive Elisa dispatch
+machine. Execution redirects only stdout into an anonymous temporary file, reaps
+the child, and returns owned length-delimited bytes. It does not reinterpret output
+as a C string, impose a pipe-sized backpressure limit, or capture stderr.
 Named direct-call arguments are resolved against predeclared parameter labels and
 then emitted in canonical signature order. Their expressions still execute once in
 source order. Missing parameters materialize their Elisa default expressions in

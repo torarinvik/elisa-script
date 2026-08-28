@@ -141,6 +141,15 @@ signal termination produces `128 + signal`. Failure to create or wait for the pr
 raises `ProcessError`. If the executable cannot be resolved, the child exits with
 status `127`.
 
+`capture_process_stdout(executable: Executable, arguments: darray[sview]) -> sview
+error[ProcessError] can[Process.Run]` uses the same shell-free argv contract and
+returns every byte written to standard output. Standard error remains inherited.
+The child redirects stdout to an anonymous temporary file, avoiding both pipe
+backpressure deadlocks and fixed capture limits. Process creation, redirection,
+seek, read, close, and wait failures raise `ProcessError`. Exit status is deliberately
+orthogonal to captured bytes; a missing executable therefore yields empty output,
+while `run_process` exposes its status `127` when status is the required observation.
+
 ## Compile-time validation
 
 `check_typed_literals.elisa` validates constant string payloads during the existing

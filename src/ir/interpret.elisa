@@ -892,6 +892,93 @@ extend EsIr:
                 return runtime_int((128 + signal_number).i64())
 
 
+        def evaluate_capture_process_stdout(machine: mutable Machine&, storage: darray[RuntimeValue]&, executable: RuntimeValue, arguments: RuntimeValue) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+            if executable.kind != RuntimeValueKind.Text or arguments.kind != RuntimeValueKind.Array:
+                machine.failure <- InterpretFailure.TypeMismatch
+                return runtime_void()
+            executable_bytes: dstr = nul_terminated_text(executable.text)
+            if executable_bytes.items == null:
+                machine.failure <- InterpretFailure.Process
+                return runtime_void()
+            executable_items: u8& = executable_bytes.items
+            owned_arguments: mutable darray[dstr] = []
+            argv: mutable darray[cstr] = []
+            owned_arguments.reserve(arguments.array_count.usize())
+            argv.reserve(arguments.array_count.usize() + 2)
+            argv.push(executable_items.cast[cstr])
+            for offset in 0..<arguments.array_count.usize() |machine, storage, arguments, owned_arguments, argv|:
+                argument: RuntimeValue = storage[arguments.array_start.usize() + offset]
+                if argument.kind != RuntimeValueKind.Text:
+                    machine.failure <- InterpretFailure.TypeMismatch
+                    return runtime_void()
+                argument_bytes: dstr = nul_terminated_text(argument.text)
+                if argument_bytes.items == null:
+                    machine.failure <- InterpretFailure.Process
+                    return runtime_void()
+                owned_arguments.push(argument_bytes)
+                argument_storage: mutable u8&? = owned_arguments[owned_arguments.count - 1].items
+                if argument_storage == null:
+                    machine.failure <- InterpretFailure.Process
+                    return runtime_void()
+                argument_items: mutable u8& = argument_storage
+                argv.push(argument_items.cast[cstr])
+            argv.push(executable_items.cast[cstr])
+            if argv.items == null:
+                machine.failure <- InterpretFailure.Process
+                return runtime_void()
+            terminator: mutable void& = (&argv[argv.count - 1]).cast[mutable void&] can Unsafe.PointerCast
+            _ = memset(terminator, 0, 8)
+            argv_items: void& = argv.items.cast[void&] can Unsafe.PointerCast
+            can Blocking.IO, Memory.Allocate, Memory.Release:
+                handle: mutable heap void&? = elisascript_posix_tmpfile()
+                if handle == null:
+                    machine.failure <- InterpretFailure.Process
+                    return runtime_void()
+                stream: mutable heap void& = handle
+                descriptor: int = elisascript_posix_fileno(stream)
+                if descriptor < 0:
+                    _ = fclose(stream)
+                    machine.failure <- InterpretFailure.Process
+                    return runtime_void()
+                pid: int = elisascript_posix_fork()
+                if pid < 0:
+                    _ = fclose(stream)
+                    machine.failure <- InterpretFailure.Process
+                    return runtime_void()
+                if pid == 0:
+                    elisascript_posix_exit(126) if elisascript_posix_dup2(descriptor, 1) < 0
+                    _ = elisascript_posix_execvp(executable_items.cast[cstr], argv_items)
+                    elisascript_posix_exit(127)
+                    return runtime_void()
+                status: mutable int = 0
+                waited: int = elisascript_posix_waitpid(pid, status, 0)
+                if waited != pid or fseek(stream, 0, FILEIO_SEEK_END) != 0:
+                    _ = fclose(stream)
+                    machine.failure <- InterpretFailure.Process
+                    return runtime_void()
+                size: i64 = ftell(stream)
+                if size < 0 or fseek(stream, 0, FILEIO_SEEK_SET) != 0:
+                    _ = fclose(stream)
+                    machine.failure <- InterpretFailure.Process
+                    return runtime_void()
+                if size == 0:
+                    _ = fclose(stream)
+                    return runtime_text("")
+                bytes: mutable dstr = ctx_fstr_alloc(size.usize())
+                if bytes.items == null:
+                    _ = fclose(stream)
+                    machine.failure <- InterpretFailure.Process
+                    return runtime_void()
+                byte_items: mutable u8& = bytes.items
+                read_count: usize = fread(byte_items.cast[mutable void&], 1, size.usize(), stream)
+                close_status: int = fclose(stream)
+                if read_count != size.usize() or close_status != 0:
+                    machine.failure <- InterpretFailure.Process
+                    return runtime_void()
+                bytes.count <- size.usize()
+                return runtime_text(bytes_view(bytes))
+
+
         def evaluate_concat(machine: mutable Machine&, storage: mutable darray[RuntimeValue]&, left: RuntimeValue, right: RuntimeValue) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
             if left.kind == RuntimeValueKind.Array and right.kind == RuntimeValueKind.Array:
                 start: u32 = storage.count.u32()
@@ -1057,6 +1144,12 @@ extend EsIr:
                             executable_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
                             arguments_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1], machine)
                             dispatch.value <- evaluate_run_process(machine, storage, executable_value, arguments_value)
+                            break
+
+                        Dispatch, Opcode.CaptureProcessStdout:
+                            executable_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
+                            arguments_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1], machine)
+                            dispatch.value <- evaluate_capture_process_stdout(machine, storage, executable_value, arguments_value)
                             break
 
                         Dispatch, Opcode.Concat:
