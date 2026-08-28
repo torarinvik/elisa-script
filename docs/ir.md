@@ -310,11 +310,13 @@ and comparisons, direct calls, branches, loops, SSA edge arguments, and returns.
 frames. `Perform` searches it from innermost to outermost and invokes the exact typed
 operation clause of the nearest covering handler; linear clauses return one resumed
 value and execution continues. Handler lookup, clause selection, and callback
-invocation are explicit interpreter state-machine states. A callback may instead issue a typed tail `Resume`,
-which transfers its payload back to the suspended `Perform` through a runtime
-continuation frame. Handler contract metadata without an operation clause is
-deliberately not treated as executable behavior. Post-resume code, terminal
-transfer, and multi-shot continuation execution remain later increments.
+invocation are explicit interpreter state-machine states. A callback may instead
+issue a typed tail `Resume`, which transfers its payload back to the suspended
+`Perform` through a runtime continuation frame. Handler contract metadata without
+an operation clause is deliberately not treated as executable behavior. Multi-shot
+policies keep that frame active during callback execution, so repeated `Resume`
+instructions are ordinary callback values; full suspended-stack replay and
+environment cloning are later increments.
 
 Interpreter failures use `error[InterpretError]`, never a result wrapper. Stable
 `observe` events and array elements are appended to caller-owned storage; this
