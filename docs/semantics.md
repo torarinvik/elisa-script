@@ -118,6 +118,12 @@ discarding embedded bytes. It contributes the same `File.Read` effect and adds
 `FileIoError` to the enclosing error row. Open, seek, read, and close failures
 remain errors; a failed read is never confused with a successfully read empty file.
 
+`write_text(path: Path, contents: sview) -> usize error[FileIoError]` replaces or
+creates a file and returns the exact byte count written. It contributes `File.Write`
+and `FileIoError`; partial writes and close failures are errors rather than apparent
+success. Together, `path_exists`, `read_text`, and `write_text` form the first
+complete filesystem round trip without shell or Python.
+
 ## Compile-time validation
 
 `check_typed_literals.elisa` validates constant string payloads during the existing

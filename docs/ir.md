@@ -155,6 +155,11 @@ lowering supplies both and the verifier rejects either omission. The interpreter
 uses Elisa's stdio bindings, checks every open/seek/read/close transition, and
 returns one owned length-delimited buffer. Empty files return empty text, while any
 I/O failure becomes `InterpretError.FileIo` at the reference-interpreter boundary.
+`WriteText` has verified signature `Named(Path) × Text -> usize` and requires
+`File.Write` plus `FileIoError`. Execution opens in replacement mode, verifies the
+complete byte count, checks close status, and returns that count. A partial write
+never produces a successful result, and empty text still creates or truncates the
+target file deterministically.
 Named direct-call arguments are resolved against predeclared parameter labels and
 then emitted in canonical signature order. Their expressions still execute once in
 source order. Missing parameters materialize their Elisa default expressions in
