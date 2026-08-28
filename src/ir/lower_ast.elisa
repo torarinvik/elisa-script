@@ -836,12 +836,6 @@ extend EsIr:
             supported: mutable bool = true
             for index in 0..<arms.count |arms, pos, state, supported|:
                 arm: Ast::MatchArm = arms[index]
-                match arm.guard:
-                    Expr.Absent:
-                        pass
-                    _:
-                        add_issue(state, LowerIssueKind.UnsupportedStatement, pos.line, "guarded match arms require pattern-aware guard lowering")
-                        supported <- false
                 catch_all: mutable bool = false
                 match arm.pattern:
                     Pattern.Literal(text) | Pattern.Pin(text):
@@ -851,7 +845,13 @@ extend EsIr:
                     _:
                         add_issue(state, LowerIssueKind.UnsupportedStatement, pos.line, "initial match lowering supports scalar literals, pins, bindings, and wildcard patterns")
                         supported <- false
-                if catch_all and index + 1 != arms.count:
+                guarded: mutable bool = false
+                match arm.guard:
+                    Expr.Absent:
+                        pass
+                    _:
+                        guarded <- true
+                if catch_all and not guarded and index + 1 != arms.count:
                     add_issue(state, LowerIssueKind.UnsupportedStatement, pos.line, "a catch-all match arm must be last")
                     supported <- false
             return supported
@@ -861,6 +861,13 @@ extend EsIr:
             saw_true: mutable bool = false
             saw_false: mutable bool = false
             for arm in arms |saw_true, saw_false|:
+                guarded: mutable bool = false
+                match arm.guard:
+                    Expr.Absent:
+                        pass
+                    _:
+                        guarded <- true
+                continue if guarded
                 match arm.pattern:
                     Pattern.Wildcard | Pattern.Binding(_):
                         return true
@@ -907,6 +914,13 @@ extend EsIr:
                 body_block: u32 = fresh_block(state)
                 final_arm: bool = arm_index + 1 == arms.count
                 next_test_block: u32 = merge_block if final_arm and not exhaustive else fresh_block(state)
+                guarded: mutable bool = false
+                match arm.guard:
+                    Expr.Absent:
+                        pass
+                    _:
+                        guarded <- true
+                matched_block: u32 = fresh_block(state) if guarded else body_block
                 binder: mutable sview = ""
                 catch_all: mutable bool = false
                 condition: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: type_from_name("bool")}
@@ -939,15 +953,41 @@ extend EsIr:
                     _:
                         pass
                 if catch_all:
-                    state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: body_block, target_count: 1, span: ir_span(pos)}
+                    state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: matched_block, target_count: 1, span: ir_span(pos)}
                 elif condition.valid:
                     if final_arm and not exhaustive:
                         unmatched_args: (start: u32, count: u16) = append_binding_arguments(state, carried_indices)
-                        state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: condition.value, operand_count: 1, target0: body_block, target1: next_test_block, target_count: 2, edge1_arg_start: unmatched_args.start, edge1_arg_count: unmatched_args.count, span: ir_span(pos)}
+                        state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: condition.value, operand_count: 1, target0: matched_block, target1: next_test_block, target_count: 2, edge1_arg_start: unmatched_args.start, edge1_arg_count: unmatched_args.count, span: ir_span(pos)}
                         any_fallthrough <- true
                     else:
-                        state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: condition.value, operand_count: 1, target0: body_block, target1: next_test_block, target_count: 2, span: ir_span(pos)}
+                        state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: condition.value, operand_count: 1, target0: matched_block, target1: next_test_block, target_count: 2, span: ir_span(pos)}
                 finish_block(state)
+
+                if guarded:
+                    for index in 0..<scope_mark |state, base_values|:
+                        state.values[index] <- base_values[index]
+                    state.current_block <- matched_block
+                    state.terminated <- false
+                    if binder != "":
+                        state.names.push(binder)
+                        state.values.push(scrutinee.value)
+                        state.types.push(scrutinee.type)
+                    guard_value: LoweredValue = lower_expression(arm.guard, state)
+                    guard_valid: mutable bool = guard_value.valid
+                    if guard_value.valid and guard_value.type.kind != TypeKind.Bool:
+                        add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "match arm guard must have boolean type")
+                        guard_valid <- false
+                    if guard_valid:
+                        if next_test_block == merge_block:
+                            guard_fallthrough_args: (start: u32, count: u16) = append_binding_arguments(state, carried_indices)
+                            state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: guard_value.value, operand_count: 1, target0: body_block, target1: next_test_block, target_count: 2, edge1_arg_start: guard_fallthrough_args.start, edge1_arg_count: guard_fallthrough_args.count, span: ir_span(pos)}
+                            any_fallthrough <- true
+                        else:
+                            state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: guard_value.value, operand_count: 1, target0: body_block, target1: next_test_block, target_count: 2, span: ir_span(pos)}
+                    finish_block(state)
+                    state.names.truncate(scope_mark)
+                    state.values.truncate(scope_mark)
+                    state.types.truncate(scope_mark)
 
                 for index in 0..<scope_mark |state, base_values|:
                     state.values[index] <- base_values[index]
