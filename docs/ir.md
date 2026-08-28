@@ -166,6 +166,13 @@ match the element type; text accepts either an 8-bit `char` or a text substring.
 Search is deterministic and linear, the empty text is contained in every text,
 and `not in` remains the ordinary typed boolean `Not` of `Contains`. Consequently
 membership composes with the existing branch-based short-circuit machinery.
+Numeric range membership lowers to ordered control-flow states rather than
+`Contains`. Ascending ranges first test `value >= low`, then test `value < high`
+or `value <= high`; strict descending ranges first test `value <= start`, then
+`value > end`. Each bound is evaluated exactly once, and `not in` applies the
+ordinary typed boolean `Not` to the merged result. Strided range membership is
+currently an explicit unsupported-expression diagnostic until its divisibility
+and overflow behavior is specified.
 Integer ranges use the same CFG shape. `low..<high` is exclusive ascending,
 `low..=high` is inclusive ascending, and `high..>low` is strict descending.
 The range-owned stride spelling (`low..<high..step`) requires a positive constant;

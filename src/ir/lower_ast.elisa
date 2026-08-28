@@ -40,6 +40,11 @@ extend EsIr:
             type: Type
 
 
+        struct RangeMembership:
+            value: LoweredValue
+            recognized: bool
+
+
         struct LowerState:
             terminator: mutable Terminator
             blocks: mutable darray[Block]
@@ -303,6 +308,90 @@ extend EsIr:
             return LoweredValue{valid: true, value: result, type: type}
 
 
+        def emit_comparison(state: mutable LowerState&, opcode: Opcode, left: u32, right: u32, pos: Ast::Pos&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+            result: u32 = fresh_value(state)
+            operand_start: u32 = state.operand_pool.count.u32()
+            state.operand_pool.push(left)
+            state.operand_pool.push(right)
+            result_type: Type = type_from_name("bool")
+            state.instructions.push(Instruction{opcode: opcode, result: result, result_type: result_type, operand_start: operand_start, operand_count: 2, span: ir_span(pos)})
+            return LoweredValue{valid: true, value: result, type: result_type}
+
+
+        def lower_range_membership(needle: LoweredValue, range_expression: Ast::Expr, pos: Ast::Pos&, state: mutable LowerState&) -> RangeMembership can[Memory.Allocate, Abort.Panic]:
+            low_expression: mutable Ast::Expr = Expr.Absent
+            high_expression: mutable Ast::Expr = Expr.Absent
+            operator: mutable TokenKind = TokenKind.Range
+            recognized: mutable bool = false
+            stepped: mutable bool = false
+            match range_expression:
+                Expr.Binary(low, range_operator, high, range_pos):
+                    if range_operator in {TokenKind.RangeLt, TokenKind.RangeLe, TokenKind.RangeGt}:
+                        low_expression <- low
+                        high_expression <- high
+                        operator <- range_operator
+                        recognized <- true
+                    elif range_operator == TokenKind.Range:
+                        match low:
+                            Expr.Binary(inner_low, inner_operator, inner_high, inner_pos):
+                                if inner_operator in {TokenKind.RangeLt, TokenKind.RangeLe, TokenKind.RangeGt}:
+                                    recognized <- true
+                                    stepped <- true
+                            _:
+                                pass
+                _:
+                    pass
+            return RangeMembership{recognized: false, value: LoweredValue{valid: false, value: 0, type: type_from_name("bool")}} if not recognized
+            if stepped:
+                add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "membership in a strided range is not implemented yet")
+                return RangeMembership{recognized: true, value: LoweredValue{valid: false, value: 0, type: type_from_name("bool")}}
+            low: LoweredValue = lower_expression_expected(low_expression, needle.type, state)
+            high: LoweredValue = lower_expression_expected(high_expression, needle.type, state)
+            if not low.valid or not high.valid or not same_type(needle.type, low.type) or not same_type(needle.type, high.type) or not numeric_type(needle.type):
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "range membership requires matching numeric needle and bound types")
+                return RangeMembership{recognized: true, value: LoweredValue{valid: false, value: 0, type: type_from_name("bool")}}
+
+            upper_test_block: u32 = fresh_block(state)
+            false_block: u32 = fresh_block(state)
+            true_block: u32 = fresh_block(state)
+            merge_block: u32 = fresh_block(state)
+            first_opcode: Opcode = Opcode.LessEqual if operator == TokenKind.RangeGt else Opcode.GreaterEqual
+            first: LoweredValue = emit_comparison(state, first_opcode, needle.value, low.value, pos)
+            state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: first.value, operand_count: 1, target0: upper_test_block, target1: false_block, target_count: 2, span: ir_span(pos)}
+            finish_block(state)
+
+            state.current_block <- upper_test_block
+            state.terminated <- false
+            second_opcode: Opcode = Opcode.Greater if operator == TokenKind.RangeGt else (Opcode.LessEqual if operator == TokenKind.RangeLe else Opcode.Less)
+            second: LoweredValue = emit_comparison(state, second_opcode, needle.value, high.value, pos)
+            state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: second.value, operand_count: 1, target0: true_block, target1: false_block, target_count: 2, span: ir_span(pos)}
+            finish_block(state)
+
+            state.current_block <- true_block
+            state.terminated <- false
+            true_value: LoweredValue = emit_constant(state, type_from_name("bool"), 0, "", "", true, ir_span(pos))
+            true_edge: u32 = state.edge_arg_pool.count.u32()
+            state.edge_arg_pool.push(true_value.value)
+            state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: merge_block, target_count: 1, edge0_arg_start: true_edge, edge0_arg_count: 1, span: ir_span(pos)}
+            finish_block(state)
+
+            state.current_block <- false_block
+            state.terminated <- false
+            false_value: LoweredValue = emit_constant(state, type_from_name("bool"), 0, "", "", false, ir_span(pos))
+            false_edge: u32 = state.edge_arg_pool.count.u32()
+            state.edge_arg_pool.push(false_value.value)
+            state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: merge_block, target_count: 1, edge0_arg_start: false_edge, edge0_arg_count: 1, span: ir_span(pos)}
+            finish_block(state)
+
+            result: u32 = fresh_value(state)
+            result_type: Type = type_from_name("bool")
+            state.pending_parameter_blocks.push(merge_block)
+            state.pending_parameters.push(Parameter{value: result, type: result_type, name: "range-membership"})
+            state.current_block <- merge_block
+            state.terminated <- false
+            return RangeMembership{recognized: true, value: LoweredValue{valid: true, value: result, type: result_type}}
+
+
         def lower_expression(expression: Ast::Expr, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
             match expression:
                 Expr.IntLit(value):
@@ -496,6 +585,9 @@ extend EsIr:
                         state.current_block <- merge_block
                         state.terminated <- false
                         return LoweredValue{valid: right_valid, value: result, type: result_type}
+                    if operator == TokenKind.In and lowered_left.valid:
+                        range_membership: RangeMembership = lower_range_membership(lowered_left, right, pos, state)
+                        return range_membership.value if range_membership.recognized
                     lowered_right: LoweredValue = lower_expression(right, state)
                     LoweredValue{valid: false, value: 0, type: unknown_ir_type()} return if not lowered_left.valid or not lowered_right.valid
                     if operator == TokenKind.In:
