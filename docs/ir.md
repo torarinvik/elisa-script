@@ -234,7 +234,9 @@ Interpreter failures use `error[InterpretError]`, never a result wrapper. Stable
 gives differential testing an ordered trace and keeps region-bearing collections
 out of the error-union return ABI. Invalid indexing is a typed
 `IndexOutOfBounds` failure. A deterministic step limit makes runaway programs a
-typed `StepLimitExceeded` failure.
+typed `StepLimitExceeded` failure. The private failure-to-error conversion is an
+exhaustive Elisa machine over `InterpretFailure`, so adding a new runtime failure
+cannot silently fall through to success or a generic result value.
 
 The interpreter's opcode dispatcher is an Elisa `machine` over the closed
 `Opcode` enum. Every opcode is named explicitly—there is no wildcard arm—so
