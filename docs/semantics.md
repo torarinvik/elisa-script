@@ -71,10 +71,14 @@ is_source: bool = matches("src/main.elisa", regex"^src/.*\\.elisa$")
 ```
 
 Its initial runtime grammar supports literal characters, `.`, start/end anchors
-`^` and `$`, escaped literals, and the greedy quantifiers `*`, `+`, and `?`.
-Search is unanchored unless `^` is present. Character classes, alternation,
-grouping, captures, and replacement are reserved for the shared compiled regex
-engine; they are not silently delegated to a host regex implementation.
+`^` and `$`, escaped literals, character classes and ranges (`[abc]`, `[a-z]`,
+`[^0-9]`), and the greedy quantifiers `*`, `+`, and `?`. The Perl-style shorthand
+classes `\d`, `\D`, `\w`, `\W`, `\s`, and `\S` work both as atoms and inside
+classes. Their meaning is deliberately ASCII and locale-independent so differential
+tests observe identical behavior on every backend. Search is unanchored unless `^`
+is present. Alternation, grouping, captures, and replacement are reserved for the
+shared compiled regex engine; they are not silently delegated to a host regex
+implementation.
 
 ## Compile-time validation
 
