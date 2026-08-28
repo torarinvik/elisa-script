@@ -170,6 +170,13 @@ fresh value storage. Text concatenation copies both byte views into permanent,
 length-aware Elisa runtime storage, so chained results and results involving
 empty text do not borrow temporary buffers. Mixed element or collection types are
 rejected statically.
+Statement-form `array.push(value)` and `array.extend(values)` are ownership-safe
+SSA updates rather than hidden aliasing mutations. `push` constructs a typed
+singleton and `extend` accepts the receiver's exact array type; both concatenate
+into a fresh array value and rebind the receiver. Mutation discovery treats these
+calls as assignments, so updates inside `if`, `while`, and `for` flow through the
+same typed merge, header, latch, and exit parameters as explicit `<-` rebinding.
+Named arguments, mismatched element types, and non-array receivers are rejected.
 Membership lowers to the typed `Contains` operation. Array needles must exactly
 match the element type; text accepts either an 8-bit `char` or a text substring.
 Search is deterministic and linear, the empty text is contained in every text,

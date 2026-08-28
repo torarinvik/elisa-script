@@ -258,6 +258,12 @@ extend EsIr:
         def collect_assigned_names(statements: darray[Ast::Stmt]&, names: mutable darray[sview]&) -> void can[Memory.Allocate, Abort.Panic]:
             for statement in statements |names|:
                 match statement:
+                    Stmt.Expr(expression, pos):
+                        match expression:
+                            Expr.Call(Expr.Field(Expr.Ident(name, ident_pos), method, field_pos), arguments, argument_names, call_pos):
+                                add_unique_name(names, name) if method == "push" or method == "extend"
+                            _:
+                                pass
                     Stmt.Assign(target, operator, value, pos):
                         match target:
                             Expr.Ident(name, target_pos):
@@ -814,6 +820,63 @@ extend EsIr:
             return lower_expression(expression, state)
 
 
+        def lower_collection_mutation(expression: Ast::Expr, pos: Ast::Pos&, state: mutable LowerState&) -> bool can[Memory.Allocate, Abort.Panic]:
+            receiver_name: mutable sview = ""
+            method_name: mutable sview = ""
+            arguments: mutable darray[Ast::Expr] = []
+            argument_names: mutable darray[sview] = []
+            match expression:
+                Expr.Call(Expr.Field(Expr.Ident(name, ident_pos), method, field_pos), call_arguments, call_argument_names, call_pos):
+                    if method == "push" or method == "extend":
+                        receiver_name <- name
+                        method_name <- method
+                        arguments.extend(call_arguments)
+                        argument_names.extend(call_argument_names)
+                _:
+                    pass
+            false return if receiver_name == ""
+            binding: usize = binding_index(state, receiver_name)
+            if binding == state.names.count:
+                add_issue(state, LowerIssueKind.UnknownBinding, pos.line, "collection mutation receiver has no local binding")
+                return true
+            if state.types[binding].kind != TypeKind.Array:
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "push and extend require an array receiver")
+                return true
+            named_argument: mutable bool = false
+            for argument_name in argument_names |named_argument|:
+                named_argument <- true if argument_name != ""
+            if arguments.count != 1 or named_argument:
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "push and extend require exactly one positional argument")
+                return true
+
+            appended: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: state.types[binding]}
+            if method_name == "extend":
+                appended <- lower_expression_expected(arguments[0], state.types[binding], state)
+                if appended.valid and not same_type(appended.type, state.types[binding]):
+                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "extend argument must have the receiver's exact array type")
+                    return true
+            else:
+                element_type: Type = array_element_type(state.types[binding])
+                element: LoweredValue = lower_expression_expected(arguments[0], element_type, state)
+                if element.valid and not same_type(element.type, element_type):
+                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "pushed value must match the array element type")
+                    return true
+                if element.valid:
+                    singleton: u32 = fresh_value(state)
+                    singleton_start: u32 = state.operand_pool.count.u32()
+                    state.operand_pool.push(element.value)
+                    state.instructions.push(Instruction{opcode: Opcode.MakeArray, result: singleton, result_type: state.types[binding], operand_start: singleton_start, operand_count: 1, span: ir_span(pos)})
+                    appended <- LoweredValue{valid: true, value: singleton, type: state.types[binding]}
+            if appended.valid:
+                result: u32 = fresh_value(state)
+                operand_start: u32 = state.operand_pool.count.u32()
+                state.operand_pool.push(state.values[binding])
+                state.operand_pool.push(appended.value)
+                state.instructions.push(Instruction{opcode: Opcode.Concat, result: result, result_type: state.types[binding], operand_start: operand_start, operand_count: 2, span: ir_span(pos)})
+                state.values[binding] <- result
+            return true
+
+
         def lower_range_for(variables: darray[sview]&, iterable: Ast::Expr, body: darray[Ast::Stmt]&, return_type: Type, pos: Ast::Pos&, state: mutable LowerState&) -> bool can[Memory.Allocate, Abort.Panic]:
             range_low: mutable Ast::Expr = Expr.Absent
             range_high: mutable Ast::Expr = Expr.Absent
@@ -1267,7 +1330,8 @@ extend EsIr:
                             state.values.push(lowered.value)
                             state.types.push(binding_type)
                 Stmt.Expr(expression, pos):
-                    _ = lower_expression(expression, state)
+                    if not lower_collection_mutation(expression, pos, state):
+                        _ = lower_expression(expression, state)
                 Stmt.Assign(target, operator, value, pos):
                     target_name: mutable sview = ""
                     match target:
