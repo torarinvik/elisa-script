@@ -347,12 +347,50 @@ extend EsIr:
             machine.failure <- InterpretFailure.UnsupportedInstruction
 
 
-        def evaluate_call(machine: mutable Machine&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, module: Module&, fn: Function&, instruction: Instruction, ids: darray[u32]&, values: darray[RuntimeValue]&) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+        def runtime_handler_index(module: Module&, name: sview) -> usize:
+            for index in 0..<module.handlers.count |module, name|:
+                index return if module.handlers[index].name == name
+            return module.handlers.count
+
+
+        def handler_covers(handler: Handler&, family: sview) -> bool:
+            return any covered in handler.handles where covered == family
+
+
+        def pop_runtime_handler(machine: mutable Machine&, handler_stack: mutable darray[sview]&, expected: sview) -> void:
+            if handler_stack.count == 0 or handler_stack[handler_stack.count - 1] != expected:
+                machine.failure <- InterpretFailure.InvalidControlFlow
+                return
+            _ = handler_stack.pop()
+
+
+        def evaluate_call(machine: mutable Machine&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, handler_stack: mutable darray[sview]&, module: Module&, fn: Function&, instruction: Instruction, ids: darray[u32]&, values: darray[RuntimeValue]&) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
             callee_index: usize = find_function(module, instruction.symbol)
             call_arguments: mutable darray[RuntimeValue] = []
             for offset in 0..<instruction.operand_count.usize() |machine, fn, instruction, ids, values, call_arguments|:
                 call_arguments.push(frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + offset], machine))
-            return execute_function(machine, observations, storage, module, callee_index, call_arguments) if machine.failure == InterpretFailure.None
+            return execute_function(machine, observations, storage, handler_stack, module, callee_index, call_arguments) if machine.failure == InterpretFailure.None
+            return runtime_void()
+
+
+        def evaluate_perform(machine: mutable Machine&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, handler_stack: mutable darray[sview]&, module: Module&, fn: Function&, instruction: Instruction, ids: darray[u32]&, values: darray[RuntimeValue]&) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+            while installed > 0 |installed: usize = handler_stack.count|:
+                installed <- installed - 1
+                handler_index: usize = runtime_handler_index(module, handler_stack[installed])
+                if handler_index < module.handlers.count:
+                    handler: Handler = module.handlers[handler_index]
+                    if handler_covers(handler, instruction.effect_family):
+                        for clause in handler.clauses |machine, observations, storage, handler_stack, module, fn, instruction, ids, values|:
+                            if clause.effect_family == instruction.effect_family and clause.effect_operation == instruction.effect_operation:
+                                arguments: mutable darray[RuntimeValue] = []
+                                for offset in 0..<instruction.operand_count.usize() |machine, fn, instruction, ids, values, arguments|:
+                                    arguments.push(frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + offset], machine))
+                                callback_index: usize = find_function(module, clause.function)
+                                return execute_function(machine, observations, storage, handler_stack, module, callback_index, arguments) if machine.failure == InterpretFailure.None
+                                return runtime_void()
+                        note_unsupported(machine)
+                        return runtime_void()
+            note_unsupported(machine)
             return runtime_void()
 
 
@@ -467,7 +505,7 @@ extend EsIr:
             return runtime_array(start, collection.array_count)
 
 
-        def execute_function(machine: mutable Machine&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, module: Module&, function_index: usize, arguments: darray[RuntimeValue]&) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+        def execute_function(machine: mutable Machine&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, handler_stack: mutable darray[sview]&, module: Module&, function_index: usize, arguments: darray[RuntimeValue]&) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
             if function_index >= module.functions.count:
                 machine.failure <- InterpretFailure.UnknownFunction
                 return runtime_void()
@@ -491,7 +529,7 @@ extend EsIr:
                     return runtime_void()
                 block: Block = fn.blocks[block_index]
                 instruction_end: usize = block.instruction_start.usize() + block.instruction_count.usize()
-                for instruction_index in block.instruction_start.usize()..<instruction_end |machine, observations, storage, module, fn, ids, values|:
+                for instruction_index in block.instruction_start.usize()..<instruction_end |machine, observations, storage, handler_stack, module, fn, ids, values|:
                     runtime_void() return if not tick(machine)
                     instruction: Instruction = fn.instruction_pool[instruction_index]
                     dispatch: mutable InstructionDispatch = InstructionDispatch{value: runtime_void(), opcode: instruction.opcode, produces_value: instruction.result != 0}
@@ -570,7 +608,7 @@ extend EsIr:
                             break
 
                         Dispatch, Opcode.Call:
-                            dispatch.value <- evaluate_call(machine, observations, storage, module, fn, instruction, ids, values)
+                            dispatch.value <- evaluate_call(machine, observations, storage, handler_stack, module, fn, instruction, ids, values)
                             break
 
                         Dispatch, Opcode.Observe:
@@ -579,11 +617,21 @@ extend EsIr:
                             dispatch.produces_value <- false
                             break
 
-                        Dispatch, Opcode.HandlerPush | Opcode.HandlerPop:
+                        Dispatch, Opcode.HandlerPush:
+                            handler_stack.push(instruction.symbol)
                             dispatch.produces_value <- false
                             break
 
-                        Dispatch, Opcode.Perform | Opcode.Resume:
+                        Dispatch, Opcode.HandlerPop:
+                            pop_runtime_handler(machine, handler_stack, instruction.symbol)
+                            dispatch.produces_value <- false
+                            break
+
+                        Dispatch, Opcode.Perform:
+                            dispatch.value <- evaluate_perform(machine, observations, storage, handler_stack, module, fn, instruction, ids, values)
+                            break
+
+                        Dispatch, Opcode.Resume:
                             note_unsupported(machine)
                             break
                     set_frame_value(ids, values, instruction.result, dispatch.value) if machine.failure == InterpretFailure.None and dispatch.produces_value
@@ -655,6 +703,7 @@ extend EsIr:
             function_index: usize = find_function(module, entry)
             raise InterpretError.UnknownFunction if function_index == module.functions.count
             machine: mutable Machine = Machine{steps: 0, step_limit: step_limit, failure: InterpretFailure.None}
-            value: RuntimeValue = execute_function(machine, observations, storage, module, function_index, arguments)
+            handler_stack: mutable darray[sview] = []
+            value: RuntimeValue = execute_function(machine, observations, storage, handler_stack, module, function_index, arguments)
             try raise_interpret_failure(machine.failure) if machine.failure != InterpretFailure.None
             return Execution{value: value, steps: machine.steps}

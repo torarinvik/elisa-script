@@ -61,6 +61,13 @@ The IR declares each handler's covered effect families, introduced effects,
 `MultiReplay`, or `MultiClone`). `HandlerPush` and `HandlerPop` delimit dynamic installation. `Resume`
 names the handler whose continuation it consumes; the verifier rejects resume for
 a terminal handler and rejects unknown or unbalanced handler operations.
+Executable handler clauses map an exact effect family and operation to an ordinary
+typed IR function. At each covered `Perform`, verification matches the performed
+payload to that function's parameters and its return type to the resumed value.
+Clause families must belong to the handler coverage set, callback symbols must
+exist, and duplicate operation clauses are rejected. Terminal handlers cannot use
+this implicitly resuming clause form; the current executable form requires the
+`Linear` continuation policy so exactly one resumption is guaranteed.
 
 Handler failures are stored in explicit error-set rows on handlers and functions.
 They are not represented as `Result` values and are not merged into effect rows.
@@ -113,12 +120,13 @@ must still appear explicitly in the caller's error row.
 oracle for later bytecode, JIT, and native backends. Its initial core executes
 integer and boolean scalars, text constants, homogeneous immutable arrays,
 array/text indexing, length, slicing, membership, and concatenation, arithmetic
-and comparisons, direct calls, branches,
-loops, SSA edge arguments, and returns. `HandlerPush` and
-`HandlerPop` preserve lexical execution structure while effect dispatch and
-continuation resumption remain the next interpreter increment. Correct execution
-requires handler operation clauses to be represented in the module first; handler
-contract metadata alone is deliberately not treated as an executable callback.
+and comparisons, direct calls, branches, loops, SSA edge arguments, and returns.
+`HandlerPush` and `HandlerPop` maintain a real runtime stack shared across direct-call
+frames. `Perform` searches it from innermost to outermost and invokes the exact typed
+operation clause of the nearest covering handler; linear clauses return one resumed
+value and execution continues. Handler contract metadata without an operation clause
+is deliberately not treated as executable behavior. Explicit `Resume`, affine choice,
+terminal transfer, and multi-shot continuation execution remain later increments.
 
 Interpreter failures use `error[InterpretError]`, never a result wrapper. Stable
 `observe` events and array elements are appended to caller-owned storage; this

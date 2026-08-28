@@ -49,7 +49,16 @@ extend EsIr:
             return false
 
 
-        def validate_handler(handler: Handler&, issues: mutable darray[Issue]&) -> void can[Memory.Allocate, Abort.Panic]:
+        def validate_handler(handler: Handler&, module: Module&, issues: mutable darray[Issue]&) -> void can[Memory.Allocate, Abort.Panic]:
+            for clause_index in 0..<handler.clauses.count |handler, module, issues|:
+                clause: HandlerClause = handler.clauses[clause_index]
+                issues.push(issue(IssueKind.HandlerContract, handler.name, 0, 0, 0, "handler clause must name an effect family, operation, and function")) if clause.effect_family == "" or clause.effect_operation == "" or clause.function == ""
+                issues.push(issue(IssueKind.HandlerContract, handler.name, 0, 0, 0, "handler clause family is absent from the handler coverage set")) if clause.effect_family != "" and not has_text(handler.handles, clause.effect_family)
+                issues.push(issue(IssueKind.HandlerContract, handler.name, 0, 0, 0, "handler clause names an unknown function")) if clause.function != "" and function_index(module.functions, clause.function) == module.functions.count
+                issues.push(issue(IssueKind.HandlerContract, handler.name, 0, 0, 0, "implicitly resuming handler clauses require linear continuation policy")) if handler.continuation != ContinuationPolicy.Linear
+                for earlier in 0..<clause_index |handler, clause, issues|:
+                    duplicate: bool = handler.clauses[earlier].effect_family == clause.effect_family and handler.clauses[earlier].effect_operation == clause.effect_operation
+                    issues.push(issue(IssueKind.HandlerContract, handler.name, 0, 0, 0, "handler declares the same operation clause more than once")) if duplicate
             if handler.continuation == ContinuationPolicy.MultiClone:
                 for capture in handler.captures |handler, issues|:
                     issues.push(issue(IssueKind.UnsafeMultiShot, handler.name, 0, 0, 0, "multi-clone continuation captures a value that is not unrestricted")) if capture.class != CaptureClass.Unrestricted
@@ -311,6 +320,29 @@ extend EsIr:
                         issues.push(issue(IssueKind.InvalidPerform, fn.name, block.id, instruction.result, instruction.trace.id, "perform must name an effect family and operation")) if instruction.effect_family == "" or instruction.effect_operation == ""
                         covered: bool = active_handler_covers(handler_stack, module.handlers, instruction.effect_family)
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "performed effect is neither dynamically handled nor present in the function effect row")) if instruction.effect_family != "" and not covered and not effect_granted(fn.effects, instruction.effect_family)
+                        selected_handler: mutable bool = false
+                        while installed_index > 0 and not selected_handler |installed_index: usize = handler_stack.count|:
+                            installed_index <- installed_index - 1
+                            installed_handler_index: usize = handler_index(module.handlers, handler_stack[installed_index])
+                            if installed_handler_index < module.handlers.count:
+                                installed_handler: Handler = module.handlers[installed_handler_index]
+                                if has_text(installed_handler.handles, instruction.effect_family):
+                                    selected_handler <- true
+                                    matched_clause: mutable bool = false
+                                    for clause in installed_handler.clauses |fn, instruction, operand_end, defined, definition_types, module, issues, block, matched_clause|:
+                                        if not matched_clause and clause.effect_family == instruction.effect_family and clause.effect_operation == instruction.effect_operation:
+                                            matched_clause <- true
+                                            callback_index: usize = function_index(module.functions, clause.function)
+                                            if callback_index < module.functions.count:
+                                                callback: Function = module.functions[callback_index]
+                                                issues.push(issue(IssueKind.HandlerContract, fn.name, block.id, instruction.result, instruction.trace.id, "handler callback argument count does not match the performed payload")) if instruction.operand_count != callback.parameters.count
+                                                paired: mutable usize = 0
+                                                paired <- (instruction.operand_count.usize() if instruction.operand_count < callback.parameters.count else callback.parameters.count) if operand_end <= fn.operand_pool.count
+                                                for offset in 0..<paired |fn, instruction, defined, definition_types, callback, issues, block|:
+                                                    operand: u32 = fn.operand_pool[instruction.operand_start.usize() + offset]
+                                                    actual: Type = definition_type(defined, definition_types, operand)
+                                                    issues.push(issue(IssueKind.HandlerContract, fn.name, block.id, instruction.result, instruction.trace.id, "handler callback parameter does not match the performed payload type")) if has_u32(defined, operand) and not same_type(actual, callback.parameters[offset].type)
+                                                issues.push(issue(IssueKind.HandlerContract, fn.name, block.id, instruction.result, instruction.trace.id, "handler callback return type does not match the performed result type")) if not same_type(callback.return_type, instruction.result_type)
                     if instruction.opcode == Opcode.HandlerPush:
                         pushed_index: usize = handler_index(module.handlers, instruction.symbol)
                         issues.push(issue(IssueKind.UnknownHandler, fn.name, block.id, instruction.result, instruction.trace.id, "dynamic handler is not declared in the IR module")) if pushed_index == module.handlers.count
@@ -346,7 +378,7 @@ extend EsIr:
         def verify(module: Module&) -> darray[Issue] can[Memory.Allocate, Abort.Panic]:
             issues: mutable darray[Issue] = []
             for index in 0..<module.handlers.count |module, issues|:
-                validate_handler(module.handlers[index], issues)
+                validate_handler(module.handlers[index], module, issues)
                 for earlier in 0..<index |module, issues, index|:
                     issues.push(issue(IssueKind.DuplicateHandler, "", 0, 0, 0, "handler name is declared more than once")) if module.handlers[index].name == module.handlers[earlier].name
             for fn in module.functions |issues, module|:
