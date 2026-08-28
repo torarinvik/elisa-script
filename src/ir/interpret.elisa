@@ -1,0 +1,267 @@
+error InterpretError:
+    VerificationFailed
+    UnknownFunction
+    ArgumentMismatch
+    MissingValue
+    TypeMismatch
+    DivisionByZero
+    InvalidControlFlow
+    UnsupportedInstruction
+    StepLimitExceeded
+
+
+extend EsIr:
+    public:
+        const enum RuntimeValueKind of u8:
+            Void
+            Bool
+            Int
+            Text
+
+
+        struct RuntimeValue:
+            text: sview = ""
+            integer: i64 = 0
+            kind: RuntimeValueKind
+            boolean: bool = false
+
+
+        struct Observation:
+            trace: u64
+            value: RuntimeValue
+
+
+        struct Execution:
+            value: RuntimeValue
+            steps: u64
+
+
+    private:
+        const enum InterpretFailure of u8:
+            None
+            UnknownFunction
+            ArgumentMismatch
+            MissingValue
+            TypeMismatch
+            DivisionByZero
+            InvalidControlFlow
+            UnsupportedInstruction
+            StepLimitExceeded
+
+
+        struct Machine:
+            steps: mutable u64
+            step_limit: u64
+            failure: mutable InterpretFailure
+
+
+        def runtime_void() -> RuntimeValue:
+            return RuntimeValue{kind: RuntimeValueKind.Void}
+
+
+        def runtime_bool(value: bool) -> RuntimeValue:
+            return RuntimeValue{kind: RuntimeValueKind.Bool, boolean: value}
+
+
+        def runtime_int(value: i64) -> RuntimeValue:
+            return RuntimeValue{kind: RuntimeValueKind.Int, integer: value}
+
+
+        def runtime_text(value: sview) -> RuntimeValue:
+            return RuntimeValue{kind: RuntimeValueKind.Text, text: value}
+
+
+        def find_function(module: Module&, name: sview) -> usize:
+            for index in 0..<module.functions.count |module, name|:
+                index return if module.functions[index].name == name
+            return module.functions.count
+
+
+        def find_block(fn: Function&, id: u32) -> usize:
+            for index in 0..<fn.blocks.count |fn, id|:
+                index return if fn.blocks[index].id == id
+            return fn.blocks.count
+
+
+        def frame_value(ids: darray[u32]&, values: darray[RuntimeValue]&, id: u32, machine: mutable Machine&) -> RuntimeValue:
+            for index in 0..<ids.count |ids, values, id|:
+                values[index] return if ids[index] == id
+            machine.failure <- InterpretFailure.MissingValue
+            return runtime_void()
+
+
+        def set_frame_value(ids: mutable darray[u32]&, values: mutable darray[RuntimeValue]&, id: u32, value: RuntimeValue) -> void can[Memory.Allocate, Abort.Panic]:
+            for index in 0..<ids.count |ids, values, id, value|:
+                if ids[index] == id:
+                    values[index] <- value
+                    return
+            ids.push(id)
+            values.push(value)
+
+
+        def tick(machine: mutable Machine&) -> bool:
+            machine.steps <- machine.steps + 1
+            if machine.steps > machine.step_limit:
+                machine.failure <- InterpretFailure.StepLimitExceeded
+                return false
+            return true
+
+
+        def execute_function(machine: mutable Machine&, observations: mutable darray[Observation]&, module: Module&, function_index: usize, arguments: darray[RuntimeValue]&) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+            if function_index >= module.functions.count:
+                machine.failure <- InterpretFailure.UnknownFunction
+                return runtime_void()
+            fn: Function = module.functions[function_index]
+            if arguments.count != fn.parameters.count:
+                machine.failure <- InterpretFailure.ArgumentMismatch
+                return runtime_void()
+
+            ids: mutable darray[u32] = []
+            values: mutable darray[RuntimeValue] = []
+            for index in 0..<arguments.count |fn, arguments, ids, values|:
+                ids.push(fn.parameters[index].value)
+                values.push(arguments[index])
+            current_block: mutable u32 = fn.entry
+
+            while machine.failure == InterpretFailure.None:
+                runtime_void() return if not tick(machine)
+                block_index: usize = find_block(fn, current_block)
+                if block_index == fn.blocks.count:
+                    machine.failure <- InterpretFailure.InvalidControlFlow
+                    return runtime_void()
+                block: Block = fn.blocks[block_index]
+                instruction_end: usize = block.instruction_start.usize() + block.instruction_count.usize()
+                for instruction_index in block.instruction_start.usize()..<instruction_end |machine, observations, module, fn, ids, values|:
+                    runtime_void() return if not tick(machine)
+                    instruction: Instruction = fn.instruction_pool[instruction_index]
+                    value: mutable RuntimeValue = runtime_void()
+                    produces_value: mutable bool = instruction.result != 0
+                    if instruction.opcode == Opcode.Constant:
+                        if instruction.result_type.kind == TypeKind.Bool:
+                            value <- runtime_bool(instruction.boolean)
+                        else:
+                            if instruction.result_type.kind == TypeKind.Int:
+                                value <- runtime_int(instruction.integer)
+                            else:
+                                if instruction.result_type.kind == TypeKind.Text or instruction.result_type.kind == TypeKind.Char:
+                                    value <- runtime_text(instruction.text)
+                                else:
+                                    machine.failure <- InterpretFailure.UnsupportedInstruction
+                    else:
+                        if instruction.opcode == Opcode.Copy:
+                            value <- frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
+                        else:
+                            if instruction.opcode in {Opcode.Add, Opcode.Subtract, Opcode.Multiply, Opcode.Divide, Opcode.Equal, Opcode.Less}:
+                                left: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
+                                right: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1], machine)
+                                if machine.failure == InterpretFailure.None:
+                                    if instruction.opcode == Opcode.Equal:
+                                        if left.kind == RuntimeValueKind.Int and right.kind == RuntimeValueKind.Int:
+                                            value <- runtime_bool(left.integer == right.integer)
+                                        else:
+                                            if left.kind == RuntimeValueKind.Bool and right.kind == RuntimeValueKind.Bool:
+                                                value <- runtime_bool(left.boolean == right.boolean)
+                                            else:
+                                                machine.failure <- InterpretFailure.TypeMismatch
+                                    else:
+                                        if left.kind != RuntimeValueKind.Int or right.kind != RuntimeValueKind.Int:
+                                            machine.failure <- InterpretFailure.TypeMismatch
+                                        else:
+                                            if instruction.opcode == Opcode.Add:
+                                                value <- runtime_int(left.integer + right.integer)
+                                            if instruction.opcode == Opcode.Subtract:
+                                                value <- runtime_int(left.integer - right.integer)
+                                            if instruction.opcode == Opcode.Multiply:
+                                                value <- runtime_int(left.integer * right.integer)
+                                            if instruction.opcode == Opcode.Divide:
+                                                if right.integer == 0:
+                                                    machine.failure <- InterpretFailure.DivisionByZero
+                                                else:
+                                                    value <- runtime_int(left.integer / right.integer)
+                                            if instruction.opcode == Opcode.Less:
+                                                value <- runtime_bool(left.integer < right.integer)
+                            else:
+                                if instruction.opcode == Opcode.Call:
+                                    callee_index: usize = find_function(module, instruction.symbol)
+                                    call_arguments: mutable darray[RuntimeValue] = []
+                                    for offset in 0..<instruction.operand_count.usize() |machine, fn, instruction, ids, values, call_arguments|:
+                                        call_arguments.push(frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + offset], machine))
+                                    value <- execute_function(machine, observations, module, callee_index, call_arguments) if machine.failure == InterpretFailure.None
+                                else:
+                                    if instruction.opcode == Opcode.Observe:
+                                        observed: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
+                                        observations.push(Observation{trace: instruction.trace.id, value: observed}) if machine.failure == InterpretFailure.None
+                                        produces_value <- false
+                                    else:
+                                        if instruction.opcode == Opcode.HandlerPush or instruction.opcode == Opcode.HandlerPop:
+                                            produces_value <- false
+                                        else:
+                                            machine.failure <- InterpretFailure.UnsupportedInstruction
+                    set_frame_value(ids, values, instruction.result, value) if machine.failure == InterpretFailure.None and produces_value
+
+                runtime_void() return if machine.failure != InterpretFailure.None
+                terminator: Terminator = block.terminator
+                if terminator.kind == TerminatorKind.Return:
+                    return runtime_void() if terminator.operand_count == 0
+                    return frame_value(ids, values, terminator.operand, machine)
+                target: mutable u32 = 0
+                edge_start: mutable u32 = 0
+                edge_count: mutable u16 = 0
+                if terminator.kind == TerminatorKind.Jump:
+                    target <- terminator.target0
+                    edge_start <- terminator.edge0_arg_start
+                    edge_count <- terminator.edge0_arg_count
+                else:
+                    if terminator.kind == TerminatorKind.Branch:
+                        condition: RuntimeValue = frame_value(ids, values, terminator.operand, machine)
+                        if condition.kind != RuntimeValueKind.Bool:
+                            machine.failure <- InterpretFailure.TypeMismatch
+                            return runtime_void()
+                        target <- terminator.target0 if condition.boolean else terminator.target1
+                        edge_start <- terminator.edge0_arg_start if condition.boolean else terminator.edge1_arg_start
+                        edge_count <- terminator.edge0_arg_count if condition.boolean else terminator.edge1_arg_count
+                    else:
+                        machine.failure <- InterpretFailure.InvalidControlFlow
+                        return runtime_void()
+                target_index: usize = find_block(fn, target)
+                if target_index == fn.blocks.count or edge_count != fn.blocks[target_index].parameter_count:
+                    machine.failure <- InterpretFailure.InvalidControlFlow
+                    return runtime_void()
+                pending: mutable darray[RuntimeValue] = []
+                for offset in 0..<edge_count.usize() |machine, fn, edge_start, ids, values, pending|:
+                    pending.push(frame_value(ids, values, fn.edge_arg_pool[edge_start.usize() + offset], machine))
+                for offset in 0..<edge_count.usize() |fn, target_index, pending, ids, values|:
+                    parameter: Parameter = fn.block_parameter_pool[fn.blocks[target_index].parameter_start.usize() + offset]
+                    set_frame_value(ids, values, parameter.value, pending[offset])
+                current_block <- target
+            return runtime_void()
+
+
+        def raise_interpret_failure(failure: InterpretFailure) -> void error[InterpretError]:
+            if failure == InterpretFailure.UnknownFunction:
+                raise InterpretError.UnknownFunction
+            if failure == InterpretFailure.ArgumentMismatch:
+                raise InterpretError.ArgumentMismatch
+            if failure == InterpretFailure.MissingValue:
+                raise InterpretError.MissingValue
+            if failure == InterpretFailure.TypeMismatch:
+                raise InterpretError.TypeMismatch
+            if failure == InterpretFailure.DivisionByZero:
+                raise InterpretError.DivisionByZero
+            if failure == InterpretFailure.InvalidControlFlow:
+                raise InterpretError.InvalidControlFlow
+            if failure == InterpretFailure.UnsupportedInstruction:
+                raise InterpretError.UnsupportedInstruction
+            if failure == InterpretFailure.StepLimitExceeded:
+                raise InterpretError.StepLimitExceeded
+
+
+    public:
+        def interpret(module: Module&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, step_limit: u64 = 1000000) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+            raise InterpretError.VerificationFailed if verify(module).count != 0
+            function_index: usize = find_function(module, entry)
+            raise InterpretError.UnknownFunction if function_index == module.functions.count
+            machine: mutable Machine = Machine{steps: 0, step_limit: step_limit, failure: InterpretFailure.None}
+            value: RuntimeValue = execute_function(machine, observations, module, function_index, arguments)
+            try raise_interpret_failure(machine.failure) if machine.failure != InterpretFailure.None
+            return Execution{value: value, steps: machine.steps}

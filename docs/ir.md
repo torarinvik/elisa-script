@@ -87,6 +87,21 @@ a value created in one branch cannot be consumed from its sibling branch. Every 
 verified module, preventing backend-specific recovery from becoming an observable
 semantic difference.
 
+## Reference interpreter
+
+`interpret` is the first executable consumer of verified IR and the semantic
+oracle for later bytecode, JIT, and native backends. Its initial core executes
+integer and boolean scalars, text constants, arithmetic and comparisons, direct
+calls, branches, loops, SSA edge arguments, and returns. `HandlerPush` and
+`HandlerPop` preserve lexical execution structure while effect dispatch and
+continuation resumption remain the next interpreter increment.
+
+Interpreter failures use `error[InterpretError]`, never a result wrapper. Stable
+`observe` events are appended to a caller-owned array; this gives differential
+testing an ordered trace without embedding a region-bearing collection in the
+error-union return ABI. A deterministic step limit makes runaway programs a
+typed `StepLimitExceeded` failure.
+
 ## Planned increments
 
 The AST lowering now handles functions, typed parameters and returns,
@@ -112,6 +127,10 @@ typed header and exit parameters; initial entry, normal backedges, `continue`, a
 1. Add complete structural types, handler installation, resume,
    and explicit ownership/region operations.
 2. Define canonical serialization and hashing for artifacts and trace-site ids.
-3. Implement the reference interpreter, which becomes the semantic oracle.
+3. Extend the reference interpreter from its current scalar/control-flow core
+   through effects, errors, structural values, and ownership operations. The
+   interpreter already executes verified integer/boolean/text constants,
+   arithmetic and comparisons, direct calls, SSA block arguments, branches,
+   loops, returns, handler installation/uninstallation, and `observe` trace sites.
 4. Lower the same verified modules to bytecode and LLVM, then test all engines
    differentially against the interpreter.
