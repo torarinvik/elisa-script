@@ -142,6 +142,27 @@ extend EsIr:
             produces_value: mutable bool
 
 
+        const enum TerminatorDispatchState of u8:
+            Select
+            Done
+            Invalid
+
+
+        const enum TerminatorDispatchAction of u8:
+            Return
+            Jump
+            Invalid
+
+
+        struct TerminatorDispatch:
+            state: mutable TerminatorDispatchState
+            action: mutable TerminatorDispatchAction
+            target: mutable u32
+            edge_start: mutable u32
+            edge_count: mutable u16
+            failure: mutable InterpretFailure
+
+
         const enum DecimalClass of u8:
             Digit
             Dot
@@ -2124,6 +2145,62 @@ extend EsIr:
             return runtime_array(start, collection.array_count)
 
 
+        # Select a block terminator through explicit control states. Branch value
+        # lookup happens before the machine so its missing-value failure remains
+        # owned by the interpreter machine, not by the control selector.
+        def select_terminator(machine: mutable Machine&, fn: Function&, terminator: Terminator, ids: darray[u32]&, values: darray[RuntimeValue]&) -> TerminatorDispatch:
+            condition: mutable RuntimeValue = runtime_void()
+            if terminator.kind == TerminatorKind.Branch:
+                condition <- frame_value(ids, values, terminator.operand, machine)
+            initial_state: mutable TerminatorDispatchState = TerminatorDispatchState.Select
+            initial_state <- TerminatorDispatchState.Invalid if machine.failure != InterpretFailure.None
+            cursor: mutable TerminatorDispatch = TerminatorDispatch{state: initial_state, action: TerminatorDispatchAction.Invalid, target: 0, edge_start: 0, edge_count: 0, failure: InterpretFailure.None}
+            machine over cursor.state:
+                state Select
+                start Select
+
+                Select, TerminatorDispatchState.Select if terminator.kind == TerminatorKind.Return:
+                    cursor.action <- TerminatorDispatchAction.Return
+                    cursor.state <- TerminatorDispatchState.Done
+                    -> Select
+                Select, TerminatorDispatchState.Select if terminator.kind == TerminatorKind.Jump:
+                    cursor.action <- TerminatorDispatchAction.Jump
+                    cursor.target <- terminator.target0
+                    cursor.edge_start <- terminator.edge0_arg_start
+                    cursor.edge_count <- terminator.edge0_arg_count
+                    cursor.state <- TerminatorDispatchState.Done
+                    -> Select
+                Select, TerminatorDispatchState.Select if terminator.kind == TerminatorKind.Branch and condition.kind == RuntimeValueKind.Bool and condition.boolean:
+                    cursor.action <- TerminatorDispatchAction.Jump
+                    cursor.target <- terminator.target0
+                    cursor.edge_start <- terminator.edge0_arg_start
+                    cursor.edge_count <- terminator.edge0_arg_count
+                    cursor.state <- TerminatorDispatchState.Done
+                    -> Select
+                Select, TerminatorDispatchState.Select if terminator.kind == TerminatorKind.Branch and condition.kind == RuntimeValueKind.Bool:
+                    cursor.action <- TerminatorDispatchAction.Jump
+                    cursor.target <- terminator.target1
+                    cursor.edge_start <- terminator.edge1_arg_start
+                    cursor.edge_count <- terminator.edge1_arg_count
+                    cursor.state <- TerminatorDispatchState.Done
+                    -> Select
+                Select, TerminatorDispatchState.Select if terminator.kind == TerminatorKind.Branch:
+                    cursor.failure <- InterpretFailure.TypeMismatch
+                    cursor.state <- TerminatorDispatchState.Invalid
+                    -> Select
+                Select, TerminatorDispatchState.Select:
+                    cursor.failure <- InterpretFailure.InvalidControlFlow
+                    cursor.state <- TerminatorDispatchState.Invalid
+                    -> Select
+
+                Select, TerminatorDispatchState.Done | TerminatorDispatchState.Invalid:
+                    break
+
+            cursor.failure <- machine.failure if machine.failure != InterpretFailure.None
+            machine.failure <- cursor.failure if cursor.failure != InterpretFailure.None
+            return cursor
+
+
         def execute_function(machine: mutable Machine&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, handler_stack: mutable darray[sview]&, module: Module&, function_index: usize, arguments: darray[RuntimeValue]&) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
             if function_index >= module.functions.count:
                 machine.failure <- InterpretFailure.UnknownFunction
@@ -2402,28 +2479,17 @@ extend EsIr:
 
                 runtime_void() return if machine.failure != InterpretFailure.None
                 terminator: Terminator = block.terminator
-                if terminator.kind == TerminatorKind.Return:
+                transfer: TerminatorDispatch = select_terminator(machine, fn, terminator, ids, values)
+                runtime_void() return if machine.failure != InterpretFailure.None
+                if transfer.action == TerminatorDispatchAction.Return:
                     return runtime_void() if terminator.operand_count == 0
                     return frame_value(ids, values, terminator.operand, machine)
-                target: mutable u32 = 0
-                edge_start: mutable u32 = 0
-                edge_count: mutable u16 = 0
-                if terminator.kind == TerminatorKind.Jump:
-                    target <- terminator.target0
-                    edge_start <- terminator.edge0_arg_start
-                    edge_count <- terminator.edge0_arg_count
-                else:
-                    if terminator.kind == TerminatorKind.Branch:
-                        condition: RuntimeValue = frame_value(ids, values, terminator.operand, machine)
-                        if condition.kind != RuntimeValueKind.Bool:
-                            machine.failure <- InterpretFailure.TypeMismatch
-                            return runtime_void()
-                        target <- terminator.target0 if condition.boolean else terminator.target1
-                        edge_start <- terminator.edge0_arg_start if condition.boolean else terminator.edge1_arg_start
-                        edge_count <- terminator.edge0_arg_count if condition.boolean else terminator.edge1_arg_count
-                    else:
-                        machine.failure <- InterpretFailure.InvalidControlFlow
-                        return runtime_void()
+                if transfer.action != TerminatorDispatchAction.Jump:
+                    machine.failure <- InterpretFailure.InvalidControlFlow
+                    return runtime_void()
+                target: u32 = transfer.target
+                edge_start: u32 = transfer.edge_start
+                edge_count: u16 = transfer.edge_count
                 target_index: usize = find_block(fn, target)
                 if target_index == fn.blocks.count or edge_count != fn.blocks[target_index].parameter_count:
                     machine.failure <- InterpretFailure.InvalidControlFlow

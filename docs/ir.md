@@ -327,6 +327,11 @@ time. Machine arms only drive dispatch state; typed arithmetic and value checks
 live in focused helpers, respecting Elisa's machine ownership rules. Decimal
 lexeme evaluation likewise uses explicit whole, fraction, exponent, and scaling
 states instead of nested scanner conditionals.
+Terminator selection follows the same model: `select_terminator` drives explicit
+return, jump, branch, and invalid states, with branch values supplied by the
+frame evaluator before transition. Edge-argument validation remains in the
+surrounding interpreter loop, keeping the control machine independent of storage
+and effect-handler state.
 
 ## Planned increments
 
