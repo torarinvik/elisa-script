@@ -381,8 +381,10 @@ control-flow state without manufacturing an instruction or runtime value.
 It also lowers homogeneous immutable array literals, scalar `darray[T]`/`array[T]`
 type annotations, integer indexing, and the `.count` field. Empty literals use
 their expected array type in bindings, assignments, returns, and call arguments,
-so `[]` never introduces an untyped dynamic collection. Nested array literals
-remain explicit lowering errors until recursive IR type descriptors are defined.
+so `[]` never introduces an untyped dynamic collection. Arrays may nest one level
+(`darray[darray[T]]`) using the flat descriptor's bounded structural fields; deeper
+nesting remains an explicit lowering error until fully recursive IR descriptors are
+defined.
 Plain single-binder `for value in array` loops lower to explicit header, body,
 latch, and exit blocks. The collection is evaluated once; length and indexing stay
 typed IR operations. `continue` targets the incrementing latch, `break` targets the
@@ -427,8 +429,8 @@ Exact-type scalar arrays also support structural `==` and `!=`. The interpreter
 compares lengths first and then elements deterministically from left to right;
 empty arrays, slices, concatenated arrays, separate equal allocations, and shared
 or copy-on-update storage therefore follow one value-semantic rule. Mixed array
-element types remain static errors, and nested structural equality awaits recursive
-IR type descriptors alongside nested arrays themselves.
+element types remain static errors; nested arrays use the same recursive runtime
+comparison within the supported one-level descriptor.
 Statement-form `array.push(value)` and `array.extend(values)` are ownership-safe
 SSA updates rather than hidden aliasing mutations. `push` constructs a typed
 singleton and `extend` accepts the receiver's exact array type; both concatenate
