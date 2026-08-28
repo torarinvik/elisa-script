@@ -115,6 +115,12 @@ adds every unhandled callee effect to the caller effect row and propagates calle
 error sets independently. The verifier repeats this check from IR alone: a
 dynamically active handler may discharge a covered effect family, while errors
 must still appear explicitly in the caller's error row.
+Named direct-call arguments are resolved against predeclared parameter labels and
+then emitted in canonical signature order. Their expressions still execute once in
+source order. Missing parameters materialize their Elisa default expressions in
+declaration order with earlier resolved parameters in lexical scope. Duplicate or
+unknown labels, missing required parameters, positional arguments after named ones,
+and exact-type mismatches are structured lowering errors.
 
 ## Reference interpreter
 

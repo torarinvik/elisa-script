@@ -76,6 +76,9 @@ extend EsIr:
             function_parameter_starts: darray[u32]&
             function_parameter_counts: darray[u16]&
             function_parameter_types: darray[Type]&
+            function_parameter_names: darray[sview]&
+            function_parameter_has_defaults: darray[bool]&
+            function_parameter_defaults: darray[Ast::Expr]&
             function_effect_starts: darray[u32]&
             function_effect_counts: darray[u16]&
             function_effects: darray[sview]&
@@ -811,23 +814,71 @@ extend EsIr:
                         return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
                     callee_index: usize = lowered_function_index(state, callee_name)
                     expected_count: u16 = state.function_parameter_counts[callee_index]
-                    if arguments.count != expected_count.usize():
-                        add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "call argument count does not match the function signature")
-                        return LoweredValue{valid: false, value: 0, type: signature.type}
                     parameter_start: usize = state.function_parameter_starts[callee_index].usize()
                     operands: mutable darray[u32] = []
                     operand_types: mutable darray[Type] = []
+                    provided: mutable darray[bool] = []
+                    for parameter in 0..<expected_count.usize() |operands, operand_types, provided|:
+                        operands.push(0)
+                        operand_types.push(void_ir_type())
+                        provided.push(false)
                     valid: mutable bool = true
-                    for index in 0..<arguments.count |arguments, operands, operand_types, valid, state, parameter_start|:
-                        lowered_argument: LoweredValue = lower_expression_expected(arguments[index], state.function_parameter_types[parameter_start + index], state)
-                        operands.push(lowered_argument.value) if lowered_argument.valid
-                        operand_types.push(lowered_argument.type) if lowered_argument.valid
-                        valid <- false if not lowered_argument.valid
-                    LoweredValue{valid: false, value: 0, type: signature.type} return if not valid
-                    for index in 0..<operands.count |state, operand_types, parameter_start, pos, valid|:
-                        if not same_type(operand_types[index], state.function_parameter_types[parameter_start + index]):
-                            add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "call argument does not match the function parameter type")
+                    positional: mutable usize = 0
+                    saw_named: mutable bool = false
+                    for argument_index in 0..<arguments.count |arguments, argument_names, operands, operand_types, provided, valid, positional, saw_named, state, parameter_start, expected_count, pos|:
+                        argument_name: sview = argument_names[argument_index] if argument_index < argument_names.count else ""
+                        parameter: mutable usize = expected_count.usize()
+                        if argument_name == "":
+                            if saw_named:
+                                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "positional call argument cannot follow a named argument")
+                            else:
+                                parameter <- positional
+                                positional <- positional + 1
+                        else:
+                            saw_named <- true
+                            for candidate in 0..<expected_count.usize() |state, parameter_start, argument_name, parameter, expected_count|:
+                                parameter <- candidate if parameter == expected_count.usize() and state.function_parameter_names[parameter_start + candidate] == argument_name
+                        if parameter >= expected_count.usize():
+                            add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "call argument does not name an available function parameter")
                             valid <- false
+                        elif provided[parameter]:
+                            add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "function parameter is supplied more than once")
+                            valid <- false
+                        else:
+                            lowered_argument: LoweredValue = lower_expression_expected(arguments[argument_index], state.function_parameter_types[parameter_start + parameter], state)
+                            if lowered_argument.valid:
+                                operands[parameter] <- lowered_argument.value
+                                operand_types[parameter] <- lowered_argument.type
+                                provided[parameter] <- true
+                                if not same_type(lowered_argument.type, state.function_parameter_types[parameter_start + parameter]):
+                                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "call argument does not match the function parameter type")
+                                    valid <- false
+                            else:
+                                valid <- false
+                    default_scope: usize = state.names.count
+                    for parameter in 0..<expected_count.usize() |state, parameter_start, operands, operand_types, provided, valid, pos|:
+                        if not provided[parameter]:
+                            if state.function_parameter_has_defaults[parameter_start + parameter]:
+                                lowered_default: LoweredValue = lower_expression_expected(state.function_parameter_defaults[parameter_start + parameter], state.function_parameter_types[parameter_start + parameter], state)
+                                if lowered_default.valid and same_type(lowered_default.type, state.function_parameter_types[parameter_start + parameter]):
+                                    operands[parameter] <- lowered_default.value
+                                    operand_types[parameter] <- lowered_default.type
+                                    provided[parameter] <- true
+                                else:
+                                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "default argument does not match the function parameter type") if lowered_default.valid
+                                    valid <- false
+                            else:
+                                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "call omits a required function parameter")
+                                valid <- false
+                        if provided[parameter]:
+                            state.names.push(state.function_parameter_names[parameter_start + parameter])
+                            state.values.push(operands[parameter])
+                            state.types.push(operand_types[parameter])
+                            state.mutables.push(false)
+                    state.names.truncate(default_scope)
+                    state.values.truncate(default_scope)
+                    state.types.truncate(default_scope)
+                    state.mutables.truncate(default_scope)
                     LoweredValue{valid: false, value: 0, type: signature.type} return if not valid
                     effect_start: usize = state.function_effect_starts[callee_index].usize()
                     effect_count: usize = state.function_effect_counts[callee_index].usize()
@@ -1895,10 +1946,10 @@ extend EsIr:
                     add_issue(state, LowerIssueKind.UnsupportedStatement, 0, "statement is not in the initial IR lowering subset")
 
 
-        def lower_function(name: sview, params: darray[Ast::ParamDecl]&, return_type_opt: Ast::Expr?, body: darray[Ast::Stmt]&, effects: darray[sview]&, declared_error: sview, pos: Ast::Pos&, function_names: darray[sview]&, function_returns: darray[Type]&, function_parameter_starts: darray[u32]&, function_parameter_counts: darray[u16]&, function_parameter_types: darray[Type]&, function_effect_starts: darray[u32]&, function_effect_counts: darray[u16]&, function_effects: darray[sview]&, function_errors: darray[sview]&, handlers: darray[Handler]&, outer_issues: mutable darray[LowerIssue]&) -> Function can[Memory.Allocate, Abort.Panic]:
+        def lower_function(name: sview, params: darray[Ast::ParamDecl]&, return_type_opt: Ast::Expr?, body: darray[Ast::Stmt]&, effects: darray[sview]&, declared_error: sview, pos: Ast::Pos&, function_names: darray[sview]&, function_returns: darray[Type]&, function_parameter_starts: darray[u32]&, function_parameter_counts: darray[u16]&, function_parameter_types: darray[Type]&, function_parameter_names: darray[sview]&, function_parameter_has_defaults: darray[bool]&, function_parameter_defaults: darray[Ast::Expr]&, function_effect_starts: darray[u32]&, function_effect_counts: darray[u16]&, function_effects: darray[sview]&, function_errors: darray[sview]&, handlers: darray[Handler]&, outer_issues: mutable darray[LowerIssue]&) -> Function can[Memory.Allocate, Abort.Panic]:
             return_type: mutable Type = void_ir_type()
             return_type <- type_from_expression(return_expression) if return_type_opt is return_expression
-            state: mutable LowerState = LowerState{function: name, next_value: 1, current_block: 1, next_block: 2, instruction_start: 0, structured_depth: 0, blocks: [], names: [], values: [], types: [], mutables: [], instructions: [], operand_pool: [], edge_arg_pool: [], issues: [], break_targets: [], continue_targets: [], pending_parameter_blocks: [], pending_parameters: [], block_parameter_pool: [], loop_context_starts: [], loop_context_counts: [], loop_carried_indices: [], loop_handler_depths: [], element_binding_indices: [], element_owner_indices: [], element_index_values: [], active_handlers: [], terminated: false, terminator: Terminator{kind: TerminatorKind.Unreachable, span: ir_span(pos)}, function_names: function_names, function_returns: function_returns, function_parameter_starts: function_parameter_starts, function_parameter_counts: function_parameter_counts, function_parameter_types: function_parameter_types, function_effect_starts: function_effect_starts, function_effect_counts: function_effect_counts, function_effects: function_effects, function_errors: function_errors, handlers: handlers, function_return_type: return_type, required_effects: [], required_errors: []}
+            state: mutable LowerState = LowerState{function: name, next_value: 1, current_block: 1, next_block: 2, instruction_start: 0, structured_depth: 0, blocks: [], names: [], values: [], types: [], mutables: [], instructions: [], operand_pool: [], edge_arg_pool: [], issues: [], break_targets: [], continue_targets: [], pending_parameter_blocks: [], pending_parameters: [], block_parameter_pool: [], loop_context_starts: [], loop_context_counts: [], loop_carried_indices: [], loop_handler_depths: [], element_binding_indices: [], element_owner_indices: [], element_index_values: [], active_handlers: [], terminated: false, terminator: Terminator{kind: TerminatorKind.Unreachable, span: ir_span(pos)}, function_names: function_names, function_returns: function_returns, function_parameter_starts: function_parameter_starts, function_parameter_counts: function_parameter_counts, function_parameter_types: function_parameter_types, function_parameter_names: function_parameter_names, function_parameter_has_defaults: function_parameter_has_defaults, function_parameter_defaults: function_parameter_defaults, function_effect_starts: function_effect_starts, function_effect_counts: function_effect_counts, function_effects: function_effects, function_errors: function_errors, handlers: handlers, function_return_type: return_type, required_effects: [], required_errors: []}
             state.required_effects.extend(effects)
             state.required_errors.push(declared_error) if declared_error != ""
             lowered_params: mutable darray[Parameter] = []
@@ -1932,11 +1983,14 @@ extend EsIr:
             parameter_starts: mutable darray[u32] = []
             parameter_counts: mutable darray[u16] = []
             parameter_types: mutable darray[Type] = []
+            parameter_names: mutable darray[sview] = []
+            parameter_has_defaults: mutable darray[bool] = []
+            parameter_defaults: mutable darray[Ast::Expr] = []
             effect_starts: mutable darray[u32] = []
             effect_counts: mutable darray[u16] = []
             signature_effects: mutable darray[sview] = []
             signature_errors: mutable darray[sview] = []
-            for declaration in file.top_decls |names, returns, parameter_starts, parameter_counts, parameter_types, effect_starts, effect_counts, signature_effects, signature_errors, file|:
+            for declaration in file.top_decls |names, returns, parameter_starts, parameter_counts, parameter_types, parameter_names, parameter_has_defaults, parameter_defaults, effect_starts, effect_counts, signature_effects, signature_errors, file|:
                 match declaration:
                     Decl.Func(name, params, return_type_opt, body, effects, decorators, pos):
                         return_type: mutable Type = void_ir_type()
@@ -1945,8 +1999,11 @@ extend EsIr:
                         returns.push(return_type)
                         parameter_starts.push(parameter_types.count.u32())
                         parameter_counts.push(params.count.u16())
-                        for parameter in params |parameter_types|:
+                        for parameter in params |parameter_types, parameter_names, parameter_has_defaults, parameter_defaults|:
                             parameter_types.push(type_from_expression(parameter.type_expression))
+                            parameter_names.push(parameter.name)
+                            parameter_has_defaults.push(parameter.has_default)
+                            parameter_defaults.push(parameter.default_value)
                         effect_starts.push(signature_effects.count.u32())
                         effect_counts.push(effects.count.u16())
                         signature_effects.extend(effects)
@@ -1958,13 +2015,13 @@ extend EsIr:
                         pass
             functions: mutable darray[Function] = []
             issues: mutable darray[LowerIssue] = []
-            for declaration in file.top_decls |functions, issues, names, returns, parameter_starts, parameter_counts, parameter_types, effect_starts, effect_counts, signature_effects, signature_errors|:
+            for declaration in file.top_decls |functions, issues, names, returns, parameter_starts, parameter_counts, parameter_types, parameter_names, parameter_has_defaults, parameter_defaults, effect_starts, effect_counts, signature_effects, signature_errors|:
                 match declaration:
                     Decl.Func(name, params, return_type_opt, body, effects, decorators, pos):
                         declared_error: mutable sview = ""
                         for error_index in 0..<file.error_set_func_lines.count |file, pos, declared_error|:
                             declared_error <- file.error_set_func_names[error_index] if file.error_set_func_lines[error_index] == pos.line
-                        functions.push(lower_function(name, params, return_type_opt, body, effects, declared_error, pos, names, returns, parameter_starts, parameter_counts, parameter_types, effect_starts, effect_counts, signature_effects, signature_errors, handlers, issues))
+                        functions.push(lower_function(name, params, return_type_opt, body, effects, declared_error, pos, names, returns, parameter_starts, parameter_counts, parameter_types, parameter_names, parameter_has_defaults, parameter_defaults, effect_starts, effect_counts, signature_effects, signature_errors, handlers, issues))
                     _:
                         issues.push(LowerIssue{kind: LowerIssueKind.UnsupportedDeclaration, function: "", line: 0, message: "declaration is not in the initial IR lowering subset"})
             lowered_handlers: mutable darray[Handler] = []
