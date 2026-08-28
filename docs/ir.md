@@ -346,12 +346,14 @@ reference interpreter. The first filesystem operations (`PathExists`, `ReadText`
 `WriteText`, `RemovePath`, and `MakeExecutable`) use the same typed resource
 wrappers as the oracle, while retaining the packed program-counter machine. Its
 value dispatcher is itself an explicit state machine. The eligibility gate rejects
-other widths, nested arrays, environment/directory/stdio operations, handlers,
-and continuations. Process execution and capture (`RunProcess`, stdout/stderr
+other widths, nested arrays, directory/stdio operations, handlers, and
+continuations. Process execution and capture (`RunProcess`, stdout/stderr
 capture, stdin transport, and `ProcessCapture` accessors) use the same typed argv
 and stream helpers as the oracle. Unsupported modules deterministically rebuild
 the verified IR and use `interpret` as the semantic oracle until their bytecode
-handlers are implemented.
+handlers are implemented. Environment reads and writes (`GetEnvironment`,
+`SetEnvironment`, and `UnsetEnvironment`) likewise share typed wrappers and are
+eligible for the packed path.
 
 ## Planned increments
 
