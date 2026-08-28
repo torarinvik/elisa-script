@@ -112,7 +112,7 @@ must still appear explicitly in the caller's error row.
 `interpret` is the first executable consumer of verified IR and the semantic
 oracle for later bytecode, JIT, and native backends. Its initial core executes
 integer and boolean scalars, text constants, homogeneous immutable arrays,
-indexing, array length, arithmetic and comparisons, direct calls, branches,
+array/text indexing and length, arithmetic and comparisons, direct calls, branches,
 loops, SSA edge arguments, and returns. `HandlerPush` and
 `HandlerPop` preserve lexical execution structure while effect dispatch and
 continuation resumption remain the next interpreter increment.
@@ -150,6 +150,11 @@ Plain single-binder `for value in array` loops lower to explicit header, body,
 latch, and exit blocks. The collection is evaluated once; length and indexing stay
 typed IR operations. `continue` targets the incrementing latch, `break` targets the
 exit, and mutations of outer bindings travel through typed loop parameters.
+Text uses the same verified collection operations and loop CFG. In the current
+Elisa-compatible `sview` model, `.count` is a byte count and `text[index]` or
+`for character in text` yields one 8-bit `char`; invalid indices raise the same
+typed `IndexOutOfBounds` interpreter error as arrays. This byte contract is
+explicit rather than silently pretending to provide Unicode grapheme indexing.
 Integer ranges use the same CFG shape. `low..<high` is exclusive ascending,
 `low..=high` is inclusive ascending, and `high..>low` is strict descending.
 The range-owned stride spelling (`low..<high..step`) requires a positive constant;
