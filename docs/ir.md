@@ -155,6 +155,13 @@ Plain single-binder `for value in array` loops lower to explicit header, body,
 latch, and exit blocks. The collection is evaluated once; length and indexing stay
 typed IR operations. `continue` targets the incrementing latch, `break` targets the
 exit, and mutations of outer bindings travel through typed loop parameters.
+`for mutable value in values` additionally requires `values` to be a named mutable
+array binding. Lowering records a scoped element-owner relation; every successful
+`value <- replacement` or compound update immediately transitions the owner through
+`SetIndex`. The updated array is loop-carried state, so writes survive conditional
+and match merges, nested loops, `continue`, and `break` without hidden aliasing or
+deferred writeback. Temporary collections, immutable owners, and mutable text
+iteration are rejected statically.
 Text uses the same verified collection operations and loop CFG. In the current
 Elisa-compatible `sview` model, `.count` is a byte count and `text[index]` or
 `for character in text` yields one 8-bit `char`; invalid indices raise the same

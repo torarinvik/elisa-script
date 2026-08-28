@@ -66,6 +66,9 @@ extend EsIr:
             loop_context_counts: mutable darray[u16]
             loop_carried_indices: mutable darray[u32]
             loop_handler_depths: mutable darray[u32]
+            element_binding_indices: mutable darray[u32]
+            element_owner_indices: mutable darray[u32]
+            element_index_values: mutable darray[u32]
             active_handlers: mutable darray[sview]
             function: sview
             function_names: darray[sview]&
@@ -248,6 +251,20 @@ extend EsIr:
                 state.instructions.push(Instruction{opcode: Opcode.HandlerPop, result: 0, result_type: void_ir_type(), symbol: state.active_handlers[handler_index], trace: trace_site(state, "handler-unwind", pos), span: ir_span(pos)})
 
 
+        def synchronize_mutable_element(state: mutable LowerState&, binding: usize, pos: Ast::Pos&) -> void can[Memory.Allocate, Abort.Panic]:
+            for relation in 0..<state.element_binding_indices.count |state, binding|:
+                if state.element_binding_indices[relation].usize() == binding:
+                    owner: usize = state.element_owner_indices[relation].usize()
+                    result: u32 = fresh_value(state)
+                    operand_start: u32 = state.operand_pool.count.u32()
+                    state.operand_pool.push(state.values[owner])
+                    state.operand_pool.push(state.element_index_values[relation])
+                    state.operand_pool.push(state.values[binding])
+                    state.instructions.push(Instruction{opcode: Opcode.SetIndex, result: result, result_type: state.types[owner], operand_start: operand_start, operand_count: 3, span: ir_span(pos)})
+                    state.values[owner] <- result
+                    return
+
+
         def supported_assignment_operator(operator: TokenKind) -> bool:
             return operator in {TokenKind.LArrow, TokenKind.PlusEq, TokenKind.MinusEq, TokenKind.StarEq, TokenKind.SlashEq, TokenKind.PercentEq, TokenKind.AmpEq, TokenKind.PipeEq, TokenKind.CaretEq, TokenKind.LShiftEq, TokenKind.RShiftEq}
 
@@ -297,6 +314,16 @@ extend EsIr:
                         collect_assigned_names(body, names)
                     _:
                         pass
+
+
+        def include_mutable_element_owners(state: LowerState&, names: mutable darray[sview]&) -> void can[Memory.Allocate, Abort.Panic]:
+            assigned_count: usize = names.count
+            for assigned in 0..<assigned_count |state, names|:
+                binding: usize = binding_index(state, names[assigned])
+                for relation in 0..<state.element_binding_indices.count |state, names, binding|:
+                    if state.element_binding_indices[relation].usize() == binding:
+                        owner: usize = state.element_owner_indices[relation].usize()
+                        add_unique_name(names, state.names[owner])
 
 
         def append_context_arguments(state: mutable LowerState&, context: usize) -> (start: u32, count: u16) can[Memory.Allocate, Abort.Panic]:
@@ -959,6 +986,7 @@ extend EsIr:
             exit_block: u32 = fresh_block(state)
             assigned_names: mutable darray[sview] = []
             collect_assigned_names(body, assigned_names)
+            include_mutable_element_owners(state, assigned_names)
             carried_indices: mutable darray[u32] = []
             for assigned_name in assigned_names |state, carried_indices|:
                 assigned_index: usize = binding_index(state, assigned_name)
@@ -1168,6 +1196,7 @@ extend EsIr:
             assigned_names: mutable darray[sview] = []
             for arm in arms |assigned_names|:
                 collect_assigned_names(arm.body, assigned_names)
+            include_mutable_element_owners(state, assigned_names)
             carried_indices: mutable darray[u32] = []
             for name in assigned_names |state, carried_indices|:
                 index: usize = binding_index(state, name)
@@ -1429,6 +1458,7 @@ extend EsIr:
                                     state.instructions.push(Instruction{opcode: Opcode.SetIndex, result: result, result_type: state.types[index], operand_start: operand_start, operand_count: 3, span: ir_span(pos)})
                                     state.values[index] <- result
                     else:
+                        rebound: mutable bool = false
                         if not state.mutables[index]:
                             add_issue(state, LowerIssueKind.ImmutableBinding, pos.line, "assignment requires a mutable local binding")
                         elif not supported_assignment_operator(operator):
@@ -1440,6 +1470,7 @@ extend EsIr:
                                     add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "assignment cannot change a binding's static type")
                                 else:
                                     state.values[index] <- lowered.value
+                                    rebound <- true
                         else:
                             lowered: LoweredValue = lower_expression_expected(value, state.types[index], state)
                             if lowered.valid:
@@ -1458,6 +1489,8 @@ extend EsIr:
                                     state.operand_pool.push(lowered.value)
                                     state.instructions.push(Instruction{opcode: opcode, result: result, result_type: state.types[index], operand_start: operand_start, operand_count: 2, span: ir_span(pos)})
                                     state.values[index] <- result
+                                    rebound <- true
+                        synchronize_mutable_element(state, index, pos) if rebound
                 Stmt.Return(value_opt, pos):
                     if value_opt is value:
                         lowered: LoweredValue = lower_expression_expected(value, return_type, state)
@@ -1560,6 +1593,7 @@ extend EsIr:
                     exit_block: u32 = fresh_block(state)
                     assigned_names: mutable darray[sview] = []
                     collect_assigned_names(body, assigned_names)
+                    include_mutable_element_owners(state, assigned_names)
                     carried_indices: mutable darray[u32] = []
                     for assigned_name in assigned_names |state, carried_indices|:
                         assigned_index: usize = binding_index(state, assigned_name)
@@ -1628,9 +1662,25 @@ extend EsIr:
                     state.current_block <- exit_block
                     state.terminated <- false
                 Stmt.For(bind, variables, iterable, body, pos):
-                    if bind != "" or variables.count != 1:
-                        add_issue(state, LowerIssueKind.UnsupportedStatement, pos.line, "initial for lowering supports one immutable array element binding")
-                    elif lower_range_for(variables, iterable, body, return_type, pos, state):
+                    mutable_iteration: bool = bind == "mutable"
+                    iterable_name: mutable sview = ""
+                    match iterable:
+                        Expr.Ident(name, iterable_pos):
+                            iterable_name <- name
+                        _:
+                            pass
+                    collection_owner: usize = binding_index(state, iterable_name)
+                    if variables.count != 1 or bind not in {"", "mutable"}:
+                        add_issue(state, LowerIssueKind.UnsupportedStatement, pos.line, "for lowering supports one read or mutable element binding")
+                    elif mutable_iteration and iterable_name == "":
+                        add_issue(state, LowerIssueKind.UnsupportedStatement, pos.line, "mutable iteration requires a named mutable array binding")
+                    elif mutable_iteration and collection_owner == state.names.count:
+                        add_issue(state, LowerIssueKind.UnknownBinding, pos.line, "mutable iteration requires a known array binding")
+                    elif mutable_iteration and not state.mutables[collection_owner]:
+                        add_issue(state, LowerIssueKind.ImmutableBinding, pos.line, "mutable iteration requires a mutable array binding")
+                    elif mutable_iteration and state.types[collection_owner].kind != TypeKind.Array:
+                        add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "mutable iteration requires an array binding")
+                    elif not mutable_iteration and lower_range_for(variables, iterable, body, return_type, pos, state):
                         pass
                     else:
                         collection: LoweredValue = lower_expression(iterable, state)
@@ -1645,6 +1695,8 @@ extend EsIr:
                             exit_block: u32 = fresh_block(state)
                             assigned_names: mutable darray[sview] = []
                             collect_assigned_names(body, assigned_names)
+                            add_unique_name(assigned_names, iterable_name) if mutable_iteration
+                            include_mutable_element_owners(state, assigned_names)
                             carried_indices: mutable darray[u32] = []
                             for assigned_name in assigned_names |state, carried_indices|:
                                 assigned_index: usize = binding_index(state, assigned_name)
@@ -1685,12 +1737,13 @@ extend EsIr:
                             state.pending_parameters.push(Parameter{value: index_value, type: index_type, name: "for-index"})
                             for offset in 0..<carried_indices.count |state, carried_indices, header_values|:
                                 state.values[carried_indices[offset].usize()] <- header_values[offset]
+                            active_collection: u32 = state.values[collection_owner] if mutable_iteration else collection.value
 
                             state.current_block <- header_block
                             state.terminated <- false
                             length_result: u32 = fresh_value(state)
                             length_operand_start: u32 = state.operand_pool.count.u32()
-                            state.operand_pool.push(collection.value)
+                            state.operand_pool.push(active_collection)
                             state.instructions.push(Instruction{opcode: Opcode.Length, result: length_result, result_type: index_type, operand_start: length_operand_start, operand_count: 1, span: ir_span(pos)})
                             condition_result: u32 = fresh_value(state)
                             condition_operand_start: u32 = state.operand_pool.count.u32()
@@ -1702,6 +1755,7 @@ extend EsIr:
                             finish_block(state)
 
                             outer_scope: usize = state.names.count
+                            relation_scope: usize = state.element_binding_indices.count
                             state.structured_depth <- state.structured_depth + 1
                             state.break_targets.push(exit_block)
                             state.continue_targets.push(latch_block)
@@ -1709,14 +1763,18 @@ extend EsIr:
                             state.terminated <- false
                             element_result: u32 = fresh_value(state)
                             element_operand_start: u32 = state.operand_pool.count.u32()
-                            state.operand_pool.push(collection.value)
+                            state.operand_pool.push(active_collection)
                             state.operand_pool.push(index_value)
                             element_type: Type = type_from_name("char") if collection.type.kind == TypeKind.Text else array_element_type(collection.type)
                             state.instructions.push(Instruction{opcode: Opcode.Index, result: element_result, result_type: element_type, operand_start: element_operand_start, operand_count: 2, span: ir_span(pos)})
                             state.names.push(variables[0])
                             state.values.push(element_result)
                             state.types.push(element_type)
-                            state.mutables.push(false)
+                            state.mutables.push(mutable_iteration)
+                            if mutable_iteration:
+                                state.element_binding_indices.push(outer_scope.u32())
+                                state.element_owner_indices.push(collection_owner.u32())
+                                state.element_index_values.push(index_value)
                             for nested in body |state, return_type|:
                                 lower_statement(nested, return_type, state)
                             if not state.terminated:
@@ -1729,6 +1787,9 @@ extend EsIr:
                             state.values.truncate(outer_scope)
                             state.types.truncate(outer_scope)
                             state.mutables.truncate(outer_scope)
+                            state.element_binding_indices.truncate(relation_scope)
+                            state.element_owner_indices.truncate(relation_scope)
+                            state.element_index_values.truncate(relation_scope)
                             for offset in 0..<carried_indices.count |state, carried_indices, latch_values|:
                                 state.values[carried_indices[offset].usize()] <- latch_values[offset]
 
@@ -1823,7 +1884,7 @@ extend EsIr:
         def lower_function(name: sview, params: darray[Ast::ParamDecl]&, return_type_opt: Ast::Expr?, body: darray[Ast::Stmt]&, effects: darray[sview]&, declared_error: sview, pos: Ast::Pos&, function_names: darray[sview]&, function_returns: darray[Type]&, function_parameter_starts: darray[u32]&, function_parameter_counts: darray[u16]&, function_parameter_types: darray[Type]&, function_effect_starts: darray[u32]&, function_effect_counts: darray[u16]&, function_effects: darray[sview]&, function_errors: darray[sview]&, handlers: darray[Handler]&, outer_issues: mutable darray[LowerIssue]&) -> Function can[Memory.Allocate, Abort.Panic]:
             return_type: mutable Type = void_ir_type()
             return_type <- type_from_expression(return_expression) if return_type_opt is return_expression
-            state: mutable LowerState = LowerState{function: name, next_value: 1, current_block: 1, next_block: 2, instruction_start: 0, structured_depth: 0, blocks: [], names: [], values: [], types: [], mutables: [], instructions: [], operand_pool: [], edge_arg_pool: [], issues: [], break_targets: [], continue_targets: [], pending_parameter_blocks: [], pending_parameters: [], block_parameter_pool: [], loop_context_starts: [], loop_context_counts: [], loop_carried_indices: [], loop_handler_depths: [], active_handlers: [], terminated: false, terminator: Terminator{kind: TerminatorKind.Unreachable, span: ir_span(pos)}, function_names: function_names, function_returns: function_returns, function_parameter_starts: function_parameter_starts, function_parameter_counts: function_parameter_counts, function_parameter_types: function_parameter_types, function_effect_starts: function_effect_starts, function_effect_counts: function_effect_counts, function_effects: function_effects, function_errors: function_errors, handlers: handlers, function_return_type: return_type, required_effects: [], required_errors: []}
+            state: mutable LowerState = LowerState{function: name, next_value: 1, current_block: 1, next_block: 2, instruction_start: 0, structured_depth: 0, blocks: [], names: [], values: [], types: [], mutables: [], instructions: [], operand_pool: [], edge_arg_pool: [], issues: [], break_targets: [], continue_targets: [], pending_parameter_blocks: [], pending_parameters: [], block_parameter_pool: [], loop_context_starts: [], loop_context_counts: [], loop_carried_indices: [], loop_handler_depths: [], element_binding_indices: [], element_owner_indices: [], element_index_values: [], active_handlers: [], terminated: false, terminator: Terminator{kind: TerminatorKind.Unreachable, span: ir_span(pos)}, function_names: function_names, function_returns: function_returns, function_parameter_starts: function_parameter_starts, function_parameter_counts: function_parameter_counts, function_parameter_types: function_parameter_types, function_effect_starts: function_effect_starts, function_effect_counts: function_effect_counts, function_effects: function_effects, function_errors: function_errors, handlers: handlers, function_return_type: return_type, required_effects: [], required_errors: []}
             state.required_effects.extend(effects)
             state.required_errors.push(declared_error) if declared_error != ""
             lowered_params: mutable darray[Parameter] = []
