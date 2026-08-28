@@ -20,6 +20,12 @@ extend EsIr:
             return false
 
 
+        def handler_index(handlers: darray[Handler]&, name: sview) -> usize:
+            for index in 0..<handlers.count |handlers, name|:
+                index return if handlers[index].name == name
+            return handlers.count
+
+
         def issue(kind: IssueKind, function: sview, block: u32, value: u32, trace: u64, message: sview) -> Issue:
             return Issue{kind: kind, function: function, block: block, value: value, trace: trace, message: message}
 
@@ -101,7 +107,7 @@ extend EsIr:
                     issues.push(issue(IssueKind.InvalidTerminator, fn.name, block.id, 0, 0, "unreachable cannot carry operands or targets")) if block.terminator.operand_count != 0 or block.terminator.target_count != 0
 
 
-        def verify_function(fn: Function&, issues: mutable darray[Issue]&) -> void can[Memory.Allocate, Abort.Panic]:
+        def verify_function(fn: Function&, handlers: darray[Handler]&, issues: mutable darray[Issue]&) -> void can[Memory.Allocate, Abort.Panic]:
             block_ids: mutable darray[u32] = []
             for block in fn.blocks |block_ids, issues|:
                 issues.push(issue(IssueKind.DuplicateBlock, fn.name, block.id, 0, 0, "block id is defined more than once")) if has_u32(block_ids, block.id)
@@ -112,6 +118,7 @@ extend EsIr:
             definition_blocks: mutable darray[u32] = []
             definition_types: mutable darray[Type] = []
             traces: mutable darray[u64] = []
+            handler_stack: mutable darray[sview] = []
             for parameter in fn.parameters |defined, definition_blocks, definition_types, issues|:
                 issues.push(issue(IssueKind.DuplicateValue, fn.name, fn.entry, parameter.value, 0, "parameter SSA value is duplicated or zero")) if parameter.value == 0 or has_u32(defined, parameter.value)
                 defined.push(parameter.value) if parameter.value != 0 and not has_u32(defined, parameter.value)
@@ -149,6 +156,18 @@ extend EsIr:
                     if instruction.opcode == Opcode.Perform:
                         issues.push(issue(IssueKind.InvalidPerform, fn.name, block.id, instruction.result, instruction.trace.id, "perform must name an effect family and operation")) if instruction.effect_family == "" or instruction.effect_operation == ""
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "performed effect is absent from the function effect row")) if instruction.effect_family != "" and not effect_granted(fn.effects, instruction.effect_family)
+                    if instruction.opcode == Opcode.HandlerPush:
+                        issues.push(issue(IssueKind.UnknownHandler, fn.name, block.id, instruction.result, instruction.trace.id, "dynamic handler is not declared in the IR module")) if handler_index(handlers, instruction.symbol) == handlers.count
+                        handler_stack.push(instruction.symbol)
+                    if instruction.opcode == Opcode.HandlerPop:
+                        if handler_stack.count == 0 or handler_stack[handler_stack.count - 1] != instruction.symbol:
+                            issues.push(issue(IssueKind.UnbalancedHandler, fn.name, block.id, instruction.result, instruction.trace.id, "dynamic handler pop does not match the active lexical handler"))
+                        else:
+                            _ = handler_stack.pop()
+                    if instruction.opcode == Opcode.Resume:
+                        index: usize = handler_index(handlers, instruction.symbol)
+                        issues.push(issue(IssueKind.UnknownHandler, fn.name, block.id, instruction.result, instruction.trace.id, "resume names an unknown handler")) if index == handlers.count
+                        issues.push(issue(IssueKind.InvalidResume, fn.name, block.id, instruction.result, instruction.trace.id, "terminal handlers cannot resume continuations")) if index < handlers.count and handlers[index].continuation == ContinuationPolicy.Terminal
                     if instruction.opcode == Opcode.Observe and instruction.result != 0:
                         issues.push(issue(IssueKind.InvalidObserve, fn.name, block.id, instruction.result, instruction.trace.id, "observe records values but cannot define one"))
                     if instruction.opcode == Opcode.Perform or instruction.opcode == Opcode.Observe:
@@ -156,6 +175,7 @@ extend EsIr:
                         issues.push(issue(IssueKind.DuplicateTraceSite, fn.name, block.id, instruction.result, instruction.trace.id, "trace site id is not unique within the function")) if instruction.trace.id != 0 and has_u64(traces, instruction.trace.id)
                         traces.push(instruction.trace.id) if instruction.trace.id != 0 and not has_u64(traces, instruction.trace.id)
                 verify_terminator(fn, block, defined, definition_blocks, definition_types, block_ids, issues)
+            issues.push(issue(IssueKind.UnbalancedHandler, fn.name, fn.entry, 0, 0, "function exits with a dynamic handler still installed")) if handler_stack.count != 0
 
 
     public:
@@ -163,6 +183,9 @@ extend EsIr:
         # module with issues instead of attempting recovery differently.
         def verify(module: Module&) -> darray[Issue] can[Memory.Allocate, Abort.Panic]:
             issues: mutable darray[Issue] = []
+            for index in 0..<module.handlers.count |module, issues|:
+                for earlier in 0..<index |module, issues, index|:
+                    issues.push(issue(IssueKind.DuplicateHandler, "", 0, 0, 0, "handler name is declared more than once")) if module.handlers[index].name == module.handlers[earlier].name
             for fn in module.functions |issues|:
-                verify_function(fn, issues)
+                verify_function(fn, module.handlers, issues)
             return issues

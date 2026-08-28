@@ -60,6 +60,7 @@ extend EsIr:
             function: sview
             function_names: darray[sview]&
             function_returns: darray[Type]&
+            handlers: darray[Handler]&
             next_value: mutable u32
             current_block: mutable u32
             next_block: mutable u32
@@ -518,23 +519,34 @@ extend EsIr:
                             reference: sview = clause[0]
                             state.instructions.push(Instruction{opcode: Opcode.Perform, result: 0, result_type: void_ir_type(), effect_family: effect_family(reference), effect_operation: effect_operation(reference), trace: trace_site(state, reference, pos), span: ir_span(pos)})
                     else:
-                        if kind == "can" or kind == "trusted":
+                        if kind == "with" and clause.count >= 2 and clause[0] == "handler":
+                            handler_name: sview = clause[1]
+                            state.instructions.push(Instruction{opcode: Opcode.HandlerPush, result: 0, result_type: void_ir_type(), symbol: handler_name, trace: trace_site(state, handler_name, pos), span: ir_span(pos)})
                             scope_mark: usize = state.names.count
                             for nested in body |state, return_type|:
                                 lower_statement(nested, return_type, state)
                             state.names.truncate(scope_mark)
                             state.values.truncate(scope_mark)
                             state.types.truncate(scope_mark)
+                            state.instructions.push(Instruction{opcode: Opcode.HandlerPop, result: 0, result_type: void_ir_type(), symbol: handler_name, trace: trace_site(state, "handler-pop", pos), span: ir_span(pos)}) if not state.terminated
                         else:
-                            add_issue(state, LowerIssueKind.UnsupportedStatement, pos.line, "control block is not in the initial IR lowering subset")
+                            if kind == "can" or kind == "trusted":
+                                scope_mark: usize = state.names.count
+                                for nested in body |state, return_type|:
+                                    lower_statement(nested, return_type, state)
+                                state.names.truncate(scope_mark)
+                                state.values.truncate(scope_mark)
+                                state.types.truncate(scope_mark)
+                            else:
+                                add_issue(state, LowerIssueKind.UnsupportedStatement, pos.line, "control block is not in the initial IR lowering subset")
                 _:
                     add_issue(state, LowerIssueKind.UnsupportedStatement, 0, "statement is not in the initial IR lowering subset")
 
 
-        def lower_function(name: sview, params: darray[Ast::ParamDecl]&, return_type_opt: Ast::Expr?, body: darray[Ast::Stmt]&, effects: darray[sview]&, pos: Ast::Pos&, function_names: darray[sview]&, function_returns: darray[Type]&, outer_issues: mutable darray[LowerIssue]&) -> Function can[Memory.Allocate, Abort.Panic]:
+        def lower_function(name: sview, params: darray[Ast::ParamDecl]&, return_type_opt: Ast::Expr?, body: darray[Ast::Stmt]&, effects: darray[sview]&, pos: Ast::Pos&, function_names: darray[sview]&, function_returns: darray[Type]&, handlers: darray[Handler]&, outer_issues: mutable darray[LowerIssue]&) -> Function can[Memory.Allocate, Abort.Panic]:
             return_type: mutable Type = void_ir_type()
             return_type <- type_from_expression(return_expression) if return_type_opt is return_expression
-            state: mutable LowerState = LowerState{function: name, next_value: 1, current_block: 1, next_block: 2, instruction_start: 0, structured_depth: 0, blocks: [], names: [], values: [], types: [], instructions: [], operand_pool: [], edge_arg_pool: [], issues: [], break_targets: [], continue_targets: [], pending_parameter_blocks: [], pending_parameters: [], block_parameter_pool: [], loop_context_starts: [], loop_context_counts: [], loop_carried_indices: [], terminated: false, terminator: Terminator{kind: TerminatorKind.Unreachable, span: ir_span(pos)}, function_names: function_names, function_returns: function_returns}
+            state: mutable LowerState = LowerState{function: name, next_value: 1, current_block: 1, next_block: 2, instruction_start: 0, structured_depth: 0, blocks: [], names: [], values: [], types: [], instructions: [], operand_pool: [], edge_arg_pool: [], issues: [], break_targets: [], continue_targets: [], pending_parameter_blocks: [], pending_parameters: [], block_parameter_pool: [], loop_context_starts: [], loop_context_counts: [], loop_carried_indices: [], terminated: false, terminator: Terminator{kind: TerminatorKind.Unreachable, span: ir_span(pos)}, function_names: function_names, function_returns: function_returns, handlers: handlers}
             lowered_params: mutable darray[Parameter] = []
             for parameter in params |state, lowered_params|:
                 parameter_type: Type = type_from_expression(parameter.type_expression)
@@ -561,7 +573,7 @@ extend EsIr:
     public:
         # Lower a semantically checked parser file. The caller must run Semantic::check first;
         # this boundary assumes the source is well typed and reports only lowering coverage.
-        def lower_file(file: Ast::File&, module_name: sview) -> LowerResult can[Memory.Allocate, Abort.Panic]:
+        def lower_file_with_handlers(file: Ast::File&, module_name: sview, handlers: darray[Handler]&) -> LowerResult can[Memory.Allocate, Abort.Panic]:
             names: mutable darray[sview] = []
             returns: mutable darray[Type] = []
             for declaration in file.top_decls |names, returns|:
@@ -578,7 +590,14 @@ extend EsIr:
             for declaration in file.top_decls |functions, issues, names, returns|:
                 match declaration:
                     Decl.Func(name, params, return_type_opt, body, effects, decorators, pos):
-                        functions.push(lower_function(name, params, return_type_opt, body, effects, pos, names, returns, issues))
+                        functions.push(lower_function(name, params, return_type_opt, body, effects, pos, names, returns, handlers, issues))
                     _:
                         issues.push(LowerIssue{kind: LowerIssueKind.UnsupportedDeclaration, function: "", line: 0, message: "declaration is not in the initial IR lowering subset"})
-            return LowerResult{module: Module{name: module_name, functions: functions}, issues: issues}
+            lowered_handlers: mutable darray[Handler] = []
+            lowered_handlers.extend(handlers)
+            return LowerResult{module: Module{name: module_name, functions: functions, handlers: lowered_handlers}, issues: issues}
+
+
+        def lower_file(file: Ast::File&, module_name: sview) -> LowerResult can[Memory.Allocate, Abort.Panic]:
+            handlers: darray[Handler] = []
+            return lower_file_with_handlers(file, module_name, handlers)

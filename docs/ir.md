@@ -47,6 +47,24 @@ text or source formatting.
 `Observe` without defining a result. It provides a typed, backend-independent
 checkpoint for differential tests without depending on stdout or debug logging.
 
+## Dynamic handlers
+
+Elisascript uses lexically scoped, dynamically selected handlers:
+
+```elisa
+with handler sandbox:
+    run_build()
+```
+
+The IR declares each handler's covered effect families, introduced effects,
+`error[...]` sets, and continuation policy (`Terminal`, `Linear`, `Affine`, or
+`Multi`). `HandlerPush` and `HandlerPop` delimit dynamic installation. `Resume`
+names the handler whose continuation it consumes; the verifier rejects resume for
+a terminal handler and rejects unknown or unbalanced handler operations.
+
+Handler failures are stored in explicit error-set rows on handlers and functions.
+They are not represented as `Result` values and are not merged into effect rows.
+
 The IR verifier rejects missing/duplicate trace sites, ungranted effects,
 undefined or duplicate SSA values, bad entry blocks, unknown branch targets, and
 malformed terminators before a backend runs. It also validates SSA dominance, so
