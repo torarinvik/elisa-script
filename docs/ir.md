@@ -177,6 +177,11 @@ as a C string, impose a pipe-sized backpressure limit, or capture stderr.
 operands. Reads produce owned `Text` under `Environment.Read`; mutations produce
 `Bool` under `Environment.Write`. All three require `EnvironmentError`, reject C
 string truncation hazards, and execute through explicit exhaustive opcode arms.
+`CreateDirectory`, `RemoveDirectory`, and `ChangeDirectory` verify as
+`Named(Path) -> Bool` with `Directory.Write` and `DirectoryError`.
+`CurrentDirectory` takes no operands, returns `Named(Path)`, and requires
+`Directory.Read` plus the same error. All four have explicit opcode-machine arms;
+the cwd result is copied before the POSIX allocation is released.
 Named direct-call arguments are resolved against predeclared parameter labels and
 then emitted in canonical signature order. Their expressions still execute once in
 source order. Missing parameters materialize their Elisa default expressions in

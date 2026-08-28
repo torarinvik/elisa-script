@@ -166,6 +166,21 @@ Names must be non-empty and neither names nor values may contain embedded NUL by
 These mutations intentionally affect later child processes and therefore make the
 environment dependency visible in the inferred effect row.
 
+## Directories and working directory
+
+Directory operations use nominal `Path` values and structured `DirectoryError`:
+
+- `create_directory(path: Path) -> bool can[Directory.Write]`
+- `remove_directory(path: Path) -> bool can[Directory.Write]`
+- `change_directory(path: Path) -> bool can[Directory.Write]`
+- `current_directory() -> Path can[Directory.Read]`
+
+All four include `error[DirectoryError]`. Successful mutations return `true`;
+operating-system failures are errors rather than ambiguous `false` values. Creation
+uses mode `0755` before the process umask is applied. `current_directory` returns an
+owned nominal snapshot, so a later directory change cannot mutate the saved path.
+Empty paths and embedded NUL bytes are rejected before entering the POSIX boundary.
+
 ## Compile-time validation
 
 `check_typed_literals.elisa` validates constant string payloads during the existing

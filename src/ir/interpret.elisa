@@ -9,6 +9,7 @@ error InterpretError:
     FileIo
     Process
     Environment
+    Directory
     InvalidShift
     IndexOutOfBounds
     InvalidControlFlow
@@ -59,6 +60,7 @@ extend EsIr:
             FileIo
             Process
             Environment
+            Directory
             InvalidShift
             IndexOutOfBounds
             InvalidControlFlow
@@ -1049,6 +1051,47 @@ extend EsIr:
             return runtime_bool(true)
 
 
+        def evaluate_directory_mutation(machine: mutable Machine&, opcode: Opcode, path: RuntimeValue) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+            if path.kind != RuntimeValueKind.Text:
+                machine.failure <- InterpretFailure.TypeMismatch
+                return runtime_void()
+            if sview_len(path.text) == 0 or text_has_nul(path.text):
+                machine.failure <- InterpretFailure.Directory
+                return runtime_void()
+            c_path: dstr = nul_terminated_text(path.text)
+            if c_path.items == null:
+                machine.failure <- InterpretFailure.Directory
+                return runtime_void()
+            path_items: u8& = c_path.items
+            status: mutable int = -1
+            can Blocking.IO:
+                status <- elisascript_posix_mkdir(path_items.cast[cstr], 493) if opcode == Opcode.CreateDirectory
+                status <- elisascript_posix_rmdir(path_items.cast[cstr]) if opcode == Opcode.RemoveDirectory
+                status <- elisascript_posix_chdir(path_items.cast[cstr]) if opcode == Opcode.ChangeDirectory
+            if status != 0:
+                machine.failure <- InterpretFailure.Directory
+                return runtime_void()
+            return runtime_bool(true)
+
+
+        def evaluate_current_directory(machine: mutable Machine&) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+            can Blocking.IO, Memory.Allocate, Memory.Release:
+                found: mutable heap u8&? = elisascript_posix_getcwd(null, 0)
+                if found == null:
+                    machine.failure <- InterpretFailure.Directory
+                    return runtime_void()
+                found_items: mutable heap u8& = found
+                length: usize = runtime_strlen(found_items)
+                if length == 0:
+                    free(found_items.cast[heap void&])
+                    machine.failure <- InterpretFailure.Directory
+                    return runtime_void()
+                bytes: mutable dstr = ctx_fstr_alloc(length)
+                ctx_fstr_append(bytes, found_items, length)
+                free(found_items.cast[heap void&])
+                return runtime_text(bytes_view(bytes))
+
+
         def evaluate_concat(machine: mutable Machine&, storage: mutable darray[RuntimeValue]&, left: RuntimeValue, right: RuntimeValue) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
             if left.kind == RuntimeValueKind.Array and right.kind == RuntimeValueKind.Array:
                 start: u32 = storage.count.u32()
@@ -1238,6 +1281,15 @@ extend EsIr:
                             dispatch.value <- evaluate_unset_environment(machine, name_value)
                             break
 
+                        Dispatch, Opcode.CreateDirectory | Opcode.RemoveDirectory | Opcode.ChangeDirectory:
+                            path_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
+                            dispatch.value <- evaluate_directory_mutation(machine, instruction.opcode, path_value)
+                            break
+
+                        Dispatch, Opcode.CurrentDirectory:
+                            dispatch.value <- evaluate_current_directory(machine)
+                            break
+
                         Dispatch, Opcode.Concat:
                             left: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
                             right: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1], machine)
@@ -1343,6 +1395,8 @@ extend EsIr:
                 raise InterpretError.Process
             if failure == InterpretFailure.Environment:
                 raise InterpretError.Environment
+            if failure == InterpretFailure.Directory:
+                raise InterpretError.Directory
             if failure == InterpretFailure.InvalidShift:
                 raise InterpretError.InvalidShift
             if failure == InterpretFailure.IndexOutOfBounds:
