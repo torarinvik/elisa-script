@@ -82,6 +82,22 @@ character classes remain literal members. Grouping, captures, and replacement ar
 reserved for the shared compiled regex engine; they are not silently delegated to
 a host regex implementation.
 
+## Text field processing
+
+Elisascript provides a strongly typed compiler-known split operation for the core
+shell/Python/AWK field-processing case:
+
+```elisa
+fields: darray[sview] = split("name::value", ":")
+# ["name", "", "value"]
+```
+
+`split` preserves empty fields at every position. An empty separator splits a
+nonempty string into byte-sized `sview` values and maps empty input to `[]`. These
+rules are total, deterministic, and identical across the interpreter and future
+bytecode, JIT, and native backends. A source function named `split` shadows the
+compiler-known operation normally.
+
 ## Compile-time validation
 
 `check_typed_literals.elisa` validates constant string payloads during the existing

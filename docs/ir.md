@@ -201,6 +201,13 @@ bound may be absent: the lower default is zero and the upper default is one
 preserve the exact array or text type, and require `0 <= low <= high <= count`;
 violations raise typed `IndexOutOfBounds`. Immutable array slices share their
 backing value storage, while text slices are byte views under the `sview` contract.
+The compiler-known `split(text, separator)` operation has the exact static type
+`Text × Text -> Array[Text]` and lowers to the semantic `Split` opcode. It preserves
+leading, trailing, and consecutive empty fields. An empty separator splits a
+nonempty input into one-byte text views, while empty input produces an empty array;
+this follows the same explicit byte model as indexing and iteration. The interpreter
+stores fields in caller-owned value storage, so split results can be indexed,
+compared structurally, iterated, and returned without hidden host allocations.
 Exact-type `array + array` and `text + text` lower to the semantic `Concat`
 operation rather than numeric `Add`. Array concatenation copies both inputs into
 fresh value storage. Text concatenation copies both byte views into permanent,
