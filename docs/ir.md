@@ -334,13 +334,13 @@ surrounding interpreter loop, keeping the control machine independent of storage
 and effect-handler state.
 
 The verified bytecode facade uses the same program-counter machine for execution.
-Modules containing only the currently closed scalar, text, and one-level
+Modules containing only the currently closed scalar, text, regex, and one-level
 homogeneous-array subset (boolean or 64-bit integer values, text/nominal constants,
 array construction, indexing, length, slicing, membership, concatenation, split,
-join, indexed updates, unary/binary operators, and observations) take a direct
+join, regex search/replacement, indexed updates, unary/binary operators, and observations) take a direct
 packed-instruction path. Its value dispatcher is itself an explicit state machine
 and shares the reference step, storage, and observation contract. The eligibility
-gate rejects other widths, nested arrays, regex execution, calls, effects,
+gate rejects other widths, nested arrays, calls, effects,
 handlers, continuations, and resource operations; those modules deterministically
 rebuild the verified IR and use `interpret` as the semantic oracle until their
 bytecode handlers are implemented.
