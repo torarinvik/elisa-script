@@ -339,14 +339,14 @@ homogeneous-array subset (boolean or 64-bit integer values, text/nominal constan
 array construction, indexing, length, slicing, membership, concatenation, split,
 join, regex search/replacement, indexed updates, unary/binary operators,
 observations, pure direct calls, and typed filesystem/process operations) take a
-direct packed-instruction path. Calls
-use recursive state-machine frames with one shared step budget, storage, and
+direct packed-instruction path. Calls use recursive state-machine frames with one
+shared step budget, storage, and
 observation stream, so helper functions remain behaviorally identical to the
 reference interpreter. The first filesystem operations (`PathExists`, `ReadText`,
 `WriteText`, `RemovePath`, and `MakeExecutable`) use the same typed resource
 wrappers as the oracle, while retaining the packed program-counter machine. Its
 value dispatcher is itself an explicit state machine. The eligibility gate rejects
-other widths, nested arrays, stdio operations, handlers, and continuations.
+other widths, nested arrays, handlers, and continuations.
 Process execution and capture (`RunProcess`, stdout/stderr
 capture, stdin transport, and `ProcessCapture` accessors) use the same typed argv
 and stream helpers as the oracle. Unsupported modules deterministically rebuild
@@ -355,7 +355,8 @@ handlers are implemented. Environment reads and writes (`GetEnvironment`,
 `SetEnvironment`, and `UnsetEnvironment`) likewise share typed wrappers and are
 eligible for the packed path. Directory creation/removal, current-directory
 queries, directory listing, directory checks, and glob expansion are also wired
-through typed wrappers; stdio, handlers, and continuations remain oracle-only.
+through typed wrappers. Stdio read/write operations use the same stream state
+machines and typed wrappers; handlers and continuations remain oracle-only.
 
 ## Planned increments
 
