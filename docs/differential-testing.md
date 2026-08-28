@@ -54,6 +54,14 @@ validated specification into a `DifferentialRun`; keeping that execution layer
 separate lets native, Python, and Elisascript adapters share the same deterministic
 comparison and artifact machinery.
 
+For a native or adapter process, the materialization path should use the IR
+`capture_process_result(executable, arguments, stdin)` intrinsic. It returns one
+typed `ProcessCapture` snapshot, whose `process_exit_status`, `process_stdout`, and
+`process_stderr` accessors populate the corresponding `DifferentialRun` fields. This
+single execution is important for nondeterministic tools: separate stdout, stderr,
+and status calls would observe three different runs. The intrinsic remains
+shell-free and keeps process failures in `error[ProcessError]`.
+
 ## Runner types
 
 First-class runners should cover:

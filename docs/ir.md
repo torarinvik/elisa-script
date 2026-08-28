@@ -215,6 +215,14 @@ keeps byte ownership, wait behavior, and shell-free argument handling identical.
 stages the input in a temporary file, redirects descriptors 0 and 1 in the child,
 and drives input writing and process waiting through explicit state machines before
 returning the complete owned stdout snapshot.
+`CaptureProcessResult` is the differential-testing primitive: it has the same typed
+ executable, argument-vector, and stdin operands but returns nominal `ProcessCapture`
+ data containing the exit status, stdout, and stderr from one child execution. The
+ child redirects descriptors 0, 1, and 2 to separate temporary files; the parent
+ waits before reading both complete streams, so a reference process is never run
+ three times merely to compare its outputs. `process_exit_status`, `process_stdout`,
+ and `process_stderr` are typed accessors over that value. The capture and accessor
+ opcodes are separately verified and dispatched explicitly by the interpreter.
 `GetEnvironment`, `SetEnvironment`, and `UnsetEnvironment` operate on `Text`
 operands. Reads produce owned `Text` under `Environment.Read`; mutations produce
 `Bool` under `Environment.Write`. All three require `EnvironmentError`, reject C
