@@ -137,7 +137,7 @@ states instead of nested scanner conditionals.
 The AST lowering now handles functions, typed parameters and returns,
 integer/float/string/character/boolean constants, immutable local bindings, direct
 calls, unary numeric negation and boolean negation, the core arithmetic family
-(`+`, `-`, `*`, `/`, `%`), integer bitwise operations (`&`, `|`, `^`) and shifts
+(`+`, `-`, `*`, `/`, `%`), integer complement and bitwise operations (`~`, `&`, `|`, `^`) and shifts
 (`<<`, `>>`), all six scalar comparisons, short-circuit `and`/`or`,
 conditional expressions, returns, structured `if` branches with
 fallthrough merges, and `while` loops with explicit headers/backedges/exits.
@@ -168,7 +168,9 @@ mutations of already-existing outer SSA bindings remain visible as expected.
 
 Straight-line `<-` mutation is reconstructed as an SSA name rebind: the
 new expression result becomes the binding's current value and no memory slot is
-introduced. Mutation across `if` fallthrough edges is reconstructed with typed
+introduced. Arithmetic and bitwise compound assignments use the same mechanism,
+including `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, and `>>=`.
+Mutation across `if` fallthrough edges is reconstructed with typed
 edge arguments and a fresh merge-block parameter. Loop-carried locals receive
 typed header and exit parameters; initial entry, normal backedges, `continue`, and
 `break` edges all pass the binding's current SSA value.

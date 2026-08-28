@@ -232,13 +232,31 @@ extend EsIr:
                 state.instructions.push(Instruction{opcode: Opcode.HandlerPop, result: 0, result_type: void_ir_type(), symbol: state.active_handlers[handler_index], trace: trace_site(state, "handler-unwind", pos), span: ir_span(pos)})
 
 
+        def supported_assignment_operator(operator: TokenKind) -> bool:
+            return operator in {TokenKind.LArrow, TokenKind.PlusEq, TokenKind.MinusEq, TokenKind.StarEq, TokenKind.SlashEq, TokenKind.PercentEq, TokenKind.AmpEq, TokenKind.PipeEq, TokenKind.CaretEq, TokenKind.LShiftEq, TokenKind.RShiftEq}
+
+
+        def compound_opcode(operator: TokenKind) -> Opcode:
+            Opcode.Add return if operator == TokenKind.PlusEq
+            Opcode.Subtract return if operator == TokenKind.MinusEq
+            Opcode.Multiply return if operator == TokenKind.StarEq
+            Opcode.Divide return if operator == TokenKind.SlashEq
+            Opcode.Remainder return if operator == TokenKind.PercentEq
+            Opcode.BitAnd return if operator == TokenKind.AmpEq
+            Opcode.BitOr return if operator == TokenKind.PipeEq
+            Opcode.BitXor return if operator == TokenKind.CaretEq
+            Opcode.ShiftLeft return if operator == TokenKind.LShiftEq
+            Opcode.ShiftRight return if operator == TokenKind.RShiftEq
+            return Opcode.Copy
+
+
         def collect_assigned_names(statements: darray[Ast::Stmt]&, names: mutable darray[sview]&) -> void can[Memory.Allocate, Abort.Panic]:
             for statement in statements |names|:
                 match statement:
                     Stmt.Assign(target, operator, value, pos):
                         match target:
                             Expr.Ident(name, target_pos):
-                                add_unique_name(names, name) if operator == TokenKind.LArrow
+                                add_unique_name(names, name) if supported_assignment_operator(operator)
                             _:
                                 pass
                     Stmt.If(condition, then_body, else_body, pos):
@@ -377,8 +395,9 @@ extend EsIr:
                     if operator == TokenKind.Plus:
                         return lowered_operand
                     opcode: mutable Opcode = Opcode.Negate
-                    supported: mutable bool = operator == TokenKind.Minus or operator == TokenKind.Not or operator == TokenKind.Bang
+                    supported: mutable bool = operator == TokenKind.Minus or operator == TokenKind.Not or operator == TokenKind.Bang or operator == TokenKind.Tilde
                     opcode <- Opcode.Not if operator == TokenKind.Not or operator == TokenKind.Bang
+                    opcode <- Opcode.BitNot if operator == TokenKind.Tilde
                     if not supported:
                         add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "unary operator is not in the core IR lowering subset")
                         return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
@@ -387,6 +406,9 @@ extend EsIr:
                         return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
                     if opcode == Opcode.Not and lowered_operand.type.kind != TypeKind.Bool:
                         add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "boolean negation requires a boolean operand")
+                        return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+                    if opcode == Opcode.BitNot and lowered_operand.type.kind != TypeKind.Int:
+                        add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "bitwise complement requires an integer operand")
                         return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
                     result_type: Type = type_from_name("bool") if opcode == Opcode.Not else lowered_operand.type
                     result: u32 = fresh_value(state)
@@ -622,15 +644,33 @@ extend EsIr:
                     if target_name == "" or index == state.names.count:
                         add_issue(state, LowerIssueKind.UnsupportedAssignmentTarget, pos.line, "initial SSA lowering supports assignment to a known local name")
                     else:
-                        if operator != TokenKind.LArrow:
-                            add_issue(state, LowerIssueKind.UnsupportedAssignmentTarget, pos.line, "initial SSA rebinding supports the Elisa mutation operator <-")
-                        else:
+                        if not supported_assignment_operator(operator):
+                            add_issue(state, LowerIssueKind.UnsupportedAssignmentTarget, pos.line, "SSA rebinding supports <- and typed arithmetic or bitwise compound assignment")
+                        elif operator == TokenKind.LArrow:
                             lowered: LoweredValue = lower_expression_expected(value, state.types[index], state)
                             if lowered.valid:
                                 if not same_type(state.types[index], lowered.type):
                                     add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "assignment cannot change a binding's static type")
                                 else:
                                     state.values[index] <- lowered.value
+                        else:
+                            lowered: LoweredValue = lower_expression_expected(value, state.types[index], state)
+                            if lowered.valid:
+                                opcode: Opcode = compound_opcode(operator)
+                                arithmetic: bool = opcode in {Opcode.Add, Opcode.Subtract, Opcode.Multiply, Opcode.Divide, Opcode.Remainder}
+                                bitwise: bool = opcode in {Opcode.BitAnd, Opcode.BitOr, Opcode.BitXor, Opcode.ShiftLeft, Opcode.ShiftRight}
+                                operands_match: bool = same_type(state.types[index], lowered.type)
+                                valid_arithmetic: bool = arithmetic and operands_match and numeric_type(state.types[index]) and (opcode != Opcode.Remainder or state.types[index].kind == TypeKind.Int)
+                                valid_bitwise: bool = bitwise and operands_match and state.types[index].kind == TypeKind.Int
+                                if not valid_arithmetic and not valid_bitwise:
+                                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "compound assignment operands do not have compatible static types")
+                                else:
+                                    result: u32 = fresh_value(state)
+                                    operand_start: u32 = state.operand_pool.count.u32()
+                                    state.operand_pool.push(state.values[index])
+                                    state.operand_pool.push(lowered.value)
+                                    state.instructions.push(Instruction{opcode: opcode, result: result, result_type: state.types[index], operand_start: operand_start, operand_count: 2, span: ir_span(pos)})
+                                    state.values[index] <- result
                 Stmt.Return(value_opt, pos):
                     if value_opt is value:
                         lowered: LoweredValue = lower_expression_expected(value, return_type, state)
