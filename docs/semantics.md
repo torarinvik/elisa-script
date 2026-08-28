@@ -98,6 +98,12 @@ rules are total, deterministic, and identical across the interpreter and future
 bytecode, JIT, and native backends. A source function named `split` shadows the
 compiler-known operation normally.
 
+`join(fields, separator) -> sview` is the typed inverse for `darray[sview]` values.
+It inserts the separator only between fields, preserves empty fields, and returns
+empty text for an empty array. `join(split(text, separator), separator)` therefore
+round-trips text under the explicit-separator rules. Like `split`, a source-defined
+function with the same name takes precedence.
+
 ## Compile-time validation
 
 `check_typed_literals.elisa` validates constant string payloads during the existing

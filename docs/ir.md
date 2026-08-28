@@ -208,6 +208,11 @@ nonempty input into one-byte text views, while empty input produces an empty arr
 this follows the same explicit byte model as indexing and iteration. The interpreter
 stores fields in caller-owned value storage, so split results can be indexed,
 compared structurally, iterated, and returned without hidden host allocations.
+The inverse compiler-known `join(fields, separator)` operation has type
+`Array[Text] × Text -> Text` and lowers to `Join`. Verification rejects non-text
+arrays before execution; the interpreter also validates each runtime element and
+constructs one owned output buffer. Empty arrays join to empty text, separators
+appear only between fields, and empty fields remain observable.
 Exact-type `array + array` and `text + text` lower to the semantic `Concat`
 operation rather than numeric `Add`. Array concatenation copies both inputs into
 fresh value storage. Text concatenation copies both byte views into permanent,
