@@ -109,6 +109,32 @@ module EsBytecode:
             edge_count: mutable u16
 
 
+        const enum BytecodeExecutionState of u8:
+            EnterBlock
+            Condition
+            SelectAction
+            ExecuteInstruction
+            StoreInstruction
+            DispatchAction
+            ValidateJump
+            CollectEdge
+            BindEdge
+            Done
+
+
+        struct BytecodeExecutionCursor:
+            state: mutable BytecodeExecutionState
+            control: mutable BytecodeControlCursor
+            entered: mutable bool
+            branch_condition: mutable bool
+            target_index: mutable usize
+            edge_offset: mutable usize
+            pending: mutable darray[RuntimeValue]
+            value: mutable RuntimeValue
+            result: mutable RuntimeValue
+            steps: mutable u64
+
+
         const enum BytecodeValueState of u8:
             Execute
             Done
@@ -1087,50 +1113,122 @@ module EsBytecode:
             for index in 0..<arguments.count |fn, arguments, ids, values|:
                 ids.push(fn.parameters[index].value)
                 values.push(arguments[index])
-            cursor: mutable BytecodeControlCursor = BytecodeControlCursor{state: BytecodeControlState.Instruction, block_index: bytecode_block_index(fn, fn.entry), instruction_index: 0, action: BytecodeControlAction.Invalid, target: 0, edge_start: 0, edge_count: 0}
-            entered: mutable bool = true
-            steps: mutable u64 = 0
-            while true:
-                raise InterpretError.InvalidControlFlow if cursor.block_index >= fn.blocks.count
-                if entered:
-                    entered <- false
-                    # The reference interpreter ticks once on block entry.
-                    steps <- steps + 1
-                    raise InterpretError.StepLimitExceeded if steps > step_limit
-                branch_condition: mutable bool = false
-                if cursor.instruction_index >= fn.blocks[cursor.block_index].instruction_count.usize() and fn.blocks[cursor.block_index].terminator.kind == TerminatorKind.Branch:
-                    condition: RuntimeValue = bytecode_direct_frame_value(ids, values, fn.blocks[cursor.block_index].terminator.operand)
-                    raise InterpretError.TypeMismatch if condition.kind != RuntimeValueKind.Bool
-                    branch_condition <- condition.boolean
-                action: BytecodeControlAction = bytecode_next_control(fn, cursor, branch_condition)
-                if action == BytecodeControlAction.ExecuteInstruction:
-                    instruction_index: usize = fn.blocks[cursor.block_index].instruction_offset.usize() + cursor.instruction_index - 1
-                    steps <- steps + 1
-                    raise InterpretError.StepLimitExceeded if steps > step_limit
-                    value: RuntimeValue = try bytecode_direct_instruction(module, fn.instructions[instruction_index], fn, ids, values, storage, observations, step_limit, steps)
-                    if fn.instructions[instruction_index].opcode != Opcode.Observe:
-                        bytecode_direct_set_frame_value(ids, values, fn.instructions[instruction_index].result, value)
-                    cursor.state <- BytecodeControlState.Instruction
-                    continue
-                if action == BytecodeControlAction.Return:
-                    terminator: Terminator = fn.blocks[cursor.block_index].terminator
-                    return Execution{value: runtime_void(), steps: steps} if terminator.operand_count == 0
-                    return Execution{value: bytecode_direct_frame_value(ids, values, terminator.operand), steps: steps}
-                if action != BytecodeControlAction.Jump:
+            cursor: mutable BytecodeExecutionCursor = BytecodeExecutionCursor{state: BytecodeExecutionState.EnterBlock, control: BytecodeControlCursor{state: BytecodeControlState.Instruction, block_index: bytecode_block_index(fn, fn.entry), instruction_index: 0, action: BytecodeControlAction.Invalid, target: 0, edge_start: 0, edge_count: 0}, entered: true, branch_condition: false, target_index: fn.blocks.count, edge_offset: 0, pending: [], value: runtime_void(), result: runtime_void(), steps: 0}
+            machine over cursor.state:
+                state Execute
+                start Execute
+
+                Execute, BytecodeExecutionState.EnterBlock if cursor.control.block_index >= fn.blocks.count:
                     raise InterpretError.InvalidControlFlow
-                target_index: usize = bytecode_block_index(fn, cursor.target)
-                raise InterpretError.InvalidControlFlow if target_index == fn.blocks.count or cursor.edge_count != fn.blocks[target_index].parameter_count
-                pending: mutable darray[RuntimeValue] = []
-                for offset in 0..<cursor.edge_count.usize() |fn, cursor, ids, values, pending|:
-                    pending.push(bytecode_direct_frame_value(ids, values, fn.edge_arg_pool[cursor.edge_start.usize() + offset]))
-                for offset in 0..<cursor.edge_count.usize() |fn, target_index, pending, ids, values|:
-                    parameter: Parameter = fn.block_parameter_pool[fn.blocks[target_index].parameter_start.usize() + offset]
-                    bytecode_direct_set_frame_value(ids, values, parameter.value, pending[offset])
-                cursor.block_index <- target_index
-                cursor.instruction_index <- 0
-                cursor.state <- BytecodeControlState.Instruction
-                entered <- true
-            return Execution{value: runtime_void(), steps: steps}
+                    break
+                Execute, BytecodeExecutionState.EnterBlock if cursor.entered and cursor.steps + 1 > step_limit:
+                    raise InterpretError.StepLimitExceeded
+                    break
+                Execute, BytecodeExecutionState.EnterBlock if cursor.entered:
+                    cursor.entered <- false
+                    # The reference interpreter ticks once on block entry.
+                    cursor.steps <- cursor.steps + 1
+                    cursor.state <- BytecodeExecutionState.Condition
+                    -> Execute
+                Execute, BytecodeExecutionState.EnterBlock:
+                    cursor.state <- BytecodeExecutionState.Condition
+                    -> Execute
+
+                Execute, BytecodeExecutionState.Condition if cursor.control.instruction_index >= fn.blocks[cursor.control.block_index].instruction_count.usize() and fn.blocks[cursor.control.block_index].terminator.kind == TerminatorKind.Branch and bytecode_direct_frame_value(ids, values, fn.blocks[cursor.control.block_index].terminator.operand).kind != RuntimeValueKind.Bool:
+                    raise InterpretError.TypeMismatch
+                    break
+                Execute, BytecodeExecutionState.Condition if cursor.control.instruction_index >= fn.blocks[cursor.control.block_index].instruction_count.usize() and fn.blocks[cursor.control.block_index].terminator.kind == TerminatorKind.Branch:
+                    condition: RuntimeValue = bytecode_direct_frame_value(ids, values, fn.blocks[cursor.control.block_index].terminator.operand)
+                    cursor.branch_condition <- condition.boolean
+                    cursor.state <- BytecodeExecutionState.SelectAction
+                    -> Execute
+                Execute, BytecodeExecutionState.Condition:
+                    cursor.branch_condition <- false
+                    cursor.state <- BytecodeExecutionState.SelectAction
+                    -> Execute
+
+                Execute, BytecodeExecutionState.SelectAction:
+                    cursor.control.action <- bytecode_next_control(fn, cursor.control, cursor.branch_condition)
+                    cursor.state <- BytecodeExecutionState.DispatchAction
+                    -> Execute
+
+                Execute, BytecodeExecutionState.DispatchAction if cursor.control.action == BytecodeControlAction.ExecuteInstruction:
+                    cursor.state <- BytecodeExecutionState.ExecuteInstruction
+                    -> Execute
+                Execute, BytecodeExecutionState.DispatchAction if cursor.control.action == BytecodeControlAction.Return and fn.blocks[cursor.control.block_index].terminator.operand_count == 0:
+                    terminator: Terminator = fn.blocks[cursor.control.block_index].terminator
+                    cursor.result <- runtime_void()
+                    cursor.state <- BytecodeExecutionState.Done
+                    -> Execute
+                Execute, BytecodeExecutionState.DispatchAction if cursor.control.action == BytecodeControlAction.Return:
+                    terminator: Terminator = fn.blocks[cursor.control.block_index].terminator
+                    cursor.result <- bytecode_direct_frame_value(ids, values, terminator.operand)
+                    cursor.state <- BytecodeExecutionState.Done
+                    -> Execute
+                Execute, BytecodeExecutionState.DispatchAction if cursor.control.action == BytecodeControlAction.Jump:
+                    cursor.target_index <- bytecode_block_index(fn, cursor.control.target)
+                    cursor.state <- BytecodeExecutionState.ValidateJump
+                    -> Execute
+                Execute, BytecodeExecutionState.DispatchAction:
+                    raise InterpretError.InvalidControlFlow
+                    break
+
+                Execute, BytecodeExecutionState.ExecuteInstruction if cursor.steps + 1 > step_limit:
+                    raise InterpretError.StepLimitExceeded
+                    break
+                Execute, BytecodeExecutionState.ExecuteInstruction:
+                    instruction_index: usize = fn.blocks[cursor.control.block_index].instruction_offset.usize() + cursor.control.instruction_index - 1
+                    cursor.steps <- cursor.steps + 1
+                    cursor.value <- try bytecode_direct_instruction(module, fn.instructions[instruction_index], fn, ids, values, storage, observations, step_limit, cursor.steps)
+                    cursor.state <- BytecodeExecutionState.StoreInstruction
+                    -> Execute
+
+                Execute, BytecodeExecutionState.StoreInstruction if fn.instructions[fn.blocks[cursor.control.block_index].instruction_offset.usize() + cursor.control.instruction_index - 1].opcode != Opcode.Observe:
+                    instruction_index: usize = fn.blocks[cursor.control.block_index].instruction_offset.usize() + cursor.control.instruction_index - 1
+                    bytecode_direct_set_frame_value(ids, values, fn.instructions[instruction_index].result, cursor.value)
+                    cursor.control.state <- BytecodeControlState.Instruction
+                    cursor.state <- BytecodeExecutionState.EnterBlock
+                    -> Execute
+                Execute, BytecodeExecutionState.StoreInstruction:
+                    cursor.control.state <- BytecodeControlState.Instruction
+                    cursor.state <- BytecodeExecutionState.EnterBlock
+                    -> Execute
+
+                Execute, BytecodeExecutionState.ValidateJump if cursor.target_index == fn.blocks.count or cursor.control.edge_count != fn.blocks[cursor.target_index].parameter_count:
+                    raise InterpretError.InvalidControlFlow
+                    break
+                Execute, BytecodeExecutionState.ValidateJump:
+                    cursor.pending <- []
+                    cursor.edge_offset <- 0
+                    cursor.state <- BytecodeExecutionState.CollectEdge
+                    -> Execute
+
+                Execute, BytecodeExecutionState.CollectEdge if cursor.edge_offset >= cursor.control.edge_count.usize():
+                    cursor.edge_offset <- 0
+                    cursor.state <- BytecodeExecutionState.BindEdge
+                    -> Execute
+                Execute, BytecodeExecutionState.CollectEdge:
+                    cursor.pending.push(bytecode_direct_frame_value(ids, values, fn.edge_arg_pool[cursor.control.edge_start.usize() + cursor.edge_offset]))
+                    cursor.edge_offset <- cursor.edge_offset + 1
+                    -> Execute
+
+                Execute, BytecodeExecutionState.BindEdge if cursor.edge_offset >= cursor.control.edge_count.usize():
+                    cursor.control.block_index <- cursor.target_index
+                    cursor.control.instruction_index <- 0
+                    cursor.control.state <- BytecodeControlState.Instruction
+                    cursor.entered <- true
+                    cursor.state <- BytecodeExecutionState.EnterBlock
+                    -> Execute
+                Execute, BytecodeExecutionState.BindEdge:
+                    parameter: Parameter = fn.block_parameter_pool[fn.blocks[cursor.target_index].parameter_start.usize() + cursor.edge_offset]
+                    bytecode_direct_set_frame_value(ids, values, parameter.value, cursor.pending[cursor.edge_offset])
+                    cursor.edge_offset <- cursor.edge_offset + 1
+                    -> Execute
+
+                Execute, BytecodeExecutionState.Done:
+                    break
+
+            return Execution{value: cursor.result, steps: cursor.steps}
 
 
         def bytecode_block_offset(function: BytecodeFunction&, block_id: u32) -> u32:

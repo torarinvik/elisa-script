@@ -355,7 +355,10 @@ reference interpreter. The first filesystem operations (`PathExists`, `ReadText`
 wrappers as the oracle, while retaining the packed program-counter machine. Its
 value dispatcher is itself an explicit state machine, and its direct binary helper
 uses a typed selection machine that separates equality, floating-point, and integer
-operations before reaching a terminal value state. The eligibility gate rejects
+operations before reaching a terminal value state. The packed executor wraps the
+control cursor in another explicit machine for block entry, condition staging,
+instruction storage, jump-edge collection, and returns, so its direct loop has no
+implicit host control-flow state. The eligibility gate rejects
 other widths, arrays nested deeper than two levels, handlers, and continuations; failure-sensitive integer
 divide/remainder/shift operations remain on the interpreter path, while `f64`
 division is direct.
