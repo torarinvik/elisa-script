@@ -44,6 +44,19 @@ separate `canonical_module_bytes` value so its inferred region remains with the
 artifact writer. `artifact_fingerprint_matches_module` provides the corresponding
 constant-time metadata check.
 
+## Bytecode lowering
+
+`EsBytecode.lower_bytecode` is the first backend facade. It accepts only a module
+with zero verifier issues, copies the typed instruction/operand/edge pools and
+handler metadata in declaration order, and adds a deterministic block-offset table
+for each function. `BytecodeBlock.terminator` remains the original typed CFG
+terminator, so branches and edge arguments are not rewritten into host labels or
+machine addresses. A malformed module returns the verifier issues and an empty
+bytecode module; no backend-specific recovery is permitted. The initial bytecode
+representation deliberately preserves semantic `Opcode` values, giving a future
+packed encoder and VM one checked source of truth while the reference interpreter
+continues to define behavior.
+
 ## Algebraic effects
 
 `Perform` is an IR operation, not an early rewrite to a runtime function call. It
