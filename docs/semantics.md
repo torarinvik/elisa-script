@@ -124,6 +124,11 @@ and `FileIoError`; partial writes and close failures are errors rather than appa
 success. Together, `path_exists`, `read_text`, and `write_text` form the first
 complete filesystem round trip without shell or Python.
 
+`remove_path(path: Path) -> bool` removes a filesystem entry and contributes
+`File.Write`. It returns `true` only when removal succeeded; a missing or otherwise
+unremovable path returns `false`, following the core Elisa `remove_file` contract.
+The nominal operand prevents accidental deletion through an arbitrary text value.
+
 ## Compile-time validation
 
 `check_typed_literals.elisa` validates constant string payloads during the existing

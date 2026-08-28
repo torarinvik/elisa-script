@@ -160,6 +160,10 @@ I/O failure becomes `InterpretError.FileIo` at the reference-interpreter boundar
 complete byte count, checks close status, and returns that count. A partial write
 never produces a successful result, and empty text still creates or truncates the
 target file deterministically.
+`RemovePath` verifies as `Named(Path) -> Bool` with `File.Write`. It calls Elisa's
+core unlink wrapper using the same owned NUL-terminated path conversion as the other
+filesystem operations. Missing paths produce `false`; they are not conflated with
+interpreter failure or wrapped in a result value.
 Named direct-call arguments are resolved against predeclared parameter labels and
 then emitted in canonical signature order. Their expressions still execute once in
 source order. Missing parameters materialize their Elisa default expressions in
