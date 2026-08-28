@@ -341,11 +341,14 @@ join, regex search/replacement, indexed updates, unary/binary operators,
 observations, and pure direct calls) take a direct packed-instruction path. Calls
 use recursive state-machine frames with one shared step budget, storage, and
 observation stream, so helper functions remain behaviorally identical to the
-reference interpreter. Its value dispatcher is itself an explicit state machine.
-The eligibility gate rejects other widths, nested arrays, effectful/resource
-operations, handlers, and continuations; those modules deterministically rebuild
-the verified IR and use `interpret` as the semantic oracle until their bytecode
-handlers are implemented.
+reference interpreter. The first filesystem operations (`PathExists`, `ReadText`,
+`WriteText`, `RemovePath`, and `MakeExecutable`) use the same typed resource
+wrappers as the oracle, while retaining the packed program-counter machine. Its
+value dispatcher is itself an explicit state machine. The eligibility gate rejects
+other widths, nested arrays, process/environment/directory/stdio operations,
+handlers, and continuations; those modules deterministically rebuild the verified
+IR and use `interpret` as the semantic oracle until their bytecode handlers are
+implemented.
 
 ## Planned increments
 
