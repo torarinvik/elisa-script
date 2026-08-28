@@ -173,6 +173,10 @@ its result. Its opcode is handled by the interpreter's exhaustive Elisa dispatch
 machine. Execution redirects only stdout into an anonymous temporary file, reaps
 the child, and returns owned length-delimited bytes. It does not reinterpret output
 as a C string, impose a pipe-sized backpressure limit, or capture stderr.
+`GetEnvironment`, `SetEnvironment`, and `UnsetEnvironment` operate on `Text`
+operands. Reads produce owned `Text` under `Environment.Read`; mutations produce
+`Bool` under `Environment.Write`. All three require `EnvironmentError`, reject C
+string truncation hazards, and execute through explicit exhaustive opcode arms.
 Named direct-call arguments are resolved against predeclared parameter labels and
 then emitted in canonical signature order. Their expressions still execute once in
 source order. Missing parameters materialize their Elisa default expressions in

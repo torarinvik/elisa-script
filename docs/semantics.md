@@ -150,6 +150,22 @@ seek, read, close, and wait failures raise `ProcessError`. Exit status is delibe
 orthogonal to captured bytes; a missing executable therefore yields empty output,
 while `run_process` exposes its status `127` when status is the required observation.
 
+## Process environment
+
+Environment access is explicit and typed rather than implicit global string magic:
+
+- `get_environment(name: sview) -> sview error[EnvironmentError]
+  can[Environment.Read]` returns an owned snapshot of the value. A missing or invalid
+  name raises `EnvironmentError`, so it cannot be confused with a present empty value.
+- `set_environment(name: sview, value: sview) -> bool error[EnvironmentError]
+  can[Environment.Write]` replaces the process-global value and returns `true`.
+- `unset_environment(name: sview) -> bool error[EnvironmentError]
+  can[Environment.Write]` removes the key and returns `true`, including when absent.
+
+Names must be non-empty and neither names nor values may contain embedded NUL bytes.
+These mutations intentionally affect later child processes and therefore make the
+environment dependency visible in the inferred effect row.
+
 ## Compile-time validation
 
 `check_typed_literals.elisa` validates constant string payloads during the existing
