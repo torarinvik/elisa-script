@@ -1,0 +1,485 @@
+# Stage1 parser — expression parsing (`extend Parser: private:`). Covers primary/postfix/
+# unary/binary expressions plus array/dict/brace literals. Split out of parser.elisa to
+# keep each part file under 600 lines; see parser.elisa for the module overview.
+
+extend Parser:
+    private:
+        def record_numeric_suffix(parser: lmut Parser, token: Token) -> void:
+            return if not token.flags.has_suffix or token.suffix_length == 0
+            suffix_start: usize = token.start.usize() + token.length.usize()
+            suffix_end: usize = suffix_start + token.suffix_length.usize()
+            parser.numeric_suffix_names <- parser.numeric_suffix_names.push(Lexer::source_view_or_empty(parser.source, suffix_start, suffix_end))
+            parser.numeric_suffix_lines <- parser.numeric_suffix_lines.push(token.line)
+
+        # ============================================================
+        # Expression parsing
+        # Returns Expr? (opaque AST handle or null on error)
+        # All allocations happen implicitly in inferred region
+        # ============================================================
+
+        # Decode an integer-literal token's source text to its i64 value. Handles decimal
+        # and `0x`/`0X` hex, skips `_` digit separators, and stops at a type suffix (e.g.
+        # `3u`). Value-dependent semantic checks (division-by-zero, array-literal arity) need
+        # the real value; previously every IntLit was recorded as 0.
+        #
+        # Accumulation is in u64 so a full-width literal (e.g. `0xFFFFFFFFFFFFFFFF` == u64.max,
+        # which is -1 as an i64 bit pattern) fits without a checked-arithmetic overflow trap;
+        # the exact bit pattern is then converted back to i64 (`.i64()` is a same-width
+        # reinterpret — it does NOT clamp or trap; u64.max → -1). A digit is folded as u64
+        # too so no signed intermediate can trap.
+        def parse_int_literal_value(text: sview) -> i64:
+            n: usize = sview_len(text)
+            is_hex: bool = n >= 2 and sview_at(text, 0) == 48 and (sview_at(text, 1) == 120 or sview_at(text, 1) == 88)
+            value: mutable u64 = 0
+            i: mutable usize = 2 if is_hex else 0
+            while i < n |value, i|:
+                b: u8 = sview_at(text, i)
+                i <- i + 1 if b == 95           # skip `_` digit separator
+                continue if b == 95
+                digit: i64 = (b - 48).i64() if b >= 48 and b <= 57 else (b - 97 + 10).i64() if is_hex and b >= 97 and b <= 102 else (b - 65 + 10).i64() if is_hex and b >= 65 and b <= 70 else -1
+                break if digit < 0
+                base: u64 = 16 if is_hex else 10
+                value <- value * base + digit.u64()
+                i <- i + 1
+            return value.i64()
+
+        def primary_literal(parser: lmut Parser, kind: TokenKind, token: Token) -> Ast::Expr?:
+            # Literal parsing is a closed token-kind table. A match keeps each token's
+            # side effects adjacent to its construction and avoids a fall-through chain of
+            # independent predicates that repeatedly tests the same discriminant.
+            match kind:
+                TokenKind.IntLit | TokenKind.HexLit:
+                    literal_text: sview = Lexer::text_or_empty(token, parser.source)
+                    parser <- parser.record_numeric_suffix(token)
+                    parser, _ <- parser.advance()
+                    return (Ast::Expr.IntLit(parse_int_literal_value(literal_text)))
+                TokenKind.FloatLit:
+                    parser <- parser.record_numeric_suffix(token)
+                    parser, _ <- parser.advance()
+                    return (Ast::Expr.FloatLit(Lexer::text_or_empty(token, parser.source)))
+                TokenKind.CharLit:
+                    parser, _ <- parser.advance()
+                    return (Ast::Expr.CharLit(Lexer::text_or_empty(token, parser.source)))
+                TokenKind.StringLit:
+                    parser, _ <- parser.advance()
+                    return (Ast::Expr.StringLit(Lexer::text_or_empty(token, parser.source)))
+                TokenKind.FString:
+                    parser, _ <- parser.advance()
+                    rebind fstring: Ast::Expr, parser = parser.fstring_expression(token)
+                    return fstring
+                _:
+                    return null
+
+        def parenthesized_expression(parser: lmut Parser, token: Token) -> Ast::Expr?:
+            parser, _ <- parser.advance()
+            if parser.peek() == TokenKind.RParen:
+                parser, _ <- parser.advance()
+                return (Ast::Expr.Tuple([], Ast::pos_of_token(token)))
+            if parser.peek() == TokenKind.Ident and parser.peek_at(1) == TokenKind.Colon:
+                named_elements: mutable darray[Ast::Expr] = []
+                while parser.peek() != TokenKind.RParen and parser.peek() != TokenKind.Eof |parser, named_elements|:
+                    if parser.peek() == TokenKind.Ident and parser.peek_at(1) == TokenKind.Colon:
+                        tuple_label_token: Token = parser.cursor()
+                        parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: "__tuple_label", name: Lexer::text_or_empty(tuple_label_token, parser.source), line: tuple_label_token.line})
+                        parser, _ <- parser.advance()
+                        parser, _ <- parser.advance()
+                    rebind named_element_opt: Ast::Expr?, parser = parser.expression()
+                    if named_element_opt is named_element:
+                        named_elements.push(named_element)
+                    rebind accepted_comma: bool, parser = parser.accept(TokenKind.Comma)
+                    break if not accepted_comma
+                parser, _ <- parser.expect(TokenKind.RParen)
+                return (Ast::Expr.Tuple(named_elements, Ast::pos_of_token(token)))
+            previous_where_group: bool = parser.in_where_group
+            parser.in_where_group <- true
+            paren_first_raw: mutable Ast::Expr = (Ast::Expr.Invalid)
+            if parser.in_contract:
+                rebind contract_group: Ast::Expr, parser = parser.contract_expression()
+                paren_first_raw <- contract_group
+            else:
+                rebind paren_first_opt: Ast::Expr?, parser = parser.expression()
+                paren_first_raw <- get paren_first_opt else (Ast::Expr.Invalid)
+            parser.in_where_group <- previous_where_group
+            rebind paren_first: Ast::Expr, parser = parser.consume_removed_as_cast(paren_first_raw)
+            if parser.peek() == TokenKind.Comma:
+                tuple_elements: mutable darray[Ast::Expr] = [paren_first]
+                while parser.accept(TokenKind.Comma) |parser|:
+                    break if parser.peek() == TokenKind.RParen
+                    rebind tuple_element_opt: Ast::Expr?, parser = parser.expression()
+                    if tuple_element_opt is tuple_element:
+                        tuple_elements.push(tuple_element)
+                parser, _ <- parser.expect(TokenKind.RParen)
+                return (Ast::Expr.Tuple(tuple_elements, Ast::pos_of_token(token)))
+            parser, _ <- parser.expect(TokenKind.RParen)
+            # The grouping node itself: kept only for the unparser (see
+            # `parser_preserve_parens`), dropped for the compile path.
+            (Ast::Expr.Paren(paren_first, Ast::pos_of_token(token))) return if parser_preserve_parens
+            return paren_first
+
+        def primary_identifier(parser: lmut Parser, token: Token) -> Ast::Expr?:
+            # `get EXPR else <recovery>` recovery form (contextual keyword): the
+            # guarded expression is the value; the `else` clause is a fallback
+            # expression or a control-flow statement (`else return null`).
+            head_text: sview = Lexer::text_or_empty(token, parser.source)
+            # Legacy `do:` value block. Stage0 still accepts this spelling
+            # (with a deprecation notice); lower it to the canonical bare
+            # Expr.Block so every expression position shares one AST shape.
+            if head_text == "do" and parser.peek_at(1) == TokenKind.Colon:
+                parser, _ <- parser.advance()
+                parser, _ <- parser.advance()
+                rebind do_block: Ast::Expr, parser = parser.parse_bare_block_value()
+                return do_block
+            # Removed spellings are contextual identifiers everywhere else, but
+            # their former expression/type shapes receive a parser diagnostic.
+            parser <- parser.error_at(Ast::ParseErrorKind.UnexpectedToken, token) if head_text == "lambda" and parser.peek_at(1) == TokenKind.Ident
+            parser <- parser.error_at(Ast::ParseErrorKind.UnexpectedToken, token) if head_text == "func" and parser.peek_at(1) == TokenKind.LParen
+            # `get EXPR else …` — contextual, so the gate mirrors stage0's: the
+            # next token must be an IDENT. Ungated, `get(40)` consumed the `get`
+            # and parsed `(40)` as the guarded expression, so the CALL NODE
+            # vanished and `def get(...)` became uncallable — silently, since the
+            # residue is a well-formed expression (`get(1, 2, 3)` misparsed to a
+            # tuple rather than erroring).
+            if head_text == "get" and parser.peek_at(1) == TokenKind.Ident:
+                rebind __ret_63: Ast::Expr?, parser = parser.get_expression()
+                return __ret_63
+            # `when SCRUT: …` decision table in expression position (docs/125 §4)
+            # — e.g. `x = when k:` / `return when c:`. Statement-position `when` is
+            # routed by the statement dispatcher first; this handles the nested
+            # expression form. Contextual gate mirrors the statement site.
+            if head_text == "when" and parser.when_construct_ahead():
+                rebind __ret_when_expr: Ast::Expr?, parser = parser.when_expression()
+                return __ret_when_expr
+            # `machine from START:` state-machine expression (docs/125 §5) — e.g.
+            # `kind: TokenKind = machine from Num.Integer:`. Statement-position
+            # `machine over` is routed first (it checks `over`); the `from` form
+            # reaches here as an expression.
+            if head_text == "machine" and parser.machine_from_ahead():
+                rebind __ret_mf_expr: Ast::Expr?, parser = parser.machine_from_expression()
+                return __ret_mf_expr
+            if head_text == "start" and parser.start_machine_ahead():
+                rebind __ret_start_expr: Ast::Expr?, parser = parser.start_machine_expression()
+                return __ret_start_expr
+            # `move EXPR` ownership transfer. Retain the marker so semantic
+            # ownership flow can distinguish a transfer from an ordinary use.
+            if head_text == "move":
+                parser, _ <- parser.advance()
+                rebind __ret_68: Ast::Expr?, parser = parser.unary_expression()
+                if __ret_68 is moved_value:
+                    return (Ast::Expr.Move(moved_value, Ast::pos_of_token(token)))
+                return __ret_68
+            # `new [region] Type(...)` is contextual in stage0 even though the
+            # legacy token slot remains reserved. Lower it to the constructor
+            # expression itself, exactly like the TokenKind.New compatibility arm.
+            if head_text == "new" and (parser.peek_at(1) == TokenKind.Ident or parser.peek_at(1) == TokenKind.LBracket):
+                parser <- parser.record_new_construct(token.line)
+                parser, _ <- parser.advance()
+                new_region_name: mutable sview = sview("", 0, 0)
+                rebind accepted_new_region: bool, parser = parser.accept(TokenKind.LBracket)
+                if accepted_new_region:
+                    # `new[auto] T(...)` is the deprecated explicit auto-region form
+                    # (superseded by bare `new`, which infers the region). Record it
+                    # so the semantic pass can emit the deprecation.
+                    region_token: Token = parser.cursor()
+                    region_selector: sview = Lexer::text_or_empty(region_token, parser.source)
+                    parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: "__new_auto", name: "__new_auto", line: token.line}) if parser.peek() == TokenKind.Ident and region_selector == "auto"
+                    # Record a named region selector (`new[scratch] …`) so the semantic
+                    # pass can see the region is USED as an allocation target — an
+                    # otherwise-untouched region owner is a leak, a used one is not.
+                    parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: region_selector, name: "__region_use", line: token.line}) if parser.peek() == TokenKind.Ident and region_selector != "auto"
+                    new_region_name <- region_selector if parser.peek() == TokenKind.Ident and region_selector != "auto"
+                    while parser.peek() != TokenKind.RBracket and parser.peek() != TokenKind.Eof |parser|:
+                        parser, _ <- parser.advance()
+                    parser, _ <- parser.accept(TokenKind.RBracket)
+                # A NAMED region (`new[scratch] …`) allocates in that region and yields a
+                # ref to the allocation, so the wrapper has to survive to the backend.
+                # Bare `new` and `new[auto]` keep the historical transparent lowering —
+                # their region is inferred, and erasing them changes no observable value.
+                if new_region_name != "":
+                    # `new` binds LOOSER than the arithmetic operators: stage0 allocates the
+                    # whole of `new[scratch] seed + 1` (its IR adds first, then allocates and
+                    # stores the sum). Parsing only the postfix operand would instead build
+                    # `RegionNew(seed) + 1` -- pointer arithmetic on the allocation.
+                    rebind region_new_operand: Ast::Expr?, parser = parser.expression()
+                    if region_new_operand is region_new_allocated:
+                        return (Ast::Expr.RegionNew(region_new_allocated, new_region_name, Ast::pos_of_token(token)))
+                    return region_new_operand
+                rebind contextual_new: Ast::Expr?, parser = parser.postfix_expression()
+                return contextual_new
+            # Ownership/concurrency value wrappers are semantically transparent
+            # to name/type resolution: retain and walk their operand instead of
+            # leaving the contextual keyword as an undefined identifier.
+            if (head_text == "freeze" or head_text == "await") and tokenStartsValue(parser.peek_at(1)):
+                parser, _ <- parser.advance()
+                rebind wrapped_value: Ast::Expr?, parser = parser.unary_expression()
+                if head_text == "await" and wrapped_value is awaited_value:
+                    parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: "__await", name: "__await", line: token.line})
+                    return (Ast::Expr.Block([], awaited_value, [], Ast::pos_of_token(token)))
+                return wrapped_value
+            # `submit [pool] TASK(...)` pool/nursery task submission — the task
+            # call is the expression; the submit marker (and optional bracketed
+            # pool selector) is consumed. The task call is wrapped in a bare
+            # value-Block so statement checkers can tell a submitted call from a
+            # bare discarded call (the submission machinery consumes the result);
+            # the Block is value-transparent to resolution and typing.
+            if head_text == "submit" and (parser.peek_at(1) == TokenKind.Ident or parser.peek_at(1) == TokenKind.LBracket):
+                explicit_pool: bool = parser.peek_at(1) == TokenKind.LBracket
+                parser <- parser.error_at(Ast::ParseErrorKind.SubmitOutsidePool, token) if parser.active_pool_depth == 0 and not explicit_pool
+                parser, _ <- parser.advance()
+                rebind accepted_lbracket: bool, parser = parser.accept(TokenKind.LBracket)
+                if accepted_lbracket:
+                    # `submit[pool] f(x)` — the selector NAMES the pool to submit to. It used to
+                    # be consumed and dropped, so the backend could not tell which pool and the
+                    # explicit form declined while the implicit one worked. Recorded line-keyed,
+                    # the same shape `__query_owner` uses.
+                    if parser.peek() == TokenKind.Ident and parser.peek_at(1) == TokenKind.RBracket:
+                        rebind submit_pool_token: Token, parser = parser.advance()
+                        parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: Lexer::text_or_empty(submit_pool_token, parser.source), name: "__submit_pool", line: token.line})
+                    else:
+                        parser, _ <- parser.expression()          # a non-name selector is dropped, as before
+                    parser, _ <- parser.expect(TokenKind.RBracket)
+                rebind __ret_79: Ast::Expr?, parser = parser.unary_expression()
+                if __ret_79 is submitted_task:
+                    parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: "__submit", name: "__submit", line: token.line})
+                    return (Ast::Expr.Block([], submitted_task, [], Ast::pos_of_token(token)))
+                return __ret_79
+            # Query/quantifier expression `KW VAR[, VAR]* in ITER [where COND]` —
+            # the full stage0 family: any/all (bool), first/count/sum/product/
+            # min/max (fold values), each (side-effect). Contextual keywords —
+            # `count`/`first`/`min`/… are common identifiers, so only the exact
+            # `VAR(, VAR)* in` shape after the keyword selects the query form.
+            if is_query_keyword(head_text) and parser.looks_like_query_expression():
+                # Record WHICH query keyword this is. Expr.Comprehension keeps only
+                # (var, iterable, condition, body, line) — the head is dropped — so the
+                # backend could not tell `count` from `sum`/`min`/`max` and treated every
+                # empty-body form as `any`. Marker goes in the line-keyed side table, the
+                # same compact reuse `__submit`/`__await` make; the `__query_` prefix keeps
+                # it distinct from a fn-type return head.
+                query_head_storage: mutable darray[u8] = []
+                _ = query_head_storage
+                parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: "__query", name: head_text, line: token.line})
+                rebind __ret_86: Ast::Expr?, parser = parser.quantifier_expression()
+                return __ret_86
+            # Verification quantifier `forall|exists VAR in ITER: PRED` (contextual
+            # keywords, `invariant`/`law` predicate spelling — colon body instead of
+            # `where`). Same disambiguation shape as any/all; reuses the Comprehension
+            # node since the quantifier semantics (var/iterable/condition) are identical.
+            direct_quantifier: bool = parser.peek_at(1) == TokenKind.Ident and parser.peek_at(2) == TokenKind.In
+            grouped_quantifier: bool = parser.peek_at(1) == TokenKind.LParen and parser.peek_at(2) == TokenKind.Ident
+            if (head_text == "forall" or head_text == "exists") and (direct_quantifier or grouped_quantifier):
+                # Same `__query` marker the any/all form records. These reuse Expr.Comprehension,
+                # so without it the backend cannot tell `forall` (universal) from `exists`
+                # (existential) either — and defaulting that pair to `any` would miscompile
+                # every `forall` the same way it miscompiled `all`.
+                parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: "__query", name: head_text, line: token.line})
+                rebind forall_head: Token, parser = parser.advance()
+                rebind forall_grouped: bool, parser = parser.accept(TokenKind.LParen)
+                rebind forall_variable: Token, parser = parser.expect(TokenKind.Ident)
+                # Binder row for the `__query` head above — see quantifier_expression.
+                parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: "__query_binder_of", name: Lexer::text_or_empty(forall_variable, parser.source), line: token.line})
+                while parser.accept(TokenKind.Comma) |parser|:
+                    parser, _ <- parser.expect(TokenKind.Ident)
+                parser, _ <- parser.expect(TokenKind.RParen) if forall_grouped
+                parser, _ <- parser.expect(TokenKind.In)
+                rebind forall_iterable: Ast::Expr, parser = get parser.expression()
+                match forall_iterable:
+                    Ast::Expr.Binary(left, operator, right, line):
+                        parser <- parser.error_at(Ast::ParseErrorKind.UnexpectedToken, forall_head) if operator == TokenKind.Range
+                    _:
+                        pass
+                parser, _ <- parser.expect(TokenKind.Colon)
+                forall_condition: mutable Ast::Expr = (Ast::Expr.Absent)
+                rebind forall_condition_opt: Ast::Expr?, parser = parser.expression()
+                forall_condition <- parsed_forall_condition if forall_condition_opt is parsed_forall_condition
+                return (Ast::Expr.Comprehension(Lexer::text_or_empty(forall_variable, parser.source), forall_iterable, forall_condition, (Ast::Expr.Absent), Ast::pos_of_token(forall_head)))
+            # Anonymous function `fn(...) => EXPR` / `fn(...): BLOCK` (params are
+            # always parenthesized — mirrors a function's shape; also any Unicode
+            # lambda letter). Contextual — `fn` is a very common variable name, so
+            # only when the lambda signature is actually followed by `:` or `=>`
+            # (a bare `fn(x)` call / `fn` reference is not).
+            if is_lambda_keyword(head_text):
+                rebind __c_lam: bool, parser = parser.looks_like_lambda()
+                if __c_lam:
+                    rebind __ret_99: Ast::Expr?, parser = parser.lambda_expression()
+                    return __ret_99
+            # Removed shorthand lambda params `fn x: x` / `λ a, b: expression` (params
+            # are always parenthesized now — bd208ae). Left unflagged, `fn` falls
+            # through to being parsed as a bare Ident and the orphaned `x: x` gets
+            # silently reinterpreted as a brand-new statement (0 errors, 2 stmts).
+            # Only fires on the exact removed shape (`IDENT (, IDENT)* COLON`
+            # directly after the keyword) so a bare `fn` reference / `fn(x)` call
+            # is untouched.
+            if is_lambda_keyword(head_text):
+                rebind __c_rsl: bool, parser = parser.looks_like_removed_shorthand_lambda()
+                if __c_rsl:
+                    parser <- parser.error_at(Ast::ParseErrorKind.UnexpectedToken, token)
+                    parser, _ <- parser.advance()
+                    return null
+            parser, _ <- parser.advance()
+            return (Ast::Expr.Ident(head_text, Ast::pos_of_token(token)))
+
+
+        def primary_catch_expression(parser: lmut Parser, token: Token) -> Ast::Expr?:
+            can Abort.Panic:
+                # `catch EXPR:` fallible expression with success/error arms
+                # (`return catch self.foo(...):`). The guarded expression is the
+                # value; the `:` arm block is parsed and consumed. (Statement-position
+                # `catch:` is handled earlier in statement(); this is the expression form.)
+                parser, _ <- parser.advance()                       # `catch`
+                rebind guarded: Ast::Expr, parser = get parser.expression()
+                catch_result: mutable Ast::Expr = guarded
+                if parser.peek() == TokenKind.Colon:
+                    rebind catch_arms: darray[Ast::MatchArm], parser = parser.parse_catch_arm_block(token)
+                    callee_name: sview = parser.catch_callee_name(guarded)
+                    parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: callee_name, name: "__catch_expr", line: token.line}) if callee_name != ""
+                    while arm_index < catch_arms.count |arm_index: usize = 1, parser|:
+                        match catch_arms[arm_index].pattern:
+                            Pattern.Binding(name):
+                                parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: callee_name, name: name, line: token.line})
+                            Pattern.Variant(path, _):
+                                parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: callee_name, name: path, line: token.line})
+                            Pattern.Wildcard:
+                                parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: callee_name, name: "__catch_all", line: token.line})
+                            Pattern.TypeBind(type_name, _):
+                                parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: callee_name, name: "__catch_all", line: token.line}) if type_name == "error"
+                            _:
+                                pass
+                        arm_index <- arm_index + 1
+                    catch_result <- (Ast::Expr.Catch(guarded, catch_arms, Ast::pos_of_token(token)))
+                return catch_result
+
+
+        def primary_keyword_expression(parser: lmut Parser, kind: TokenKind, token: Token) -> Ast::Expr?:
+            no_expr: Ast::Expr? = null
+            if kind == TokenKind.True or kind == TokenKind.False:
+                    parser, _ <- parser.advance()
+                    return (Ast::Expr.BoolLit(kind == TokenKind.True))
+
+                # `raise Error.Tag` is a terminating expression with an unparenthesized
+                # operand. Model it as a call-shaped node so generic expression walkers
+                # retain the tag and flow analysis still recognizes the `raise` head.
+            if kind == TokenKind.Raise:
+                    parser, _ <- parser.advance()
+                    raise_head: Ast::Expr = (Ast::Expr.Ident("raise", Ast::pos_of_token(token)))
+                    rebind raised_value: Ast::Expr?, parser = parser.unary_expression()
+                    if raised_value is raised_expression:
+                        raise_arguments: darray[Ast::Expr] = [raised_expression]
+                        raise_argument_names: darray[sview] = [""]
+                        return (Ast::Expr.Call(raise_head, raise_arguments, raise_argument_names, Ast::pos_of_token(token)))
+                    else:
+                        return raise_head
+
+                # Leaf keywords recorded as identifier nodes: `null` (no dedicated Null
+                # node yet), `sizeof`/`alignof`/`offsetof` (the following `(...)` is
+                # consumed by the postfix Call rule), `panic`/`raise` (operand consumed
+                # by the postfix/unary rules), and `zeroed`.
+            if kind == TokenKind.Null or kind == TokenKind.Sizeof or kind == TokenKind.Alignof or kind == TokenKind.Offsetof or kind == TokenKind.Panic or kind == TokenKind.Zeroed or kind == TokenKind.Error:
+                    spelling: sview = Lexer::text_or_empty(token, parser.source)
+                    parser <- parser.error_at(Ast::ParseErrorKind.UnexpectedToken, token) if spelling == "sizeof" or spelling == "alignof" or spelling == "offsetof"
+                    if kind == TokenKind.Panic:
+                        parser.panic_lines <- parser.panic_lines.push(token.line)
+                        parser.panic_columns <- parser.panic_columns.push(token.column)
+                    parser, _ <- parser.advance()
+                    return (Ast::Expr.Ident(Lexer::text_or_empty(token, parser.source), Ast::pos_of_token(token)))
+
+            if kind == TokenKind.New:
+                    # `new [region] Type(...)`: skip the keyword and optional region
+                    # bracket, then parse the constructor expression as the value.
+                    # The keyword is erased from the AST, so record the line — the
+                    # brace-only construction check exempts new-form paren calls.
+                    parser <- parser.record_new_construct(token.line)
+                    parser, _ <- parser.advance()
+                    rebind accepted_lbracket_2: bool, parser = parser.accept(TokenKind.LBracket)
+                    if accepted_lbracket_2:
+                        while parser.peek() != TokenKind.RBracket and parser.peek() != TokenKind.Eof:
+                            parser, _ <- parser.advance()
+                        parser, _ <- parser.accept(TokenKind.RBracket)
+                    rebind __v_141: Ast::Expr?, parser = parser.postfix_expression()
+                    return __v_141
+
+            if kind == TokenKind.LParen:
+                    rebind parenthesized: Ast::Expr?, parser = parser.parenthesized_expression(token)
+                    return parenthesized
+
+            if kind == TokenKind.LBracket:
+                    rebind __v_184: Ast::Expr?, parser = parser.array_literal()
+                    return __v_184
+
+            if kind == TokenKind.LBrace:
+                    rebind __v_187: Ast::Expr?, parser = parser.brace_literal()
+                    return __v_187
+
+            if kind == TokenKind.Dot:
+                    # Leading-dot enum shorthand `.Variant` / `.A.B` — the enclosing enum
+                    # type is inferred from context. Consume the whole `.Ident(.Ident)*`
+                    # chain here; a following call/index is handled by the postfix rule.
+                    parser, _ <- parser.advance()                       # leading `.`
+                    parts: mutable darray[sview] = []
+                    rebind first_part: Token, parser = parser.expect(TokenKind.Ident)
+                    parts.push(Lexer::text_or_empty(first_part, parser.source))
+                    while parser.accept(TokenKind.Dot) |parser|:
+                        rebind next_part: Token, parser = parser.expect(TokenKind.Ident)
+                        parts.push(Lexer::text_or_empty(next_part, parser.source))
+                    return (Ast::Expr.ShorthandMember(parts, Ast::pos_of_token(token)))
+
+            if kind == TokenKind.Try:
+                    # `try EXPR else <recovery>` inline recovery expression — same shape
+                    # as `get …`; the guarded expression is the value.
+                    rebind __v_205: Ast::Expr?, parser = parser.get_expression()
+                    return __v_205
+
+            if kind == TokenKind.Catch:
+                rebind catch_expression: Ast::Expr?, parser = parser.primary_catch_expression(token)
+                return catch_expression
+            parser <- parser.error_at(Ast::ParseErrorKind.UnexpectedToken, token)
+            parser, _ <- parser.advance()   # consume the offending token so callers don't re-error on it
+            return no_expr
+
+
+        def primary_expression(parser: lmut Parser) -> Ast::Expr?:
+            can Abort.Panic:
+                kind: TokenKind = parser.peek()
+                token: Token = parser.cursor()
+                no_expr: Ast::Expr? = null
+
+                # Dispatch by explicit alternatives so recursive AST-producing parser calls
+                # do not have to pass through a value-match lowering path in the stage1 backend.
+                if kind == TokenKind.Match:
+                        # Expression-form `match EXPR: ...` (e.g. `return match x:` / `y = match x:`).
+                        # Statement-position `match` is routed to match_statement by the statement
+                        # dispatcher first; this handles `match` nested in an expression. Reuses
+                        # the shared arm-block parser; arms carry statement bodies (as in the
+                        # statement form), which the resolver's Expr.Match walker already handles.
+                        rebind match_token: Token, parser = parser.advance()        # `match`
+                        rebind match_scrutinee: Ast::Expr, parser = get parser.expression()
+                        rebind accepted_as: bool, parser = parser.accept(TokenKind.As)
+                        parser, _ <- parser.expect(TokenKind.Ident) if accepted_as
+                        previous_match_value_block: bool = parser.in_value_block
+                        parser.in_value_block <- true
+                        rebind match_arms: darray[Ast::MatchArm], parser = parser.parse_arm_block()
+                        parser.in_value_block <- previous_match_value_block
+                        return (Ast::Expr.Match(match_scrutinee, match_arms, Ast::pos_of_token(match_token)))
+
+                    # Decode literals in a small dispatch helper so the primary parser's
+                    # control-flow body stays within stage1's lowering envelope.
+                if kind == TokenKind.IntLit or kind == TokenKind.HexLit or kind == TokenKind.FloatLit or kind == TokenKind.CharLit or kind == TokenKind.StringLit or kind == TokenKind.FString:
+                        rebind literal: Ast::Expr?, parser = parser.primary_literal(kind, token)
+                        return literal
+
+                if kind == TokenKind.Ident:
+                    rebind identifier: Ast::Expr?, parser = parser.primary_identifier(token)
+                    return identifier
+                rebind keyword_expression: Ast::Expr?, parser = parser.primary_keyword_expression(kind, token)
+                return keyword_expression
+            # Record a `new`-form construction line (see the TokenKind.New primary arm).
+        def record_new_construct(parser: lmut Parser, line: u32) -> void:
+            parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: "__new_construct", name: "__new_construct", line: line})
+
+        def catch_callee_name(parser: Parser&, expression: Ast::Expr) -> sview:
+            can Abort.Panic:
+                match expression:
+                    Expr.Call(callee, arguments, argument_names, line):
+                        return match callee:
+                            Expr.Ident(name, ident_line): name
+                            _: ""
+                    _:
+                        return ""

@@ -1,0 +1,121 @@
+extend Semantic:
+    private:
+        # Record a non-trailing default-parameter finding. A free helper taking the diagnostic
+        # list by reference lets the `machine` arm below report through a straight-line call:
+        # machine arms may mutate only the driven cursor, never the foreign `table`.
+        def report_non_trailing_default(diagnostics: mutable darray[Diagnostic]&, name: sview, line: u32) -> void can[Memory.Allocate, Abort.Panic]:
+            diagnostics.push(Diagnostic{kind: DiagnosticKind.NonTrailingDefaultParam, name: name, line: line, expected: "", actual: ""})
+
+        # Signature + mutability checks for one function: duplicate parameter names,
+        # then assignment-to-immutable over the body.
+        def check_function(parameters: darray[Ast::ParamDecl], body: darray[Ast::Stmt], table: lmut SymbolTable, line: u32) -> void:
+            can Memory.Allocate, Abort.Panic:
+                seen: mutable darray[sview] = []
+                for parameter in parameters |table, seen| -> table:
+                    # Synthesized placeholder params (e.g. a typestate transition's subject
+                    # and declared params, materialized only to carry call arity) have an
+                    # empty name and never appear in real source — skip the duplicate check.
+                    if parameter.name == "":
+                        table
+                    elif any seen_name in seen where seen_name == parameter.name:
+                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.DuplicateParam, name: parameter.name, line: line, expected: "", actual: ""})
+                        table
+                    else:
+                        seen.push(parameter.name)
+                        table
+
+                # No plain parameter may follow a defaulted one — a two-state latch (docs/123).
+                # `machine` names the latch (BeforeDefault/AfterDefault) and checks that every
+                # state handles both inputs (a defaulted vs. a plain parameter). `table` is
+                # foreign to the driven cursor, so the finding is reported through a helper call.
+                parameter_index: mutable usize = 0
+                machine over parameters[parameter_index].has_default while parameter_index < parameters.count:
+                    state BeforeDefault
+                    state AfterDefault
+                    start BeforeDefault
+
+                    BeforeDefault, true:
+                        parameter_index <- parameter_index + 1
+                        -> AfterDefault
+                    BeforeDefault, _:
+                        parameter_index <- parameter_index + 1
+                        -> BeforeDefault
+                    AfterDefault, true:
+                        parameter_index <- parameter_index + 1
+                        -> AfterDefault
+                    AfterDefault, _:
+                        report_non_trailing_default(table.diagnostics, parameters[parameter_index].name, line)
+                        parameter_index <- parameter_index + 1
+                        -> AfterDefault
+
+                immutable_names: mutable darray[sview] = []
+                mutable_names: mutable darray[sview] = []
+                skip: mutable darray[sview] = []
+                for parameter in parameters |immutable_names, mutable_names|:
+                    note_binding(parameter.name, parameter.is_mutable or type_is_mutable(parameter.type_expression) or type_is_lmut(parameter.type_expression), immutable_names, mutable_names)
+                gather_mutability(body, immutable_names, mutable_names, skip)
+                table <- check_assigns(body, table, immutable_names, mutable_names, skip)
+
+                function_scope: mutable darray[sview] = [parameter.name for parameter in parameters]
+                table <- check_duplicate_locals(body, function_scope, table)
+
+
+
+        # Resolve references in every function declaration in `declarations` (recursing modules).
+        def resolve_declarations(declarations: darray[Ast::Decl], table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |table|:
+                    match declaration:
+                        Decl.Func(name, parameters, return_type, body, effects, decorators, line):
+                            bound: mutable darray[sview] = [parameter.name for parameter in parameters]
+                            bound_mutability: mutable darray[bool] = [parameter.is_mutable or type_is_mutable(parameter.type_expression) or type_is_lmut(parameter.type_expression) for parameter in parameters]
+                            while generic_index < table.generic_param_lines.count |generic_index: usize = 0|:
+                                bound.push(table.generic_param_names[generic_index]) if table.generic_param_lines[generic_index] == line.line
+                                bound_mutability.push(false) if table.generic_param_lines[generic_index] == line.line
+                                generic_index <- generic_index + 1
+                            immutable_names: mutable darray[sview] = []
+                            mutable_names: mutable darray[sview] = []
+                            skip: mutable darray[sview] = []
+                            for parameter in parameters |immutable_names, mutable_names|:
+                                note_binding(parameter.name, parameter.is_mutable or type_is_mutable(parameter.type_expression) or type_is_lmut(parameter.type_expression), immutable_names, mutable_names)
+                            gather_mutability(body, immutable_names, mutable_names, skip)
+                            # Params occupy the first `parameters.count` entries of
+                            # `bound`; log their declarations (on the `def` line)
+                            # and mark the boundary for use-site classification.
+                            table.current_param_count <- parameters.count
+                            table.current_loop_depth <- 0
+                            for parameter in parameters |table| -> table:
+                                table <- record_reference(table, line.line, parameter.name, true)
+                            table <- resolve_body(body, table, bound, bound_mutability)
+                            table <- check_function(parameters, body, table, line.line)
+                            table <- check_returns(body, return_type_is_void(return_type), name, table)
+                            table <- check_missing_return(body, return_type_is_void(return_type), name, table, line.line)
+                            parameter_names: mutable darray[sview] = []
+                            parameter_type_names: mutable darray[sview] = []
+                            for parameter in parameters |parameter_names, parameter_type_names|:
+                                parameter_names.push(parameter.name)
+                                parameter_type_names.push(bare_type_name(parameter.type_expression))
+                            return_type_name: mutable sview = ""
+                            if return_type is return_type_expr:
+                                return_type_name <- bare_type_name(return_type_expr)
+                            return_type_name <- "" if return_type_name == "void"
+                            declared_return_id: mutable u32 = 0
+                            if return_type is structural_return_annotation:
+                                declared_return_id <- annotation_type_id(structural_return_annotation, table)
+                            # Fresh structural-type channel for this function's locals
+                            # (populated by note_local_type_id in the initializer walk),
+                            # seeded with the PARAMETERS' structural annotations (safe
+                            # since stage0 da3fb1c6 fixed brace-grower region inference).
+                            clear_local_type_ids(table)
+                            for parameter in parameters |table|:
+                                note_local_type_id(parameter.name, parameter.type_expression, table)
+                            table <- check_variable_initializers(body, return_type_name, declared_return_id, parameter_names, parameter_type_names, table)
+                        Decl.Module(name, body, line):
+                            previous_module: sview = table.current_module
+                            table.current_module <- name
+                            table <- resolve_declarations(body, table)
+                            table.current_module <- previous_module
+                        Decl.Scoped(body, line):
+                            table <- resolve_declarations(body, table)
+                        _:
+                            pass

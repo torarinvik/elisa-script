@@ -1,0 +1,158 @@
+# Stage1 backend — export wrappers and generic instantiation bodies.
+# Part of `module Backend` (see codegen.elisa); split out to keep each file short.
+
+extend Backend:
+    private:
+        # `export fn public(args) -> T = internal` is represented by the parser as an
+        # extern-shaped declaration plus side-table metadata. For the scalar/like-for-like
+        # ABI, emit the public symbol as a thin LLVM wrapper around the internal function.
+        # Aggregate C ABI lowering is intentionally left to the dedicated export/header path;
+        # declining here is safer than silently using the language ABI for a C boundary.
+        def emit_export_wrapper(export_name: sview, target_name: sview, fn: LLVMValueRef, fns: FnTable&, structs: mutable StructTable&, runtime: Runtime&, m: LLVMModuleRef, ctx: LLVMContextRef, builder: LLVMBuilderRef) -> bool can[Abort.Panic, Memory.Allocate, Unsafe.PointerCast]:
+            wrapper_index: i64 = function_index_of(fns, "", export_name)
+            target_index: i64 = function_index_of(fns, "", target_name)
+            false return if wrapper_index < 0 or target_index < 0
+            false return if fns.needs_arena[wrapper_index.usize()]
+            false return if fns.is_error[wrapper_index.usize()] or fns.is_error[target_index.usize()]
+            false return if fns.param_count[wrapper_index.usize()] != fns.param_count[target_index.usize()]
+            target: LLVMValueRef = fns.handles[target_index.usize()]
+            return emit_export_wrapper_to(export_name, target, fns.needs_arena[target_index.usize()], fn, fns, structs, runtime, m, ctx, builder)
+
+
+        # The wrapper body, against an explicit target HANDLE. Split out so a GENERIC target
+        # (`= keep_left[Vec[i32]]`) can be wrapped too: an instantiation has no FnTable row,
+        # so the arena flag comes from the caller rather than from a row lookup.
+        def emit_export_wrapper_to(export_name: sview, target: LLVMValueRef, target_needs_arena: bool, fn: LLVMValueRef, fns: FnTable&, structs: mutable StructTable&, runtime: Runtime&, m: LLVMModuleRef, ctx: LLVMContextRef, builder: LLVMBuilderRef) -> bool can[Abort.Panic, Memory.Allocate, Unsafe.PointerCast]:
+            wrapper_index: i64 = function_index_of(fns, "", export_name)
+            false return if wrapper_index < 0
+            entry: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(ctx, fn, "entry")
+            LLVMPositionBuilderAtEnd(builder, entry)
+            argument_count: usize = fns.param_count[wrapper_index.usize()]
+            arguments: mutable darray[LLVMValueRef] = []
+            for position in 0..<argument_count |arguments, fn|:
+                arguments.push(LLVMGetParam(fn, position.u32()))
+            # `export fn axpy(...) = axpy_impl` where the TARGET threads an implicit arena
+            # (any signature carrying a container does). The exported symbol keeps stage0's
+            # declared ABI — four parameters, no arena — so the wrapper opens its own auto
+            # region, passes it as the trailing argument and releases it after the call.
+            # Without this the whole forwarder declined whenever the target allocated.
+            export_arena_slot: mutable LLVMValueRef = zeroed
+            export_threads_arena: bool = target_needs_arena
+            if export_threads_arena:
+                export_arena_type: LLVMTypeRef = arena_llvm_type(ctx)
+                export_arena_slot <- LLVMBuildAlloca(builder, export_arena_type, "auto.region")
+                _ = LLVMBuildStore(builder, LLVMConstNull(export_arena_type), export_arena_slot)
+                _ = LLVMBuildStore(builder, LLVMConstInt(LLVMInt64TypeInContext(ctx), 0, 0), LLVMBuildStructGEP2(builder, export_arena_type, export_arena_slot, 3, "region.strategy"))
+                arguments.push(export_arena_slot)
+            target_type: LLVMTypeRef = LLVMGlobalGetValueType(target)
+            call_result: mutable LLVMValueRef = zeroed
+            # LLVM rejects a named instruction whose result type is void. The call still needs
+            # to be emitted, but its SSA name must be empty; the wrapper returns void directly
+            # below. Scalar export wrappers keep the descriptive name for readable IR.
+            call_name: mutable cstr = "export.call"
+            call_name <- "" if fns.returns[wrapper_index.usize()].kind == TypeKind.Void
+            if arguments.count == 0:
+                call_result <- LLVMBuildCall2(builder, target_type, target, zeroed, 0, call_name)
+            else:
+                arguments_pointer: void& = (&arguments[0]).cast[void&] can Unsafe.PointerCast
+                call_result <- LLVMBuildCall2(builder, target_type, target, arguments_pointer, arguments.count.u32(), call_name)
+            if export_threads_arena:
+                export_free_args: mutable darray[LLVMValueRef] = [export_arena_slot]
+                export_free_pointer: void& = (&export_free_args[0]).cast[void&] can Unsafe.PointerCast
+                _ = LLVMBuildCall2(builder, runtime.arena_free_type, runtime.arena_free, export_free_pointer, 1, "")
+            if fns.returns[wrapper_index.usize()].kind == TypeKind.Void:
+                _ = LLVMBuildRetVoid(builder)
+            else:
+                _ = LLVMBuildRet(builder, call_result)
+            return true
+
+        # Emit the body of one queued instantiation, with its type parameter BOUND for the
+        # whole emission — so every `T` inside resolves to the concrete type.
+        def emit_instantiation_body(index: usize, generics: mutable GenericTable&, fns: FnTable&, structs: mutable StructTable&, runtime: mutable Runtime&, m: LLVMModuleRef, ctx: LLVMContextRef, builder: LLVMBuilderRef) -> bool can[Abort.Panic, Memory.Allocate, Unsafe.PointerCast]:
+            base: sview = generics.pending_bases[index]
+            handle: LLVMValueRef = generics.pending_handles[index]
+            # Use the RECORDED slot, not generic_index_of(base): for an overloaded name the latter
+            # returns the first overload, whose body would be wrong for this instantiation.
+            slot: usize = generics.pending_slots[index]
+
+            # Rebuild this instantiation's type-argument tuple from the pending pool and bind
+            # every K/T for the body emission.
+            arg_start: usize = generics.pending_arg_start[index]
+            arg_count: usize = generics.pending_arg_count[index]
+            type_args: mutable darray[ValueType] = []
+            for offset in 0..<arg_count |type_args, generics, arg_start|:
+                type_args.push(copied_type(generics.pending_args[arg_start + offset]))
+            bound: usize = push_type_bindings(generics, structs, slot, type_args)
+            # An error-returning template (`arena_dict_put[K,T] … error[E]`) must emit its body
+            # under the error ABI. emit_function_body keys that off `error_lines` by the decl's
+            # line, so hand it a one-line list containing the template's line when it is error-
+            # returning; empty otherwise.
+            template_error_lines: mutable darray[u32] = []
+            template_error_lines.push(function_line_of(generics.decls[slot])) if generics.is_error[slot]
+            # A generic INSTANTIATION is emitted here, AFTER emit_debug_info ran, so it has no
+            # DISubprogram. Attaching a DWARF local/parameter to a subprogram-less function builds
+            # metadata with a NULL scope, which segfaults the O2 pipeline. Emit the monomorph's
+            # body with debug OFF (no DWARF locals for the instantiation — sound; a crash is not),
+            # then restore so ordinary functions keep their debug info.
+            saved_debug_active: bool = runtime.debug_active
+            runtime.debug_active <- false
+            emitted: bool = emit_function_body(generics.decls[slot], "", handle, template_error_lines, fns, structs, generics, runtime, m, ctx, builder)
+            runtime.debug_active <- saved_debug_active
+            pop_type_bindings(structs, bound)
+            # Report the MANGLED name: one template has many instantiations, and the base
+            # name alone does not say which type arguments failed.
+            record_declined_instantiation(handle, generics.pending_bases[index], m, ctx) if not emitted
+            # Match ordinary function linkage: O1/O2/O3 internalize non-exported
+            # instantiations, while O0 leaves them externally linked.
+            set_defined_function_linkage(generics.pending_bases[index], handle, function_index_of(fns, "", "main") >= 0) if emitted
+            return emitted
+
+    public:
+        # `-emit interpret`: make the module PRINT `main`'s return value.
+        #
+        # stage0 interprets the program and reports `[ result   ] <value>`. stage1 runs the
+        # compiled program instead, which is observably the same — except the value cannot
+        # come back through the process exit status (0-255, and stage0 prints 100000 exactly).
+        # So `main` is renamed and a new entry point calls it, printfs the result and returns 0.
+        # Renaming happens at the MODULE level because `main` is the entry point and cannot be
+        # wrapped in source without rewriting the user's text.
+        #
+        # Answers false when the unit declares no `main`, which the driver reports the way
+        # stage0 does.
+        def wrap_main_for_interpret(returns_void: bool, m: LLVMModuleRef, ctx: LLVMContextRef, builder: LLVMBuilderRef) -> bool can[Abort.Panic, Memory.Allocate, Unsafe.PointerCast]:
+            can Abort.Panic, Memory.Allocate, Unsafe.PointerCast:
+                # The binding must be introduced by a POSITIVE `is`; it does not escape a
+                # negated guard.
+                if LLVMGetNamedFunction(m, "main") is user_main:
+                    return wrap_main_body(user_main, returns_void, m, ctx, builder)
+                return false
+
+
+        def wrap_main_body(user_main: LLVMValueRef, returns_void: bool, m: LLVMModuleRef, ctx: LLVMContextRef, builder: LLVMBuilderRef) -> bool can[Abort.Panic, Memory.Allocate, Unsafe.PointerCast]:
+            can Abort.Panic, Memory.Allocate, Unsafe.PointerCast:
+                user_type: LLVMTypeRef = LLVMGlobalGetValueType(user_main)
+                LLVMSetValueName2(user_main, "elisa_interpret_user_main", 25)
+
+                int_type: LLVMTypeRef = LLVMInt32TypeInContext(ctx)
+                entry_type: LLVMTypeRef = LLVMFunctionType(int_type, zeroed, 0, 0)
+                entry_fn: LLVMValueRef = LLVMAddFunction(m, "main", entry_type)
+                entry_block: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(ctx, entry_fn, "entry")
+                LLVMPositionBuilderAtEnd(builder, entry_block)
+                call_result: LLVMValueRef = LLVMBuildCall2(builder, user_type, user_main, zeroed, 0, "" if returns_void else "interpret.result")
+                # A void `main` prints NOTHING — measured against stage0, which emits no
+                # result line at all for one.
+                if not returns_void:
+                    printf_params: mutable darray[LLVMTypeRef] = [LLVMPointerTypeInContext(ctx, 0)]
+                    printf_params_pointer: void& = (&printf_params[0]).cast[void&] can Unsafe.PointerCast
+                    printf_type: LLVMTypeRef = LLVMFunctionType(int_type, printf_params_pointer, 1, 1)
+                    printf_fn: mutable LLVMValueRef = zeroed
+                    if LLVMGetNamedFunction(m, "printf") is existing_printf:
+                        printf_fn <- existing_printf
+                    else:
+                        printf_fn <- LLVMAddFunction(m, "printf", printf_type)
+                    format_string: LLVMValueRef = LLVMBuildGlobalStringPtr(builder, "[ result   ] %lld\n", "interpret.fmt")
+                    printf_args: mutable darray[LLVMValueRef] = [format_string, call_result]
+                    printf_args_pointer: void& = (&printf_args[0]).cast[void&] can Unsafe.PointerCast
+                    _ = LLVMBuildCall2(builder, printf_type, printf_fn, printf_args_pointer, 2, "")
+                _ = LLVMBuildRet(builder, LLVMConstInt(int_type, 0, 0))
+                return true

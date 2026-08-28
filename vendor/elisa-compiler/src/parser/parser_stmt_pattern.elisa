@@ -1,0 +1,490 @@
+extend Parser:
+    private:
+        # Collect every binding introduced by a destructuring pattern. Used by
+        # statement-level `move ... as ...`, whose names continue in the surrounding
+        # scope (unlike an ordinary match arm). Composite payloads are snapshotted
+        # before recursive node reads invalidate their borrowed side-tables.
+        def pattern_binding_names(pattern: Ast::Pattern, names: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match pattern:
+                    Ast::Pattern.Binding(name):
+                        names.push(name)
+                    Ast::Pattern.TypeBind(type_name, binder):
+                        names.push(binder)
+                    Ast::Pattern.Variant(path, fields) | Ast::Pattern.Struct(path, fields):
+                        handles: darray[Ast::Pattern] = [field for field in fields]
+                        for handle in handles:
+                            pattern_binding_names(handle, names)
+                    Ast::Pattern.Field(selector, inner):
+                        handles: darray[Ast::Pattern] = [element for element in inner]
+                        for handle in handles:
+                            pattern_binding_names(handle, names)
+                    Ast::Pattern.Tuple(elements) | Ast::Pattern.Or(elements):
+                        handles: darray[Ast::Pattern] = [element for element in elements]
+                        for handle in handles:
+                            pattern_binding_names(handle, names)
+                    Ast::Pattern.As(name, inner):
+                        names.push(name)
+                        handles: darray[Ast::Pattern] = [element for element in inner]
+                        for handle in handles:
+                            pattern_binding_names(handle, names)
+                    Ast::Pattern.Rest(name):
+                        names.push(name) if name != ""
+                    _:
+                        pass
+
+
+        # Qualified head path of a move pattern (`Expr.Int`), or "" for a plain
+        # struct/name pattern. Stored on the transparent move block for semantic
+        # packed-Store validation without re-borrowing nested Match arm payloads.
+        def move_pattern_head_path(pattern: Ast::Pattern) -> sview:
+            can Abort.Panic:
+                match pattern:
+                    Ast::Pattern.Variant(path, fields):
+                        return path
+                    Ast::Pattern.As(name, inner):
+                        move_pattern_head_path(inner[0]) return if inner.count > 0
+                    _:
+                        pass
+                return ""
+
+
+
+        # `match SCRUTINEE:` with indented `PATTERN: <block>` arms. The scrutinee and each
+        # arm's body are fully parsed; the pattern is captured as its raw source text
+        # (exotic/recovery patterns may still use Pattern.Other). Each arm owns its body
+        # `darray[Stmt]`, and the arm list becomes the Match node's `arms` side-table.
+        # Build a source view over the byte span [start, end) via a synthetic span
+        # token (direct slicing of a raw u8& is not permitted here).
+        def span_view(parser: Parser&, start: usize, end: usize) -> sview:
+            span_token: mutable Token = zeroed
+            span_token.start <- start.u32()
+            span_token.length <- (end - start).u32()
+            return Lexer::text_or_empty(span_token, parser.source)
+
+
+        # Consume tokens up to an arm's block colon (paren/bracket/brace-balanced so
+        # `A.B(x)` / `{a, b}` stay whole) and return their raw source span. Used as the
+        # lossless fallback for pattern forms not yet structured.
+        def capture_pattern_span(parser: lmut Parser) -> sview:
+            pattern_start: usize = parser.cursor().start.usize()
+            pattern_end: mutable usize = pattern_start
+            depth: mutable int = 0
+            while parser.peek() != TokenKind.Eof |parser, pattern_end, depth|:
+                kind: TokenKind = parser.peek()
+                # Stop at the arm colon / end of line, and ALSO at an unbalanced
+                # closer — a `)`/`]`/`}` at depth 0 belongs to the enclosing
+                # construct (e.g. an exotic subpattern inside `Variant(...)`), and
+                # consuming it would unbalance the walk and eat past the pattern.
+                is_terminal: bool = kind == TokenKind.Colon or kind == TokenKind.Newline or kind == TokenKind.RParen or kind == TokenKind.RBracket or kind == TokenKind.RBrace
+                break if depth == 0 and is_terminal
+
+                is_opener: bool = kind == TokenKind.LParen or kind == TokenKind.LBracket or kind == TokenKind.LBrace
+                is_closer: bool = kind == TokenKind.RParen or kind == TokenKind.RBracket or kind == TokenKind.RBrace
+                if is_opener:
+                    depth <- depth + 1
+                elif is_closer:
+                    depth <- depth - 1
+                rebind consumed_token: Token, parser = parser.advance()
+                pattern_end <- consumed_token.start.usize() + consumed_token.length.usize()
+
+            return parser.span_view(pattern_start, pattern_end)
+
+
+        # Parse one match-arm pattern. Three layers: a top-level comma list is a tuple
+        # pattern; each element may be an or-pattern (`A | B`); each alternative is a
+        # primary (wildcard, literal, bare binding, variant, struct, or category binder).
+        # Anything exotic is captured losslessly as `Other`, and parsing always halts at
+        # the arm's block colon so the parser never regresses.
+        def parse_pattern(parser: lmut Parser) -> Ast::Pattern:
+            rebind first: Ast::Pattern, parser = parser.parse_pattern_or()
+            first return if parser.peek() != TokenKind.Comma
+                
+            elements: mutable darray[Ast::Pattern] = [first]
+            while parser.accept(TokenKind.Comma) |parser|:
+                break if parser.peek() == TokenKind.Colon or parser.peek() == TokenKind.Newline
+                    
+                elements.push(parser.parse_pattern_or())
+            return (Ast::Pattern.Tuple(elements))
+
+
+        # An or-pattern `A | B | …` (or just a single primary when there is no `|`).
+        def parse_pattern_or(parser: lmut Parser) -> Ast::Pattern:
+            rebind first: Ast::Pattern, parser = parser.parse_pattern_primary()
+            first return if parser.peek() != TokenKind.Pipe
+                
+            options: mutable darray[Ast::Pattern] = [first]
+            while parser.accept(TokenKind.Pipe) |parser|:
+                options.push(parser.parse_pattern_primary())
+            return (Ast::Pattern.Or(options))
+
+
+        # Capture a range's upper literal, preserving a unary minus as part of the
+        # source span (`-5..<-1`). Stage0 parses the bound as a value expression rather
+        # than treating the minus as a separate pattern token.
+        def parse_pattern_range_hi(parser: lmut Parser) -> sview:
+            hi_start: Token = parser.cursor()
+            if parser.peek() == TokenKind.Minus:
+                parser, _ <- parser.advance()
+                rebind magnitude_token: Token, parser = parser.advance()
+                hi_end: usize = magnitude_token.start.usize() + magnitude_token.length.usize()
+                return parser.span_view(hi_start.start.usize(), hi_end)
+            rebind hi_token: Token, parser = parser.advance()
+            # CharLit interiors expand to quoted spans (see CharLit arm of parse_pattern_primary).
+            parser.span_view(hi_token.start.usize() - 1, hi_token.start.usize() + hi_token.length.usize() + 1) return if hi_token.kind == TokenKind.CharLit and hi_token.start.usize() > 0
+            return Lexer::text_or_empty(hi_token, parser.source)
+
+
+        # Catch expressions reuse the shared arm-block parser, but unlike `match`
+        # they require a non-error-binding success arm first. Stage0 rejected a
+        # leading `error NAME:` here so we mirror that check after the shared parse.
+        def parse_catch_arm_block(parser: lmut Parser, catch_token: Token) -> darray[Ast::MatchArm]:
+            # Re-materialize locally: a callee's darray forwarded straight out of this
+            # frame dies with this frame's auto region (see parse_block).
+            rebind parsed_arms: darray[Ast::MatchArm], parser = parser.parse_arm_block()
+            arms_buffer: darray[Ast::MatchArm] = [arm for arm in parsed_arms]
+            parser <- parser.error_at(Ast::ParseErrorKind.UnexpectedToken, catch_token) if arms_buffer.count == 0
+            arms_buffer return if arms_buffer.count == 0
+            match arms_buffer[0].pattern:
+                Ast::Pattern.TypeBind(type_name, binder):
+                    parser <- parser.error_at(Ast::ParseErrorKind.UnexpectedToken, catch_token) if type_name == "error"
+                _:
+                    pass
+            return arms_buffer
+
+
+        # A primary pattern: wildcard, literal, bare binding, (qualified) variant,
+        # struct pattern, or a category arm with a binder (`Type s`).
+        def parse_pattern_primary(parser: lmut Parser) -> Ast::Pattern:
+            token: Token = parser.cursor()
+            kind: TokenKind = parser.peek()
+
+            # Dispatch on the lead token kind: literal (or docs/122 §5.2 range), the
+            # `error NAME` catch-arm binder, the `^name` pin pattern (guarded — only
+            # when a binding name follows), identifier-headed forms, or (default)
+            # anything exotic captured losslessly.
+            match kind:
+                # List-pattern rest: `...rest` binds the unmatched tail, while bare `...`
+                # is a discard-only tail marker. The tuple parser keeps this as one element.
+                TokenKind.Ellipsis:
+                    parser, _ <- parser.advance()
+                    if parser.peek() == TokenKind.Ident:
+                        rebind rest_token: Token, parser = parser.advance()
+                        return (Ast::Pattern.Rest(Lexer::text_or_empty(rest_token, parser.source)))
+                    return (Ast::Pattern.Rest(Lexer::empty_sview()))
+
+                # Bracketed list patterns use the same tuple element representation as
+                # comma-separated patterns, with an optional Rest tail (`[head, ...tail]`).
+                TokenKind.LBracket:
+                    parser, _ <- parser.advance()
+                    list_elements: mutable darray[Ast::Pattern] = []
+                    while parser.peek() != TokenKind.RBracket and parser.peek() != TokenKind.Eof |parser|:
+                        list_elements.push(parser.parse_pattern_or())
+                        break if not parser.accept(TokenKind.Comma)
+                    parser, _ <- parser.expect(TokenKind.RBracket)
+                    return (Ast::Pattern.Tuple(list_elements))
+
+                # Anonymous brace destructure used by `let {field: binding, short} = value`.
+                # Store it as a struct-pattern with an empty type path; field labels are
+                # selectors while shorthand fields bind their own names.
+                TokenKind.LBrace:
+                    parser, _ <- parser.advance()
+                    brace_fields: mutable darray[Ast::Pattern] = []
+                    while parser.peek() != TokenKind.RBrace and parser.peek() != TokenKind.Eof |parser, brace_fields|:
+                        selector_token: Token = parser.cursor()
+                        selector: sview = Lexer::text_or_empty(selector_token, parser.source) if selector_token.kind == TokenKind.Ident else ""
+                        if parser.peek() == TokenKind.Ident and parser.peek_at(1) == TokenKind.Colon:
+                            parser, _ <- parser.advance()
+                            parser, _ <- parser.advance()
+                        inner: Ast::Pattern = parser.parse_pattern_or()
+                        brace_fields.push((Ast::Pattern.Field(selector, [inner])) if selector != "" else inner)
+                        break if not parser.accept(TokenKind.Comma)
+                    parser, _ <- parser.expect(TokenKind.RBrace)
+                    return (Ast::Pattern.Struct(Lexer::empty_sview(), brace_fields))
+
+                # Parenthesized patterns are transparent in stage0; retain the inner
+                # structured node rather than degrading `(pattern)` to Other.
+                TokenKind.LParen:
+                    parser, _ <- parser.advance()
+                    rebind inner_pattern: Ast::Pattern, parser = parser.parse_pattern_or()
+                    parser, _ <- parser.expect(TokenKind.RParen)
+                    return inner_pattern
+
+                # Signed numeric literals are value patterns, not exotic expressions.
+                # Preserve the complete source span (`-1`) as a literal, including the
+                # signed lower bound of a range pattern.
+                TokenKind.Minus if parser.peek_at(1) == TokenKind.IntLit or parser.peek_at(1) == TokenKind.HexLit or parser.peek_at(1) == TokenKind.FloatLit:
+                    parser, _ <- parser.advance()
+                    rebind magnitude_token: Token, parser = parser.advance()
+                    parser <- parser.record_numeric_suffix(magnitude_token)
+                    signed_end: usize = magnitude_token.start.usize() + magnitude_token.length.usize()
+                    signed_lo: sview = parser.span_view(token.start.usize(), signed_end)
+                    parser <- parser.error_at(Ast::ParseErrorKind.UnexpectedToken, token) if parser.peek() == TokenKind.Range
+                    if parser.peek() == TokenKind.RangeLt or parser.peek() == TokenKind.RangeLe:
+                        rebind range_token: Token, parser = parser.advance()
+                        rebind hi_text: sview, parser = parser.parse_pattern_range_hi()
+                        return (Ast::Pattern.Range(signed_lo, hi_text, range_token.kind == TokenKind.RangeLe))
+                    return (Ast::Pattern.Literal(signed_lo))
+
+                # Leading-dot enum shorthand (`.Ready` / `.State.Ready`) is a
+                # payload-less variant pattern. Store the selector path without the
+                # leading dot so existing enum-tail and mismatch checks can reuse it.
+                TokenKind.Dot if parser.peek_at(1) == TokenKind.Ident:
+                    parser, _ <- parser.advance()
+                    rebind first_segment: Token, parser = parser.advance()
+                    shorthand_start: usize = first_segment.start.usize()
+                    shorthand_end: mutable usize = first_segment.start.usize() + first_segment.length.usize()
+                    while parser.peek() == TokenKind.Dot and parser.peek_at(1) == TokenKind.Ident |parser|:
+                        parser, _ <- parser.advance()
+                        rebind segment_token: Token, parser = parser.advance()
+                        shorthand_end <- segment_token.start.usize() + segment_token.length.usize()
+                    return (Ast::Pattern.Variant(parser.span_view(shorthand_start, shorthand_end), []))
+
+                # Literal value patterns — or a docs/122 §5.2 range pattern when the
+                # literal is followed by `..<` / `..=` (`'a'..<'z'`, `0..=127`).
+                TokenKind.IntLit | TokenKind.HexLit | TokenKind.FloatLit | TokenKind.StringLit | TokenKind.CharLit | TokenKind.True | TokenKind.False | TokenKind.Null:
+                    parser <- parser.record_numeric_suffix(token) if kind == TokenKind.IntLit or kind == TokenKind.HexLit or kind == TokenKind.FloatLit
+                    # CharLit token text is the INTERIOR only (`A`, not `'A'`). Re-include the
+                    # surrounding quotes in the pattern text so the backend can distinguish
+                    # char code `'0'` (48) from integer `0` (0).
+                    lit_text: mutable sview = Lexer::text_or_empty(token, parser.source)
+                    if kind == TokenKind.CharLit and token.start.usize() > 0:
+                        quote_start: usize = token.start.usize() - 1
+                        quote_end: usize = token.start.usize() + token.length.usize() + 1
+                        lit_text <- parser.span_view(quote_start, quote_end)
+                    parser, _ <- parser.advance()
+                    parser <- parser.error_at(Ast::ParseErrorKind.UnexpectedToken, token) if parser.peek() == TokenKind.Range
+                    if parser.peek() == TokenKind.RangeLt or parser.peek() == TokenKind.RangeLe:
+                        rebind range_token: Token, parser = parser.advance()
+                        rebind hi_text: sview, parser = parser.parse_pattern_range_hi()
+                        return (Ast::Pattern.Range(lit_text, hi_text, range_token.kind == TokenKind.RangeLe))
+                    return (Ast::Pattern.Literal(lit_text))
+
+                # `error NAME` catch-arm: binds the caught error value to NAME (a category
+                # binder). Modeled as a TypeBind so name resolution registers the binding;
+                # a bare `error` with no name is a catch-all wildcard.
+                TokenKind.Error:
+                    parser, _ <- parser.advance()                       # `error`
+                    if parser.peek() == TokenKind.Ident:
+                        rebind error_binding_token: Token, parser = parser.advance()
+                        return (Ast::Pattern.TypeBind("error", Lexer::text_or_empty(error_binding_token, parser.source)))
+                    return (Ast::Pattern.Wildcard)
+
+                # `^name` pin pattern — compares against the VALUE of an existing binding
+                # instead of introducing a new one. No binding to register, so the pinned
+                # name is kept losslessly as an Other pattern.
+                TokenKind.Caret if parser.peek_at(1) == TokenKind.Ident:
+                    parser, _ <- parser.advance()                       # `^`
+                    rebind pin_token: Token, parser = parser.advance()      # the pinned binding name
+                    return (Ast::Pattern.Pin(Lexer::text_or_empty(pin_token, parser.source)))
+
+                # Identifier-headed: wildcard, bare binding, variant, struct, or type binder.
+                TokenKind.Ident:
+                    head: sview = Lexer::text_or_empty(token, parser.source)
+                    if head == "_":
+                        parser, _ <- parser.advance()
+                        return (Ast::Pattern.Wildcard)
+
+                    # Consume a (possibly module-qualified) path: Ident ((`.`|`::`) Ident)*.
+                    path_start: usize = token.start.usize()
+                    rebind last: Token, parser = parser.advance()
+                    # Plain accumulators + statement loop rather than a multi-place
+                    # loop-EXPRESSION: the tuple-yielding value form is not in the emitted subset.
+                    dotted: mutable bool = false
+                    path_end: mutable usize = last.start.usize() + last.length.usize()
+                    while parser.peek() == TokenKind.Dot or parser.peek() == TokenKind.Scope |parser, dotted, path_end|:
+                        dotted <- true
+                        parser, _ <- parser.advance()                   # `.` or `::`
+                        rebind segment_token: Token, parser = parser.advance()      # path segment
+                        path_end <- segment_token.start.usize() + segment_token.length.usize()
+                    path: sview = parser.span_view(path_start, path_end)
+
+                    # `Variant(field, …)` — field subpatterns are or-patterns (their own commas
+                    # separate fields, so they must not be parsed as a tuple). A field may be
+                    # labeled (`Variant(name: subpattern)`); the label is a selector, so it is
+                    # consumed and only the subpattern is kept.
+                    match parser.peek():
+                        TokenKind.LParen:
+                            parser, _ <- parser.advance()
+                            fields_buffer: mutable darray[Ast::Pattern] = []
+                            while parser.peek() != TokenKind.RParen and parser.peek() != TokenKind.Eof |parser|:
+                                selector: mutable sview = ""
+                                if parser.peek() == TokenKind.Ident and parser.peek_at(1) == TokenKind.Colon:
+                                    rebind selector_token: Token, parser = parser.advance() # field label
+                                    selector <- Lexer::text_or_empty(selector_token, parser.source)
+                                    parser, _ <- parser.advance()               # `:`
+                                rebind __a_129: Ast::Pattern, parser = parser.parse_pattern_or()
+                                wrapped: Ast::Pattern = (Ast::Pattern.Field(selector, [__a_129])) if selector != "" else __a_129
+                                fields_buffer.push(wrapped)
+                                rebind accepted_comma: bool, parser = parser.accept(TokenKind.Comma)
+                                break if not accepted_comma
+                            parser, _ <- parser.expect(TokenKind.RParen)
+                            # docs/122 §5.4 as-binding: `Enum.V(...) as whole` binds the entire
+                            # matched value alongside the destructure.
+                            if parser.peek() == TokenKind.As:
+                                parser, _ <- parser.advance()               # `as`
+                                rebind as_token: Token, parser = parser.expect(TokenKind.Ident)
+                                return (Ast::Pattern.As(Lexer::text_or_empty(as_token, parser.source), [(Ast::Pattern.Variant(path, fields_buffer))]))
+                            return (Ast::Pattern.Variant(path, fields_buffer))
+
+                        # `Type{a, b: sub}` — struct pattern. A labeled field (`name:`) keeps its
+                        # subpattern; a shorthand field is parsed as a primary (bare name → Binding).
+                        TokenKind.LBrace:
+                            parser, _ <- parser.advance()
+                            struct_fields: mutable darray[Ast::Pattern] = []
+                            while parser.peek() != TokenKind.RBrace and parser.peek() != TokenKind.Eof |parser|:
+                                selector_token: Token = parser.cursor()
+                                selector: sview = Lexer::text_or_empty(selector_token, parser.source) if selector_token.kind == TokenKind.Ident else ""
+                                if parser.peek() == TokenKind.Ident and parser.peek_at(1) == TokenKind.Colon:
+                                    parser, _ <- parser.advance()           # field label (selector, not a binding)
+                                    parser, _ <- parser.advance()           # `:`
+                                rebind __a_145: Ast::Pattern, parser = parser.parse_pattern_or()
+                                struct_fields.push((Ast::Pattern.Field(selector, [__a_145])) if selector != "" else __a_145)
+                                rebind accepted_comma_2: bool, parser = parser.accept(TokenKind.Comma)
+                                break if not accepted_comma_2
+                            parser, _ <- parser.expect(TokenKind.RBrace)
+                            # docs/122 §5.4 as-binding on a struct pattern.
+                            if parser.peek() == TokenKind.As:
+                                parser, _ <- parser.advance()               # `as`
+                                rebind as_token_2: Token, parser = parser.expect(TokenKind.Ident)
+                                return (Ast::Pattern.As(Lexer::text_or_empty(as_token_2, parser.source), [(Ast::Pattern.Struct(path, struct_fields))]))
+                            return (Ast::Pattern.Struct(path, struct_fields))
+
+                        # A category arm with a binder: `Type s` (two identifiers, no separator).
+                        TokenKind.Ident:
+                            rebind binder_token: Token, parser = parser.advance()
+                            return (Ast::Pattern.TypeBind(path, Lexer::text_or_empty(binder_token, parser.source)))
+
+                        _:
+                            pass
+
+                    # A dotted head with no fields is a bare enum constant; a single bare
+                    # name binds the scrutinee.
+                    #
+                    # docs/122 §5.4 as-binding on a payloadless variant: `Shape.Empty as
+                    # whole`. Mirrors the LParen/LBrace as-checks above; only reachable when
+                    # `dotted`, so a plain (undotted) binding pattern is untouched — `x as y`
+                    # is not a shape this covers.
+                    if dotted and parser.peek() == TokenKind.As:
+                        parser, _ <- parser.advance()               # `as`
+                        rebind as_token_3: Token, parser = parser.expect(TokenKind.Ident)
+                        return (Ast::Pattern.As(Lexer::text_or_empty(as_token_3, parser.source), [(Ast::Pattern.Variant(path, []))]))
+                    (Ast::Pattern.Variant(path, [])) return if dotted
+                    return (Ast::Pattern.Binding(path))
+
+                # Anything else: keep the raw span, advancing to the block colon.
+                _:
+                    rebind __v_164: sview, parser = parser.capture_pattern_span()
+                    return (Ast::Pattern.Other(__v_164))
+
+
+        def match_statement(parser: lmut Parser) -> Ast::Stmt?:
+            rebind match_token: Token, parser = parser.expect(TokenKind.Match)
+            rebind scrutinee_value: Ast::Expr, parser = get parser.expression()
+            scrutinee: mutable Ast::Expr = scrutinee_value
+            # Multi-scrutinee `match a, b, c:` — the scrutinees form a tuple and each
+            # arm carries a matching comma-separated pattern list (parse_arm_block).
+            if parser.peek() == TokenKind.Comma:
+                scrutinees: mutable darray[Ast::Expr] = [scrutinee]
+                while parser.accept(TokenKind.Comma) |parser|:
+                    rebind more_option: Ast::Expr?, parser = parser.expression()
+                    if more_option is more:
+                        scrutinees.push(more)
+                scrutinee <- (Ast::Expr.Tuple(scrutinees, Ast::pos_of_token(match_token)))
+            # Optional scrutinee alias `match EXPR as NAME:` — binds the matched value
+            # under NAME in the arms. The alias is a selector consumed here (expression()
+            # stops before `as`; see the reinterpret-target gate in binary_expression_at_level).
+            rebind accepted_as: bool, parser = parser.accept(TokenKind.As)
+            parser, _ <- parser.expect(TokenKind.Ident) if accepted_as
+            rebind arms_buffer: darray[Ast::MatchArm], parser = parser.parse_arm_block()
+            return (Ast::Stmt.Match(scrutinee, arms_buffer, Ast::pos_of_token(match_token)))
+
+
+        # `catch EXPR:` — run EXPR and dispatch on its outcome via indented arms: a bare
+        # `n:` success binding, error-variant patterns (`ModuleError.MapFailed(v):`), and a
+        # catch-all `error e:`. Structurally a match on the call's result, so it reuses the
+        # match arm loop and is modeled as a Match node (the scrutinee is the guarded call).
+        def catch_statement(parser: lmut Parser) -> Ast::Stmt?:
+            rebind catch_token: Token, parser = parser.expect(TokenKind.Catch)
+            rebind scrutinee: Ast::Expr, parser = get parser.expression()
+            # Optional alias `catch EXPR as NAME:` (mirrors match_statement).
+            rebind accepted_as_2: bool, parser = parser.accept(TokenKind.As)
+            parser, _ <- parser.expect(TokenKind.Ident) if accepted_as_2
+            rebind arms_buffer: darray[Ast::MatchArm], parser = parser.parse_catch_arm_block(catch_token)
+            parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: "__catch_match", name: "__catch_match", line: catch_token.line})
+            # stage0 reads a `catch` arm as a MATCH EXPRESSION arm, so each one must end with
+            # an expression: an arm whose last statement ASSIGNS is rejected there ("match
+            # expression arm must end with an expression") while stage1 accepted it. Recorded
+            # as an annotation, the way the other catch rules reach the semantic layer.
+            #
+            # Deliberately narrow — only a trailing ASSIGNMENT. A tail that `return`s, raises
+            # or yields a value is fine, and anything else stays unflagged rather than risking
+            # a false rejection of a program stage0 accepts.
+            for tail_arm in arms_buffer |parser, catch_token|:
+                continue if tail_arm.body.count == 0
+                match tail_arm.body[tail_arm.body.count - 1]:
+                    Stmt.Assign(tail_target, tail_operator, tail_value, tail_line):
+                        parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: "__catch_match", name: "__catch_arm_tail", line: catch_token.line})
+                    _:
+                        pass
+            return (Ast::Stmt.Match(scrutinee, arms_buffer, Ast::pos_of_token(catch_token)))
+
+
+        # Parse the `: NEWLINE INDENT (PATTERN: <block>)* DEDENT` arm block shared by
+        # `match` and `catch`. Each arm's pattern is decomposed via parse_pattern (exotic
+        # forms captured losslessly), and parsing always halts at the arm's block colon so
+        # a malformed head never spins the loop.
+        def parse_arm_block(parser: lmut Parser) -> darray[Ast::MatchArm]:
+            parser, _ <- parser.expect(TokenKind.Colon)
+            parser, _ <- parser.expect(TokenKind.Newline)
+            parser, _ <- parser.expect(TokenKind.Indent)
+
+            arms_buffer: mutable darray[Ast::MatchArm] = []
+            while parser.peek() != TokenKind.Dedent and parser.peek() != TokenKind.Eof |parser|:
+                parser <- parser.skip_newlines()
+                break if parser.peek() == TokenKind.Dedent or parser.peek() == TokenKind.Eof
+
+                arm_head: Token = parser.cursor()
+                parser <- parser.error_at(Ast::ParseErrorKind.UnexpectedToken, arm_head) if parser.peek() == TokenKind.Ident and Lexer::text_or_empty(arm_head, parser.source) == "case" and parser.peek_at(1) != TokenKind.Colon
+
+                # docs/125 §5 — an arm header carrying a top-level `with` fans out into one
+                # sibling MatchArm per alternative (each with its discriminating constants
+                # prepended). Only this path differs; every `with`-less arm is unchanged.
+                if parser.arm_header_has_with():
+                    rebind with_arms: darray[Ast::MatchArm], parser = parser.parse_with_arm()
+                    arms_buffer.extend(with_arms)
+                    continue
+
+                rebind __d_220: Ast::Pattern, parser = parser.parse_pattern()
+                pattern: mutable Ast::Pattern = __d_220
+
+                # A comma-separated pattern list is a tuple arm (`A, B, C:` — one
+                # pattern per scrutinee of a multi-scrutinee match).
+                if parser.peek() == TokenKind.Comma:
+                    pattern_elements: mutable darray[Ast::Pattern] = [pattern]
+                    while parser.accept(TokenKind.Comma) |parser|:
+                        pattern_elements.push(parser.parse_pattern())
+                    pattern <- (Ast::Pattern.Tuple(pattern_elements))
+
+                # docs/122 §5.1 arm-header guard: `Pattern if cond:` — the guard
+                # expression ends at the arm's block colon; pattern bindings are in
+                # scope inside it (registered by the resolver).
+                guard: mutable Ast::Expr = (Ast::Expr.Absent)
+                if parser.peek() == TokenKind.If:
+                    parser, _ <- parser.advance()                   # `if`
+                    rebind guard_opt: Ast::Expr?, parser = parser.expression()
+                    if guard_opt is guard_value:
+                        guard <- guard_value
+
+                # If the pattern parse didn't land on the block colon (an exotic
+                # tail), drop the rest of the head losslessly so we don't spin.
+                parser, _ <- parser.capture_pattern_span() if parser.peek() != TokenKind.Colon
+                if parser.peek() != TokenKind.Colon:
+                    parser, _ <- parser.advance()                   # malformed arm; don't spin
+                    continue
+
+                rebind body: darray[Ast::Stmt], parser = parser.parse_block()
+                arms_buffer.push(Ast::MatchArm{pattern: pattern, body: body, guard: guard})
+
+            parser, _ <- parser.expect(TokenKind.Dedent)
+            return arms_buffer

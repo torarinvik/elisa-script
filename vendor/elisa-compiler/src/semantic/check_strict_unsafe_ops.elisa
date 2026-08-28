@@ -1,0 +1,270 @@
+# Strict-mode (`-strict` / EnforceUnsafePermissions) Unsafe-family obligations that are
+# decidable structurally (stage0 parity; the bounds/alias PROVERS stay stage0's job):
+#
+#   1. Unchecked index: `arr[idx]` where `arr` is a fixed-array param and `idx` a plain
+#      integer param no requires-clause constrains — the access is provably unproven, so
+#      it needs `can Unsafe.UncheckedIndex` (or `get arr[i]` / `arr[i] else ...`).
+#   2. Mutable alias: a call whose arguments name the same `mutable T&` param twice
+#      (directly or through a ref-returning call over it) creates two live mutable
+#      borrows — needs `can Unsafe.Alias`.
+#
+# Both stay SILENT inside any `can`/`trusted` block (conservative over-grant, zero
+# false positives) and outside strict mode.
+
+extend Semantic:
+    private:
+        # Whether TYPE_EXPRESSION spells an indexable whose subscripts stage0's
+        # strict mode bounds-checks: `array[T, N]`, `T[N]` suffix arrays, `darray[T]`,
+        # or a raw ref over a scalar (`u8&`), each optionally `&`/`mutable`-wrapped.
+        def is_fixed_array_annotation(type_expression: Ast::Expr) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                match type_expression:
+                    Expr.Index(object, index, line):
+                        head: sview = ident_name_of(object)
+                        elem: sview = ident_name_of(index)
+                        # Generic elements (`darray[T]` in an impl[T] member) keep
+                        # stage0's generic-context suppression — primitives only.
+                        (is_integer_type_name(elem) or is_float_type_name(elem) or elem == "bool" or elem == "char") return if head == "array" or head == "darray"
+                        # `i32[4]` — a primitive scalar name subscripted by a length.
+                        return is_integer_type_name(head) or is_float_type_name(head)
+                    Expr.IndexN(object_n, arguments_n, line_n):
+                        head_n: sview = ident_name_of(object_n)
+                        first_elem: sview = ident_name_of(arguments_n[0]) if arguments_n.count > 0 else sview("", 0, 0)
+                        (is_integer_type_name(first_elem) or is_float_type_name(first_elem) or first_elem == "bool" or first_elem == "char") return if head_n == "array" or head_n == "darray"
+                        return is_integer_type_name(head_n) or is_float_type_name(head_n)
+                    Expr.Unary(operator, operand, line):
+                        # A raw scalar ref (`u8&`) indexes unchecked memory directly.
+                        operand_name: sview = ident_name_of(operand)
+                        true return if operator == TokenKind.Ampersand and (is_integer_type_name(operand_name) or is_float_type_name(operand_name))
+                        return is_fixed_array_annotation(operand)
+                    Expr.Call(callee, arguments, argument_names, line):
+                        callee_head: sview = ident_name_of(callee)
+                        true return if callee_head == "array"
+                        return false
+                    _:
+                        return false
+
+        # The declared EXTENT of a fixed-array annotation (`array[u32, 128]`, `i32[16]`),
+        # or -1. Looks through `&`/`mutable`.
+        def fixed_array_extent(type_expression: Ast::Expr) -> i64:
+            can Memory.Allocate, Abort.Panic:
+                match type_expression:
+                    Expr.IndexN(object_n, arguments_n, line_n):
+                        head_n: sview = ident_name_of(object_n)
+                        (-1) return if head_n != "array" or arguments_n.count != 2
+                        extent: (found: bool, value: i64) = fold_const_int(arguments_n[1])
+                        return extent.value if extent.found else -1
+                    Expr.Index(object, index, line):
+                        head: sview = ident_name_of(object)
+                        (-1) return if not (is_integer_type_name(head) or is_float_type_name(head))
+                        length: (found: bool, value: i64) = fold_const_int(index)
+                        return length.value if length.found else -1
+                    Expr.Unary(operator, operand, line):
+                        return fixed_array_extent(operand)
+                    Expr.Paren(inner, paren_line):
+                        return fixed_array_extent(inner)
+                    _:
+                        return (-1)
+
+
+        # The [lo, hi] window a refined annotation guarantees (`u32 is InRange[0, 126]`),
+        # via the shared law machinery; found=false for an unbounded law (`is Even`) —
+        # the REFINED marker still reports whether an `is` refinement is present at all.
+        def index_annotation_window(type_expression: Ast::Expr, law_names: darray[sview]&, law_predicates: darray[Ast::Expr]&) -> (refined: bool, found: bool, lo: i64, hi: i64):
+            can Memory.Allocate, Abort.Panic:
+                spec: (found: bool, law_name: sview, lo: i64, hi: i64) = refinement_bound_spec(type_expression, law_names, law_predicates)
+                is_refined: bool = match type_expression:
+                    Expr.Binary(base, operator, right, line): operator == TokenKind.Is
+                    _: false
+                return (is_refined, spec.found, spec.lo, spec.hi)
+
+
+        # The annotation of STRUCT.FIELD, via the collected struct tables ((Absent, false)
+        # when unknown).
+        def struct_field_annotation(struct_name: sview, field: sview, sm_struct_names: darray[sview]&, sm_field_starts: darray[usize]&, sm_field_counts: darray[usize]&, all_sm_field_names: darray[sview]&, all_sm_field_types: darray[Ast::Expr]&) -> (found: bool, annotation: Ast::Expr):
+            can Abort.Panic:
+                slot: mutable i64 = -1
+                probe: mutable usize = 0
+                while probe < sm_struct_names.count |slot, probe, struct_name, sm_struct_names|:
+                    slot <- probe.i64() if sm_struct_names[probe] == struct_name and slot < 0
+                    probe <- probe + 1
+                (false, Ast::Expr.Absent) return if slot < 0
+                index: usize = slot.usize()
+                offset: mutable usize = 0
+                while offset < sm_field_counts[index] |offset, index, field, sm_field_starts, all_sm_field_names, all_sm_field_types|:
+                    (true, all_sm_field_types[sm_field_starts[index] + offset]) return if all_sm_field_names[sm_field_starts[index] + offset] == field
+                    offset <- offset + 1
+                return (false, Ast::Expr.Absent)
+
+
+        # The base mutable-param ident an ARGUMENT expression aliases: the ident itself,
+        # or the single mutable-param ident among a direct call's arguments (a
+        # ref-returning wrapper like `get_ref(x)` forwards the borrow of `x`).
+        def argument_alias_base(argument: Ast::Expr, mutable_params: darray[sview]&) -> sview:
+            can Memory.Allocate, Abort.Panic:
+                direct: sview = ident_name_of(argument)
+                direct return if direct != "" and (any p in mutable_params where p == direct)
+                match argument:
+                    Expr.Call(callee, arguments, argument_names, line):
+                        for inner in arguments:
+                            inner_name: sview = ident_name_of(inner)
+                            inner_name return if inner_name != "" and (any p in mutable_params where p == inner_name)
+                        return sview("", 0, 0)
+                    _:
+                        return sview("", 0, 0)
+
+        # Whether BODY does anything that could break a bounds proof about NAME: reassigning
+        # the index, or any call (which may mutate the container the bound was taken from).
+        def body_invalidates_bounds(body: darray[Ast::Stmt], name: sview) -> bool:
+            can Abort.Panic, Memory.Allocate:
+                false return if name == ""
+                for statement in body:
+                    match statement:
+                        Stmt.Assign(target, operator, value, line):
+                            true return if ident_name_of(target) == name
+                        Stmt.Expr(expression, line):
+                            true return if expression_contains_call(expression)
+                        Stmt.Block(kind, clause, binding, block_body, line):
+                            true return if body_invalidates_bounds(block_body, name)
+                        _:
+                            pass
+                return false
+
+
+        # Whether EXPRESSION performs a call anywhere within it.
+        def expression_contains_call(expression: Ast::Expr) -> bool:
+            can Abort.Panic, Memory.Allocate:
+                match expression:
+                    Expr.Call(callee, arguments, argument_names, line):
+                        return true
+                    Expr.Binary(left, operator, right, line):
+                        return expression_contains_call(left) or expression_contains_call(right)
+                    Expr.Paren(inner, line):
+                        return expression_contains_call(inner)
+                    Expr.Index(object, index, line):
+                        return expression_contains_call(object) or expression_contains_call(index)
+                    _:
+                        return false
+
+
+        # The local a `&x` address-of borrows, or "". `(&x)` through parens counts.
+        def address_of_target(value: Ast::Expr) -> sview:
+            can Memory.Allocate, Abort.Panic:
+                match value:
+                    Expr.Unary(operator, operand, line):
+                        return ident_name_of(operand) if operator == TokenKind.Ampersand else sview("", 0, 0)
+                    Expr.Paren(inner, line):
+                        return address_of_target(inner)
+                    _:
+                        return sview("", 0, 0)
+
+
+        # `idx < recv.count` (or `recv.count > idx`) proves IDX in bounds for the rest of the
+        # guarded region; `idx >= recv.count` proves it for the code AFTER an early return.
+        # Returns the index NAME the comparison bounds, or "".
+        #
+        # The comparison must be against a `.count` FIELD, not a literal: stage0 proves
+        # `index < items.count` and does NOT prove `index < 3` even for `array[T, 3]`
+        # (verified against `-emit unsafe` both ways). Matching that exactly is what keeps
+        # this from silently over-proving.
+        # `name >= 0` / `0 <= name` — the lower-bound half of a signed guard.
+        def signed_lower_bound_name(condition: Ast::Expr) -> sview:
+            can Abort.Panic, Memory.Allocate:
+                match condition:
+                    Expr.Binary(left, operator, right, line):
+                        left_name: sview = ident_name_of(left)
+                        right_name: sview = ident_name_of(right)
+                        left_const: (found: bool, value: i64) = fold_const_int(left)
+                        right_const: (found: bool, value: i64) = fold_const_int(right)
+                        left_zero: bool = left_const.found and left_const.value == 0
+                        right_zero: bool = right_const.found and right_const.value == 0
+                        left_name return if operator == TokenKind.GtEq and right_zero and left_name != ""
+                        right_name return if operator == TokenKind.LtEq and left_zero and right_name != ""
+                        return sview("", 0, 0)
+                    _:
+                        return sview("", 0, 0)
+
+
+        # `name < recv.count` / `recv.count > name` — the upper-bound half.
+        def upper_count_bound_name(condition: Ast::Expr) -> sview:
+            can Abort.Panic, Memory.Allocate:
+                match condition:
+                    Expr.Binary(left, operator, right, line):
+                        left_name: sview = ident_name_of(left)
+                        right_name: sview = ident_name_of(right)
+                        left_name return if operator == TokenKind.Lt and expression_is_count_field(right) and left_name != ""
+                        right_name return if operator == TokenKind.Gt and expression_is_count_field(left) and right_name != ""
+                        return sview("", 0, 0)
+                    _:
+                        return sview("", 0, 0)
+
+
+        def bounds_guard_name(condition: Ast::Expr, want_less: bool, unsigned_indexes: darray[sview]&) -> sview:
+            can Abort.Panic, Memory.Allocate:
+                match condition:
+                    Expr.Binary(left, operator, right, line):
+                        # SIGNED indexes narrow through the two-sided conjunction
+                        # `i >= 0 and i < xs.count` (either conjunct order) — the lower
+                        # bound supplies what the unsigned-only rule lacks.
+                        if operator == TokenKind.And and want_less:
+                            left_lower: sview = signed_lower_bound_name(left)
+                            right_lower: sview = signed_lower_bound_name(right)
+                            left_upper: sview = upper_count_bound_name(left)
+                            right_upper: sview = upper_count_bound_name(right)
+                            left_upper return if left_upper != "" and left_upper == right_lower
+                            right_upper return if right_upper != "" and right_upper == left_lower
+                            return sview("", 0, 0)
+                        left_name: sview = ident_name_of(left)
+                        right_is_count: bool = expression_is_count_field(right)
+                        left_is_count: bool = expression_is_count_field(left)
+                        right_name: sview = ident_name_of(right)
+                        # `idx < recv.count` / `idx >= recv.count`
+                        # A SIGNED index is not proven by an upper bound alone: `i < xs.count`
+                        # says nothing about `i >= 0`. stage0 flags `i: int` here and accepts
+                        # `i: usize` (verified both ways) -- only unsigned narrows.
+                        wanted: TokenKind = TokenKind.Lt if want_less else TokenKind.GtEq
+                        left_unsigned: bool = any u in unsigned_indexes where u == left_name
+                        right_unsigned: bool = any u in unsigned_indexes where u == right_name
+                        left_name return if operator == wanted and right_is_count and left_name != "" and left_unsigned
+                        # Mirrored: `recv.count > idx` / `recv.count <= idx`
+                        mirrored: TokenKind = TokenKind.Gt if want_less else TokenKind.LtEq
+                        right_name return if operator == mirrored and left_is_count and right_name != "" and right_unsigned
+                        return sview("", 0, 0)
+                    _:
+                        return sview("", 0, 0)
+
+
+        # Whether EXPRESSION is a `.count` field access (`items.count`).
+        def expression_is_count_field(expression: Ast::Expr) -> bool:
+            can Abort.Panic:
+                match expression:
+                    Expr.Field(object, field, line):
+                        return field == "count"
+                    _:
+                        return false
+
+
+        # Whether a body ENDS in a terminator, so control cannot reach the statements after
+        # the `if` on that path -- which is what makes an `idx >= count` guard a proof for
+        # everything below it.
+        def body_terminates(body: darray[Ast::Stmt]) -> bool:
+            can Abort.Panic:
+                false return if body.count == 0
+                match body[body.count - 1]:
+                    Stmt.Return(value, line):
+                        return true
+                    Stmt.Break(label, line):
+                        return true
+                    Stmt.Continue(label, line):
+                        return true
+                    _:
+                        return false
+
+
+        # The index list with NAME removed -- the name is now proven in bounds, so an access
+        # through it is no longer unchecked.
+        def index_params_without(index_params: darray[sview]&, name: sview) -> darray[sview]:
+            can Abort.Panic, Memory.Allocate:
+                kept: mutable darray[sview] = []
+                kept.extend([candidate for candidate in index_params if candidate != name])
+                return kept

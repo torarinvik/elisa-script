@@ -1,0 +1,110 @@
+# Immediate overwrite check: detects adjacent statements where a variable is written
+# and then immediately overwritten without reading the first value.
+# Only flags plain `<-` assignment when the second statement immediately follows
+# the first in the same statement list.
+
+extend Semantic:
+    private:
+        # The `<-` target name written by a statement, plus its line ("" if the statement
+        # is not a plain-`<-`/VarDecl write). Pulls the first-statement classification out
+        # of the pairing loop so the loop body stays flat.
+        # Whether a declared type carries a `where` refinement (`i64 where x > 0`), possibly
+        # under mutable/&/?/paren wrappers. A refinement-typed local's initializer is not a
+        # dead store — the value must SATISFY the refinement at the declaration, and
+        # reassigning to re-discharge it is a legitimate pattern stage0 does not flag.
+        def type_has_refinement(type_expression: Ast::Expr) -> bool:
+            can Abort.Panic:
+                return match type_expression:
+                    Expr.Refinement(base, predicate, line):     true
+                    Expr.Unary(operator, operand, line):        type_has_refinement(operand)
+                    Expr.Paren(inner, line):                    type_has_refinement(inner)
+                    _:                                          false
+
+        def overwrite_target_name(statement: Ast::Stmt) -> sview:
+            can Abort.Panic:
+                return match statement:
+                    Ast::Stmt.VarDecl(name, type_expression, value, line):
+                        "" if type_has_refinement(type_expression) else name
+                    Ast::Stmt.Assign(target, operator, value, line):
+                        when_assign_ident_name(target) if operator == TokenKind.LArrow else ""
+                    _: ""
+
+        def overwrite_target_line(statement: Ast::Stmt) -> u32:
+            return match statement:
+                Ast::Stmt.VarDecl(name, type_expression, value, line): line.line
+                Ast::Stmt.Assign(target, operator, value, line): line.line
+                _: 0
+
+        def when_assign_ident_name(target: Ast::Expr) -> sview:
+            return match target:
+                Ast::Expr.Ident(name, line): name
+                _: ""
+
+        # Whether `next_stmt` is `NAME <- <simple literal>` — an immediate overwrite of the
+        # just-written `first_name`. Extracted so the pairing loop dispatches once instead
+        # of pyramiding the assign/operator/ident/name/literal probes (docs/121 flow).
+        def is_immediate_overwrite(next_stmt: Ast::Stmt, first_name: sview) -> bool:
+            match next_stmt:
+                Ast::Stmt.Assign(target, operator, value2, line):
+                    false return if operator != TokenKind.LArrow
+                    false return if when_assign_ident_name(target) != first_name
+                    return match value2:
+                        Ast::Expr.IntLit(v):    true
+                        Ast::Expr.FloatLit(t):  true
+                        Ast::Expr.StringLit(t): true
+                        Ast::Expr.CharLit(t):   true
+                        Ast::Expr.BoolLit(b):   true
+                        _:                      false
+                _:
+                    return false
+            return false
+
+        # Check a list of statements for immediate overwrites.
+        # Looks for adjacent pairs where the first writes to a variable
+        # and the second immediately overwrites it without reading the value.
+        def check_immediate_overwrite_statements(statements: darray[Ast::Stmt], table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                # `index + 1 < count` (not `index < count - 1`): count is usize, so the
+                # subtraction underflows on an EMPTY statement list and walks out of bounds.
+                index: mutable usize = 0
+                while index + 1 < statements.count:
+                    first_name: sview = overwrite_target_name(statements[index])
+                    # A write immediately overwritten by `first_name <- <simple literal>`,
+                    # with no read between, is flagged. Both the first-statement
+                    # classification and the pair test are named helpers, so this loop is a
+                    # single guarded dispatch (no pyramided if..is chain — docs/121 flow).
+                    table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.ImmediateOverwrite, name: first_name, line: overwrite_target_line(statements[index]), expected: "", actual: ""}) if first_name != "" and is_immediate_overwrite(statements[index + 1], first_name)
+                    index <- index + 1
+
+                # Recursively walk nested statements
+                for statement in statements |table|:
+                    match statement:
+                        Stmt.If(condition, then_body, else_body, line):
+                            table <- check_immediate_overwrite_statements(then_body, table)
+                            table <- check_immediate_overwrite_statements(else_body, table)
+                        Stmt.While(condition, body, line):
+                            table <- check_immediate_overwrite_statements(body, table)
+                        Stmt.For(bind, variables, iterable, body, line):
+                            table <- check_immediate_overwrite_statements(body, table)
+                        Stmt.Block(kind, clause, binding, body, line):
+                            table <- check_immediate_overwrite_statements(body, table)
+                        Stmt.Match(scrutinee, arms, line):
+                            for arm in arms |table|:
+                                table <- check_immediate_overwrite_statements(arm.body, table)
+                        _:
+                            pass
+
+
+        # Entry point: check all declarations for immediate overwrites in function bodies.
+        def check_immediate_overwrite(declarations: darray[Ast::Decl], table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |table|:
+                    match declaration:
+                        Decl.Func(name, parameters, return_type, body, effects, decorators, line):
+                            table <- check_immediate_overwrite_statements(body, table)
+                        Decl.Module(name, body, line):
+                            table <- check_immediate_overwrite(body, table)
+                        Decl.Scoped(body, line):
+                            table <- check_immediate_overwrite(body, table)
+                        _:
+                            pass

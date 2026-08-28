@@ -1,0 +1,433 @@
+extend Lexer:
+    public:
+        # Stage1 meta-compile: `runtime_strlen` is not lowerable as a bare u8& call in
+        # this unit (it shows up as an optional-pointer extern). Count C-string bytes
+        # locally so Lexer construction and frontend_tokenize define under stage1.
+        @inline(always)
+        def cstring_length(text: u8&) -> usize:
+            length: mutable usize = 0
+            machine over length while text[length] != 0:
+                state Count
+                start Count
+                Count, _:
+                    length <- length + 1
+                    -> Count
+            return length
+
+        def Lexer(filename: u8&, source: u8&, source_length: usize) -> Lexer:
+            return Lexer{
+                filename: filename[0:cstring_length(filename)],
+                source: source,
+                source_length: source_length,
+                position: 0,
+                line: 1,
+                column: 1,
+                indentation_stack: [],
+                pending_tokens: [],
+                comments: [],
+                pending_start: 0,
+                at_line_start: true,
+                group_depth: 0,
+                pending_grouped_block: false,
+                number_kind: TokenKind.IntLit,
+                fstring_depth: 0,
+                quoted_text_end: 0,
+                quoted_done: false,
+                machine_usize: 0,
+                machine_int: 0,
+                machine_bool: false,
+                machine_token: zeroed,
+                machine_tokens: [],
+                grouped_block_contexts: []
+            }
+
+
+        def Lexer(filename: u8&, source: u8&) -> Lexer:
+            source_length: usize = cstring_length(source)
+            return Lexer{
+                filename: filename[0:cstring_length(filename)],
+                source: source,
+                source_length: source_length,
+                position: 0,
+                line: 1,
+                column: 1,
+                indentation_stack: [],
+                pending_tokens: [],
+                comments: [],
+                pending_start: 0,
+                at_line_start: true,
+                group_depth: 0,
+                pending_grouped_block: false,
+                number_kind: TokenKind.IntLit,
+                fstring_depth: 0,
+                quoted_text_end: 0,
+                quoted_done: false,
+                machine_usize: 0,
+                machine_int: 0,
+                machine_bool: false,
+                machine_token: zeroed,
+                machine_tokens: [],
+                grouped_block_contexts: []
+            }
+
+
+        @inline(always)
+        def view(lexer: Lexer&, start: usize, end: usize) -> sview?:
+            return make_source_view(lexer.source, start, end)
+        @inline(always)
+        def pending_has_tokens(lexer: Lexer&) -> bool:
+            return not lexer.pending_is_empty()
+        # Consume an optional trailing `=` and pick between the compound and
+        # plain operator kinds — shared tail of the operator dispatch ladder.
+        @inline(always)
+        def eq_suffix_token(lexer: lmut Lexer, position: LexerPosition, start: usize, with_eq: TokenKind, without_eq: TokenKind) -> Token:
+            can Memory.Allocate, Abort.Panic:
+                rebind matched_eq: bool, lexer = lexer.match_char('=')
+                return Token(with_eq if matched_eq else without_eq, position, start, lexer.position)
+        def emit_pending_token(lexer: lmut Lexer, kind: TokenKind):
+            position: LexerPosition = lexer.cursor_position()
+            token: Token = Token(kind, position, position.offset, position.offset)
+            lexer <- lexer.push_pending(token) can Memory.Allocate, Abort.Panic
+        def next_token(lexer: lmut Lexer) -> Token:
+            can Memory.Allocate, Abort.Panic:
+                state {Pending, PendingToken, Directives, PrepareIndent, Indentation, IndentationToken, Scan, Dedent, Eof, ClearGroupedBlock, Number, Newline, NewlineResult, LineComment, Quote, BlockComment, String, Char, FString, Identifier, Recurse, Operator}
+                return start Pending:
+                    Pending:
+                        -> PendingToken if lexer.pending_has_tokens()
+                        -> Directives
+                    PendingToken:
+                        rebind pending_token: Token, lexer = lexer.pop_pending()
+                        => pending_token
+                    Directives:
+                        lexer <- lexer.consume_line_directives_at_line_start()
+                        -> PrepareIndent if lexer.at_line_start
+                        -> Scan
+                    PrepareIndent:
+                        lexer.at_line_start <- false
+                        -> Indentation if lexer.group_depth == 0 or lexer.active_grouped_block_context()
+                        -> Scan
+                    Indentation:
+                        lexer <- lexer.handle_indentation()
+                        lexer <- lexer.trim_finished_grouped_block_contexts()
+                        -> IndentationToken if lexer.pending_has_tokens()
+                        -> Scan
+                    IndentationToken:
+                        rebind indentation_token: Token, lexer = lexer.pop_pending()
+                        => indentation_token
+                    Scan:
+                        lexer <- lexer.skip_spaces()
+                        character: char = lexer.current_char()
+                        -> Dedent if lexer.is_end_of_source() and lexer.indentation_stack.count > 0
+                        -> Eof if lexer.is_end_of_source()
+                        -> ClearGroupedBlock if lexer.pending_grouped_block and character != ':'
+                        -> Number if character.is_digit() or (character == '.' and lexer.peek(1).is_digit())
+                        -> Newline if character == '\n'
+                        -> LineComment if character == '#'
+                        -> Quote if character == '"'
+                        -> Char if character == '\''
+                        -> FString if character == 'f' and lexer.peek(1) == '"'
+                        -> Identifier if character.is_identifier_start() or lexer.starts_unicode_identifier()
+                        -> Operator
+                    Dedent:
+                        lexer <- lexer.pop_indent()
+                        position: LexerPosition = lexer.cursor_position()
+                        => Token(TokenKind.Dedent, position, position.offset, position.offset)
+                    Eof:
+                        position: LexerPosition = lexer.cursor_position()
+                        => Token(TokenKind.Eof, position, position.offset, position.offset)
+                    ClearGroupedBlock:
+                        lexer.pending_grouped_block <- false
+                        character: char = lexer.current_char()
+                        -> Number if character.is_digit() or (character == '.' and lexer.peek(1).is_digit())
+                        -> Newline if character == '\n'
+                        -> LineComment if character == '#'
+                        -> Quote if character == '"'
+                        -> Char if character == '\''
+                        -> FString if character == 'f' and lexer.peek(1) == '"'
+                        -> Identifier if character.is_identifier_start() or lexer.starts_unicode_identifier()
+                        -> Operator
+                    Number:
+                        rebind number_token: Token, lexer = lexer.read_number()
+                        => number_token
+                    Newline:
+                        lexer.machine_token <- Token(TokenKind.Newline, lexer.cursor_position(), lexer.position, lexer.position)
+                        lexer <- lexer.advance_char()
+                        lexer.at_line_start <- true
+                        lexer <- lexer.skip_blank_lines()
+                        -> Recurse if lexer.group_depth > 0 and not lexer.active_grouped_block_context()
+                        -> NewlineResult
+                    NewlineResult:
+                        => lexer.machine_token
+                    LineComment:
+                        lexer <- lexer.skip_line_comment()
+                        -> Recurse
+                    Quote:
+                        -> BlockComment if lexer.is_block_comment_start()
+                        -> String
+                    BlockComment:
+                        lexer <- lexer.skip_block_comment()
+                        -> Recurse
+                    String:
+                        rebind string_token: Token, lexer = lexer.read_string()
+                        => string_token
+                    Char:
+                        rebind char_token: Token, lexer = lexer.read_char()
+                        => char_token
+                    FString:
+                        rebind fstring_token: Token, lexer = lexer.read_fstring()
+                        => fstring_token
+                    Identifier:
+                        rebind identifier_token: Token, lexer = lexer.read_identifier()
+                        => identifier_token
+                    Recurse:
+                        rebind recursive_token: Token, lexer = lexer.next_token()
+                        => recursive_token
+                    Operator:
+                        rebind operator_token: Token, lexer = lexer.read_operator_token()
+                        => operator_token
+
+        def read_operator_token(lexer: lmut Lexer) -> Token:
+            can Memory.Allocate, Abort.Panic:
+                character: char = lexer.current_char()
+                position: LexerPosition = lexer.cursor_position()
+                start: usize = lexer.position
+
+                match character:
+                    '<':
+                        lexer <- lexer.advance_char()
+                        rebind matched_dash: bool, lexer = lexer.match_char('-')
+                        Token(TokenKind.LArrow, position, start, lexer.position) return if matched_dash
+                        rebind matched_second_lt: bool, lexer = lexer.match_char('<')
+                        lt_with_eq: TokenKind = TokenKind.LShiftEq if matched_second_lt else TokenKind.LtEq
+                        lt_without_eq: TokenKind = TokenKind.LShift if matched_second_lt else TokenKind.Lt
+                        rebind lt_token: Token, lexer = lexer.eq_suffix_token(position, start, lt_with_eq, lt_without_eq)
+                        return lt_token
+
+                    '>':
+                        lexer <- lexer.advance_char()
+                        rebind matched_second_gt: bool, lexer = lexer.match_char('>')
+                        gt_with_eq: TokenKind = TokenKind.RShiftEq if matched_second_gt else TokenKind.GtEq
+                        gt_without_eq: TokenKind = TokenKind.RShift if matched_second_gt else TokenKind.Gt
+                        rebind gt_token: Token, lexer = lexer.eq_suffix_token(position, start, gt_with_eq, gt_without_eq)
+                        return gt_token
+
+                    '=':
+                        lexer <- lexer.advance_char()
+                        rebind matched_gt_after_eq: bool, lexer = lexer.match_char('>')
+                        Token(TokenKind.FatArrow, position, start, lexer.position) return if matched_gt_after_eq
+                        rebind assign_token: Token, lexer = lexer.eq_suffix_token(position, start, TokenKind.EqEq, TokenKind.Assign)
+                        return assign_token
+
+                    '!':
+                        lexer <- lexer.advance_char()
+                        rebind bang_token: Token, lexer = lexer.eq_suffix_token(position, start, TokenKind.BangEq, TokenKind.Bang)
+                        return bang_token
+
+                    '+':
+                        lexer <- lexer.advance_char()
+                        rebind plus_token: Token, lexer = lexer.eq_suffix_token(position, start, TokenKind.PlusEq, TokenKind.Plus)
+                        return plus_token
+
+                    '-':
+                        lexer <- lexer.advance_char()
+                        rebind matched_gt_after_dash: bool, lexer = lexer.match_char('>')
+                        Token(TokenKind.Arrow, position, start, lexer.position) return if matched_gt_after_dash
+                        rebind minus_token: Token, lexer = lexer.eq_suffix_token(position, start, TokenKind.MinusEq, TokenKind.Minus)
+                        return minus_token
+
+                    '*':
+                        lexer <- lexer.advance_char()
+                        rebind star_token: Token, lexer = lexer.eq_suffix_token(position, start, TokenKind.StarEq, TokenKind.Star)
+                        return star_token
+
+                    '/':
+                        lexer <- lexer.advance_char()
+                        rebind slash_token: Token, lexer = lexer.eq_suffix_token(position, start, TokenKind.SlashEq, TokenKind.Slash)
+                        return slash_token
+
+                    '%':
+                        lexer <- lexer.advance_char()
+                        rebind percent_token: Token, lexer = lexer.eq_suffix_token(position, start, TokenKind.PercentEq, TokenKind.Percent)
+                        return percent_token
+
+                    '^':
+                        lexer <- lexer.advance_char()
+                        rebind caret_token: Token, lexer = lexer.eq_suffix_token(position, start, TokenKind.CaretEq, TokenKind.Caret)
+                        return caret_token
+
+                    '|':
+                        lexer <- lexer.advance_char()
+                        rebind matched_gt_after_pipe: bool, lexer = lexer.match_char('>')
+                        Token(TokenKind.PipeGt, position, start, lexer.position) return if matched_gt_after_pipe
+                        rebind pipe_token: Token, lexer = lexer.eq_suffix_token(position, start, TokenKind.PipeEq, TokenKind.Pipe)
+                        return pipe_token
+
+                    '&':
+                        lexer <- lexer.advance_char()
+                        rebind amp_token: Token, lexer = lexer.eq_suffix_token(position, start, TokenKind.AmpEq, TokenKind.Ampersand)
+                        return amp_token
+
+                    '.':
+                        lexer <- lexer.advance_char()
+                        Token(TokenKind.Dot, position, start, lexer.position) return if lexer.current_char() != '.'
+                        is_ellipsis: bool = lexer.peek(1) == '.'
+                        lexer <- lexer.advance_char()
+                        lexer <- lexer.advance_char() if is_ellipsis
+                        Token(TokenKind.Ellipsis, position, start, lexer.position) return if is_ellipsis
+                        rebind matched_lt_after_range: bool, lexer = lexer.match_char('<')
+                        Token(TokenKind.RangeLt, position, start, lexer.position) return if matched_lt_after_range
+                        rebind matched_gt_after_range: bool, lexer = lexer.match_char('>')
+                        Token(TokenKind.RangeGt, position, start, lexer.position) return if matched_gt_after_range
+                        rebind range_token: Token, lexer = lexer.eq_suffix_token(position, start, TokenKind.RangeLe, TokenKind.Range)
+                        return range_token
+
+                    ':':
+                        lexer <- lexer.advance_char()
+                        rebind matched_second_colon: bool, lexer = lexer.match_char(':')
+                        lexer.grouped_block_contexts <- lexer.grouped_block_contexts.push(GroupedBlockContext{group_depth: lexer.group_depth, base_indent: lexer.indentation_top()}) if not matched_second_colon and lexer.pending_grouped_block and lexer.group_depth > 0
+                        lexer.pending_grouped_block <- false
+                        return Token(TokenKind.Scope if matched_second_colon else TokenKind.Colon, position, start, lexer.position)
+
+                    ',':
+                        lexer <- lexer.advance_char()
+                        return Token(TokenKind.Comma, position, start, lexer.position)
+
+                    ';':
+                        lexer <- lexer.advance_char()
+                        return Token(TokenKind.Semicolon, position, start, lexer.position)
+
+                    '(':
+                        lexer <- lexer.advance_char()
+                        lexer.group_depth <- lexer.group_depth + 1
+                        lexer.pending_grouped_block <- false
+                        return Token(TokenKind.LParen, position, start, lexer.position)
+
+                    ')':
+                        lexer <- lexer.advance_char()
+                        lexer.group_depth <- lexer.group_depth - 1 if lexer.group_depth > 0
+                        lexer.pending_grouped_block <- false
+                        return Token(TokenKind.RParen, position, start, lexer.position)
+
+                    '[':
+                        lexer <- lexer.advance_char()
+                        lexer.group_depth <- lexer.group_depth + 1
+                        lexer.pending_grouped_block <- false
+                        return Token(TokenKind.LBracket, position, start, lexer.position)
+
+                    ']':
+                        lexer <- lexer.advance_char()
+                        lexer.group_depth <- lexer.group_depth - 1 if lexer.group_depth > 0
+                        lexer.pending_grouped_block <- false
+                        return Token(TokenKind.RBracket, position, start, lexer.position)
+
+                    '{':
+                        lexer <- lexer.advance_char()
+                        lexer.group_depth <- lexer.group_depth + 1
+                        lexer.pending_grouped_block <- false
+                        return Token(TokenKind.LBrace, position, start, lexer.position)
+
+                    '}':
+                        lexer <- lexer.advance_char()
+                        lexer.group_depth <- lexer.group_depth - 1 if lexer.group_depth > 0
+                        lexer.pending_grouped_block <- false
+                        return Token(TokenKind.RBrace, position, start, lexer.position)
+
+                    '?':
+                        lexer <- lexer.advance_char()
+                        rebind question_token: Token, lexer = lexer.eq_suffix_token(position, start, TokenKind.QAssign, TokenKind.Question)
+                        return question_token
+
+                    '~':
+                        lexer <- lexer.advance_char()
+                        return Token(TokenKind.Tilde, position, start, lexer.position)
+
+                    '@':
+                        lexer <- lexer.advance_char()
+                        return Token(TokenKind.At, position, start, lexer.position)
+                    _:
+                        lexer <- lexer.advance_char()
+                        return Token(TokenKind.Ident, position, start, lexer.position)
+        def frontend_tokenize(filename: u8&, source: u8&) -> darray[Token]:
+            can Memory.Allocate, Abort.Panic:
+                return frontend_tokenize_with_length(filename, source, cstring_length(source))
+
+
+        def frontend_tokenize_with_length(filename: u8&, source: u8&, source_length: usize) -> darray[Token]:
+            can Memory.Allocate, Abort.Panic:
+                lexer: mutable Lexer = Lexer(filename, source, source_length)
+                machine over lexer.machine_bool:
+                    state Read
+                    state Emit
+                    start Read
+                    Read, _:
+                        rebind next: Token, lexer = lexer.next_token()
+                        lexer.machine_token <- next
+                        lexer.machine_bool <- next.kind == TokenKind.Eof
+                        -> Emit
+                    Emit, true:
+                        lexer.machine_tokens <- lexer.machine_tokens.push(lexer.machine_token)
+                        break
+                    Emit, _:
+                        lexer.machine_tokens <- lexer.machine_tokens.push(lexer.machine_token)
+                        -> Read
+
+                result: mutable darray[Token] = []
+                result.extend(lexer.machine_tokens)
+                return result
+
+
+        # Tokenize a sub-span of `source` — the parser's f-string desugar uses this to
+        # sub-lex an embedded `{EXPR}` with ABSOLUTE offsets (the Lexer starts at `start`
+        # and sees `end` as EOF), so every produced token's views index the original
+        # buffer and LSP positions stay valid.
+        def frontend_tokenize_span(filename: u8&, source: u8&, start: usize, end: usize) -> darray[Token]:
+            can Memory.Allocate, Abort.Panic:
+                lexer: mutable Lexer = Lexer(filename, source, end)
+                lexer.position <- start
+                machine over lexer.machine_bool:
+                    state Read
+                    state Emit
+                    start Read
+                    Read, _:
+                        rebind next: Token, lexer = lexer.next_token()
+                        lexer.machine_token <- next
+                        lexer.machine_bool <- next.kind == TokenKind.Eof
+                        -> Emit
+                    Emit, true:
+                        lexer.machine_tokens <- lexer.machine_tokens.push(lexer.machine_token)
+                        break
+                    Emit, _:
+                        lexer.machine_tokens <- lexer.machine_tokens.push(lexer.machine_token)
+                        -> Read
+                result: mutable darray[Token] = []
+                result.extend(lexer.machine_tokens)
+                return result
+
+
+        # Tokenize purely to harvest the comment spans (Comment-kind tokens that
+        # the normal stream drops). For tooling — the LSP semantic-token pass —
+        # not the parser.
+        def frontend_tokenize_comments_with_length(filename: u8&, source: u8&, source_length: usize) -> darray[Token]:
+            can Memory.Allocate, Abort.Panic:
+                lexer: mutable Lexer = Lexer(filename, source, source_length)
+
+                machine over lexer.machine_bool:
+                    state Read
+                    state Check
+                    start Read
+                    Read, _:
+                        rebind next: Token, lexer = lexer.next_token()
+                        lexer.machine_token <- next
+                        lexer.machine_bool <- next.kind == TokenKind.Eof
+                        -> Check
+                    Check, true:
+                        break
+                    Check, _:
+                        -> Read
+
+                # Copy out of the lexer's struct field into a standalone
+                # owned darray: returning the field directly dangles once
+                # the local lexer's region is torn down.
+                result: mutable darray[Token] = []
+                result.extend(lexer.comments)
+                return result

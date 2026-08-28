@@ -1,0 +1,212 @@
+# Flow-shape lints (stage0 analyzer_flow_function / analyzer_flow_complexity, docs/121/125
+# -Wflow). Runs under `# flow` (FlowLintMode 1) and `# flow-strict` (mode 2). A `can ComplexFlow:`
+# block is the escape hatch — its body is exempt (in_complex_flow). Lints ported:
+#  - Shadow-elif table: an if/elif chain of >= 3 arms all testing the same bare-ident scrutinee
+#    for equality against int/char/string literals — a decision table; use `when`.
+#  - Nesting budget (R1): a loop body whose conditional nesting exceeds 3 levels — a decision
+#    tree hiding a state machine. `if`-chains/`match`/block-wrappers collapse; nested loops reset;
+#    an `if true:` scoped-loop wrapper is transparent.
+# SOUND syntactic subsets: enum-tag literals + field-path scrutinees are sound misses.
+
+extend Semantic:
+    private:
+        def flow_line_seen(seen: darray[u32]&, line: u32) -> bool:
+            can Abort.Panic:
+                return any seen_line in seen where seen_line == line
+
+        def flow_is_literal(expression: Ast::Expr) -> bool:
+            can Abort.Panic:
+                match expression:
+                    Expr.IntLit(value):
+                        return true
+                    Expr.CharLit(text):
+                        return true
+                    Expr.StringLit(text):
+                        return true
+                    _:
+                        return false
+
+        # A decision-table ladder VALUE: an int/char/string literal, OR a genuine enum-variant
+        # reference `EnumName.Variant` (stage0 treats an equality ladder against enum variants as
+        # the same when-convertible decision table). Restricted to REGISTERED enums so an ordinary
+        # field-value comparison (`k == obj.field`) is never mistaken for a decision value.
+        def flow_is_ladder_value(expression: Ast::Expr, table: SymbolTable&) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                true return if flow_is_literal(expression)
+                match expression:
+                    Expr.Field(base, variant, field_line):
+                        base_name: sview = ident_name_of(base)
+                        return base_name != "" and is_enum_name(table, base_name) and enum_has_variant(table, base_name, variant)
+                    Expr.Scope(base, name, scope_line):
+                        scope_base_name: sview = ident_name_of(base)
+                        return scope_base_name != "" and is_enum_name(table, scope_base_name) and enum_has_variant(table, scope_base_name, name)
+                    _:
+                        return false
+
+        def flow_is_const_true(condition: Ast::Expr) -> bool:
+            can Abort.Panic:
+                match condition:
+                    Expr.BoolLit(value):
+                        return value
+                    Expr.Ident(name, line):
+                        return name == "true"
+                    Expr.Paren(inner, paren_line):
+                        return flow_is_const_true(inner)
+                    _:
+                        return false
+
+        def flow_clause_grants_complex_flow(clause: darray[sview]&) -> bool:
+            can Abort.Panic:
+                return any grant in clause where grant == "ComplexFlow"
+
+        # The bare-identifier scrutinee a condition tests for equality against a literal, for
+        # `X == LIT` / `LIT == X` and or-chains `X == L1 or X == L2` over one X; "" otherwise.
+        def flow_equality_scrutinee(condition: Ast::Expr, table: SymbolTable&) -> sview:
+            can Memory.Allocate, Abort.Panic:
+                match condition:
+                    Expr.Paren(inner, paren_line):
+                        return flow_equality_scrutinee(inner, table)
+                    Expr.Binary(left, operator, right, binary_line):
+                        if operator == TokenKind.EqEq:
+                            left_lit: bool = flow_is_ladder_value(left, table)
+                            right_lit: bool = flow_is_ladder_value(right, table)
+                            return ident_name_of(left) if right_lit and not left_lit else (ident_name_of(right) if left_lit and not right_lit else sview("", 0, 0))
+                        if operator == TokenKind.Or:
+                            left_scrutinee: sview = flow_equality_scrutinee(left, table)
+                            return left_scrutinee if left_scrutinee != "" and left_scrutinee == flow_equality_scrutinee(right, table) else sview("", 0, 0)
+                        return sview("", 0, 0)
+                    _:
+                        return sview("", 0, 0)
+
+        def flow_elif_chain(condition: Ast::Expr, else_body: darray[Ast::Stmt], head_line: u32, member_lines: mutable darray[u32]&, table: SymbolTable&) -> (length: usize, scrutinee: sview):
+            can Memory.Allocate, Abort.Panic:
+                scrutinee: sview = flow_equality_scrutinee(condition, table)
+                (0, sview("", 0, 0)) return if scrutinee == ""
+                length: mutable usize = 1
+                member_lines.push(head_line)
+                current_else: mutable darray[Ast::Stmt] = []
+                current_else.extend(else_body)
+                while continuing |continuing: bool = true, length, current_else, member_lines|:
+                    continuing <- false
+                    if current_else.count == 1:
+                        match current_else[0]:
+                            Stmt.If(next_condition, next_then, next_else, next_line):
+                                next_scrutinee: sview = flow_equality_scrutinee(next_condition, table)
+                                if next_scrutinee == scrutinee:
+                                    length <- length + 1
+                                    member_lines.push(next_line.line)
+                                    next_else_copy: mutable darray[Ast::Stmt] = []
+                                    next_else_copy.extend(next_else)
+                                    current_else <- next_else_copy
+                                    continuing <- true
+                            _:
+                                pass
+                return (length, scrutinee)
+
+        # (is_bool, value) of a boolean-literal expression (`true`/`false`), through parens.
+        def flow_bool_literal(expression: Ast::Expr) -> (is_bool: bool, value: bool):
+            can Abort.Panic:
+                match expression:
+                    Expr.BoolLit(value):
+                        return (true, value)
+                    Expr.Ident(name, line):
+                        return (name == "true" or name == "false", name == "true")
+                    Expr.Paren(inner, paren_line):
+                        return flow_bool_literal(inner)
+                    _:
+                        return (false, false)
+
+        # Whether NAME is tested as a bare boolean or against a bool literal in any if/while
+        # condition of a statement list (the boolTests signal for a flag).
+        def flow_name_bool_compared(statements: darray[Ast::Stmt], name: sview) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements:
+                    match statement:
+                        Stmt.If(condition, then_body, else_body, line):
+                            true return if flow_condition_tests_bool(condition, name)
+                            true return if flow_name_bool_compared(then_body, name)
+                            true return if flow_name_bool_compared(else_body, name)
+                        Stmt.While(condition, body, line):
+                            true return if flow_condition_tests_bool(condition, name)
+                            true return if flow_name_bool_compared(body, name)
+                        Stmt.For(bind, variables, iterable, body, line):
+                            true return if flow_name_bool_compared(body, name)
+                        Stmt.Block(kind, clause, binding, body, line):
+                            true return if flow_name_bool_compared(body, name)
+                        Stmt.Match(scrutinee, arms, line):
+                            for arm in arms:
+                                true return if flow_name_bool_compared(arm.body, name)
+                        _:
+                            pass
+                return false
+
+        def flow_condition_tests_bool(condition: Ast::Expr, name: sview) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                match condition:
+                    Expr.Ident(ident_name, line):
+                        return ident_name == name
+                    Expr.Paren(inner, paren_line):
+                        return flow_condition_tests_bool(inner, name)
+                    Expr.Unary(operator, operand, unary_line):
+                        return flow_condition_tests_bool(operand, name)
+                    Expr.Binary(left, operator, right, binary_line):
+                        if operator == TokenKind.EqEq or operator == TokenKind.BangEq:
+                            left_bool: (is_bool: bool, value: bool) = flow_bool_literal(right)
+                            right_bool: (is_bool: bool, value: bool) = flow_bool_literal(left)
+                            true return if ident_name_of(left) == name and left_bool.is_bool
+                            true return if ident_name_of(right) == name and right_bool.is_bool
+                            return false
+                        return flow_condition_tests_bool(left, name) or flow_condition_tests_bool(right, name)
+                    _:
+                        return false
+
+        # Whether an arm body DIRECTLY (top-level, not nested) assigns NAME a bool literal, and
+        # which values it wrote — records into acc[0] (assigning-arm count), acc[1] (saw true),
+        # acc[2] (saw false).
+        def flow_arm_bool_assign(body: darray[Ast::Stmt], name: sview, acc: mutable darray[u32]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                assigns: mutable bool = false
+                for statement in body |assigns, acc|:
+                    match statement:
+                        Stmt.Assign(target, operator, value, line):
+                            if ident_name_of(target) == name:
+                                literal: (is_bool: bool, value: bool) = flow_bool_literal(value)
+                                assigns <- true if literal.is_bool
+                                acc[1] <- 1 if literal.is_bool and literal.value
+                                acc[2] <- 1 if literal.is_bool and not literal.value
+                        _:
+                            pass
+                acc[0] <- acc[0] + 1 if assigns
+
+        # Accumulate assigning-arm count + true/false-value presence for NAME across every
+        # if-branch body in a statement list (recursively). acc = [arm_count, saw_true, saw_false].
+        def flow_accumulate_flag_arms(statements: darray[Ast::Stmt], name: sview, acc: mutable darray[u32]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |acc|:
+                    match statement:
+                        Stmt.If(condition, then_body, else_body, line):
+                            flow_arm_bool_assign(then_body, name, acc)
+                            flow_arm_bool_assign(else_body, name, acc)
+                            flow_accumulate_flag_arms(then_body, name, acc)
+                            flow_accumulate_flag_arms(else_body, name, acc)
+                        Stmt.While(condition, body, line):
+                            flow_accumulate_flag_arms(body, name, acc)
+                        Stmt.For(bind, variables, iterable, body, line):
+                            flow_accumulate_flag_arms(body, name, acc)
+                        Stmt.Block(kind, clause, binding, body, line):
+                            flow_accumulate_flag_arms(body, name, acc)
+                        Stmt.Match(scrutinee, arms, line):
+                            for arm in arms |acc|:
+                                flow_accumulate_flag_arms(arm.body, name, acc)
+                        _:
+                            pass
+
+        # State-flag check (R2, bool subset): a loop-carried capture set to BOTH `true` and
+        # `false` across >= 2 distinct branch arms and tested as a bool is a 2-state machine.
+        def flow_state_flag_check(loop_body: darray[Ast::Stmt], captures: darray[sview], loop_line: u32, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for capture in captures |table| -> table:
+                    acc: mutable darray[u32] = [0, 0, 0]
+                    flow_accumulate_flag_arms(loop_body, capture, acc)
+                    flagged: bool = acc[0] >= 2 and acc[1] == 1 and acc[2] == 1 and flow_name_bool_compared(loop_body, capture)
+                    table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.FlowStateFlag, name: capture, line: loop_line, expected: "", actual: ""}) if flagged

@@ -1,0 +1,394 @@
+# Stage1 parser — `module Parser` core: the Parser struct and its constructor. This is the
+# canonical `module Parser:` declaration; every other part file (parser_core_cursor.elisa,
+# parser_expr.elisa, parser_stmt.elisa, parser_decl.elisa, parser_types.elisa, ...) declares
+# its own `extend Parser:` block with its own visibility section — a file's membership is
+# visible in the file itself rather than encoded by this facade's include layout (see
+# parser.elisa). Token consumption and block parsing continue in parser_core_cursor.elisa;
+# block values, loop headers, and the `can[...]` scanner in parser_core_blocks.elisa.
+#
+# Region-Inferred Allocation: there are no explicit `Arena&` parameters anywhere in the
+# parser. Every AST node, side-table darray, and error entry is allocated through idiomatic
+# Elisa region inference (docs/75) — the region is inferred from the call site and threaded
+# implicitly, all the way out to `parse_file`'s region-polymorphic return.
+#
+# The `Parser` struct itself intentionally carries almost no state: `source`/`tokens`/
+# `position` are the cursor over the token stream, and `errors` is the one accumulated
+# side table. AST nodes are NOT held here — each is constructed as a handle into the
+# unified Node store (docs/76/77) and wired directly into its parent's payload, so child
+# lists live on the nodes themselves rather than in any parser-owned collection.
+
+include "./parser_tokens.elisa"
+
+module Parser:
+    public:
+        struct Parser:
+            tokens: darray[Token]
+            errors: mutable darray[Ast::ParseError]
+            # Effect names captured by the most recent `skip_trailing_can` call (dotted
+            # source spans). Overwritten on every call so a signature-line reader can pick
+            # up the effect grant a return-type `expression()` consumed as a trailing `can`.
+            captured_effects: mutable darray[sview]
+            # Struct-invariant predicate expressions (`invariant EXPR`) captured by the most
+            # recent `struct_member_block`, in declaration order. Read by `struct_declaration`
+            # to populate `Decl.Struct.invariants`. Reset at the start of each body parse.
+            captured_invariants: mutable darray[Ast::Expr]
+            # Per-signature capture buffers for `requires`/`ensures` predicates (reset each
+            # signature by parse_signature_clauses). function_declaration drains them — with the
+            # owning function line — into the file-level signature_contract_* accumulators.
+            captured_contract_kinds: mutable darray[sview]
+            captured_contract_exprs: mutable darray[Ast::Expr]
+            # File-level accumulators (parallel line/kind/predicate), drained into File by
+            # parse_file. Signature contracts stay OUT of the body — a pure side-channel.
+            signature_contract_lines: mutable darray[u32]
+            signature_contract_kinds: mutable darray[sview]
+            signature_contract_exprs: mutable darray[Ast::Expr]
+            derived_state_rules: mutable darray[Ast::DerivedStateRule]
+            typestate_postconditions: mutable darray[Ast::TypestatePostcondition]
+            # Decorator names captured by the most recent `parse_decorators` call (bare
+            # `@name` spans), read by the declaration that immediately follows them.
+            pending_decorators: mutable darray[Ast::Annotation]
+            annotation_args: mutable darray[sview]
+            extern_params: mutable darray[Ast::ExternParam]
+            local_region_annotations: mutable darray[Ast::LocalRegionAnnotation]
+            # Source lines of `ghost NAME: T = v` locals (marker dropped from the AST).
+            ghost_local_lines: mutable darray[u32]
+            static_assert_conds: mutable darray[Ast::Expr]
+            # `static if/elif/else COND:` branch selection. The parser keeps EVERY branch
+            # (a name declared in two branches is not a duplicate), so the condition has to
+            # survive for the backend to pick one -- otherwise a per-target `const` is
+            # declared once per branch and everything downstream of it declines.
+            # Parallel rows, keyed to the branch's `Decl.Scoped` line.
+            static_if_conds: mutable darray[Ast::Expr]
+            static_if_lines: mutable darray[u32]
+            static_if_kinds: mutable darray[u32]
+            static_assert_msgs: mutable darray[sview]
+            static_assert_lines: mutable darray[u32]
+            # Parallel expression-provenance rows; `__inline_can` is the postfix-grant
+            # sentinel alongside ordinary `new[region]` region names.
+            allocation_region_names: mutable darray[sview]
+            allocation_region_lines: mutable darray[u32]
+            enum_annotations: mutable darray[Ast::EnumAnnotation]
+            func_decl_lines: mutable darray[u32]
+            func_decl_columns: mutable darray[u32]
+            # Column of each `panic` keyword, keyed by its line. The backend renders
+            # `panic at FILE:LINE:COL: MESSAGE` and Expr carries only a line, so the
+            # column has to travel beside it — the same shape as func_decl_columns.
+            panic_lines: mutable darray[u32]
+            panic_columns: mutable darray[u32]
+            # Full type expressions for typed function-value parameters. The legacy annotation
+            # rows retain only a head token; these rows preserve generic applications such as
+            # `fn(Slice[T]) -> i64` for backend ABI resolution.
+            fn_type_param_lines: mutable darray[u32]
+            fn_type_param_exprs: mutable darray[Ast::Expr]
+            # The RETURN type expression of a function-type annotation, same rows and the
+            # same reason: the `__lambda_return` annotation keeps only a head STRING, so
+            # `-> Task[R, Pending]` lost its type arguments entirely.
+            fn_type_return_lines: mutable darray[u32]
+            fn_type_return_exprs: mutable darray[Ast::Expr]
+            tuple_type_elements: mutable darray[Ast::Expr]
+            tuple_type_starts: mutable darray[usize]
+            tuple_type_counts: mutable darray[usize]
+            tuple_type_lines: mutable darray[u32]
+            # docs/123: top-level decls synthesized by a statement-level desugar (the
+            # machine's hoisted mode enum), drained into top_decls by parse_file.
+            pending_decls: mutable darray[Ast::Decl]
+            # Function-local typed states, consumed by the next `start State:`.
+            pending_state_decls: mutable darray[MachineStateAst]
+            # Protocol DEFAULT methods materialized as Decl.Func, checked ONLY by the
+            # ensure/decreases obligation checks (NOT drained into top_decls, so the full
+            # check suite does not over-fire on protocol-scoped methods).
+            protocol_default_methods: mutable darray[Ast::Decl]
+            # Source lines of every function whose signature declares an `error[...]` return
+            # set. Drained into `File.error_set_func_lines` by parse_file. A raise-bearing
+            # function whose line is here is exempt from RaiseWithoutErrorSet. Recording is
+            # exhaustive (every error-set function's line is pushed), so a line collision can
+            # only over-exempt (a sound miss), never falsely flag.
+            error_set_func_lines: mutable darray[u32]
+            # The SET NAME for each line above, index-parallel (`error[BackendError]` ->
+            # "BackendError"), or "" when the clause was not a plain `error[Ident]`. The
+            # backend needs it to size an error set's ABI: a set with a PAYLOAD-carrying
+            # variant returns a struct, a fieldless one returns i32.
+            error_set_func_names: mutable darray[sview]
+            # Names DECLARED as `error Name:`. The `error[...]` CLAUSE is not proof of an
+            # error set — the source writes `error[E]`/`error[R]` for generic parameters and
+            # `error[Ident]` for names that are something else entirely — so the set-name
+            # capture above must be intersected with this before it can drive an ABI choice.
+            error_set_decl_names: mutable darray[sview]
+            numeric_suffix_names: mutable darray[sview]
+            numeric_suffix_lines: mutable darray[u32]
+            # docs/125 §9 Tier-2: machine-over coverage rows (Ast::MachineCoverageRow) accumulated
+            # as classifier-input machines are parsed; drained into File.machine_coverage by
+            # parse_file, checked in semantic once the classifier's return type is known.
+            machine_coverage: mutable darray[Ast::MachineCoverageRow]
+            declared_thread_slots: mutable darray[sview]
+            lmut_param_names: mutable darray[sview]
+            mutable_param_names: mutable darray[sview]
+            # Per-signature buffer of plain `fulfills LawName` clause names (no `is`
+            # subject). Reset at each parse_signature_clauses; drained by
+            # function_declaration into a fn-keyed annotation for effect-law checking.
+            pending_fulfills: mutable darray[sview]
+            # Per-signature `fulfills SUBJECT is LAW` clauses (parallel subject/law rows),
+            # drained by function_declaration into fn-keyed annotations for frame-law checking.
+            pending_fulfills_is_subject: mutable darray[sview]
+            pending_fulfills_is_law: mutable darray[sview]
+            # Generic type/value parameters keyed by their owning function's source
+            # line. Drained into File so semantic resolution can scope `T`, `K`, `N`,
+            # etc. without widening them to file-global symbols.
+            generic_param_lines: mutable darray[u32]
+            generic_param_names: mutable darray[sview]
+            generic_struct_decls: mutable darray[Ast::Decl]
+            generic_struct_decl_names: mutable darray[sview]
+            # The module each generic TEMPLATE was declared in, "" for a top-level one.
+            # Same shape and same reason as struct_owners: a template is recorded under
+            # its bare name, and `register_struct_names` skips a struct whose name matches
+            # a template -- so a module's own concrete `Task` was skipped because the
+            # runtime declares a generic `Task[T, S]`, and every function mentioning it
+            # was declined by the backend. Must come from the PARSER: only it knows the
+            # enclosing module at the point the header is read.
+            generic_struct_decl_owners: mutable darray[sview]
+            generic_struct_decl_lines: mutable darray[u32]
+            generic_func_decls: mutable darray[Ast::Decl]
+            generic_func_decl_names: mutable darray[sview]
+            generic_func_decl_lines: mutable darray[u32]
+            # Packed enum declaration names. `Decl.Enum` predates layout metadata;
+            # this file side-table preserves the semantic distinction for Store checks.
+            packed_enum_names: mutable darray[sview]
+            # Alias declarations retained in flat side tables for backend passes that must
+            # avoid destructuring the recursive packed Decl hierarchy.
+            alias_names: mutable darray[sview]
+            alias_targets: mutable darray[Ast::Expr]
+            alias_target_heads: mutable darray[sview]
+            struct_names: mutable darray[sview]
+            # The module each struct was declared in, "" for a top-level one. Struct names
+            # shared ONE flat table keyed by bare name, so two modules each declaring a
+            # `Work` collapsed onto one row and the second silently overwrote the first --
+            # `struct literal "Work" is missing field "tally"`, for a program stage0
+            # compiles. Same shape as const_owners.
+            #
+            # It has to come from the PARSER rather than from the backend's module walk,
+            # because struct_member_starts/counts are keyed POSITIONALLY by this list's
+            # index; recovering the owner separately would not line the two up.
+            struct_owners: mutable darray[sview]
+            # The module whose body is being parsed, "" at top level. Saved and restored
+            # around a module body, so nesting yields the innermost enclosing name -- which
+            # is what the backend's own module walk records for consts, so the two agree.
+            current_module: mutable sview
+            struct_member_rows: mutable darray[Ast::StructMember]
+            struct_member_starts: mutable darray[usize]
+            struct_member_counts: mutable darray[usize]
+            enum_decl_names: mutable darray[sview]
+            enum_decl_storage_heads: mutable darray[sview]
+            enum_decl_is_const: mutable darray[bool]
+            enum_decl_variant_names: mutable darray[sview]
+            # A const-enum member's VALUE, parallel to enum_decl_variant_names. The flat
+            # metadata is the only path a CONST enum reaches the backend by (both decl-based
+            # registrations start `return if is_const`), so without this the backend saw only
+            # names and order — and compiled every member as its ORDINAL. `Lo = 2, Hi = 5`
+            # answered 0 and 1.
+            enum_decl_variant_values: mutable darray[i64]
+            enum_decl_variant_starts: mutable darray[usize]
+            enum_decl_variant_counts: mutable darray[usize]
+            payload_enum_names: mutable darray[sview]
+            payload_enum_is_const: mutable darray[bool]
+            payload_enum_variant_starts: mutable darray[usize]
+            payload_enum_variant_counts: mutable darray[usize]
+            payload_enum_variant_names: mutable darray[sview]
+            payload_enum_variant_field_starts: mutable darray[usize]
+            payload_enum_variant_field_counts: mutable darray[usize]
+            payload_enum_variant_fields: mutable darray[Ast::Expr]
+            payload_enum_variant_field_names: mutable darray[sview]
+            captured_enum_variant_names: mutable darray[sview]
+            captured_enum_variant_field_starts: mutable darray[usize]
+            captured_enum_variant_field_counts: mutable darray[usize]
+            captured_enum_variant_fields: mutable darray[Ast::Expr]
+            captured_enum_variant_field_names: mutable darray[sview]
+            enum_common_owners: mutable darray[sview]
+            enum_common_counts: mutable darray[u32]
+            source: u8&
+            position: mutable usize
+            # docs/123: per-file machine counter selecting synthesized machine names.
+            machine_count: mutable usize
+            # Shape metadata for the most recently parsed `when` scrutinee.
+            when_scrutinee_columns: mutable usize
+            # Expression-recursion depth, bounded by EXPR_DEPTH_LIMIT so a pathological
+            # deeply-nested expression (`((((…))))`) emits a diagnostic instead of
+            # overflowing the stack. Incremented on entry to `expression`, decremented on exit.
+            depth: mutable u32
+            active_pool_depth: mutable u32
+            current_struct_stride: mutable u32
+            captured_enum_common_count: mutable u32
+            # Whether the most recent `struct_member_block` saw a `derive state:` block.
+            # Read by `struct_declaration` to set `Decl.Struct.has_derive`: the `[state …]`
+            # header is already consumed by the time the body is parsed, so the presence of
+            # a matching `derive` block must be carried back out of the body parse.
+            captured_has_derive: mutable bool
+            # docs/119 §3/§6: while parsing a loop iterable/condition that may be followed
+            # by a `|header|`, top-level bitwise `|` is suppressed so the expression stops
+            # at the header's opening pipe. The loop parser then chains any genuine
+            # (non-header) `|` itself. Off everywhere else.
+            suppress_pipe: mutable bool
+            # docs/123: while parsing a `machine` header clause, a top-level `->` is the
+            # yield introducer, not the function-type arrow — suppressed like the pipe.
+            suppress_arrow: mutable bool
+            # While parsing the scrutinee of `expect EXPR as PATTERN`, qualified `as`
+            # is the statement delimiter rather than the packed-pattern expression operator.
+            suppress_as_pattern: mutable bool
+            # True while parsing a design-by-contract / law predicate (`requires`, `ensure`,
+            # `invariant`, `law N(...) = <pred>`). Enables the contract-only grammar —
+            # unbounded `forall/exists VAR: PRED` quantifiers and the `implies`/`=>`
+            # implication infix — inside parenthesized sub-groups, so a nested predicate
+            # like `(forall i: A implies B) implies (forall j: C)` parses. Off everywhere
+            # else, so ordinary expressions treat `implies` as a plain identifier.
+            in_contract: mutable bool
+            # True while parsing inside a `can ComplexFlow:` grant (docs/125 §6b) — the
+            # documented escape hatch from the flow-strict "no block `if`" rule. Block-ifs
+            # under it (transitively, through nested blocks) are NOT tagged `__block_if`,
+            # so the flow-strict census does not flag them, matching stage0.
+            in_complex_flow: mutable bool
+            # Set by parse_signature_clauses when it consumes a top-level `error[...]` return
+            # set on the current signature line; read (and reset) by function_declaration.
+            signature_has_error_set: mutable bool
+            # The name inside the current signature's `error[...]`, reset per signature
+            # alongside signature_has_error_set.
+            signature_error_set_name: mutable sview
+            # True only while parsing a bare/captured value block. Such a block may
+            # use a bare comma tuple as its final value; ordinary statement blocks may not.
+            in_value_block: mutable bool
+            # Enables the expression-level `SOURCE where ...` view grammar while
+            # parsing an explicitly parenthesized value group.
+            in_where_group: mutable bool
+            # True while parsing a TYPE annotation (a function RETURN type). A `fn(A)->R` type
+            # here is followed by the enclosing `:` (the function body), which a lambda VALUE's
+            # block-body branch would otherwise greedily consume — suppress that consumption.
+            in_type_annotation: mutable bool
+            current_struct_is_guest: mutable bool
+            current_struct_has_stride: mutable bool
+            pending_packed_decl: mutable bool
+
+
+        # ============================================================
+        # Region-polymorphic parser constructor
+        # No Arena& param; region inferred from allocation site
+        # ============================================================
+
+        def Parser(source: u8&, tokens: darray[Token]) -> Parser:
+            # Region is implicit; the empty error list is backed by the caller's inferred
+            # region, carried through this region-polymorphic builder's return.
+            return Parser{
+                source: source,
+                tokens: tokens,
+                position: 0,
+                errors: [],           # region inferred
+                captured_effects: [],
+                captured_has_derive: false,
+                captured_invariants: [],
+                captured_contract_kinds: [],
+                captured_contract_exprs: [],
+                signature_contract_lines: [],
+                signature_contract_kinds: [],
+                signature_contract_exprs: [],
+                derived_state_rules: [],
+                typestate_postconditions: [],
+                pending_decorators: [],
+                annotation_args: [],
+                extern_params: [],
+                local_region_annotations: [],
+                ghost_local_lines: [],
+                static_assert_conds: [],
+                static_if_conds: [],
+                static_if_lines: [],
+                static_if_kinds: [],
+                static_assert_msgs: [],
+                static_assert_lines: [],
+                allocation_region_names: [],
+                allocation_region_lines: [],
+                enum_annotations: [],
+                fn_type_param_lines: [],
+                fn_type_param_exprs: [],
+                fn_type_return_lines: [],
+                fn_type_return_exprs: [],
+                tuple_type_elements: [],
+                tuple_type_starts: [],
+                tuple_type_counts: [],
+                tuple_type_lines: [],
+                depth: 0,
+                suppress_pipe: false,
+                suppress_arrow: false,
+                suppress_as_pattern: false,
+                in_contract: false,
+                in_complex_flow: false,
+                pending_decls: [],
+                pending_state_decls: [],
+                func_decl_lines: [],
+                func_decl_columns: [],
+                panic_lines: [],
+                panic_columns: [],
+                protocol_default_methods: [],
+                machine_count: 0,
+                active_pool_depth: 0,
+                error_set_func_lines: [],
+                error_set_func_names: [],
+                error_set_decl_names: [],
+                numeric_suffix_names: [],
+                numeric_suffix_lines: [],
+                signature_has_error_set: false,
+                signature_error_set_name: sview("", 0, 0),
+                machine_coverage: [],
+                in_value_block: false,
+                in_where_group: false,
+                in_type_annotation: false,
+                current_struct_is_guest: false,
+                current_struct_has_stride: false,
+                current_struct_stride: 0,
+                declared_thread_slots: [],
+                lmut_param_names: [],
+                mutable_param_names: [],
+                pending_fulfills: [],
+                pending_fulfills_is_subject: [],
+                pending_fulfills_is_law: [],
+                generic_param_lines: [],
+                generic_param_names: [],
+                generic_struct_decls: [],
+                generic_struct_decl_names: [],
+                generic_struct_decl_owners: [],
+                generic_struct_decl_lines: [],
+                generic_func_decls: [],
+                generic_func_decl_names: [],
+                generic_func_decl_lines: [],
+                packed_enum_names: [],
+                alias_names: [],
+                alias_targets: [],
+                alias_target_heads: [],
+                struct_names: [],
+                struct_owners: [],
+                current_module: "",
+                struct_member_rows: [],
+                struct_member_starts: [],
+                struct_member_counts: [],
+                enum_decl_names: [],
+                enum_decl_storage_heads: [],
+                enum_decl_is_const: [],
+                enum_decl_variant_names: [],
+                enum_decl_variant_values: [],
+                enum_decl_variant_starts: [],
+                enum_decl_variant_counts: [],
+                payload_enum_names: [],
+                payload_enum_is_const: [],
+                payload_enum_variant_starts: [],
+                payload_enum_variant_counts: [],
+                payload_enum_variant_names: [],
+                payload_enum_variant_field_starts: [],
+                payload_enum_variant_field_counts: [],
+                payload_enum_variant_fields: [],
+                payload_enum_variant_field_names: [],
+                captured_enum_variant_names: [],
+                captured_enum_variant_field_starts: [],
+                captured_enum_variant_field_counts: [],
+                captured_enum_variant_fields: [],
+                captured_enum_variant_field_names: [],
+                pending_packed_decl: false,
+                when_scrutinee_columns: 1,
+                enum_common_owners: [],
+                enum_common_counts: [],
+                captured_enum_common_count: 0
+            }

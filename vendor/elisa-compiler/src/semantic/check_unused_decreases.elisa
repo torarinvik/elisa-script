@@ -1,0 +1,320 @@
+# Termination-family diagnostic (structural, no call-graph). A `decreases` clause states a
+# well-founded measure for a recursive (or looping) function; if the function makes NO calls at
+# all, the clause is unused. stage0 warns on the broader "no direct RECURSIVE call" condition
+# (which needs a call graph); we port the strict, provably-sound SUBSET "zero calls anywhere" —
+# zero calls trivially implies no recursive call, so we can never fire where stage0 is silent.
+#
+# INVERTED SOUNDNESS: here MISSING a call is a false positive (we'd flag a function that really
+# calls). So call detection is CONSERVATIVE — any expression/statement shape not positively known
+# to be call-free is treated as possibly containing a call, suppressing the warning.
+extend Semantic:
+    private:
+        # Whether an expression may contain a call. Leaves are call-free; common compound shapes
+        # recurse; anything else conservatively "may contain a call" (never a sound miss).
+        def expr_has_call(expression: Ast::Expr) -> bool:
+            match expression:
+                Expr.Call(callee, arguments, argument_names, line):
+                    return true
+                Expr.Ident(name, ident_line):
+                    return false
+                Expr.IntLit(value):
+                    return false
+                Expr.FloatLit(text):
+                    return false
+                Expr.StringLit(text):
+                    return false
+                Expr.CharLit(text):
+                    return false
+                Expr.BoolLit(value):
+                    return false
+                Expr.Invalid:
+                    return false
+                Expr.Absent:
+                    return false
+                Expr.Binary(left, operator, right, binary_line):
+                    return expr_has_call(left) or expr_has_call(right)
+                Expr.Unary(operator, operand, unary_line):
+                    return expr_has_call(operand)
+                Expr.Paren(inner, paren_line):
+                    return expr_has_call(inner)
+                Expr.Field(object, field, field_line):
+                    return expr_has_call(object)
+                Expr.Index(object, index, index_line):
+                    return expr_has_call(object) or expr_has_call(index)
+                _:
+                    return true
+
+
+        def stmts_have_call(statements: darray[Ast::Stmt]) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements:
+                    true return if stmt_has_call(statement)
+                return false
+
+
+        def stmt_has_call(statement: Ast::Stmt) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                match statement:
+                    Stmt.Expr(expression, line):
+                        return expr_has_call(expression)
+                    Stmt.VarDecl(name, type_expression, value, line):
+                        return expr_has_call(value)
+                    Stmt.Assign(target, operator, value, line):
+                        return expr_has_call(target) or expr_has_call(value)
+                    Stmt.Return(value, line):
+                        if value is return_value:
+                            return expr_has_call(return_value)
+                        return false
+                    Stmt.If(condition, then_body, else_body, line):
+                        return expr_has_call(condition) or stmts_have_call(then_body) or stmts_have_call(else_body)
+                    Stmt.While(condition, body, line):
+                        return expr_has_call(condition) or stmts_have_call(body)
+                    Stmt.For(bind, variables, iterable, body, line):
+                        return expr_has_call(iterable) or stmts_have_call(body)
+                    Stmt.Block(kind, clause, binding, body, line):
+                        return stmts_have_call(body)
+                    Stmt.Match(scrutinee, arms, line):
+                        true return if expr_has_call(scrutinee)
+                        for arm in arms:
+                            true return if stmts_have_call(arm.body)
+                        return false
+                    Stmt.Contract(kind, expression, line):
+                        return expr_has_call(expression)
+                    Stmt.Break(label, line):
+                        return false
+                    Stmt.Continue(label, line):
+                        return false
+                    Stmt.Invalid:
+                        return false
+                    _:
+                        return true
+
+
+        # Flag each leading-prologue `decreases` in a function proven to make zero calls.
+        # A `decreases` is a termination clause ONLY in the leading contract prologue (mirrors
+        # check_contract_position); a mid-body `decreases` is dropped by stage0 with no warning,
+        # so scanning past the prologue would false-positive. We bound the scan to the prologue.
+        def flag_unused_decreases(function_name: sview, statements: darray[Ast::Stmt], table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                prologue_length: usize = leading_contract_count(statements)
+                for statement in statements |table, position: usize = 0| -> table:
+                    if position < prologue_length:
+                        match statement:
+                            Stmt.Contract(kind, expression, line):
+                                contract_kind: sview = kind
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.UnusedDecreases, name: function_name, line: line.line, expected: "", actual: ""}) if contract_kind == "decreases"
+                            _:
+                                pass
+                    position <- position + 1
+
+
+        # The measure IDENT of a leading-prologue `decreases n` clause ("" otherwise).
+        def prologue_decreases_measure(statements: darray[Ast::Stmt]) -> sview:
+            can Memory.Allocate, Abort.Panic:
+                prologue_length: usize = leading_contract_count(statements)
+                for statement in statements |position: usize = 0| -> position:
+                    break if position >= prologue_length
+                    match statement:
+                        Stmt.Contract(kind, expression, line):
+                            contract_kind: sview = kind
+                            ident_name_of(expression) return if contract_kind == "decreases"
+                        _:
+                            pass
+                    position <- position + 1
+                return ""
+
+        # The measure COMPONENTS of the prologue's `decreases` clause: a bare ident is a
+        # one-component measure, `decreases (a, b)` a lexicographic tuple.
+        def prologue_decreases_components(statements: darray[Ast::Stmt], out: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                prologue_length: usize = leading_contract_count(statements)
+                out.reserve(out.count + statements.count)
+                for statement in statements |out, position: usize = 0|:
+                    break if position >= prologue_length
+                    match statement:
+                        Stmt.Contract(kind, expression, line):
+                            contract_kind: sview = kind
+                            if contract_kind == "decreases" and out.count == 0:
+                                single: sview = ident_name_of(expression)
+                                out.push(single) if single != ""
+                                match expression:
+                                    Expr.Tuple(elements, tuple_line):
+                                        for element in elements |out|:
+                                            component: sview = ident_name_of(element)
+                                            out.push(component) if component != ""
+                                    Expr.Paren(inner_expression, paren_line):
+                                        inner_name: sview = ident_name_of(inner_expression)
+                                        out.push(inner_name) if inner_name != "" and out.count == 0
+                                    _:
+                                        pass
+                        _:
+                            pass
+                    position <- position + 1
+
+
+        # LEXICOGRAPHIC refutation at a recursive call: each argument at a measure
+        # component's position must be affine `component + c`; scanning components in
+        # order, the first nonzero delta decides — c > 0 refutes, c < 0 proves; all
+        # zero (measure unchanged) refutes. A non-affine or cross-variable argument
+        # leaves the call to the real prover (silent).
+        def recursive_call_refutes_lex(expression: Ast::Expr, function_name: sview, components: darray[sview]&, positions: darray[i64]&) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Call(callee, arguments, argument_names, call_line):
+                        false return if ident_name_of(callee) != function_name
+                        first_delta: mutable i64 = 0
+                        decided: mutable bool = false
+                        modeled: mutable bool = true
+                        component_index: mutable usize = 0
+                        while component_index < components.count |first_delta, decided, modeled, component_index, components, positions, arguments|:
+                            continue_scan: bool = not decided and modeled
+                            position: i64 = positions[component_index]
+                            in_range: bool = continue_scan and position >= 0 and position.usize() < arguments.count
+                            if in_range:
+                                argument: Ast::Expr = arguments[position.usize()]
+                                arg_names: mutable darray[sview] = []
+                                arg_coeffs: mutable darray[i64] = []
+                                arg_konst: mutable i64 = 0
+                                arg_linear: bool = lin_add(argument, 1, arg_names, arg_coeffs, arg_konst, Ast::Expr.Invalid, false, 0)
+                                self_shape: mutable bool = arg_linear
+                                term: mutable usize = 0
+                                while term < arg_names.count |self_shape, term, component_index, components, arg_names, arg_coeffs|:
+                                    keeps_self: bool = arg_names[term] == components[component_index] and arg_coeffs[term] == 1
+                                    self_shape <- false if arg_coeffs[term] != 0 and not keeps_self
+                                    term <- term + 1
+                                modeled <- false if not self_shape
+                                if self_shape and arg_konst != 0:
+                                    first_delta <- arg_konst
+                                    decided <- true
+                            modeled <- false if continue_scan and not in_range
+                            component_index <- component_index + 1
+                        false return if not modeled
+                        (first_delta > 0) return if decided
+                        # Every component unchanged: the measure can never decrease.
+                        return true
+                    Expr.Paren(inner, paren_line):
+                        return recursive_call_refutes_lex(inner, function_name, components, positions)
+                    Expr.Binary(left, operator, right, binary_line):
+                        true return if recursive_call_refutes_lex(left, function_name, components, positions)
+                        return recursive_call_refutes_lex(right, function_name, components, positions)
+                    Expr.Unary(operator, operand, unary_line):
+                        return recursive_call_refutes_lex(operand, function_name, components, positions)
+                    Expr.GetElse(guarded, recovery, getelse_line):
+                        return recursive_call_refutes_lex(guarded, function_name, components, positions)
+                    _:
+                        return false
+
+
+        def flag_lex_refuted_calls(function_name: sview, components: darray[sview]&, positions: darray[i64]&, statements: darray[Ast::Stmt], table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |table|:
+                    match statement:
+                        Stmt.Return(value, line):
+                            if value is returned:
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.NonDecreasingMeasure, name: function_name, line: line.line, expected: components[0], actual: ""}) if recursive_call_refutes_lex(returned, function_name, components, positions)
+                        Stmt.Expr(expression, line):
+                            table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.NonDecreasingMeasure, name: function_name, line: line.line, expected: components[0], actual: ""}) if recursive_call_refutes_lex(expression, function_name, components, positions)
+                        Stmt.VarDecl(declared_name, type_expression, value, line):
+                            table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.NonDecreasingMeasure, name: function_name, line: line.line, expected: components[0], actual: ""}) if recursive_call_refutes_lex(value, function_name, components, positions)
+                        Stmt.If(condition, then_body, else_body, line):
+                            table <- flag_lex_refuted_calls(function_name, components, positions, then_body, table)
+                            table <- flag_lex_refuted_calls(function_name, components, positions, else_body, table)
+                        Stmt.While(condition, body, line):
+                            table <- flag_lex_refuted_calls(function_name, components, positions, body, table)
+                        Stmt.Block(kind, clause, binding, body, line):
+                            table <- flag_lex_refuted_calls(function_name, components, positions, body, table)
+                        _:
+                            pass
+
+
+        # How many `decreases` clauses the leading prologue carries.
+        def prologue_decreases_count(statements: darray[Ast::Stmt]) -> usize:
+            can Memory.Allocate, Abort.Panic:
+                prologue_length: usize = leading_contract_count(statements)
+                counted: usize =
+                    for statement in statements |count: usize = 0, position: usize = 0| -> count:
+                        break if position >= prologue_length
+                        match statement:
+                            Stmt.Contract(kind, expression, line):
+                                contract_kind: sview = kind
+                                count <- count + 1 if contract_kind == "decreases"
+                            _:
+                                pass
+                        position <- position + 1
+                return counted
+
+        # Whether EXPRESSION is a direct recursive call to FUNCTION_NAME passing the
+        # measure ident UNCHANGED at its own position (so it can never strictly decrease).
+        def recursive_call_keeps_measure(expression: Ast::Expr, function_name: sview, measure: sview, measure_position: i64) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Call(callee, arguments, argument_names, call_line):
+                        match callee:
+                            Expr.Ident(callee_name, callee_line):
+                                in_range: bool = callee_name == function_name and measure_position >= 0 and measure_position.usize() < arguments.count
+                                return in_range and ident_name_of(arguments[measure_position.usize()]) == measure
+                            _:
+                                return false
+                    _:
+                        return false
+
+        # A sound SUBSET of stage0's termination prover: a direct recursive call
+        # passing the measure param UNCHANGED at its own position can never
+        # strictly decrease — flag it, whether it appears in a return, a binding,
+        # an assignment, or a bare expression statement. Any other shape stays silent.
+        def flag_non_decreasing_calls(function_name: sview, measure: sview, measure_position: i64, statements: darray[Ast::Stmt], table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |table|:
+                    match statement:
+                        Stmt.Return(value, line):
+                            if value is returned:
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.NonDecreasingMeasure, name: function_name, line: line.line, expected: measure, actual: ""}) if recursive_call_keeps_measure(returned, function_name, measure, measure_position)
+                        Stmt.VarDecl(declared_name, type_expression, value, line):
+                            table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.NonDecreasingMeasure, name: function_name, line: line.line, expected: measure, actual: ""}) if recursive_call_keeps_measure(value, function_name, measure, measure_position)
+                        Stmt.Assign(target, operator, value, line):
+                            table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.NonDecreasingMeasure, name: function_name, line: line.line, expected: measure, actual: ""}) if recursive_call_keeps_measure(value, function_name, measure, measure_position)
+                        Stmt.Expr(expression, line):
+                            table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.NonDecreasingMeasure, name: function_name, line: line.line, expected: measure, actual: ""}) if recursive_call_keeps_measure(expression, function_name, measure, measure_position)
+                        Stmt.If(condition, then_body, else_body, line):
+                            table <- flag_non_decreasing_calls(function_name, measure, measure_position, then_body, table)
+                            table <- flag_non_decreasing_calls(function_name, measure, measure_position, else_body, table)
+                        Stmt.While(condition, body, line):
+                            table <- flag_non_decreasing_calls(function_name, measure, measure_position, body, table)
+                        Stmt.Block(kind, clause, binding, body, line):
+                            table <- flag_non_decreasing_calls(function_name, measure, measure_position, body, table)
+                        _:
+                            pass
+
+        def check_unused_decreases(declarations: darray[Ast::Decl], table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |table| -> table:
+                    match declaration:
+                        Decl.Func(name, parameters, return_type, body, effects, decorators, line):
+                            table <- flag_unused_decreases(name, body, table) if not stmts_have_call(body)
+                            measure: sview = prologue_decreases_measure(body)
+                            measure_position: mutable i64 = (-1)
+                            for parameter in parameters |measure_position, parameter_index: usize = 0| -> measure_position:
+                                measure_position <- parameter_index.i64() if parameter.name == measure and measure_position < 0
+                                parameter_index <- parameter_index + 1
+                            # LEXICOGRAPHIC refutation over the clause's components: a
+                            # bare ident is the one-component case; `decreases (a, b)` a
+                            # tuple. MULTIPLE clauses stay undecided here (stage0 accepts
+                            # `decreases a; decreases b` with recursion on b).
+                            single_clause: bool = prologue_decreases_count(body) == 1
+                            components: mutable darray[sview] = []
+                            prologue_decreases_components(body, components) if single_clause
+                            positions: mutable darray[i64] = []
+                            for component in components |positions, parameters|:
+                                component_position: mutable i64 = (-1)
+                                for parameter in parameters |component_position, parameter_index: usize = 0| -> component_position:
+                                    component_position <- parameter_index.i64() if parameter.name == component and component_position < 0
+                                    parameter_index <- parameter_index + 1
+                                positions.push(component_position)
+                            all_positioned: bool = components.count > 0 and not (any p in positions where p < 0)
+                            table <- flag_lex_refuted_calls(name, components, positions, body, table) if single_clause and all_positioned
+                        Decl.Module(module_name, body, module_line):
+                            table <- check_unused_decreases(body, table)
+                        Decl.Scoped(scoped_body, scoped_line):
+                            table <- check_unused_decreases(scoped_body, table)
+                        _:
+                            pass

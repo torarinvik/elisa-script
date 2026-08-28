@@ -1,0 +1,160 @@
+# Check for literal arguments that can never inhabit their parameter's declared type.
+# e.g., def g(n: i64) called as g("hello") — a string literal cannot be passed to i64.
+
+extend Semantic:
+    private:
+        # Walk through all expressions, checking for literal arguments that can never
+        # inhabit their parameter's declared type.
+        def walk_expression_for_literal_arg_type_mismatch(expression: Ast::Expr, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Call(callee, arguments, argument_names, line):
+                        # Only check direct function calls (callee is an Ident)
+                        match callee:
+                            Expr.Ident(fn_name, _):
+                                # Only check if no overloads (direct_function_count == 1)
+                                if direct_function_count(table, fn_name) == 1:
+                                    # Check each positional argument (skip named arguments)
+                                    argument_index: mutable usize = 0
+                                    while argument_index < arguments.count:
+                                        # Skip named/labeled arguments; only flag if this is a literal
+                                        # whose parameter type is a bare ident and can never fit.
+                                        argument: Ast::Expr = arguments[argument_index]
+                                        lit_kind: sview = literal_kind_of(argument)
+                                        param_type: sview = function_parameter_type_at_firm(table, fn_name, argument_index)
+                                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.LiteralArgTypeMismatch, name: fn_name, line: line.line, expected: param_type, actual: stage0_literal_spelling(lit_kind), expected_count: (argument_index + 1).u32()}) if argument_names[argument_index] == "" and lit_kind != "" and param_type != "" and literal_never_fits(lit_kind, param_type)
+                                        # A `null` ARGUMENT. null has no literal kind, so the wall
+                                        # above never saw it and `g(null)` for `g(x: i64)` was
+                                        # accepted. Gated on is_bare_primitive_type, which the
+                                        # optional spelling fails — param_type KEEPS the `?`, so
+                                        # `g(x: i64?)` stays silent (verified: it is silent even
+                                        # for a plainly-wrong literal argument).
+                                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.LiteralArgTypeMismatch, name: fn_name, line: line.line, expected: param_type, actual: "null", expected_count: (argument_index + 1).u32()}) if argument_names[argument_index] == "" and expression_is_null(argument) and param_type != "" and is_bare_primitive_type(param_type)
+                                        argument_index <- argument_index + 1
+                            _:
+                                pass
+                        # Recursively walk callee
+                        table <- walk_expression_for_literal_arg_type_mismatch(callee, table)
+                        # Recursively walk arguments
+                        for argument in arguments |table| -> table:
+                            table <- walk_expression_for_literal_arg_type_mismatch(argument, table)
+                    Expr.Field(object, field, line):
+                        table <- walk_expression_for_literal_arg_type_mismatch(object, table)
+                    Expr.Scope(base, name, line):
+                        table <- walk_expression_for_literal_arg_type_mismatch(base, table)
+                    Expr.Index(object, index, line):
+                        table <- walk_expression_for_literal_arg_type_mismatch(object, table)
+                        table <- walk_expression_for_literal_arg_type_mismatch(index, table) if not index_receiver_is_type_application(object)
+                    Expr.Unary(operator, operand, line):
+                        table <- walk_expression_for_literal_arg_type_mismatch(operand, table)
+                    Expr.Binary(left, operator, right, line):
+                        table <- walk_expression_for_literal_arg_type_mismatch(left, table)
+                        table <- walk_expression_for_literal_arg_type_mismatch(right, table) if operator != TokenKind.Is and operator != TokenKind.As
+                    Expr.Paren(inner, line):
+                        table <- walk_expression_for_literal_arg_type_mismatch(inner, table)
+                    Expr.Array(elements, line):
+                        for element in elements |table| -> table:
+                            table <- walk_expression_for_literal_arg_type_mismatch(element, table)
+                    Expr.Tuple(elements, line):
+                        for element in elements |table| -> table:
+                            table <- walk_expression_for_literal_arg_type_mismatch(element, table)
+                    Expr.Slice(object, low, high, line):
+                        table <- walk_expression_for_literal_arg_type_mismatch(object, table)
+                        table <- walk_expression_for_literal_arg_type_mismatch(low, table)
+                        table <- walk_expression_for_literal_arg_type_mismatch(high, table)
+                    Expr.IndexN(object, arguments, line):
+                        table <- walk_expression_for_literal_arg_type_mismatch(object, table)
+                        for argument in arguments |table| -> table:
+                            table <- walk_expression_for_literal_arg_type_mismatch(argument, table) if not index_receiver_is_type_application(object)
+                    Expr.SetLit(elements, line):
+                        for element in elements |table| -> table:
+                            table <- walk_expression_for_literal_arg_type_mismatch(element, table)
+                    Expr.DictLit(entries, line):
+                        for entry in entries |table| -> table:
+                            table <- walk_expression_for_literal_arg_type_mismatch(entry.key, table)
+                            table <- walk_expression_for_literal_arg_type_mismatch(entry.value, table)
+                    Expr.Construct(type_expression, fields, line):
+                        table <- walk_expression_for_literal_arg_type_mismatch(type_expression, table)
+                        for field in fields |table| -> table:
+                            table <- walk_expression_for_literal_arg_type_mismatch(field.value, table)
+                    Expr.RecordUpdate(base, fields, line):
+                        table <- walk_expression_for_literal_arg_type_mismatch(base, table)
+                        for field in fields |table| -> table:
+                            table <- walk_expression_for_literal_arg_type_mismatch(field.value, table)
+                    Expr.If(condition, then_expr, else_expr, line):
+                        table <- walk_expression_for_literal_arg_type_mismatch(condition, table)
+                        table <- walk_expression_for_literal_arg_type_mismatch(then_expr, table)
+                        table <- walk_expression_for_literal_arg_type_mismatch(else_expr, table)
+                    Expr.Comprehension(loop_variable, iterable, condition, body, line):
+                        table <- walk_expression_for_literal_arg_type_mismatch(iterable, table)
+                        table <- walk_expression_for_literal_arg_type_mismatch(condition, table)
+                        table <- walk_expression_for_literal_arg_type_mismatch(body, table)
+                    Expr.Lambda(parameters, body, line):
+                        table <- walk_statements_for_literal_arg_type_mismatch(body, table)
+                    Expr.Block(statements, value, captures, line):
+                        table <- walk_statements_for_literal_arg_type_mismatch(statements, table)
+                        table <- walk_expression_for_literal_arg_type_mismatch(value, table)
+                    Expr.Match(scrutinee, arms, line):
+                        table <- walk_expression_for_literal_arg_type_mismatch(scrutinee, table)
+                        for arm in arms |table| -> table:
+                            table <- walk_statements_for_literal_arg_type_mismatch(arm.body, table)
+                    # Literals and other expression forms don't contain sub-expressions
+                    _:
+                        pass
+
+
+        # Walk through statements, checking expressions for literal argument type mismatches.
+        def walk_statements_for_literal_arg_type_mismatch(statements: darray[Ast::Stmt], table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |table|:
+                    match statement:
+                        Stmt.Expr(expression, line):
+                            table <- walk_expression_for_literal_arg_type_mismatch(expression, table)
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            table <- walk_expression_for_literal_arg_type_mismatch(value, table)
+                        Stmt.Assign(target, operator, value, line):
+                            table <- walk_expression_for_literal_arg_type_mismatch(target, table)
+                            table <- walk_expression_for_literal_arg_type_mismatch(value, table)
+                        Stmt.If(condition, then_body, else_body, line):
+                            table <- walk_expression_for_literal_arg_type_mismatch(condition, table)
+                            table <- walk_statements_for_literal_arg_type_mismatch(then_body, table)
+                            table <- walk_statements_for_literal_arg_type_mismatch(else_body, table)
+                        Stmt.While(condition, body, line):
+                            table <- walk_expression_for_literal_arg_type_mismatch(condition, table)
+                            table <- walk_statements_for_literal_arg_type_mismatch(body, table)
+                        Stmt.For(bind, variables, iterable, body, line):
+                            table <- walk_expression_for_literal_arg_type_mismatch(iterable, table)
+                            table <- walk_statements_for_literal_arg_type_mismatch(body, table)
+                        Stmt.Return(value, line):
+                            table <- walk_expression_for_literal_arg_type_mismatch(return_value, table) if value is return_value
+                        Stmt.Block(kind, clause, binding, body, line):
+                            table <- walk_statements_for_literal_arg_type_mismatch(body, table)
+                        Stmt.Match(scrutinee, arms, line):
+                            table <- walk_expression_for_literal_arg_type_mismatch(scrutinee, table)
+                            for arm in arms |table|:
+                                table <- walk_statements_for_literal_arg_type_mismatch(arm.body, table)
+                        Stmt.Contract(kind, expression, line):
+                            table <- walk_expression_for_literal_arg_type_mismatch(expression, table)
+                        # No expressions in these statements
+                        Stmt.Break(label, line):
+                            pass
+                        Stmt.Continue(label, line):
+                            pass
+                        Stmt.Invalid:
+                            pass
+
+
+        # Walk through function declarations and check expressions in their bodies.
+        def check_literal_arg_type_mismatch(declarations: darray[Ast::Decl], table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |table|:
+                    match declaration:
+                        Decl.Func(name, params, return_type, body, effects, decorators, line):
+                            table <- walk_statements_for_literal_arg_type_mismatch(body, table)
+                        Decl.Module(module_name, body, line):
+                            table <- check_literal_arg_type_mismatch(body, table)
+                        Decl.Scoped(body, line):
+                            table <- check_literal_arg_type_mismatch(body, table)
+                        # Other declarations don't have bodies to check
+                        _:
+                            pass

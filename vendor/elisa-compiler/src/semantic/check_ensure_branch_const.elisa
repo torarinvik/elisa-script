@@ -1,0 +1,428 @@
+# Branchy ensure postcondition, constant-return slice. check_ensure_strict handles only single-return,
+# non-branchy bodies; a body that assigns the returned variable a CONSTANT on one branch (and a
+# different constant / nothing on another) is left unproven. This pass abstract-interprets the
+# returned variable over a tiny constant domain (known-consts + unknown), joining `if` branches and
+# giving up (→ unknown) on loops, then flags a reachable constant value that VIOLATES an `ensure`
+# predicate — stage0 reports "ensure postcondition ... could not be proven".
+#
+# SOUND: only a definitely-reachable constant that provably breaks the predicate fires (a strict
+# subset of "not provable"); a value the analysis cannot pin to a constant is unknown → never flags.
+extend Semantic:
+    private:
+        # The constant integer value of an expression, or not-found.
+        def ebc_const_value(value: Ast::Expr) -> (found: bool, value: i64):
+            can Memory.Allocate, Abort.Panic:
+                return where_signed_literal(value)
+
+        # Merge value `v` into a constant set (dedup).
+        def ebc_add_const(consts: mutable darray[i64]&, v: i64) -> void:
+            can Memory.Allocate, Abort.Panic:
+                consts.push(v) if not (any c in consts where c == v)
+
+        # Does any statement in `body` assign `var` (so a loop makes it unknown)?
+        def ebc_assigns_var(statements: darray[Ast::Stmt], var: sview) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements:
+                    match statement:
+                        Stmt.Assign(target, operator, value, line):
+                            true return if ident_name_of(target) == var
+                        Stmt.VarDecl(name, type_expression, decl_value, line):
+                            true return if name == var
+                        Stmt.If(condition, then_body, else_body, if_line):
+                            true return if ebc_assigns_var(then_body, var)
+                            true return if ebc_assigns_var(else_body, var)
+                        Stmt.While(while_condition, while_body, while_line):
+                            true return if ebc_assigns_var(while_body, var)
+                        Stmt.For(bind, variables, iterable, for_body, for_line):
+                            true return if ebc_assigns_var(for_body, var)
+                        Stmt.Block(block_kind, clause, binding, block_body, block_line):
+                            true return if ebc_assigns_var(block_body, var)
+                        _:
+                            pass
+                return false
+
+        # Abstract-interpret `var`'s value over the statements, updating (consts, unknown).
+        def ebc_interp(statements: darray[Ast::Stmt], var: sview, consts: mutable darray[i64]&, unknown: mutable bool&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |consts, unknown|:
+                    match statement:
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            if name == var:
+                                cv: (found: bool, value: i64) = ebc_const_value(value)
+                                consts <- consts.truncate(0)
+                                unknown <- not cv.found
+                                ebc_add_const(consts, cv.value) if cv.found
+                        Stmt.Assign(target, operator, value, line):
+                            if ident_name_of(target) == var and operator == TokenKind.LArrow:
+                                cv: (found: bool, value: i64) = ebc_const_value(value)
+                                consts <- consts.truncate(0)
+                                unknown <- not cv.found
+                                ebc_add_const(consts, cv.value) if cv.found
+                        Stmt.If(condition, then_body, else_body, if_line):
+                            then_consts: mutable darray[i64] = [c for c in consts]
+                            then_unknown: mutable bool = unknown
+                            ebc_interp(then_body, var, then_consts, then_unknown)
+                            else_consts: mutable darray[i64] = [c for c in consts]
+                            else_unknown: mutable bool = unknown
+                            ebc_interp(else_body, var, else_consts, else_unknown)
+                            consts <- consts.truncate(0)
+                            for c in then_consts |consts|:
+                                ebc_add_const(consts, c)
+                            for c in else_consts |consts|:
+                                ebc_add_const(consts, c)
+                            unknown <- then_unknown or else_unknown
+                        Stmt.While(while_condition, while_body, while_line):
+                            if ebc_assigns_var(while_body, var):
+                                consts <- consts.truncate(0)
+                                unknown <- true
+                        Stmt.For(bind, variables, iterable, for_body, for_line):
+                            if ebc_assigns_var(for_body, var):
+                                consts <- consts.truncate(0)
+                                unknown <- true
+                        _:
+                            pass
+
+        # The bare returned variable name of a body whose LAST statement is `return VAR`, else "".
+        def ebc_return_var(statements: darray[Ast::Stmt]) -> sview:
+            can Memory.Allocate, Abort.Panic:
+                sview("", 0, 0) return if statements.count == 0
+                match statements[statements.count - 1]:
+                    Stmt.Return(value, line):
+                        if value is returned:
+                            return ident_name_of(returned)
+                        return sview("", 0, 0)
+                    _:
+                        return sview("", 0, 0)
+
+        # A condition of the shape `NAME <op> LITERAL` (op/lit extracted), else not-found.
+        def ebc_ident_lit_cond(condition: Ast::Expr, name: sview) -> (found: bool, op: TokenKind, lit: i64):
+            can Memory.Allocate, Abort.Panic:
+                match condition:
+                    Expr.Binary(left, operator, right, binary_line):
+                        if ident_name_of(left) == name:
+                            bound: (found: bool, value: i64) = where_signed_literal(right)
+                            (true, operator, bound.value) return if bound.found
+                    _:
+                        pass
+                return (false, TokenKind.Eof, 0)
+
+        # The last statement of a block is an early-exit `return`.
+        def statements_end_in_return(statements: darray[Ast::Stmt]) -> bool:
+            can Abort.Panic:
+                false return if statements.count == 0
+                match statements[statements.count - 1]:
+                    Stmt.Return(value, line):
+                        return true
+                    _:
+                        return false
+
+        # A sound integer interval [lo, hi] (each bound optional) for the bare parameter `name` at the
+        # function's trailing `return name`, derived from its type, `requires` facts, and the NEGATION
+        # of every guarding `if COND: return ...` early-exit that precedes the tail (fallthrough facts).
+        def ebc_param_interval(body: darray[Ast::Stmt], name: sview, unsigned: bool) -> (lop: bool, lo: i64, hip: bool, hi: i64):
+            can Memory.Allocate, Abort.Panic:
+                lop: mutable bool = unsigned
+                lo: mutable i64 = 0
+                hip: mutable bool = false
+                hi: mutable i64 = 0
+                for statement in body |lop, lo, hip, hi|:
+                    match statement:
+                        Stmt.Contract(contract_kind, contract_expr, contract_line):
+                            if contract_kind == "requires":
+                                fact: (found: bool, op: TokenKind, lit: i64) = ebc_ident_lit_cond(contract_expr, name)
+                                if fact.found:
+                                    # requires x >= K / x > K tighten the lower bound; <= / < the upper.
+                                    if fact.op == TokenKind.GtEq and (not lop or fact.lit > lo):
+                                        lop <- true
+                                        lo <- fact.lit
+                                    if fact.op == TokenKind.Gt and (not lop or fact.lit + 1 > lo):
+                                        lop <- true
+                                        lo <- fact.lit + 1
+                                    if fact.op == TokenKind.LtEq and (not hip or fact.lit < hi):
+                                        hip <- true
+                                        hi <- fact.lit
+                                    if fact.op == TokenKind.Lt and (not hip or fact.lit - 1 < hi):
+                                        hip <- true
+                                        hi <- fact.lit - 1
+                        Stmt.If(condition, then_body, else_body, if_line):
+                            # Only an early-exit guard constrains the fallthrough; add NOT(condition).
+                            if statements_end_in_return(then_body):
+                                guard: (found: bool, op: TokenKind, lit: i64) = ebc_ident_lit_cond(condition, name)
+                                if guard.found:
+                                    # not(x < K)  => x >= K ;  not(x <= K) => x > K (>= K+1)
+                                    if guard.op == TokenKind.Lt and (not lop or guard.lit > lo):
+                                        lop <- true
+                                        lo <- guard.lit
+                                    if guard.op == TokenKind.LtEq and (not lop or guard.lit + 1 > lo):
+                                        lop <- true
+                                        lo <- guard.lit + 1
+                                    # not(x > K)  => x <= K ;  not(x >= K) => x < K (<= K-1)
+                                    if guard.op == TokenKind.Gt and (not hip or guard.lit < hi):
+                                        hip <- true
+                                        hi <- guard.lit
+                                    if guard.op == TokenKind.GtEq and (not hip or guard.lit - 1 < hi):
+                                        hip <- true
+                                        hi <- guard.lit - 1
+                        _:
+                            pass
+                return (lop, lo, hip, hi)
+
+        # Does the parameter's known interval FAIL to entail `ensure result <op> LITERAL`?
+        # (Only a definite non-entailment fires; an interval that entails the predicate is silent.)
+        def ebc_param_return_unproven(predicate: Ast::Expr, body: darray[Ast::Stmt], name: sview, unsigned: bool) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                match predicate:
+                    Expr.Binary(left, operator, right, binary_line):
+                        false return if ident_name_of(left) != "result"
+                        bound: (found: bool, value: i64) = where_signed_literal(right)
+                        false return if not bound.found
+                        iv: (lop: bool, lo: i64, hip: bool, hi: i64) = ebc_param_interval(body, name, unsigned)
+                        # entailed by the interval? then NOT unproven.
+                        false return if operator == TokenKind.Gt and iv.lop and iv.lo > bound.value
+                        false return if operator == TokenKind.GtEq and iv.lop and iv.lo >= bound.value
+                        false return if operator == TokenKind.Lt and iv.hip and iv.hi < bound.value
+                        false return if operator == TokenKind.LtEq and iv.hip and iv.hi <= bound.value
+                        false return if operator == TokenKind.EqEq and iv.lop and iv.hip and iv.lo == bound.value and iv.hi == bound.value
+                        # a comparison against a literal we understand, not entailed → unproven.
+                        return when operator:
+                            TokenKind.Lt | TokenKind.LtEq | TokenKind.Gt | TokenKind.GtEq | TokenKind.EqEq -> true
+                            _ -> false
+                    _:
+                        return false
+
+        def ebc_is_unsigned_bare(type_expression: Ast::Expr) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                bare: sview = bare_type_name(type_expression)
+                return when bare:
+                    "u8" | "u16" | "u32" | "u64" | "usize" | "uintptr" | "uint" -> true
+                    _ -> false
+
+        # `BASE.FIELD` decomposition of a field-access expression (BASE a plain ident), else not-ok.
+        def ebc_field_of(expression: Ast::Expr) -> (ok: bool, base: sview, field: sview):
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Field(object, field, field_line):
+                        base: sview = ident_name_of(object)
+                        (true, base, field) return if base != ""
+                    _:
+                        pass
+                return (false, sview("", 0, 0), sview("", 0, 0))
+
+        # An `ensure BASE.FIELD <op> LITERAL` postcondition decomposed, else not-ok.
+        def ebc_field_ensure(contract_expr: Ast::Expr) -> (ok: bool, base: sview, field: sview, op: TokenKind, lit: i64):
+            can Memory.Allocate, Abort.Panic:
+                match contract_expr:
+                    Expr.Binary(left, operator, right, binary_line):
+                        lhs: (ok: bool, base: sview, field: sview) = ebc_field_of(left)
+                        if lhs.ok:
+                            bound: (found: bool, value: i64) = where_signed_literal(right)
+                            (true, lhs.base, lhs.field, operator, bound.value) return if bound.found
+                    _:
+                        pass
+                return (false, sview("", 0, 0), sview("", 0, 0), TokenKind.Eof, 0)
+
+        # Does any statement assign `base.field` (so a loop makes the field's exit value unknown)?
+        def ebc_field_assigned(statements: darray[Ast::Stmt], base: sview, field: sview) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements:
+                    match statement:
+                        Stmt.Assign(target, operator, value, line):
+                            tf: (ok: bool, base: sview, field: sview) = ebc_field_of(target)
+                            true return if tf.ok and tf.base == base and tf.field == field
+                        Stmt.If(condition, then_body, else_body, if_line):
+                            true return if ebc_field_assigned(then_body, base, field)
+                            true return if ebc_field_assigned(else_body, base, field)
+                        Stmt.While(while_condition, while_body, while_line):
+                            true return if ebc_field_assigned(while_body, base, field)
+                        Stmt.For(bind, variables, iterable, for_body, for_line):
+                            true return if ebc_field_assigned(for_body, base, field)
+                        Stmt.Block(block_kind, clause, binding, block_body, block_line):
+                            true return if ebc_field_assigned(block_body, base, field)
+                        _:
+                            pass
+                return false
+
+        # Does any statement write `X.field` for ANY base (used to poison a callee summary)?
+        def ebc_field_written_anybase(statements: darray[Ast::Stmt], field: sview) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements:
+                    match statement:
+                        Stmt.Assign(target, operator, value, line):
+                            tf: (ok: bool, base: sview, field: sview) = ebc_field_of(target)
+                            true return if tf.ok and tf.field == field
+                        Stmt.If(condition, then_body, else_body, if_line):
+                            true return if ebc_field_written_anybase(then_body, field)
+                            true return if ebc_field_written_anybase(else_body, field)
+                        Stmt.While(while_condition, while_body, while_line):
+                            true return if ebc_field_written_anybase(while_body, field)
+                        Stmt.For(bind, variables, iterable, for_body, for_line):
+                            true return if ebc_field_written_anybase(for_body, field)
+                        Stmt.Block(block_kind, clause, binding, block_body, block_line):
+                            true return if ebc_field_written_anybase(block_body, field)
+                        _:
+                            pass
+                return false
+
+        # Summarize a callee's NET effect on `field`: does it write it, is the effect unknown
+        # (conditional / non-constant write => poisoned), and the last unconditional constant value.
+        def ebc_summarize_field(statements: darray[Ast::Stmt], field: sview) -> (writes: bool, poisoned: bool, value: i64):
+            can Memory.Allocate, Abort.Panic:
+                writes: mutable bool = false
+                poisoned: mutable bool = false
+                value: mutable i64 = 0
+                for statement in statements |writes, poisoned, value|:
+                    match statement:
+                        Stmt.Assign(target, operator, assign_value, line):
+                            tf: (ok: bool, base: sview, field: sview) = ebc_field_of(target)
+                            if tf.ok and tf.field == field and operator == TokenKind.LArrow:
+                                writes <- true
+                                cv: (found: bool, value: i64) = ebc_const_value(assign_value)
+                                poisoned <- true if not cv.found
+                                value <- cv.value if cv.found
+                        Stmt.If(condition, then_body, else_body, if_line):
+                            if ebc_field_written_anybase(then_body, field) or ebc_field_written_anybase(else_body, field):
+                                writes <- true
+                                poisoned <- true
+                        Stmt.While(while_condition, while_body, while_line):
+                            if ebc_field_written_anybase(while_body, field):
+                                writes <- true
+                                poisoned <- true
+                        Stmt.For(bind, variables, iterable, for_body, for_line):
+                            if ebc_field_written_anybase(for_body, field):
+                                writes <- true
+                                poisoned <- true
+                        _:
+                            pass
+                return (writes, poisoned, value)
+
+        # The top-level body of a function named `name` in `declarations`, else not-found.
+        def ebc_find_func_body(declarations: darray[Ast::Decl], name: sview) -> (found: bool, body: darray[Ast::Stmt]):
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations:
+                    match declaration:
+                        Decl.Func(function_name, parameters, return_type, body, effects, decorators, line):
+                            (true, body) return if function_name == name
+                        Decl.Module(module_name, module_body, module_line):
+                            nested: (found: bool, body: darray[Ast::Stmt]) = ebc_find_func_body(module_body, name)
+                            nested return if nested.found
+                        Decl.Scoped(scoped_body, scoped_line):
+                            nested: (found: bool, body: darray[Ast::Stmt]) = ebc_find_func_body(scoped_body, name)
+                            nested return if nested.found
+                        _:
+                            pass
+                return (false, [])
+
+        # Abstract-interpret `base.field`'s exit value over the constant domain (consts, unknown).
+        # Seeded unknown=true by the caller since the incoming field value is not known.
+        def ebc_interp_field(statements: darray[Ast::Stmt], base: sview, field: sview, declarations: darray[Ast::Decl], consts: mutable darray[i64]&, unknown: mutable bool&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |consts, unknown, declarations|:
+                    match statement:
+                        Stmt.Assign(target, operator, value, line):
+                            tf: (ok: bool, base: sview, field: sview) = ebc_field_of(target)
+                            if tf.ok and tf.base == base and tf.field == field and operator == TokenKind.LArrow:
+                                cv: (found: bool, value: i64) = ebc_const_value(value)
+                                consts <- consts.truncate(0)
+                                unknown <- not cv.found
+                                ebc_add_const(consts, cv.value) if cv.found
+                        Stmt.Expr(expression, line):
+                            # A call passing `base` as its first (self) argument may mutate base.field.
+                            match expression:
+                                Expr.Call(callee, arguments, argument_names, call_line):
+                                    callee_name: sview = ident_name_of(callee)
+                                    if callee_name != "" and arguments.count >= 1 and ident_name_of(arguments[0]) == base:
+                                        target_body: (found: bool, body: darray[Ast::Stmt]) = ebc_find_func_body(declarations, callee_name)
+                                        if target_body.found:
+                                            effect: (writes: bool, poisoned: bool, value: i64) = ebc_summarize_field(target_body.body, field)
+                                            if effect.writes and effect.poisoned:
+                                                consts <- consts.truncate(0)
+                                                unknown <- true
+                                            if effect.writes and not effect.poisoned:
+                                                consts <- consts.truncate(0)
+                                                unknown <- false
+                                                ebc_add_const(consts, effect.value)
+                                _:
+                                    pass
+                        Stmt.If(condition, then_body, else_body, if_line):
+                            then_consts: mutable darray[i64] = [c for c in consts]
+                            then_unknown: mutable bool = unknown
+                            ebc_interp_field(then_body, base, field, declarations, then_consts, then_unknown)
+                            else_consts: mutable darray[i64] = [c for c in consts]
+                            else_unknown: mutable bool = unknown
+                            ebc_interp_field(else_body, base, field, declarations, else_consts, else_unknown)
+                            consts <- consts.truncate(0)
+                            for c in then_consts |consts|:
+                                ebc_add_const(consts, c)
+                            for c in else_consts |consts|:
+                                ebc_add_const(consts, c)
+                            unknown <- then_unknown or else_unknown
+                        Stmt.While(while_condition, while_body, while_line):
+                            if ebc_field_assigned(while_body, base, field):
+                                consts <- consts.truncate(0)
+                                unknown <- true
+                        Stmt.For(bind, variables, iterable, for_body, for_line):
+                            if ebc_field_assigned(for_body, base, field):
+                                consts <- consts.truncate(0)
+                                unknown <- true
+                        _:
+                            pass
+
+        def ebc_check_declarations(declarations: darray[Ast::Decl], table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |table| -> table:
+                    match declaration:
+                        Decl.Func(function_name, parameters, return_type, body, effects, decorators, line):
+                            # Field postcondition slice: `ensure BASE.FIELD <op> LIT` broken by the
+                            # straight-line/branch-joined constant last-written to that field.
+                            for statement in body |table| -> table:
+                                match statement:
+                                    Stmt.Contract(contract_kind, contract_expr, contract_line):
+                                        if contract_kind == "ensure":
+                                            fe: (ok: bool, base: sview, field: sview, op: TokenKind, lit: i64) = ebc_field_ensure(contract_expr)
+                                            if fe.ok:
+                                                fconsts: mutable darray[i64] = []
+                                                funknown: mutable bool = true
+                                                ebc_interp_field(body, fe.base, fe.field, declarations, fconsts, funknown)
+                                                fviolated: mutable bool = fconsts.count > 0 and not funknown
+                                                for c in fconsts |fviolated|:
+                                                    fviolated <- false if evaluate_comparison(c, fe.op, fe.lit)
+                                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.EnsureNotProven, name: function_name, line: contract_line.line, expected: "", actual: ""}) if fviolated
+                                    _:
+                                        pass
+                            return_var: sview = ebc_return_var(body)
+                            if return_var != "":
+                                consts: mutable darray[i64] = []
+                                unknown: mutable bool = false
+                                ebc_interp(body, return_var, consts, unknown)
+                                # Case A: the returned variable was pinned to constants on some path.
+                                # Case B: the returned variable is a bare parameter never reassigned
+                                # (consts empty, not unknown) whose type/`requires` do not entail the ensure.
+                                param_unsigned: mutable bool = false
+                                param_is_return: mutable bool = false
+                                for parameter in parameters |param_unsigned, param_is_return|:
+                                    if parameter.name == return_var:
+                                        param_is_return <- true
+                                        param_unsigned <- ebc_is_unsigned_bare(parameter.type_expression)
+                                for statement in body |table| -> table:
+                                    match statement:
+                                        Stmt.Contract(contract_kind, contract_expr, contract_line):
+                                            if contract_kind == "ensure":
+                                                violated: mutable bool = false
+                                                for c in consts |violated|:
+                                                    violated <- true if predicate_violated_by(contract_expr, "result", c)
+                                                if consts.count == 0 and not unknown and param_is_return:
+                                                    violated <- true if ebc_param_return_unproven(contract_expr, body, return_var, param_unsigned)
+                                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.EnsureNotProven, name: function_name, line: contract_line.line, expected: "", actual: ""}) if violated
+                                        _:
+                                            pass
+                        Decl.Module(module_name, module_body, module_line):
+                            table <- ebc_check_declarations(module_body, table)
+                        Decl.Scoped(scoped_body, scoped_line):
+                            table <- ebc_check_declarations(scoped_body, table)
+                        _:
+                            pass
+
+    public:
+        def check_ensure_branch_const(declarations: darray[Ast::Decl], table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                table <- ebc_check_declarations(declarations, table)

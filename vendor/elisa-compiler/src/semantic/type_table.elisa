@@ -1,0 +1,306 @@
+# The flat interned TYPE TABLE — Phase C's structural type representation (backlog
+# items 92-94/96; mirrors stage0 typeid.go/types.go). Tuples, optionals, refs, and
+# generic instances become deduped rows in SymbolTable's parallel type_row_* arrays,
+# addressed by a `u32` TypeId (0 = "no type"/Unknown; row i is id i+1). Interning
+# dedupes on insert, so TypeId equality IS structural type equality — the O(1)
+# identity the coarse InferType/family strings cannot express.
+#
+# WHY a side table and not richer InferType values: an owned `darray[InferType]`
+# element field makes `infer_expression_type`'s return region-bearing and therefore
+# region-polymorphic, breaking all ~20 call sites (verified; see the DESIGN NOTE on
+# InferType). Here structure lives in the SymbolTable that every check already
+# threads, and ids are plain scalars.
+
+extend Semantic:
+    public:
+        # Intern a type row, returning its TypeId. An existing row with the same
+        # kind + name + element list is reused (dedup), so ids are canonical.
+        def intern_type(kind: SemTypeKind, name: sview, elems: darray[u32]&, table: mutable SymbolTable&) -> u32:
+            can Memory.Allocate, Abort.Panic:
+                while row_index < table.type_row_kind.count |row_index: usize = 0|:
+                    (row_index + 1).u32() return if type_row_matches(row_index, kind, name, elems, table)
+                    row_index <- row_index + 1
+                # Bind counts to locals before `.u32()` — a method call chained directly on
+                # a ref-param's field read ties the scalar to the param's region (gotcha).
+                pool_size: usize = table.type_elem_pool.count
+                pool_start: u32 = pool_size.u32()
+                for element_id in elems |table|:
+                    table.type_elem_pool.push(element_id)
+                table.type_row_kind.push(kind)
+                table.type_row_name.push(name)
+                table.type_row_elem_start.push(pool_start)
+                elem_total: usize = elems.count
+                table.type_row_elem_count.push(elem_total.u32())
+                row_total: usize = table.type_row_kind.count
+                return row_total.u32()
+
+
+        # The kind of an interned type. Id 0 (or any out-of-range id) is Unknown.
+        def interned_kind(type_id: u32, table: SymbolTable&) -> SemTypeKind:
+            can Abort.Panic:
+                SemTypeKind.Unknown return if type_id == 0 or type_id.usize() > table.type_row_kind.count
+                return table.type_row_kind[type_id.usize() - 1]
+
+
+        # The head spelling of an interned Named/Container row ("" otherwise/invalid).
+        def interned_name(type_id: u32, table: SymbolTable&) -> sview:
+            can Abort.Panic:
+                sview("", 0, 0) return if type_id == 0 or type_id.usize() > table.type_row_name.count
+                return table.type_row_name[type_id.usize() - 1]
+
+
+        # How many element types an interned row carries (0 for scalars/invalid ids).
+        def interned_elem_count(type_id: u32, table: SymbolTable&) -> u32:
+            can Abort.Panic:
+                0 return if type_id == 0 or type_id.usize() > table.type_row_elem_count.count
+                return table.type_row_elem_count[type_id.usize() - 1]
+
+
+        # The TypeId of element `position` of an interned row (0 when out of range).
+        def interned_elem(type_id: u32, position: u32, table: SymbolTable&) -> u32:
+            can Abort.Panic:
+                0 return if position >= interned_elem_count(type_id, table)
+                row_start: u32 = table.type_row_elem_start[type_id.usize() - 1]
+                return table.type_elem_pool[(row_start + position).usize()]
+
+
+        # Convert a declared type ANNOTATION expression into an interned TypeId —
+        # the structural sibling of `bare_type_name` (which sees only bare names).
+        # Sound subset: an unmodeled shape yields 0 (Unknown), never a wrong row.
+        # `mutable`/`lmut` wrappers are transparent; `T?` -> Optional(T); each `&`
+        # of `T&`/`T&&` -> Ref(..); `(A, B)` -> Tuple; `head[A, ...]` -> Container
+        # (a fixed array `i64[3]` is Container "array" over the ELEMENT type — the
+        # extent is a value, not a type, and is not recorded here).
+        def annotation_type_id(type_expression: Ast::Expr, table: mutable SymbolTable&) -> u32:
+            can Memory.Allocate, Abort.Panic:
+                match type_expression:
+                    Expr.Ident(type_name, ident_line):
+                        named: InferType = type_of_name(type_name)
+                        0 return if named.kind == SemTypeKind.Unknown
+                        no_elems: darray[u32] = []
+                        # Preserve the surface primitive width in the row name (`u8`,
+                        # `i32`, ...). InferType intentionally collapses numeric widths,
+                        # but structural identity and diagnostics must not.
+                        return intern_type(named.kind, type_name, no_elems, table)
+                    Expr.Unary(operator, operand, unary_line):
+                        annotation_type_id(operand, table) return if operator == TokenKind.Mutable or operator == TokenKind.Lmut
+                        0 return if operator != TokenKind.Question and operator != TokenKind.Ampersand
+                        base_id: u32 = annotation_type_id(operand, table)
+                        wrapped: darray[u32] = [base_id]
+                        intern_type(SemTypeKind.Optional, "optional", wrapped, table) return if operator == TokenKind.Question
+                        return intern_type(SemTypeKind.Ref, "ref", wrapped, table)
+                    Expr.Tuple(elements, tuple_line):
+                        # SNAPSHOT the payload handles before recursing: resolving another
+                        # node (any consumer call, incl. this fn's own recursion) leaves the
+                        # destructured payload darray stale — elements read AFTER a recursion
+                        # come back garbled (observed empirically; tuple elem 1 read wrong
+                        # after elem 0's recursive conversion).
+                        element_handles: mutable darray[Ast::Expr] = []
+                        element_handles.extend(elements)
+                        tuple_elem_ids: mutable darray[u32] = []
+                        tuple_elem_ids.extend([annotation_type_id(element_handle, table) for element_handle in element_handles])
+                        return intern_type(SemTypeKind.Tuple, "tuple", tuple_elem_ids, table)
+                    Expr.Refinement(base_type, predicate, refinement_line):
+                        return annotation_type_id(base_type, table)
+                    Expr.Index(indexed_head, index_argument, index_line):
+                        # `i64[3]`: a fixed array — the bracket holds an extent VALUE, and
+                        # the HEAD is the element type (interned only on this path: on the
+                        # generic path the head is a container NAME, not a type to intern).
+                        # Checked BEFORE the shape-param rule: a primitive head with a
+                        # LITERAL bracket is a fixed array, with an IDENT bracket a shape.
+                        match index_argument:
+                            Expr.IntLit(extent_value):
+                                # The head can itself be a fixed-array expression in a
+                                # multidimensional annotation such as `u8[16][8]`.
+                                # Recursing here preserves the inner array row; the old
+                                # ident-only path returned Unknown for that nested head.
+                                fixed_element_id: u32 = annotation_type_id(indexed_head, table)
+                                0 return if fixed_element_id == 0
+                                fixed_element: darray[u32] = [fixed_element_id]
+                                return intern_type(SemTypeKind.Container, "array", fixed_element, table)
+                            _:
+                                pass
+                        head_name: sview = ident_name_of(indexed_head)
+                        0 return if head_name == ""
+                        # A PRIMITIVE head's non-literal bracket argument is a SHAPE
+                        # parameter (a value binding), not a type — `cstr[shape_left]`
+                        # is just cstr.
+                        head_scalar: InferType = type_of_name(head_name)
+                        if head_scalar.kind != SemTypeKind.Unknown and head_scalar.kind != SemTypeKind.Named:
+                            no_shape_elems: darray[u32] = []
+                            return intern_type(head_scalar.kind, "", no_shape_elems, table)
+                        argument_id: darray[u32] = [annotation_type_id(index_argument, table)]
+                        return intern_type(SemTypeKind.Container, head_name, argument_id, table)
+                    Expr.IndexN(indexed_head_n, index_arguments, index_n_line):
+                        # Same payload-staleness hazard as the Tuple arm — and the head
+                        # lookup (`ident_name_of`) is itself a consumer call, so snapshot
+                        # the argument handles BEFORE it runs.
+                        argument_handles: mutable darray[Ast::Expr] = []
+                        argument_handles.extend(index_arguments)
+                        head_name_n: sview = ident_name_of(indexed_head_n)
+                        0 return if head_name_n == ""
+                        # `darray[T, shape]`: the second argument is a SHAPE parameter
+                        # (a value binding, not a type) — only the element type interns.
+                        argument_total: usize = argument_handles.count
+                        type_argument_count: usize = 1 if head_name_n == "darray" and argument_total == 2 else argument_total
+                        argument_ids: mutable darray[u32] = []
+                        while argument_position < type_argument_count |argument_position: usize = 0, argument_ids, table|:
+                            argument_ids.push(annotation_type_id(argument_handles[argument_position], table))
+                            argument_position <- argument_position + 1
+                        return intern_type(SemTypeKind.Container, head_name_n, argument_ids, table)
+                    _:
+                        return 0
+
+        # Registration pass: intern every declared type annotation in the program —
+        # function parameters and local `x: T = v` declarations (at any statement
+        # depth). Populates the table's type_row_* arrays; consumers then reason
+        # over TypeIds. NOTE for out-of-pipeline callers (smokes/tools): AST payload
+        # lists are only reliably readable from INSIDE the Semantic walk context —
+        # assert on the interned rows this pass produces, not on raw AST matches.
+        def intern_file_types(file: Ast::File&, table: mutable SymbolTable&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                intern_declared_types(file.top_decls, table)
+
+
+        def intern_declared_types(declarations: darray[Ast::Decl], table: mutable SymbolTable&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |table|:
+                    match declaration:
+                        Decl.Func(function_name, params, return_type, body, effects, decorators, line):
+                            # Parameter annotations intern like every other position.
+                            # (Historically excluded: pre-da3fb1c6 stage0, brace-built
+                            # ParamDecls' side-table payloads dangled — the grower
+                            # region-inference fix restored them.)
+                            for parameter in params |table|:
+                                _ = annotation_type_id(parameter.type_expression, table)
+                            intern_statement_var_types(body, table)
+                        Decl.Module(module_name, module_body, module_line):
+                            intern_declared_types(module_body, table)
+                        Decl.Scoped(scoped_body, scoped_line):
+                            intern_declared_types(scoped_body, table)
+                        _:
+                            pass
+
+        # Record local `name`'s structural annotation TypeId in the transient
+        # per-function channel (see SymbolTable.local_type_names). A repeated name
+        # with a DIFFERENT id degrades to 0 — same shadowing conservatism as
+        # note_local_type.
+        def note_local_type_id(name: sview, type_expression: Ast::Expr, table: mutable SymbolTable&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                note_local_type_id_direct(name, annotation_type_id(type_expression, table), table)
+
+
+        # Record a binding's structural TypeId directly (loop variables get their
+        # id from the iterated container's element row, not from an annotation).
+        # SCOPED like the flat channel (item 106): re-declarations push shadow
+        # entries; block exits truncate to the scope mark.
+        def note_local_type_id_direct(name: sview, type_id: u32, table: mutable SymbolTable&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                table.local_type_names.push(name)
+                table.local_type_ids.push(type_id)
+
+
+        # A canonical bare SPELLING for an interned row, for the legacy flat
+        # name-keyed local-type table ("" when the row has no bare spelling).
+        # Scalars use the family-preserving canonical width (the flat table's
+        # consumers only project families, so i64/f64/cstr are exact enough).
+        def type_name_of_row(type_id: u32, table: SymbolTable&) -> sview:
+            can Abort.Panic:
+                return when interned_kind(type_id, table):
+                    SemTypeKind.Int -> interned_name(type_id, table) if interned_name(type_id, table) != "" else "i64"
+                    SemTypeKind.Float -> interned_name(type_id, table) if interned_name(type_id, table) != "" else "f64"
+                    SemTypeKind.Bool -> "bool"
+                    SemTypeKind.Char -> "char"
+                    SemTypeKind.String -> "cstr"
+                    SemTypeKind.Named -> interned_name(type_id, table)
+                    _ -> ""
+
+
+        # The recorded structural TypeId of local `name` (0 if untracked).
+        def local_type_id_of(name: sview, table: SymbolTable&) -> u32:
+            can Abort.Panic:
+                # INNERMOST (last-pushed) entry wins — the scoped-shadowing rule.
+                while name_index > 0 |name_index: usize = table.local_type_names.count|:
+                    name_index <- name_index - 1
+                    table.local_type_ids[name_index] return if table.local_type_names[name_index] == name
+                return 0
+
+
+        # Reset the transient per-function local-type-id channel (called at each
+        # function's body-check entry).
+        def clear_local_type_ids(table: mutable SymbolTable&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                table.local_type_names <- []
+                table.local_type_ids <- []
+
+    private:
+        # Statement walk for intern_declared_types: intern VarDecl annotations,
+        # recursing into nested bodies.
+        def intern_statement_var_types(statements: darray[Ast::Stmt], table: mutable SymbolTable&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |table|:
+                    match statement:
+                        Stmt.VarDecl(variable_name, type_expression, value, line):
+                            _ = annotation_type_id(type_expression, table)
+                        Stmt.If(condition, then_body, else_body, line):
+                            intern_statement_var_types(then_body, table)
+                            intern_statement_var_types(else_body, table)
+                        Stmt.While(while_condition, while_body, while_line):
+                            intern_statement_var_types(while_body, table)
+                        Stmt.For(bind, variables, iterable, for_body, for_line):
+                            intern_statement_var_types(for_body, table)
+                        Stmt.Block(kind, clause, binding, block_body, block_line):
+                            intern_statement_var_types(block_body, table)
+                        Stmt.Match(scrutinee, arms, match_line):
+                            for arm in arms |table|:
+                                intern_statement_var_types(arm.body, table)
+                        _:
+                            pass
+
+        # Whether row `row_index` is exactly (kind, name, elems) — the intern dedup test.
+        def type_row_matches(row_index: usize, kind: SemTypeKind, name: sview, elems: darray[u32]&, table: SymbolTable&) -> bool:
+            can Abort.Panic:
+                false return if table.type_row_kind[row_index] != kind
+                false return if table.type_row_name[row_index] != name
+                row_elem_count: u32 = table.type_row_elem_count[row_index]
+                false return if row_elem_count.usize() != elems.count
+                row_start: usize = table.type_row_elem_start[row_index].usize()
+                for element_position in 0..<elems.count:
+                    false return if table.type_elem_pool[row_start + element_position] != elems[element_position]
+                return true
+
+    public:
+        # Sound structural compatibility for already-interned types. This is the
+        # foundation for assignment/call checking: exact structure is compatible;
+        # numeric scalar rows may widen/convert; optionals, refs, tuples, and generic
+        # instances require recursively compatible corresponding elements.
+        def type_ids_compatible(left_id: u32, right_id: u32, table: SymbolTable&) -> bool:
+            can Abort.Panic:
+                false return if left_id == 0 or right_id == 0
+                true return if left_id == right_id
+                left_kind: SemTypeKind = interned_kind(left_id, table)
+                right_kind: SemTypeKind = interned_kind(right_id, table)
+                numeric: bool = (left_kind == SemTypeKind.Int or left_kind == SemTypeKind.Float) and (right_kind == SemTypeKind.Int or right_kind == SemTypeKind.Float)
+                true return if numeric
+                false return if left_kind != right_kind or interned_name(left_id, table) != interned_name(right_id, table)
+                element_count: u32 = interned_elem_count(left_id, table)
+                false return if element_count != interned_elem_count(right_id, table)
+                for element_position in 0..<element_count.usize():
+                    false return if not type_ids_compatible(interned_elem(left_id, element_position, table), interned_elem(right_id, element_position, table), table)
+                return true
+
+        # Recursively substitute canonical TypeIds. `from_ids[i]` is replaced by
+        # `to_ids[i]`; all other rows are rebuilt with substituted children and
+        # re-interned, preserving structural identity and deduplication.
+        def substitute_type_id(type_id: u32, from_ids: darray[u32]&, to_ids: darray[u32]&, table: mutable SymbolTable&) -> u32:
+            can Memory.Allocate, Abort.Panic:
+                0 return if from_ids.count != to_ids.count
+                for substitution_index in 0..<from_ids.count:
+                    to_ids[substitution_index] return if from_ids[substitution_index] == type_id
+                0 return if type_id == 0
+                child_count: usize = interned_elem_count(type_id, table).usize()
+                type_id return if child_count == 0
+                children: mutable darray[u32] = []
+                for child_position in 0..<child_count |children, table|:
+                    children.push(substitute_type_id(interned_elem(type_id, child_position, table), from_ids, to_ids, table))
+                return intern_type(interned_kind(type_id, table), interned_name(type_id, table), children, table)

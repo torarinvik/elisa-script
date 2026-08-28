@@ -1,0 +1,93 @@
+# Stage1 parser — `error Name:` declarations plus the token-skipping helpers the other
+# declaration parsers share (`extend Parser: private:`). Continues parser_decl.elisa; the
+# extern/func/struct/enum declarations continue in parser_types_extern.elisa ->
+# _function -> _struct -> _enum, and `parse_file` lives in parser_types_entry.elisa.
+# Split out of parser.elisa to keep each part file under 600 lines.
+
+extend Parser:
+    private:
+        # `error Name:` is a closed tagged family. Reuse the enum variant shape so
+        # payload constructors retain arity/names and semantic resolution can inspect
+        # `raise Family.Tag(...)` instead of treating the family as opaque.
+        def error_type_declaration(parser: lmut Parser) -> Ast::Decl?:
+            rebind token: Token, parser = parser.expect(TokenKind.Error)
+            rebind name_token: Token, parser = parser.expect(TokenKind.Ident)
+            parser <- parser.skip_declaration_header_clauses()
+            variants: mutable darray[Ast::EnumVariant] = []
+            variants, parser <- parser.enum_variant_block("") if parser.peek() == TokenKind.Colon and parser.peek_at(1) == TokenKind.Newline
+            error_set_name: sview = Lexer::text_or_empty(name_token, parser.source)
+            # An `error E:` set is a fieldless enum of its variants, and the backend reads
+            # enums from this side table, not from the Decl node. Only `enum_declaration`
+            # recorded it, so an error set had no registered ordinals — which made
+            # `raise E.Variant` decline and took every error-returning function with it.
+            parser.error_set_decl_names <- parser.error_set_decl_names.push(error_set_name)
+            parser <- parser.record_enum_metadata(error_set_name, "", false, variants)
+            return (Ast::Decl.Enum(error_set_name, variants, false, (Ast::Expr.Absent), Ast::pos_of_token(token)))
+
+        # Depth-tracked skip of an already-opened Indent/Dedent block, entered with the
+        # cursor just past the opening `Indent` (loop-local `depth` seeded to that one
+        # open indent). Shared by the handful of not-yet-modeled block clauses below.
+        def skip_to_matching_dedent(parser: lmut Parser) -> void:
+            depth: mutable int = 1
+            while depth > 0 and parser.peek() != TokenKind.Eof |parser, depth|:
+                rebind advanced_token: Token, parser = parser.advance()
+                kind: TokenKind = advanced_token.kind
+                depth <- depth + 1 if kind == TokenKind.Indent
+                depth <- depth - 1 if kind == TokenKind.Dedent
+
+        # Depth-tracked skip of an already-opened `[...]` group, entered with the cursor
+        # just past the opening `[`. Shared by generic/region param lists and inline
+        # `can[...]` effect clauses.
+        def skip_bracketed_group(parser: lmut Parser) -> void:
+            depth: mutable int = 1
+            while depth > 0 and parser.peek() != TokenKind.Eof |parser, depth|:
+                rebind advanced_token: Token, parser = parser.advance()
+                kind: TokenKind = advanced_token.kind
+                depth <- depth + 1 if kind == TokenKind.LBracket
+                depth <- depth - 1 if kind == TokenKind.RBracket
+
+        # Advance the cursor when COND holds, discarding the consumed token. A guarded
+        # tuple-assign (`parser, _ <- parser.advance() if cond`) does not parse (the
+        # `if` is taken as a ternary demanding `else`), so the guard is routed through
+        # this helper's bare exit guard instead. Named distinctly from parser_decl.elisa's
+        # `advance_if` (same idiom, different file) to avoid a cross-file duplicate
+        # declaration — `extend Parser: private:` members share one flat namespace.
+        def advance_when(parser: lmut Parser, cond: bool) -> void:
+            return if not cond
+            parser, _ <- parser.advance()
+
+        # Consume (and discard) one expression when COND holds. Same tuple-guard-if
+        # parse gotcha as `advance_when` above.
+        def expression_when(parser: lmut Parser, cond: bool) -> void:
+            return if not cond
+            parser, _ <- parser.expression()
+
+        # Consume one expression when COND holds and KEEP it (`Expr.Invalid` otherwise).
+        # A struct field's `= default` is the one place the consumed node is needed rather
+        # than merely stepped over — the backend stores it for a field an aggregate literal
+        # omits.
+        def expression_kept_when(parser: lmut Parser, cond: bool) -> Ast::Expr:
+            (Ast::Expr.Invalid) return if not cond
+            rebind parsed_default: Ast::Expr?, parser = parser.expression()
+            if parsed_default is default_expression:
+                return default_expression
+            return (Ast::Expr.Invalid)
+
+        # The literal kind of a bare literal token ("" for a non-literal), mirroring the
+        # semantic `literal_kind_of`. Used to type-check struct field default values.
+        def field_default_literal_kind(kind: TokenKind) -> sview:
+            can Abort.Panic:
+                return when kind:
+                    TokenKind.IntLit -> "int"
+                    TokenKind.FloatLit -> "float"
+                    TokenKind.StringLit -> "string"
+                    TokenKind.CharLit -> "char"
+                    TokenKind.True -> "bool"
+                    TokenKind.False -> "bool"
+                    _ -> sview("", 0, 0)
+
+        # Accept a specific token kind (discarding whether it matched) when COND holds.
+        # Same tuple-guard-if parse gotcha as `advance_when` above.
+        def accept_when(parser: lmut Parser, kind: TokenKind, cond: bool) -> void:
+            return if not cond
+            parser, _ <- parser.accept(kind)

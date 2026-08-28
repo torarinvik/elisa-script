@@ -1,0 +1,169 @@
+# Impl-vs-protocol conformance — missing members (stage0 impl conformance). An
+# `impl P for T:` must provide every method and associated type that protocol P declares,
+# including those inherited from a supertype (`protocol Ord is Eq`). A missing member is
+# rejected:
+#
+#   protocol Container:
+#       type Elem
+#       def size(self: Self) -> i64
+#   impl Container for IntBuf:
+#       def size(self: IntBuf) -> i64: ...   # missing `type Elem` -> error
+#
+# The parser records protocol member names on the side-table: methods at 3900000060 and
+# associated types at 3900000061 (owner = protocol), the supertype at 3900000013, and the
+# impl body's line via __impl_scope (name = interface) + __impl_concrete (name = concrete).
+# The impl body is a `Decl.Scoped` whose line matches __impl_scope; its provided members are
+# its `def` (method) and `type X = ...` alias declarations.
+extend Semantic:
+    private:
+        def imc_name_in(names: darray[sview]&, wanted: sview) -> bool:
+            can Abort.Panic:
+                for entry in names:
+                    true return if entry == wanted
+                return false
+
+        def imc_annotation_value(annotations: darray[Ast::EnumAnnotation]&, owner: sview, sentinel: u32) -> sview:
+            can Abort.Panic:
+                for annotation in annotations:
+                    annotation.name return if annotation.owner == owner and annotation.line == sentinel
+                return sview("", 0, 0)
+
+        # Collect protocol P's required members (of the given sentinel kind), transitively
+        # following the `is Parent` supertype chain.
+        def imc_collect_required(annotations: darray[Ast::EnumAnnotation]&, protocol: sview, sentinel: u32, visited: mutable darray[sview]&, out: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                return if imc_name_in(visited, protocol)
+                visited.push(protocol)
+                out.extend([annotation.name for annotation in annotations if annotation.owner == protocol and annotation.line == sentinel and not imc_name_in(out, annotation.name)])
+                parent: sview = imc_annotation_value(annotations, protocol, 3900000013)
+                imc_collect_required(annotations, parent, sentinel, visited, out) if parent != ""
+
+        # The effects (dotted `Family.Member`) protocol method `method` grants (3900000063).
+        def imc_protocol_effects(annotations: darray[Ast::EnumAnnotation]&, method: sview, out: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                out.extend([annotation.name for annotation in annotations if annotation.owner == method and annotation.line == 3900000063 and not imc_name_in(out, annotation.name)])
+        # For each impl method, flag any effect it grants that the protocol method does not.
+        def imc_check_effects(annotations: darray[Ast::EnumAnnotation]&, body: darray[Ast::Decl], interface: sview, line: u32, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in body |table| -> table:
+                    match declaration:
+                        Decl.Func(name, params, return_type, func_body, effects, decorators, func_line):
+                            allowed: mutable darray[sview] = []
+                            imc_protocol_effects(annotations, name, allowed)
+                            for effect in effects |table| -> table:
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.ImplEffectExtra, name: effect, line: line, expected: name, actual: interface}) if not imc_name_in(allowed, effect)
+                        _:
+                            pass
+
+        # The error families protocol method `method` declares (3900000064).
+        def imc_protocol_errors(annotations: darray[Ast::EnumAnnotation]&, method: sview, out: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                out.extend([annotation.name for annotation in annotations if annotation.owner == method and annotation.line == 3900000064 and not imc_name_in(out, annotation.name)])
+        # For each impl method, flag any error family it declares (`__error_set_family` at its
+        # own line) that the protocol method's declared error set does not include.
+        def imc_check_errors(annotations: darray[Ast::EnumAnnotation]&, body: darray[Ast::Decl], interface: sview, line: u32, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in body |table| -> table:
+                    match declaration:
+                        Decl.Func(name, params, return_type, func_body, effects, decorators, func_line):
+                            allowed: mutable darray[sview] = []
+                            imc_protocol_errors(annotations, name, allowed)
+                            for annotation in annotations |table| -> table:
+                                impl_family: bool = annotation.owner == "__error_set_family" and annotation.line == func_line.line
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.ImplErrorExtra, name: annotation.name, line: line, expected: name, actual: interface}) if impl_family and not imc_name_in(allowed, annotation.name)
+                        _:
+                            pass
+
+        # The impl's binding for associated type `assoc` (`type Elem = i64` -> "i64"), or "".
+        def imc_impl_type_binding(body: darray[Ast::Decl], assoc: sview) -> sview:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in body:
+                    match declaration:
+                        Decl.Alias(name, value, alias_line):
+                            bare_type_name(value) return if name == assoc
+                        _:
+                            pass
+                return sview("", 0, 0)
+
+        # Return-type conformance: for each impl method, resolve the protocol method's declared
+        # return (3900000065) — `Self` -> concrete, an associated type -> the impl's binding,
+        # else literal — and flag when it is concretely known and differs from the impl method's
+        # return. Unresolvable associated returns (impl omits the binding, inherits a default)
+        # are skipped so no false positives.
+        def imc_check_return_types(annotations: darray[Ast::EnumAnnotation]&, body: darray[Ast::Decl], interface: sview, concrete: sview, line: u32, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in body |table| -> table:
+                    match declaration:
+                        Decl.Func(name, params, return_type, func_body, effects, decorators, func_line):
+                            protocol_return: sview = imc_annotation_value(annotations, name, 3900000065)
+                            if protocol_return != "":
+                                impl_return: mutable sview = ""
+                                impl_return <- bare_type_name(return_expr) if return_type is return_expr
+                                is_assoc: bool = any assoc in annotations where assoc.owner == interface and assoc.line == 3900000061 and assoc.name == protocol_return
+                                resolved: mutable sview = ""
+                                if protocol_return == "Self":
+                                    resolved <- concrete
+                                elif is_assoc:
+                                    resolved <- imc_impl_type_binding(body, protocol_return)
+                                else:
+                                    resolved <- protocol_return
+                                mismatched: bool = resolved != "" and impl_return != "" and resolved != impl_return
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.ImplSignatureMismatch, name: name, line: line, expected: resolved, actual: interface, detail: impl_return}) if mismatched
+                        _:
+                            pass
+
+        # Provided member names of an impl Scoped body: `def` methods and `type X` aliases.
+        def imc_collect_provided(body: darray[Ast::Decl], methods: mutable darray[sview]&, types: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in body |methods, types|:
+                    match declaration:
+                        Decl.Func(name, params, return_type, func_body, effects, decorators, line):
+                            methods.push(name)
+                        Decl.Alias(name, value, alias_line):
+                            types.push(name)
+                        _:
+                            pass
+
+        def imc_report_missing(required: darray[sview]&, provided: darray[sview]&, kind_label: sview, interface: sview, concrete: sview, line: u32, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for member in required |table| -> table:
+                    table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.ImplMissingMember, name: member, line: line, expected: kind_label, actual: interface, detail: concrete}) if not imc_name_in(provided, member)
+
+        def imc_check_declarations(declarations: darray[Ast::Decl], annotations: darray[Ast::EnumAnnotation]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |table| -> table:
+                    match declaration:
+                        Decl.Scoped(body, scoped_line):
+                            interface: sview = imc_annotation_value(annotations, "__impl_scope", scoped_line.line)
+                            derived: sview = imc_annotation_value(annotations, "__impl_derived", scoped_line.line)
+                            if interface != "" and derived == "":
+                                concrete: sview = imc_annotation_value(annotations, "__impl_concrete", scoped_line.line)
+                                required_methods: mutable darray[sview] = []
+                                required_types: mutable darray[sview] = []
+                                default_methods: mutable darray[sview] = []
+                                visited_m: mutable darray[sview] = []
+                                visited_t: mutable darray[sview] = []
+                                visited_d: mutable darray[sview] = []
+                                imc_collect_required(annotations, interface, 3900000060, visited_m, required_methods)
+                                imc_collect_required(annotations, interface, 3900000061, visited_t, required_types)
+                                # Default methods (a protocol method with a body) are provided by
+                                # the protocol itself — treat them as already satisfied.
+                                imc_collect_required(annotations, interface, 3900000062, visited_d, default_methods)
+                                provided_methods: mutable darray[sview] = [entry for entry in default_methods]
+                                provided_types: mutable darray[sview] = []
+                                imc_collect_provided(body, provided_methods, provided_types)
+                                table <- imc_report_missing(required_methods, provided_methods, "method", interface, concrete, scoped_line.line, table)
+                                table <- imc_report_missing(required_types, provided_types, "associated type", interface, concrete, scoped_line.line, table)
+                                table <- imc_check_effects(annotations, body, interface, scoped_line.line, table)
+                                table <- imc_check_errors(annotations, body, interface, scoped_line.line, table)
+                                table <- imc_check_return_types(annotations, body, interface, concrete, scoped_line.line, table)
+                            table <- imc_check_declarations(body, annotations, table)
+                        Decl.Module(module_name, module_body, module_line):
+                            table <- imc_check_declarations(module_body, annotations, table)
+                        _:
+                            pass
+
+    public:
+        def check_impl_conformance(file: Ast::File&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                table <- imc_check_declarations(file.top_decls, file.enum_annotations, table)

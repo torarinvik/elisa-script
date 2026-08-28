@@ -1,0 +1,206 @@
+extend Semantic:
+    private:
+        # True when any statement is a contract predicate (requires/ensure/assert/invariant).
+        # A self-comparison in the RETURN of such a function is a deliberate constant expressing
+        # the proof obligation (e.g. `ensure result == false` / `return a < a`), so it is exempt
+        # for the same reason `Stmt.Contract` predicates are — stage0 is silent on these.
+        def stmts_have_contract(statements: darray[Ast::Stmt]) -> bool:
+            can Abort.Panic:
+                for statement in statements:
+                    match statement:
+                        Stmt.Contract(kind, expression, contract_line):
+                            return true
+                        _:
+                            pass
+                return false
+
+        # Walk all statements in a function body, checking for self-comparison expressions.
+        def walk_self_comparison_statements(statements: darray[Ast::Stmt], func_has_contract: bool, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |table, func_has_contract|:
+                    match statement:
+                        Stmt.Expr(expression, line):
+                            table <- walk_self_comparison_expression(expression, func_has_contract, table)
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            table <- walk_self_comparison_expression(value, func_has_contract, table)
+                        Stmt.Assign(target, operator, value, line):
+                            table <- walk_self_comparison_expression(target, func_has_contract, table)
+                            table <- walk_self_comparison_expression(value, func_has_contract, table)
+                        Stmt.If(condition, then_body, else_body, line):
+                            table <- walk_self_comparison_expression(condition, func_has_contract, table)
+                            table <- walk_self_comparison_statements(then_body, func_has_contract, table)
+                            table <- walk_self_comparison_statements(else_body, func_has_contract, table)
+                        Stmt.While(condition, body, line):
+                            table <- walk_self_comparison_expression(condition, func_has_contract, table)
+                            table <- walk_self_comparison_statements(body, func_has_contract, table)
+                        Stmt.For(bind, variables, iterable, body, line):
+                            table <- walk_self_comparison_expression(iterable, func_has_contract, table)
+                            table <- walk_self_comparison_statements(body, func_has_contract, table)
+                        Stmt.Block(kind, clause, binding, body, line):
+                            table <- walk_self_comparison_statements(body, func_has_contract, table)
+                        Stmt.Match(scrutinee, arms, line):
+                            table <- walk_self_comparison_expression(scrutinee, func_has_contract, table)
+                            for arm in arms |table, func_has_contract|:
+                                table <- walk_self_comparison_expression(arm.guard, func_has_contract, table)
+                                table <- walk_self_comparison_statements(arm.body, func_has_contract, table)
+                        Stmt.Return(value, line):
+                            # In a contract-bearing function the return expression is often a
+                            # deliberate constant satisfying the proof obligation; exempt it.
+                            if value is return_value:
+                                table <- walk_self_comparison_expression(return_value, func_has_contract, table) if not func_has_contract
+                        Stmt.Contract(kind, expression, line):
+                            # CONTRACT predicates are exempt: `assert x == x` / a lemma's
+                            # `ensure x == x` states deliberate reflexivity for the prover
+                            # (stage0 is silent on these).
+                            pass
+                        Stmt.Invalid:
+                            pass
+                        Stmt.Break(label, line):
+                            pass
+                        Stmt.Continue(label, line):
+                            pass
+
+
+        # Walk all expressions, checking for self-comparison binary expressions.
+        def walk_self_comparison_expression(expression: Ast::Expr, func_has_contract: bool, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Invalid:
+                        pass
+                    Expr.Absent:
+                        pass
+                    Expr.IntLit(value):
+                        pass
+                    Expr.FloatLit(text):
+                        pass
+                    Expr.StringLit(text):
+                        pass
+                    Expr.CharLit(text):
+                        pass
+                    Expr.BoolLit(value):
+                        pass
+                    Expr.Ident(name, line):
+                        pass
+                    Expr.Call(callee, arguments, argument_names, line):
+                        table <- walk_self_comparison_expression(callee, func_has_contract, table)
+                        for argument in arguments |table, func_has_contract|:
+                            table <- walk_self_comparison_expression(argument, func_has_contract, table)
+                    Expr.Field(object, field, line):
+                        table <- walk_self_comparison_expression(object, func_has_contract, table)
+                    Expr.Scope(base, name, line):
+                        table <- walk_self_comparison_expression(base, func_has_contract, table)
+                    Expr.ShorthandMember(parts, line):
+                        pass
+                    Expr.Index(object, index, line):
+                        table <- walk_self_comparison_expression(object, func_has_contract, table)
+                        table <- walk_self_comparison_expression(index, func_has_contract, table)
+                    Expr.Slice(object, low, high, line):
+                        table <- walk_self_comparison_expression(object, func_has_contract, table)
+                        table <- walk_self_comparison_expression(low, func_has_contract, table)
+                        table <- walk_self_comparison_expression(high, func_has_contract, table)
+                    Expr.IndexN(object, arguments, line):
+                        table <- walk_self_comparison_expression(object, func_has_contract, table)
+                        for argument in arguments |table, func_has_contract|:
+                            table <- walk_self_comparison_expression(argument, func_has_contract, table)
+                    Expr.Binary(left, operator, right, line):
+                        # Check for self-comparison: left and right are both Ident with the same
+                        # name, and operator is a comparison operator (==, !=, <, >, <=, >=). The
+                        # refinement bindings are used only in nested bodies (never in the same
+                        # condition), so the resolver keeps them in scope.
+                        is_comparison_op: bool = operator == TokenKind.EqEq or operator == TokenKind.BangEq or operator == TokenKind.Lt or operator == TokenKind.Gt or operator == TokenKind.LtEq or operator == TokenKind.GtEq
+                        if is_comparison_op:
+                            match left:
+                                Expr.Ident(left_name, left_line):
+                                    match right:
+                                        Expr.Ident(right_name, right_line):
+                                            table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.SelfComparison, name: left_name, line: line.line, expected: "", actual: ""}) if left_name == right_name
+                                        _:
+                                            pass
+                                _:
+                                    pass
+                        table <- walk_self_comparison_expression(left, func_has_contract, table)
+                        table <- walk_self_comparison_expression(right, func_has_contract, table)
+                    Expr.Unary(operator, operand, line):
+                        table <- walk_self_comparison_expression(operand, func_has_contract, table)
+                    Expr.Move(operand, line):
+                        table <- walk_self_comparison_expression(operand, func_has_contract, table)
+                    Expr.RegionNew(operand, region, line):
+                        table <- walk_self_comparison_expression(operand, func_has_contract, table)
+                    Expr.Refinement(base, predicate, line):
+                        table <- walk_self_comparison_expression(base, func_has_contract, table)
+                        table <- walk_self_comparison_expression(predicate, func_has_contract, table)
+                    # `get EXPR else return …` — walk the GUARDED expression; the recovery is a
+                    # statement list, which this expression walker does not descend into.
+                    Expr.GetElse(guarded, recovery, line):
+                        table <- walk_self_comparison_expression(guarded, func_has_contract, table)
+                    Expr.Paren(inner, line):
+                        table <- walk_self_comparison_expression(inner, func_has_contract, table)
+                    Expr.Array(elements, line):
+                        for element in elements |table, func_has_contract|:
+                            table <- walk_self_comparison_expression(element, func_has_contract, table)
+                    Expr.Tuple(elements, line):
+                        for element in elements |table, func_has_contract|:
+                            table <- walk_self_comparison_expression(element, func_has_contract, table)
+                    Expr.SetLit(elements, line):
+                        for element in elements |table, func_has_contract|:
+                            table <- walk_self_comparison_expression(element, func_has_contract, table)
+                    Expr.DictLit(entries, line):
+                        for entry in entries |table, func_has_contract|:
+                            table <- walk_self_comparison_expression(entry.key, func_has_contract, table)
+                            table <- walk_self_comparison_expression(entry.value, func_has_contract, table)
+                    Expr.Construct(type_expression, fields, line):
+                        table <- walk_self_comparison_expression(type_expression, func_has_contract, table)
+                        for field in fields |table, func_has_contract|:
+                            table <- walk_self_comparison_expression(field.value, func_has_contract, table)
+                    Expr.RecordUpdate(base, fields, line):
+                        table <- walk_self_comparison_expression(base, func_has_contract, table)
+                        for field in fields |table, func_has_contract|:
+                            table <- walk_self_comparison_expression(field.value, func_has_contract, table)
+                    Expr.If(condition, then_expr, else_expr, line):
+                        table <- walk_self_comparison_expression(condition, func_has_contract, table)
+                        table <- walk_self_comparison_expression(then_expr, func_has_contract, table)
+                        table <- walk_self_comparison_expression(else_expr, func_has_contract, table)
+                    Expr.Match(scrutinee, arms, line):
+                        table <- walk_self_comparison_expression(scrutinee, func_has_contract, table)
+                        for arm in arms |table, func_has_contract|:
+                            table <- walk_self_comparison_expression(arm.guard, func_has_contract, table)
+                            table <- walk_self_comparison_statements(arm.body, func_has_contract, table)
+                    # `catch EXPR:` — positionally identical to Match (guarded, arms, line);
+                    # the guarded call is the scrutinee and the arms walk the same way.
+                    Expr.Catch(scrutinee, arms, line):
+                        table <- walk_self_comparison_expression(scrutinee, func_has_contract, table)
+                        for arm in arms |table, func_has_contract|:
+                            table <- walk_self_comparison_expression(arm.guard, func_has_contract, table)
+                            table <- walk_self_comparison_statements(arm.body, func_has_contract, table)
+                    Expr.Comprehension(loop_variable, iterable, condition, body, line):
+                        table <- walk_self_comparison_expression(iterable, func_has_contract, table)
+                        table <- walk_self_comparison_expression(condition, func_has_contract, table)
+                        table <- walk_self_comparison_expression(body, func_has_contract, table)
+                    Expr.Lambda(parameters, body, line):
+                        table <- walk_self_comparison_statements(body, func_has_contract, table)
+                    Expr.Block(statements, value, captures, line):
+                        table <- walk_self_comparison_statements(statements, func_has_contract, table)
+                        table <- walk_self_comparison_expression(value, func_has_contract, table)
+
+
+        # Entry point: check all declarations for self-comparison expressions.
+        def check_declarations_for_self_comparison(declarations: darray[Ast::Decl], table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |table|:
+                    match declaration:
+                        Decl.Func(name, params, return_type, body, effects, decorators, line):
+                            func_has_contract: bool = stmts_have_contract(body)
+                            table <- walk_self_comparison_statements(body, func_has_contract, table)
+                        Decl.Module(name, body, line):
+                            table <- check_declarations_for_self_comparison(body, table)
+                        Decl.Scoped(body, line):
+                            table <- check_declarations_for_self_comparison(body, table)
+                        _:
+                            pass
+
+
+    public:
+        # Public check function that can be called from semantic_api.
+        def check_self_comparison(declarations: darray[Ast::Decl], table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                table <- check_declarations_for_self_comparison(declarations, table)

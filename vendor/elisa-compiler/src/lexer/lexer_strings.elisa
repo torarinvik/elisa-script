@@ -1,0 +1,291 @@
+extend Lexer:
+    private:
+        @inline(always)
+        def char_at(source: u8&, source_length: usize, index: usize) -> char:
+            NULL_CHAR return if index >= source_length
+            return source[index].char()
+
+        @inline(always)
+        def current_char(lexer: Lexer&) -> char:
+            return char_at(lexer.source, lexer.source_length, lexer.position)
+
+        @inline(always)
+        def match_char(lexer: lmut Lexer, expected: char) -> bool:
+            false return if lexer.current_char() != expected
+            lexer <- lexer.advance_char()
+            return true
+
+        const enum QuotedClass of u8:
+            Terminator
+            Newline
+            EscapeTerm
+            Escape
+            Other
+
+        @inline(always)
+        def classify_quoted_input(lexer: Lexer&, terminator: char) -> QuotedClass:
+            character: char = lexer.current_char()
+            state CheckTerminator
+            state CheckNewline
+            state CheckEscape
+            state Terminator
+            state Newline
+            state EscapeTerm
+            state Escape
+            state Other
+            return start CheckTerminator:
+                CheckTerminator:
+                    -> Terminator if character == terminator
+                    -> CheckNewline
+                CheckNewline:
+                    -> Newline if character == '\n'
+                    -> CheckEscape
+                CheckEscape:
+                    -> EscapeTerm if character == '\\' and (lexer.position + 1 >= lexer.source_length or lexer.peek(1) == '\n')
+                    -> Escape if character == '\\'
+                    -> Other
+                Terminator:
+                    => QuotedClass.Terminator
+                Newline:
+                    => QuotedClass.Newline
+                EscapeTerm:
+                    => QuotedClass.EscapeTerm
+                Escape:
+                    => QuotedClass.Escape
+                Other:
+                    => QuotedClass.Other
+
+        # Shared string/character literal scanner. Both forms have the same escape and
+        # recovery rules; only the terminator and token kind differ. The machine records the
+        # pre-terminator span on the driven lexer so the statement-form machine can still
+        # return the exact token after it breaks.
+        def read_quoted(lexer: lmut Lexer, terminator: char, kind: TokenKind) -> Token:
+            position: LexerPosition = lexer.cursor_position()
+            lexer <- lexer.advance_char()
+            start: usize = lexer.position
+            lexer.quoted_text_end <- start
+            lexer.quoted_done <- false
+
+            machine over lexer.classify_quoted_input(terminator) while not lexer.is_end_of_source():
+                state Body
+                state Done
+                start Body
+
+                Body, QuotedClass.Terminator:
+                    lexer.quoted_text_end <- lexer.position
+                    lexer.quoted_done <- true
+                    lexer <- lexer.advance_char()
+                    -> Done
+                Body, QuotedClass.Newline:
+                    lexer.quoted_text_end <- lexer.position
+                    lexer.quoted_done <- true
+                    -> Done
+                Body, QuotedClass.EscapeTerm:
+                    lexer <- lexer.advance_char()
+                    lexer.quoted_text_end <- lexer.position
+                    lexer.quoted_done <- true
+                    -> Done
+                Body, QuotedClass.Escape:
+                    lexer <- lexer.advance_chars(2)
+                    -> Body
+                Body, QuotedClass.Other:
+                    lexer <- lexer.advance_char()
+                    -> Body
+
+                Done, QuotedClass.Terminator | QuotedClass.Newline | QuotedClass.EscapeTerm | QuotedClass.Escape | QuotedClass.Other:
+                    break
+
+            lexer.quoted_text_end <- lexer.position if not lexer.quoted_done
+            return Token(kind, position, start, lexer.quoted_text_end)
+
+        def read_string(lexer: lmut Lexer) -> Token:
+            rebind token: Token, lexer = lexer.read_quoted('"', TokenKind.StringLit)
+            return token
+
+        # f-string literal `f"...{EXPR}..."` -> ONE FString token spanning the RAW
+        # interior. Brace- and string-aware: a `"` inside `{...}` belongs to an
+        # embedded string literal and does not terminate the f-string; `\\x` escapes
+        # are skipped undecoded. Single-line (mirrors stage0's readFString).
+        const enum FStringClass of u8:
+            Quote
+            Newline
+            EscapeTerm
+            Escape
+            LBrace
+            EscapedLBrace
+            RBraceClose
+            RBraceNested
+            EscapedRBraceClose
+            EscapedRBraceNested
+            Other
+
+        @inline(always)
+        def classify_fstring_input(lexer: Lexer&) -> FStringClass:
+            character: char = lexer.current_char()
+            state CheckQuote
+            state CheckNewline
+            state CheckEscape
+            state CheckLeftBrace
+            state CheckRightBrace
+            state Quote
+            state Newline
+            state EscapeTerm
+            state Escape
+            state LeftBrace
+            state EscapedLeftBrace
+            state RightBraceClose
+            state RightBraceNested
+            state EscapedRightBraceClose
+            state EscapedRightBraceNested
+            state Other
+            return start CheckQuote:
+                CheckQuote:
+                    -> Quote if character == '"'
+                    -> CheckNewline
+                CheckNewline:
+                    -> Newline if character == '\n'
+                    -> CheckEscape
+                CheckEscape:
+                    -> EscapeTerm if character == '\\' and (lexer.position + 1 >= lexer.source_length or lexer.peek(1) == '\n')
+                    -> Escape if character == '\\'
+                    -> CheckLeftBrace
+                CheckLeftBrace:
+                    -> EscapedLeftBrace if character == '{' and lexer.peek(1) == '{'
+                    -> LeftBrace if character == '{'
+                    -> CheckRightBrace
+                CheckRightBrace:
+                    -> EscapedRightBraceClose if character == '}' and lexer.peek(1) == '}' and lexer.fstring_depth <= 1
+                    -> EscapedRightBraceNested if character == '}' and lexer.peek(1) == '}'
+                    -> RightBraceClose if character == '}' and lexer.fstring_depth <= 1
+                    -> RightBraceNested if character == '}'
+                    -> Other
+                Quote:
+                    => FStringClass.Quote
+                Newline:
+                    => FStringClass.Newline
+                EscapeTerm:
+                    => FStringClass.EscapeTerm
+                Escape:
+                    => FStringClass.Escape
+                LeftBrace:
+                    => FStringClass.LBrace
+                EscapedLeftBrace:
+                    => FStringClass.EscapedLBrace
+                RightBraceClose:
+                    => FStringClass.RBraceClose
+                RightBraceNested:
+                    => FStringClass.RBraceNested
+                EscapedRightBraceClose:
+                    => FStringClass.EscapedRBraceClose
+                EscapedRightBraceNested:
+                    => FStringClass.EscapedRBraceNested
+                Other:
+                    => FStringClass.Other
+
+        def read_fstring(lexer: lmut Lexer) -> Token:
+            position: LexerPosition = lexer.cursor_position()
+            lexer <- lexer.advance_char()               # f
+            lexer <- lexer.advance_char()               # opening quote
+            start: usize = lexer.position
+
+            lexer.fstring_depth <- 0
+            lexer.quoted_text_end <- start
+            lexer.quoted_done <- false
+            machine over lexer.classify_fstring_input() while not lexer.is_end_of_source():
+                state Text
+                state Expr
+                state InnerString
+                state Done
+                start Text
+
+                Text, FStringClass.Quote:
+                    lexer.quoted_text_end <- lexer.position
+                    lexer.quoted_done <- true
+                    lexer <- lexer.advance_char()
+                    -> Done
+                Text, FStringClass.Newline:
+                    lexer.quoted_text_end <- lexer.position
+                    lexer.quoted_done <- true
+                    -> Done
+                Text, FStringClass.EscapeTerm:
+                    lexer <- lexer.advance_char()
+                    lexer.quoted_text_end <- lexer.position
+                    lexer.quoted_done <- true
+                    -> Done
+                Text, FStringClass.Escape:
+                    lexer <- lexer.advance_chars(2)
+                    -> Text
+                Text, FStringClass.LBrace:
+                    lexer <- lexer.advance_char()
+                    lexer.fstring_depth <- 1
+                    -> Expr
+                Text, FStringClass.EscapedLBrace:
+                    lexer <- lexer.advance_chars(2)
+                    -> Text
+                Text, FStringClass.RBraceClose | FStringClass.RBraceNested:
+                    lexer <- lexer.advance_char()
+                    -> Text
+                Text, FStringClass.EscapedRBraceClose | FStringClass.EscapedRBraceNested:
+                    lexer <- lexer.advance_chars(2)
+                    -> Text
+                Text, FStringClass.Other:
+                    lexer <- lexer.advance_char()
+                    -> Text
+
+                Expr, FStringClass.Quote:
+                    lexer <- lexer.advance_char()
+                    -> InnerString
+                Expr, FStringClass.Newline:
+                    lexer.quoted_text_end <- lexer.position
+                    lexer.quoted_done <- true
+                    -> Done
+                Expr, FStringClass.EscapeTerm | FStringClass.Escape:
+                    lexer <- lexer.advance_char()
+                    -> Expr
+                Expr, FStringClass.LBrace | FStringClass.EscapedLBrace:
+                    lexer <- lexer.advance_char()
+                    lexer.fstring_depth <- lexer.fstring_depth + 1
+                    -> Expr
+                Expr, FStringClass.RBraceClose:
+                    lexer <- lexer.advance_char()
+                    lexer.fstring_depth <- 0
+                    -> Text
+                Expr, FStringClass.RBraceNested:
+                    lexer <- lexer.advance_char()
+                    lexer.fstring_depth <- lexer.fstring_depth - 1
+                    -> Expr
+                Expr, FStringClass.EscapedRBraceClose:
+                    lexer <- lexer.advance_char()
+                    lexer.fstring_depth <- 0
+                    -> Text
+                Expr, FStringClass.EscapedRBraceNested:
+                    lexer <- lexer.advance_char()
+                    lexer.fstring_depth <- lexer.fstring_depth - 1
+                    -> Expr
+                Expr, FStringClass.Other:
+                    lexer <- lexer.advance_char()
+                    -> Expr
+
+                InnerString, FStringClass.Quote:
+                    lexer <- lexer.advance_char()
+                    -> Expr
+                InnerString, FStringClass.Newline:
+                    lexer <- lexer.advance_char()
+                    -> Expr
+                InnerString, FStringClass.EscapeTerm | FStringClass.Escape:
+                    lexer <- lexer.advance_chars(2)
+                    -> InnerString
+                InnerString, FStringClass.LBrace | FStringClass.EscapedLBrace | FStringClass.RBraceClose | FStringClass.RBraceNested | FStringClass.EscapedRBraceClose | FStringClass.EscapedRBraceNested | FStringClass.Other:
+                    lexer <- lexer.advance_char()
+                    -> InnerString
+
+                Done, FStringClass.Quote | FStringClass.Newline | FStringClass.EscapeTerm | FStringClass.Escape | FStringClass.LBrace | FStringClass.EscapedLBrace | FStringClass.RBraceClose | FStringClass.RBraceNested | FStringClass.EscapedRBraceClose | FStringClass.EscapedRBraceNested | FStringClass.Other:
+                    break
+
+            lexer.quoted_text_end <- lexer.position if not lexer.quoted_done
+            return Token(TokenKind.FString, position, start, lexer.quoted_text_end)
+
+
+        def read_char(lexer: lmut Lexer) -> Token:
+            rebind token: Token, lexer = lexer.read_quoted('\'', TokenKind.CharLit)
+            return token

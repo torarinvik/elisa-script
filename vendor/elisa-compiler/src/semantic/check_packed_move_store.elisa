@@ -1,0 +1,276 @@
+# Validate `move VALUE in STORE as PackedEnum.V(...)`. The parser's transparent
+# move Block records `[qualified_pattern_path, store_identifier]` in its clause.
+# This pass fires only when both packed enum and Store owners are exact.
+
+extend Semantic:
+    private:
+        def packed_store_owner_of_type(type_expression: Ast::Expr) -> sview:
+            can Abort.Panic:
+                match type_expression:
+                    Expr.Index(head, argument, line):
+                        return packed_store_owner_of_type(head)
+                    Expr.IndexN(head, arguments, line):
+                        return packed_store_owner_of_type(head)
+                    Expr.Unary(operator, operand, line):
+                        return packed_store_owner_of_type(operand)
+                    Expr.Field(owner, field, line):
+                        ident_name_of(owner) return if field == "Store"
+                    Expr.Scope(owner, field, line):
+                        ident_name_of(owner) return if field == "Store"
+                    _:
+                        pass
+                return ""
+
+
+        def store_owner_for_name(names: darray[sview]&, owners: darray[sview]&, name: sview) -> sview:
+            can Abort.Panic:
+                while index > 0 |index: usize = names.count|:
+                    index <- index - 1
+                    owners[index] return if names[index] == name
+                return ""
+
+
+        def packed_store_is_frozen(type_expression: Ast::Expr) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                match type_expression:
+                    Expr.Ident(name, line):
+                        return sview_equal(name, "Frozen")
+                    Expr.Index(head, argument, line):
+                        return packed_store_is_frozen(head) or packed_store_is_frozen(argument)
+                    Expr.IndexN(head, arguments, line):
+                        true return if packed_store_is_frozen(head)
+                        for argument in arguments:
+                            true return if packed_store_is_frozen(argument)
+                        return false
+                    Expr.Unary(operator, operand, line) | Expr.Paren(operand, line):
+                        return packed_store_is_frozen(operand)
+                    _:
+                        return false
+
+
+        def frozen_store_for_name(names: darray[sview]&, frozen: darray[bool]&, name: sview) -> bool:
+            can Abort.Panic:
+                while index > 0 |index: usize = names.count|:
+                    index <- index - 1
+                    frozen[index] return if names[index] == name
+                return false
+
+
+        def packed_owner_for_path(path: sview, table: SymbolTable&) -> sview:
+            can Abort.Panic:
+                while index < table.packed_enum_names.count |index: usize = 0|:
+                    owner: sview = table.packed_enum_names[index]
+                    owner return if path_qualified_by(path, owner)
+                    index <- index + 1
+                return ""
+
+
+        def registered_struct_field_count(owner: sview, table: SymbolTable&) -> u32:
+            can Abort.Panic:
+                count: mutable u32 = 0
+                while index < table.struct_field_owner.count |index: usize = 0, count|:
+                    count <- count + 1 if table.struct_field_owner[index] == owner
+                    index <- index + 1
+                return count
+
+
+        def packed_store_owner_active(owners: darray[sview]&, wanted: sview) -> bool:
+            can Abort.Panic:
+                return any owner in owners where owner == wanted
+
+
+        def check_packed_constructor_path(owner: sview, variant: sview, line: u32, owners: darray[sview]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                # The store-clause requirement applies to an EXPLICITLY `packed enum`
+                # owner AND to a plain recursive enum auto-promoted by
+                # record_recursive_enum — but NOT to a member of a sealed Node hierarchy.
+                #
+                # The exemption used to cover every auto-promoted enum, because demanding
+                # a store for the compiler's own bare `(Ast::Expr.Ident(text, line))`
+                # produced 49 findings on our own source. That was the right call for the
+                # wrong reason: stage0 exempts AST REFINEMENTS specifically, not
+                # auto-promotion generally. Measured, one probe each:
+                #
+                #   enum Node: Leaf(v: i64); Pair(a: Node, b: Node)   bare Node.Leaf(42)
+                #     -> stage0: "packed enum constructor Node.Leaf requires an active in
+                #        Node.Store: scope or explicit new[Node.Store]"      REJECTED
+                #     -> writing `new Node.Leaf(42)` instead                 accepted
+                #   the same shape inside a sealed `is Node` hierarchy
+                #     -> no store error at all                               exempt
+                #
+                # So the line is __ast_refinement, which record_recursive_enum already
+                # marks. stage1 accepted the bare plain-recursive form that stage0 refuses.
+                packed_owner: sview = owner if (any packed_name in table.packed_enum_names where packed_name == owner) else ""
+                declared: bool = any declared_name in table.declared_packed_names where declared_name == owner
+                refinement: bool = any refinement_name in table.ast_refinement_names where refinement_name == owner
+                needs_store: bool = declared or not refinement
+                # A plain `new Node.Leaf(42)` satisfies the requirement for an
+                # AUTO-PROMOTED recursive enum, which is region-backed by design — stage0
+                # accepts that where it rejects the bare form.
+                #
+                # It does NOT satisfy it for an explicitly DECLARED packed enum: stage0's
+                # own TestAnalyzeRejectsBarePackedAllocOutsideInStoreScope rejects
+                # `return new Expr.Int(value: 1)` on a `packed enum Expr`. The diagnostic
+                # means what it says — `new[Expr.Store]`, naming a store, not a bare `new`.
+                # Exempting every `new` cost one case on that suite and is the reason this
+                # condition carries `not declared`.
+                under_new: bool = (not declared) and (any new_line in table.new_construct_lines where new_line == line)
+                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.PackedConstructorWithoutStore, name: owner, line: line, expected: variant, actual: ""}) if packed_owner != "" and needs_store and not under_new and variant != "Store" and not packed_store_owner_active(owners, packed_owner)
+
+
+        def check_frozen_packed_allocation(expression: Ast::Expr, names: darray[sview]&, frozen: darray[bool]&, allocation_regions: darray[sview]&, allocation_lines: darray[u32]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Call(callee, arguments, argument_names, line):
+                        explicit_store: sview = allocation_region_at(allocation_regions, allocation_lines, line.line)
+                        match callee:
+                            Expr.Field(Expr.Ident(owner, owner_line), variant, field_line):
+                                packed_owner: sview = owner if (any packed_name in table.packed_enum_names where packed_name == owner) else ""
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.PackedFrozenStoreAllocation, name: packed_owner, line: line.line, expected: "", actual: ""}) if packed_owner != "" and frozen_store_for_name(names, frozen, explicit_store)
+                            _:
+                                pass
+                        for argument in arguments |table|:
+                            table <- check_frozen_packed_allocation(argument, names, frozen, allocation_regions, allocation_lines, table)
+                    Expr.Array(elements, line) | Expr.Tuple(elements, line) | Expr.SetLit(elements, line):
+                        for element in elements |table|:
+                            table <- check_frozen_packed_allocation(element, names, frozen, allocation_regions, allocation_lines, table)
+                    Expr.Construct(type_expression, fields, line) | Expr.RecordUpdate(type_expression, fields, line):
+                        for field in fields |table|:
+                            table <- check_frozen_packed_allocation(field.value, names, frozen, allocation_regions, allocation_lines, table)
+                    Expr.Unary(operator, operand, line) | Expr.Move(operand, line) | Expr.Paren(operand, line):
+                        table <- check_frozen_packed_allocation(operand, names, frozen, allocation_regions, allocation_lines, table)
+                    # `new[store] Packed.Variant(…)` — the allocation this check exists to
+                    # reject is INSIDE the wrapper, so the wrapper must be walked through.
+                    # A separate arm rather than joining the or-pattern above: this variant
+                    # binds a third field, and or-pattern options must bind alike.
+                    Expr.RegionNew(operand, region, line):
+                        table <- check_frozen_packed_allocation(operand, names, frozen, allocation_regions, allocation_lines, table)
+                    _:
+                        pass
+
+
+        def walk_packed_constructor_expression(expression: Ast::Expr, owners: darray[sview]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Call(callee, arguments, argument_names, line):
+                        match callee:
+                            Expr.Field(Expr.Ident(owner, _), variant, _):
+                                table <- check_packed_constructor_path(owner, variant, line.line, owners, table)
+                            _:
+                                table <- walk_packed_constructor_expression(callee, owners, table)
+                        for argument in arguments |table|:
+                            table <- walk_packed_constructor_expression(argument, owners, table)
+                    Expr.Field(Expr.Ident(owner, owner_line), variant, line):
+                        table <- check_packed_constructor_path(owner, variant, line.line, owners, table)
+                    Expr.Binary(left, operator, right, line):
+                        table <- walk_packed_constructor_expression(left, owners, table)
+                        table <- walk_packed_constructor_expression(right, owners, table) if operator != TokenKind.Is and operator != TokenKind.As
+                    Expr.Unary(operator, operand, line):
+                        table <- walk_packed_constructor_expression(operand, owners, table)
+                    Expr.Paren(inner, line):
+                        table <- walk_packed_constructor_expression(inner, owners, table)
+                    Expr.Array(elements, line) | Expr.Tuple(elements, line) | Expr.SetLit(elements, line):
+                        for element in elements |table|:
+                            table <- walk_packed_constructor_expression(element, owners, table)
+                    Expr.Index(object, index, line):
+                        table <- walk_packed_constructor_expression(object, owners, table)
+                        table <- walk_packed_constructor_expression(index, owners, table) if not index_receiver_is_type_application(object)
+                    Expr.Slice(object, low, high, line):
+                        table <- walk_packed_constructor_expression(object, owners, table)
+                        table <- walk_packed_constructor_expression(low, owners, table)
+                        table <- walk_packed_constructor_expression(high, owners, table)
+                    _:
+                        pass
+
+
+        # The parser keeps a move destructure as Block("move") whose first statement is
+        # the synthetic Match. Inspect only that exact lowering shape, so ordinary match
+        # patterns retain their own diagnostics and wording.
+        def check_move_struct_arity(clause: darray[sview]&, body: darray[Ast::Stmt]&, line: u32, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                return if clause.count == 0 or body.count == 0
+                path: sview = clause[0]
+                expected_count: u32 = registered_struct_field_count(path, table)
+                return if expected_count == 0
+                match body[0]:
+                    Stmt.Match(scrutinee, arms, match_line):
+                        return if arms.count == 0
+                        match arms[0].pattern:
+                            Pattern.Struct(struct_path, fields):
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.MoveStructPatternArityMismatch, name: path, line: line, expected: "", actual: "", expected_count: expected_count, actual_count: fields.count.u32()}) if struct_path == path and fields.count.u32() != expected_count
+                            # Parenthesized move patterns are syntactically shared with enum
+                            # variants. A registered struct path disambiguates this case here.
+                            Pattern.Variant(struct_path, fields):
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.MoveStructPatternArityMismatch, name: path, line: line, expected: "", actual: "", expected_count: expected_count, actual_count: fields.count.u32()}) if struct_path == path and fields.count.u32() != expected_count
+                            _:
+                                pass
+                    _:
+                        pass
+
+
+        def walk_packed_move_store(statements: darray[Ast::Stmt], names: mutable darray[sview]&, owners: mutable darray[sview]&, frozen: mutable darray[bool]&, allocation_regions: darray[sview]&, allocation_lines: darray[u32]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |names, owners, frozen, table| -> table:
+                    match statement:
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            table <- walk_packed_constructor_expression(value, owners, table)
+                            table <- check_frozen_packed_allocation(value, names, frozen, allocation_regions, allocation_lines, table)
+                            names.push(name)
+                            owners.push(packed_store_owner_of_type(type_expression))
+                            frozen.push(packed_store_is_frozen(type_expression))
+                        Stmt.Assign(target, operator, value, line):
+                            table <- walk_packed_constructor_expression(value, owners, table)
+                        Stmt.Expr(expression, line):
+                            table <- walk_packed_constructor_expression(expression, owners, table)
+                        Stmt.If(condition, then_body, else_body, line):
+                            table <- walk_packed_constructor_expression(condition, owners, table)
+                            table <- walk_packed_move_store(then_body, names, owners, frozen, allocation_regions, allocation_lines, table)
+                            table <- walk_packed_move_store(else_body, names, owners, frozen, allocation_regions, allocation_lines, table)
+                        Stmt.While(condition, body, line):
+                            table <- walk_packed_constructor_expression(condition, owners, table)
+                            table <- walk_packed_move_store(body, names, owners, frozen, allocation_regions, allocation_lines, table)
+                        Stmt.For(bind, variables, iterable, body, line):
+                            table <- walk_packed_constructor_expression(iterable, owners, table)
+                            table <- walk_packed_move_store(body, names, owners, frozen, allocation_regions, allocation_lines, table)
+                        Stmt.Block(kind, clause, binding, body, line):
+                            if kind == "move" and clause.count >= 2:
+                                expected_owner: sview = packed_owner_for_path(clause[0], table)
+                                actual_owner: sview = store_owner_for_name(names, owners, clause[1])
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.PackedMoveStoreMismatch, name: clause[1], line: line.line, expected: expected_owner, actual: actual_owner}) if expected_owner != "" and actual_owner != "" and expected_owner != actual_owner
+                            table <- check_move_struct_arity(clause, body, line.line, table) if kind == "move"
+                            table <- walk_packed_move_store(body, names, owners, frozen, allocation_regions, allocation_lines, table)
+                        Stmt.Match(scrutinee, arms, line):
+                            table <- walk_packed_constructor_expression(scrutinee, owners, table)
+                            for arm in arms |names, owners, frozen, table| -> table:
+                                table <- walk_packed_move_store(arm.body, names, owners, frozen, allocation_regions, allocation_lines, table)
+                        Stmt.Return(value, line):
+                            table <- walk_packed_constructor_expression(returned_value, owners, table) if value is returned_value
+                            table <- check_frozen_packed_allocation(returned_value, names, frozen, allocation_regions, allocation_lines, table) if value is returned_value
+                        _:
+                            pass
+
+
+        def check_packed_move_store_declarations(declarations: darray[Ast::Decl], allocation_regions: darray[sview]&, allocation_lines: darray[u32]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |table|:
+                    match declaration:
+                        Decl.Func(name, params, return_type, body, effects, decorators, line):
+                            names: mutable darray[sview] = []
+                            owners: mutable darray[sview] = []
+                            frozen: mutable darray[bool] = []
+                            for param in params |names, owners, frozen|:
+                                names.push(param.name)
+                                owners.push(packed_store_owner_of_type(param.type_expression))
+                                frozen.push(packed_store_is_frozen(param.type_expression))
+                            table <- walk_packed_move_store(body, names, owners, frozen, allocation_regions, allocation_lines, table)
+                        Decl.Module(module_name, body, line):
+                            table <- check_packed_move_store_declarations(body, allocation_regions, allocation_lines, table)
+                        Decl.Scoped(body, line):
+                            table <- check_packed_move_store_declarations(body, allocation_regions, allocation_lines, table)
+                        _:
+                            pass
+
+    public:
+        def check_packed_move_store(file: Ast::File&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                table <- check_packed_move_store_declarations(file.top_decls, file.allocation_region_names, file.allocation_region_lines, table)

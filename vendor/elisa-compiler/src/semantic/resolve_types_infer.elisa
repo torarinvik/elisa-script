@@ -1,0 +1,514 @@
+# Stage1 semantic — expression type inference and stage0 spellings (`extend Semantic:
+# private:`). `infer_expression_type` is the core inference walk; the `stage0_*` and
+# `family_of_*` helpers render an inferred type the way stage0 words it in a diagnostic,
+# so the two compilers' messages stay byte-identical. Continues resolve_types.elisa;
+# split out to keep each part file under 600 lines.
+
+extend Semantic:
+    private:
+        # THE type-inference engine: assign a structured `InferType` to an expression from
+        # its shape + the flat local-type table + the struct-field registry. Sound SUBSET —
+        # anything not modeled is `Unknown` (never used to flag). Comparisons/membership/
+        # refinement/logic yield `Bool`; arithmetic yields a known operand's type; field
+        # access `object.field` yields the field's declared type; parens and sign/bitwise/
+        # volatile unaries pass through; `not` yields `Bool`. Calls/constructors: Unknown.
+        def infer_expression_type(expression: Ast::Expr, names: darray[sview]&, types: darray[sview]&, table: SymbolTable&) -> InferType:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.IntLit(int_value):
+                        return primitive_type(SemTypeKind.Int)
+                    Expr.FloatLit(float_text):
+                        return primitive_type(SemTypeKind.Float)
+                    Expr.StringLit(string_text):
+                        return primitive_type(SemTypeKind.String)
+                    Expr.CharLit(char_text):
+                        return primitive_type(SemTypeKind.Char)
+                    Expr.BoolLit(bool_value):
+                        return primitive_type(SemTypeKind.Bool)
+                    _:
+                        pass
+                match expression:
+                    Expr.Ident(name, ident_line):
+                        flat_type: InferType = type_of_name(local_type_of(names, types, name))
+                        flat_type return if flat_type.kind != SemTypeKind.Unknown
+                        # Structural fallback (Phase C): a local whose annotation was not a
+                        # bare name may still have an interned TypeId. ONLY Container and
+                        # Optional map — a `T&` local is NOT dereferenced to T (refs to
+                        # buffers are legally indexed/field-accessed as raw memory, so a
+                        # scalar-through-ref inference false-positives the index/field
+                        # checks — corpus-verified), and Tuple idents stay Unknown here
+                        # (the tuple/container sidecar check owns tuple-var misuse).
+                        structural_id: u32 = local_type_id_of(name, table)
+                        structural_kind: SemTypeKind = interned_kind(structural_id, table)
+                        InferType{kind: structural_kind, name: interned_name(structural_id, table)} return if structural_kind == SemTypeKind.Container or structural_kind == SemTypeKind.Optional
+                        return flat_type
+                    _:
+                        pass
+                match expression:
+                    Expr.Paren(inner, paren_line):
+                        return infer_expression_type(inner, names, types, table)
+                    Expr.Refinement(base, predicate, refinement_line):
+                        return infer_expression_type(base, names, types, table)
+                    _:
+                        pass
+                # Tuple literal `(a, b, …)`: a distinct `Tuple` type (POD — the per-position
+                # element types are NOT stored here; a consumer needing them recurses into the
+                # `Expr.Tuple` node's `elements` in its own region context). This replaces the
+                # former `Unknown` so operand checks can tell a whole tuple is not a scalar.
+                match expression:
+                    Expr.Tuple(tuple_elements, tuple_line):
+                        return InferType{kind: SemTypeKind.Tuple, name: "tuple"}
+                    _:
+                        pass
+                # Indexing a container-typed local: `xs[i]` yields the element type,
+                # `d[k]` the dict VALUE type (Phase C — via the interned type table).
+                # Structural receivers are modeled through fields and indexes; `.cast[T]`
+                # remains Unknown because its bracket is a type application, not indexing.
+                match expression:
+                    Expr.Index(indexed_object, index_expression, index_line):
+                        # Use the structural expression channel for every receiver shape, not
+                        # only a bare identifier.  This covers `state.rows[i].raw[j]` and similar
+                        # chains through reference parameters; the previous bare-ident-only arm
+                        # silently returned Unknown for those chains, letting an invalid `get`
+                        # initializer reach backend lowering.
+                        receiver_id: u32 = structural_type_id_of(indexed_object, names, types, table)
+                        element_type: InferType = infer_from_type_id(indexed_element_type_id(receiver_id, table), table)
+                        element_type return if element_type.kind != SemTypeKind.Unknown
+                        # Indexing a STRING local yields a char (oracle-verified:
+                        # stage0 types `s[0]` char for cstr/dstr/sview).
+                        receiver_type: InferType = infer_expression_type(indexed_object, names, types, table)
+                        primitive_type(SemTypeKind.Char) return if receiver_type.kind == SemTypeKind.String
+                        return primitive_type(SemTypeKind.Unknown)
+                    _:
+                        pass
+                match expression:
+                    Expr.IndexN(indexed_object_n, index_arguments, index_n_line):
+                        # Multi-argument subscripts use the same structural walk as repeated
+                        # single indexes.  Type applications (for example `.cast[T]`) have no
+                        # container TypeId, so they naturally remain Unknown here.
+                        selected_id: mutable u32 = structural_type_id_of(indexed_object_n, names, types, table)
+                        for _ in index_arguments |selected_id|:
+                            selected_id <- indexed_element_type_id(selected_id, table)
+                        selected_type: InferType = infer_from_type_id(selected_id, table)
+                        selected_type return if selected_type.kind != SemTypeKind.Unknown
+                        receiver_type_n: InferType = infer_expression_type(indexed_object_n, names, types, table)
+                        primitive_type(SemTypeKind.Char) return if receiver_type_n.kind == SemTypeKind.String
+                        return primitive_type(SemTypeKind.Unknown)
+                    _:
+                        pass
+                # NOTE: array/list literals `[…]` are deliberately NOT given a firm type here.
+                # `[]` (and `[…]`) is the canonical empty/collection initializer for dstr and
+                # container types (`out: dstr = []`, `xs: darray[T] = […]`), so treating a list
+                # as firm-never-fit-scalar produces false positives on legitimate collection
+                # initialization. They stay Unknown until the engine can distinguish "list as a
+                # collection initializer" from "list misused as a scalar" (needs declared-type
+                # structure — the interned type table).
+                # Field access `object.field`: when object is a known struct and field is a
+                # registered bare-typed field, the access has that field's type.
+                match expression:
+                    Expr.Field(object, field, field_line):
+                        object_type: InferType = infer_expression_type(object, names, types, table)
+                        if object_type.kind == SemTypeKind.Named:
+                            flat_field: InferType = type_of_name(field_type_of(table, object_type.name, field))
+                            flat_field return if flat_field.kind != SemTypeKind.Unknown
+                            # Structural field (Phase C): `p.items` where items is a
+                            # container/optional-typed registered field.
+                            structural_field: InferType = infer_from_type_id(field_type_id_of(table, object_type.name, field), table)
+                            structural_field return if structural_field.kind == SemTypeKind.Container or structural_field.kind == SemTypeKind.Optional or structural_field.kind == SemTypeKind.Ref
+                            return primitive_type(SemTypeKind.Unknown)
+                        # A chain whose PREFIX is itself an unresolvable field access cannot
+                        # resolve structurally either, and walking it again is what made
+                        # `a.b.b.b...` take EXPONENTIAL time. This arm walks `object` ONCE via
+                        # infer_expression_type above and a SECOND time via
+                        # structural_type_id_of below (which recurses too), so every failing
+                        # link doubled the work: ~1.75x per link measured, and the internal
+                        # oracle's chain.elisa has 400 of them, which never finishes.
+                        #
+                        # A chain that DOES resolve returns from the Named branch above and
+                        # never reached the second walk -- which is why a `struct Node: b: Node&`
+                        # chain was always fine and only the failing form blew up.
+                        #
+                        # Only a failing FIELD prefix is short-circuited. Field access through a
+                        # reference parameter is an Ident, not a Field, so it still takes the
+                        # structural path below and keeps its exact type.
+                        # See repro/nw_stage1_field_chain_exponential.elisa.
+                        match object:
+                            Expr.Field(chain_object, chain_field, chain_field_line):
+                                primitive_type(SemTypeKind.Unknown) return if object_type.kind == SemTypeKind.Unknown
+                            _:
+                                pass
+                        # Field access through a reference parameter has no Named coarse type,
+                        # but its structural row can still be unwrapped for an exact field type.
+                        field_object_id: mutable u32 = structural_type_id_of(object, names, types, table)
+                        while interned_kind(field_object_id, table) == SemTypeKind.Ref:
+                            field_object_id <- interned_elem(field_object_id, 0, table)
+                        if interned_kind(field_object_id, table) == SemTypeKind.Named:
+                            ref_field: InferType = infer_from_type_id(field_type_id_of(table, interned_name(field_object_id, table), field), table)
+                            ref_field return if ref_field.kind != SemTypeKind.Unknown
+                        # Size fields of the KNOWN container heads are integers (usize) —
+                        # user generics are excluded (their `count` could be anything).
+                        is_known_container: bool = object_type.kind == SemTypeKind.Container and (object_type.name == "darray" or object_type.name == "dict" or object_type.name == "set" or object_type.name == "list" or object_type.name == "array")
+                        is_size_field: bool = field == "count" or field == "len" or field == "capacity" or field == "size"
+                        InferType{kind: SemTypeKind.Int, name: "usize"} return if is_known_container and is_size_field
+                        return primitive_type(SemTypeKind.Unknown)
+                    _:
+                        pass
+                # Direct call `f(...)`: the return type of a uniquely-named function.
+                # Method/qualified calls (callee is a Field/Scope) fall to Unknown.
+                match expression:
+                    Expr.Call(callee, arguments, argument_names, call_line):
+                        # A qualified call `M::f(...)` types like a direct call to `f` —
+                        # the collector flattens module members into the one symbol table,
+                        # and the unique-name guard below keeps overload ambiguity silent.
+                        match callee:
+                            Expr.Scope(scope_qualifier, qualified_name, scope_line):
+                                qualified_return: InferType = type_of_name(function_return_type(table, qualified_name))
+                                qualified_return return if qualified_return.kind != SemTypeKind.Unknown
+                                qualified_structural: InferType = infer_from_type_id(function_return_type_id(table, qualified_name), table)
+                                qualified_structural return if qualified_structural.kind == SemTypeKind.Container or qualified_structural.kind == SemTypeKind.Optional
+                                return primitive_type(SemTypeKind.Unknown)
+                            Expr.Ident(function_name, function_name_line):
+                                flat_return: InferType = type_of_name(function_return_type(table, function_name))
+                                flat_return return if flat_return.kind != SemTypeKind.Unknown
+                                # Structural return (Phase C): a `-> darray[T]`/`T?` return
+                                # annotation has no bare name but does have an interned TypeId.
+                                structural_return: InferType = infer_from_type_id(function_return_type_id(table, function_name), table)
+                                structural_return return if structural_return.kind == SemTypeKind.Container or structural_return.kind == SemTypeKind.Optional
+                            _:
+                                pass
+                        return primitive_type(SemTypeKind.Unknown)
+                    _:
+                        pass
+                # The parser retains control-flow `get EXPR else return ...` as GetElse.
+                # Its value type is the guarded expression after the absence path exits.
+                # Without this arm, all such expressions inferred Unknown and bypassed the
+                # initializer type wall entirely.
+                match expression:
+                    Expr.GetElse(guarded, recovery, getelse_line):
+                        guarded_type: InferType = infer_expression_type(guarded, names, types, table)
+                        if guarded_type.kind == SemTypeKind.Optional:
+                            guarded_id: u32 = structural_type_id_of(guarded, names, types, table)
+                            return infer_from_type_id(interned_elem(guarded_id, 0, table), table)
+                        return guarded_type
+                    Expr.Unary(operator, operand, unary_line):
+                        primitive_type(SemTypeKind.Bool) return if operator == TokenKind.Not
+                        # `!x` is the volatile/atomic READ sigil (NOT logical not — that's
+                        # `not`): it preserves the operand's type, like sign/bitwise ops.
+                        infer_expression_type(operand, names, types, table) return if operator == TokenKind.Bang or operator == TokenKind.Minus or operator == TokenKind.Plus or operator == TokenKind.Tilde
+                        return primitive_type(SemTypeKind.Unknown)
+                    Expr.Move(operand, move_line):
+                        return infer_expression_type(operand, names, types, table)
+                    _:
+                        pass
+                match expression:
+                    Expr.Binary(left, operator, right, binary_line):
+                        primitive_type(SemTypeKind.Bool) return if operator in {TokenKind.EqEq, TokenKind.BangEq, TokenKind.Lt, TokenKind.Gt, TokenKind.LtEq, TokenKind.GtEq, TokenKind.In, TokenKind.Is, TokenKind.And, TokenKind.Or}
+                        if operator in {TokenKind.Plus, TokenKind.Minus, TokenKind.Star, TokenKind.Slash, TokenKind.Percent, TokenKind.LShift, TokenKind.RShift, TokenKind.Pipe, TokenKind.Caret, TokenKind.Ampersand}:
+                            left_type: InferType = infer_expression_type(left, names, types, table)
+                            left_type return if left_type.kind != SemTypeKind.Unknown
+                            return infer_expression_type(right, names, types, table)
+                        return primitive_type(SemTypeKind.Unknown)
+                    Expr.Slice(object, low, high, slice_line):
+                        object_type: mutable InferType = infer_expression_type(object, names, types, table)
+                        match object:
+                            Expr.Ident(object_name, object_line):
+                                object_type <- infer_from_type_id(local_type_id_of(object_name, table), table) if object_type.kind == SemTypeKind.Unknown
+                            _:
+                                pass
+                        InferType{kind: SemTypeKind.Container, name: "sview"} return if object_type.kind == SemTypeKind.String
+                        InferType{kind: SemTypeKind.Container, name: "view"} return if object_type.kind == SemTypeKind.Container and object_type.name in {"array", "darray", "view"}
+                        return primitive_type(SemTypeKind.Unknown)
+                    _:
+                        return primitive_type(SemTypeKind.Unknown)
+
+
+        # An InferType from an interned row (Phase C): scalar kinds and Named map
+        # directly; Container/Optional keep their structural kind; Ref and unmodeled
+        # rows are Unknown (refs to buffers must not read as their referent scalar —
+        # see the Ident-arm note).
+        def infer_from_type_id(type_id: u32, table: SymbolTable&) -> InferType:
+            can Abort.Panic:
+                row_kind: SemTypeKind = interned_kind(type_id, table)
+                return when row_kind:
+                    SemTypeKind.Int | SemTypeKind.Float | SemTypeKind.String -> InferType{kind: row_kind, name: interned_name(type_id, table)}
+                    SemTypeKind.Bool | SemTypeKind.Char -> primitive_type(row_kind)
+                    SemTypeKind.Named | SemTypeKind.Container | SemTypeKind.Optional | SemTypeKind.Ref -> InferType{kind: row_kind, name: interned_name(type_id, table)}
+                    _ -> primitive_type(SemTypeKind.Unknown)
+
+
+        # The interned ELEMENT TypeId an index expression on `container_id` yields:
+        # darray/array/set index by position -> element 0; dict[k] -> the VALUE
+        # (element 1). 0 (Unknown) for other heads/shapes.
+        def indexed_element_type_id(container_id: u32, table: SymbolTable&) -> u32:
+            can Abort.Panic:
+                receiver_id: mutable u32 = container_id
+                # Indexing through `values: darray[T]&` is legal and yields T; the
+                # reference wrapper is storage, not the indexed container head.
+                while interned_kind(receiver_id, table) == SemTypeKind.Ref:
+                    receiver_id <- interned_elem(receiver_id, 0, table)
+                0 return if interned_kind(receiver_id, table) != SemTypeKind.Container
+                head: sview = interned_name(receiver_id, table)
+                interned_elem(receiver_id, 0, table) return if head == "darray" or head == "array" or head == "set"
+                interned_elem(receiver_id, 1, table) return if head == "dict"
+                return 0
+
+
+        # stage0-parity spelling for a LITERAL family recorded at a mismatch site:
+        # stage0 prints string literals as their storage type "static u8&" and numeric
+        # literals at canonical width. Non-literal families pass through unchanged.
+        #
+        # The `&` is part of the spelling. It was missing here — every caller passes this
+        # value straight into `Diagnostic.actual`, so ten mismatch messages read
+        # "got static u8" where stage0 writes "got static u8&". MEASURED, not inferred:
+        #     xs: darray[i64] = [1, "two", 3]   ->  stage0: got static u8&
+        #     f("x") where f(a: i64)            ->  stage0: expects i64, got static u8&
+        # The note two screens down (the `s["k"]` index table) had the right spelling all
+        # along; this one did not, and the diagnostics fixtures matched on a SUBSTRING
+        # ("got static u8"), which the truncated form satisfies — so nothing caught it.
+        def stage0_literal_spelling(literal_kind: sview) -> sview:
+            return when literal_kind:
+                "string" -> "static u8&"
+                "int" -> "i64"
+                "float" -> "f64"
+                _ -> literal_kind
+
+        # stage0-parity spelling for an inferred VALUE type: the precise declared
+        # spelling when known (type_of_name/infer_from_type_id preserve it), else the
+        # canonical family width stage0 prints ("i64"/"f64"/"cstr").
+        def stage0_value_spelling(inferred_type: InferType) -> sview:
+            can Abort.Panic:
+                scalar: bool = inferred_type.kind == SemTypeKind.Int or inferred_type.kind == SemTypeKind.Float or inferred_type.kind == SemTypeKind.String
+                inferred_type.name return if scalar and inferred_type.name != ""
+                return when inferred_type.kind:
+                    SemTypeKind.Int -> "i64"
+                    SemTypeKind.Float -> "f64"
+                    SemTypeKind.String -> "cstr"
+                    # A container keeps its HEAD spelling ("darray"); the elem argument
+                    # travels separately in Diagnostic.detail (container_elem_spelling_of).
+                    SemTypeKind.Container -> inferred_type.name if inferred_type.name != "" else "container"
+                    _ -> family_of_kind(inferred_type)
+
+        # stage0-parity spelling for the INDEX of a rejected `x[i]`. stage0 names the
+        # index's declared type, not its family, so the coarse family_of_kind ("string")
+        # is wrong wherever a spelling exists. MEASURED against stage0, one probe per row:
+        #     s[k] with k: cstr        -> "cstr"          declared spelling
+        #     s[k] with k: sview       -> "sview"         declared spelling
+        #     s["k"]                   -> "static u8&"    a string LITERAL, not cstr
+        #     s[b] with b: bool        -> "bool"
+        #     s[k] with k: dstr        -> "darray[u8]"    stage0 prints dstr LOWERED
+        # Two spellings stage1 cannot yet reproduce, so those sites report what InferType
+        # holds instead of the exact text: a container prints its full argument list
+        # ("darray[i64]") where InferType keeps only the head, and an optional prints
+        # "i64?". The diagnostic still FIRES for both — a rejected program carrying an
+        # imprecise type name beats a silently accepted one — so only the exact-spelling
+        # rows above are pinned as diagnostics fixtures.
+        def stage0_index_spelling(inferred_type: InferType) -> sview:
+            can Abort.Panic:
+                if inferred_type.kind == SemTypeKind.String:
+                    "darray[u8]" return if inferred_type.name == "dstr"
+                    inferred_type.name return if inferred_type.name != ""
+                    # "static u8&" — the `&` is part of the spelling, as the `s["k"]` row in
+                    # the table above already says. Same missing ampersand as
+                    # stage0_literal_spelling had.
+                    return "static u8&"
+                return stage0_value_spelling(inferred_type)
+
+        # The coarse "family" string of an InferType, for the legacy literal/condition
+        # checks: "int" | "float" | "bool" | "string" | "char" | "" (unknown/void/named).
+        def family_of_kind(inferred_type: InferType) -> sview:
+            can Abort.Panic:
+                return when inferred_type.kind:
+                    SemTypeKind.Int -> "int"
+                    SemTypeKind.Float -> "float"
+                    SemTypeKind.Bool -> "bool"
+                    SemTypeKind.String -> "string"
+                    SemTypeKind.Char -> "char"
+                    SemTypeKind.Tuple -> "tuple"
+                    # Structural families (Phase C): consumed by the generic non-bool
+                    # walls (NonBoolCondition/NonBoolMatchGuard fire on any firm
+                    # non-"bool" family); the mismatch oracles (firm_never_fits,
+                    # comparison_group) treat them as unmodeled and stay silent, so
+                    # the tuple/container sidecar check is not double-reported.
+                    SemTypeKind.Optional -> "optional"
+                    SemTypeKind.Container -> "container"
+                    _ -> ""
+
+
+        # User-facing operand name for comparison diagnostics. Structural inference
+        # currently retains the container head (but not all generic arguments), which
+        # is still more precise and stable than exposing the coarse "container" family.
+        def comparison_type_name(inferred_type: InferType) -> sview:
+            can Abort.Panic:
+                inferred_type.name return if inferred_type.kind == SemTypeKind.Container
+                return family_of_kind(inferred_type)
+
+
+        # How stage0 names an OPERAND in a diagnostic: a bare LITERAL by its family, a typed
+        # VALUE by its declared spelling. MEASURED at three independent sites, which is what
+        # establishes it as one rule rather than three coincidences:
+        #     ternary cond   x: i64   -> "got i64"      literal 3   -> "got int"
+        #     `b == x`       x: i64   -> "bool and i64" `b == 1`    -> "bool and int"
+        #     for-range      a: f64   -> "f64 and i64"  `0.5..<3`   -> "f64 and int"
+        # Only the INT literal needs the special case: a float literal already spells "f64"
+        # and a string literal "static u8", which stage0_index_spelling gives.
+        #
+        # This is why family_of_kind is wrong at any site whose text stage0 compares against
+        # — it answers "int"/"float"/"string" everywhere, which stage0 prints ONLY for
+        # literals.
+        def stage0_operand_spelling(operand: Ast::Expr, operand_type: InferType) -> sview:
+            can Abort.Panic:
+                "int" return if literal_kind_of(operand) == "int"
+                return stage0_index_spelling(operand_type)
+
+
+        # Whether a declared kind can NEVER hold `null`. Only an Optional can; a Ref is
+        # excluded here because it has its own "non-null reference" wording, and
+        # Unknown/Void stay out so an unresolved annotation cannot false-positive.
+        def kind_cannot_hold_null(declared_kind: SemTypeKind) -> bool:
+            can Abort.Panic:
+                return match declared_kind:
+                    SemTypeKind.Int | SemTypeKind.Float | SemTypeKind.Bool | SemTypeKind.String | SemTypeKind.Char | SemTypeKind.Named | SemTypeKind.Container | SemTypeKind.Tuple: true
+                    _: false
+
+
+        # The RETURN-position variant, deliberately NARROWER: it excludes Named.
+        #
+        # An AFFINE return type `-> P!` ACCEPTS null (stage0 compiles
+        # `def missing_box() -> Box!: return null`, which is in its own semantic suite as
+        # TestAnalyzePointerTypestateBranches). At the return site the `!` is lost twice over —
+        # `bare_type_name` gives "Box" and `interned_kind(return_type_id)` gives Named — so a
+        # plain `-> P` and an affine `-> P!` are indistinguishable there and flagging Named
+        # rejected the affine form.
+        #
+        # The DECLARATION site does not have this problem: `p: P! = null` is correctly silent,
+        # because its declared_type_id models the affine type. So only this variant narrows.
+        # Cost: `-> P` with a plain struct is a conservative MISS. The scalar rows
+        # (i64/cstr/bool/f64/char) are all verified and unambiguous.
+        def return_kind_cannot_hold_null(declared_kind: SemTypeKind) -> bool:
+            can Abort.Panic:
+                return match declared_kind:
+                    SemTypeKind.Int | SemTypeKind.Float | SemTypeKind.Bool | SemTypeKind.String | SemTypeKind.Char: true
+                    _: false
+
+
+        # Whether a dict KEY type has no value equality, so stage0 refuses to build the
+        # runtime hash table for it. MEASURED, one probe per key type through `d[k] <- 5`:
+        #     REJECTED: sview, dstr, f32, f64
+        #     accepted: cstr, i64, u64, i32, usize, bool, char, const enum
+        #
+        # A SOUND SUBSET, deliberately: stage0 also rejects aggregate keys, but the message
+        # names the key by its declared spelling and an aggregate's spelling is harder to
+        # reproduce exactly. The same call was made for the float-only coverage in
+        # check_set_membership_element.elisa. Missing a diagnostic is safe; a wrong one is
+        # not.
+        def dict_key_type_unsupported(key_spelling: sview) -> bool:
+            can Abort.Panic:
+                return when key_spelling:
+                    "sview" | "dstr" | "f32" | "f64" -> true
+                    _ -> false
+
+
+        # Whether an `==`/`!=` between these operands is one stage0 ACCEPTS despite the two
+        # sides sitting in different comparison groups: a bare STRING LITERAL against a
+        # NUMERIC operand, where the literal adapts to a byte comparison.
+        #
+        # MEASURED through `-emit obj`, so this is acceptance and not just a quiet analyzer:
+        #     n == "s"   n: i64     ACCEPTED        b == "s"   b: bool   rejected
+        #     x == "s"   x: f64     ACCEPTED        n == s     s: cstr   rejected
+        #     c == "s"   c: char    ACCEPTED                             ("cannot compare i64 and cstr")
+        # So BOTH conditions are required — a literal on one side AND a numeric on the
+        # other. Group 3 is exactly the numeric family (int/float/char) in comparison_group.
+        #
+        # stage1 flagged all three ACCEPTED rows, rejecting valid programs.
+        def comparison_string_literal_adapts(left: Ast::Expr, left_type: InferType, right: Ast::Expr, right_type: InferType) -> bool:
+            can Abort.Panic:
+                true return if literal_kind_of(left) == "string" and comparison_group(right_type) == 3
+                return literal_kind_of(right) == "string" and comparison_group(left_type) == 3
+
+
+        # Map a bare primitive type name onto its family (projection of type_of_name).
+        def family_of_type_name(type_name: sview) -> sview:
+            can Abort.Panic:
+                return family_of_kind(type_of_name(type_name))
+
+
+        # Infer an expression's type FAMILY — a projection of the structured engine.
+        def infer_family(expression: Ast::Expr, names: darray[sview]&, types: darray[sview]&, table: SymbolTable&) -> sview:
+            can Memory.Allocate, Abort.Panic:
+                return family_of_kind(infer_expression_type(expression, names, types, table))
+
+
+        # stage0-parity spelling of an EXPRESSION for messages: literals print their
+        # storage spelling ("static u8"/"i64"/"f64"), other values their precise type.
+        def stage0_expr_spelling(expression: Ast::Expr, inferred_type: InferType) -> sview:
+            can Memory.Allocate, Abort.Panic:
+                literal_kind: sview = literal_kind_of(expression)
+                stage0_literal_spelling(literal_kind) return if literal_kind != ""
+                return stage0_value_spelling(inferred_type)
+
+        # The ELEMENT spelling of a container-typed expression ("i64" for a
+        # darray[i64] local/field/call), or "" when unmodeled. Rendered as the
+        # bracketed argument of stage0's container type text ("darray[i64]").
+        def container_elem_spelling_of(expression: Ast::Expr, names: darray[sview]&, types: darray[sview]&, table: SymbolTable&) -> sview:
+            can Memory.Allocate, Abort.Panic:
+                return type_name_of_row(interned_elem(structural_type_id_of(expression, names, types, table), 0, table), table)
+
+        # stage0-parity spelled variant of infer_family (precise type text for messages).
+        def infer_spelling(expression: Ast::Expr, names: darray[sview]&, types: darray[sview]&, table: SymbolTable&) -> sview:
+            can Memory.Allocate, Abort.Panic:
+                return stage0_value_spelling(infer_expression_type(expression, names, types, table))
+
+
+        # Whether a FIRM (non-literal) value of family `value_family` can never inhabit a
+        # variable of primitive `type_name`. Numerics are fully inter-convertible in
+        # Elisa (int<->float, any width — oracle-verified), so only the hard
+        # bool/string/numeric walls are flagged; `char` values are skipped
+        # (adaptive rules untested for firm chars).
+        def firm_never_fits(value_family: sview, type_name: sview) -> bool:
+            can Abort.Panic:
+                target_family: sview = family_of_type_name(type_name)
+                false return if target_family == ""
+                return when value_family:
+                    "bool" -> target_family != "bool"
+                    "int" | "float" -> target_family == "bool" or target_family == "string"
+                    "string" -> target_family == "int" or target_family == "float" or target_family == "bool"
+                    # Firm chars hit only the bool/string walls (char<->numeric is
+                    # adaptive and legal — oracle-verified 2026-07-16).
+                    "char" -> target_family == "bool" or target_family == "string"
+                    # A tuple never fits a primitive element type. `target_family` is already
+                    # proven non-"" (the early return above), so it is some scalar family here;
+                    # a declared tuple/named element type yields "" and bailed, so this can't
+                    # false-positive on a genuine darray/dict/set of tuples.
+                    "tuple" -> true
+                    _ -> false
+
+
+        def constructor_argument_never_fits(value: Ast::Expr, type_name: sview, names: darray[sview]&, types: darray[sview]&, table: SymbolTable&) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                false return if type_name == ""
+                literal: sview = literal_kind_of(value)
+                literal_never_fits(literal, type_name) return if literal != ""
+                family: sview = infer_family(value, names, types, table)
+                firm_never_fits(family, type_name) return if family != ""
+                # A cast to a structural/ref type cannot inhabit a primitive payload.
+                match value:
+                    Expr.Index(cast_member, cast_target, cast_line):
+                        match cast_member:
+                            Expr.Field(cast_receiver, cast_name, member_line):
+                                return cast_name == "cast" and bare_type_name(cast_target) == "" and family_of_type_name(type_name) != ""
+                            _:
+                                pass
+                    _:
+                        pass
+                return false
+
+
+        # Flag a value (literal OR firm expression) against a declared primitive.
+        def check_value_against(value: Ast::Expr, type_name: sview, declared_name: sview, line: u32, names: darray[sview]&, types: darray[sview]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                literal_kind: sview = literal_kind_of(value)
+                if literal_kind != "":
+                    table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.TypeMismatch, name: declared_name, line: line, expected: type_name, actual: stage0_literal_spelling(literal_kind)}) if literal_never_fits(literal_kind, type_name)
+                else:
+                    value_family: sview = infer_family(value, names, types, table)
+                    table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.TypeMismatch, name: declared_name, line: line, expected: type_name, actual: infer_spelling(value, names, types, table)}) if value_family != "" and firm_never_fits(value_family, type_name)

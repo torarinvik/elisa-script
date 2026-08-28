@@ -1,0 +1,414 @@
+# Stage1 backend — the module entry points: `emit_module` and its debug/trace variants.
+# Part of `module Backend` (see codegen.elisa); split out to keep each file short.
+
+extend Backend:
+    public:
+        def select_module_declarations(file: Ast::File&, structs: mutable StructTable&) -> darray[Decl] can[Abort.Panic, Memory.Allocate]:
+            register_target_consts(structs)
+            register_fn_signatures(file, structs)
+            static_branch_lines: darray[u32] = file.static_if_lines
+            # Impl membership must be captured BEFORE flattening erases the Scoped nodes.
+            record_impl_member_lines(file.top_decls, file.enum_annotations, structs)
+            structs.decl_line_rows <- file.func_decl_lines
+            structs.decl_column_rows <- file.func_decl_columns
+            structs.panic_line_rows <- file.panic_lines
+            structs.panic_column_rows <- file.panic_columns
+            top: mutable darray[Decl] = []
+            for _selection_round in 0..<(file.static_if_lines.count + 1) |top, structs, file, static_branch_lines|:
+                round_taken: darray[u32] = selected_static_if_lines(file, structs)
+                round_top: mutable darray[Decl] = []
+                flatten_static_branches(file.top_decls, static_branch_lines, round_taken, round_top)
+                settled: bool = round_top.count == top.count
+                top <- round_top
+                break if settled
+                for round_index in 0..<top.count |structs|:
+                    round_declaration: Decl = top[round_index]
+                    if declaration_is_module(round_declaration):
+                        for nested_index in 0..<declaration_module_count(round_declaration) |file, structs, round_declaration|:
+                            register_const(declaration_module_at(round_declaration, nested_index), module_name_of(round_declaration), file.enum_annotations, structs)
+                    else:
+                        register_const(round_declaration, "", file.enum_annotations, structs)
+                fold_consts(file, top, structs)
+            structs.static_branch_lines <- file.static_if_lines
+            # `static def` functions are COMPILE-TIME ONLY (evaluated during static
+            # execution; stage0 emits no runtime code for them). Dropping them here keeps
+            # both the declare and the body pass from seeing them, so an exotic static-only
+            # body (reflection, static comprehensions) cannot decline anything. The parser
+            # records each as a `__static_fn` annotation (name + line).
+            static_fn_filtered: mutable darray[Decl] = []
+            for kept_declaration in top |static_fn_filtered, file|:
+                kept_is_static: mutable bool = false
+                match kept_declaration:
+                    Decl.Func(kept_name, kept_params, kept_return, kept_body, kept_effects, kept_decorators, kept_line):
+                        for static_annotation in file.enum_annotations |kept_is_static, kept_name, kept_line|:
+                            kept_is_static <- true if static_annotation.owner == "__static_fn" and static_annotation.name == kept_name and static_annotation.line == kept_line.line
+                    _:
+                        pass
+                static_fn_filtered.push(kept_declaration) if not kept_is_static
+            top <- static_fn_filtered
+            selected_lines: darray[u32] = selected_static_if_lines(file, structs)
+            structs.static_taken_lines <- structs.static_taken_lines.truncate(0)
+            for selected_line in selected_lines |structs|:
+                structs.static_taken_lines <- structs.static_taken_lines.push(selected_line)
+            return top
+
+        def register_module_types(file: Ast::File&, top: darray[Decl]&, structs: mutable StructTable&, m: LLVMModuleRef, ctx: LLVMContextRef) -> void can[Abort.Panic, Memory.Allocate, Unsafe.PointerCast]:
+            can Abort.Panic, Memory.Allocate, Unsafe.PointerCast:
+                register_generic_structs(file, top, structs)
+                # Reserve the AST packed-store headers ONLY for a program that actually
+                # declares the Node hierarchy. Reserving them unconditionally put `Node`,
+                # `Expr`, `Stmt`, `Decl` and `Pattern` into the packed registry for EVERY
+                # program, so an ordinary user `enum Expr:` found a packed slot already
+                # present and was treated as a packed AoS enum -- every construction and
+                # match against it declined, while the byte-identical program with the enum
+                # renamed to `Shape` compiled.
+                #
+                # The parser marks genuine hierarchy members with `__ast_refinement` (and
+                # only when they really have a Node parent or are the sealed root), so its
+                # presence is the honest test for "this program has an AST".
+                file_has_ast_refinement: mutable bool = false
+                for ast_annotation in file.enum_annotations |file_has_ast_refinement|:
+                    file_has_ast_refinement <- true if ast_annotation.name == "__ast_refinement"
+                reserve_ast_packed_headers(structs) if file_has_ast_refinement
+                register_struct_names(file, structs, ctx)
+                # Packed AST variants can contain ordinary fieldless enums and aliases
+                # such as TokenKind. Resolve those dependencies before inspecting packed
+                # payloads; otherwise Expr/Stmt/Decl are conservatively discarded.
+                register_aliases(file, structs)
+                register_enums_from_metadata(file, structs)
+                resolve_aliases(file, structs)
+                register_error_set_names(file, structs)
+                register_packed_enums_from_metadata(file, structs)
+                module_packed_or_ast: mutable darray[sview] = []
+                packed_or_ast_enum_names(file, &module_packed_or_ast)
+                register_payload_enums_from_metadata(file, module_packed_or_ast, structs)
+                apply_struct_alignments(file.enum_annotations, structs)
+                # Before struct BODIES are sized: register the `[size x i8]` alias for every
+                # inline-storage `@c_opaque` extern (pthread_mutex_t/cond_t), so a struct FIELD of
+                # one gets its real C size rather than an 8-byte handle (which would silently
+                # race a struct-embedded mutex). The later declaration pass then skips these.
+                register_opaque_extern_aliases(top, file.annotation_args, structs)
+                set_struct_bodies_from_metadata(file, structs, ctx)
+                # AFTER the struct bodies: a payload enum carrying a struct can only be sized
+                # once that struct's fields are known (see finalize_payload_enum_words).
+                finalize_payload_enum_words(structs)
+                finalize_overlay_field_widths(structs)
+                for declaration_index in 0..<top.count |structs|:
+                    declaration: Decl = top[declaration_index]
+                    if declaration_is_module(declaration):
+                        for nested_index in 0..<declaration_module_count(declaration) |file, structs, declaration|:
+                            register_const(declaration_module_at(declaration, nested_index), module_name_of(declaration), file.enum_annotations, structs)
+                    else:
+                        register_const(declaration, "", file.enum_annotations, structs)
+                fold_consts(file, top, structs)
+                materialize_const_aggregates(file, top, structs, m, ctx)
+                materialize_mutable_globals(file, top, structs, m, ctx)
+                materialize_export_global_aliases(file.enum_annotations, structs, m, ctx)
+                register_tuple_types(file.tuple_type_elements, file.tuple_type_starts, file.tuple_type_counts, file.tuple_type_lines, structs, ctx)
+                register_disjoint_facts(top, structs)
+
+
+        def emit_module_core(file: Ast::File&, m: LLVMModuleRef, ctx: LLVMContextRef, builder: LLVMBuilderRef, want_debug: bool, want_trace: bool, source_name: sview) -> i64 can[Abort.Panic, Memory.Allocate, Unsafe.PointerCast]:
+            structs: mutable StructTable = new_struct_table(ctx)
+            for annotation in file.enum_annotations |structs|:
+                if annotation.owner == "__branch_hint":
+                    structs.branch_hint_lines <- structs.branch_hint_lines.push(annotation.line)
+                    structs.branch_hint_kinds <- structs.branch_hint_kinds.push(annotation.name)
+                structs.ast_refinement_names <- structs.ast_refinement_names.push(annotation.owner) if annotation.name == "__ast_refinement"
+                # `struct Holder[?]` -- a TYPESTATE header. Recorded by OWNER so the type
+                # resolver can erase a `Holder[&]` bracket for THIS struct only; erasing the
+                # bracket for every plain struct swallowed generic instantiations and declined
+                # 10+ programs across the differential suite.
+                structs.aggregate_state_owners <- structs.aggregate_state_owners.push(annotation.owner) if annotation.name == "__aggregate_state"
+                # `struct S layout(soa)` -- a COLUMN-major aggregate. stage0 lowers it to a
+                # struct whose every field is a darray of the declared type
+                # (`%SymbolRows = type { %DynArray__usize, %DynArray__u32 }`).
+                structs.soa_layout_owners <- structs.soa_layout_owners.push(annotation.owner) if annotation.name == "__layout_soa"
+                structs.impl_concrete_names <- structs.impl_concrete_names.push(annotation.name) if annotation.owner == "__impl_concrete"
+                if annotation.name == "__query_binder":
+                    structs.query_extra_binder_lines <- structs.query_extra_binder_lines.push(annotation.line)
+                    structs.query_extra_binder_names <- structs.query_extra_binder_names.push(annotation.owner)
+                if annotation.name == "__for_brace_field":
+                    structs.for_brace_field_lines <- structs.for_brace_field_lines.push(annotation.line)
+                    structs.for_brace_field_names <- structs.for_brace_field_names.push(annotation.owner)
+                if annotation.name == "__submit_pool":
+                    structs.submit_pool_lines <- structs.submit_pool_lines.push(annotation.line)
+                    structs.submit_pool_names <- structs.submit_pool_names.push(annotation.owner)
+                # `node is Expr.Pair as pair` -- the alias for a VARIANT test, keyed by the line
+                # the alias token sits on. The parser keeps the variant as the is-RHS (so the
+                # test is real) and records the name here. Recorded as an ENUM annotation, not a
+                # region one: the region side table has several consumers and one of them read
+                # this back as an unknown region qualifier.
+                if annotation.name == "__is_variant_alias":
+                    structs.is_variant_alias_lines <- structs.is_variant_alias_lines.push(annotation.line)
+                    structs.is_variant_alias_names <- structs.is_variant_alias_names.push(annotation.owner)
+            for derived_rule in file.derived_state_rules |structs|:
+                structs.derived_state_owners <- structs.derived_state_owners.push(derived_rule.owner)
+                structs.derived_state_names <- structs.derived_state_names.push(derived_rule.state)
+                structs.derived_state_conditions <- structs.derived_state_conditions.push(derived_rule.condition)
+            for region_annotation in file.local_region_annotations |structs|:
+                structs.region_param_lines <- structs.region_param_lines.push(region_annotation.line) if region_annotation.name == "__region_param"
+                # The per-DECLARATION `@region` pin, under its own reserved marker. Keyed by
+                # the declaration's line; `region` is the region it is pinned to.
+                if region_annotation.name == "__region_pin":
+                    structs.local_region_lines <- structs.local_region_lines.push(region_annotation.line)
+                    structs.local_region_names <- structs.local_region_names.push(region_annotation.region)
+            # The runtime is declared once per module; each function gets its own arena
+            # value below (the `arena` field here is a placeholder until then).
+            runtime: mutable Runtime = declare_runtime(m, ctx, want_trace, packed_profile_mode(file.enum_annotations))
+            runtime.trace_enabled <- want_trace
+            generics: mutable GenericTable = new_generic_table()
+            top: mutable darray[Decl] = select_module_declarations(file, structs)
+
+            # Templates must be known before any body is emitted: a call decides between
+            # "ordinary function" and "instantiate a generic" by looking here.
+            register_generics(file, top, generics)
+            fns: mutable FnTable = FnTable{names: [], lines: [], owners: [], needs_arena: [], arena_counts: [], needs_store: [], is_error: [], returns_nullable: [], is_variadic: [], handles: [], returns: [], param_types: [], param_names: [], param_defaults: [], param_start: [], param_count: []}
+            declined: mutable bool = false
+
+            # THREE passes. Structs first: a function signature can name a struct, and a
+            # struct field can name another struct, so every struct type must exist before
+            # any signature is resolved. Named-empty-then-set-body (see llvm_c.elisa) is
+            # what makes the field pass tolerate any declaration order.
+            # Generic struct templates first: a concrete struct's field may name a
+            # `Base[args]` application, and register_struct_name must know to SKIP a template
+            # rather than register it as a (fieldless) concrete type.
+            register_module_types(file, top, structs, m, ctx)
+            # AFTER the source types, so the std's own `DynArrayView` wins when it is in the
+            # unit and this is a no-op. Without the std there is no declaration to find and
+            # every `view[T]` use declined; see synthesize_view_struct.
+            _ = synthesize_view_struct(structs)
+            # Passes 3 and 4 cover FUNCTIONS only: a struct declaration emits no code of
+            # its own (its type was built above), so it is skipped rather than declined.
+            # The body pass looks its handle up by NAME — `fns` is no longer index-parallel
+            # with `top_decls` now that non-function declarations exist.
+            # A function whose SIGNATURE cannot be modeled is simply not declared: it has
+            # no entry in `fns`, so every call to it declines its CALLER (which is then
+            # stripped below). Only `main` failing is fatal to the module.
+            declare_module_functions(file, top, fns, structs, generics, m, ctx)
+
+            # declare_runtime PRE-DECLARES a few names (arena_alloc, ctx_streq,
+            # new_region_backend, …). When the SOURCE also defines one, LLVMAddFunction cannot
+            # reuse the name and silently appends a suffix, so the body lands on `arena_alloc.2`
+            # while `arena_alloc` stays a bodiless declaration — with no DECLINE and no DROPPED,
+            # because nothing was declined. In a PROGRAM that is invisible and wanted: the
+            # declaration binds to elisacore_runtime.o and the renamed copy dead-strips. In the
+            # runtime object ITSELF it means the object exports nothing usable.
+            #
+            # So repoint the table at the canonical handle, and ONLY FOR A LIBRARY. Doing it for
+            # programs too was measured and is catastrophic — 36 corpus programs segfaulted (35
+            # of them EASM, which does its own LLVMGetNamedFunction bookkeeping) and gen2 broke.
+            #
+            # Bodies have not been emitted yet, so swapping the table entry is enough: the body
+            # goes to the canonical symbol and the renamed declaration is left dead.
+            if function_index_of(fns, "", "main") < 0:
+                for reuse_index in 0..<fns.handles.count |fns, m, structs|:
+                    continue if fns.owners[reuse_index] != ""
+                    # Overloads mangle their name, so only a UNIQUE bare name is canonical.
+                    reuse_same_name: mutable usize = 0
+                    for reuse_probe in 0..<fns.names.count |reuse_same_name, fns, reuse_index|:
+                        reuse_same_name <- reuse_same_name + 1 if fns.names[reuse_probe] == fns.names[reuse_index] and fns.owners[reuse_probe] == ""
+                    continue if reuse_same_name != 1
+                    reuse_storage: mutable darray[u8] = []
+                    reuse_name: cstr = sview_to_cstr(fns.names[reuse_index], reuse_storage)
+                    if LLVMGetNamedFunction(m, reuse_name) is reuse_owner_handle:
+                        # No collision: the lookup hands back this very handle, so this is a
+                        # no-op by construction.
+                        continue if reuse_owner_handle == fns.handles[reuse_index]
+                        # An EXACT type match only. LLVM types are uniqued per context, so this
+                        # compares by identity; declare_runtime's signatures are hand-written and
+                        # need not agree with the source's, and binding a body to a handle whose
+                        # type disagrees would miscompile SILENTLY.
+                        continue if LLVMGlobalGetValueType(reuse_owner_handle) != LLVMGlobalGetValueType(fns.handles[reuse_index])
+                        continue if LLVMGetFirstBasicBlock(reuse_owner_handle) is reuse_existing_body
+                        fns.handles[reuse_index] <- reuse_owner_handle
+
+            # BEFORE the bodies: each alloca needs its function's subprogram already
+            # attached to hang a parameter/local variable off. (The declare pass above has
+            # run, so every handle is in `fns`.)
+            emit_debug_info(file, top, m, fns, structs, runtime, source_name, ctx) if want_debug
+            main_ok: mutable bool = false
+            dangling: mutable darray[LLVMValueRef] = []
+            emitted_count: i64 = emit_module_bodies(file, top, fns, structs, generics, runtime, m, ctx, builder, main_ok, dangling)
+            # A module that DECLARES `main` and failed to emit it is a broken program: decline.
+            # A module that declares no `main` at all is a LIBRARY — `native_runtime_support.elisa`
+            # is the one the build actually needs — and refusing those was what stopped stage1
+            # compiling the standard library from source. The driver still rejects an empty
+            # module (`2 return if emitted_count <= 0`), so nothing silently produces a
+            # contentless object.
+            # Asks whether a top-level `def main` DECLARATION exists, not whether the FnTable
+            # holds an entry named `main`. The table also holds EXPORT WRAPPERS, so
+            # `export fn main() -> int = ctx_test_main` — which is how a program supplies its
+            # entry point without a `def main`, and exactly what stage0's `-emit test-runner`
+            # generates — registered under "main" and made this look like a program whose
+            # `main` had failed to emit. `main_ok` is only ever set by a top-level Decl.Func,
+            # so the module declined with emitted_count -1 and the driver exited 2 with no
+            # message. stage0 compiles that shape.
+            -1 return if not main_ok and module_declares_main(top)
+            # A PROGRAM that declined a body which is still CALLED cannot link, and until now
+            # said so only as `Undefined symbol: _total` from the host linker — the driver
+            # exited 0 on an object it knew was broken (the decline is already in
+            # `!elisa.declined`). Decline the module instead, so the compiler owns its own bad
+            # news. Deliberately narrow, because all three narrowings are load-bearing:
+            #   * PROGRAMS only — a library's object exists to be linked against, and
+            #     `native_runtime_support.elisa` legitimately leaves symbols to others.
+            #   * REFERENCED only — the self-host build drops 45 functions and links fine;
+            #     every one of them is either dead or an extern libc/runtime name. Making an
+            #     unreferenced drop fatal would refuse to compile this compiler.
+            #   * MINUS the runtime-provided names, which the linked runtime object supplies
+            #     by design (see name_is_runtime_provided).
+            for dangling_index in 0..<dangling.count |dangling|:
+                dangling_handle: LLVMValueRef = dangling[dangling_index]
+                continue if LLVMGetFirstBasicBlock(dangling_handle) is dangling_revived
+                -1 return if LLVMGetFirstUse(dangling_handle) is dangling_use
+            # Finalize AFTER the bodies: the declares added during emission must exist
+            # before the metadata is resolved. Creation itself ran BEFORE them (below the
+            # declare pass), so each alloca had its subprogram to hang a variable off.
+            LLVMDIBuilderFinalize(runtime.debug_builder) if want_debug and runtime.debug_active
+            return emitted_count
+
+
+        def emit_module_with_debug_trace(file: Ast::File&, m: LLVMModuleRef, ctx: LLVMContextRef, builder: LLVMBuilderRef, want_debug: bool, want_trace: bool, source_name: sview) -> i64 can[Abort.Panic, Memory.Allocate, Unsafe.PointerCast]:
+            can Abort.Panic, Memory.Allocate, Unsafe.PointerCast:
+                return emit_module_core(file, m, ctx, builder, want_debug, want_trace, source_name)
+
+        def emit_module_with_debug(file: Ast::File&, m: LLVMModuleRef, ctx: LLVMContextRef, builder: LLVMBuilderRef, want_debug: bool, source_name: sview) -> i64 can[Abort.Panic, Memory.Allocate, Unsafe.PointerCast]:
+            can Abort.Panic, Memory.Allocate, Unsafe.PointerCast:
+                return emit_module_with_debug_trace(file, m, ctx, builder, want_debug, false, source_name)
+
+            # The original entry point, unchanged for every caller that does not want debug info.
+        def emit_module(file: Ast::File&, m: LLVMModuleRef, ctx: LLVMContextRef, builder: LLVMBuilderRef) -> i64 can[Abort.Panic, Memory.Allocate, Unsafe.PointerCast]:
+            can Abort.Panic, Memory.Allocate, Unsafe.PointerCast:
+                return emit_module_with_debug(file, m, ctx, builder, false, "")
+
+
+            # Lower the verified EASM surface into LLVM inline assembly.  Stage0 does this in
+            # llvm_easm.go after the project loader has collected `.easm` modules; keeping this
+            # entry point separate from emit_module is deliberate because EASM functions are
+            # declarations with machine-level contracts, not Elisa AST declarations.
+        def easm_llvm_scalar_type(name: sview, ctx: LLVMContextRef) -> LLVMTypeRef:
+            LLVMVoidTypeInContext(ctx) return if name == "void"
+            LLVMInt1TypeInContext(ctx) return if name == "bool"
+            LLVMInt8TypeInContext(ctx) return if name == "i8" or name == "u8"
+            LLVMInt16TypeInContext(ctx) return if name == "i16" or name == "u16"
+            LLVMInt32TypeInContext(ctx) return if name == "i32" or name == "u32"
+            LLVMInt64TypeInContext(ctx) return if name == "i64" or name == "u64" or name == "int" or name == "usize" or name == "uintptr"
+            LLVMFloatTypeInContext(ctx) return if name == "f32"
+            LLVMDoubleTypeInContext(ctx) return if name == "f64"
+            # EASM address-space carriers and opaque host callable handles are pointers at
+            # the ABI boundary; their layout/permission meaning was already checked by the
+            # EASM verifier.
+            LLVMPointerTypeInContext(ctx, 0) return if name == "cstr" or name == "HostCallable" or name == "HostFsSelector" or Easm::easm_starts(name, "HostPtr[") or Easm::easm_starts(name, "GuestVAddr[") or Easm::easm_starts(name, "NativeMappedGuestPtr[")
+            return LLVMInt64TypeInContext(ctx)
+
+
+        def easm_append_constraint(out: mutable darray[u8]&, value: sview) -> void can[Abort.Panic, Memory.Allocate]:
+            if out.count > 0:
+                out.push(44)
+            for index in 0..<sview_len(value) |out, value|:
+                out.push(sview_at(value, index))
+
+
+        def easm_append_clobber(out: mutable darray[u8]&, value: sview) -> void can[Abort.Panic, Memory.Allocate]:
+            if out.count > 0:
+                out.push(44)
+            out.push(126)
+            out.push(123)
+            for index in 0..<sview_len(value) |out, value|:
+                out.push(sview_at(value, index))
+            out.push(125)
+
+
+        def easm_append_output_constraint(fn: Easm::Function, out: mutable darray[u8]&) -> void can[Abort.Panic, Memory.Allocate]:
+            can Abort.Panic, Memory.Allocate:
+                if fn.outputs.count == 0:
+                    easm_append_constraint(out, "=r")
+                    return
+                output: sview = Easm::easm_trim(fn.outputs[0])
+                equals: usize = Easm::easm_find(output, "=")
+                register: mutable sview = output
+                register <- Easm::easm_register_operand(output[equals + 1.usize():sview_len(output)]) if equals < sview_len(output)
+                if register == "":
+                    easm_append_constraint(out, "=r")
+                    return
+                if out.count > 0:
+                    out.push(44)
+                out.push(61)
+                out.push(123)
+                for index in 0..<sview_len(register) |out, register|:
+                    out.push(sview_at(register, index))
+                out.push(125)
+
+
+        def easm_inline_constraints(fn: Easm::Function, out: mutable darray[u8]&) -> void can[Abort.Panic, Memory.Allocate]:
+            can Abort.Panic, Memory.Allocate:
+                # LLVM requires one output constraint even for a void EASM wrapper.  The result
+                # is discarded by the wrapper, but the constraint keeps the inline-asm call's
+                # type well-formed just as stage0's dummy output does.
+                easm_append_output_constraint(fn, out)
+                for _param in fn.params:
+                    easm_append_constraint(out, "r")
+                if fn.params.count == 0:
+                    easm_append_constraint(out, "r")
+                for clobber in fn.clobbers:
+                    lower: sview = Easm::easm_trim(clobber)
+                    if lower == "flags":
+                        easm_append_clobber(out, "cc")
+                    elif lower == "cc" or lower == "memory":
+                        easm_append_clobber(out, lower)
+                    else:
+                        easm_append_clobber(out, lower)
+
+
+        def emit_easm_module(module: Easm::Module, target: sview, llvm_module: LLVMModuleRef, ctx: LLVMContextRef, builder: LLVMBuilderRef) -> i64 can[Abort.Panic, Memory.Allocate, Unsafe.PointerCast]:
+            error_count: mutable i64 = 0
+            for issue in module.issues:
+                error_count <- error_count + 1 if issue.severity == Easm::Severity.Error
+            -1 return if error_count != 0 or not Easm::easm_target_matches(module.target, target)
+            emitted: mutable i64 = 0
+            for fn in module.functions:
+                continue if not Easm::easm_target_matches(fn.platform, target)
+                continue if fn.name == ""
+                name_storage: mutable darray[u8] = []
+                fn_name: cstr = sview_to_cstr(fn.name, name_storage)
+                if LLVMGetNamedFunction(llvm_module, fn_name) is existing:
+                    return -1
+                param_types: mutable darray[LLVMTypeRef] = []
+                for param in fn.params:
+                    param_types.push(easm_llvm_scalar_type(param.type_name, ctx))
+                zero_param: bool = param_types.count == 0
+                if zero_param:
+                    param_types.push(LLVMInt32TypeInContext(ctx))
+                result_type: LLVMTypeRef = easm_llvm_scalar_type(fn.return_type, ctx)
+                inline_result_type: LLVMTypeRef = LLVMInt32TypeInContext(ctx) if fn.return_type == "void" else result_type
+                param_pointer: void& = (&param_types[0]).cast[void&] can Unsafe.PointerCast
+                fn_type: LLVMTypeRef = LLVMFunctionType(result_type, param_pointer, fn.params.count.u32(), 0) if not zero_param else LLVMFunctionType(result_type, null, 0, 0)
+                handle: LLVMValueRef = LLVMAddFunction(llvm_module, fn_name, fn_type)
+                entry: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(ctx, handle, "entry")
+                LLVMPositionBuilderAtEnd(builder, entry)
+                body: mutable darray[u8] = []
+                for instruction in fn.instructions:
+                    continue if instruction.pseudo
+                    Easm::easm_append_instruction_text(body, instruction)
+                    body.push(10)
+                body.push(0)
+                constraints: mutable darray[u8] = []
+                easm_inline_constraints(fn, constraints)
+                constraints.push(0)
+                inline_params_pointer: void& = (&param_types[0]).cast[void&] can Unsafe.PointerCast
+                inline_type: LLVMTypeRef = LLVMFunctionType(inline_result_type, inline_params_pointer, param_types.count.u32(), 0)
+                body_length: usize = body.count - 1.usize()
+                constraints_length: usize = constraints.count - 1.usize()
+                body_pointer: cstr = (&body[0]).cast[cstr] can Unsafe.PointerCast
+                constraints_pointer: cstr = (&constraints[0]).cast[cstr] can Unsafe.PointerCast
+                asm_value: LLVMValueRef = LLVMGetInlineAsm(inline_type, body_pointer, body_length, constraints_pointer, constraints_length, 1, 0, 0, 0)
+                args: mutable darray[LLVMValueRef] = []
+                for index in 0..<fn.params.count |args, handle|:
+                    args.push(LLVMGetParam(handle, index.u32()))
+                if zero_param:
+                    args.push(LLVMConstInt(LLVMInt32TypeInContext(ctx), 0, 0))
+                args_pointer: void& = (&args[0]).cast[void&] can Unsafe.PointerCast
+                call: LLVMValueRef = LLVMBuildCall2(builder, inline_type, asm_value, args_pointer, args.count.u32(), "easm.call")
+                LLVMBuildRetVoid(builder) if fn.return_type == "void" else LLVMBuildRet(builder, call)
+                emitted <- emitted + 1
+            return emitted

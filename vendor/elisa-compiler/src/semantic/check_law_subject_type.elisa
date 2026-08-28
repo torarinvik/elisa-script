@@ -1,0 +1,126 @@
+# Applying a refinement law to a value (`x is Positive`) checks the value against the law's
+# predicate, so the value's type must match the law's SUBJECT (first-parameter) type. `x is
+# Positive` where `x: cstr` and `law Positive(self: i64)` is a type error. SOUND subset: the
+# subject is a bare Ident whose declared param/local type is a primitive, the law's recorded
+# subject type (sentinel 3900000033) is a primitive, and the two differ.
+extend Semantic:
+    private:
+        def lst_subject_type_of_law(annotations: darray[Ast::EnumAnnotation]&, law_name: sview) -> sview:
+            can Abort.Panic:
+                index: mutable usize = 0
+                found: mutable sview = sview("", 0, 0)
+                while index < annotations.count |found, index, law_name, annotations|:
+                    found <- annotations[index].name if annotations[index].line == 3900000033 and annotations[index].owner == law_name and found == ""
+                    index <- index + 1
+                return found
+
+        def lst_check_expression(expression: Ast::Expr, names: darray[sview]&, types: darray[sview]&, annotations: darray[Ast::EnumAnnotation]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Binary(left, operator, right, line):
+                        if operator == TokenKind.Is:
+                            match right:
+                                Expr.Ident(law_name, _):
+                                    value_type: sview = parallel_lookup_first(names, types, ident_name_of(left))
+                                    subject_type: sview = lst_subject_type_of_law(annotations, law_name)
+                                    table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.LawSubjectTypeMismatch, name: law_name, line: line.line, expected: subject_type, actual: value_type}) if value_type != "" and subject_type != "" and value_type != subject_type
+                                _:
+                                    pass
+                        table <- lst_check_expression(left, names, types, annotations, table)
+                        table <- lst_check_expression(right, names, types, annotations, table)
+                    Expr.Unary(operator, operand, unary_line):
+                        table <- lst_check_expression(operand, names, types, annotations, table)
+                    Expr.Paren(inner, paren_line):
+                        table <- lst_check_expression(inner, names, types, annotations, table)
+                    Expr.Call(callee, arguments, argument_names, call_line):
+                        for argument in arguments |table| -> table:
+                            table <- lst_check_expression(argument, names, types, annotations, table)
+                    _:
+                        pass
+
+        def lst_check_statements(statements: darray[Ast::Stmt], names: darray[sview]&, types: darray[sview]&, annotations: darray[Ast::EnumAnnotation]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |table| -> table:
+                    match statement:
+                        Stmt.Expr(expression, line):
+                            table <- lst_check_expression(expression, names, types, annotations, table)
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            table <- lst_check_expression(value, names, types, annotations, table)
+                        Stmt.Assign(target, operator, value, line):
+                            table <- lst_check_expression(value, names, types, annotations, table)
+                        Stmt.Return(value, line):
+                            table <- lst_check_expression(returned, names, types, annotations, table) if value is returned
+                        Stmt.If(condition, then_body, else_body, line):
+                            table <- lst_check_expression(condition, names, types, annotations, table)
+                            table <- lst_check_statements(then_body, names, types, annotations, table)
+                            table <- lst_check_statements(else_body, names, types, annotations, table)
+                        Stmt.While(condition, while_body, line):
+                            table <- lst_check_expression(condition, names, types, annotations, table)
+                            table <- lst_check_statements(while_body, names, types, annotations, table)
+                        Stmt.For(bind, variables, iterable, for_body, line):
+                            table <- lst_check_statements(for_body, names, types, annotations, table)
+                        Stmt.Block(kind, clause, binding, body, line):
+                            table <- lst_check_statements(body, names, types, annotations, table)
+                        Stmt.Match(scrutinee, arms, line):
+                            for arm in arms |table| -> table:
+                                table <- lst_check_statements(arm.body, names, types, annotations, table)
+                        _:
+                            pass
+
+        # The base type an `is`-refined annotation refines: `i64 is NonEmpty` -> "i64".
+        # "" when the annotation is not a top-level `BASE is LAW` refinement.
+        def lst_refined_base_head(type_expression: Ast::Expr) -> sview:
+            can Memory.Allocate, Abort.Panic:
+                match type_expression:
+                    Expr.Binary(left, operator, right, line):
+                        return bare_type_name(left) if operator == TokenKind.Is else sview("", 0, 0)
+                    _:
+                        return sview("", 0, 0)
+
+        # A refined ANNOTATION (`n: i64 is NonEmpty`) whose base type head disagrees with the
+        # law's recorded subject-type head is a subject-type error. SOUND: fire only when one
+        # side is a PRIMITIVE (which never coerces to a container/struct), so a genuine
+        # mismatch — never a struct-subtype or alias-resolution nuance.
+        def lst_check_refined_annotation(law_name: sview, base_head: sview, line: u32, annotations: darray[Ast::EnumAnnotation]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                return if law_name == "" or base_head == ""
+                subject_head: sview = lst_subject_type_of_law(annotations, law_name)
+                return if subject_head == "" or subject_head == base_head
+                # Fire only across a CATEGORY boundary: exactly one side is a primitive (the
+                # other a container/struct). Two differing primitives (`u32` vs `usize`) are
+                # numerically compatible — stage0 accepts — so `or` would over-fire; XOR
+                # restricts to a genuine primitive-vs-aggregate mismatch (`i64` vs `darray`).
+                base_primitive: bool = is_primitive_type_name(base_head)
+                subject_primitive: bool = is_primitive_type_name(subject_head)
+                category_mismatch: bool = base_primitive != subject_primitive
+                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.RefinementSubjectMismatch, name: law_name, line: line, expected: subject_head, actual: base_head}) if category_mismatch
+
+        def lst_walk(declarations: darray[Ast::Decl], annotations: darray[Ast::EnumAnnotation]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |table| -> table:
+                    match declaration:
+                        Decl.Func(function_name, parameters, return_type, body, effects, decorators, line):
+                            names: mutable darray[sview] = []
+                            types: mutable darray[sview] = []
+                            for parameter in parameters |names, types|:
+                                parameter_primitive: sview = idunwrap_primitive_type(parameter.type_expression)
+                                if parameter_primitive != "":
+                                    names.push(parameter.name)
+                                    types.push(parameter_primitive)
+                            for parameter in parameters |table| -> table:
+                                param_law: sview = local_refinement_law_name(parameter.type_expression)
+                                param_base: sview = lst_refined_base_head(parameter.type_expression)
+                                table <- lst_check_refined_annotation(param_law, param_base, line.line, annotations, table)
+                            collect_primitive_typed_locals(body, names, types)
+                            table <- lst_check_statements(body, names, types, annotations, table)
+                        Decl.Module(module_name, module_body, module_line):
+                            table <- lst_walk(module_body, annotations, table)
+                        Decl.Scoped(scoped_body, scoped_line):
+                            table <- lst_walk(scoped_body, annotations, table)
+                        _:
+                            pass
+
+    public:
+        def check_law_subject_type(file: Ast::File&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                table <- lst_walk(file.top_decls, file.enum_annotations, table)

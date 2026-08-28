@@ -1,0 +1,249 @@
+extend Parser:
+    private:
+        # An indented `public:` / `private:` block. Visibility is a layout grouping
+        # only here; members are flattened into the enclosing declaration list.
+        def visibility_section(parser: lmut Parser, out: mutable darray[Ast::Decl]&) -> void:
+            can Abort.Panic, Memory.Allocate:
+                # A `private:` section's members are hidden outside their module; record each
+                # member name so the qualified-access check can reject `Module::hidden` from
+                # outside. (`public:` members are unrestricted.)
+                section_token: Token = parser.cursor()
+                is_private: bool = Lexer::text_or_empty(section_token, parser.source) == "private"
+                parser, _ <- parser.advance()                       # consume the public/private identifier
+                parser, _ <- parser.expect(TokenKind.Colon)
+                parser, _ <- parser.expect(TokenKind.Newline)
+                parser, _ <- parser.expect(TokenKind.Indent)
+                while parser.peek() != TokenKind.Dedent and parser.peek() != TokenKind.Eof |parser, out|:
+                    parser <- parser.skip_newlines()
+                    break if parser.peek() == TokenKind.Dedent or parser.peek() == TokenKind.Eof
+                    before: usize = parser.position
+                    member_count_before: usize = out.count
+                    member_name: sview = parser.private_name_ahead()
+                    parser <- parser.parse_declaration_unit(out)
+                    if is_private and out.count > member_count_before:
+                        parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: "__private_member", name: member_name, line: section_token.line}) if member_name != ""
+                    continue if parser.position != before      # never spin on an unrecognized token
+                    parser, _ <- parser.advance()
+                parser, _ <- parser.expect(TokenKind.Dedent)
+
+
+            # Recover the member name before parsing consumes the declaration header.
+        def private_name_ahead(parser: Parser&) -> sview:
+            can Abort.Panic:
+                first: TokenKind = parser.peek()
+                current: Token = parser.cursor()
+                accepted: bool = first == TokenKind.Def or first == TokenKind.Struct or first == TokenKind.Enum or first == TokenKind.Const or (first == TokenKind.Ident and Lexer::text_or_empty(current, parser.source) == "alias")
+                sview("", 0, 0) return if not accepted
+                scan: mutable usize = 1
+                while parser.peek_at(scan) != TokenKind.Newline and parser.peek_at(scan) != TokenKind.Eof |scan|:
+                    Lexer::text_or_empty(parser.tokens[parser.position + scan], parser.source) return if parser.peek_at(scan) == TokenKind.Ident
+                    scan <- scan + 1
+                return sview("", 0, 0)
+
+
+        def module_declaration(parser: lmut Parser) -> Ast::Decl?:
+            rebind token: Token, parser = parser.advance()          # consume the `module`/`extend` identifier
+            # A qualified module name (`module Common::Log::Class:`) is a single Ident
+            # chain joined by `.` or `::`; both separators are accepted and the whole
+            # chain is recorded verbatim as the module's name (mirrors parse_dotted_name,
+            # but also accepts `::` since a namespace chain — unlike a value path —
+            # commonly uses it).
+            name_start: usize = parser.cursor().start.usize()
+            rebind first_name_token: Token, parser = parser.expect(TokenKind.Ident)
+            # The chain scan yields the end offset of the last segment consumed.
+            name_end: usize =
+                while (parser.peek() == TokenKind.Dot or parser.peek() == TokenKind.Scope) and parser.peek_at(1) == TokenKind.Ident |parser, name_end_offset = (first_name_token.start + first_name_token.length).usize()| -> name_end_offset:
+                    parser, _ <- parser.advance()                          # `.` or `::`
+                    rebind segment: Token, parser = parser.advance()         # next Ident segment
+                    name_end_offset <- (segment.start + segment.length).usize()
+            name: sview = parser.span_view(name_start, name_end)
+
+            body_items: mutable darray[Ast::Decl] = []
+            (Ast::Decl.Module(name, body_items, Ast::pos_of_token(token))) return if parser.peek() != TokenKind.Colon
+            parser, _ <- parser.expect(TokenKind.Colon)
+            parser, _ <- parser.expect(TokenKind.Newline)
+            parser, _ <- parser.expect(TokenKind.Indent)
+            # Record the module whose body follows, so a `struct` declared inside it is
+            # registered under an OWNER instead of landing in one flat name table with
+            # every other module's. Saved and restored, so a nested module leaves the
+            # outer one intact.
+            saved_module: sview = parser.current_module
+            parser.current_module <- name
+            while parser.peek() != TokenKind.Dedent and parser.peek() != TokenKind.Eof |parser|:
+                parser <- parser.skip_newlines()
+                break if parser.peek() == TokenKind.Dedent or parser.peek() == TokenKind.Eof
+                before: usize = parser.position
+                # `const module`/`const enum` grouping propagates const-ness to its
+                # members, which are then written bare — `NAME: T = value` / `NAME = value`
+                # with the `const` keyword dropped (the zero-overhead-constants idiom).
+                # `declaration()` only recognizes a keyword-led `const …`, so parse a bare
+                # `IDENT : T = …` / `IDENT = …` member as a Const here. A `NAME =` is
+                # unambiguous; a `NAME :` is a const member only when a type follows on
+                # the SAME line — `NAME :` NEWLINE is a `public:`/`private:` visibility
+                # section (or other block), which must fall through to parse_declaration_unit.
+                is_bare_const_member: mutable bool = false
+                if parser.peek() == TokenKind.Ident and parser.peek_at(1) == TokenKind.Colon:
+                    is_bare_const_member <- parser.peek_at(2) != TokenKind.Newline
+                elif parser.peek() == TokenKind.Ident and parser.peek_at(1) == TokenKind.Assign:
+                    is_bare_const_member <- true
+
+                rebind matched_member: Ast::Decl?, parser = parser.bare_const_member(is_bare_const_member)
+                if matched_member is member:
+                    body_items.push(member)
+                else:
+                    parser <- parser.parse_declaration_unit(body_items)
+                continue if parser.position != before
+                parser, _ <- parser.advance()
+            parser, _ <- parser.expect(TokenKind.Dedent)
+            parser.current_module <- saved_module
+
+            return (Ast::Decl.Module(name, body_items, Ast::pos_of_token(token)))
+
+
+        # A bare const-module member `NAME [: T] [= value]` (the `const` keyword is implied
+        # by the enclosing `const module`/`const enum` grouping). Mirrors const_declaration's
+        # binding tail; recorded as a Const node.
+        def bare_const_member(parser: lmut Parser, cond: bool) -> Ast::Decl?:
+            no_member: Ast::Decl? = null
+            no_member return if not cond
+            token: Token = parser.cursor()
+            rebind name_token: Token, parser = parser.expect(TokenKind.Ident)
+            # docs/119 §6 captured value blocks: the `|parser|` header licenses the
+            # cursor-advancing calls (`accept`/`expression`) inside a block used as a value.
+            type_expression: Ast::Expr = |parser|
+                rebind accepted_colon: bool, parser = parser.accept(TokenKind.Colon)
+                if accepted_colon and parser.expression() is parsed_type:
+                    parsed_type
+                else:
+                    (Ast::Expr.Invalid)
+            value: Ast::Expr = |parser|
+                rebind accepted_assign: bool, parser = parser.accept(TokenKind.Assign)
+                if accepted_assign and parser.expression() is parsed_value:
+                    parsed_value
+                else:
+                    (Ast::Expr.Invalid)
+            return (Ast::Decl.Const(Lexer::text_or_empty(name_token, parser.source), type_expression, value, false, Ast::pos_of_token(token)))
+
+
+        def include_declaration(parser: lmut Parser) -> Ast::Decl?:
+            rebind token: Token, parser = parser.advance()          # consume the `include` identifier
+            rebind path_token: Token, parser = parser.expect(TokenKind.StringLit)
+            return (Ast::Decl.Import(Lexer::text_or_empty(path_token, parser.source), Ast::pos_of_token(token)))
+
+
+        # `using Foo` / `using Foo::bar` (or `Foo.bar`) / `using Foo as F` plus
+        # comma-separated targets and brace-selective members are consumed whole
+        # since they are not modeled yet.
+        def skip_qualified_decl_name(parser: lmut Parser) -> void:
+            parser, _ <- parser.expect(TokenKind.Ident)
+            while (parser.peek() == TokenKind.Dot or parser.peek() == TokenKind.Scope) and parser.peek_at(1) == TokenKind.Ident |parser|:
+                parser, _ <- parser.advance()
+                parser, _ <- parser.expect(TokenKind.Ident)
+
+        def skip_using_target(parser: lmut Parser) -> void:
+            parser <- parser.skip_qualified_decl_name()
+            return if parser.peek() != TokenKind.Dot or parser.peek_at(1) != TokenKind.LBrace
+            parser, _ <- parser.advance()
+            parser, _ <- parser.advance()
+            while parser.peek() != TokenKind.RBrace and parser.peek() != TokenKind.Eof |parser|:
+                parser, _ <- parser.expect(TokenKind.Ident)
+                rebind accepted_comma: bool, parser = parser.accept(TokenKind.Comma)
+                break if not accepted_comma
+            parser, _ <- parser.accept(TokenKind.RBrace)
+
+        # An optional `as ALIAS` suffix on a using target.
+        # `using Mod as M` — RECORD the alias instead of discarding it.
+        #
+        # The alias name used to be skipped, so `M` was a name nothing downstream had ever
+        # heard of: `M::f()` resolved to `undefined identifier 'M'` and the backend had no
+        # owner to look up. Two line-paired markers carry it — the alias as `__using_alias`
+        # and the module it stands for as `__using_alias_target` — the same line-pairing
+        # `__from_member`/`__from_src` already use for selective imports.
+        def using_alias(parser: lmut Parser, target_module: sview) -> void:
+            rebind accepted_as: bool, parser = parser.accept(TokenKind.As)
+            return if not accepted_as
+            alias_token: Token = parser.cursor()
+            parser, _ <- parser.expect(TokenKind.Ident)
+            alias_name: sview = Lexer::text_or_empty(alias_token, parser.source)
+            return if alias_name == "" or target_module == ""
+            parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: alias_name, name: "__using_alias", line: alias_token.line})
+            parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: target_module, name: "__using_alias_target", line: alias_token.line})
+
+        def using_declaration(parser: lmut Parser) -> void:
+            parser, _ <- parser.advance()                       # `using`
+            while parser.peek() != TokenKind.Newline and parser.peek() != TokenKind.Eof |parser|:
+                target_token: Token = parser.cursor()
+                target_module: sview = Lexer::text_or_empty(target_token, parser.source)
+                parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: target_module, name: "__using", line: target_token.line})
+                parser <- parser.skip_using_target()
+                parser <- parser.using_alias(target_module)
+                rebind accepted_comma: bool, parser = parser.accept(TokenKind.Comma)
+                break if not accepted_comma
+            parser, _ <- parser.accept(TokenKind.Newline)
+
+
+        # `from Mod import a, b, c` — a selective import. Each named member is recorded as
+        # `__from_member` so the resolver makes exactly those members (and no others)
+        # visible unqualified, matching stage0: an un-listed member stays undefined. The
+        # leading `from Mod import` header tokens are skipped; every identifier after the
+        # `import` keyword is a brought-in member (commas separate them).
+        def from_import_declaration(parser: lmut Parser) -> void:
+            parser, _ <- parser.advance()                       # `from`
+            past_import: mutable bool = false
+            source_module: mutable sview = sview("", 0, 0)
+            while parser.peek() != TokenKind.Newline and parser.peek() != TokenKind.Eof |parser, past_import, source_module|:
+                token: Token = parser.cursor()
+                text: sview = Lexer::text_or_empty(token, parser.source)
+                # The module head is the first identifier after `from` (before `import`);
+                # record it against every brought-in member so the semantic layer can flag
+                # the same name imported from two different modules (a conflicting import).
+                source_module <- text if not past_import and parser.peek() == TokenKind.Ident and text != "import" and source_module == ""
+                parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: "__from_member", name: text, line: token.line}) if past_import and parser.peek() == TokenKind.Ident
+                # Paired by LINE with the `__from_member` above: `__from_src` carries the
+                # source module name for the member on this line (same-line members all
+                # share one module, so a duplicate marker is harmless).
+                parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: "__from_src", name: source_module, line: token.line}) if past_import and parser.peek() == TokenKind.Ident and source_module != ""
+                past_import <- true if parser.peek() == TokenKind.Ident and text == "import"
+                parser, _ <- parser.advance()
+            parser, _ <- parser.accept(TokenKind.Newline)
+
+
+        def declaration(parser: lmut Parser) -> Ast::Decl?:
+            kind: TokenKind = parser.peek()
+
+            match kind:
+                TokenKind.Def:
+                    rebind __ret_128: Ast::Decl?, parser = parser.function_declaration()
+                    return __ret_128
+
+                TokenKind.Struct:
+                    rebind __ret_131: Ast::Decl?, parser = parser.struct_declaration()
+                    return __ret_131
+
+                TokenKind.Enum:
+                    rebind __ret_134: Ast::Decl?, parser = parser.enum_declaration(false)
+                    return __ret_134
+
+                TokenKind.Const:
+                    rebind __ret_137: Ast::Decl?, parser = parser.const_declaration()
+                    return __ret_137
+
+                TokenKind.Global:
+                    rebind __ret_140: Ast::Decl?, parser = parser.const_declaration()
+                    return __ret_140
+
+                TokenKind.Extern:
+                    rebind __ret_143: Ast::Decl?, parser = parser.extern_declaration()
+                    return __ret_143
+
+                TokenKind.Export:
+                    rebind __ret_146: Ast::Decl?, parser = parser.extern_declaration()
+                    return __ret_146
+
+                TokenKind.Error:
+                    rebind __ret_149: Ast::Decl?, parser = parser.error_type_declaration()
+                    return __ret_149
+
+                _:
+                    parser <- parser.error_at(Ast::ParseErrorKind.ExpectedDeclaration, parser.cursor())
+                    return null

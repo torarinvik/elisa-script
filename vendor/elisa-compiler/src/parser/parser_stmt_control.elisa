@@ -1,0 +1,327 @@
+extend Parser:
+    private:
+        # Distinguish the `guard COND else …` statement from a local named `guard`
+        # (`guard: T = …`, `guard.field <- …`). Scan the rest of the line, tracking
+        # bracket depth; it is a guard statement iff a top-level `else` appears before
+        # the line ends (mirrors stage0 looksLikeGuardStmt).
+        def looks_like_guard_statement(parser: Parser&) -> bool:
+            while true |depth: int = 0, scan_index: usize = 1|:
+                kind: TokenKind = parser.peek_at(scan_index)
+                false return if kind == TokenKind.Eof or kind == TokenKind.Newline
+                match kind:
+                    TokenKind.LParen | TokenKind.LBracket:
+                        depth <- depth + 1
+                    TokenKind.RParen | TokenKind.RBracket:
+                        depth <- depth - 1 if depth > 0
+                    TokenKind.Else:
+                        true return if depth == 0
+                    _:
+                        pass
+                scan_index <- scan_index + 1
+            return false
+
+
+        # `guard COND else STMT` / `guard COND else: BLOCK` — an early-exit guard whose
+        # else-branch runs when COND is false. Desugared to `if not COND: <else>` so the
+        # condition and the else body both resolve like any other if. (Contextual
+        # keyword — the lexer emits `guard` as an identifier.)
+        def guard_statement(parser: lmut Parser) -> Ast::Stmt?:
+            rebind guard_token: Token, parser = parser.advance()              # `guard`
+            rebind condition: Ast::Expr, parser = get parser.expression()
+            parser, _ <- parser.expect(TokenKind.Else)
+            negated_condition: Ast::Expr = (Ast::Expr.Unary(TokenKind.Not, condition, Ast::pos_of_token(guard_token)))
+            then_body: mutable darray[Ast::Stmt] = []
+            match parser.peek():
+                TokenKind.Colon:
+                    then_body, parser <- parser.parse_block()
+                _:
+                    rebind __es: Ast::Stmt?, parser = parser.statement()
+                    if __es is else_statement:
+                        then_body.push(else_statement)
+            no_else: darray[Ast::Stmt] = []
+            return (Ast::Stmt.If(negated_condition, then_body, no_else, Ast::pos_of_token(guard_token)))
+
+
+        # Parse the value RHS of a `name: T = …` binding when an `=` was accepted: a bare
+        # block-value (docs/119 §2) or a plain expression (absent → Invalid). No `=` → Invalid,
+        # parser untouched. Extracted so the caller threads it as one assignment rather than a
+        # block `if` wrapping the block-vs-expression decision.
+        def parse_binding_value(parser: lmut Parser, accepted_assign: bool) -> Ast::Expr:
+            (Ast::Expr.Invalid) return if not accepted_assign
+            if parser.block_value_rhs_ahead():
+                rebind block_value: Ast::Expr, parser = parser.parse_block_value_rhs()
+                return block_value
+            # docs/119 §3: the same loop expression written INLINE (`x: T = for v in xs
+            # |acc=seed| -> acc:`) rather than as a block on the next line.
+            if parser.inline_loop_value_ahead():
+                rebind inline_loop_value: Ast::Expr, parser = parser.parse_inline_loop_value()
+                return inline_loop_value
+            rebind parsed_value_option: Ast::Expr?, parser = parser.expression()
+            return (get parsed_value_option else (Ast::Expr.Invalid))
+
+
+        def variable_declaration_statement(parser: lmut Parser) -> Ast::Stmt?:
+            can Abort.Panic:
+                rebind name_token: Token, parser = parser.expect(TokenKind.Ident)
+                parser, _ <- parser.expect(TokenKind.Colon)
+                parser <- parser.reject_positional_tuple_type_ahead()
+                # Parse the TYPE in type-annotation context so a `fn(A)->R` local type resolves as a
+                # fn-TYPE (arrow, no body) rather than a call to a fn named `fn`.
+                parser.in_type_annotation <- true
+                rebind parsed_type_expression: Ast::Expr?, parser = parser.expression()
+                parser.in_type_annotation <- false
+                type_expression: mutable Ast::Expr = get parsed_type_expression
+                rebind refined_type: Ast::Expr, parser = parser.parse_refinement_suffix(type_expression)
+                type_expression <- refined_type
+                parser <- parser.record_tuple_type(type_expression)
+
+                # The compact AST stores the payload type for a local error union. Preserve
+                # and consume its `error[Family]` suffix so the declaration remains a single
+                # typed binding and the backend can attach the first-class union later.
+                parser <- parser.record_error_union(name_token.line, "__local_error_union") if parser.peek() == TokenKind.Error
+
+                # Optional `@region` binding annotation (`x: T @scratch = …`) pinning the
+                # local to a named region. The region name is a region selector, not a value
+                # reference, so it is consumed and discarded.
+                rebind accepted_at: bool, parser = parser.accept(TokenKind.At)
+                region_token: Token = parser.cursor()
+                has_region_name: bool = accepted_at and parser.peek() == TokenKind.Ident
+                parser <- parser.advance_when(has_region_name)
+                parser.local_region_annotations <- parser.local_region_annotations.push(Ast::LocalRegionAnnotation{name: Lexer::text_or_empty(name_token, parser.source), type_expression: type_expression, region: Lexer::text_or_empty(region_token, parser.source), line: name_token.line}) if has_region_name
+                # The same fact under a RESERVED marker, for the backend. The row above is
+                # keyed by the local's own name, which is indistinguishable from the rows
+                # `@region`-qualified PARAMETERS push (same shape, but keyed by the FUNCTION's
+                # line) -- reading those as declaration pins made every std function that takes
+                # one decline. Only a `NAME: T @region =` statement pushes this one.
+                parser.local_region_annotations <- parser.local_region_annotations.push(Ast::LocalRegionAnnotation{name: "__region_pin", type_expression: (Ast::Expr.Invalid), region: Lexer::text_or_empty(region_token, parser.source), line: name_token.line}) if has_region_name
+                # An `Arena&`-typed LOCAL is itself a region OWNER: `alloc: mutable Arena& =
+                # (&owner).cast[mutable Arena&]` then `xs: darray[i64] @alloc = [...]`. It is
+                # neither a `[@r]` region PARAMETER nor a `region R:` BLOCK, so a later `@alloc`
+                # resolved to neither and was rejected as an unknown region. The region name
+                # recorded here is the LOCAL's own name.
+                parser.local_region_annotations <- parser.local_region_annotations.push(Ast::LocalRegionAnnotation{name: "__region_arena_local", type_expression: type_expression, region: Lexer::text_or_empty(name_token, parser.source), line: name_token.line}) if parser.type_expression_names_arena(type_expression)
+
+                # `value` is non-optional in the AST; an uninitialized binding records Invalid.
+                value: mutable Ast::Expr = (Ast::Expr.Invalid)
+                rebind accepted_assign: bool, parser = parser.accept(TokenKind.Assign)
+                value, parser <- parser.parse_binding_value(accepted_assign)
+                rebind __t_67: Ast::Expr, parser = parser.consume_removed_as_cast(value)
+                value <- __t_67
+
+                # Optional-binding recovery tail `NAME: T = EXPR else <statement>` (the desugared
+                # `get`): if the RHS is empty, run the else statement (typically `return …`).
+                # The else branch isn't modeled on VarDecl; parse it so the line is consumed.
+                rebind accepted_else: bool, parser = parser.accept(TokenKind.Else)
+                if accepted_else:
+                    match parser.peek():
+                        TokenKind.Colon:
+                            parser, _ <- parser.parse_block()
+                        _:
+                            parser, _ <- parser.statement()
+
+                return (Ast::Stmt.VarDecl(Lexer::text_or_empty(name_token, parser.source), type_expression, value, Ast::pos_of_token(name_token)))
+
+
+            # `rebind TARGET (, TARGET)* = <block/expression>` (docs/119 §5) threads a value block's
+            # result back into outer mutables (bare targets) and fresh bindings (`name: T`).
+            # For the frontend, resolution is what matters: every target name binds and the
+            # RHS resolves, so the whole form desugars to a tuple assignment over the target
+            # idents (a fresh target's `: T` annotation is parsed and dropped — the temp-move
+            # threading and E8 discipline are stage0 codegen concerns, not name resolution).
+        def rebind_statement(parser: lmut Parser) -> Ast::Stmt?:
+            rebind keyword_token: Token, parser = parser.advance()   # consume `rebind`
+            targets: mutable darray[Ast::Expr] = []
+            any_colon: mutable bool = false
+            first_is_fresh: mutable bool = false
+            first_name: mutable sview = ""
+            first_type: mutable Ast::Expr = (Ast::Expr.Invalid)
+            target_count: mutable usize = 0
+            while true |parser, targets, any_colon, first_is_fresh, first_name, first_type, target_count|:
+                rebind name_token: Token, parser = parser.expect(TokenKind.Ident)
+                targets.push((Ast::Expr.Ident(Lexer::text_or_empty(name_token, parser.source), Ast::pos_of_token(name_token))))
+                # Optional `: T` marks a fresh binding; the type is a selector here.
+                rebind accepted_colon: bool, parser = parser.accept(TokenKind.Colon)
+                any_colon <- true if accepted_colon
+                # A colon-LESS target re-binds an existing name — it CLAIMS a threaded slot
+                # (docs/120): the callee must thread it (via an `lmut` parameter). Recorded here
+                # keyed by the rebind's line so a semantic check can validate the claim.
+                parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: "__lmut_rebind_claim", name: Lexer::text_or_empty(name_token, parser.source), line: keyword_token.line}) if not accepted_colon
+                # The first target's `: T` annotation is RETAINED (not dropped): the bare-`get`
+                # threading form `rebind X: T, recv = get recv.method()` lowers to a plain
+                # VarDecl below, and the VarDecl bare-get path needs T to unwrap the optional.
+                if accepted_colon:
+                    parser.in_type_annotation <- true
+                    rebind target_type_option: Ast::Expr?, parser = parser.expression()
+                    parser.in_type_annotation <- false
+                    if target_count == 0:
+                        first_type <- target_type_value if target_type_option is target_type_value
+                if target_count == 0:
+                    first_is_fresh <- accepted_colon
+                    first_name <- Lexer::text_or_empty(name_token, parser.source)
+                target_count <- target_count + 1
+                rebind accepted_comma: bool, parser = parser.accept(TokenKind.Comma)
+                break if not accepted_comma
+            parser, _ <- parser.expect(TokenKind.Assign)
+            # Was the RHS a bare `get`? The stripped node loses that marker, so capture it
+            # here (the enclosing fn must return an optional for the None to propagate into).
+            value_head_token: Token = parser.cursor()
+            value_is_get: bool = parser.peek() == TokenKind.Ident and Lexer::text_or_empty(value_head_token, parser.source) == "get" and parser.peek_at(1) == TokenKind.Ident
+            value: mutable Ast::Expr = (Ast::Expr.Invalid)
+            if parser.block_value_rhs_ahead():
+                value, parser <- parser.parse_block_value_rhs()
+            elif parser.inline_loop_value_ahead():
+                value, parser <- parser.parse_inline_loop_value()
+            else:
+                rebind parsed_value_option: Ast::Expr?, parser = parser.expression()
+                value <- parsed_value if parsed_value_option is parsed_value
+            # `rebind X: T, recv = get recv.method()` — the single-fresh-binding threading
+            # form. The receiver `recv` threads through the call (an `lmut` argument mutated
+            # in place), so the trailing claim-targets need no store: this is exactly a
+            # VarDecl bare-get `X: T = get recv.method()`. Lower to it so the backend's
+            # VarDecl bare-get path binds X's payload and PROPAGATES None on absent.
+            (Ast::Stmt.VarDecl(first_name, first_type, value, Ast::pos_of_token(keyword_token))) return if value_is_get and first_is_fresh and target_count >= 1
+            # A colon on ANY target marks the group as introducing fresh bindings (the
+            # threading idiom `rebind x: T, parser = …`). With NO colon anywhere, `rebind`
+            # re-binds EXISTING targets (like `<-`): lower with LArrow so the resolver
+            # requires them to already resolve rather than silently defining them.
+            rebind_operator: TokenKind = TokenKind.Assign if any_colon else TokenKind.LArrow
+            return (Ast::Stmt.Assign((Ast::Expr.Array(targets, Ast::pos_of_token(keyword_token))), rebind_operator, value, Ast::pos_of_token(keyword_token)))
+
+
+        # A contract-position expression (docs/90 brick 90-4): the ordinary expression
+        # grammar plus the spec-only forms — a `forall i, j:`/`exists i:` quantifier
+        # prefix (optionally parenthesized binders, optionally `in <range>`) and the
+        # right-associative `implies`/`=>` implication infix. The stage1 frontend does
+        # not discharge contracts, so a quantifier lowers to a resolvable shape: a block
+        # declaring each binder as an integer local whose value expression is the body
+        # (binders resolve, the body type-checks, nothing is proven). An `in <range>`
+        # source is consumed and dropped — it only feeds stage0's prover.
+        def contract_expression(parser: lmut Parser) -> Ast::Expr:
+            saved_in_contract: bool = parser.in_contract
+            parser.in_contract <- true
+            rebind result: Ast::Expr, parser = parser.contract_expression_inner()
+            parser.in_contract <- saved_in_contract
+            return result
+
+        def contract_expression_inner(parser: lmut Parser) -> Ast::Expr:
+            head_token: Token = parser.cursor()
+            head_text: sview = Lexer::text_or_empty(head_token, parser.source)
+            is_quantifier: bool = parser.peek() == TokenKind.Ident and (head_text == "forall" or head_text == "exists") and (parser.peek_at(1) == TokenKind.Ident or parser.peek_at(1) == TokenKind.LParen)
+            if is_quantifier:
+                parser, _ <- parser.advance()                       # forall / exists
+                has_parens: bool = parser.peek() == TokenKind.LParen
+                parser, _ <- parser.advance() if has_parens
+                binders: mutable darray[sview] = []
+                rebind first_binder_token: Token, parser = parser.expect(TokenKind.Ident)
+                binders.push(Lexer::text_or_empty(first_binder_token, parser.source))
+                while parser.accept(TokenKind.Comma) |parser, binders|:
+                    rebind more_binder_token: Token, parser = parser.expect(TokenKind.Ident)
+                    binders.push(Lexer::text_or_empty(more_binder_token, parser.source))
+                parser, _ <- parser.expect(TokenKind.RParen) if has_parens
+                quantifier_source: mutable Ast::Expr = (Ast::Expr.Invalid)
+                if parser.peek() == TokenKind.In:
+                    parser, _ <- parser.advance()
+                    rebind range_source_opt: Ast::Expr?, parser = parser.expression()
+                    range_source: Ast::Expr = get range_source_opt else (Ast::Expr.Invalid)
+                    # A BARE `a .. b` quantifier source is ambiguous and stage0 rejects it
+                    # (the expression form of this quantifier already did; the contract
+                    # form -- `law P(...) = forall k in 0 .. n: ...` -- did not).
+                    bare_range: mutable bool = false
+                    match range_source:
+                        Expr.Binary(range_left, range_operator, range_right, range_line):
+                            bare_range <- range_operator == TokenKind.Range
+                        _:
+                            pass
+                    parser <- parser.error_at(Ast::ParseErrorKind.UnexpectedToken, head_token) if bare_range
+                    quantifier_source <- range_source
+                parser, _ <- parser.expect(TokenKind.Colon)
+                rebind body_option: Ast::Expr?, parser = parser.expression()
+                body: mutable Ast::Expr = get body_option else (Ast::Expr.Invalid)
+                # `forall k: GUARD implies POST` — fold the implication INSIDE the
+                # quantifier. contract_statement folds a trailing `implies` around the
+                # WHOLE predicate, which put the consequent outside the binder's block:
+                # every `k` in POST then resolved as an undefined identifier.
+                quantifier_implies_token: Token = parser.cursor()
+                quantifier_is_implies: bool = parser.peek() == TokenKind.FatArrow or (parser.peek() == TokenKind.Ident and Lexer::text_or_empty(quantifier_implies_token, parser.source) == "implies")
+                if quantifier_is_implies:
+                    rebind quantifier_arrow: Token, parser = parser.advance()
+                    rebind quantifier_consequent_opt: Ast::Expr?, parser = parser.expression()
+                    quantifier_consequent: Ast::Expr = get quantifier_consequent_opt else (Ast::Expr.Invalid)
+                    quantifier_negated: Ast::Expr = (Ast::Expr.Unary(TokenKind.Not, body, Ast::pos_of_token(quantifier_arrow)))
+                    body <- (Ast::Expr.Binary(quantifier_negated, TokenKind.Or, quantifier_consequent, Ast::pos_of_token(quantifier_arrow)))
+                binder_declarations: mutable darray[Ast::Stmt] = []
+                first_binder: mutable bool = true
+                for binder in binders |binder_declarations, first_binder, quantifier_source|:
+                    binder_value: Ast::Expr = quantifier_source if first_binder else (Ast::Expr.IntLit(0))
+                    binder_declarations.push(Ast::Stmt.VarDecl(binder, (Ast::Expr.Ident("i64", Ast::pos_of_token(head_token))), binder_value, Ast::pos_of_token(head_token)))
+                    first_binder <- false
+                no_captures: darray[sview] = []
+                return (Ast::Expr.Block(binder_declarations, body, no_captures, Ast::pos_of_token(head_token)))
+            rebind base_option: Ast::Expr?, parser = parser.expression()
+            folded: mutable Ast::Expr = get base_option else (Ast::Expr.Invalid)
+            implies_cursor: Token = parser.cursor()
+            is_implies: bool = parser.peek() == TokenKind.FatArrow or (parser.peek() == TokenKind.Ident and Lexer::text_or_empty(implies_cursor, parser.source) == "implies")
+            if is_implies:
+                rebind implication_token: Token, parser = parser.advance()
+                rebind consequent_option: Ast::Expr?, parser = parser.expression()
+                consequent: Ast::Expr = get consequent_option else (Ast::Expr.Invalid)
+                folded <- (Ast::Expr.Binary((Ast::Expr.Unary(TokenKind.Not, folded, Ast::pos_of_token(implication_token))), TokenKind.Or, consequent, Ast::pos_of_token(implication_token)))
+            return folded
+
+        # `requires E` / `ensure E` / `decreases E` / `invariant E` / `changes PATH` /
+        # `preserves PATH` —
+        # a design-by-contract leading body statement. The keyword is contextual; the
+        # dispatcher has already confirmed an operand follows on the same line.
+        def contract_statement(parser: lmut Parser) -> Ast::Stmt?:
+            rebind keyword_token: Token, parser = parser.advance()              # consume the contract keyword
+            kind_text: sview = Lexer::text_or_empty(keyword_token, parser.source)
+            if kind_text == "decreases" and parser.peek() == TokenKind.Star:
+                parser, _ <- parser.advance()
+                reason: mutable Ast::Expr = (Ast::Expr.StringLit(""))
+                if parser.peek() == TokenKind.StringLit:
+                    rebind reason_token: Token, parser = parser.advance()
+                    reason <- (Ast::Expr.StringLit(Lexer::text_or_empty(reason_token, parser.source)))
+                return (Ast::Stmt.Contract("decreases*", reason, Ast::pos_of_token(keyword_token)))
+            rebind predicate_value: Ast::Expr, parser = parser.contract_expression()
+            predicate: mutable Ast::Expr = predicate_value
+            # `ensure GUARD => POST` / `ensure GUARD implies POST` — an implication
+            # postcondition (docs/118-B: conditional progress contracts). Fold to
+            # `(not GUARD) or POST` so BOTH sides name-resolve; the stage1 frontend does
+            # not discharge contracts, so the desugaring only needs to be resolvable and
+            # to match the shape stage0's parser produces for differential parity.
+            implies_token: Token = parser.cursor()
+            is_implies_keyword: bool = parser.peek() == TokenKind.Ident and Lexer::text_or_empty(implies_token, parser.source) == "implies"
+            if parser.peek() == TokenKind.FatArrow or is_implies_keyword:
+                rebind arrow_token: Token, parser = parser.advance()    # `=>` or `implies`
+                rebind consequent: Ast::Expr, parser = get parser.expression()
+                negated_guard: Ast::Expr = (Ast::Expr.Unary(TokenKind.Not, predicate, Ast::pos_of_token(arrow_token)))
+                predicate <- (Ast::Expr.Binary(negated_guard, TokenKind.Or, consequent, Ast::pos_of_token(arrow_token)))
+            if kind_text == "assert" and parser.peek() == TokenKind.Comma:
+                parser, _ <- parser.advance()
+                parser, _ <- parser.expression()
+            # `assert COND by TACTIC:` — a scoped proof tactic block (docs/90). The tactic
+            # name and its indented proof body are consumed; stage1 does not discharge the
+            # proof, so the block is skipped (the goal predicate above still resolves).
+            by_token: Token = parser.cursor()
+            by_present: bool = parser.peek() == TokenKind.Ident and Lexer::text_or_empty(by_token, parser.source) == "by"
+            parser <- parser.advance_when(by_present)                    # `by`
+            # The tactic name is OPTIONAL (`assert C by:` is the bare form). It is RETAINED as the
+            # block's binding so the semantic checker can honor `by scoped:` (walls — no caller facts).
+            tactic_token: Token = parser.cursor()
+            tactic_named: bool = by_present and parser.peek() == TokenKind.Ident
+            tactic_name: sview = Lexer::text_or_empty(tactic_token, parser.source) if tactic_named else sview("", 0, 0)
+            parser <- parser.advance_when(tactic_named)                  # tactic name
+            has_tactic_block: bool = by_present and parser.peek() == TokenKind.Colon
+            parser <- parser.advance_when(has_tactic_block)              # `:`
+            # An inline mode word may trail the colon (`by scoped: bitvector`) before
+            # the indented proof body.
+            parser <- parser.skip_to_line_end() if has_tactic_block
+            (Ast::Stmt.Contract(kind_text, predicate, Ast::pos_of_token(keyword_token))) return if not has_tactic_block
+            # The proof body is RETAINED (not skipped): check_assert_by judges the
+            # goal from the block's facts and rejects effectful statements in it.
+            # The goal rides as the block's first statement.
+            rebind proof_body: darray[Ast::Stmt], parser = parser.parse_indented_block_if(true)
+            carried: mutable darray[Ast::Stmt] = [(Ast::Stmt.Contract(kind_text, predicate, Ast::pos_of_token(keyword_token)))]
+            carried.extend(proof_body)
+            empty_clause: darray[sview] = []
+            return (Ast::Stmt.Block("assert_by", empty_clause, tactic_name, carried, Ast::pos_of_token(keyword_token)))

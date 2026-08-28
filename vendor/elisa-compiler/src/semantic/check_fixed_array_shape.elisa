@@ -1,0 +1,170 @@
+# Structural fixed-array declaration and return-shape validation.
+
+extend Semantic:
+    private:
+        def fixed_array_scalar_element(name: sview) -> bool:
+            return name in {"u8", "u16", "u32", "u64", "usize", "i8", "i16", "i32", "i64", "isize", "int", "f32", "f64", "bool", "char"}
+
+        def logical_shape_label(type_expression: Ast::Expr) -> sview:
+            can Abort.Panic:
+                match type_expression:
+                    Expr.Unary(operator, operand, _):
+                        return logical_shape_label(operand)
+                    Expr.Index(object, shape, _):
+                        return bare_type_name(shape) if bare_type_name(object) == "cstr" else ""
+                    Expr.IndexN(object, arguments, _):
+                        "" return if bare_type_name(object) != "darray" or arguments.count < 2
+                        return bare_type_name(arguments[1])
+                    _:
+                        pass
+                return ""
+
+        def fresh_return_shape(function_name: sview) -> sview:
+            "shape_result" return if function_name in {"concat", "strcat", "rt_concat2", "rt_concat2_scratch"}
+            "shape_out" return if function_name in {"resize", "push", "append_many", "truncate", "clear", "arena_da_append", "arena_da_append_many", "rt_int_to_string", "rt_int_to_string_scratch", "rt_bool_to_string", "rt_bool_to_string_scratch", "rt_char_to_string", "rt_char_to_string_scratch", "ctx_string_slice", "ctx_string_from_view", "arena_da_from_view"}
+            return ""
+
+        def is_abstract_shape_label(shape: sview) -> bool:
+            can Abort.Panic:
+                return sview_len(shape) > 6 and shape[0:6] == "shape_"
+
+        def fresh_shape_call_name(value: Ast::Expr) -> sview:
+            match value:
+                Expr.Call(callee, arguments, argument_names, _):
+                    match callee:
+                        Expr.Ident(function_name, _):
+                            return function_name
+                        _:
+                            pass
+                _:
+                    pass
+            return ""
+
+        def array_size_uses_function_value(expression: Ast::Expr, owner: sview, table: SymbolTable&) -> bool:
+            can Abort.Panic, Memory.Allocate:
+                match expression:
+                    Expr.Ident(name, line):
+                        # Was an O(function_param_owner.count) scan of every parameter in the
+                        # whole program — see the matching comment on function_parameter_count
+                        # in resolve_expr.elisa.
+                        cur: mutable u32 = function_param_chain_head(table, owner)
+                        while cur != 4294967295:
+                            true return if sview_equal(table.function_param_owner[cur.usize()], owner) and sview_equal(table.function_param_name[cur.usize()], name)
+                            cur <- table.function_param_name_next[cur.usize()]
+                        return false
+                    Expr.Binary(left, operator, right, line):
+                        return array_size_uses_function_value(left, owner, table) or array_size_uses_function_value(right, owner, table)
+                    Expr.Unary(operator, operand, line):
+                        return array_size_uses_function_value(operand, owner, table)
+                    Expr.Paren(inner, line):
+                        return array_size_uses_function_value(inner, owner, table)
+                    _:
+                        return false
+
+        def fixed_array_shape(type_expression: Ast::Expr, table: SymbolTable&, found: mutable bool&, element: mutable sview&, size: mutable i64&) -> void:
+            can Abort.Panic:
+                match type_expression:
+                    Expr.Index(object, index, line):
+                        element <- bare_type_name(object)
+                        resolve_known_int(index, table, found, size)
+                    _:
+                        pass
+
+        def check_runtime_array_size(type_expression: Ast::Expr, owner: sview, line: u32, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match type_expression:
+                    Expr.Index(object, index, index_line):
+                        found: mutable bool = false
+                        value: mutable i64 = 0
+                        resolve_known_int(index, table, found, value)
+                        element_name: sview = bare_type_name(object)
+                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.RuntimeArraySize, name: "", line: line, expected: "", actual: ""}) if not found and fixed_array_scalar_element(element_name) and array_size_uses_function_value(index, owner, table)
+                    _:
+                        pass
+
+        def note_fixed_array(name: sview, type_expression: Ast::Expr, table: SymbolTable&, names: mutable darray[sview]&, elements: mutable darray[sview]&, sizes: mutable darray[i64]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                found: mutable bool = false
+                element: mutable sview = ""
+                size: mutable i64 = 0
+                fixed_array_shape(type_expression, table, found, element, size)
+                names.push(name) if found
+                elements.push(element) if found
+                sizes.push(size) if found
+
+        def fixed_array_local_index(name: sview, names: mutable darray[sview]&) -> i64:
+            for index in 0..<names.count:
+                index.i64() return if names[index] == name
+            return (-1)
+
+        def check_fixed_array_return(value: Ast::Expr, return_found: bool, return_element: sview, return_size: i64, line: u32, names: mutable darray[sview]&, elements: mutable darray[sview]&, sizes: mutable darray[i64]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match value:
+                    Expr.Ident(name, ident_line):
+                        local_index: i64 = fixed_array_local_index(name, names)
+                        if return_found and local_index >= 0:
+                            actual_element: sview = elements[local_index.usize()]
+                            actual_size: i64 = sizes[local_index.usize()]
+                            mismatch: bool = return_element != actual_element or return_size != actual_size
+                            table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.FixedArrayShapeMismatch, name: "return", line: line, expected: return_element, actual: actual_element, expected_count: return_size.u32(), actual_count: actual_size.u32()}) if mismatch
+                    _:
+                        pass
+                function_name: sview = fresh_shape_call_name(value)
+                actual_shape: sview = fresh_return_shape(function_name)
+                shape_mismatch: bool = not return_found and actual_shape != "" and return_element != "" and not is_abstract_shape_label(return_element)
+                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.FixedArrayShapeMismatch, name: function_name, line: line, expected: return_element, actual: actual_shape, expected_count: 0, actual_count: 0}) if shape_mismatch
+
+        def walk_fixed_array_statements(statements: darray[Ast::Stmt], owner: sview, return_found: bool, return_element: sview, return_size: i64, names: mutable darray[sview]&, elements: mutable darray[sview]&, sizes: mutable darray[i64]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |names, elements, sizes, table| -> table:
+                    match statement:
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            table <- check_runtime_array_size(type_expression, owner, line.line, table)
+                            note_fixed_array(name, type_expression, table, names, elements, sizes)
+                        Stmt.Return(value, line):
+                            table <- check_fixed_array_return(returned, return_found, return_element, return_size, line.line, names, elements, sizes, table) if value is returned
+                        Stmt.If(condition, then_body, else_body, line):
+                            table <- walk_fixed_array_statements(then_body, owner, return_found, return_element, return_size, names, elements, sizes, table)
+                            table <- walk_fixed_array_statements(else_body, owner, return_found, return_element, return_size, names, elements, sizes, table)
+                        Stmt.While(condition, body, line):
+                            table <- walk_fixed_array_statements(body, owner, return_found, return_element, return_size, names, elements, sizes, table)
+                        Stmt.For(bind, variables, iterable, body, line):
+                            table <- walk_fixed_array_statements(body, owner, return_found, return_element, return_size, names, elements, sizes, table)
+                        Stmt.Block(kind, clause, binding, body, line):
+                            table <- walk_fixed_array_statements(body, owner, return_found, return_element, return_size, names, elements, sizes, table)
+                        Stmt.Match(scrutinee, arms, line):
+                            for arm in arms |names, elements, sizes, table| -> table:
+                                table <- walk_fixed_array_statements(arm.body, owner, return_found, return_element, return_size, names, elements, sizes, table)
+                        _:
+                            pass
+
+        def check_fixed_array_shape_declarations(declarations: darray[Ast::Decl], table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |table| -> table:
+                    match declaration:
+                        Decl.Func(name, params, return_type, body, effects, decorators, line):
+                            array_names: mutable darray[sview] = []
+                            array_elements: mutable darray[sview] = []
+                            array_sizes: mutable darray[i64] = []
+                            for param in params |array_names, array_elements, array_sizes, table|:
+                                table <- check_runtime_array_size(param.type_expression, name, line.line, table)
+                                note_fixed_array(param.name, param.type_expression, table, array_names, array_elements, array_sizes)
+                            return_found: mutable bool = false
+                            return_element: mutable sview = ""
+                            return_size: mutable i64 = 0
+                            if return_type is return_expression:
+                                fixed_array_shape(return_expression, table, return_found, return_element, return_size)
+                                return_element <- logical_shape_label(return_expression) if not return_found
+                                table <- check_runtime_array_size(return_expression, name, line.line, table)
+                            table <- walk_fixed_array_statements(body, name, return_found, return_element, return_size, array_names, array_elements, array_sizes, table)
+                        Decl.Module(module_name, body, line):
+                            table <- check_fixed_array_shape_declarations(body, table)
+                        Decl.Scoped(body, line):
+                            table <- check_fixed_array_shape_declarations(body, table)
+                        _:
+                            pass
+
+    public:
+        def check_fixed_array_shape(declarations: darray[Ast::Decl], table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                table <- check_fixed_array_shape_declarations(declarations, table)

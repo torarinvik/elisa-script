@@ -1,0 +1,181 @@
+# Validate explicitly state-qualified struct literals when a derived-state predicate
+# can be decided from their literal field initializers.
+extend Semantic:
+    private:
+        def derived_type_owner_state(type_expression: Ast::Expr, owner: mutable sview&, state: mutable sview&) -> void:
+            can Abort.Panic:
+                match type_expression:
+                    Expr.Index(Expr.Ident(type_owner, owner_line), Expr.Ident(type_state, state_line), index_line):
+                        owner <- type_owner
+                        state <- type_state
+                    Expr.Unary(operator, operand, unary_line):
+                        derived_type_owner_state(operand, owner, state) if operator in {TokenKind.Mutable, TokenKind.Ampersand, TokenKind.Lmut}
+                    _:
+                        pass
+
+
+        def derived_literal_int(expression: Ast::Expr, known: mutable bool&) -> i64:
+            can Abort.Panic:
+                match expression:
+                    Expr.IntLit(value):
+                        known <- true
+                        return value
+                    Expr.BoolLit(bool_value):
+                        # `derive state` predicates over a bool field (`self.is_open == true`)
+                        # compare against a bool literal; normalize false->0, true->1 so the
+                        # same integer machinery classifies them.
+                        known <- true
+                        return 1 if bool_value else 0
+                    Expr.Unary(TokenKind.Minus, operand, line):
+                        inner_known: mutable bool = false
+                        inner: i64 = derived_literal_int(operand, inner_known)
+                        known <- inner_known
+                        return -inner
+                    Expr.Paren(inner, line):
+                        return derived_literal_int(inner, known)
+                    Expr.Binary(left, operator, right, line):
+                        # Constant arithmetic in a state assignment (`self.health <- 0 - 5`).
+                        left_known: mutable bool = false
+                        right_known: mutable bool = false
+                        left_value: i64 = derived_literal_int(left, left_known)
+                        right_value: i64 = derived_literal_int(right, right_known)
+                        if left_known and right_known:
+                            if operator == TokenKind.Plus:
+                                known <- true
+                                return left_value + right_value
+                            if operator == TokenKind.Minus:
+                                known <- true
+                                return left_value - right_value
+                            if operator == TokenKind.Star:
+                                known <- true
+                                return left_value * right_value
+                        known <- false
+                        return 0
+                    _:
+                        known <- false
+                        return 0
+
+
+        def derived_self_field(expression: Ast::Expr) -> sview:
+            can Abort.Panic:
+                match expression:
+                    Expr.Field(Expr.Ident(name, ident_line), field, field_line):
+                        return field
+                    Expr.Paren(inner, line):
+                        return derived_self_field(inner)
+                    _:
+                        return ""
+
+
+        def constructor_field_int(fields: darray[Ast::FieldInit]&, wanted: sview, known: mutable bool&) -> i64:
+            can Abort.Panic:
+                for field in fields:
+                    matched: bool = field.name == wanted
+                    value: i64 = derived_literal_int(field.value, known) if matched else 0
+                    value return if matched
+                known <- false
+                return 0
+
+
+        def derived_rule_holds(condition: Ast::Expr, fields: darray[Ast::FieldInit]&, known: mutable bool&) -> bool:
+            can Abort.Panic:
+                match condition:
+                    Expr.Binary(left, operator, right, line):
+                        field_name: sview = derived_self_field(left)
+                        rhs_known: mutable bool = false
+                        rhs: i64 = derived_literal_int(right, rhs_known)
+                        field_known: mutable bool = false
+                        field_value: i64 = constructor_field_int(fields, field_name, field_known) if field_name != "" else 0
+                        known <- rhs_known and field_known
+                        false return if not rhs_known or not field_known
+                        return when operator:
+                            TokenKind.EqEq -> field_value == rhs
+                            TokenKind.BangEq -> field_value != rhs
+                            TokenKind.Lt -> field_value < rhs
+                            TokenKind.Gt -> field_value > rhs
+                            TokenKind.LtEq -> field_value <= rhs
+                            TokenKind.GtEq -> field_value >= rhs
+                            _ -> false
+                    _:
+                        known <- false
+                        return false
+
+
+        def check_derived_constructor_expression(expression: Ast::Expr, rules: darray[Ast::DerivedStateRule]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Construct(type_expression, fields, line):
+                        owner: mutable sview = ""
+                        state: mutable sview = ""
+                        derived_type_owner_state(type_expression, owner, state)
+                        for rule in rules |table|:
+                            if rule.owner == owner and rule.state == state:
+                                known: mutable bool = false
+                                holds: bool = derived_rule_holds(rule.condition, fields, known)
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.DerivedStateConstructorMismatch, name: owner, line: line.line, expected: state, actual: ""}) if known and not holds
+                        for field in fields |table|:
+                            table <- check_derived_constructor_expression(field.value, rules, table)
+                    Expr.Call(callee, arguments, argument_names, line):
+                        for argument in arguments |table|:
+                            table <- check_derived_constructor_expression(argument, rules, table)
+                    Expr.Binary(left, operator, right, line):
+                        table <- check_derived_constructor_expression(left, rules, table)
+                        table <- check_derived_constructor_expression(right, rules, table)
+                    Expr.Paren(inner, line) | Expr.Unary(_, inner, line):
+                        table <- check_derived_constructor_expression(inner, rules, table)
+                    _:
+                        pass
+
+
+        def check_derived_constructor_statements(statements: darray[Ast::Stmt], rules: darray[Ast::DerivedStateRule]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |table|:
+                    match statement:
+                        Stmt.VarDecl(name, type_expression, value, line) | Stmt.Assign(type_expression, _, value, line):
+                            table <- check_derived_constructor_expression(value, rules, table)
+                        Stmt.Expr(expression, line):
+                            table <- check_derived_constructor_expression(expression, rules, table)
+                        Stmt.Return(value, line):
+                            table <- check_derived_constructor_expression(returned, rules, table) if value is returned
+                        Stmt.If(condition, then_body, else_body, line):
+                            table <- check_derived_constructor_statements(then_body, rules, table)
+                            table <- check_derived_constructor_statements(else_body, rules, table)
+                        Stmt.Block(_, _, _, body, line) | Stmt.While(_, body, line) | Stmt.For(_, _, _, body, line):
+                            table <- check_derived_constructor_statements(body, rules, table)
+                        _:
+                            pass
+
+
+        def check_derived_constructor_declarations(declarations: darray[Ast::Decl], rules: darray[Ast::DerivedStateRule]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |table|:
+                    match declaration:
+                        Decl.Func(name, params, return_type, body, effects, decorators, line):
+                            table <- check_derived_constructor_statements(body, rules, table)
+                        Decl.Module(name, body, line) | Decl.Scoped(body, line):
+                            table <- check_derived_constructor_declarations(body, rules, table)
+                        _:
+                            pass
+
+    public:
+        # Whether a derive-state rule condition compares a BARE ident (not
+        # `self.field`) — stage0 rejects such rules as non-field-based.
+        def derived_rule_is_bare_ident(condition: Ast::Expr) -> bool:
+            can Abort.Panic:
+                match condition:
+                    Expr.Binary(rule_left, rule_operator, rule_right, rule_line):
+                        match rule_left:
+                            Expr.Ident(rule_left_name, rule_left_line):
+                                return true
+                            _:
+                                return false
+                    _:
+                        return false
+
+        def check_derived_state_constructor(file: Ast::File&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                # stage0 requires every derive-state rule to be a comparison over
+                # `self.field`; a bare-ident condition (`hp > 0`) is rejected.
+                for rule in file.derived_state_rules |table|:
+                    table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.DerivedStateRuleNotFieldBased, name: rule.state, line: rule.line, expected: "", actual: ""}) if derived_rule_is_bare_ident(rule.condition)
+                table <- check_derived_constructor_declarations(file.top_decls, file.derived_state_rules, table)

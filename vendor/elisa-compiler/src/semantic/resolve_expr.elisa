@@ -1,0 +1,373 @@
+extend Semantic:
+    private:
+        # Check a direct call `name(arguments...)` against the declared arity of `name`'s
+        # Func symbol(s). Conservative by design -- flags ONLY when the callee name is
+        # known, every symbol with that name is a Func, and the argument count fits
+        # none of their [required, total] ranges. Any shadowing local, non-Func symbol
+        # (extern/const/struct/builtin), labeled argument, or unknown name skips the
+        # check, so an unmodeled call shape can never produce a false positive.
+        # Collect the FIELD path (root→leaf) of a place expression into `out`, returning
+        # whether it is a modelable field-only place. Address-of / `mutable` / `lmut`
+        # prefixes are seen through; any Index/Slice/other node makes the place
+        # unmodelable (returns false) so the aliasing check stays sound — it only ever
+        # compares places it can match exactly, never guessing about dynamic indices.
+        def place_fields(expression: Ast::Expr, out: mutable darray[sview]&) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Ident(name, ident_line):
+                        return true
+                    Expr.Field(object, field, field_line):
+                        false return if not place_fields(object, out)
+                        out.push(field)
+                        return true
+                    Expr.Unary(operator, operand, unary_line):
+                        place_fields(operand, out) return if operator == TokenKind.Ampersand or operator == TokenKind.Mutable or operator == TokenKind.Lmut
+                        return false
+                    _:
+                        return false
+
+
+        # Whether two argument expressions name overlapping storage: same root variable
+        # and one field path a prefix of (or equal to) the other. Only field-only places
+        # are compared; anything with an index/slice is treated as non-overlapping (sound
+        # — we never flag unless the two places provably collide).
+        def places_overlap(expression_a: Ast::Expr, expression_b: Ast::Expr) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                root_a: sview = target_root_ident(expression_a)
+                root_b: sview = target_root_ident(expression_b)
+                false return if root_a == "" or root_a != root_b
+                fields_a: mutable darray[sview] = []
+                fields_b: mutable darray[sview] = []
+                false return if not place_fields(expression_a, fields_a)
+                false return if not place_fields(expression_b, fields_b)
+                min_count: usize = fields_a.count if fields_a.count < fields_b.count else fields_b.count
+                while field_index < min_count |field_index: usize = 0|:
+                    false return if fields_a[field_index] != fields_b[field_index]
+                    field_index <- field_index + 1
+                return true
+
+
+        # Whether callee `function_name` declares an `lmut` parameter at positional index `position`.
+        def argument_position_is_lmut(table: SymbolTable&, function_name: sview, position: usize) -> bool:
+            can Abort.Panic:
+                while lmut_index < table.lmut_param_owner.count |lmut_index: usize = 0|:
+                    true return if table.lmut_param_owner[lmut_index] == function_name and table.lmut_param_pos[lmut_index].usize() == position
+                    lmut_index <- lmut_index + 1
+                return false
+
+
+        # The `lmut` non-aliasing rule at a direct call site: an argument bound to an
+        # `lmut` parameter may not name the same place as any other argument of the same
+        # call. Conservative like the arity check — only for a uniquely-named function
+        # (overloaded names can't be positionally resolved here, so they are skipped).
+        def check_call_lmut_aliasing(table: lmut SymbolTable, function_name: sview, arguments: darray[Ast::Expr], line: u32) -> void:
+            can Memory.Allocate, Abort.Panic:
+                # Fast bail: does this name have any lmut parameter at all?
+                any_lmut: bool =
+                    while lmut_index < table.lmut_param_owner.count |any_lmut = false, lmut_index: usize = 0| -> any_lmut:
+                        any_lmut <- true if table.lmut_param_owner[lmut_index] == function_name
+                        lmut_index <- lmut_index + 1
+                return if not any_lmut
+                # Poison overloaded names: only a unique Func declaration binds positionally here.
+                # Was an O(symbols.count) scan of every declaration in the whole program, per
+                # direct call — see the matching comment on direct_function_count below.
+                func_count: u32 =
+                    while cur != 4294967295 |func_count: u32 = 0, cur: u32 = symbol_chain_head(table, function_name)| -> func_count:
+                        func_count <- func_count + 1 if table.symbols[cur.usize()].name == function_name and table.symbols[cur.usize()].kind == SymbolKind.Func
+                        cur <- table.symbol_name_next[cur.usize()]
+                return if func_count != 1
+                argument_count: usize = arguments.count
+                while first_argument_index < argument_count |first_argument_index: usize = 0|:
+                    while second_argument_index < argument_count |second_argument_index: usize = first_argument_index + 1|:
+                        root: sview = target_root_ident(arguments[second_argument_index])
+                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.LmutAliasing, name: root, line: line, expected: "", actual: ""}) if (argument_position_is_lmut(table, function_name, first_argument_index) or argument_position_is_lmut(table, function_name, second_argument_index)) and places_overlap(arguments[first_argument_index], arguments[second_argument_index])
+                        second_argument_index <- second_argument_index + 1
+                    first_argument_index <- first_argument_index + 1
+
+
+        def check_call_arity(table: lmut SymbolTable, function_name: sview, argument_count: usize, line: u32) -> void:
+            can Memory.Allocate, Abort.Panic:
+                # docs/119 §3: the symbol scan is a multi-accumulator loop expression — the
+                # header declares exactly what it computes (found a Func? did any shape fit?
+                # how many Func decls, and the last one's arity range), and the tail tuple
+                # binds them. `table.symbols` is only READ, so no capture is needed (the
+                # loop body is pure over outer state); the diagnostic is pushed afterward.
+                # Was `for symbol in table.symbols` — an O(symbols.count) scan of every
+                # declaration in the whole program, per direct call — see the matching
+                # comment on direct_function_count below. Walks only function_name's own
+                # hash chain now; `cur` is loop-internal (not part of the result tuple).
+                found_func, fits, func_count, only_min, only_max =
+                    while cur != 4294967295 |found_func = false, fits = false, func_count: u32 = 0, only_min: u32 = 0, only_max: u32 = 0, cur: u32 = symbol_chain_head(table, function_name)| -> found_func, fits, func_count, only_min, only_max:
+                        symbol: Symbol = table.symbols[cur.usize()]
+                        if symbol.name == function_name:
+                            if symbol.kind == SymbolKind.Func:
+                                found_func <- true
+                                func_count <- func_count + 1
+                                only_min <- symbol.arity_min
+                                only_max <- symbol.arity_max
+                                if argument_count.u32() >= symbol.arity_min and argument_count.u32() <= symbol.arity_max:
+                                    fits <- true
+                            else:
+                                # A non-Func symbol shares the name (constructor, extern,
+                                # builtin, ...) -- callable shapes we don't model; skip.
+                                fits <- true
+                        cur <- table.symbol_name_next[cur.usize()]
+                # When exactly one declaration and no defaults (min == max), the
+                # expected count is unambiguous — report it (stage0 parity). With
+                # overloads or defaults, keep the generic message. `expected` = "n"
+                # marks the enriched form for diagnostic_message.
+                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.ArityMismatch, name: function_name, line: line, expected: "n", actual: "", expected_count: only_max, actual_count: argument_count.u32()} if func_count == 1 and only_min == only_max else Diagnostic{kind: DiagnosticKind.ArityMismatch, name: function_name, line: line, expected: "", actual: ""}) if found_func and not fits
+
+
+        # Was an O(symbols.count) scan of every declaration in the whole program — called on
+        # EVERY direct-call expression's callee (this function, check_call_arity, and the
+        # lmut-aliasing poison check above all query "how many Func decls share this name").
+        # Walks only `function_name`'s own hash chain now (symbol_chain_head/symbol_name_next,
+        # symbols.elisa) — O(that name's own overload count).
+        def direct_function_count(table: SymbolTable&, function_name: sview) -> u32:
+            can Abort.Panic:
+                count: mutable u32 = 0
+                cur: mutable u32 = symbol_chain_head(table, function_name)
+                while cur != 4294967295:
+                    count <- count + 1 if table.symbols[cur.usize()].name == function_name and table.symbols[cur.usize()].kind == SymbolKind.Func
+                    cur <- table.symbol_name_next[cur.usize()]
+                return count
+
+
+        # These four all used to be `while parameter_index < table.function_param_owner.count`
+        # — an O(EVERY parameter of EVERY function in the whole program) scan repeated for
+        # every direct-call site's arity/named-argument check. They now walk only `function_
+        # name`'s own hash chain (function_param_chain_head/function_param_name_next,
+        # symbols.elisa) — O(that one function's parameter/overload count). The chain visits
+        # entries in original declaration order, so behavior (which "position" is which
+        # parameter, overloads concatenated in declared order) is unchanged.
+        def function_parameter_count(table: SymbolTable&, function_name: sview) -> usize:
+            can Abort.Panic:
+                count: mutable usize = 0
+                cur: mutable u32 = function_param_chain_head(table, function_name)
+                while cur != 4294967295:
+                    count <- count + 1 if table.function_param_owner[cur.usize()] == function_name
+                    cur <- table.function_param_name_next[cur.usize()]
+                return count
+
+
+        def function_parameter_name_at(table: SymbolTable&, function_name: sview, position: usize) -> sview:
+            can Abort.Panic:
+                seen: mutable usize = 0
+                cur: mutable u32 = function_param_chain_head(table, function_name)
+                while cur != 4294967295:
+                    if table.function_param_owner[cur.usize()] == function_name:
+                        table.function_param_name[cur.usize()] return if seen == position
+                        seen <- seen + 1
+                    cur <- table.function_param_name_next[cur.usize()]
+                return ""
+
+
+        def function_parameter_has_default_at(table: SymbolTable&, function_name: sview, position: usize) -> bool:
+            can Abort.Panic:
+                seen: mutable usize = 0
+                cur: mutable u32 = function_param_chain_head(table, function_name)
+                while cur != 4294967295:
+                    if table.function_param_owner[cur.usize()] == function_name:
+                        table.function_param_has_default[cur.usize()] return if seen == position
+                        seen <- seen + 1
+                    cur <- table.function_param_name_next[cur.usize()]
+                return false
+
+
+        def function_parameter_index(table: SymbolTable&, function_name: sview, parameter_name: sview) -> int:
+            can Abort.Panic:
+                seen: mutable usize = 0
+                cur: mutable u32 = function_param_chain_head(table, function_name)
+                while cur != 4294967295:
+                    if table.function_param_owner[cur.usize()] == function_name:
+                        seen.int() return if table.function_param_name[cur.usize()] == parameter_name
+                        seen <- seen + 1
+                    cur <- table.function_param_name_next[cur.usize()]
+                return -1
+
+
+        # Classify one POSITIONAL argument (`filled` tracks which parameter slots are taken).
+        # A positional after a named argument is an ordering error; one past the last parameter
+        # is an arity error; one re-filling a slot is a duplicate. Advances `next_positional`
+        # only when the argument legitimately consumes a slot.
+        def apply_positional_call_argument(table: lmut SymbolTable, function_name: sview, filled: mutable darray[bool]&, next_positional: mutable usize&, saw_named: bool, parameter_count: usize, argument_count: usize, line: u32) -> void:
+            can Memory.Allocate, Abort.Panic:
+                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.CallArgumentError, name: function_name, line: line, expected: "after_named", actual: ""}) if saw_named
+                return if saw_named
+                position: usize = next_positional
+                table <- check_call_arity(table, function_name, argument_count, line) if position >= parameter_count
+                return if position >= parameter_count
+                if filled[position]:
+                    parameter_name: sview = function_parameter_name_at(table, function_name, position)
+                    table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.CallArgumentError, name: function_name, line: line, expected: "duplicate", actual: parameter_name})
+                else:
+                    filled[position] <- true
+                next_positional <- position + 1
+
+        # Field-label checks for a `Struct{...}` construction whose type names a registered
+        # struct: flag unknown labels, duplicate labels, and — in pure by-label mode — any
+        # missing required field. Extracted so the guard at the call site is one postfix-guarded
+        # transition instead of a block `if` wrapping a nested decision.
+        def check_construct_field_labels(table: lmut SymbolTable, struct_name: sview, fields: darray[Ast::FieldInit], line: u32) -> void:
+            can Memory.Allocate, Abort.Panic:
+                # WHICH `struct_name` this construction means. Field rows are keyed by bare
+                # owner, so two modules each declaring a `Work` share the key: without this
+                # `Grade::Work{total: 3}` saw Score::Work's fields as well and reported
+                # `missing field "tally"`. Resolved from the module the construction is
+                # written in.
+                owner_module: sview = struct_owner_module_for(table, table.current_module, struct_name)
+                any_positional, seen_labels =
+                    for field in fields |table, any_positional = false, seen_labels: darray[sview] = []| -> any_positional, seen_labels:
+                        any_positional <- true if field.name == ""
+                        continue if field.name == ""
+                        # UnknownField: a labeled field the struct does not declare.
+                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.UnknownField, name: field.name, line: line, expected: struct_name, actual: ""}) if not struct_has_field_in(table, owner_module, struct_name, field.name)
+                        # DuplicateFieldInit: the same label given twice.
+                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.DuplicateFieldInit, name: field.name, line: line, expected: struct_name, actual: ""}) if any seen_label in seen_labels where seen_label == field.name
+                        seen_labels.push(field.name) if not (any seen_label in seen_labels where seen_label == field.name)
+                # MissingField: in PURE by-label mode (>=1 label, no positional field — positional
+                # fills fields in order, so we cannot tell which are covered), every REQUIRED
+                # field must be present.
+                return if any_positional or seen_labels.count == 0
+                while field_row_index < table.struct_field_owner.count |field_row_index: usize = 0|:
+                    table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.MissingField, name: table.struct_field_name[field_row_index], line: line, expected: struct_name, actual: ""}) if table.struct_field_owner[field_row_index] == struct_name and struct_field_module_at(table, field_row_index) == owner_module and table.struct_field_required[field_row_index] and not any seen_label in seen_labels where seen_label == table.struct_field_name[field_row_index]
+                    field_row_index <- field_row_index + 1
+
+
+        # Classify one NAMED argument (`label: value`): an unknown label or a label whose
+        # parameter slot is already filled is an error; otherwise the slot is marked filled.
+        def apply_named_call_argument(table: lmut SymbolTable, function_name: sview, filled: mutable darray[bool]&, argument_name: sview, line: u32) -> void:
+            can Memory.Allocate, Abort.Panic:
+                parameter_index: int = function_parameter_index(table, function_name, argument_name)
+                # Unknown label: no matching parameter slot.
+                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.CallArgumentError, name: function_name, line: line, expected: "unknown", actual: argument_name}) if parameter_index < 0
+                return if parameter_index < 0
+                position: usize = parameter_index.usize()
+                # Duplicate: the slot is already filled; otherwise mark it filled.
+                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.CallArgumentError, name: function_name, line: line, expected: "duplicate", actual: argument_name}) if filled[position]
+                filled[position] <- true if not filled[position]
+
+        def check_named_call_arguments(table: lmut SymbolTable, function_name: sview, argument_names: darray[sview], line: u32) -> void:
+            can Memory.Allocate, Abort.Panic:
+                return if direct_function_count(table, function_name) != 1
+                parameter_count: usize = function_parameter_count(table, function_name)
+                return if parameter_count == 0
+                filled: mutable darray[bool] = []
+                while fill_index < parameter_count |fill_index: usize = 0|:
+                    filled.push(false)
+                    fill_index <- fill_index + 1
+
+                saw_named: mutable bool = false
+                next_positional: mutable usize = 0
+                while argument_index < argument_names.count |argument_index: usize = 0|:
+                    argument_name: sview = argument_names[argument_index]
+                    if argument_name == "":
+                        table <- apply_positional_call_argument(table, function_name, filled, next_positional, saw_named, parameter_count, argument_names.count, line)
+                    else:
+                        saw_named <- true
+                        table <- apply_named_call_argument(table, function_name, filled, argument_name, line)
+                    argument_index <- argument_index + 1
+
+                while parameter_index < parameter_count |parameter_index: usize = 0|:
+                    missing_name: sview = function_parameter_name_at(table, function_name, parameter_index)
+                    table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.CallArgumentError, name: function_name, line: line, expected: "missing", actual: missing_name}) if not filled[parameter_index] and not function_parameter_has_default_at(table, function_name, parameter_index)
+                    parameter_index <- parameter_index + 1
+
+
+        def field_is_packed_store_type(object: Ast::Expr, field: sview, table: SymbolTable&) -> bool:
+            can Abort.Panic:
+                false return if field != "Store" and field != "Tag"
+                match object:
+                    Expr.Ident(enum_name, enum_line):
+                        return any packed_name in table.packed_enum_names where packed_name == enum_name
+                    _:
+                        pass
+                return false
+
+
+        def enum_common_payload_count(table: SymbolTable&, enum_name: sview) -> usize:
+            can Abort.Panic:
+                while common_index < table.enum_common_owners.count |common_index: usize = 0|:
+                    table.enum_common_counts[common_index].usize() return if table.enum_common_owners[common_index] == enum_name
+                    common_index <- common_index + 1
+                return 0
+
+
+        def enum_payload_count(table: SymbolTable&, enum_name: sview, variant_name: sview) -> usize:
+            can Abort.Panic:
+                count: usize =
+                    while payload_index < table.enum_payload_owner.count |count: usize = 0, payload_index: usize = 0| -> count:
+                        count <- count + 1 if table.enum_payload_owner[payload_index] == enum_name and table.enum_payload_variant[payload_index] == variant_name
+                        payload_index <- payload_index + 1
+                return count
+
+
+        def enum_payload_name_at(table: SymbolTable&, enum_name: sview, variant_name: sview, position: usize) -> sview:
+            can Abort.Panic:
+                seen: mutable usize = 0
+                while payload_index < table.enum_payload_owner.count |payload_index: usize = 0|:
+                    if table.enum_payload_owner[payload_index] == enum_name and table.enum_payload_variant[payload_index] == variant_name:
+                        table.enum_payload_name[payload_index] return if seen == position
+                        seen <- seen + 1
+                    payload_index <- payload_index + 1
+                return ""
+
+
+        def enum_payload_index(table: SymbolTable&, enum_name: sview, variant_name: sview, payload_name: sview) -> int:
+            can Abort.Panic:
+                seen: mutable usize = 0
+                while payload_index < table.enum_payload_owner.count |payload_index: usize = 0|:
+                    if table.enum_payload_owner[payload_index] == enum_name and table.enum_payload_variant[payload_index] == variant_name:
+                        seen.int() return if table.enum_payload_name[payload_index] == payload_name
+                        seen <- seen + 1
+                    payload_index <- payload_index + 1
+                return -1
+
+
+        def enum_payloads_all_named(table: SymbolTable&, enum_name: sview, variant_name: sview) -> bool:
+            can Abort.Panic:
+                payload_count: usize = enum_payload_count(table, enum_name, variant_name)
+                false return if payload_count == 0
+                while payload_position < payload_count |payload_position: usize = 0|:
+                    false return if enum_payload_name_at(table, enum_name, variant_name, payload_position) == ""
+                    payload_position <- payload_position + 1
+                return true
+
+
+        def check_named_enum_constructor_arguments(table: lmut SymbolTable, enum_name: sview, variant_name: sview, argument_names: darray[sview], line: u32) -> void:
+            can Memory.Allocate, Abort.Panic:
+                named_count: usize =
+                    while argument_index < argument_names.count |count: usize = 0, argument_index: usize = 0| -> count:
+                        count <- count + 1 if argument_names[argument_index] != ""
+                        argument_index <- argument_index + 1
+                return if named_count == 0
+                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.EnumConstructorArgumentError, name: variant_name, line: line, expected: "mixed", actual: ""}) if named_count != argument_names.count
+                return if named_count != argument_names.count
+                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.EnumConstructorArgumentError, name: variant_name, line: line, expected: "unnamed", actual: ""}) if not enum_payloads_all_named(table, enum_name, variant_name)
+                return if not enum_payloads_all_named(table, enum_name, variant_name)
+
+                payload_count: usize = enum_payload_count(table, enum_name, variant_name)
+                seen: mutable darray[bool] = []
+                while seen_index < payload_count |seen_index: usize = 0|:
+                    seen.push(false)
+                    seen_index <- seen_index + 1
+
+                while argument_index < argument_names.count |argument_index: usize = 0|:
+                    argument_name: sview = argument_names[argument_index]
+                    payload_index: int = enum_payload_index(table, enum_name, variant_name, argument_name)
+                    if payload_index < 0:
+                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.EnumConstructorArgumentError, name: variant_name, line: line, expected: "unknown", actual: argument_name})
+                    else:
+                        position: usize = payload_index.usize()
+                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.EnumConstructorArgumentError, name: variant_name, line: line, expected: "duplicate", actual: argument_name}) if seen[position]
+                        seen[position] <- true if not seen[position]
+                    argument_index <- argument_index + 1
+
+                # Common packed fields may be initialized by name but are optional;
+                # only variant-specific payloads are required.
+                payload_index: mutable usize = enum_common_payload_count(table, enum_name)
+                while payload_index < payload_count:
+                    missing_name: sview = enum_payload_name_at(table, enum_name, variant_name, payload_index)
+                    table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.EnumConstructorArgumentError, name: variant_name, line: line, expected: "missing", actual: missing_name}) if not seen[payload_index]
+                    payload_index <- payload_index + 1

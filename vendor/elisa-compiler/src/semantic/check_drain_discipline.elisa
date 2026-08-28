@@ -1,0 +1,223 @@
+# Drain-loop body discipline. A `for x in move c:` loop drains its container — every
+# element is moved out and MUST be consumed in each iteration. A `break` or `return`
+# inside the drain body would abandon the loop with elements still un-consumed, leaking
+# them:
+#
+#   for g in move gs:
+#       release(move g)
+#       break                 # leaks the remaining Guards still in gs
+#
+# The drain is recognised syntactically: a For whose iterable is `Expr.Move(...)`. A
+# `return` anywhere in the body leaks; a `break` leaks only at the drain's own loop level
+# (a `break` inside a NESTED loop targets that inner loop, so it is fine). `continue` is
+# always fine. This is a purely structural check — no type information is needed.
+extend Semantic:
+    private:
+        # Whether the drain body contains a leaking `break`/`return`. `break_leaks` is true
+        # only while scanning at the drain's own loop level; descending into a nested loop
+        # clears it (an inner `break` targets the inner loop), but a `return` always leaks.
+        def dd_body_leaks(statements: darray[Ast::Stmt]&, break_leaks: bool) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements:
+                    match statement:
+                        Stmt.Return(value, line):
+                            return true
+                        Stmt.Break(label, line):
+                            true return if break_leaks
+                        Stmt.If(condition, then_body, else_body, line):
+                            true return if dd_body_leaks(then_body, break_leaks)
+                            true return if dd_body_leaks(else_body, break_leaks)
+                        Stmt.While(condition, while_body, while_line):
+                            true return if dd_body_leaks(while_body, false)
+                        Stmt.For(bind, variables, iterable, for_body, for_line):
+                            true return if dd_body_leaks(for_body, false)
+                        Stmt.Block(kind, clause, binding, body, block_line):
+                            true return if dd_body_leaks(body, break_leaks)
+                        Stmt.Match(scrutinee, arms, match_line):
+                            for arm in arms:
+                                true return if dd_body_leaks(arm.body, break_leaks)
+                        _:
+                            pass
+                return false
+
+        # The type head and generic argument of a param type expression: `view[i64]` ->
+        # ("view", "i64"); a bare `sview` -> ("sview", ""). `mutable`/paren strip. Both parts
+        # are source-backed sviews (the full "view[i64]" string is assembled in the renderer).
+        def dd_type_head_arg(type_expression: Ast::Expr) -> (head: sview, argument: sview):
+            can Memory.Allocate, Abort.Panic:
+                match type_expression:
+                    Expr.Unary(operator, operand, unary_line):
+                        dd_type_head_arg(operand) return if operator == TokenKind.Mutable
+                        return (sview("", 0, 0), sview("", 0, 0))
+                    Expr.Paren(inner, paren_line):
+                        return dd_type_head_arg(inner)
+                    Expr.Ident(name, ident_line):
+                        return (name, sview("", 0, 0))
+                    Expr.Index(head, argument, index_line):
+                        return (ident_name_of(head), ident_name_of(argument))
+                    Expr.IndexN(head, arguments, indexn_line):
+                        return (ident_name_of(head), ident_name_of(arguments[0]) if arguments.count > 0 else sview("", 0, 0))
+                    _:
+                        return (sview("", 0, 0), sview("", 0, 0))
+
+        # A drain source is invalid when it is (positively) a view-family type — the only
+        # non-darray heads we resolve with certainty. Anything unresolved stays silent (a
+        # conservative miss, never a false fire).
+        def dd_bad_drain_source(parameters: darray[Ast::ParamDecl]&, moved: Ast::Expr) -> (bad: bool, head: sview, argument: sview):
+            can Memory.Allocate, Abort.Panic:
+                match moved:
+                    Expr.Ident(name, ident_line):
+                        for parameter in parameters:
+                            if parameter.name == name:
+                                head_arg: (head: sview, argument: sview) = dd_type_head_arg(parameter.type_expression)
+                                (true, head_arg.head, head_arg.argument) return if head_arg.head == "view" or head_arg.head == "sview"
+                                return (false, sview("", 0, 0), sview("", 0, 0))
+                    _:
+                        pass
+                return (false, sview("", 0, 0), sview("", 0, 0))
+
+        # The root identifier of an lvalue path (Field/Index/Paren/Move descend to the base).
+        def dd_root_ident(expression: Ast::Expr) -> sview:
+            can Abort.Panic:
+                match expression:
+                    Expr.Ident(name, ident_line):
+                        return name
+                    Expr.Field(object, field, field_line):
+                        return dd_root_ident(object)
+                    Expr.Index(object, index_argument, index_line):
+                        return dd_root_ident(object)
+                    Expr.Paren(inner, paren_line):
+                        return dd_root_ident(inner)
+                    Expr.Move(operand, move_line):
+                        return dd_root_ident(operand)
+                    _:
+                        return sview("", 0, 0)
+
+        # Whether the drain binder is `move`d anywhere in an expression (consumed). Linear
+        # consumption REQUIRES a `move`, so absence of any `move binder` means it leaks.
+        def dd_expr_moves(expression: Ast::Expr, binder: sview) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Move(operand, move_line):
+                        true return if dd_root_ident(operand) == binder
+                        return dd_expr_moves(operand, binder)
+                    Expr.Call(callee, arguments, argument_names, call_line):
+                        true return if dd_expr_moves(callee, binder)
+                        for argument in arguments:
+                            true return if dd_expr_moves(argument, binder)
+                        return false
+                    Expr.Binary(left, operator, right, binary_line):
+                        return dd_expr_moves(left, binder) or dd_expr_moves(right, binder)
+                    Expr.Unary(operator, operand, unary_line):
+                        return dd_expr_moves(operand, binder)
+                    Expr.Paren(inner, paren_line):
+                        return dd_expr_moves(inner, binder)
+                    Expr.Field(object, field, field_line):
+                        return dd_expr_moves(object, binder)
+                    Expr.Index(object, index_argument, index_line):
+                        return dd_expr_moves(object, binder) or dd_expr_moves(index_argument, binder)
+                    _:
+                        return false
+
+        def dd_stmt_moves(statements: darray[Ast::Stmt]&, binder: sview) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements:
+                    match statement:
+                        Stmt.Expr(expression, line):
+                            true return if dd_expr_moves(expression, binder)
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            true return if dd_expr_moves(value, binder)
+                        Stmt.Assign(target, operator, value, line):
+                            true return if dd_expr_moves(value, binder)
+                        Stmt.Return(value, line):
+                            if value is returned:
+                                true return if dd_expr_moves(returned, binder)
+                        Stmt.If(condition, then_body, else_body, line):
+                            true return if dd_stmt_moves(then_body, binder) or dd_stmt_moves(else_body, binder)
+                        Stmt.While(condition, while_body, while_line):
+                            true return if dd_stmt_moves(while_body, binder)
+                        Stmt.For(bind, variables, iterable, for_body, for_line):
+                            true return if dd_expr_moves(iterable, binder) or dd_stmt_moves(for_body, binder)
+                        Stmt.Block(kind, clause, binding, body, block_line):
+                            true return if dd_stmt_moves(body, binder)
+                        Stmt.Match(scrutinee, arms, match_line):
+                            for arm in arms:
+                                true return if dd_stmt_moves(arm.body, binder)
+                        _:
+                            pass
+                return false
+
+        # For a NON-drain `for x in xs` whose source is a param `darray[E]`/`set[E]` with an
+        # affine element E, the affine element name (else ""). Affinity is the transitive
+        # registry fact (struct_is_affine), so a `Slot { t: Thread }` element is caught.
+        def dd_affine_iter_element(parameters: darray[Ast::ParamDecl]&, iterable: Ast::Expr, table: SymbolTable&) -> sview:
+            can Memory.Allocate, Abort.Panic:
+                match iterable:
+                    Expr.Ident(name, ident_line):
+                        for parameter in parameters:
+                            if parameter.name == name:
+                                head_arg: (head: sview, argument: sview) = dd_type_head_arg(parameter.type_expression)
+                                head_arg.argument return if (head_arg.head == "darray" or head_arg.head == "set") and struct_is_affine(table, head_arg.argument)
+                                return sview("", 0, 0)
+                    _:
+                        pass
+                return sview("", 0, 0)
+
+        def dd_walk(statements: darray[Ast::Stmt], parameters: darray[Ast::ParamDecl]&, linear_sources: darray[sview]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |table| -> table:
+                    match statement:
+                        Stmt.For(bind, variables, iterable, for_body, for_line):
+                            match iterable:
+                                Expr.Move(moved, move_line):
+                                    table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.DrainBodyLeak, name: "", line: for_line.line, expected: "", actual: ""}) if dd_body_leaks(for_body, true)
+                                    bad_source: (bad: bool, head: sview, argument: sview) = dd_bad_drain_source(parameters, moved)
+                                    table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.DrainSourceNotDarray, name: "", line: for_line.line, expected: bad_source.argument, actual: bad_source.head}) if bad_source.bad
+                                    # A darray-of-linear drain whose binder is never `move`d leaks
+                                    # its linear elements one per iteration.
+                                    if variables.count > 0 and darray_linear_name_present(linear_sources, dd_root_ident(moved)):
+                                        binder: sview = variables[0]
+                                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.DrainElementNotConsumed, name: binder, line: for_line.line, expected: "", actual: ""}) if not dd_stmt_moves(for_body, binder)
+                                _:
+                                    # A plain (non-drain) iteration over a param darray/set whose
+                                    # element type is affine cannot copy or borrow the elements.
+                                    affine_element: sview = dd_affine_iter_element(parameters, iterable, table)
+                                    table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.IterAffineNonborrowable, name: affine_element, line: for_line.line, expected: "", actual: ""}) if affine_element != ""
+                            table <- dd_walk(for_body, parameters, linear_sources, table)
+                        Stmt.While(condition, while_body, while_line):
+                            table <- dd_walk(while_body, parameters, linear_sources, table)
+                        Stmt.If(condition, then_body, else_body, line):
+                            table <- dd_walk(then_body, parameters, linear_sources, table)
+                            table <- dd_walk(else_body, parameters, linear_sources, table)
+                        Stmt.Block(kind, clause, binding, body, block_line):
+                            table <- dd_walk(body, parameters, linear_sources, table)
+                        Stmt.Match(scrutinee, arms, match_line):
+                            for arm in arms |table| -> table:
+                                table <- dd_walk(arm.body, parameters, linear_sources, table)
+                        _:
+                            pass
+
+        def dd_check_declarations(declarations: darray[Ast::Decl], linear_names: darray[sview]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |table| -> table:
+                    match declaration:
+                        Decl.Func(function_name, parameters, return_type, body, effects, decorators, line):
+                            linear_sources: mutable darray[sview] = []
+                            linear_lines: mutable darray[u32] = []
+                            darray_collect_linear_locals(body, linear_names, linear_sources, linear_lines)
+                            for parameter in parameters |linear_sources|:
+                                linear_sources.push(parameter.name) if darray_linear_element(parameter.type_expression, linear_names)
+                            table <- dd_walk(body, parameters, linear_sources, table)
+                        Decl.Module(module_name, module_body, module_line):
+                            table <- dd_check_declarations(module_body, linear_names, table)
+                        Decl.Scoped(scoped_body, scoped_line):
+                            table <- dd_check_declarations(scoped_body, linear_names, table)
+                        _:
+                            pass
+
+    public:
+        def check_drain_discipline(file: Ast::File&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                linear_names: mutable darray[sview] = []
+                darray_linear_type_names(file.top_decls, linear_names)
+                table <- dd_check_declarations(file.top_decls, linear_names, table)

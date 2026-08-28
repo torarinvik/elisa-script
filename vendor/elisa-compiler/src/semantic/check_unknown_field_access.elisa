@@ -1,0 +1,192 @@
+# Check for bare field access (`p.field`, not called) on a value of known
+# struct type `S` where `field` is not among S's declared fields. Only fires
+# when S has a KNOWN, CLOSED field set (>=1 registered field) and `field`
+# does not match any known function/property name (properties and UFCS
+# methods look identical to field access syntactically, so any function
+# name match bails out — soundness over recall).
+
+extend Semantic:
+    private:
+        # A `layout(soa)` struct carries a ROW-level API alongside its columns: `s.count` is
+        # the row count and `s.rows` the row sequence. Neither is a declared field, so the
+        # closed-field-set check would reject both.
+        def soa_row_api_name(table: SymbolTable&, struct_name: sview, field: sview) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                false return if not (field == "count" or field == "rows")
+                return any soa_owner in table.soa_layout_owners where soa_owner == struct_name
+
+
+        # Walk through expressions, checking for unknown field access.
+        def walk_expression_for_unknown_field_access(expression: Ast::Expr, table: lmut SymbolTable, var_types: mutable darray[sview]&, type_names: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Binary(left, operator, right, line):
+                        table <- walk_expression_for_unknown_field_access(left, table, var_types, type_names)
+                        table <- walk_expression_for_unknown_field_access(right, table, var_types, type_names) if operator != TokenKind.Is and operator != TokenKind.As
+                    Expr.Call(callee, arguments, argument_names, line):
+                        # The callee, if a Field, is a method call — walk its receiver
+                        # only, never apply the unknown-field check to the callee Field.
+                        match callee:
+                            Expr.Field(callee_object, _, _):
+                                table <- walk_expression_for_unknown_field_access(callee_object, table, var_types, type_names)
+                            _:
+                                table <- walk_expression_for_unknown_field_access(callee, table, var_types, type_names)
+                        for argument in arguments |table|:
+                            table <- walk_expression_for_unknown_field_access(argument, table, var_types, type_names)
+                    Expr.Field(object, field, line):
+                        table <- walk_expression_for_unknown_field_access(object, table, var_types, type_names)
+                        object_type: InferType = infer_expression_type(object, var_types, type_names, table)
+                        struct_name: sview = object_type.name
+                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.UnknownFieldAccess, name: field, line: line.line, expected: struct_name, actual: ""}) if object_type.kind == SemTypeKind.Named and struct_is_registered(table, struct_name) and not struct_has_field(table, struct_name, field) and direct_function_count(table, field) == 0 and not soa_row_api_name(table, struct_name, field)
+                    Expr.Scope(base, name, line):
+                        table <- walk_expression_for_unknown_field_access(base, table, var_types, type_names)
+                    Expr.Index(object, index, line):
+                        table <- walk_expression_for_unknown_field_access(object, table, var_types, type_names)
+                        table <- walk_expression_for_unknown_field_access(index, table, var_types, type_names) if not index_receiver_is_type_application(object)
+                    Expr.Unary(operator, operand, line):
+                        table <- walk_expression_for_unknown_field_access(operand, table, var_types, type_names)
+                    Expr.Paren(inner, line):
+                        table <- walk_expression_for_unknown_field_access(inner, table, var_types, type_names)
+                    Expr.Array(elements, line):
+                        for element in elements |table|:
+                            table <- walk_expression_for_unknown_field_access(element, table, var_types, type_names)
+                    Expr.Tuple(elements, line):
+                        for element in elements |table|:
+                            table <- walk_expression_for_unknown_field_access(element, table, var_types, type_names)
+                    Expr.Slice(object, low, high, line):
+                        table <- walk_expression_for_unknown_field_access(object, table, var_types, type_names)
+                        table <- walk_expression_for_unknown_field_access(low, table, var_types, type_names)
+                        table <- walk_expression_for_unknown_field_access(high, table, var_types, type_names)
+                    Expr.IndexN(object, arguments, line):
+                        table <- walk_expression_for_unknown_field_access(object, table, var_types, type_names)
+                        for argument in arguments |table|:
+                            table <- walk_expression_for_unknown_field_access(argument, table, var_types, type_names) if not index_receiver_is_type_application(object)
+                    Expr.SetLit(elements, line):
+                        for element in elements |table|:
+                            table <- walk_expression_for_unknown_field_access(element, table, var_types, type_names)
+                    Expr.DictLit(entries, line):
+                        for entry in entries |table|:
+                            table <- walk_expression_for_unknown_field_access(entry.key, table, var_types, type_names)
+                            table <- walk_expression_for_unknown_field_access(entry.value, table, var_types, type_names)
+                    Expr.Construct(type_expression, fields, line):
+                        table <- walk_expression_for_unknown_field_access(type_expression, table, var_types, type_names)
+                        for field in fields |table|:
+                            table <- walk_expression_for_unknown_field_access(field.value, table, var_types, type_names)
+                    Expr.RecordUpdate(base, fields, line):
+                        table <- walk_expression_for_unknown_field_access(base, table, var_types, type_names)
+                        base_type: InferType = infer_expression_type(base, var_types, type_names, table)
+                        for field in fields |table|:
+                            table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.RecordUpdateUnknownField, name: field.name, line: line.line, expected: base_type.name, actual: ""}) if field.name != "" and base_type.kind == SemTypeKind.Named and struct_is_registered(table, base_type.name) and not struct_has_field(table, base_type.name, field.name)
+                            table <- walk_expression_for_unknown_field_access(field.value, table, var_types, type_names)
+                    Expr.If(condition, then_expr, else_expr, line):
+                        table <- walk_expression_for_unknown_field_access(condition, table, var_types, type_names)
+                        table <- walk_expression_for_unknown_field_access(then_expr, table, var_types, type_names)
+                        table <- walk_expression_for_unknown_field_access(else_expr, table, var_types, type_names)
+                    Expr.Comprehension(loop_variable, iterable, condition, body, line):
+                        table <- walk_expression_for_unknown_field_access(iterable, table, var_types, type_names)
+                        table <- walk_expression_for_unknown_field_access(condition, table, var_types, type_names)
+                        table <- walk_expression_for_unknown_field_access(body, table, var_types, type_names)
+                    Expr.Lambda(parameters, body, line):
+                        table <- walk_statements_for_unknown_field_access(body, table, var_types, type_names)
+                    Expr.Block(statements, value, captures, line):
+                        table <- walk_statements_for_unknown_field_access(statements, table, var_types, type_names)
+                        table <- walk_expression_for_unknown_field_access(value, table, var_types, type_names)
+                    Expr.Match(scrutinee, arms, line):
+                        table <- walk_expression_for_unknown_field_access(scrutinee, table, var_types, type_names)
+                        for arm in arms |table|:
+                            table <- walk_statements_for_unknown_field_access(arm.body, table, var_types, type_names)
+                    # Literals and other expressions don't contain relevant sub-expressions
+                    _:
+                        pass
+
+        def check_let_struct_selectors(pattern: Ast::Pattern, owner: sview, line: u32, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match pattern:
+                    Pattern.Struct(path, fields):
+                        for field_pattern in fields |table| -> table:
+                            match field_pattern:
+                                Pattern.Field(selector, inner):
+                                    table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.LetDestructureUnknownField, name: selector, line: line, expected: owner, actual: ""}) if not struct_has_field(table, owner, selector)
+                                _:
+                                    pass
+                    _:
+                        pass
+
+        def check_let_destructure_block(body: darray[Ast::Stmt]&, line: u32, table: lmut SymbolTable, var_types: mutable darray[sview]&, type_names: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                return if body.count == 0
+                match body[0]:
+                    Stmt.Match(scrutinee, arms, match_line):
+                        return if arms.count == 0
+                        scrutinee_type: InferType = infer_expression_type(scrutinee, var_types, type_names, table)
+                        table <- check_let_struct_selectors(arms[0].pattern, scrutinee_type.name, line, table) if scrutinee_type.kind == SemTypeKind.Named and struct_is_registered(table, scrutinee_type.name)
+                    _:
+                        pass
+
+        # Walk through statements, tracking variable types and checking for unknown field access.
+        def walk_statements_for_unknown_field_access(statements: darray[Ast::Stmt], table: lmut SymbolTable, var_types: mutable darray[sview]&, type_names: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |table|:
+                    match statement:
+                        Stmt.Expr(expression, line):
+                            table <- walk_expression_for_unknown_field_access(expression, table, var_types, type_names)
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            type_name: sview = bare_type_name(type_expression)
+                            note_local_type(var_types, type_names, name, type_name)
+                            table <- walk_expression_for_unknown_field_access(value, table, var_types, type_names)
+                        Stmt.Assign(target, operator, value, line):
+                            table <- walk_expression_for_unknown_field_access(target, table, var_types, type_names)
+                            table <- walk_expression_for_unknown_field_access(value, table, var_types, type_names)
+                        Stmt.If(condition, then_body, else_body, line):
+                            table <- walk_expression_for_unknown_field_access(condition, table, var_types, type_names)
+                            table <- walk_statements_for_unknown_field_access(then_body, table, var_types, type_names)
+                            table <- walk_statements_for_unknown_field_access(else_body, table, var_types, type_names)
+                        Stmt.While(condition, body, line):
+                            table <- walk_expression_for_unknown_field_access(condition, table, var_types, type_names)
+                            table <- walk_statements_for_unknown_field_access(body, table, var_types, type_names)
+                        Stmt.For(bind, variables, iterable, body, line):
+                            table <- walk_expression_for_unknown_field_access(iterable, table, var_types, type_names)
+                            table <- walk_statements_for_unknown_field_access(body, table, var_types, type_names)
+                        Stmt.Block(kind, clause, binding, body, line):
+                            table <- check_let_destructure_block(body, line.line, table, var_types, type_names) if kind == "let"
+                            table <- walk_statements_for_unknown_field_access(body, table, var_types, type_names)
+                        Stmt.Match(scrutinee, arms, line):
+                            table <- walk_expression_for_unknown_field_access(scrutinee, table, var_types, type_names)
+                            for arm in arms |table|:
+                                table <- walk_expression_for_unknown_field_access(arm.guard, table, var_types, type_names)
+                                table <- walk_statements_for_unknown_field_access(arm.body, table, var_types, type_names)
+                        Stmt.Return(value, line):
+                            table <- walk_expression_for_unknown_field_access(return_value, table, var_types, type_names) if value is return_value
+                        Stmt.Contract(kind, expression, line):
+                            table <- walk_expression_for_unknown_field_access(expression, table, var_types, type_names)
+                        Stmt.Invalid:
+                            pass
+                        Stmt.Break(label, line):
+                            pass
+                        Stmt.Continue(label, line):
+                            pass
+
+        # Walk through function declarations.
+        def check_unknown_field_access_declarations(declarations: darray[Ast::Decl], table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |table|:
+                    match declaration:
+                        Decl.Func(name, params, return_type, body, effects, decorators, line):
+                            var_types: mutable darray[sview] = []
+                            type_names: mutable darray[sview] = []
+                            for param in params |table|:
+                                param_type: sview = bare_type_name(param.type_expression)
+                                note_local_type(var_types, type_names, param.name, param_type)
+                            table <- walk_statements_for_unknown_field_access(body, table, var_types, type_names)
+                        Decl.Module(module_name, body, line):
+                            table <- check_unknown_field_access_declarations(body, table)
+                        Decl.Scoped(body, line):
+                            table <- check_unknown_field_access_declarations(body, table)
+                        _:
+                            pass
+
+    public:
+        # Public entry point for the check.
+        def check_unknown_field_access(declarations: darray[Ast::Decl], table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                table <- check_unknown_field_access_declarations(declarations, table)

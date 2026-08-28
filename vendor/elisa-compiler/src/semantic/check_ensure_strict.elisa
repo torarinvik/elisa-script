@@ -1,0 +1,383 @@
+# Strict-proofs (`-strict` / EnforceStrictProofs) ensure-postcondition obligation.
+# Stage0's prover discharges each `ensure P` under strict mode and emits when it CANNOT
+# prove P holds on all return paths. Stage1 has no arithmetic prover, so it mirrors the
+# DECISION conservatively: an ensure is treated as proven only when it is decidably true
+# by cheap structural reasoning — a reflexive/identity comparison (after substituting the
+# single return expression for `result`), or a verbatim restatement of a `requires`
+# clause. Every other ensure is reported "could not be proven", matching stage0's default
+# outcome on the non-trivial arithmetic goals that dominate the corpus. Runs ONLY under
+# strict proofs (the diagnostic is strict-gated in stage0 too); refutation of provably
+# FALSE ensures stays with check_contract_result_void (which also runs in default mode).
+
+extend Semantic:
+    private:
+        # Whether EXPRESSION is the integer literal VALUE.
+        def int_literal_is(expression: Ast::Expr, value: i64) -> bool:
+            can Abort.Panic:
+                return match expression:
+                    Expr.IntLit(literal_value): literal_value == value
+                    _: false
+
+        # Peel the arithmetic-identity wrappers a structural prover can see — `X + 0`,
+        # `0 + X`, `X - 0`, `X * 1`, `1 * X` → X — returning the meaningful sub-node.
+        # Also unwraps Paren. Returns an EXISTING node (no allocation): the prover stays
+        # region-agnostic. Applied at the top only; the recursive comparator re-applies it
+        # at each level.
+        def strip_identity_top(expression: Ast::Expr) -> Ast::Expr:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Paren(inner, line):
+                        return strip_identity_top(inner)
+                    Expr.Binary(left, operator, right, line):
+                        strip_identity_top(left) return if operator == TokenKind.Plus and int_literal_is(right, 0)
+                        strip_identity_top(right) return if operator == TokenKind.Plus and int_literal_is(left, 0)
+                        strip_identity_top(left) return if operator == TokenKind.Minus and int_literal_is(right, 0)
+                        strip_identity_top(left) return if operator == TokenKind.Star and int_literal_is(right, 1)
+                        strip_identity_top(right) return if operator == TokenKind.Star and int_literal_is(left, 1)
+                        return expression
+                    _:
+                        return expression
+
+        # Map a bare `result` to the single return expression (has_return); other nodes are
+        # returned unchanged. Existing node, no allocation.
+        def resolve_result(expression: Ast::Expr, return_expression: Ast::Expr, has_return: bool) -> Ast::Expr:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Ident(name, line):
+                        return_expression return if has_return and name == "result"
+                        return expression
+                    Expr.Field(object, field, field_line):
+                        # `result.FIELD` resolves to the initializer of a struct-construct
+                        # return (`return Pair{a: 1, b: 2}` proves `ensure result.a == 1`).
+                        if has_return and ident_name_of(object) == "result":
+                            match return_expression:
+                                Expr.Construct(construct_type, construct_fields, construct_line):
+                                    for field_init in construct_fields |field|:
+                                        field_init.value return if field_init.name == field
+                                _:
+                                    pass
+                        return expression
+                    _:
+                        return expression
+
+        # Structural equality of two ensure-goal sub-expressions AFTER resolving `result`
+        # to the return value and folding arithmetic identities at every level — all without
+        # allocating (each step returns an existing node). Enough to prove reflexive goals
+        # like `result == a + b` given `return a + b`, or `x + 0 == x`.
+        def equal_normalized(a: Ast::Expr, b: Ast::Expr, return_expression: Ast::Expr, has_return: bool) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                a_normalized: Ast::Expr = strip_identity_top(resolve_result(strip_identity_top(a), return_expression, has_return))
+                b_normalized: Ast::Expr = strip_identity_top(resolve_result(strip_identity_top(b), return_expression, has_return))
+                match a_normalized:
+                    Expr.Ident(a_name, a_line):
+                        return match b_normalized:
+                            Expr.Ident(b_name, b_line): a_name == b_name
+                            _: false
+                    Expr.IntLit(a_value):
+                        return match b_normalized:
+                            Expr.IntLit(b_value): a_value == b_value
+                            _: false
+                    Expr.Binary(a_left, a_operator, a_right, a_line):
+                        return match b_normalized:
+                            Expr.Binary(b_left, b_operator, b_right, b_line): a_operator == b_operator and equal_normalized(a_left, b_left, return_expression, has_return) and equal_normalized(a_right, b_right, return_expression, has_return)
+                            _: false
+                    Expr.Unary(a_operator, a_operand, a_line):
+                        return match b_normalized:
+                            Expr.Unary(b_operator, b_operand, b_line): a_operator == b_operator and equal_normalized(a_operand, b_operand, return_expression, has_return)
+                            _: false
+                    Expr.Field(a_object, a_field, a_line):
+                        return match b_normalized:
+                            Expr.Field(b_object, b_field, b_line): a_field == b_field and equal_normalized(a_object, b_object, return_expression, has_return)
+                            _: false
+                    Expr.Index(a_object, a_index, a_line):
+                        return match b_normalized:
+                            Expr.Index(b_object, b_index, b_line): equal_normalized(a_object, b_object, return_expression, has_return) and equal_normalized(a_index, b_index, return_expression, has_return)
+                            _: false
+                    # Two structurally-identical calls (`self.lo()` == `self.lo()`): same callee
+                    # and pairwise-equal arguments. This makes the `result == E` identity hold when
+                    # the single return is a method/function call (`ensure result == self.lo(); return
+                    # self.lo()`), which stage0 discharges trivially.
+                    Expr.Call(a_callee, a_args, a_arg_names, a_call_line):
+                        return match b_normalized:
+                            Expr.Call(b_callee, b_args, b_arg_names, b_call_line): a_args.count == b_args.count and equal_normalized(a_callee, b_callee, return_expression, has_return) and es_args_equal(a_args, b_args, return_expression, has_return)
+                            _: false
+                    _:
+                        return false
+
+        # Pairwise structural equality of two argument lists (same length assumed by caller).
+        def es_args_equal(a_args: darray[Ast::Expr], b_args: darray[Ast::Expr], return_expression: Ast::Expr, has_return: bool) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                index: mutable usize = 0
+                while index < a_args.count |index, a_args, b_args, return_expression, has_return|:
+                    false return if index >= b_args.count
+                    false return if not equal_normalized(a_args[index], b_args[index], return_expression, has_return)
+                    index <- index + 1
+                return true
+
+        # --- Linear tier -------------------------------------------------------------
+        # stage0 discharges the corpus's simple contract goals through its prover ladder
+        # (interval facts, then SMT): `requires x > 0; ensure result > 0; return x + 1`
+        # is accepted silently. The tier below is a faithful port of the decidable core:
+        # normalize the goal to a LINEAR form D = Σ cᵢ·vᵢ + k over INTEGER parameters,
+        # bound each vᵢ from `requires` clauses and `where` refinements, and decide the
+        # comparison from D's extreme values over that box. Integer-only on purpose —
+        # `x > 0` implies `x >= 1` for ints, which is what makes strict bounds exact.
+
+        # Accumulate SIGN * EXPRESSION into a linear form held as parallel name/coeff
+        # arrays plus a constant. `result` resolves through the single return expression.
+        # Returns false when any sub-term is not affine (a call, a float, a field, ...).
+        def lin_add(expression: Ast::Expr, sign: i64, names: mutable darray[sview]&, coeffs: mutable darray[i64]&, konst: mutable i64&, return_expression: Ast::Expr, has_return: bool, depth: u32) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                false return if depth > 32
+                match expression:
+                    Expr.IntLit(value):
+                        konst <- konst + sign * value
+                        return true
+                    Expr.Ident(name, line):
+                        # `result` stands for the return value; fold it in, but never
+                        # resolve recursively (`result` cannot appear in its own body).
+                        (lin_add(return_expression, sign, names, coeffs, konst, Ast::Expr.Invalid, false, depth + 1)) return if has_return and name == "result"
+                        slot: mutable i64 = -1
+                        probe: mutable usize = 0
+                        while probe < names.count |slot, probe, name, names|:
+                            slot <- probe.i64() if names[probe] == name and slot < 0
+                            probe <- probe + 1
+                        if slot < 0:
+                            names.push(name)
+                            coeffs.push(sign)
+                        else:
+                            coeffs[slot.usize()] <- coeffs[slot.usize()] + sign
+                        return true
+                    Expr.Paren(inner, line):
+                        return lin_add(inner, sign, names, coeffs, konst, return_expression, has_return, depth + 1)
+                    Expr.Unary(operator, operand, line):
+                        (lin_add(operand, 0 - sign, names, coeffs, konst, return_expression, has_return, depth + 1)) return if operator == TokenKind.Minus
+                        return false
+                    Expr.Binary(left, operator, right, line):
+                        if operator == TokenKind.Plus:
+                            false return if not lin_add(left, sign, names, coeffs, konst, return_expression, has_return, depth + 1)
+                            return lin_add(right, sign, names, coeffs, konst, return_expression, has_return, depth + 1)
+                        if operator == TokenKind.Minus:
+                            false return if not lin_add(left, sign, names, coeffs, konst, return_expression, has_return, depth + 1)
+                            return lin_add(right, 0 - sign, names, coeffs, konst, return_expression, has_return, depth + 1)
+                        if operator == TokenKind.Star:
+                            # Affine only: one factor must be a literal.
+                            match left:
+                                Expr.IntLit(left_value):
+                                    return lin_add(right, sign * left_value, names, coeffs, konst, return_expression, has_return, depth + 1)
+                                _:
+                                    pass
+                            match right:
+                                Expr.IntLit(right_value):
+                                    return lin_add(left, sign * right_value, names, coeffs, konst, return_expression, has_return, depth + 1)
+                                _:
+                                    pass
+                            return false
+                        return false
+                    _:
+                        return false
+
+
+        # Update the bound rows for VARIABLE from `VARIABLE op VALUE` (mirrored when the
+        # variable is on the right). Bounds are parallel to `int_params`.
+        def lin_apply_bound(variable: sview, operator: TokenKind, value: i64, flipped: bool, int_params: darray[sview]&, has_lo: mutable darray[bool]&, lo: mutable darray[i64]&, has_hi: mutable darray[bool]&, hi: mutable darray[i64]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                slot: mutable i64 = -1
+                probe: mutable usize = 0
+                while probe < int_params.count |slot, probe, variable, int_params|:
+                    slot <- probe.i64() if int_params[probe] == variable and slot < 0
+                    probe <- probe + 1
+                return if slot < 0
+                index: usize = slot.usize()
+                # Normalize a flipped comparison (`VALUE op VARIABLE`) to variable-first.
+                effective: TokenKind = operator if not flipped else (TokenKind.Lt if operator == TokenKind.Gt else (TokenKind.LtEq if operator == TokenKind.GtEq else (TokenKind.Gt if operator == TokenKind.Lt else (TokenKind.GtEq if operator == TokenKind.LtEq else operator))))
+                new_lo: mutable i64 = 0
+                new_hi: mutable i64 = 0
+                sets_lo: mutable bool = false
+                sets_hi: mutable bool = false
+                if effective == TokenKind.Gt:
+                    new_lo <- value + 1
+                    sets_lo <- true
+                if effective == TokenKind.GtEq:
+                    new_lo <- value
+                    sets_lo <- true
+                if effective == TokenKind.Lt:
+                    new_hi <- value - 1
+                    sets_hi <- true
+                if effective == TokenKind.LtEq:
+                    new_hi <- value
+                    sets_hi <- true
+                if effective == TokenKind.EqEq:
+                    new_lo <- value
+                    new_hi <- value
+                    sets_lo <- true
+                    sets_hi <- true
+                if sets_lo and ((not has_lo[index]) or new_lo > lo[index]):
+                    has_lo[index] <- true
+                    lo[index] <- new_lo
+                if sets_hi and ((not has_hi[index]) or new_hi < hi[index]):
+                    has_hi[index] <- true
+                    hi[index] <- new_hi
+
+
+        # Fold FACT (splitting `and` conjunctions) into the per-parameter bounds.
+        def lin_collect_fact(fact: Ast::Expr, int_params: darray[sview]&, has_lo: mutable darray[bool]&, lo: mutable darray[i64]&, has_hi: mutable darray[bool]&, hi: mutable darray[i64]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match fact:
+                    Expr.Paren(inner, line):
+                        lin_collect_fact(inner, int_params, has_lo, lo, has_hi, hi)
+                    Expr.Binary(left, operator, right, line):
+                        if operator == TokenKind.And:
+                            lin_collect_fact(left, int_params, has_lo, lo, has_hi, hi)
+                            lin_collect_fact(right, int_params, has_lo, lo, has_hi, hi)
+                            return
+                        return if not is_comparison_operator(operator)
+                        left_name: sview = ident_name_of(left)
+                        right_name: sview = ident_name_of(right)
+                        left_const: (found: bool, value: i64) = fold_const_int(left)
+                        right_const: (found: bool, value: i64) = fold_const_int(right)
+                        lin_apply_bound(left_name, operator, right_const.value, false, int_params, has_lo, lo, has_hi, hi) if left_name != "" and right_const.found
+                        lin_apply_bound(right_name, operator, left_const.value, true, int_params, has_lo, lo, has_hi, hi) if right_name != "" and left_const.found
+                    _:
+                        pass
+
+
+        # Whether the expression SUBTRACTS a variable (`0 - a`, `x - y`): wrap-sensitive
+        # for unsigned operands, so the box requirement stays on.
+        def ensure_subtracts_variable(expression: Ast::Expr, depth: u32) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                false return if depth > 12
+                match expression:
+                    Expr.Paren(inner, line):
+                        return ensure_subtracts_variable(inner, depth + 1)
+                    Expr.Unary(operator, operand, unary_line):
+                        (ensure_goal_mentions_variable(operand, depth + 1)) return if operator == TokenKind.Minus
+                        return ensure_subtracts_variable(operand, depth + 1)
+                    Expr.Binary(left, operator, right, binary_line):
+                        true return if operator == TokenKind.Minus and ensure_goal_mentions_variable(right, depth + 1)
+                        true return if ensure_subtracts_variable(left, depth + 1)
+                        return ensure_subtracts_variable(right, depth + 1)
+                    _:
+                        return false
+
+
+        # Whether a goal side mentions any identifier other than `result` — a
+        # VAR-RELATIONAL goal (`result > x`) stays wrap-sensitive under bitvectors,
+        # while a CONST-bound goal (`result >= 4`) is decided by the interval tier.
+        def ensure_goal_mentions_variable(expression: Ast::Expr, depth: u32) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                false return if depth > 12
+                match expression:
+                    Expr.Ident(name, line):
+                        return name != "result"
+                    Expr.Paren(inner, paren_line):
+                        return ensure_goal_mentions_variable(inner, depth + 1)
+                    Expr.Unary(operator, operand, unary_line):
+                        return ensure_goal_mentions_variable(operand, depth + 1)
+                    Expr.Binary(left, operator, right, binary_line):
+                        true return if ensure_goal_mentions_variable(left, depth + 1)
+                        return ensure_goal_mentions_variable(right, depth + 1)
+                    _:
+                        return false
+
+
+        # Whether an expression performs arithmetic (any op node under the Parens) — the
+        # trigger for the overflow guard below.
+        def lin_has_arithmetic(expression: Ast::Expr) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Paren(inner, line):
+                        return lin_has_arithmetic(inner)
+                    Expr.Binary(left, operator, right, line):
+                        return true
+                    Expr.Unary(operator, operand, line):
+                        return true
+                    _:
+                        return false
+
+
+        # Decide `GOAL_LEFT op GOAL_RIGHT` by bounding D = lin(left) - lin(right) over the
+        # parameter box. Every variable D touches must be a bounded-as-needed INT param.
+        #
+        # OVERFLOW GUARD (pinned against stage0's bitvector-aware prover): when the return
+        # value itself is an ARITHMETIC expression, `requires a > 0; ensure result > 0;
+        # return a + b` is REJECTED — the sum may wrap — unless every variable in the
+        # return expression is bounded on BOTH sides, which is what rules the wrap out
+        # (`x < 100; return x + 1` cannot overflow). A bare `return n` does no arithmetic
+        # and needs no such box.
+        def linear_goal_is_proven(goal_left: Ast::Expr, operator: TokenKind, goal_right: Ast::Expr, return_expression: Ast::Expr, has_return: bool, int_params: darray[sview]&, has_lo: darray[bool]&, lo: darray[i64]&, has_hi: darray[bool]&, hi: darray[i64]&) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                if has_return and lin_has_arithmetic(return_expression):
+                    return_names: mutable darray[sview] = []
+                    return_coeffs: mutable darray[i64] = []
+                    return_konst: mutable i64 = 0
+                    false return if not lin_add(return_expression, 1, return_names, return_coeffs, return_konst, Ast::Expr.Invalid, false, 0)
+                    # The wrap-around guard is a MULTI-variable concern: `a + b` may
+                    # overflow past both bounds, but a single-variable affine step
+                    # (`n + 4`) is proven by the interval tier without a box (pinned:
+                    # stage0 accepts `requires n >= 0; ensure result >= 4; return n + 4`
+                    # and still rejects the unbounded two-variable sum).
+                    distinct_vars: mutable usize = 0
+                    var_probe: mutable usize = 0
+                    while var_probe < return_names.count |distinct_vars, var_probe, return_coeffs|:
+                        distinct_vars <- distinct_vars + 1 if return_coeffs[var_probe] != 0
+                        var_probe <- var_probe + 1
+                    relational_goal: bool = ensure_goal_mentions_variable(goal_left, 0) or ensure_goal_mentions_variable(goal_right, 0)
+                    box_needed: bool = distinct_vars >= 2 or relational_goal or ensure_subtracts_variable(return_expression, 0)
+                    fully_boxed: mutable bool = true
+                    box_probe: mutable usize = 0
+                    while box_probe < return_names.count |fully_boxed, box_probe, return_names, return_coeffs, int_params, has_lo, has_hi|:
+                        if return_coeffs[box_probe] != 0:
+                            slot: mutable i64 = -1
+                            param_probe: mutable usize = 0
+                            while param_probe < int_params.count |slot, param_probe, box_probe, return_names, int_params|:
+                                slot <- param_probe.i64() if int_params[param_probe] == return_names[box_probe] and slot < 0
+                                param_probe <- param_probe + 1
+                            fully_boxed <- false if slot < 0
+                            fully_boxed <- false if slot >= 0 and not (has_lo[slot.usize()] and has_hi[slot.usize()])
+                        box_probe <- box_probe + 1
+                    false return if box_needed and not fully_boxed
+                names: mutable darray[sview] = []
+                coeffs: mutable darray[i64] = []
+                konst: mutable i64 = 0
+                false return if not lin_add(goal_left, 1, names, coeffs, konst, return_expression, has_return, 0)
+                false return if not lin_add(goal_right, -1, names, coeffs, konst, return_expression, has_return, 0)
+                # D's extremes over the box; any needed-but-missing bound kills that side.
+                min_value: mutable i64 = konst
+                max_value: mutable i64 = konst
+                min_known: mutable bool = true
+                max_known: mutable bool = true
+                term: mutable usize = 0
+                while term < names.count |min_value, max_value, min_known, max_known, term, names, coeffs, int_params, has_lo, lo, has_hi, hi|:
+                    coefficient: i64 = coeffs[term]
+                    if coefficient != 0:
+                        slot: mutable i64 = -1
+                        probe: mutable usize = 0
+                        while probe < int_params.count |slot, probe, term, names, int_params|:
+                            slot <- probe.i64() if int_params[probe] == names[term] and slot < 0
+                            probe <- probe + 1
+                        if slot < 0:
+                            # Not a known integer parameter: nothing sound to say.
+                            min_known <- false
+                            max_known <- false
+                        else:
+                            index: usize = slot.usize()
+                            # A positive coefficient takes its min from lo and max from hi;
+                            # a negative one swaps them.
+                            min_uses_lo: bool = coefficient > 0
+                            min_bound_known: bool = has_lo[index] if min_uses_lo else has_hi[index]
+                            max_bound_known: bool = has_hi[index] if min_uses_lo else has_lo[index]
+                            min_bound: i64 = (lo[index] if min_uses_lo else hi[index]) if min_bound_known else 0
+                            max_bound: i64 = (hi[index] if min_uses_lo else lo[index]) if max_bound_known else 0
+                            min_value <- min_value + coefficient * min_bound if min_bound_known
+                            min_known <- false if not min_bound_known
+                            max_value <- max_value + coefficient * max_bound if max_bound_known
+                            max_known <- false if not max_bound_known
+                    term <- term + 1
+                (min_known and min_value >= 1) return if operator == TokenKind.Gt
+                (min_known and min_value >= 0) return if operator == TokenKind.GtEq
+                (max_known and max_value <= (0 - 1)) return if operator == TokenKind.Lt
+                (max_known and max_value <= 0) return if operator == TokenKind.LtEq
+                (min_known and max_known and min_value == 0 and max_value == 0) return if operator == TokenKind.EqEq
+                ((min_known and min_value >= 1) or (max_known and max_value <= (0 - 1))) return if operator == TokenKind.BangEq
+                return false

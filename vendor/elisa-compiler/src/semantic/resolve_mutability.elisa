@@ -1,0 +1,472 @@
+extend Semantic:
+    private:
+        # Resolve references in every function declaration in `declarations` (recursing modules).
+        # Whether a declared type spells mutability: the canonical `x: mutable T`/
+        # `p: mutable T&` form parses as a leading Unary(Mutable, ...) on the type expression.
+        def type_is_mutable(expression: Ast::Expr) -> bool:
+            can Abort.Panic:
+                match expression:
+                    Expr.Unary(operator, operand, line):
+                        return match operator:
+                            TokenKind.Mutable: true
+                            _: type_is_mutable(operand)
+                    # Function types parse their `-> Return` suffix as a binary type
+                    # expression, leaving the leading qualifier on the left-hand side.
+                    Expr.Binary(left, operator, right, line):
+                        return type_is_mutable(left)
+                    Expr.Paren(inner, line):
+                        return type_is_mutable(inner)
+                    Expr.Refinement(base, predicate, line):
+                        return type_is_mutable(base)
+                    _:
+                        return false
+
+
+        # Whether a declared type spells the `lmut T` (linear-mutable) parameter mode:
+        # it parses as a leading Unary(Lmut, ...) on the type expression, exactly like the
+        # `mutable` prefix above. Codegen is identical to `mutable T&`; the distinction
+        # only feeds the call-site aliasing check (`check_call_lmut_aliasing`).
+        def type_is_lmut(expression: Ast::Expr) -> bool:
+            can Abort.Panic:
+                return match expression:
+                    Expr.Unary(operator, operand, line): operator == TokenKind.Lmut
+                    _: false
+
+
+        # Record a function-body binding's mutability. Params feed this with their own
+        # flag; var-decls derive it from the declared type. Any OTHER binding form
+        # (for-loop variables, pattern bindings, block bindings, multi-assign targets, ...)
+        # goes to `skip` -- mutability of those isn't modeled yet, and a skipped name is
+        # never flagged (no false positives from unmodeled forms).
+        def note_binding(name: sview, is_mutable: bool, immutable_names: mutable darray[sview]&, mutable_names: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                mutable_names.push(name) if is_mutable
+                immutable_names.push(name) if not is_mutable
+
+
+        # Gather binding mutability across a body (flattened, mirrors gather_locals).
+        def gather_mutability(statements: darray[Ast::Stmt], immutable_names: mutable darray[sview]&, mutable_names: mutable darray[sview]&, skip: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                immutable_total: usize = immutable_names.count + statements.count * 4
+                mutable_total: usize = mutable_names.count + statements.count * 4
+                skip_total: usize = skip.count + statements.count * 8
+                immutable_names.reserve(immutable_total)
+                mutable_names.reserve(mutable_total)
+                skip.reserve(skip_total)
+                for statement_index in 0..<statements.count |immutable_names, mutable_names, skip|:
+                    statement: Ast::Stmt = statements[statement_index]
+                    match statement:
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            note_binding(name, type_is_mutable(type_expression), immutable_names, mutable_names)
+                        Stmt.Assign(target, operator, value, line):
+                            # Multi-target unpack introduces fresh locals -- unmodeled.
+                            match target:
+                                Expr.Array(elements, array_line):
+                                    for element in elements |skip|:
+                                        match element:
+                                            Expr.Ident(element_name, ident_line):
+                                                skip.push(element_name)
+                                            _:
+                                                pass
+                                _:
+                                    pass
+                        Stmt.For(bind, variables, iterable, body, line):
+                            skip.extend([variable for variable in variables])
+                            gather_mutability(body, immutable_names, mutable_names, skip)
+                        Stmt.If(condition, then_body, else_body, line):
+                            gather_mutability(then_body, immutable_names, mutable_names, skip)
+                            gather_mutability(else_body, immutable_names, mutable_names, skip)
+                        Stmt.While(condition, body, line):
+                            gather_mutability(body, immutable_names, mutable_names, skip)
+                        Stmt.Block(kind, clause, binding, body, line):
+                            skip.push(binding) if binding != ""
+                            gather_mutability(body, immutable_names, mutable_names, skip)
+                        Stmt.Match(scrutinee, arms, line):
+                            for arm in arms:
+                                gather_pattern(arm.pattern, skip)
+                                gather_mutability(arm.body, immutable_names, mutable_names, skip)
+                        Stmt.Expr(expression, line):
+                            pass
+                        Stmt.Return(value, line):
+                            pass
+                        Stmt.Contract(kind, expression, line):
+                            pass
+                        Stmt.Invalid:
+                            pass
+                        Stmt.Break(label, line):
+                            pass
+                        Stmt.Continue(label, line):
+                            pass
+
+
+
+        # Whether a method name is a mutating builtin on containers (darray/dict/set).
+        # Mirrors stage0's mutatingBuiltinCollectionMethods.
+        def is_mutating_method(method: sview) -> bool:
+            can Abort.Panic:
+                mutating: darray[sview] = [
+                    "push", "pop", "extend", "clear", "truncate", "insert", "remove",
+                    "reserve", "resize", "set", "put", "add", "get_or_insert"
+                ]
+                return any candidate in mutating where candidate == method
+
+
+        # Check a single expression for mutating method calls on immutable bindings.
+        # Examines Call(Field(...), ...) patterns only; nested expressions not walked.
+        def check_expression_mutating_call(expression: Ast::Expr, table: lmut SymbolTable, immutable_names: darray[sview]&, mutable_names: darray[sview]&, skip: darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                # One deep pattern (docs/122) — the Call→Field→Ident probe ladder collapsed.
+                match expression:
+                    Expr.Call(callee, arguments, argument_names, line):
+                        match callee:
+                            Expr.Field(receiver, method, field_line):
+                                match receiver:
+                                    Expr.Ident(receiver_name, _):
+                                        is_immutable: bool = any immutable_name in immutable_names where immutable_name == receiver_name
+                                        ever_mutable: bool = any mutable_name in mutable_names where mutable_name == receiver_name
+                                        is_skipped: bool = any skipped_name in skip where skipped_name == receiver_name
+                                        flagged: bool = is_mutating_method(method) and is_immutable and not ever_mutable and not is_skipped
+                                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.AssignImmutable, name: receiver_name, line: line.line, expected: "", actual: ""}) if flagged
+                                    _:
+                                        pass
+                            _:
+                                pass
+                    _:
+                        pass
+
+
+        # Flag mutations (`<-` / compound assigns -- NOT `=`, which defines a new local)
+        # whose bare-ident target is a binding known to be immutable. A name that is
+        # skipped or ever declared mutable (e.g. a shadowing redeclaration) is not
+        # flagged -- unmodeled forms must never produce a false positive.
+        def check_assigns(statements: darray[Ast::Stmt], table: lmut SymbolTable, immutable_names: darray[sview]&, mutable_names: darray[sview]&, skip: darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |table| -> table:
+                    match statement:
+                        Stmt.Assign(target, operator, value, line):
+                            if operator != TokenKind.Assign:
+                                match target:
+                                    Expr.Ident(name, ident_line):
+                                        if (any immutable_name in immutable_names where immutable_name == name) and not (any mutable_name in mutable_names where mutable_name == name) and not (any skipped_name in skip where skipped_name == name):
+                                            table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.AssignImmutable, name: name, line: line.line, expected: "", actual: ""})
+                                    _:
+                                        pass
+                        Stmt.Expr(expression, line):
+                            # Check for mutating method calls in expression statements.
+                            table <- check_expression_mutating_call(expression, table, immutable_names, mutable_names, skip)
+                        Stmt.If(condition, then_body, else_body, line):
+                            table <- check_assigns(then_body, table, immutable_names, mutable_names, skip)
+                            table <- check_assigns(else_body, table, immutable_names, mutable_names, skip)
+                        Stmt.While(condition, body, line):
+                            table <- check_assigns(body, table, immutable_names, mutable_names, skip)
+                        Stmt.For(bind, variables, iterable, body, line):
+                            table <- check_assigns(body, table, immutable_names, mutable_names, skip)
+                        Stmt.Block(kind, clause, binding, body, line):
+                            table <- check_assigns(body, table, immutable_names, mutable_names, skip)
+                        Stmt.Match(scrutinee, arms, line):
+                            for arm in arms |table| -> table:
+                                table <- check_assigns(arm.body, table, immutable_names, mutable_names, skip)
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            pass
+                        Stmt.Return(value, line):
+                            pass
+                        Stmt.Contract(kind, expression, line):
+                            pass
+                        Stmt.Invalid:
+                            pass
+                        Stmt.Break(label, line):
+                            pass
+                        Stmt.Continue(label, line):
+                            pass
+
+
+        # Flag same-list local redefinitions: a repeated `x: T = v` declaration or an
+        # `x = v` binding definition over an existing same-list local/param. Nested
+        # blocks start a FRESH list -- shadowing an outer name there is legal (stage0
+        # semantics), so only the current statement list's names are consulted.
+        def check_duplicate_locals(statements: darray[Ast::Stmt], here: mutable darray[sview]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |table, here| -> table:
+                    match statement:
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            if any held_name in here where held_name == name:
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.DuplicateLocal, name: name, line: line.line, expected: "", actual: ""})
+                            else:
+                                here.push(name)
+                        Stmt.Assign(target, operator, value, line):
+                            # `=` DEFINES a local; a bare-ident `=` target over an
+                            # existing same-list name is a redefinition. `<-`/compound
+                            # mutate (checked elsewhere); multi-target arrays unmodeled.
+                            # `_` is the discard sink — `_ = a` then `_ = b` in one list
+                            # is idiomatic and never a redefinition.
+                            if operator == TokenKind.Assign:
+                                match target:
+                                    Expr.Ident(name, ident_line):
+                                        if name != "_":
+                                            if any held_name in here where held_name == name:
+                                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.DuplicateLocal, name: name, line: line.line, expected: "", actual: ""})
+                                            else:
+                                                here.push(name)
+                                    _:
+                                        pass
+                        Stmt.If(condition, then_body, else_body, line):
+                            then_scope: mutable darray[sview] = []
+                            table <- check_duplicate_locals(then_body, then_scope, table)
+                            else_scope: mutable darray[sview] = []
+                            table <- check_duplicate_locals(else_body, else_scope, table)
+                        Stmt.While(condition, body, line):
+                            while_scope: mutable darray[sview] = []
+                            table <- check_duplicate_locals(body, while_scope, table)
+                        Stmt.For(bind, variables, iterable, body, line):
+                            for_scope: mutable darray[sview] = []
+                            table <- check_duplicate_locals(body, for_scope, table)
+                        Stmt.Block(kind, clause, binding, body, line):
+                            block_scope: mutable darray[sview] = []
+                            table <- check_duplicate_locals(body, block_scope, table)
+                        Stmt.Match(scrutinee, arms, line):
+                            for arm in arms |table| -> table:
+                                arm_scope: mutable darray[sview] = []
+                                table <- check_duplicate_locals(arm.body, arm_scope, table)
+                        Stmt.Expr(expression, line):
+                            pass
+                        Stmt.Return(value, line):
+                            pass
+                        Stmt.Contract(kind, expression, line):
+                            pass
+                        Stmt.Invalid:
+                            pass
+                        Stmt.Break(label, line):
+                            pass
+                        Stmt.Continue(label, line):
+                            pass
+
+
+        # Collect every value-position identifier REFERENCE in an expression into
+        # `used` (the inverse of walk_expression's resolution: names, not diagnostics).
+        # Selector positions (field names, labels, `::` members, `is` targets) are
+        # not references and are skipped, mirroring walk_expression exactly.
+        def collect_expression_uses(expression: Ast::Expr, used: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Ident(name, line):
+                        used.push(name)
+                    Expr.Call(callee, arguments, argument_names, line):
+                        collect_expression_uses(callee, used)
+                        for argument in arguments:
+                            collect_expression_uses(argument, used)
+                    Expr.Field(receiver, field, line):
+                        collect_expression_uses(receiver, used)
+                    Expr.Scope(base, name, line):
+                        collect_expression_uses(base, used)
+                    Expr.Index(receiver, index, line):
+                        collect_expression_uses(receiver, used)
+                        collect_expression_uses(index, used)
+                    Expr.Binary(left, operator, right, line):
+                        collect_expression_uses(left, used)
+                        collect_expression_uses(right, used)
+                    Expr.Unary(operator, operand, line):
+                        collect_expression_uses(operand, used)
+                    Expr.Move(operand, line):
+                        collect_expression_uses(operand, used)
+                    Expr.RegionNew(operand, region, line):
+                        collect_expression_uses(operand, used)
+                    Expr.Refinement(base, predicate, line):
+                        collect_expression_uses(base, used)
+                        collect_expression_uses(predicate, used)
+                    # `get EXPR else return …` — walk the GUARDED expression; the recovery is a
+                    # statement list, which this expression walker does not descend into.
+                    Expr.GetElse(guarded, recovery, line):
+                        collect_expression_uses(guarded, used)
+                    Expr.Paren(inner, line):
+                        collect_expression_uses(inner, used)
+                    Expr.Array(elements, line):
+                        for element in elements:
+                            collect_expression_uses(element, used)
+                    Expr.Tuple(elements, line):
+                        for element in elements:
+                            collect_expression_uses(element, used)
+                    Expr.Slice(receiver, low, high, line):
+                        collect_expression_uses(receiver, used)
+                        collect_expression_uses(low, used)
+                        collect_expression_uses(high, used)
+                    Expr.IndexN(receiver, arguments, line):
+                        collect_expression_uses(receiver, used)
+                        for argument in arguments:
+                            collect_expression_uses(argument, used)
+                    Expr.SetLit(elements, line):
+                        for element in elements:
+                            collect_expression_uses(element, used)
+                    Expr.DictLit(entries, line):
+                        for entry in entries:
+                            collect_expression_uses(entry.key, used)
+                            collect_expression_uses(entry.value, used)
+                    Expr.Construct(type, fields, line):
+                        collect_expression_uses(type, used)
+                        for field in fields:
+                            collect_expression_uses(field.value, used)
+                    Expr.RecordUpdate(base, fields, line):
+                        collect_expression_uses(base, used)
+                        for field in fields:
+                            collect_expression_uses(field.value, used)
+                    Expr.If(condition, then_expression, else_expression, line):
+                        collect_expression_uses(condition, used)
+                        collect_expression_uses(then_expression, used)
+                        collect_expression_uses(else_expression, used)
+                    Expr.Comprehension(variable, iterable, condition, body, line):
+                        collect_expression_uses(iterable, used)
+                        collect_expression_uses(condition, used)
+                        collect_expression_uses(body, used)
+                    Expr.Lambda(parameters, body, line):
+                        collect_statement_uses(body, used)
+                    Expr.Match(scrutinee, arms, line):
+                        collect_expression_uses(scrutinee, used)
+                        for arm in arms:
+                            collect_statement_uses(arm.body, used)
+                    # `catch EXPR:` — positionally identical to Match (guarded, arms, line);
+                    # the guarded call is the scrutinee and the arms walk the same way.
+                    Expr.Catch(scrutinee, arms, line):
+                        collect_expression_uses(scrutinee, used)
+                        for arm in arms:
+                            collect_statement_uses(arm.body, used)
+                    Expr.Block(statements, value, captures, line):
+                        # Captures are uses (they're threaded in/out).
+                        used.extend(captures)
+                        collect_statement_uses(statements, used)
+                        collect_expression_uses(value, used)
+                    Expr.Invalid:
+                        pass
+                    Expr.Absent:
+                        pass
+                        pass
+                    Expr.IntLit(value):
+                        pass
+                    Expr.FloatLit(text):
+                        pass
+                    Expr.StringLit(text):
+                        pass
+                    Expr.CharLit(text):
+                        pass
+                    Expr.BoolLit(value):
+                        pass
+                    Expr.ShorthandMember(parts, line):
+                        pass
+
+
+        # Collect uses across statements (recursing every nested body). Assignment
+        # TARGETS count as uses too — a write keeps a binding "used" for hint
+        # purposes (write-only locals are a different, later analysis).
+        def collect_statement_uses(statements: darray[Ast::Stmt], used: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |used|:
+                    match statement:
+                        Stmt.Expr(expression, line):
+                            collect_expression_uses(expression, used)
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            collect_expression_uses(value, used)
+                        Stmt.Assign(target, operator, value, line):
+                            collect_expression_uses(target, used)
+                            collect_expression_uses(value, used)
+                        Stmt.If(condition, then_body, else_body, line):
+                            collect_expression_uses(condition, used)
+                            collect_statement_uses(then_body, used)
+                            collect_statement_uses(else_body, used)
+                        Stmt.While(condition, body, line):
+                            collect_expression_uses(condition, used)
+                            collect_statement_uses(body, used)
+                        Stmt.For(bind, variables, iterable, body, line):
+                            collect_expression_uses(iterable, used)
+                            collect_statement_uses(body, used)
+                        Stmt.Block(kind, clause, binding, body, line):
+                            # Prefix-clause names (`in owner:`, `region r:`, `lock m as g:`)
+                            # are region/mutex selectors — they USE the named binding.
+                            used.extend([clause_name for clause_name in clause])
+                            collect_statement_uses(body, used)
+                        Stmt.Match(scrutinee, arms, line):
+                            collect_expression_uses(scrutinee, used)
+                            for arm in arms:
+                                collect_statement_uses(arm.body, used)
+                        Stmt.Return(value, line):
+                            if value is return_value:
+                                collect_expression_uses(return_value, used)
+                        Stmt.Contract(kind, expression, line):
+                            collect_expression_uses(expression, used)
+                        Stmt.Invalid:
+                            pass
+                        Stmt.Break(label, line):
+                            pass
+                        Stmt.Continue(label, line):
+                            pass
+
+
+        # Discard-convention name: `_` or `_`-prefixed. Uses the seeded sview
+        # builtins (NOT stdlib helpers) so the frontend stays self-resolving
+        # without the standard library in scope.
+        def is_discard_name(name: sview) -> bool:
+            can Abort.Panic:
+                return sview_len(name) > 0 and sview_at(name, 0) == '_'
+
+
+        # Whether a parameter is ownership-threading ABI: an `Arena`, or a packed
+        # enum's qualified `Enum.Store[...]`. Packed pattern tests infer their store
+        # from this parameter, so it is semantically consumed without an explicit
+        # value reference. Wrappers/type applications are transparent here.
+        def type_is_implicit_owner(expression: Ast::Expr) -> bool:
+            can Abort.Panic:
+                match expression:
+                    Expr.Unary(operator, operand, line):
+                        return type_is_implicit_owner(operand)
+                    Expr.Ident(name, ident_line):
+                        return name == "Arena"
+                    Expr.Field(owner, field, field_line):
+                        return field == "Store"
+                    Expr.Scope(owner, name, scope_line):
+                        return name == "Store"
+                    Expr.Index(owner, argument, index_line):
+                        return type_is_implicit_owner(owner)
+                    Expr.IndexN(owner, arguments, index_line):
+                        return type_is_implicit_owner(owner)
+                    _:
+                        return false
+
+
+        # NOTE: stage0 deliberately has no unused-param/local semantic diagnostic, and stage1
+        # must not add one — a lint-only hint that changes acceptance is a parity break. There
+        # used to be a `check_unused` hook here that took four arguments and did nothing; the
+        # rule it encodes is this comment, not a call. The DiagnosticKind ordinals it was said
+        # to pin live in the enum and are unaffected.
+
+
+        # Recurse the body flagging unused `x: T = v` locals at their own lines.
+        def check_unused_locals(statements: darray[Ast::Stmt], table: lmut SymbolTable, used: darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |table| -> table:
+                    match statement:
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            if not is_discard_name(name):
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.UnusedLocal, name: name, line: line.line, expected: "", actual: ""}) if not (any used_name in used where used_name == name)
+                        Stmt.If(condition, then_body, else_body, line):
+                            table <- check_unused_locals(then_body, table, used)
+                            table <- check_unused_locals(else_body, table, used)
+                        Stmt.While(condition, body, line):
+                            table <- check_unused_locals(body, table, used)
+                        Stmt.For(bind, variables, iterable, body, line):
+                            table <- check_unused_locals(body, table, used)
+                        Stmt.Block(kind, clause, binding, body, line):
+                            table <- check_unused_locals(body, table, used)
+                        Stmt.Match(scrutinee, arms, line):
+                            for arm in arms |table| -> table:
+                                table <- check_unused_locals(arm.body, table, used)
+                        Stmt.Expr(expression, line):
+                            pass
+                        Stmt.Assign(target, operator, value, line):
+                            pass
+                        Stmt.Return(value, line):
+                            pass
+                        Stmt.Contract(kind, expression, line):
+                            pass
+                        Stmt.Invalid:
+                            pass
+                        Stmt.Break(label, line):
+                            pass
+                        Stmt.Continue(label, line):
+                            pass

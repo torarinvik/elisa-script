@@ -1,0 +1,171 @@
+# Validate function decorators against stage0's separate ordinary/extern allowlists.
+# Decorator arguments are intentionally outside this pass; the parser currently retains
+# names only, which is sufficient to reject unknown annotations without guessing payloads.
+
+extend Semantic:
+    private:
+        def supported_function_annotation(name: sview) -> bool:
+            return when name:
+                "test" | "bench" | "property" | "differential" | "lockstep" | "fixture" | "skip" | "inline" | "fast_math" | "norecurse" | "hot" | "cold" | "callconv" | "guard_nonnull" | "guard_variant" | "internal" | "main_thread" | "init" | "async_entry" | "segment_agnostic" | "segment_establishing" | "segment_transition" | "reentrant_safe" | "deprecated" | "noalloc" | "inbounds" | "nolock" | "boundary_pointer_args" -> true
+                _ -> false
+
+        def supported_extern_function_annotation(name: sview) -> bool:
+            return when name:
+                "borrows_return" | "link_name" | "intrinsic" | "callconv" | "internal" | "blocking" | "nonblocking" | "segment_transition" | "reentrant_safe" | "deprecated" | "trusted" -> true
+                _ -> false
+
+        def has_function_annotation(decorators: darray[Ast::Annotation], wanted: sview) -> bool:
+            for decorator in decorators:
+                true return if decorator.name == wanted
+            return false
+
+        def function_has_generic_params(line: u32, table: SymbolTable&) -> bool:
+            for generic_line in table.generic_param_lines:
+                true return if generic_line == line
+            return false
+
+        def annotation_path_root(path: sview) -> sview:
+            for index in 0..<sview_len(path):
+                path[0:index] return if path[index] == '.'
+            return path
+
+        def annotation_path_field(path: sview) -> sview:
+            for index in 0..<sview_len(path):
+                path[index + 1:sview_len(path)] return if path[index] == '.'
+            return ""
+
+        def provenance_container_name(name: sview) -> bool:
+            return name in {"view", "dview", "sview", "darray", "dstr"}
+
+        def struct_provenance_field(owner: sview, wanted_field: sview, table: SymbolTable&) -> bool:
+            can Abort.Panic:
+                for index in 0..<table.struct_field_owner.count:
+                    if table.struct_field_owner[index] == owner and (wanted_field == "" or table.struct_field_name[index] == wanted_field):
+                        field_kind: SemTypeKind = interned_kind(table.struct_field_type_id[index], table)
+                        true return if field_kind in {SemTypeKind.Ref, SemTypeKind.Container} or provenance_container_name(table.struct_field_type[index])
+                return false
+
+
+        def extern_return_type_at(annotations: darray[Ast::EnumAnnotation]&, line: u32) -> sview:
+            for annotation in annotations:
+                annotation.name return if annotation.owner == "__extern_return" and annotation.line == line
+            return ""
+
+
+        def return_field_path_exists(owner: sview, path: sview, table: SymbolTable&) -> bool:
+            can Abort.Panic:
+                field: sview = annotation_path_root(path)
+                remaining: sview = annotation_path_field(path)
+                for index in 0..<table.struct_field_owner.count:
+                    if table.struct_field_owner[index] == owner and table.struct_field_name[index] == field:
+                        true return if remaining == ""
+                        return return_field_path_exists(table.struct_field_type[index], remaining, table)
+                return false
+
+
+        def annotation_path_has_index(path: sview) -> bool:
+            for index in 0..<sview_len(path):
+                true return if path[index] == '['
+            return false
+
+        def check_function_annotation_contracts(name: sview, params: darray[Ast::ParamDecl], return_type: Ast::Expr?, effects: darray[sview], decorators: darray[Ast::Annotation], annotation_args: darray[sview], line: u32, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                # `@test` / `@bench` / `@fixture` share ONE rule block in stage0
+                # (validateFunctionAnnotation's fallthrough): no type or shape parameters,
+                # no declared permissions EXCEPT on `@test`, no parameters, and — for
+                # `@test` and `@bench` only — a void return. stage0 returns on the FIRST
+                # violation, so only one diagnostic is reported per annotation; the order
+                # below is stage0's.
+                #
+                # Previously stage1 checked only THREE of the eight (annotation, rule)
+                # pairs — test/params, bench/return, fixture/generics — so a
+                # parameter-taking `@fixture`, and any permission-declaring `@bench` or
+                # `@fixture`, compiled clean here and were rejected by stage0.
+                annotated_names: darray[sview] = ["test", "bench", "fixture"]
+                for annotated_name in annotated_names |table| -> table:
+                    continue if not has_function_annotation(decorators, annotated_name)
+                    if function_has_generic_params(line, table):
+                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.GenericFixtureFunction, name: name, line: line, expected: annotated_name, actual: ""})
+                        continue
+                    # Only `@test` may carry a `can[...]` clause.
+                    if annotated_name != "test" and effects.count != 0:
+                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.AnnotatedFunctionPermissions, name: name, line: line, expected: annotated_name, actual: ""})
+                        continue
+                    if params.count != 0:
+                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.TestFunctionParameters, name: name, line: line, expected: annotated_name, actual: ""})
+                        continue
+                    continue if annotated_name == "fixture"
+                    if return_type is return_type_expr:
+                        return_name: sview = bare_type_name(return_type_expr)
+                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.BenchFunctionNonVoidReturn, name: name, line: line, expected: annotated_name, actual: return_name}) if return_name != "" and return_name != "void"
+                for decorator in decorators |table| -> table:
+                    if decorator.name == "guard_nonnull" and decorator.arg_count == 1 and decorator.arg_start.usize() < annotation_args.count:
+                        guarded_name: sview = annotation_args[decorator.arg_start.usize()]
+                        for param in params |table| -> table:
+                            if param.name == guarded_name:
+                                guarded_type_id: u32 = annotation_type_id(param.type_expression, table)
+                                guarded_surface_type: sview = bare_type_name(param.type_expression)
+                                # A `T?` / `heap T&?` param is syntactically optional even when
+                                # the interner cannot resolve the `heap`-qualified carrier to an
+                                # Optional kind — check the `?` marker directly to avoid a false
+                                # positive on nullable-reference parameters.
+                                is_optional_param: bool = interned_kind(guarded_type_id, table) == SemTypeKind.Optional or type_marker_present_here(param.type_expression, TokenKind.Question)
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.GuardNonnullNonOptionalParam, name: guarded_name, line: line, expected: name, actual: guarded_surface_type}) if not is_optional_param
+                                break
+
+        def check_extern_borrow_annotation(name: sview, param_start: u32, arity: u32, params: darray[Ast::ExternParam], decorators: darray[Ast::Annotation], annotation_args: darray[sview], enum_annotations: darray[Ast::EnumAnnotation]&, line: u32, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for decorator in decorators |table| -> table:
+                    if decorator.name == "borrows_return" and decorator.arg_count == 1:
+                        arg_index: usize = decorator.arg_start.usize()
+                        if arg_index < annotation_args.count:
+                            source_name: sview = annotation_args[arg_index]
+                            source_root: sview = annotation_path_root(source_name)
+                            source_field: sview = annotation_path_field(source_name)
+                            found: mutable bool = false
+                            provenance: mutable bool = false
+                            source_type: mutable sview = ""
+                            for param_index in param_start.usize()..<(param_start + arity).usize() |found, provenance, source_type|:
+                                break if param_index >= params.count
+                                param: Ast::ExternParam = params[param_index]
+                                if param.name == source_root:
+                                    found <- true
+                                    provenance <- param.provenance_bearing or struct_provenance_field(param.type_name, source_field, table)
+                                    source_type <- param.type_name
+                            table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.ExternBorrowUnknownParam, name: source_name, line: line, expected: name, actual: ""}) if not found
+                            table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.ExternBorrowNonProvenanceParam, name: source_name, line: line, expected: name, actual: source_type}) if found and source_field == "" and not provenance
+                    if decorator.name == "borrows_return" and decorator.arg_count >= 3:
+                        arg_start: usize = decorator.arg_start.usize()
+                        if arg_start < annotation_args.count and annotation_args[arg_start] == "field":
+                            rebased: bool = arg_start + 1 < annotation_args.count and annotation_args[arg_start + 1] == "rebased"
+                            path_index: usize = arg_start + 1 + (1 if rebased else 0)
+                            if path_index < annotation_args.count:
+                                return_path: sview = annotation_args[path_index]
+                                return_owner: sview = extern_return_type_at(enum_annotations, line)
+                                concrete_return: bool = struct_is_registered(table, return_owner)
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.ExternBorrowFieldNonStructReturn, name: return_path, line: line, expected: name, actual: return_owner}) if not concrete_return
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.ExternBorrowUnknownReturnField, name: return_path, line: line, expected: name, actual: return_owner}) if concrete_return and not annotation_path_has_index(return_path) and not return_field_path_exists(return_owner, return_path, table)
+
+        def check_unknown_function_annotation_declarations(declarations: darray[Ast::Decl], annotation_args: darray[sview], extern_params: darray[Ast::ExternParam], enum_annotations: darray[Ast::EnumAnnotation]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |table| -> table:
+                    match declaration:
+                        Decl.Func(name, params, return_type, body, effects, decorators, line):
+                            for decorator in decorators |table| -> table:
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.UnknownFunctionAnnotation, name: decorator.name, line: line.line, expected: name, actual: ""}) if not supported_function_annotation(decorator.name)
+                            table <- check_function_annotation_contracts(name, params, return_type, effects, decorators, annotation_args, line.line, table)
+                        Decl.Extern(name, param_start, arity, variadic, callable, _, decorators, line):
+                            for decorator in decorators |table| -> table:
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.UnknownExternFunctionAnnotation, name: decorator.name, line: line.line, expected: name, actual: ""}) if callable and not supported_extern_function_annotation(decorator.name)
+                            table <- check_extern_borrow_annotation(name, param_start, arity, extern_params, decorators, annotation_args, enum_annotations, line.line, table) if callable
+                        Decl.Module(module_name, body, line):
+                            table <- check_unknown_function_annotation_declarations(body, annotation_args, extern_params, enum_annotations, table)
+                        Decl.Scoped(body, line):
+                            table <- check_unknown_function_annotation_declarations(body, annotation_args, extern_params, enum_annotations, table)
+                        _:
+                            pass
+
+    public:
+        def check_unknown_function_annotation(file: Ast::File&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                table <- check_unknown_function_annotation_declarations(file.top_decls, file.annotation_args, file.extern_params, file.enum_annotations, table)

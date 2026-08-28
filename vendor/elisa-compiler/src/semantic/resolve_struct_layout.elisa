@@ -1,0 +1,255 @@
+extend Semantic:
+    # Stage1 struct declaration layout checks (stage0 port docs/119).
+    #
+    # Validate struct field types and structural properties at declaration time:
+    # 1. Unknown field type: a field's declared type names a type that is not registered
+    #    (not a primitive, not a known struct/enum).
+    # 2. Directly self-recursive struct: a struct references itself directly without
+    #    indirection (e.g. `struct S: x: S` — infinite size). Mutual recursion via refs
+    #    is sound (ref is a pointer) and beyond this check.
+
+    private:
+        # Whether `name` is a recognized primitive type or special form.
+        # An arbitrary-width integer type spelling `uN`/`iN` (e.g. `u4`, `u3`, `u1` in a
+        # `layout(packed)` struct). Leading `u`(117)/`i`(105) followed by one or more ASCII
+        # digits, with a width below 64. Distinguishes `u4` from `usize`/`uintptr`/`int`.
+        def is_bit_width_int(name: sview) -> bool:
+            can Abort.Panic:
+                length: usize = sview_len(name)
+                false return if length < 2
+                lead: u8 = name[0]
+                false return if lead != 117 and lead != 105
+                index: mutable usize = 1
+                all_digits: mutable bool = true
+                while index < length |all_digits, index|:
+                    digit: u8 = name[index]
+                    all_digits <- false if digit < 48 or digit > 57
+                    index <- index + 1
+                return all_digits
+
+        def is_primitive_type(name: sview) -> bool:
+            can Abort.Panic:
+                # Special syntax forms (bitset/bitfield are pseudo-types used in struct definitions).
+                true return if name in {"i8", "i16", "i32", "i64", "int", "isize", "u8", "u16", "u32", "u64", "usize", "uintptr", "f32", "f64", "bool", "char", "void", "cstr", "dstr", "sview", "bitset", "bitfield"}
+                return is_bit_width_int(name)
+
+
+        # Whether `name` is a registered struct or enum in the table.
+        def is_registered_type(name: sview, table: SymbolTable&) -> bool:
+            can Abort.Panic:
+                for symbol in table.symbols:
+                    # Structs and enums are types; `extern T` FFI types (e.g. `va_list`) and
+                    # `alias` names are equally valid type spellings — a name known through any
+                    # of these is resolved. The kind test is a pure comparison, so compute it
+                    # unconditionally and fold the name match into the return guard.
+                    is_type: bool = symbol.kind == SymbolKind.Struct or symbol.kind == SymbolKind.Enum or symbol.kind == SymbolKind.Extern or symbol.kind == SymbolKind.Alias
+                    true return if symbol.name == name and is_type
+                return false
+
+        def qualified_type_is_registered(expression: Ast::Expr, table: SymbolTable&) -> bool:
+            can Abort.Panic:
+                match expression:
+                    Expr.Scope(base, member_name, line):
+                        module_name: sview = match base:
+                            Expr.Ident(name, ident_line): name
+                            _: ""
+                        # Nested/compound qualifiers are not yet represented in the
+                        # ownership pair; remain conservative rather than flagging a
+                        # valid imported or nested type.
+                        true return if module_name == ""
+                        # If the qualifier itself is not a locally registered module,
+                        # it may be an imported/external namespace; preserve the
+                        # historical conservative behavior for that case.
+                        known_module: mutable bool = false
+                        for symbol in table.symbols |known_module|:
+                            known_module <- true if symbol.kind == SymbolKind.Module and symbol.name == module_name
+                        true return if not known_module
+                        while qualified_index < table.qualified_type_module.count |qualified_index: usize = 0|:
+                            true return if table.qualified_type_module[qualified_index] == module_name and table.qualified_type_name[qualified_index] == member_name
+                            qualified_index <- qualified_index + 1
+                        return false
+                    _:
+                        return true
+
+
+        # Resolve a bare TYPE name. Returns true if the name is DEFINITELY unresolved
+        # (not a primitive, not registered). Conservative: empty name, single-letter names
+        # (generics), and capitalized names (may be defined elsewhere) are never flagged.
+        def is_unresolved_type(name: sview, table: SymbolTable&) -> bool:
+            can Abort.Panic:
+                # A declared `region NAME(...)` is legal in type position
+                # (region-parameterized generics: `Box[i64, scratch]`).
+                false return if any region_name in table.region_names where region_name == name
+                false return if name == ""
+                # Single-letter identifiers are generic type parameters (T, U, K, V, etc.).
+                false return if name.len == 1
+                # If it starts with uppercase, it might be defined elsewhere (cross-module type).
+                # Only flag truly-unresolved lowercase names (likely typos). The guards above
+                # already proved name is non-empty and not single-letter (len >= 2), so
+                # indexing [0] here is always in bounds — no length guard needed.
+                first_char: u8 = name[0]
+                false return if first_char >= 65 and first_char <= 90
+                false return if is_primitive_type(name)
+                false return if is_registered_type(name, table)
+                return true
+
+
+        # Source line for a field type expression, used to place layout diagnostics on
+        # the declaration that actually names the bad type.
+        def expr_line(expression: Ast::Expr) -> u32:
+            can Abort.Panic:
+                return match expression:
+                    Expr.Invalid:                 0
+                    Expr.Absent:                 0
+                    Expr.IntLit(value):           0
+                    Expr.FloatLit(text):          0
+                    Expr.StringLit(text):         0
+                    Expr.CharLit(text):           0
+                    Expr.BoolLit(value):          0
+                    Expr.Ident(name, line):       line.line
+                    Expr.Call(callee, arguments, argument_names, line): line.line
+                    Expr.Field(receiver, field, line): line.line
+                    Expr.Scope(base, name, line): line.line
+                    Expr.Index(object, index, line): line.line
+                    Expr.Binary(left, operator, right, line): line.line
+                    Expr.Unary(operator, operand, line): line.line
+                    Expr.Move(operand, line): line.line
+                    Expr.RegionNew(operand, region, line): line.line
+                    Expr.Refinement(base, predicate, line): line.line
+                    Expr.GetElse(guarded, recovery, line): line.line
+                    Expr.Paren(inner, line):      line.line
+                    Expr.Array(elements, line):    line.line
+                    Expr.Tuple(elements, line):    line.line
+                    Expr.SetLit(elements, line):   line.line
+                    Expr.DictLit(entries, line):   line.line
+                    Expr.Construct(type, fields, line): line.line
+                    Expr.RecordUpdate(base, fields, line): line.line
+                    Expr.If(condition, then_expression, else_expression, line): line.line
+                    Expr.Match(scrutinee, arms, line): line.line
+                    Expr.Catch(guarded, catch_arms, line): line.line
+                    Expr.Comprehension(variable, iterable, condition, body, line): line.line
+                    Expr.Lambda(parameters, body, line): line.line
+                    Expr.ShorthandMember(parts, line): line.line
+                    Expr.IndexN(object, arguments, line): line.line
+                    Expr.Slice(object, low, high, line): line.line
+                    Expr.Block(stmts, value, captures, line): line.line
+
+
+        def primitive_layout_size(type_name: sview) -> u32:
+            can Abort.Panic:
+                return when type_name:
+                    "bool" | "i8" | "u8" -> 1
+                    "i16" | "u16" -> 2
+                    "i32" | "u32" | "f32" -> 4
+                    "char" | "i64" | "u64" | "f64" | "int" | "isize" | "usize" | "uintptr" -> 8
+                    _ -> 0
+
+
+        def layout_size_for_three(first: u32, second: u32, third: u32, count: usize) -> u32:
+            offset: mutable u32 = first
+            second_remainder: u32 = offset % second
+            offset <- offset + (second - second_remainder) if second_remainder != 0
+            offset <- offset + second
+            if count == 3:
+                third_remainder: u32 = offset % third
+                offset <- offset + (third - third_remainder) if third_remainder != 0
+                offset <- offset + third
+            maximum_alignment: mutable u32 = first
+            maximum_alignment <- second if second > maximum_alignment
+            maximum_alignment <- third if count == 3 and third > maximum_alignment
+            final_remainder: u32 = offset % maximum_alignment
+            offset <- offset + (maximum_alignment - final_remainder) if final_remainder != 0
+            return offset
+
+
+        # Exact stage0 host-ABI ordering for the common fully-known primitive case.
+        # Keep the subset deliberately closed: structural/ghost/packed fields require the
+        # richer recursive layout engine and therefore suppress this warning for now.
+        def check_primitive_struct_padding(name: sview, members: darray[Ast::StructMember]&, line: u32, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                return if members.count < 2 or members.count > 3
+                for member in members:
+                    return if member.name == "" or member.is_ghost or member.bit_group_kind != ""
+                    size: u32 = primitive_layout_size(bare_type_name(member.type_expression))
+                    return if size == 0
+                first_name: mutable sview = members[0].name
+                second_name: mutable sview = members[1].name
+                third_name: mutable sview = members[2].name if members.count == 3 else ""
+                first_size: mutable u32 = primitive_layout_size(bare_type_name(members[0].type_expression))
+                second_size: mutable u32 = primitive_layout_size(bare_type_name(members[1].type_expression))
+                third_size: mutable u32 = primitive_layout_size(bare_type_name(members[2].type_expression)) if members.count == 3 else 0
+                current_size: u32 = layout_size_for_three(first_size, second_size, third_size, members.count)
+                if second_size > first_size:
+                    swap_size: u32 = first_size
+                    swap_name: sview = first_name
+                    first_size <- second_size
+                    first_name <- second_name
+                    second_size <- swap_size
+                    second_name <- swap_name
+                if members.count == 3 and third_size > second_size:
+                    swap_size: u32 = second_size
+                    swap_name: sview = second_name
+                    second_size <- third_size
+                    second_name <- third_name
+                    third_size <- swap_size
+                    third_name <- swap_name
+                if second_size > first_size:
+                    swap_size: u32 = first_size
+                    swap_name: sview = first_name
+                    first_size <- second_size
+                    first_name <- second_name
+                    second_size <- swap_size
+                    second_name <- swap_name
+                best_size: u32 = layout_size_for_three(first_size, second_size, third_size, members.count)
+                return if best_size >= current_size
+                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.StructPadding, name: name, line: line, expected: first_name, actual: second_name, expected_count: current_size, actual_count: best_size, detail: third_name})
+
+
+        # Validate a single struct's field types and self-recursion.
+        def check_struct_layout(name: sview, members: darray[Ast::StructMember]&, line: u32, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                table <- check_primitive_struct_padding(name, members, line, table)
+                for member in members |table| -> table:
+                    continue if member.name == ""
+                    type_name: sview = bare_type_name(member.type_expression)
+                    type_line: u32 = expr_line(member.type_expression)
+                    match member.type_expression:
+                        Expr.Scope(_, qualified_name, _):
+                            if not qualified_type_is_registered(member.type_expression, table):
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.UnknownFieldType, name: member.name, line: type_line, expected: name, actual: qualified_name})
+                                continue
+                        _:
+                            pass
+                    if is_unresolved_type(type_name, table):
+                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.UnknownFieldType, name: member.name, line: type_line, expected: name, actual: type_name})
+                        table
+                    elif type_name == name:
+                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.RecursiveStruct, name: name, line: type_line, expected: member.name, actual: ""})
+                        table
+                    else:
+                        table
+
+
+        # Recursively walk a declaration list (top-level or module bodies).
+        def validate_struct_layouts_range(declarations: darray[Ast::Decl]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |table| -> table:
+                    match declaration:
+                        Ast::Decl.Struct(struct_name, members, affinity, _, _, _, line):
+                            table <- check_struct_layout(struct_name, members, line.line, table)
+                            table
+                        Ast::Decl.Module(module_name, body, module_line):
+                            table <- validate_struct_layouts_range(body, table)
+                            table
+                        Ast::Decl.Scoped(body, scoped_line):
+                            table <- validate_struct_layouts_range(body, table)
+                            table
+                        _:
+                            table
+
+    public:
+        # Entry point: validate struct layouts across all declarations. Called during
+        # symbol collection, after structs are registered but before functions are analyzed.
+        def validate_struct_layouts(file: Ast::File&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                table <- validate_struct_layouts_range(file.top_decls, table)

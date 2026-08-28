@@ -1,0 +1,284 @@
+# Check for identical operands on both sides of logical `and` or `or` operators.
+# Both operands must be structurally equal and side-effect-free (no calls).
+
+extend Semantic:
+    private:
+        # Check if an expression contains any Call nodes (side effects).
+        def contains_call(expr: Ast::Expr) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                match expr:
+                    Expr.Call(_, _, _, _):
+                        return true
+                    Expr.Field(object, _, _):
+                        return contains_call(object)
+                    Expr.Scope(base, _, _):
+                        return contains_call(base)
+                    Expr.Index(object, index, _):
+                        return contains_call(object) or contains_call(index)
+                    Expr.Unary(_, operand, _):
+                        return contains_call(operand)
+                    Expr.Paren(inner, _):
+                        return contains_call(inner)
+                    Expr.Array(elements, _):
+                        for element in elements:
+                            true return if contains_call(element)
+                        return false
+                    Expr.Tuple(elements, _):
+                        for element in elements:
+                            true return if contains_call(element)
+                        return false
+                    Expr.Slice(object, low, high, _):
+                        return contains_call(object) or contains_call(low) or contains_call(high)
+                    Expr.IndexN(object, arguments, _):
+                        true return if contains_call(object)
+                        for arg in arguments:
+                            true return if contains_call(arg)
+                        return false
+                    Expr.SetLit(elements, _):
+                        for element in elements:
+                            true return if contains_call(element)
+                        return false
+                    Expr.DictLit(entries, _):
+                        for entry in entries:
+                            true return if contains_call(entry.key) or contains_call(entry.value)
+                        return false
+                    Expr.Construct(type_expr, fields, _):
+                        true return if contains_call(type_expr)
+                        for field in fields:
+                            true return if contains_call(field.value)
+                        return false
+                    Expr.RecordUpdate(base, fields, _):
+                        true return if contains_call(base)
+                        for field in fields:
+                            true return if contains_call(field.value)
+                        return false
+                    Expr.Binary(left, _, right, _):
+                        return contains_call(left) or contains_call(right)
+                    Expr.If(cond, then_expr, else_expr, _):
+                        return contains_call(cond) or contains_call(then_expr) or contains_call(else_expr)
+                    Expr.Comprehension(_, iterable, condition, body, _):
+                        return contains_call(iterable) or contains_call(condition) or contains_call(body)
+                    Expr.Lambda(_, _, _):
+                        # Lambdas may contain calls in their body, so conservatively return true
+                        return true
+                    Expr.Block(_, _, _, _):
+                        # Blocks may contain calls, so conservatively return true
+                        return true
+                    Expr.Match(scrutinee, _, _):
+                        # Match arms may contain calls, so conservatively return true
+                        return contains_call(scrutinee)
+                    _:
+                        # Literals and other safe forms
+                        return false
+
+
+        # Compare two expressions for structural equality (reuses the pattern from check_duplicate_condition).
+        # Only compares simple node kinds that have no side effects.
+        def expressions_equal_identical(a: Ast::Expr, b: Ast::Expr) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                # Unwrap Paren nodes from both sides first
+                a_unwrapped: mutable Ast::Expr = a
+                b_unwrapped: mutable Ast::Expr = b
+                match a:
+                    Expr.Paren(inner_a, _):
+                        a_unwrapped <- inner_a
+                    _:
+                        pass
+                match b:
+                    Expr.Paren(inner_b, _):
+                        b_unwrapped <- inner_b
+                    _:
+                        pass
+
+                # Match on a and check if b matches its structure
+                match a_unwrapped:
+                    Expr.Ident(a_name, _):
+                        match b_unwrapped:
+                            Expr.Ident(b_name, _):
+                                return sview_equal(a_name, b_name)
+                            _:
+                                return false
+                    Expr.IntLit(a_value):
+                        match b_unwrapped:
+                            Expr.IntLit(b_value):
+                                return a_value == b_value
+                            _:
+                                return false
+                    Expr.BoolLit(a_value):
+                        match b_unwrapped:
+                            Expr.BoolLit(b_value):
+                                return a_value == b_value
+                            _:
+                                return false
+                    Expr.StringLit(a_text):
+                        match b_unwrapped:
+                            Expr.StringLit(b_text):
+                                return sview_equal(a_text, b_text)
+                            _:
+                                return false
+                    Expr.CharLit(a_text):
+                        match b_unwrapped:
+                            Expr.CharLit(b_text):
+                                return sview_equal(a_text, b_text)
+                            _:
+                                return false
+                    Expr.Field(a_obj, a_field, _):
+                        match b_unwrapped:
+                            Expr.Field(b_obj, b_field, _):
+                                # Fields equal if names match and objects match
+                                false return if not sview_equal(a_field, b_field)
+                                return expressions_equal_identical(a_obj, b_obj)
+                            _:
+                                return false
+                    Expr.Binary(a_left, a_op, a_right, _):
+                        match b_unwrapped:
+                            Expr.Binary(b_left, b_op, b_right, _):
+                                return a_op == b_op and expressions_equal_identical(a_left, b_left) and expressions_equal_identical(a_right, b_right)
+                            _:
+                                return false
+                    Expr.Unary(a_op, a_operand, _):
+                        match b_unwrapped:
+                            Expr.Unary(b_op, b_operand, _):
+                                return a_op == b_op and expressions_equal_identical(a_operand, b_operand)
+                            _:
+                                return false
+                    Expr.Paren(a_inner, _):
+                        # Recursively compare the inner expression (handles nested parens)
+                        return expressions_equal_identical(a_inner, b)
+                    _:
+                        # Bail on complex expressions: calls, indexes, etc.
+                        return false
+
+
+        # Walk through all expressions, checking for identical logical operands.
+        def walk_expression_for_identical_logical_operands(expression: Ast::Expr, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Binary(left, operator, right, line):
+                        # Check for identical operands with logical operators; both operands
+                        # must be structurally equal and side-effect-free.
+                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.IdenticalLogicalOperands, name: "and" if operator == TokenKind.And else "or", line: line.line, expected: "", actual: ""}) if (operator == TokenKind.And or operator == TokenKind.Or) and expressions_equal_identical(left, right) and not contains_call(left) and not contains_call(right)
+                        # Recursively walk left and right operands
+                        table <- walk_expression_for_identical_logical_operands(left, table)
+                        table <- walk_expression_for_identical_logical_operands(right, table) if operator != TokenKind.Is and operator != TokenKind.As
+                    Expr.Call(callee, arguments, argument_names, line):
+                        table <- walk_expression_for_identical_logical_operands(callee, table)
+                        for argument in arguments |table| -> table:
+                            table <- walk_expression_for_identical_logical_operands(argument, table)
+                    Expr.Field(object, field, line):
+                        table <- walk_expression_for_identical_logical_operands(object, table)
+                    Expr.Scope(base, name, line):
+                        table <- walk_expression_for_identical_logical_operands(base, table)
+                    Expr.Index(object, index, line):
+                        table <- walk_expression_for_identical_logical_operands(object, table)
+                        table <- walk_expression_for_identical_logical_operands(index, table) if not index_receiver_is_type_application(object)
+                    Expr.Unary(operator, operand, line):
+                        table <- walk_expression_for_identical_logical_operands(operand, table)
+                    Expr.Paren(inner, line):
+                        table <- walk_expression_for_identical_logical_operands(inner, table)
+                    Expr.Array(elements, line):
+                        for element in elements |table| -> table:
+                            table <- walk_expression_for_identical_logical_operands(element, table)
+                    Expr.Tuple(elements, line):
+                        for element in elements |table| -> table:
+                            table <- walk_expression_for_identical_logical_operands(element, table)
+                    Expr.Slice(object, low, high, line):
+                        table <- walk_expression_for_identical_logical_operands(object, table)
+                        table <- walk_expression_for_identical_logical_operands(low, table)
+                        table <- walk_expression_for_identical_logical_operands(high, table)
+                    Expr.IndexN(object, arguments, line):
+                        table <- walk_expression_for_identical_logical_operands(object, table)
+                        for argument in arguments |table| -> table:
+                            table <- walk_expression_for_identical_logical_operands(argument, table) if not index_receiver_is_type_application(object)
+                    Expr.SetLit(elements, line):
+                        for element in elements |table| -> table:
+                            table <- walk_expression_for_identical_logical_operands(element, table)
+                    Expr.DictLit(entries, line):
+                        for entry in entries |table| -> table:
+                            table <- walk_expression_for_identical_logical_operands(entry.key, table)
+                            table <- walk_expression_for_identical_logical_operands(entry.value, table)
+                    Expr.Construct(type_expression, fields, line):
+                        table <- walk_expression_for_identical_logical_operands(type_expression, table)
+                        for field in fields |table| -> table:
+                            table <- walk_expression_for_identical_logical_operands(field.value, table)
+                    Expr.RecordUpdate(base, fields, line):
+                        table <- walk_expression_for_identical_logical_operands(base, table)
+                        for field in fields |table| -> table:
+                            table <- walk_expression_for_identical_logical_operands(field.value, table)
+                    Expr.If(condition, then_expr, else_expr, line):
+                        table <- walk_expression_for_identical_logical_operands(condition, table)
+                        table <- walk_expression_for_identical_logical_operands(then_expr, table)
+                        table <- walk_expression_for_identical_logical_operands(else_expr, table)
+                    Expr.Comprehension(loop_variable, iterable, condition, body, line):
+                        table <- walk_expression_for_identical_logical_operands(iterable, table)
+                        table <- walk_expression_for_identical_logical_operands(condition, table)
+                        table <- walk_expression_for_identical_logical_operands(body, table)
+                    Expr.Lambda(parameters, body, line):
+                        table <- walk_statements_for_identical_logical_operands(body, table)
+                    Expr.Block(statements, value, captures, line):
+                        table <- walk_statements_for_identical_logical_operands(statements, table)
+                        table <- walk_expression_for_identical_logical_operands(value, table)
+                    Expr.Match(scrutinee, arms, line):
+                        table <- walk_expression_for_identical_logical_operands(scrutinee, table)
+                        for arm in arms |table| -> table:
+                            table <- walk_statements_for_identical_logical_operands(arm.body, table)
+                    # Literals and other expression forms don't contain sub-expressions
+                    _:
+                        pass
+
+
+        # Walk through statements, checking for identical logical operands in expressions.
+        def walk_statements_for_identical_logical_operands(statements: darray[Ast::Stmt], table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |table|:
+                    match statement:
+                        Stmt.Expr(expression, line):
+                            table <- walk_expression_for_identical_logical_operands(expression, table)
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            table <- walk_expression_for_identical_logical_operands(value, table)
+                        Stmt.Assign(target, operator, value, line):
+                            table <- walk_expression_for_identical_logical_operands(target, table)
+                            table <- walk_expression_for_identical_logical_operands(value, table)
+                        Stmt.If(condition, then_body, else_body, line):
+                            table <- walk_expression_for_identical_logical_operands(condition, table)
+                            table <- walk_statements_for_identical_logical_operands(then_body, table)
+                            table <- walk_statements_for_identical_logical_operands(else_body, table)
+                        Stmt.While(condition, body, line):
+                            table <- walk_expression_for_identical_logical_operands(condition, table)
+                            table <- walk_statements_for_identical_logical_operands(body, table)
+                        Stmt.For(bind, variables, iterable, body, line):
+                            table <- walk_expression_for_identical_logical_operands(iterable, table)
+                            table <- walk_statements_for_identical_logical_operands(body, table)
+                        Stmt.Return(value, line):
+                            table <- walk_expression_for_identical_logical_operands(return_value, table) if value is return_value
+                        Stmt.Block(kind, clause, binding, body, line):
+                            table <- walk_statements_for_identical_logical_operands(body, table)
+                        Stmt.Match(scrutinee, arms, line):
+                            table <- walk_expression_for_identical_logical_operands(scrutinee, table)
+                            for arm in arms |table|:
+                                table <- walk_statements_for_identical_logical_operands(arm.body, table)
+                        Stmt.Contract(kind, expression, line):
+                            table <- walk_expression_for_identical_logical_operands(expression, table)
+                        # No expressions in these statements
+                        Stmt.Break(label, line):
+                            pass
+                        Stmt.Continue(label, line):
+                            pass
+                        Stmt.Invalid:
+                            pass
+
+
+        # Walk through function declarations, checking expressions in their bodies.
+        def check_identical_logical_operands(declarations: darray[Ast::Decl], table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |table|:
+                    match declaration:
+                        Decl.Func(name, params, return_type, body, effects, decorators, line):
+                            table <- walk_statements_for_identical_logical_operands(body, table)
+                        Decl.Module(module_name, body, line):
+                            table <- check_identical_logical_operands(body, table)
+                        Decl.Scoped(body, line):
+                            table <- check_identical_logical_operands(body, table)
+                        # Other declarations don't have bodies to check
+                        _:
+                            pass

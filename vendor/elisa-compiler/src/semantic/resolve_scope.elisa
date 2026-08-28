@@ -1,0 +1,559 @@
+extend Semantic:
+    private:
+        # Stage1 semantic layer — name resolution (internal helpers, module-private).
+        #
+        # Walks each function body's VALUE expressions and resolves every identifier reference
+        # against the names in scope: the function's parameters, its local bindings (var-decls,
+        # for-loop variables, match-arm pattern bindings, `is` refinements, comprehension
+        # variables, prefix-clause bindings), and the file's global symbol table. References
+        # that resolve to none of these are counted as unresolved. Type-position expressions
+        # (param/return/var-declaration annotations) are deliberately NOT walked, so built-in type
+        # names don't register as unresolved.
+
+
+        # A name is in scope if it is a parameter/local (bound) or a global declaration. The
+        # global half is an O(1) index probe (`name_indexed`) rather than a scan of every
+        # symbol; `bound` (a function's locals) stays a linear scan since it is small.
+        # Max AST-walk recursion depth (see SymbolTable.walk_depth). Far above any
+        # real expression nesting, well below the stack-overflow threshold.
+        const WALK_DEPTH_LIMIT: u32 = 4000
+
+        # Whether `name` resolves EXCLUSIVELY to Module symbol(s) and is not a
+        # bound local/param — the "namespace used as a value" test.
+        def name_is_module_only(table: SymbolTable&, bound: darray[sview]&, name: sview) -> bool:
+            can Abort.Panic:
+                false return if any bound_name in bound where bound_name == name
+                saw_module: mutable bool = false
+                for symbol in table.symbols |saw_module|:
+                    false return if symbol.name == name and symbol.kind != SymbolKind.Module
+                    saw_module <- true if symbol.name == name
+                return saw_module
+
+
+        def name_is_module(table: SymbolTable&, bound: darray[sview]&, name: sview) -> bool:
+            can Abort.Panic:
+                false return if any bound_name in bound where bound_name == name
+                return any symbol in table.symbols where symbol.name == name and symbol.kind == SymbolKind.Module
+
+
+        # Does `head::tail` name a module? A module declared with a QUALIFIED name
+        # (`module Outer::Inner:`) is recorded VERBATIM, separators and all, because the
+        # parser captures the whole chain as one source span. A use of it therefore arrives
+        # as a NESTED Scope — `Outer::Inner::f` is Scope(Scope(Ident, "Inner"), "f") — whose
+        # base is not a bare Ident, so the qualifier test missed it and `Outer` was walked as
+        # a VALUE and reported undefined.
+        #
+        # Compared piecewise against the recorded name rather than by building `head::tail`:
+        # joining would mean allocating a name just to look one up.
+        def two_part_names_module(table: SymbolTable&, head: sview, rest: sview) -> bool:
+            can Abort.Panic:
+                for symbol in table.symbols |head, rest|:
+                    continue if symbol.kind != SymbolKind.Module
+                    true return if qualified_name_matches(symbol.name, head, rest)
+                return false
+
+
+        # `candidate == head ++ "::" ++ tail`, without building the join.
+        def qualified_name_matches(candidate: sview, head: sview, rest: sview) -> bool:
+            can Abort.Panic:
+                head_length: usize = sview_len(head)
+                rest_length: usize = sview_len(rest)
+                false return if head_length == 0 or rest_length == 0
+                false return if sview_len(candidate) != head_length + 2.usize() + rest_length
+                for index in 0..<head_length |candidate, head|:
+                    false return if sview_at(candidate, index) != sview_at(head, index)
+                false return if sview_at(candidate, head_length) != 58
+                false return if sview_at(candidate, head_length + 1.usize()) != 58
+                for index in 0..<rest_length |candidate, rest, head_length|:
+                    false return if sview_at(candidate, head_length + 2.usize() + index) != sview_at(rest, index)
+                return true
+
+
+        def name_known(table: SymbolTable&, bound: darray[sview]&, name: sview) -> bool:
+            can Abort.Panic:
+                # `_` is the discard wildcard, never a real binding: it appears as a
+                # thread-claim discard target (`parser, _ <- parser.advance()`,
+                # docs/120 §11) and in destructures, and always "resolves".
+                true return if name == "_"
+                # `old` is the contract-only pre-state operator (`ensure x > old(x)`,
+                # docs/87); stage0 resolves it as a spec builtin.
+                true return if name == "old"
+                # `ensures(f, PRED)` is the higher-order contract predicate — asserts that
+                # callable `f` guarantees PRED of its result (stage0's
+                # analyzer_higher_order_contracts). Resolved as a spec builtin like `old`.
+                true return if name == "ensures"
+                # `variants(Enum)` / `fields(Struct)` — the compile-time REFLECTION
+                # builtins (static_builders): stage0 resolves them in static contexts and
+                # evaluates them during static execution. stage1 resolves them like the
+                # other spec builtins; static bodies are compile-time-only and emit no
+                # runtime code, so resolution is all the analyzer owes them.
+                true return if name == "variants" or name == "fields"
+                true return if any bound_name in bound where bound_name == name
+                # `region r(4096):` BINDS `r` — it is passed to functions taking a region
+                # (`build(r)`). The parser records each one as a `__region_name` annotation
+                # and check_full already collects those into table.region_names; the block
+                # itself carries no `binding`, so without this the name read as undefined.
+                true return if any region_name in table.region_names where region_name == name
+                false return if not name_indexed(table, name)
+                symbol_count: mutable usize = 0
+                for symbol in table.symbols |symbol_count|:
+                    symbol_count <- symbol_count + 1 if symbol.name == name and symbol.kind != SymbolKind.Module
+                member_count: mutable usize = 0
+                visible_member: mutable bool = false
+                while member_index < table.module_member_name.count |member_index: usize = 0, member_count, visible_member|:
+                    if table.module_member_name[member_index] == name:
+                        member_count <- member_count + 1
+                        owner: sview = table.module_member_owner[member_index]
+                        visible_member <- true if owner == table.current_module or (any imported in table.imported_modules where imported == owner) or (any brought in table.imported_members where brought == name)
+                    member_index <- member_index + 1
+                return visible_member or symbol_count > member_count or symbol_count == 0
+
+
+        # Record one param/local occurrence for tooling (the LSP's semantic-token
+        # highlighter reads these). `is_param` selects kind 1 (parameter) over 2
+        # (local). No effect on diagnostics — a pure side log.
+        def record_reference(table: lmut SymbolTable, line: u32, name: sview, is_param: bool) -> void:
+            can Memory.Allocate, Abort.Panic:
+                table.ref_line <- table.ref_line.push(line)
+                table.ref_name <- table.ref_name.push(name)
+                table.ref_kind <- table.ref_kind.push(1 if is_param else 2)
+
+
+        # Index of the innermost `bound` entry named `name`, else -1. Scans from
+        # the end so a later local correctly shadows an earlier param/local.
+        def bound_last_index(bound: darray[sview]&, name: sview) -> int:
+            can Abort.Panic:
+                while binding_index >= 0 |binding_index: int = bound.count.int() - 1|:
+                    binding_index return if bound[binding_index.usize()] == name
+                    binding_index <- binding_index - 1
+                return -1
+
+
+        # Collect the names a match-arm pattern binds: a bare `Binding`, the binder of a
+        # category arm (`Type s`), and any binding subpatterns nested inside variant,
+        # struct, tuple, or or-pattern fields. Wildcards/literals/paths bind nothing.
+        # Does this pattern bind NAME? The allocation-free twin of gather_pattern followed by a
+        # membership scan, short-circuiting at the first hit.
+        #
+        # The or-pattern intersection below asked exactly that question once per alternative
+        # per candidate, and answered it by gathering ALL of an alternative's bindings into a
+        # fresh darray and searching it — an allocation per inner iteration, in a doubly nested
+        # loop. Traversal MUST stay in step with gather_pattern; they are the same walk.
+        def pattern_binds_name(pattern: Ast::Pattern, wanted: sview) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                match pattern:
+                    Pattern.Binding(name):
+                        return name == wanted
+                    Pattern.TypeBind(type, binder):
+                        return binder == wanted
+                    Pattern.Variant(path, fields):
+                        return any field_pattern in fields where pattern_binds_name(field_pattern, wanted)
+                    Pattern.Struct(path, fields):
+                        return any field_pattern in fields where pattern_binds_name(field_pattern, wanted)
+                    Pattern.Field(selector, inner):
+                        return any inner_pattern in inner where pattern_binds_name(inner_pattern, wanted)
+                    Pattern.Tuple(elements):
+                        return any element_pattern in elements where pattern_binds_name(element_pattern, wanted)
+                    Pattern.Or(options):
+                        # An or-pattern binds a name only when EVERY alternative does — the
+                        # same intersection rule gather_pattern applies below.
+                        false return if options.count == 0
+                        return not (any option_pattern in options where not pattern_binds_name(option_pattern, wanted))
+                    Pattern.As(name, inner):
+                        # The as-name binds the whole value, PLUS the wrapped pattern's own
+                        # bindings — and `inner` is a list, like the other payload arms.
+                        true return if name == wanted
+                        return any inner_pattern in inner where pattern_binds_name(inner_pattern, wanted)
+                    _:
+                        return false
+
+
+        def gather_pattern(pattern: Ast::Pattern, bound: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match pattern:
+                    Pattern.Binding(name):
+                        bound.push(name)
+                    Pattern.TypeBind(type, binder):
+                        bound.push(binder)
+                    Pattern.Variant(path, fields):
+                        field_handles: darray[Ast::Pattern] = [field_pattern for field_pattern in fields]
+                        for field_handle in field_handles:
+                            gather_pattern(field_handle, bound)
+                    Pattern.Struct(path, fields):
+                        field_handles: darray[Ast::Pattern] = [field_pattern for field_pattern in fields]
+                        for field_handle in field_handles:
+                            gather_pattern(field_handle, bound)
+                    Pattern.Field(selector, inner):
+                        inner_handles: darray[Ast::Pattern] = [inner_pattern for inner_pattern in inner]
+                        for inner_handle in inner_handles:
+                            gather_pattern(inner_handle, bound)
+                    Pattern.Tuple(elements):
+                        element_handles: darray[Ast::Pattern] = [element_pattern for element_pattern in elements]
+                        for element_handle in element_handles:
+                            gather_pattern(element_handle, bound)
+                    Pattern.Or(options):
+                        # stage0 scopes only the INTERSECTION of the alternatives'
+                        # bindings: `Circle(r, tag) | Square(r)` binds `r` alone, and a
+                        # body naming `tag` gets an ordinary `undefined identifier`, not
+                        # an or-pattern error. Gathering the UNION here made `tag`
+                        # resolve, which is why stage1 carried a same-names check that
+                        # stage0 does not have (now retired in
+                        # check_or_pattern_bindings.elisa — the two must stay together).
+                        #
+                        # Pushes each surviving name individually: collecting into a local
+                        # darray and `extend`-ing it into `bound` stores an auto-region
+                        # value into the longer-lived `__rg_bound` and the region checker
+                        # rejects it.
+                        option_handles: darray[Ast::Pattern] = [option_pattern for option_pattern in options]
+                        first_names: mutable darray[sview] = []
+                        for first_handle in option_handles |first_names|:
+                            gather_pattern(first_handle, first_names) if first_names.count == 0
+                        for candidate in first_names |bound, option_handles|:
+                            in_every: mutable bool = true
+                            for other_handle in option_handles |in_every|:
+                                in_every <- false if not pattern_binds_name(other_handle, candidate)
+                            bound.push(candidate) if in_every
+                    Pattern.As(name, inner):
+                        # docs/122 §5.4: the as-name binds the whole value, plus the
+                        # wrapped pattern's own bindings.
+                        bound.push(name)
+                        inner_handles: darray[Ast::Pattern] = [inner_pattern for inner_pattern in inner]
+                        for inner_handle in inner_handles:
+                            gather_pattern(inner_handle, bound)
+                    _:
+                        pass
+
+
+        # A refinement test `EXPR is TARGET` introduces bindings on its right side: a bare
+        # name (`x is mod`) binds that name; a variant form (`x is Variant(a, b)`) binds each
+        # field name. A qualified constant test (`x is Enum.Const`) binds nothing.
+        # `node is Expr.Pair as pair` — bring the alias into the scope the test guards. The
+        # alias is recorded by LINE (the parser keeps the variant itself as the is-RHS, so the
+        # test is real), and gather_is_target cannot see it: a Field target binds nothing.
+        def gather_is_variant_aliases(expression: Ast::Expr, alias_lines: darray[u32]&, alias_names: darray[sview]&, bound: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Binary(alias_left, alias_operator, alias_right, alias_binary_line):
+                        gather_is_variant_aliases(alias_left, alias_lines, alias_names, bound)
+                        if alias_operator == TokenKind.Is:
+                            match alias_right:
+                                Expr.Field(alias_head, alias_variant, alias_variant_line):
+                                    paired: usize = alias_lines.count if alias_lines.count < alias_names.count else alias_names.count
+                                    for probe in 0..<paired |bound, alias_lines, alias_names, alias_variant_line|:
+                                        bound.push(alias_names[probe]) if alias_lines[probe].i64() == alias_variant_line.line
+                                _:
+                                    gather_is_variant_aliases(alias_right, alias_lines, alias_names, bound)
+                        else:
+                            gather_is_variant_aliases(alias_right, alias_lines, alias_names, bound)
+                    Expr.Unary(alias_unary_operator, alias_operand, alias_unary_line):
+                        gather_is_variant_aliases(alias_operand, alias_lines, alias_names, bound)
+                    Expr.Paren(alias_inner, alias_paren_line):
+                        gather_is_variant_aliases(alias_inner, alias_lines, alias_names, bound)
+                    _:
+                        pass
+
+
+        def gather_is_target(expression: Ast::Expr, bound: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Ident(name, line):
+                        bound.push(name)
+                    Expr.Call(callee, arguments, argument_names, line):
+                        for argument in arguments:
+                            gather_is_target(argument, bound)
+                    # Array pattern `x is [1, value]` — element idents are payload binders
+                    # (literals fall to the Ident-less no-op).
+                    Expr.Array(elements, array_line):
+                        for element in elements:
+                            gather_is_target(element, bound)
+                    # Struct pattern `x is Pair{left: 1, right: value}` — field-value idents
+                    # are binders.
+                    Expr.Construct(construct_type, fields, construct_line):
+                        for field in fields:
+                            gather_is_target(field.value, bound)
+                    _:
+                        pass
+
+
+        # Is `expression` a BARE variant pattern used as a filter — `where Enum.Variant(a, b)`
+        # with no `subject is` in front? Such a filter is a PATTERN: its arguments are BINDERS
+        # the loop/comprehension body may read, not references to resolve. Walking one as an
+        # ordinary expression reports every binder undefined and rejects the whole function.
+        #
+        # Deliberately narrow, because guessing wrong here would BIND a name that should have
+        # been a use (silently accepting an undefined identifier, the PERMISSIVE direction the
+        # gate ratchets at zero). Two conditions must hold:
+        #   * the callee is a DOTTED path (`Enum.Variant`), never a bare `f(...)`; and
+        #   * every argument is a bare Ident.
+        # An ordinary predicate call in filter position (`m.check(x.field)`) fails the second
+        # test and is walked normally. One that passes both (`m.check(x)`) can only re-push a
+        # name the loop already bound, which is a no-op.
+        def is_bare_pattern_filter(expression: Ast::Expr) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Call(filter_callee, filter_arguments, filter_argument_names, filter_line):
+                        match filter_callee:
+                            Expr.Field(filter_head, filter_variant, filter_field_line):
+                                match filter_head:
+                                    Expr.Ident(filter_enum, filter_enum_line):
+                                        false return if filter_arguments.count == 0
+                                        for filter_argument in filter_arguments:
+                                            match filter_argument:
+                                                Expr.Ident(bare_name, bare_line):
+                                                    pass
+                                                _:
+                                                    return false
+                                        return true
+                                    _:
+                                        pass
+                            _:
+                                pass
+                    _:
+                        pass
+                return false
+
+
+        # Walk an expression collecting the bindings introduced by any `is` refinement test,
+        # packed-enum `as` pattern, or comprehension inside it, so later uses resolve.
+        # Whether `expression` contains a higher-order `ensures(f, PRED)` predicate call —
+        # its PRED argument may reference the callable's `result`, so the enclosing contract
+        # must bind `result`. A shallow structural walk over the shapes a contract predicate
+        # takes (calls, boolean/comparison operators, groups) is enough.
+        def expression_mentions_ensures(expression: Ast::Expr) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Call(callee, arguments, argument_names, line):
+                        true return if ident_name_of(callee) == "ensures"
+                        return any argument in arguments where expression_mentions_ensures(argument)
+                    Expr.Binary(left, operator, right, line):
+                        return expression_mentions_ensures(left) or expression_mentions_ensures(right)
+                    Expr.Unary(operator, operand, line):
+                        return expression_mentions_ensures(operand)
+                    Expr.Paren(inner, line):
+                        return expression_mentions_ensures(inner)
+                    _:
+                        return false
+
+        def gather_expression_bindings(expression: Ast::Expr, bound: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Binary(left, operator, right, line):
+                        gather_expression_bindings(left, bound)
+                        match operator:
+                            TokenKind.Is | TokenKind.As:
+                                gather_is_target(right, bound)
+                            _:
+                                gather_expression_bindings(right, bound)
+                    Expr.Call(callee, arguments, argument_names, line):
+                        gather_expression_bindings(callee, bound)
+                        for argument in arguments:
+                            gather_expression_bindings(argument, bound)
+                    Expr.Field(receiver, field, line):
+                        gather_expression_bindings(receiver, bound)
+                    Expr.Scope(base, name, line):
+                        gather_expression_bindings(base, bound)
+                    Expr.Index(receiver, index, line):
+                        gather_expression_bindings(receiver, bound)
+                        gather_expression_bindings(index, bound)
+                    Expr.Unary(operator, operand, line):
+                        gather_expression_bindings(operand, bound)
+                    Expr.Move(operand, line):
+                        gather_expression_bindings(operand, bound)
+                    Expr.RegionNew(operand, region, line):
+                        gather_expression_bindings(operand, bound)
+                    Expr.Refinement(base, predicate, line):
+                        gather_expression_bindings(base, bound)
+                        gather_expression_bindings(predicate, bound)
+                    # `get EXPR else return …` — walk the GUARDED expression; the recovery is a
+                    # statement list, which this expression walker does not descend into.
+                    Expr.GetElse(guarded, recovery, line):
+                        gather_expression_bindings(guarded, bound)
+                    Expr.Paren(inner, line):
+                        gather_expression_bindings(inner, bound)
+                    Expr.Array(elements, line):
+                        for element in elements:
+                            gather_expression_bindings(element, bound)
+                    Expr.Tuple(elements, line):
+                        for element in elements:
+                            gather_expression_bindings(element, bound)
+                    Expr.Slice(receiver, low, high, line):
+                        gather_expression_bindings(receiver, bound)
+                        gather_expression_bindings(low, bound)
+                        gather_expression_bindings(high, bound)
+                    Expr.IndexN(receiver, arguments, line):
+                        gather_expression_bindings(receiver, bound)
+                        for argument in arguments:
+                            gather_expression_bindings(argument, bound)
+                    Expr.SetLit(elements, line):
+                        for element in elements:
+                            gather_expression_bindings(element, bound)
+                    Expr.DictLit(entries, line):
+                        for entry in entries:
+                            gather_expression_bindings(entry.key, bound)
+                            gather_expression_bindings(entry.value, bound)
+                    Expr.Construct(type, fields, line):
+                        for field in fields:
+                            gather_expression_bindings(field.value, bound)
+                    Expr.RecordUpdate(base, fields, line):
+                        gather_expression_bindings(base, bound)
+                        for field in fields:
+                            gather_expression_bindings(field.value, bound)
+                    Expr.If(condition, then_expression, else_expression, line):
+                        gather_expression_bindings(condition, bound)
+                        gather_expression_bindings(then_expression, bound)
+                        gather_expression_bindings(else_expression, bound)
+                    Expr.Comprehension(variable, iterable, condition, body, line):
+                        # A comprehension's loop variable and any `where … is …(bind)` payload
+                        # bindings are scoped to the comprehension body ONLY — they do NOT escape
+                        # to the enclosing statement scope (stage0 rejects using them afterward, so
+                        # hoisting them here would MISS that undefined-identifier). Gather only from
+                        # the outer-scoped iterable.
+                        gather_expression_bindings(iterable, bound)
+                    Expr.Lambda(parameters, body, line):
+                        # The lambda's params scope its body; add them to `bound` plus
+                        # any locals the body introduces (mirrors Comprehension's var —
+                        # over-permissive to the outer scope, but never a false unresolved).
+                        bound.extend([parameter for parameter in parameters])
+                        gather_locals(body, bound)
+                    Expr.Match(scrutinee, arms, line):
+                        # Match in expression position introduces its arms' pattern bindings
+                        # and any bindings inside arm bodies (mirrors Stmt.Match in gather_locals).
+                        # Snapshot arm payloads before recursive node reads invalidate the
+                        # borrowed enum side-table.
+                        arm_patterns: mutable darray[Ast::Pattern] = []
+                        arm_bodies: mutable darray[darray[Ast::Stmt]] = []
+                        for arm in arms |arm_patterns, arm_bodies|:
+                            arm_patterns.push(arm.pattern)
+                            arm_bodies.push(arm.body)
+                        gather_expression_bindings(scrutinee, bound)
+                        while arm_index < arm_patterns.count |arm_index: usize = 0|:
+                            gather_pattern(arm_patterns[arm_index], bound)
+                            gather_locals(arm_bodies[arm_index], bound)
+                            arm_index <- arm_index + 1
+                    # `catch EXPR:` — positionally identical to Match (guarded, arms, line);
+                    # the guarded call is the scrutinee and the arms walk the same way.
+                    Expr.Catch(scrutinee, arms, line):
+                        # Match in expression position introduces its arms' pattern bindings
+                        # and any bindings inside arm bodies (mirrors Stmt.Match in gather_locals).
+                        # Snapshot arm payloads before recursive node reads invalidate the
+                        # borrowed enum side-table.
+                        arm_patterns: mutable darray[Ast::Pattern] = []
+                        arm_bodies: mutable darray[darray[Ast::Stmt]] = []
+                        for arm in arms |arm_patterns, arm_bodies|:
+                            arm_patterns.push(arm.pattern)
+                            arm_bodies.push(arm.body)
+                        gather_expression_bindings(scrutinee, bound)
+                        while arm_index < arm_patterns.count |arm_index: usize = 0|:
+                            gather_pattern(arm_patterns[arm_index], bound)
+                            gather_locals(arm_bodies[arm_index], bound)
+                            arm_index <- arm_index + 1
+                    Expr.Block(statements, value, captures, line):
+                        # A block expression's leading locals scope the block (mirrors Lambda —
+                        # over-permissive to the outer scope, but never a false unresolved).
+                        gather_locals(statements, bound)
+                        # Captures bind as locals too (for scope-flattening purposes).
+                        bound.extend(captures)
+                        gather_expression_bindings(value, bound)
+                    # Leaves and references bind nothing. Listed explicitly (no wildcard) so a
+                    # new Expr variant is a compile error rather than a silently-missed binding.
+                    Expr.Invalid:
+                        pass
+                    Expr.Absent:
+                        pass
+                        pass
+                    Expr.IntLit(value):
+                        pass
+                    Expr.FloatLit(text):
+                        pass
+                    Expr.StringLit(text):
+                        pass
+                    Expr.CharLit(text):
+                        pass
+                    Expr.BoolLit(value):
+                        pass
+                    Expr.Ident(name, line):
+                        pass
+                    Expr.ShorthandMember(parts, line):
+                        pass
+
+
+        # Gather the names a function binds: var-declaration names, for-loop variables, match-arm
+        # pattern bindings, `is`/comprehension bindings, and prefix-clause bindings across the
+        # body (block scoping is flattened — a first pass accepts forward references).
+        def gather_locals(statements: darray[Ast::Stmt], bound: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                total: usize = bound.count + statements.count * 8
+                bound.reserve(total)
+                for statement_index in 0..<statements.count |bound|:
+                    statement: Ast::Stmt = statements[statement_index]
+                    match statement:
+                        Stmt.Expr(expression, line):
+                            gather_expression_bindings(expression, bound)
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            bound.push(name)
+                            gather_expression_bindings(value, bound)
+                        Stmt.Assign(target, operator, value, line):
+                            # Multi-target unpack `a, b = …` (target is an Array literal)
+                            # introduces its bare-ident targets as new locals; a single
+                            # bare-ident `x = …` DEFINES a local too (incl. the `_`
+                            # discard). `<-` targets are already-declared names, so
+                            # registering them again is harmless.
+                            match target:
+                                Expr.Array(elements, array_line):
+                                    for element in elements |bound|:
+                                        match element:
+                                            Expr.Ident(element_name, ident_line):
+                                                bound.push(element_name)
+                                            _:
+                                                pass
+                                Expr.Ident(single_name, single_line):
+                                    bound.push(single_name)
+                                _:
+                                    pass
+                            gather_expression_bindings(target, bound)
+                            gather_expression_bindings(value, bound)
+                        Stmt.For(bind, variables, iterable, body, line):
+                            bound.extend(variables)
+                            gather_expression_bindings(iterable, bound)
+                            gather_locals(body, bound)
+                        Stmt.If(condition, then_body, else_body, line):
+                            gather_expression_bindings(condition, bound)
+                            gather_locals(then_body, bound)
+                            gather_locals(else_body, bound)
+                        Stmt.While(condition, body, line):
+                            gather_expression_bindings(condition, bound)
+                            gather_locals(body, bound)
+                        Stmt.Return(value, line):
+                            if value is return_value:
+                                gather_expression_bindings(return_value, bound)
+                        Stmt.Block(kind, clause, binding, body, line):
+                            bound.push(binding) if binding != ""
+                            gather_locals(body, bound)
+                        Stmt.Match(scrutinee, arms, line):
+                            # Snapshot before walking the scrutinee: recursive node access
+                            # invalidates the borrowed Match arm side-table.
+                            arm_patterns: mutable darray[Ast::Pattern] = []
+                            arm_bodies: mutable darray[darray[Ast::Stmt]] = []
+                            for arm in arms |arm_patterns, arm_bodies|:
+                                arm_patterns.push(arm.pattern)
+                                arm_bodies.push(arm.body)
+                            gather_expression_bindings(scrutinee, bound)
+                            while arm_index < arm_patterns.count |arm_index: usize = 0|:
+                                gather_pattern(arm_patterns[arm_index], bound)
+                                gather_locals(arm_bodies[arm_index], bound)
+                                arm_index <- arm_index + 1
+                        Stmt.Contract(kind, expression, line):
+                            # An `ensure` predicate may reference the function's `result`.
+                            # A higher-order `ensures(f, PRED)` predicate (valid in any
+                            # contract kind, e.g. `requires ensures(f, result >= 5)`) binds
+                            # `result` to the callable's result inside PRED.
+                            bound.push("result") if kind == "ensure" or kind == "ensures" or expression_mentions_ensures(expression)
+                            gather_expression_bindings(expression, bound)
+                        # These introduce no bindings. Explicit (no wildcard) so a new Stmt
+                        # variant forces a decision here.
+                        Stmt.Invalid:
+                            pass
+                        Stmt.Break(label, line):
+                            pass
+                        Stmt.Continue(label, line):
+                            pass

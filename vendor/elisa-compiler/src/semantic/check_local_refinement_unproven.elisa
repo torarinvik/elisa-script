@@ -1,0 +1,350 @@
+# A local declared with a refinement (`y: T is Law = SOURCE`) where nothing establishes the
+# law for SOURCE. stage0 reports it as unprovable, and the value carries no runtime check
+# either, so the refinement is simply not enforced.
+#
+# The provability boundary, pinned against stage0 in both directions:
+#
+#   y: i64 is Positive = 5                     LITERAL      -> clean (evaluated elsewhere)
+#   requires x > 0; y: i64 is Positive = x     fact         -> clean
+#   y: i64 is Positive = x                     no facts     -> UNPROVEN
+#
+# A first version keyed only on "no `requires` mentions the source" and measured 14 fixed /
+# 12 BROKEN. Every false positive was a fact this check could not see, in four families:
+#
+#   1. `requires forall i in xs.indices: xs[i] > 0`  — reached only through field/index
+#   2. `if a >= 10 and a <= 20:`                     — an enclosing GUARD, not a requires
+#   3. `law CountIsFour(self) = self.count == 4` on `array[i64, 4]` — from the TYPE
+#   4. `Bounded[0..=500]` under a guard                — guard plus law arguments
+#
+# So the fact layer below collects all four sources. It is deliberately CONSERVATIVE: any
+# mention of the source in a requires-clause or an enclosing guard counts as establishing
+# the law, and a matching type-derived extent counts. That can only cause MISSES, never a
+# false positive — and a false positive (warning where stage0 accepts) is the worse failure
+# for a port.
+
+extend Semantic:
+    private:
+        # The law NAME applied by a type annotation `T is Law` / `T is Law[args]`, or "".
+        def local_refinement_law_name(type_expression: Ast::Expr) -> sview:
+            can Memory.Allocate, Abort.Panic:
+                match type_expression:
+                    Expr.Binary(left, operator, right, line):
+                        empty_name: sview = sview("", 0, 0)
+                        empty_name return if operator != TokenKind.Is
+                        return match right:
+                            Expr.Ident(law_name, ident_line): law_name
+                            Expr.Index(applied, argument, index_line): ident_name_of(applied)
+                            Expr.IndexN(applied_n, arguments_n, index_n_line): ident_name_of(applied_n)
+                            Expr.Call(callee, arguments, argument_names, call_line): ident_name_of(callee)
+                            _: sview("", 0, 0)
+                    _:
+                        return sview("", 0, 0)
+
+
+        # Every identifier an expression mentions, reaching through FIELD and INDEX access so
+        # `forall i in xs.indices: xs[i] > 0` counts as mentioning `xs` (family 1).
+        # Whether a refinement predicate references an EXTERNAL non-constant term — a field
+        # access (`xs.count`) or a call — which the non-SMT prover cannot discharge from a
+        # local's initializer (unlike `y > 0 = 5`, provable from the literal). stage0 warns
+        # "local where refinement could not be proven" for such predicates.
+        def refinement_has_field_or_call(expression: Ast::Expr) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Field(object, field, field_line):
+                        return true
+                    Expr.Call(callee, arguments, argument_names, call_line):
+                        return true
+                    Expr.Binary(left, operator, right, binary_line):
+                        return refinement_has_field_or_call(left) or refinement_has_field_or_call(right)
+                    Expr.Unary(operator, operand, unary_line):
+                        return refinement_has_field_or_call(operand)
+                    Expr.Paren(inner, paren_line):
+                        return refinement_has_field_or_call(inner)
+                    Expr.Index(object, index, index_line):
+                        return refinement_has_field_or_call(object) or refinement_has_field_or_call(index)
+                    _:
+                        return false
+
+        def refinement_mentions(expression: Ast::Expr, out: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Ident(name, line):
+                        out.push(name)
+                    Expr.Field(object, field, field_line):
+                        refinement_mentions(object, out)
+                    Expr.Index(object, index, index_line):
+                        refinement_mentions(object, out)
+                        refinement_mentions(index, out)
+                    Expr.IndexN(object, arguments, indexn_line):
+                        refinement_mentions(object, out)
+                        for argument in arguments |out|:
+                            refinement_mentions(argument, out)
+                    Expr.Binary(left, operator, right, binary_line):
+                        refinement_mentions(left, out)
+                        refinement_mentions(right, out)
+                    Expr.Paren(inner, paren_line):
+                        refinement_mentions(inner, out)
+                    Expr.Unary(operator, operand, unary_line):
+                        refinement_mentions(operand, out)
+                    Expr.Comprehension(variable, iterable, condition, body, q_line):
+                        refinement_mentions(iterable, out)
+                        refinement_mentions(condition, out)
+                        refinement_mentions(body, out)
+                    Expr.Call(callee, arguments, argument_names, call_line):
+                        for argument in arguments |out|:
+                            refinement_mentions(argument, out)
+                    _:
+                        pass
+
+
+        # Does the expression mention this ONE name? The allocation-free twin of
+        # refinement_mentions followed by a membership scan, short-circuiting at the first hit.
+        #
+        # That pair is the shape this file and its neighbours reach for constantly — "collect
+        # every ident, then ask whether `result` (or one local) is among them" — and the list
+        # is pure overhead: it exists only to be searched once and dropped. Each such call
+        # allocates into the caller's auto-region, which is what turns a question into an mmap
+        # and an munmap.
+        #
+        # Traversal MUST stay in step with refinement_mentions above; they are the same walk.
+        def refinement_mentions_name(expression: Ast::Expr, wanted: sview) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Ident(name, line):
+                        return name == wanted
+                    Expr.Field(object, field, field_line):
+                        return refinement_mentions_name(object, wanted)
+                    Expr.Index(object, index, index_line):
+                        true return if refinement_mentions_name(object, wanted)
+                        return refinement_mentions_name(index, wanted)
+                    Expr.IndexN(object, arguments, indexn_line):
+                        true return if refinement_mentions_name(object, wanted)
+                        return any argument in arguments where refinement_mentions_name(argument, wanted)
+                    Expr.Binary(left, operator, right, binary_line):
+                        true return if refinement_mentions_name(left, wanted)
+                        return refinement_mentions_name(right, wanted)
+                    Expr.Paren(inner, paren_line):
+                        return refinement_mentions_name(inner, wanted)
+                    Expr.Unary(operator, operand, unary_line):
+                        return refinement_mentions_name(operand, wanted)
+                    Expr.Comprehension(variable, iterable, condition, body, q_line):
+                        true return if refinement_mentions_name(iterable, wanted)
+                        true return if refinement_mentions_name(condition, wanted)
+                        return refinement_mentions_name(body, wanted)
+                    Expr.Call(callee, arguments, argument_names, call_line):
+                        return any argument in arguments where refinement_mentions_name(argument, wanted)
+                    _:
+                        return false
+
+
+        # Facts from `requires` clauses (family 1).
+        def refinement_requires_facts(body: darray[Ast::Stmt], out: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in body |out|:
+                    match statement:
+                        Stmt.Contract(kind, expression, line):
+                            contract_kind: sview = kind
+                            refinement_mentions(expression, out) if contract_kind == "requires"
+                        _:
+                            pass
+
+
+        # The extent N of an `array[T, N]` annotation, or -1.
+        def refinement_array_extent(type_expression: Ast::Expr) -> i64:
+            can Memory.Allocate, Abort.Panic:
+                match type_expression:
+                    Expr.Unary(operator, operand, line):
+                        return refinement_array_extent(operand)
+                    Expr.Paren(inner, paren_line):
+                        return refinement_array_extent(inner)
+                    Expr.IndexN(object, arguments, index_line):
+                        (-1) return if ident_name_of(object) != "array" or arguments.count != 2
+                        extent: (found: bool, value: i64) = fold_const_int(arguments[1])
+                        return extent.value if extent.found else -1
+                    _:
+                        return (-1)
+
+
+        # Whether LAW's predicate is `self.count == N` for the given extent (family 3): the
+        # fact then comes from the TYPE and needs no other evidence.
+        def refinement_count_law_holds(predicate: Ast::Expr, extent: i64) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                false return if extent < 0
+                match predicate:
+                    Expr.Binary(left, operator, right, line):
+                        false return if operator != TokenKind.EqEq
+                        counts_self: bool = match left:
+                            Expr.Field(object, field, field_line): field == "count" and ident_name_of(object) == "self"
+                            _: false
+                        false return if not counts_self
+                        bound: (found: bool, value: i64) = fold_const_int(right)
+                        return bound.found and bound.value == extent
+                    _:
+                        return false
+
+
+        # A law whose TOP-LEVEL predicate is an implication (`A implies B`, desugared by the
+        # parser to `(not A) or B`) holds without any facts about the value: it is either
+        # vacuous or a logical consequence. stage0 proves all of these.
+        #
+        # Only at the TOP level. An implication nested inside a quantifier -- as in
+        # `forall i: (0 <= i and i < self.count) implies self[i] == self[0]` -- is a real
+        # obligation about the elements and still needs facts.
+        def law_is_top_level_implication(predicate: Ast::Expr) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                match predicate:
+                    Expr.Binary(left, operator, right, line):
+                        false return if operator != TokenKind.Or
+                        return match left:
+                            Expr.Unary(unary_operator, operand, unary_line): unary_operator == TokenKind.Not
+                            _: false
+                    Expr.Paren(inner, paren_line):
+                        return law_is_top_level_implication(inner)
+                    _:
+                        return false
+
+
+        # A law the check cannot classify (a multi-statement law body parses to no usable
+        # predicate expression) is left alone rather than reported.
+        def law_predicate_is_opaque(predicate: Ast::Expr) -> bool:
+            can Abort.Panic:
+                match predicate:
+                    Expr.Invalid:
+                        return true
+                    Expr.Absent:
+                        return true
+                    _:
+                        return false
+
+
+        # The innermost element-comparison operator inside a quantifier body, peeling the
+        # guard implication `(not GUARD) or CMP` (the desugared `guard implies CMP`) and
+        # parens. `conjunction` flags an `and` of element comparisons — declined by callers,
+        # because two order chains together (`a[i] <= a[i+1]` and `a[i] >= a[i+1]`) CAN force
+        # equality, so the single-order refutation must not apply.
+        def lru_body_core_comparison(body: Ast::Expr) -> (found: bool, operator: TokenKind, conjunction: bool):
+            can Memory.Allocate, Abort.Panic:
+                match body:
+                    Expr.Paren(inner, paren_line):
+                        return lru_body_core_comparison(inner)
+                    Expr.Binary(left, operator, right, binary_line):
+                        if operator == TokenKind.Or:
+                            match left:
+                                Expr.Unary(not_operator, guard, not_line):
+                                    lru_body_core_comparison(right) return if not_operator == TokenKind.Not
+                                _:
+                                    pass
+                            return (false, operator, false)
+                        (false, operator, true) return if operator == TokenKind.And
+                        return (is_comparison_operator(operator), operator, false)
+                    _:
+                        return (false, TokenKind.Or, false)
+
+
+        # A top-level implication law `(forall …: self[i] ORDER self[i+1]) implies
+        # (forall …: self[a] == self[b])` — a monotone-ORDER antecedent (`<`, `<=`, `>`, `>=`)
+        # whose consequent asserts EQUALITY of positions. An order chain never forces equality
+        # (counterexample: strictly increasing), so the implication is INVALID and stage0's
+        # prover refutes it. Deliberately narrow: a single-order antecedent (no `and`), an
+        # equality consequent; anything else declines, so it can only fire where stage0 warns.
+        def lru_implication_order_then_equality(predicate: Ast::Expr) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                match predicate:
+                    Expr.Paren(inner, paren_line):
+                        return lru_implication_order_then_equality(inner)
+                    Expr.Binary(left, operator, right, binary_line):
+                        false return if operator != TokenKind.Or
+                        antecedent: mutable Ast::Expr = (Ast::Expr.Absent)
+                        match left:
+                            Expr.Unary(not_operator, operand, not_line):
+                                antecedent <- operand if not_operator == TokenKind.Not
+                            _:
+                                pass
+                        match antecedent:
+                            Expr.Absent:
+                                return false
+                            _:
+                                pass
+                        antecedent_quantifier: (found: bool, binder: sview, body: Ast::Expr) = qr_quantifier_of(antecedent)
+                        consequent_quantifier: (found: bool, binder: sview, body: Ast::Expr) = qr_quantifier_of(right)
+                        false return if not antecedent_quantifier.found or not consequent_quantifier.found
+                        antecedent_comparison: (found: bool, operator: TokenKind, conjunction: bool) = lru_body_core_comparison(antecedent_quantifier.body)
+                        consequent_comparison: (found: bool, operator: TokenKind, conjunction: bool) = lru_body_core_comparison(consequent_quantifier.body)
+                        false return if not antecedent_comparison.found or antecedent_comparison.conjunction
+                        false return if not consequent_comparison.found
+                        antecedent_is_order: bool = antecedent_comparison.operator == TokenKind.Lt or antecedent_comparison.operator == TokenKind.LtEq or antecedent_comparison.operator == TokenKind.Gt or antecedent_comparison.operator == TokenKind.GtEq
+                        consequent_is_equality: bool = consequent_comparison.operator == TokenKind.EqEq
+                        return antecedent_is_order and consequent_is_equality
+                    _:
+                        return false
+
+
+        # A law predicate that quantifies over the value's elements (contains a `forall`/comprehension).
+        # Such an element law is NOT established by a fact that merely mentions the source non-element-
+        # wise (e.g. `requires xs.count == 3`) — only by a quantified fact over the same source.
+        def lru_predicate_is_quantified(predicate: Ast::Expr) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                # `forall`/`exists` lowers to a Comprehension or a binder Block (both recognised by
+                # qr_quantifier_of); also descend through boolean structure to catch nested quantifiers.
+                quant: (found: bool, binder: sview, body: Ast::Expr) = qr_quantifier_of(predicate)
+                true return if quant.found
+                match predicate:
+                    Expr.Paren(inner, paren_line):
+                        return lru_predicate_is_quantified(inner)
+                    Expr.Binary(left, operator, right, binary_line):
+                        true return if lru_predicate_is_quantified(left)
+                        return lru_predicate_is_quantified(right)
+                    Expr.Unary(operator, operand, unary_line):
+                        return lru_predicate_is_quantified(operand)
+                    _:
+                        return false
+
+
+        # Whether the body carries ANY quantified (`forall`/`exists`) requires. The parser drops a
+        # quantifier's source iterable (`forall x in xs` keeps no reference to `xs`), so an element
+        # law cannot be tied to a specific source; the presence of any quantified requires is treated
+        # conservatively as possibly establishing the element law (suppressing the tightening).
+        def refinement_has_quantified_requires(body: darray[Ast::Stmt]) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                for statement in body:
+                    match statement:
+                        Stmt.Contract(contract_kind, expression, contract_line):
+                            true return if contract_kind == "requires" and lru_predicate_is_quantified(expression)
+                        _:
+                            pass
+                return false
+
+
+        # The integer VALUE of a match arm whose body is a single value expression
+        # (`0: 0`), or (false, 0) when the arm body is not a lone constant-int expression.
+        def lru_arm_int_value(arm: Ast::MatchArm) -> (found: bool, value: i64):
+            can Memory.Allocate, Abort.Panic:
+                (false, 0) return if arm.body.count != 1
+                match arm.body[0]:
+                    Stmt.Expr(expression, expr_line):
+                        return signed_int_literal(expression)
+                    _:
+                        return (false, 0)
+
+        # A match-arm pattern that CONSTRAINS its scrutinee to a specific value/shape (a literal,
+        # variant, struct, or pin) — as opposed to a wildcard `_` or a fresh binding, which leave
+        # the scrutinee unconstrained. Used to establish a fact on the scrutinee for that arm only
+        # (stage0 does NOT leak a sibling arm's fact — a wildcard arm keeps the scrutinee free).
+        def lru_pattern_constrains(pattern: Ast::Pattern) -> bool:
+            can Abort.Panic:
+                match pattern:
+                    Pattern.Wildcard:
+                        return false
+                    Pattern.Binding(binding_name):
+                        return false
+                    _:
+                        return true
+
+        # Every match arm yields a constant within [lo, hi] — the only shape the non-SMT prover
+        # can discharge for a match-valued range refinement.
+        def lru_match_all_in_range(arms: darray[Ast::MatchArm], lo: i64, hi: i64) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                for arm in arms:
+                    arm_value: (found: bool, value: i64) = lru_arm_int_value(arm)
+                    false return if not arm_value.found or arm_value.value < lo or arm_value.value > hi
+                return true

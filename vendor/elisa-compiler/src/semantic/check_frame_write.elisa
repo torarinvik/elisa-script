@@ -1,0 +1,238 @@
+# Frame-condition body writes (sound subset of stage0 analyzer_frame_changes). A function that
+# declares a `changes P.f, ...` frame may only write the named param fields; a DIRECT write to a
+# parameter field outside the set is rejected ("writes to ROOT.FIELD, which is outside the
+# `changes` set of NAME").
+#
+# The parser records each function's `changes P.FIELD` fields on the side-table (owner=function,
+# name=field, line-sentinel 3900000003) — only the FIELD name after the dot, so membership is
+# tested by field name. This is a SOUND subset of stage0's exact (root, field) match: a write to a
+# field name absent from the whole set can never be in-frame (so no false positive); it only MISSES
+# when a field name recurs across params. Interprocedural "may write" (writes through a callee) and
+# alias writes need callee frame summaries / alias tracking and are left to stage0 (sound misses).
+extend Semantic:
+    private:
+        def frame_mutating_method(method: sview) -> bool:
+            can Abort.Panic:
+                return when method:
+                    "push" | "extend" | "add" | "put" | "insert" | "reserve" | "resize" | "clear" | "pop" | "remove" | "set" -> true
+                    _ -> false
+
+        # A write to `PARAM.FIELD` (root is a parameter): returns (found, root, field). Handles a
+        # direct field lvalue `p.f` and a mutating-method receiver `p.f.push(...)`.
+        def frame_write_target(target: Ast::Expr, params: darray[sview]&) -> (found: bool, root: sview, field: sview):
+            can Abort.Panic:
+                match target:
+                    Expr.Field(object, field, line):
+                        root: sview = ident_name_of(object)
+                        return (root != "" and (any parameter_name in params where parameter_name == root), root, field)
+                    Expr.Paren(inner, line):
+                        return frame_write_target(inner, params)
+                    _:
+                        return (false, sview("", 0, 0), sview("", 0, 0))
+
+        def frame_field_in_set(changes_fields: darray[sview]&, field: sview) -> bool:
+            can Abort.Panic:
+                return any changed in changes_fields where changed == field
+
+        def frame_report_write(root: sview, field: sview, function_name: sview, line: u32, changes_fields: darray[sview]&, params: darray[sview]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                return if frame_field_in_set(changes_fields, field)
+                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.WritesOutsideChanges, name: root, line: line, expected: function_name, actual: field})
+
+        # Scan an expression for `&PARAM.field` sub-expressions — taking the mutable address of a
+        # parameter field and passing it (typically to a call) MAY write that field. If the field
+        # is outside the frame it is flagged ("may write ROOT.FIELD ..."). Sound: a bare address-of
+        # a param field outside the declared set can only be a potential out-of-frame write.
+        def frame_scan_addr_writes(expression: Ast::Expr, function_name: sview, changes_fields: darray[sview]&, params: darray[sview]&, line: u32, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Unary(operator, operand, unary_line):
+                        if operator == TokenKind.Ampersand:
+                            write: (found: bool, root: sview, field: sview) = frame_write_target(operand, params)
+                            table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.WritesOutsideChanges, name: write.root, line: line, expected: function_name, actual: write.field, expected_count: 1}) if write.found and not frame_field_in_set(changes_fields, write.field)
+                        table <- frame_scan_addr_writes(operand, function_name, changes_fields, params, line, table)
+                    Expr.Call(callee, arguments, argument_names, call_line):
+                        for argument in arguments |table| -> table:
+                            table <- frame_scan_addr_writes(argument, function_name, changes_fields, params, line, table)
+                    Expr.Paren(inner, paren_line):
+                        table <- frame_scan_addr_writes(inner, function_name, changes_fields, params, line, table)
+                    Expr.Binary(left, binary_operator, right, binary_line):
+                        table <- frame_scan_addr_writes(left, function_name, changes_fields, params, line, table)
+                        table <- frame_scan_addr_writes(right, function_name, changes_fields, params, line, table)
+                    _:
+                        pass
+
+        # If EXPRESSION is `&PARAM.field` (address-of a parameter field, through a paren), the
+        # (root, field) it borrows, else found=false.
+        def frame_addr_field(expression: Ast::Expr, params: darray[sview]&) -> (found: bool, root: sview, field: sview):
+            can Memory.Allocate, Abort.Panic:
+                empty: (found: bool, root: sview, field: sview) = (false, sview("", 0, 0), sview("", 0, 0))
+                match expression:
+                    Expr.Unary(operator, operand, unary_line):
+                        empty return if operator != TokenKind.Ampersand
+                        return frame_write_target(operand, params)
+                    Expr.Paren(inner, paren_line):
+                        return frame_addr_field(inner, params)
+                    _:
+                        return empty
+
+        # Collect locals bound to `&PARAM.field` (`h = &r.health`): a write THROUGH such an alias
+        # (`h <- v`) writes PARAM.field. Recorded as parallel (name, root, field) arrays.
+        def frame_collect_field_aliases(statements: darray[Ast::Stmt], params: darray[sview]&, out_names: mutable darray[sview]&, out_roots: mutable darray[sview]&, out_fields: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |out_names, out_roots, out_fields|:
+                    match statement:
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            addr: (found: bool, root: sview, field: sview) = frame_addr_field(value, params)
+                            if addr.found:
+                                out_names.push(name)
+                                out_roots.push(addr.root)
+                                out_fields.push(addr.field)
+                        Stmt.Assign(target, operator, value, line):
+                            assign_addr: (found: bool, root: sview, field: sview) = frame_addr_field(value, params)
+                            assign_name: sview = ident_name_of(target)
+                            if assign_addr.found and assign_name != "":
+                                out_names.push(assign_name)
+                                out_roots.push(assign_addr.root)
+                                out_fields.push(assign_addr.field)
+                        Stmt.If(condition, then_body, else_body, line):
+                            frame_collect_field_aliases(then_body, params, out_names, out_roots, out_fields)
+                            frame_collect_field_aliases(else_body, params, out_names, out_roots, out_fields)
+                        Stmt.While(condition, body, line):
+                            frame_collect_field_aliases(body, params, out_names, out_roots, out_fields)
+                        Stmt.For(bind, variables, iterable, body, line):
+                            frame_collect_field_aliases(body, params, out_names, out_roots, out_fields)
+                        Stmt.Block(kind, clause, binding, body, line):
+                            frame_collect_field_aliases(body, params, out_names, out_roots, out_fields)
+                        _:
+                            pass
+
+        # The (root, field) a local field-alias name resolves to, or found=false.
+        def frame_alias_target(alias_names: darray[sview]&, alias_roots: darray[sview]&, alias_fields: darray[sview]&, name: sview) -> (found: bool, root: sview, field: sview):
+            can Abort.Panic:
+                index: mutable usize = 0
+                result: mutable (found: bool, root: sview, field: sview) = (false, sview("", 0, 0), sview("", 0, 0))
+                while index < alias_names.count |result, index|:
+                    result <- (true, alias_roots[index], alias_fields[index]) if alias_names[index] == name and not result.found
+                    index <- index + 1
+                return result
+
+        # A loop/block used in VALUE position (`r = for … |acc| -> acc:` / a block expression)
+        # wraps to Expr.Block(stmts, value, …); its statements can contain out-of-frame writes
+        # (`w.dirty <- …` inside the fold body). Recurse the write walk into any Block/If/Paren
+        # embedded in an expression so those writes are checked too.
+        def frame_walk_expr_blocks(expression: Ast::Expr, function_name: sview, changes_fields: darray[sview]&, params: darray[sview]&, alias_names: darray[sview]&, alias_roots: darray[sview]&, alias_fields: darray[sview]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Block(block_statements, block_value, block_captures, block_line):
+                        table <- frame_write_walk(block_statements, function_name, changes_fields, params, alias_names, alias_roots, alias_fields, table)
+                        table <- frame_walk_expr_blocks(block_value, function_name, changes_fields, params, alias_names, alias_roots, alias_fields, table)
+                    Expr.If(condition, then_expression, else_expression, if_line):
+                        table <- frame_walk_expr_blocks(then_expression, function_name, changes_fields, params, alias_names, alias_roots, alias_fields, table)
+                        table <- frame_walk_expr_blocks(else_expression, function_name, changes_fields, params, alias_names, alias_roots, alias_fields, table)
+                    Expr.Paren(inner, paren_line):
+                        table <- frame_walk_expr_blocks(inner, function_name, changes_fields, params, alias_names, alias_roots, alias_fields, table)
+                    Expr.Binary(left, binary_operator, right, binary_line):
+                        table <- frame_walk_expr_blocks(left, function_name, changes_fields, params, alias_names, alias_roots, alias_fields, table)
+                        table <- frame_walk_expr_blocks(right, function_name, changes_fields, params, alias_names, alias_roots, alias_fields, table)
+                    Expr.Call(callee, arguments, argument_names, call_line):
+                        for argument in arguments |table| -> table:
+                            table <- frame_walk_expr_blocks(argument, function_name, changes_fields, params, alias_names, alias_roots, alias_fields, table)
+                    _:
+                        pass
+
+        def frame_write_walk(statements: darray[Ast::Stmt], function_name: sview, changes_fields: darray[sview]&, params: darray[sview]&, alias_names: darray[sview]&, alias_roots: darray[sview]&, alias_fields: darray[sview]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |table| -> table:
+                    match statement:
+                        Stmt.VarDecl(var_name, var_type, var_value, var_line):
+                            table <- frame_walk_expr_blocks(var_value, function_name, changes_fields, params, alias_names, alias_roots, alias_fields, table)
+                        Stmt.Assign(target, operator, value, line):
+                            write: (found: bool, root: sview, field: sview) = frame_write_target(target, params)
+                            table <- frame_report_write(write.root, write.field, function_name, line.line, changes_fields, params, table) if write.found
+                            # A write THROUGH a `&PARAM.field` alias local (`h <- v`) writes PARAM.field —
+                            # but the alias-establishing binding itself (`h = &r.f`, whose value is an
+                            # address-of) is not a write, so skip when the RHS is another `&field`.
+                            rebinds_alias: bool = frame_addr_field(value, params).found
+                            alias: (found: bool, root: sview, field: sview) = frame_alias_target(alias_names, alias_roots, alias_fields, ident_name_of(target))
+                            table <- frame_report_write(alias.root, alias.field, function_name, line.line, changes_fields, params, table) if alias.found and not write.found and not rebinds_alias
+                            table <- frame_walk_expr_blocks(value, function_name, changes_fields, params, alias_names, alias_roots, alias_fields, table)
+                        Stmt.Expr(expression, line):
+                            # A mutating method on a param field: `p.f.push(...)`.
+                            match expression:
+                                Expr.Call(callee, arguments, argument_names, call_line):
+                                    match callee:
+                                        Expr.Field(receiver, method, field_line):
+                                            if frame_mutating_method(method):
+                                                write: (found: bool, root: sview, field: sview) = frame_write_target(receiver, params)
+                                                table <- frame_report_write(write.root, write.field, function_name, line.line, changes_fields, params, table) if write.found
+                                        _:
+                                            pass
+                                _:
+                                    pass
+                            # `&PARAM.field` passed into any call may write that field.
+                            table <- frame_scan_addr_writes(expression, function_name, changes_fields, params, line.line, table)
+                            table <- frame_walk_expr_blocks(expression, function_name, changes_fields, params, alias_names, alias_roots, alias_fields, table)
+                        Stmt.If(condition, then_body, else_body, line):
+                            table <- frame_write_walk(then_body, function_name, changes_fields, params, alias_names, alias_roots, alias_fields, table)
+                            table <- frame_write_walk(else_body, function_name, changes_fields, params, alias_names, alias_roots, alias_fields, table)
+                        Stmt.While(condition, while_body, line):
+                            table <- frame_write_walk(while_body, function_name, changes_fields, params, alias_names, alias_roots, alias_fields, table)
+                        Stmt.For(bind, variables, iterable, for_body, line):
+                            table <- frame_write_walk(for_body, function_name, changes_fields, params, alias_names, alias_roots, alias_fields, table)
+                        Stmt.Block(kind, clause, binding, body, line):
+                            table <- frame_write_walk(body, function_name, changes_fields, params, alias_names, alias_roots, alias_fields, table)
+                        _:
+                            pass
+
+        def collect_changes_fields(enum_annotations: darray[Ast::EnumAnnotation]&, function_name: sview, out: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                out.extend([annotation.name for annotation in enum_annotations if annotation.line == 3900000003 and annotation.owner == function_name])
+        def check_frame_write_walk(declarations: darray[Ast::Decl], enum_annotations: darray[Ast::EnumAnnotation]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |table| -> table:
+                    match declaration:
+                        Decl.Func(function_name, parameters, return_type, body, effects, decorators, line):
+                            changes_fields: mutable darray[sview] = []
+                            collect_changes_fields(enum_annotations, function_name, changes_fields)
+                            if changes_fields.count > 0:
+                                params: mutable darray[sview] = [parameter.name for parameter in parameters]
+                                alias_names: mutable darray[sview] = []
+                                alias_roots: mutable darray[sview] = []
+                                alias_fields: mutable darray[sview] = []
+                                frame_collect_field_aliases(body, params, alias_names, alias_roots, alias_fields)
+                                table <- frame_write_walk(body, function_name, changes_fields, params, alias_names, alias_roots, alias_fields, table)
+                        Decl.Module(module_name, module_body, module_line):
+                            table <- check_frame_write_walk(module_body, enum_annotations, table)
+                        Decl.Scoped(scoped_body, scoped_line):
+                            table <- check_frame_write_walk(scoped_body, enum_annotations, table)
+                        _:
+                            pass
+
+        def check_frame_write(file: Ast::File&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                table <- check_frame_write_walk(file.top_decls, file.enum_annotations, table)
+
+        # Each `changes ROOT.field` target's ROOT must name an actual parameter. Roots are recorded
+        # under sentinel 3900000006 (owner=function). A root not in the function's parameter list is
+        # rejected ("`changes` target ROOT is not a parameter").
+        def check_changes_target_walk(declarations: darray[Ast::Decl], enum_annotations: darray[Ast::EnumAnnotation]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |table| -> table:
+                    match declaration:
+                        Decl.Func(function_name, parameters, return_type, body, effects, decorators, line):
+                            params: mutable darray[sview] = [parameter.name for parameter in parameters]
+                            for annotation in enum_annotations |table| -> table:
+                                is_root_of_this: bool = annotation.line == 3900000006 and annotation.owner == function_name
+                                not_a_param: bool = is_root_of_this and not (any parameter_name in params where parameter_name == annotation.name)
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.ChangesTargetNotParam, name: annotation.name, line: line.line, expected: "", actual: ""}) if not_a_param
+                        Decl.Module(module_name, module_body, module_line):
+                            table <- check_changes_target_walk(module_body, enum_annotations, table)
+                        Decl.Scoped(scoped_body, scoped_line):
+                            table <- check_changes_target_walk(scoped_body, enum_annotations, table)
+                        _:
+                            pass
+
+        def check_changes_target_param(file: Ast::File&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                table <- check_changes_target_walk(file.top_decls, file.enum_annotations, table)

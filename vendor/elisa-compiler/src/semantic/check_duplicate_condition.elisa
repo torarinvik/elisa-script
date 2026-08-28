@@ -1,0 +1,212 @@
+extend Semantic:
+    private:
+        # Wrapper to compare sview values by collecting into arrays
+        def sview_equal(a: sview, b: sview) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                # `==` on two sviews IS a byte comparison (the runtime's string_views_eq).
+                # This used to materialise BOTH views into fresh `darray[u8]`s with
+                # comprehensions and walk them elementwise — two heap allocations to answer
+                # whether two strings match. Every Elisa function frees its auto-region on
+                # return, so each call cost an mmap and an munmap; in a self-compile profile
+                # this one helper was 475 of 8741 samples, ALL of it in that syscall pair.
+                return a == b
+
+
+        # Compare two expressions for structural equality. Only compares simple node kinds
+        # that have no side effects (literals, identifiers, fields, binary/unary ops, parens).
+        # Returns false for any complex expressions (calls, indexes, etc.) to be conservative.
+        def conditions_equal(a: Ast::Expr, b: Ast::Expr) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                # Unwrap ALL Paren nodes from both sides first. A single unwrap made
+                # `x > 5` and `(((x > 5)))` compare unequal, and the recursive fallback
+                # below revisited one level at a time for deeply parenthesized conditions.
+                a_unwrapped: mutable Ast::Expr = a
+                b_unwrapped: mutable Ast::Expr = b
+                a_done: mutable bool = false
+                while not a_done:
+                    match a_unwrapped:
+                        Expr.Paren(inner_a, _):
+                            a_unwrapped <- inner_a
+                        _:
+                            a_done <- true
+                b_done: mutable bool = false
+                while not b_done:
+                    match b_unwrapped:
+                        Expr.Paren(inner_b, _):
+                            b_unwrapped <- inner_b
+                        _:
+                            b_done <- true
+
+                # Match on a and check if b matches its structure
+                match a_unwrapped:
+                    Expr.Ident(a_name, _):
+                        match b_unwrapped:
+                            Expr.Ident(b_name, _):
+                                return sview_equal(a_name, b_name)
+                            _:
+                                return false
+                    Expr.IntLit(a_value):
+                        match b_unwrapped:
+                            Expr.IntLit(b_value):
+                                return a_value == b_value
+                            _:
+                                return false
+                    Expr.BoolLit(a_value):
+                        match b_unwrapped:
+                            Expr.BoolLit(b_value):
+                                return a_value == b_value
+                            _:
+                                return false
+                    Expr.StringLit(a_text):
+                        match b_unwrapped:
+                            Expr.StringLit(b_text):
+                                return sview_equal(a_text, b_text)
+                            _:
+                                return false
+                    Expr.CharLit(a_text):
+                        match b_unwrapped:
+                            Expr.CharLit(b_text):
+                                return sview_equal(a_text, b_text)
+                            _:
+                                return false
+                    Expr.Field(a_obj, a_field, _):
+                        match b_unwrapped:
+                            Expr.Field(b_obj, b_field, _):
+                                # Fields equal if names match and objects match
+                                false return if not sview_equal(a_field, b_field)
+                                return conditions_equal(a_obj, b_obj)
+                            _:
+                                return false
+                    Expr.Binary(a_left, a_op, a_right, _):
+                        match b_unwrapped:
+                            Expr.Binary(b_left, b_op, b_right, _):
+                                return a_op == b_op and conditions_equal(a_left, b_left) and conditions_equal(a_right, b_right)
+                            _:
+                                return false
+                    Expr.Unary(a_op, a_operand, _):
+                        match b_unwrapped:
+                            Expr.Unary(b_op, b_operand, _):
+                                return a_op == b_op and conditions_equal(a_operand, b_operand)
+                            _:
+                                return false
+                    _:
+                # Bail on complex expressions: calls, indexes, etc. may have side effects
+                        return false
+
+        def duplicate_is_single_if(statements: darray[Ast::Stmt]) -> bool:
+            can Abort.Panic:
+                return false if statements.count != 1
+                match statements[0]:
+                    Stmt.If(_, _, _, _):
+                        return true
+                    _:
+                        return false
+
+
+        # Check an if/elif chain for duplicate conditions. Collects conditions from the chain
+        # and flags any later condition that matches an earlier one.
+        def check_if_elif_chain(if_stmt: Ast::Stmt, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                # A LONE `if` — one whose else is not an elif continuation — has exactly one
+                # condition, and the comparison below needs two. Walking its bodies is still
+                # required, but the two lists are not: they were allocated for every `if` in
+                # the unit and discarded unused for most of them, and that allocation is what
+                # gives the enclosing call an auto-region to mmap and munmap.
+                #
+                # The chain test is the same one the loop uses to follow a continuation.
+                match if_stmt:
+                    Stmt.If(lone_cond, lone_then, lone_else, lone_line):
+                        if not duplicate_is_single_if(lone_else):
+                            table <- check_duplicate_condition_statements(lone_then, table)
+                            table <- check_duplicate_condition_statements(lone_else, table)
+                            return
+                    _:
+                        pass
+                current_stmt: mutable Ast::Stmt? = if_stmt
+                conditions: mutable darray[Ast::Expr] = []
+                condition_lines: mutable darray[u32] = []
+
+                # Collect all conditions from the if/elif chain
+                while current_stmt is stmt:
+                    match stmt:
+                        Stmt.If(cond, then_body, else_body, line):
+                            conditions.push(cond)
+                            condition_lines.push(line.line)
+                            table <- check_duplicate_condition_statements(then_body, table)
+
+                            # An `else` that is exactly one nested `if` is an elif continuation;
+                            # follow it with the LOOP, and do NOT also walk it as a nested
+                            # statement body — that walk restarts the whole tail as a fresh
+                            # chain at every link, so an n-link chain costs O(2^n) time and
+                            # memory (measured: 20 elifs = 7s / 1.6GB) and reports every
+                            # duplicate once per enclosing link. Only a REAL `else` body is
+                            # outside the chain and gets walked here.
+                            current_stmt <- null
+                            if duplicate_is_single_if(else_body):
+                                current_stmt <- else_body[0]
+                            else:
+                                table <- check_duplicate_condition_statements(else_body, table)
+                        _:
+                            current_stmt <- null
+
+                # Check for duplicates: each condition against all earlier ones
+                idx: mutable usize = 0
+                while idx < conditions.count:
+                    prev_idx: mutable usize = 0
+                    while prev_idx < idx:
+                        # Report the first earlier condition this one duplicates, then stop.
+                        is_duplicate: bool = conditions_equal(conditions[idx], conditions[prev_idx])
+                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.DuplicateCondition, name: "", line: condition_lines[idx], expected: "", actual: ""}) if is_duplicate
+                        break if is_duplicate
+                        prev_idx <- prev_idx + 1
+                    idx <- idx + 1
+
+
+        # Walk all statements in a function body, checking for duplicate conditions in if/elif chains.
+        def check_duplicate_condition_statements(statements: darray[Ast::Stmt], table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |table|:
+                    match statement:
+                        Stmt.If(condition, then_body, else_body, line):
+                            # Treat this If as a potential chain start
+                            table <- check_if_elif_chain(statement, table)
+                        Stmt.While(condition, body, line):
+                            table <- check_duplicate_condition_statements(body, table)
+                        Stmt.For(bind, variables, iterable, body, line):
+                            table <- check_duplicate_condition_statements(body, table)
+                        Stmt.Block(kind, clause, binding, body, line):
+                            table <- check_duplicate_condition_statements(body, table)
+                        Stmt.Match(scrutinee, arms, line):
+                            for arm in arms |table|:
+                                table <- check_duplicate_condition_statements(arm.body, table)
+                        Stmt.Expr(expression, line):
+                            pass
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            pass
+                        Stmt.Assign(target, operator, value, line):
+                            pass
+                        Stmt.Return(value, line):
+                            pass
+                        Stmt.Contract(kind, expression, line):
+                            pass
+                        Stmt.Invalid:
+                            pass
+                        Stmt.Break(label, line):
+                            pass
+                        Stmt.Continue(label, line):
+                            pass
+
+
+        # Check all declarations for duplicate conditions in if/elif chains.
+        def check_duplicate_condition(declarations: darray[Ast::Decl], table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |table|:
+                    match declaration:
+                        Decl.Func(name, parameters, return_type, body, effects, decorators, line):
+                            table <- check_duplicate_condition_statements(body, table)
+                        Decl.Module(name, body, line):
+                            table <- check_duplicate_condition(body, table)
+                        Decl.Scoped(body, line):
+                            table <- check_duplicate_condition(body, table)
+                        _:
+                            pass

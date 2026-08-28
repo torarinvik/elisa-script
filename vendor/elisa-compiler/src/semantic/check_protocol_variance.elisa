@@ -1,0 +1,146 @@
+# Behavioural-subtyping (Liskov) variance of protocol impls, checked STRUCTURALLY (no proving):
+# an impl method must not ADD a `requires` the protocol method lacks (STRENGTHENS the precondition)
+# and must not DROP a `requires`... no — postcondition: it must not omit a protocol `ensure`
+# (WEAKENS the postcondition). Predicates are compared by SOURCE-SPAN text, captured by the parser
+# (protocol methods are peek-scanned, not parsed): protocol requires/ensure spans at 3900000072/73,
+# impl requires/ensure spans at 3900000074/75, both keyed by method name.
+extend Semantic:
+    private:
+        # Ordered param names captured for `owner` at `sentinel` (protocol 3900000066 /
+        # impl 3900000068), excluding self — the positional key for canonicalisation.
+        def pv_collect_params(annotations: darray[Ast::EnumAnnotation]&, owner: sview, sentinel: u32, out: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                out.extend([annotation.name for annotation in annotations if annotation.line == sentinel and annotation.owner == owner])
+        def pv_is_ident_start(byte: u8) -> bool:
+            can Abort.Panic:
+                return (byte >= 65 and byte <= 90) or (byte >= 97 and byte <= 122) or byte == 95
+
+        def pv_is_ident_byte(byte: u8) -> bool:
+            can Abort.Panic:
+                return pv_is_ident_start(byte) or (byte >= 48 and byte <= 57)
+
+        def pv_is_space(byte: u8) -> bool:
+            can Abort.Panic:
+                return when byte:
+                    32 | 9 -> true
+                    _ -> false
+
+        # Index of the identifier `view[start..end)` among `params`, or -1 when it names no param.
+        def pv_param_index(view: sview, start: usize, end: usize, params: darray[sview]&) -> i64:
+            can Abort.Panic:
+                word_length: usize = end - start
+                slot: mutable i64 = -1
+                probe: mutable usize = 0
+                while probe < params.count |slot, probe, view, start, end, word_length, params|:
+                    if slot < 0 and sview_len(params[probe]) == word_length:
+                        equal: mutable bool = true
+                        cursor: mutable usize = 0
+                        while cursor < word_length |equal, cursor, view, start, params, probe|:
+                            equal <- false if sview_at(view, start + cursor) != sview_at(params[probe], cursor)
+                            cursor <- cursor + 1
+                        slot <- probe.i64() if equal
+                    probe <- probe + 1
+                return slot
+
+        # Whether two `requires`/`ensure` predicate spans are equivalent MODULO a positional
+        # param rename and whitespace: `factor > 0` (protocol param 0 = factor) equals
+        # `f > 0` (impl param 0 = f). A literal token must match verbatim; a param token must
+        # map to the SAME positional index on both sides.
+        def pv_predicates_equivalent(a: sview, a_params: darray[sview]&, b: sview, b_params: darray[sview]&) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                a_length: usize = sview_len(a)
+                b_length: usize = sview_len(b)
+                ia: mutable usize = 0
+                ib: mutable usize = 0
+                while true |ia, ib, a, b, a_params, b_params, a_length, b_length|:
+                    while ia < a_length and pv_is_space(sview_at(a, ia)) |ia, a, a_length|:
+                        ia <- ia + 1
+                    while ib < b_length and pv_is_space(sview_at(b, ib)) |ib, b, b_length|:
+                        ib <- ib + 1
+                    true return if ia >= a_length and ib >= b_length
+                    false return if ia >= a_length or ib >= b_length
+                    byte_a: u8 = sview_at(a, ia)
+                    byte_b: u8 = sview_at(b, ib)
+                    a_ident: bool = pv_is_ident_start(byte_a)
+                    b_ident: bool = pv_is_ident_start(byte_b)
+                    false return if a_ident != b_ident
+                    if a_ident:
+                        a_end: mutable usize = ia
+                        while a_end < a_length and pv_is_ident_byte(sview_at(a, a_end)) |a_end, a, a_length|:
+                            a_end <- a_end + 1
+                        b_end: mutable usize = ib
+                        while b_end < b_length and pv_is_ident_byte(sview_at(b, b_end)) |b_end, b, b_length|:
+                            b_end <- b_end + 1
+                        index_a: i64 = pv_param_index(a, ia, a_end, a_params)
+                        index_b: i64 = pv_param_index(b, ib, b_end, b_params)
+                        if index_a >= 0 or index_b >= 0:
+                            false return if index_a != index_b
+                        else:
+                            word_length: usize = a_end - ia
+                            false return if (b_end - ib) != word_length
+                            literal_probe: mutable usize = 0
+                            while literal_probe < word_length |literal_probe, a, b, ia, ib|:
+                                false return if sview_at(a, ia + literal_probe) != sview_at(b, ib + literal_probe)
+                                literal_probe <- literal_probe + 1
+                        ia <- a_end
+                        ib <- b_end
+                    else:
+                        false return if byte_a != byte_b
+                        ia <- ia + 1
+                        ib <- ib + 1
+                return false
+
+        # Whether any predicate span at (owner, src_sentinel) has NO param-canonical match at
+        # (owner, dst_sentinel). src_params/dst_params key each side's positional renames.
+        def pv_has_unmatched(annotations: darray[Ast::EnumAnnotation]&, owner: sview, src_sentinel: u32, dst_sentinel: u32, src_params: darray[sview]&, dst_params: darray[sview]&) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                for annotation in annotations:
+                    if annotation.line == src_sentinel and annotation.owner == owner:
+                        matched: mutable bool = false
+                        for candidate in annotations |matched, owner, dst_sentinel, annotation, src_params, dst_params, annotations|:
+                            matched <- true if candidate.line == dst_sentinel and candidate.owner == owner and pv_predicates_equivalent(annotation.name, src_params, candidate.name, dst_params)
+                        true return if not matched
+                return false
+
+        # Leaf: a declaration's method name (Decl.Func) or "" — isolates the region-bearing
+        # Decl.Func binding so callers stay region-monomorphic.
+        def pv_member_name(member: Ast::Decl) -> sview:
+            can Memory.Allocate, Abort.Panic:
+                match member:
+                    Decl.Func(name, params, return_type, func_body, effects, decorators, func_line):
+                        return name
+                    _:
+                        return sview("", 0, 0)
+
+        # Non-recursive: check each impl method in `body`.
+        def pv_check_impl_body(annotations: darray[Ast::EnumAnnotation]&, body: darray[Ast::Decl], interface: sview, concrete: sview, scoped_line: u32, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for member in body |table| -> table:
+                    name: sview = pv_member_name(member)
+                    if name != "":
+                        protocol_params: mutable darray[sview] = []
+                        impl_params: mutable darray[sview] = []
+                        pv_collect_params(annotations, name, 3900000066, protocol_params)
+                        pv_collect_params(annotations, name, 3900000068, impl_params)
+                        strengthens: bool = pv_has_unmatched(annotations, name, 3900000074, 3900000072, impl_params, protocol_params)
+                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.ImplStrengthensPrecondition, name: name, line: scoped_line, expected: interface, actual: concrete, detail: "the impl declares a `requires` the protocol method does not"}) if strengthens
+                        weakens: bool = pv_has_unmatched(annotations, name, 3900000073, 3900000075, protocol_params, impl_params)
+                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.ImplWeakensPostcondition, name: name, line: scoped_line, expected: interface, actual: concrete, detail: "an `ensure` the protocol method declares"}) if weakens
+
+        # One level of declarations: check each Decl.Scoped impl here (non-recursive).
+        def pv_scan_level(declarations: darray[Ast::Decl], annotations: darray[Ast::EnumAnnotation]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |table| -> table:
+                    match declaration:
+                        Decl.Scoped(body, scoped_line):
+                            interface: sview = imc_annotation_value(annotations, "__impl_scope", scoped_line.line)
+                            derived: sview = imc_annotation_value(annotations, "__impl_derived", scoped_line.line)
+                            if interface != "" and derived == "":
+                                concrete: sview = imc_annotation_value(annotations, "__impl_concrete", scoped_line.line)
+                                table <- pv_check_impl_body(annotations, body, interface, concrete, scoped_line.line, table)
+
+                        _:
+                            pass
+        def check_protocol_variance(file: Ast::File&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                table <- pv_scan_level(file.top_decls, file.enum_annotations, table)

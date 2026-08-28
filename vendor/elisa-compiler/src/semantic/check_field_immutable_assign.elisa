@@ -1,0 +1,265 @@
+# Check for assignment (`<-` or a compound op) to a struct field that was NOT declared
+# `mutable`. In Elisa a struct field is immutable unless its declared type is wrapped
+# `mutable T` (StructMember has no separate mutable flag — see `type_is_mutable`).
+# Sound: fires ONLY when the object firmly infers to a REGISTERED struct (known, closed
+# field set) AND the named field is itself registered on that struct AND recorded as
+# NOT mutable. Unknown objects, unregistered structs, and unregistered fields never fire
+# (those are the job of UnknownField / a Named-with-Unknown-field case, not this check).
+# Plain `=` (define) is not a mutation of an existing field — only `<-` and compound ops.
+
+extend Semantic:
+    private:
+        # Bare struct/type name behind a possibly-`mutable`/`lmut`/ref-wrapped type
+        # expression. The shared `bare_type_name` only sees through `mutable`, so a
+        # `mutable P&`/`P&` PARAMETER (the overwhelmingly common shape for a mutation
+        # target — a bare-value `p: P` parameter can never be the target of `p.a <- v`
+        # in the first place) would otherwise type as Unknown and this check could
+        # never fire on realistic code. Local to this file; does not touch the shared
+        # helper other checks rely on.
+        def bare_type_name_through_ref(expression: Ast::Expr) -> sview:
+            can Abort.Panic:
+                match expression:
+                    Expr.Unary(operator, operand, unary_line):
+                        "mutable_view" return if operator == TokenKind.Mutable and bare_type_name_through_ref(operand) == "view"
+                        "mutable_darray" return if operator == TokenKind.Mutable and bare_type_name_through_ref(operand) == "darray"
+                        "mutable_array" return if operator == TokenKind.Mutable and bare_type_name_through_ref(operand) == "array"
+                        bare_type_name_through_ref(operand) return if operator == TokenKind.Mutable or operator == TokenKind.Ampersand or operator == TokenKind.Lmut or operator == TokenKind.Static or operator == TokenKind.Heap or operator == TokenKind.Stack or operator == TokenKind.Tail
+                    Expr.Ident(name, ident_line):
+                        return name
+                    Expr.Index(object, argument, index_line):
+                        match object:
+                            Expr.Field(owner, field, field_line):
+                                return "packed_store" if field == "Store" else ""
+                            _:
+                                return bare_type_name_through_ref(object)
+                    Expr.IndexN(object, arguments, index_line):
+                        match object:
+                            Expr.Field(owner_n, field_n, field_line_n):
+                                return "packed_store" if field_n == "Store" else ""
+                            _:
+                                return bare_type_name_through_ref(object)
+                    _:
+                        pass
+                return ""
+
+        # Whether an operator token is a mutating assignment: `<-` or any compound op.
+        def is_mutating_assign_operator(operator: TokenKind) -> bool:
+            can Abort.Panic:
+                return when operator:
+                    TokenKind.LArrow | TokenKind.PlusEq | TokenKind.MinusEq | TokenKind.StarEq | TokenKind.SlashEq | TokenKind.PercentEq | TokenKind.LShiftEq | TokenKind.RShiftEq | TokenKind.AmpEq | TokenKind.PipeEq | TokenKind.CaretEq -> true
+                    _ -> false
+
+        # Walk through expressions, recursing into sub-expressions (this check has no
+        # expression-level logic of its own — the field-assign check lives in the
+        # statement walker — but we still need a full expression walk for nested blocks/
+        # lambdas/matches that may themselves contain field assignments).
+        def walk_expression_for_field_immutable_assign(expression: Ast::Expr, table: lmut SymbolTable, var_types: mutable darray[sview]&, type_names: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Binary(left, operator, right, line):
+                        table <- walk_expression_for_field_immutable_assign(left, table, var_types, type_names)
+                        table <- walk_expression_for_field_immutable_assign(right, table, var_types, type_names) if operator != TokenKind.Is and operator != TokenKind.As
+                    Expr.Call(callee, arguments, argument_names, line):
+                        table <- walk_expression_for_field_immutable_assign(callee, table, var_types, type_names)
+                        for argument in arguments |table|:
+                            table <- walk_expression_for_field_immutable_assign(argument, table, var_types, type_names)
+                    Expr.Field(object, field, line):
+                        table <- walk_expression_for_field_immutable_assign(object, table, var_types, type_names)
+                    Expr.Scope(base, name, line):
+                        table <- walk_expression_for_field_immutable_assign(base, table, var_types, type_names)
+                    Expr.Index(object, index, line):
+                        table <- walk_expression_for_field_immutable_assign(object, table, var_types, type_names)
+                        table <- walk_expression_for_field_immutable_assign(index, table, var_types, type_names) if not index_receiver_is_type_application(object)
+                    Expr.Unary(operator, operand, line):
+                        table <- walk_expression_for_field_immutable_assign(operand, table, var_types, type_names)
+                    Expr.Paren(inner, line):
+                        table <- walk_expression_for_field_immutable_assign(inner, table, var_types, type_names)
+                    Expr.Array(elements, line):
+                        for element in elements |table|:
+                            table <- walk_expression_for_field_immutable_assign(element, table, var_types, type_names)
+                    Expr.Tuple(elements, line):
+                        for element in elements |table|:
+                            table <- walk_expression_for_field_immutable_assign(element, table, var_types, type_names)
+                    Expr.Slice(object, low, high, line):
+                        table <- walk_expression_for_field_immutable_assign(object, table, var_types, type_names)
+                        table <- walk_expression_for_field_immutable_assign(low, table, var_types, type_names)
+                        table <- walk_expression_for_field_immutable_assign(high, table, var_types, type_names)
+                    Expr.IndexN(object, arguments, line):
+                        table <- walk_expression_for_field_immutable_assign(object, table, var_types, type_names)
+                        for argument in arguments |table|:
+                            table <- walk_expression_for_field_immutable_assign(argument, table, var_types, type_names) if not index_receiver_is_type_application(object)
+                    Expr.SetLit(elements, line):
+                        for element in elements |table|:
+                            table <- walk_expression_for_field_immutable_assign(element, table, var_types, type_names)
+                    Expr.DictLit(entries, line):
+                        for entry in entries |table|:
+                            table <- walk_expression_for_field_immutable_assign(entry.key, table, var_types, type_names)
+                            table <- walk_expression_for_field_immutable_assign(entry.value, table, var_types, type_names)
+                    Expr.Construct(type_expression, fields, line):
+                        table <- walk_expression_for_field_immutable_assign(type_expression, table, var_types, type_names)
+                        for field in fields |table|:
+                            table <- walk_expression_for_field_immutable_assign(field.value, table, var_types, type_names)
+                    Expr.RecordUpdate(base, fields, line):
+                        table <- walk_expression_for_field_immutable_assign(base, table, var_types, type_names)
+                        for field in fields |table|:
+                            table <- walk_expression_for_field_immutable_assign(field.value, table, var_types, type_names)
+                    Expr.If(condition, then_expr, else_expr, line):
+                        table <- walk_expression_for_field_immutable_assign(condition, table, var_types, type_names)
+                        table <- walk_expression_for_field_immutable_assign(then_expr, table, var_types, type_names)
+                        table <- walk_expression_for_field_immutable_assign(else_expr, table, var_types, type_names)
+                    Expr.Comprehension(loop_variable, iterable, condition, body, line):
+                        table <- walk_expression_for_field_immutable_assign(iterable, table, var_types, type_names)
+                        table <- walk_expression_for_field_immutable_assign(condition, table, var_types, type_names)
+                        table <- walk_expression_for_field_immutable_assign(body, table, var_types, type_names)
+                    Expr.Lambda(parameters, body, line):
+                        table <- walk_statements_for_field_immutable_assign(body, table, var_types, type_names)
+                    Expr.Block(statements, value, captures, line):
+                        table <- walk_statements_for_field_immutable_assign(statements, table, var_types, type_names)
+                        table <- walk_expression_for_field_immutable_assign(value, table, var_types, type_names)
+                    Expr.Match(scrutinee, arms, line):
+                        table <- walk_expression_for_field_immutable_assign(scrutinee, table, var_types, type_names)
+                        for arm in arms |table|:
+                            table <- walk_statements_for_field_immutable_assign(arm.body, table, var_types, type_names)
+                    # Literals and other expressions don't contain relevant sub-expressions
+                    _:
+                        pass
+
+        # A mutating assignment whose target is an immutable struct field. Extracted so the
+        # statement walk's Assign arm dispatches once instead of pyramiding a
+        # match-target + Named + registered/has-field + immutable chain (docs/121 flow).
+        def check_field_immutable_target(target: Ast::Expr, line: u32, table: lmut SymbolTable, var_types: darray[sview]&, type_names: darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match target:
+                    Expr.Field(object, field, field_line):
+                        object_type: Semantic::InferType = infer_expression_type(object, var_types, type_names, table)
+                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.FieldImmutableAssign, name: field, line: line, expected: "", actual: ""}) if object_type.kind == SemTypeKind.Named and struct_is_registered(table, object_type.name) and struct_has_field(table, object_type.name, field) and not field_is_mutable(table, object_type.name, field)
+                    _:
+                        pass
+
+
+        def check_readonly_index_target(target: Ast::Expr, line: u32, table: lmut SymbolTable, var_types: darray[sview]&, type_names: darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match target:
+                    Expr.Index(object, index, index_line):
+                        match object:
+                            Expr.Ident(name, ident_line):
+                                receiver_type: sview = local_type_of(var_types, type_names, name)
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.ReadonlyViewIndexAssign, name: name, line: line, expected: "", actual: ""}) if receiver_type == "view"
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.StringViewIndexAssign, name: name, line: line, expected: "", actual: ""}) if receiver_type == "sview"
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.StringIndexAssign, name: name, line: line, expected: "", actual: ""}) if receiver_type == "cstr" or receiver_type == "dstr"
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.PackedStoreIndexAssign, name: name, line: line, expected: "", actual: ""}) if receiver_type == "packed_store"
+                            _:
+                                pass
+                    _:
+                        pass
+
+
+        def check_readonly_string_len_target(target: Ast::Expr, line: u32, table: lmut SymbolTable, var_types: darray[sview]&, type_names: darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match target:
+                    Expr.Field(object, field, field_line):
+                        match object:
+                            Expr.Ident(name, ident_line):
+                                receiver_type: sview = local_type_of(var_types, type_names, name)
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.FieldImmutableAssign, name: field, line: line, expected: "", actual: ""}) if field == "len" and (receiver_type == "cstr" or receiver_type == "dstr" or receiver_type == "sview")
+                            _:
+                                pass
+                    _:
+                        pass
+
+
+        def check_mutable_view_initializer(name: sview, type_expression: Ast::Expr, value: Ast::Expr, line: u32, table: lmut SymbolTable, var_types: darray[sview]&, type_names: darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                return if bare_type_name_through_ref(type_expression) != "mutable_view"
+                match value:
+                    Expr.Slice(object, low, high, slice_line):
+                        match object:
+                            Expr.Ident(source_name, source_line):
+                                source_type: sview = local_type_of(var_types, type_names, source_name)
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.MutableViewFromReadonlySource, name: name, line: line, expected: "", actual: source_type}) if source_type != "mutable_darray" and source_type != "mutable_array" and source_type != "mutable_view"
+                            _:
+                                pass
+                    _:
+                        pass
+
+
+        def check_mutable_iteration(bind: sview, iterable: Ast::Expr, line: u32, table: lmut SymbolTable, var_types: darray[sview]&, type_names: darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match iterable:
+                    Expr.Ident(name, ident_line):
+                        iterable_type: sview = local_type_of(var_types, type_names, name)
+                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.MutableIterationReadonlyView, name: name, line: line, expected: "", actual: ""}) if bind == "mutable" and (iterable_type == "view" or iterable_type == "sview")
+                    _:
+                        pass
+
+        # Walk through statements, tracking variable types and checking field assignments.
+        def walk_statements_for_field_immutable_assign(statements: darray[Ast::Stmt], table: lmut SymbolTable, var_types: mutable darray[sview]&, type_names: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |table|:
+                    match statement:
+                        Stmt.Expr(expression, line):
+                            table <- walk_expression_for_field_immutable_assign(expression, table, var_types, type_names)
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            table <- check_mutable_view_initializer(name, type_expression, value, line.line, table, var_types, type_names)
+                            type_name: sview = bare_type_name_through_ref(type_expression)
+                            note_local_type(var_types, type_names, name, type_name)
+                            table <- walk_expression_for_field_immutable_assign(value, table, var_types, type_names)
+                        Stmt.Assign(target, operator, value, line):
+                            table <- check_field_immutable_target(target, line.line, table, var_types, type_names) if is_mutating_assign_operator(operator)
+                            table <- check_readonly_index_target(target, line.line, table, var_types, type_names) if is_mutating_assign_operator(operator)
+                            table <- check_readonly_string_len_target(target, line.line, table, var_types, type_names) if is_mutating_assign_operator(operator)
+                            table <- walk_expression_for_field_immutable_assign(target, table, var_types, type_names)
+                            table <- walk_expression_for_field_immutable_assign(value, table, var_types, type_names)
+                        Stmt.If(condition, then_body, else_body, line):
+                            table <- walk_expression_for_field_immutable_assign(condition, table, var_types, type_names)
+                            table <- walk_statements_for_field_immutable_assign(then_body, table, var_types, type_names)
+                            table <- walk_statements_for_field_immutable_assign(else_body, table, var_types, type_names)
+                        Stmt.While(condition, body, line):
+                            table <- walk_expression_for_field_immutable_assign(condition, table, var_types, type_names)
+                            table <- walk_statements_for_field_immutable_assign(body, table, var_types, type_names)
+                        Stmt.For(bind, variables, iterable, body, line):
+                            table <- check_mutable_iteration(bind, iterable, line.line, table, var_types, type_names)
+                            table <- walk_expression_for_field_immutable_assign(iterable, table, var_types, type_names)
+                            table <- walk_statements_for_field_immutable_assign(body, table, var_types, type_names)
+                        Stmt.Block(kind, clause, binding, body, line):
+                            table <- walk_statements_for_field_immutable_assign(body, table, var_types, type_names)
+                        Stmt.Match(scrutinee, arms, line):
+                            table <- walk_expression_for_field_immutable_assign(scrutinee, table, var_types, type_names)
+                            for arm in arms |table|:
+                                table <- walk_expression_for_field_immutable_assign(arm.guard, table, var_types, type_names)
+                                table <- walk_statements_for_field_immutable_assign(arm.body, table, var_types, type_names)
+                        Stmt.Return(value, line):
+                            table <- walk_expression_for_field_immutable_assign(return_value, table, var_types, type_names) if value is return_value
+                        Stmt.Contract(kind, expression, line):
+                            table <- walk_expression_for_field_immutable_assign(expression, table, var_types, type_names)
+                        Stmt.Invalid:
+                            pass
+                        Stmt.Break(label, line):
+                            pass
+                        Stmt.Continue(label, line):
+                            pass
+
+        # Walk through function declarations.
+        def check_field_immutable_assign_declarations(declarations: darray[Ast::Decl], table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |table|:
+                    match declaration:
+                        Decl.Func(name, params, return_type, body, effects, decorators, line):
+                            var_types: mutable darray[sview] = []
+                            type_names: mutable darray[sview] = []
+                            for param in params |table|:
+                                param_type: sview = bare_type_name_through_ref(param.type_expression)
+                                note_local_type(var_types, type_names, param.name, param_type)
+                            table <- walk_statements_for_field_immutable_assign(body, table, var_types, type_names)
+                        Decl.Module(module_name, body, line):
+                            table <- check_field_immutable_assign_declarations(body, table)
+                        Decl.Scoped(body, line):
+                            table <- check_field_immutable_assign_declarations(body, table)
+                        _:
+                            pass
+
+    public:
+        # Public entry point for the check.
+        def check_field_immutable_assign(declarations: darray[Ast::Decl], table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                table <- check_field_immutable_assign_declarations(declarations, table)

@@ -1,0 +1,540 @@
+# Loop-invariant PRESERVATION (docs/90 tier). An `invariant P` established on entry must
+# be re-established by every iteration; stage0 warns when the body provably cannot (or
+# cannot be shown to) preserve it. The decidable core, pinned against stage0:
+#
+#     invariant i < 5;   i <- i + 1     -> flags   (i can be 4; 5 is not < 5)
+#     invariant i >= 100; i <- i + 1    -> clean   (a non-negative step preserves >=)
+#     invariant i >= 100; i <- 0        -> flags   (a constant that fails the bound —
+#                                                   including via a NESTED loop's body)
+#
+# Only `var cmp const` invariants over a variable whose body updates are constants or
+# `var + const` steps are judged; anything else (quantifiers, cross-variable bounds)
+# stays with the real prover.
+extend Semantic:
+    private:
+        # The invariant's (variable, operator, bound) when it has the judged shape.
+        # Collect top-level `const NAME: T = <int>` declarations (NAME -> value).
+        def lip_collect_consts(declarations: darray[Ast::Decl], out_names: mutable darray[sview]&, out_values: mutable darray[i64]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |out_names, out_values|:
+                    match declaration:
+                        Decl.Const(const_name, const_type, const_value, const_is_global, const_line):
+                            literal: (found: bool, value: i64) = fold_const_int(const_value)
+                            if literal.found:
+                                out_names.push(const_name)
+                                out_values.push(literal.value)
+                        Decl.Module(module_name, module_body, module_line):
+                            lip_collect_consts(module_body, out_names, out_values)
+                        Decl.Scoped(scoped_body, scoped_line):
+                            lip_collect_consts(scoped_body, out_names, out_values)
+                        _:
+                            pass
+
+        # The constant value of a bound expression: a folded literal, or a named `const`.
+        def lip_bound_value(expression: Ast::Expr, const_names: darray[sview]&, const_values: darray[i64]&) -> (found: bool, value: i64):
+            can Memory.Allocate, Abort.Panic:
+                literal: (found: bool, value: i64) = fold_const_int(expression)
+                literal return if literal.found
+                name: sview = ident_name_of(expression)
+                if name != "":
+                    probe: mutable usize = 0
+                    while probe < const_names.count |probe, name, const_names, const_values|:
+                        (true, const_values[probe]) return if const_names[probe] == name
+                        probe <- probe + 1
+                return (false, 0)
+
+        def invariant_shape(predicate: Ast::Expr, const_names: darray[sview]&, const_values: darray[i64]&) -> (found: bool, name: sview, operator: TokenKind, bound: i64):
+            can Memory.Allocate, Abort.Panic:
+                match predicate:
+                    Expr.Paren(inner, line):
+                        return invariant_shape(inner, const_names, const_values)
+                    Expr.Binary(left, operator, right, line):
+                        (false, sview("", 0, 0), operator, 0) return if not is_comparison_operator(operator)
+                        left_name: sview = ident_name_of(left)
+                        bound: (found: bool, value: i64) = lip_bound_value(right, const_names, const_values)
+                        (true, left_name, operator, bound.value) return if left_name != "" and bound.found
+                        return (false, sview("", 0, 0), operator, 0)
+                    _:
+                        return (false, sview("", 0, 0), TokenKind.EqEq, 0)
+
+
+        # An integer literal (through parens), else not-found.
+        def lip_literal_int(expression: Ast::Expr) -> (found: bool, value: i64):
+            can Memory.Allocate, Abort.Panic:
+                return match expression:
+                    Expr.IntLit(literal_value): (true, literal_value)
+                    Expr.Paren(inner, paren_line): lip_literal_int(inner)
+                    _: (false, 0)
+
+        # A modular invariant `VAR % C == K` (C, K integer literals; VAR an ident).
+        def lip_modular_invariant(predicate: Ast::Expr) -> (ok: bool, name: sview, modulus: i64, remainder: i64):
+            can Memory.Allocate, Abort.Panic:
+                match predicate:
+                    Expr.Paren(inner, paren_line):
+                        return lip_modular_invariant(inner)
+                    Expr.Binary(left, operator, right, binary_line):
+                        if operator == TokenKind.EqEq:
+                            rem: (found: bool, value: i64) = lip_literal_int(right)
+                            match left:
+                                Expr.Binary(mod_left, mod_op, mod_right, mod_line):
+                                    if mod_op == TokenKind.Percent and rem.found:
+                                        var_name: sview = ident_name_of(mod_left)
+                                        modulus: (found: bool, value: i64) = lip_literal_int(mod_right)
+                                        (true, var_name, modulus.value, rem.value) return if var_name != "" and modulus.found and modulus.value != 0
+                                _:
+                                    pass
+                        return (false, sview("", 0, 0), 0, 0)
+                    _:
+                        return (false, sview("", 0, 0), 0, 0)
+
+        def lip_establishment_declarations(declarations: darray[Ast::Decl], table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |table| -> table:
+                    match declaration:
+                        Decl.Func(name, parameters, return_type, body, effects, decorators, line):
+                            table <- lip_check_establishment(body, table)
+                        Decl.Module(module_name, module_body, module_line):
+                            table <- lip_establishment_declarations(module_body, table)
+                        Decl.Scoped(scoped_body, scoped_line):
+                            table <- lip_establishment_declarations(scoped_body, table)
+                        _:
+                            pass
+
+        # Establishment: a `while` invariant `VAR % C == K` is provably FALSE on entry when VAR
+        # was initialised to a literal L (unmodified since) with L % C != K. stage0 warns; this
+        # is a sound, decidable subset (the entry value is a compile-time constant).
+        def lip_check_establishment(statements: darray[Ast::Stmt], table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                init_names: mutable darray[sview] = []
+                init_values: mutable darray[i64] = []
+                for statement in statements |init_names, init_values, table| -> table:
+                    match statement:
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            lit: (found: bool, value: i64) = lip_literal_int(value)
+                            if name != "":
+                                init_names.push(name)
+                                init_values.push(lit.value if lit.found else 4000000001)
+                        Stmt.Assign(target, operator, value, line):
+                            assigned: sview = ident_name_of(target)
+                            probe: mutable usize = 0
+                            while probe < init_names.count |probe, assigned, init_names, init_values|:
+                                init_values[probe] <- 4000000001 if init_names[probe] == assigned
+                                probe <- probe + 1
+                        Stmt.While(condition, while_body, while_line):
+                            for body_statement in while_body |table, init_names, init_values| -> table:
+                                match body_statement:
+                                    Stmt.Contract(kind, expression, contract_line):
+                                        if kind == "invariant":
+                                            mod: (ok: bool, name: sview, modulus: i64, remainder: i64) = lip_modular_invariant(expression)
+                                            if mod.ok:
+                                                slot: mutable i64 = -1
+                                                find: mutable usize = 0
+                                                while find < init_names.count |slot, find, mod, init_names|:
+                                                    slot <- find.i64() if init_names[find] == mod.name and slot < 0
+                                                    find <- find + 1
+                                                if slot >= 0 and init_values[slot.usize()] != 4000000001:
+                                                    entry_value: i64 = init_values[slot.usize()]
+                                                    table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.LoopInvariantNotPreserved, name: mod.name, line: contract_line.line, expected: "", actual: ""}) if (entry_value % mod.modulus) != mod.remainder
+                                    _:
+                                        pass
+                            table <- lip_check_establishment(while_body, table)
+                        Stmt.If(condition, then_body, else_body, if_line):
+                            table <- lip_check_establishment(then_body, table)
+                            table <- lip_check_establishment(else_body, table)
+                        Stmt.Block(kind, clause, binding, block_body, block_line):
+                            table <- lip_check_establishment(block_body, table)
+                        Stmt.For(bind, variables, iterable, for_body, for_line):
+                            table <- lip_check_establishment(for_body, table)
+                        _:
+                            pass
+
+        # Whether the BODY (recursively, nested control flow included) provably breaks
+        # the invariant: a constant store failing the bound, or a step in the bound's
+        # losing direction (strictly positive against an upper bound; strictly negative
+        # against a lower bound — the invariant alone cannot absorb it).
+        # The upper bound the loop GUARD imposes on `name` (`name < V` -> V-1, `name <= V` -> V),
+        # searching through `and` conjunctions. (found, value) where value is the MAX name can take.
+        def lip_guard_upper_bound(condition: Ast::Expr, name: sview, const_names: darray[sview]&, const_values: darray[i64]&) -> (found: bool, value: i64):
+            can Memory.Allocate, Abort.Panic:
+                match condition:
+                    Expr.Paren(inner, paren_line):
+                        return lip_guard_upper_bound(inner, name, const_names, const_values)
+                    Expr.Binary(left, operator, right, binary_line):
+                        if operator == TokenKind.And:
+                            left_bound: (found: bool, value: i64) = lip_guard_upper_bound(left, name, const_names, const_values)
+                            left_bound return if left_bound.found
+                            return lip_guard_upper_bound(right, name, const_names, const_values)
+                        if ident_name_of(left) == name:
+                            limit: (found: bool, value: i64) = lip_bound_value(right, const_names, const_values)
+                            (true, limit.value - 1) return if limit.found and operator == TokenKind.Lt
+                            (true, limit.value) return if limit.found and operator == TokenKind.LtEq
+                        return (false, 0)
+                    _:
+                        return (false, 0)
+
+        # Whether the loop GUARD already keeps a `< / <=` invariant true across a `+step` body: the
+        # next-iteration maximum (guard-max + step) still satisfies the bound (so stage0's SMT proves
+        # it — do NOT report). Only meaningful for upper-bound invariants with a positive step.
+        def lip_guard_preserves(operator: TokenKind, bound: i64, step: i64, guard_condition: Ast::Expr, name: sview, const_names: darray[sview]&, const_values: darray[i64]&) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                gub: (found: bool, value: i64) = lip_guard_upper_bound(guard_condition, name, const_names, const_values)
+                false return if not gub.found
+                next_max: i64 = gub.value + step
+                true return if operator == TokenKind.Lt and next_max < bound
+                true return if operator == TokenKind.LtEq and next_max <= bound
+                return false
+
+        def invariant_body_breaks(statements: darray[Ast::Stmt], name: sview, operator: TokenKind, bound: i64, guard_condition: Ast::Expr, const_names: darray[sview]&, const_values: darray[i64]&) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |name, operator, bound|:
+                    match statement:
+                        Stmt.Assign(target, assign_operator, value, line):
+                            continue if ident_name_of(target) != name
+                            value_names: mutable darray[sview] = []
+                            value_coeffs: mutable darray[i64] = []
+                            value_konst: mutable i64 = 0
+                            value_linear: bool = lin_add(value, 1, value_names, value_coeffs, value_konst, Ast::Expr.Invalid, false, 0)
+                            continue if not value_linear
+                            self_coeff: mutable i64 = 0
+                            other_vars: mutable bool = false
+                            term: mutable usize = 0
+                            while term < value_names.count |self_coeff, other_vars, term, name, value_names, value_coeffs|:
+                                is_self: bool = value_names[term] == name
+                                self_coeff <- value_coeffs[term] if is_self
+                                other_vars <- true if not is_self and value_coeffs[term] != 0
+                                term <- term + 1
+                            continue if other_vars
+                            # `v <- CONST`: violated outright when the constant fails.
+                            if self_coeff == 0:
+                                true return if operator == TokenKind.Lt and not (value_konst < bound)
+                                true return if operator == TokenKind.LtEq and not (value_konst <= bound)
+                                true return if operator == TokenKind.Gt and not (value_konst > bound)
+                                true return if operator == TokenKind.GtEq and not (value_konst >= bound)
+                                continue
+                            continue if self_coeff != 1
+                            # `v <- v + d`: the losing direction cannot be re-proven from the invariant
+                            # ALONE — but the loop GUARD may already bound v tightly enough to preserve
+                            # it (`n <= C` under guard `n < C`), which stage0's SMT discharges. Suppress
+                            # the report in that case; a strict `<` bound is never saved this way.
+                            if value_konst > 0 and (operator == TokenKind.Lt or operator == TokenKind.LtEq):
+                                true return if not lip_guard_preserves(operator, bound, value_konst, guard_condition, name, const_names, const_values)
+                            true return if value_konst < 0 and (operator == TokenKind.Gt or operator == TokenKind.GtEq)
+                        Stmt.If(condition, then_body, else_body, if_line):
+                            true return if invariant_body_breaks(then_body, name, operator, bound, guard_condition, const_names, const_values)
+                            true return if invariant_body_breaks(else_body, name, operator, bound, guard_condition, const_names, const_values)
+                        Stmt.While(condition, while_body, while_line):
+                            true return if invariant_body_breaks(while_body, name, operator, bound, guard_condition, const_names, const_values)
+                        Stmt.Block(kind, clause, binding, block_body, block_line):
+                            true return if invariant_body_breaks(block_body, name, operator, bound, guard_condition, const_names, const_values)
+                        _:
+                            pass
+                return false
+
+        # The upper-bound VARIABLE of a range predicate `... and binder < UPPER` (or `<=`), else "".
+        def lip_range_upper(range_predicate: Ast::Expr, binder: sview) -> sview:
+            can Memory.Allocate, Abort.Panic:
+                match range_predicate:
+                    Expr.Paren(inner, paren_line):
+                        return lip_range_upper(inner, binder)
+                    Expr.Binary(left, operator, right, binary_line):
+                        if operator == TokenKind.And:
+                            left_upper: sview = lip_range_upper(left, binder)
+                            left_upper return if left_upper != ""
+                            return lip_range_upper(right, binder)
+                        if operator == TokenKind.Lt or operator == TokenKind.LtEq:
+                            return ident_name_of(right) if ident_name_of(left) == binder else sview("", 0, 0)
+                        return sview("", 0, 0)
+                    _:
+                        return sview("", 0, 0)
+
+        # A quantified fill invariant `forall k: (0<=k and k<UPPER) implies STORE[k] == LIT`, returning
+        # (ok, UPPER var, the STORE base expression, the claimed literal). The implication is desugared
+        # by the parser to `(not RANGE) or CONSEQ`.
+        def lip_quant_invariant_parts(predicate: Ast::Expr) -> (ok: bool, upper: sview, base: Ast::Expr, lit: i64):
+            can Memory.Allocate, Abort.Panic:
+                quant: (found: bool, binder: sview, body: Ast::Expr) = qr_quantifier_of(predicate)
+                (false, sview("", 0, 0), (Ast::Expr.Absent), 0) return if not quant.found or quant.binder == ""
+                match quant.body:
+                    Expr.Binary(body_left, body_op, body_right, body_line):
+                        if body_op == TokenKind.Or:
+                            # body_left is `not RANGE`; recover RANGE and its upper bound variable.
+                            upper: mutable sview = sview("", 0, 0)
+                            match body_left:
+                                Expr.Unary(not_operator, range_expression, not_line):
+                                    upper <- lip_range_upper(range_expression, quant.binder) if not_operator == TokenKind.Not
+                                _:
+                                    pass
+                            if upper != "":
+                                # CONSEQ: STORE[binder] == INT_LIT
+                                match body_right:
+                                    Expr.Binary(conseq_left, conseq_op, conseq_right, conseq_line):
+                                        if conseq_op == TokenKind.EqEq:
+                                            match conseq_left:
+                                                Expr.Index(store_base, index_expression, index_line):
+                                                    if ident_name_of(index_expression) == quant.binder:
+                                                        match conseq_right:
+                                                            Expr.IntLit(claimed_literal):
+                                                                return (true, upper, store_base, claimed_literal)
+                                                            _:
+                                                                pass
+                                                _:
+                                                    pass
+                                    _:
+                                        pass
+                    _:
+                        pass
+                return (false, sview("", 0, 0), (Ast::Expr.Absent), 0)
+
+        # Whether the loop body writes `STORE[UPPER] <- LIT2` with LIT2 a literal distinct from the
+        # invariant's claimed literal — the element newly brought into range holds the wrong value.
+        def lip_body_writes_conflict(statements: darray[Ast::Stmt], base: Ast::Expr, upper: sview, claimed_literal: i64) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements:
+                    match statement:
+                        Stmt.Assign(target, operator, value, assign_line):
+                            if operator == TokenKind.LArrow or operator == TokenKind.Assign:
+                                match target:
+                                    Expr.Index(write_base, write_index, write_index_line):
+                                        if ident_name_of(write_index) == upper and expressions_equal(write_base, base):
+                                            match value:
+                                                Expr.IntLit(written_literal):
+                                                    true return if written_literal != claimed_literal
+                                                _:
+                                                    pass
+                                    _:
+                                        pass
+                        _:
+                            pass
+                return false
+
+
+        # The upper-bound VARIABLE of an invariant `var < X` / `var <= X` (X any expression), else "".
+        def lip_invariant_upper_var(predicate: Ast::Expr) -> sview:
+            can Memory.Allocate, Abort.Panic:
+                match predicate:
+                    Expr.Paren(inner, paren_line):
+                        return lip_invariant_upper_var(inner)
+                    Expr.Binary(left, operator, right, binary_line):
+                        return ident_name_of(left) if operator == TokenKind.Lt or operator == TokenKind.LtEq else sview("", 0, 0)
+                    _:
+                        return sview("", 0, 0)
+
+        # Whether an expression is a non-negative integer literal.
+        def lip_nonneg_intlit(expression: Ast::Expr) -> bool:
+            can Abort.Panic:
+                return match expression:
+                    Expr.IntLit(literal_value): literal_value >= 0
+                    _: false
+
+        # Whether `operator value` increments `name` by a non-negative constant.
+        def lip_is_increment(operator: TokenKind, value: Ast::Expr, name: sview) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                true return if operator == TokenKind.PlusEq and lip_nonneg_intlit(value)
+                if operator == TokenKind.LArrow:
+                    match value:
+                        Expr.Binary(add_left, add_op, add_right, add_line):
+                            return add_op == TokenKind.Plus and ident_name_of(add_left) == name and lip_nonneg_intlit(add_right)
+                        _:
+                            pass
+                return false
+
+        # Whether some statement (recursively) increments `name` (`name += c` / `name <- name + c`, c>=0).
+        def lip_increments_var(statements: darray[Ast::Stmt], name: sview) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements:
+                    match statement:
+                        Stmt.Assign(target, operator, value, assign_line):
+                            true return if ident_name_of(target) == name and lip_is_increment(operator, value, name)
+                        Stmt.If(condition, then_body, else_body, if_line):
+                            true return if lip_increments_var(then_body, name) or lip_increments_var(else_body, name)
+                        Stmt.While(while_condition, while_body, while_line):
+                            true return if lip_increments_var(while_body, name)
+                        Stmt.Block(block_kind, clause, binding, block_body, block_line):
+                            true return if lip_increments_var(block_body, name)
+                        _:
+                            pass
+                return false
+
+        # Whether a guard condition upper-bounds `name` by ANY expression (`name < X` / `name <= X`,
+        # X const OR variable) — enough to know the nested loop cannot run `name` past the bound.
+        def lip_guard_mentions_upper(condition: Ast::Expr, name: sview) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                match condition:
+                    Expr.Paren(inner, paren_line):
+                        return lip_guard_mentions_upper(inner, name)
+                    Expr.Binary(left, operator, right, binary_line):
+                        lip_guard_mentions_upper(left, name) or lip_guard_mentions_upper(right, name) return if operator == TokenKind.And
+                        return (operator == TokenKind.Lt or operator == TokenKind.LtEq) and ident_name_of(left) == name
+                    _:
+                        return false
+
+        # Whether the body contains a NESTED loop whose guard does NOT upper-bound `name` yet whose
+        # body increments `name` — the nested increments escape the outer guard, so an upper-bound
+        # invariant on `name` cannot be preserved across the outer iteration.
+        def lip_nested_unguarded_increment(statements: darray[Ast::Stmt], name: sview, const_names: darray[sview]&, const_values: darray[i64]&) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements:
+                    match statement:
+                        Stmt.While(condition, while_body, while_line):
+                            true return if not lip_guard_mentions_upper(condition, name) and lip_increments_var(while_body, name)
+                            true return if lip_nested_unguarded_increment(while_body, name, const_names, const_values)
+                        Stmt.If(condition, then_body, else_body, if_line):
+                            true return if lip_nested_unguarded_increment(then_body, name, const_names, const_values) or lip_nested_unguarded_increment(else_body, name, const_names, const_values)
+                        Stmt.Block(block_kind, clause, binding, block_body, block_line):
+                            true return if lip_nested_unguarded_increment(block_body, name, const_names, const_values)
+                        _:
+                            pass
+                return false
+
+        def loop_invariant_walk(statements: darray[Ast::Stmt], const_names: darray[sview]&, const_values: darray[i64]&, enable_smt: bool, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |table| -> table:
+                    match statement:
+                        Stmt.While(condition, while_body, line):
+                            for body_statement in while_body |table| -> table:
+                                match body_statement:
+                                    Stmt.Contract(kind, expression, contract_line):
+                                        continue if kind != "invariant"
+                                        # stage0 proves invariant PRESERVATION only through its SMT
+                                        # tier; with SMT off it cannot prove any and warns on every
+                                        # loop invariant. Mirror that: warn unconditionally, and skip
+                                        # the (SMT-on) structural violation checks below.
+                                        if not enable_smt:
+                                            table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.LoopInvariantNotPreserved, name: "", line: contract_line.line, expected: "", actual: ""})
+                                            continue
+                                        shape: (found: bool, name: sview, operator: TokenKind, bound: i64) = invariant_shape(expression, const_names, const_values)
+                                        if shape.found:
+                                            breaks: bool = invariant_body_breaks(while_body, shape.name, shape.operator, shape.bound, condition, const_names, const_values)
+                                            table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.LoopInvariantNotPreserved, name: shape.name, line: contract_line.line, expected: "", actual: ""}) if breaks
+                                        else:
+                                            # Quantified fill invariant contradicted by a wrong-literal store.
+                                            quant: (ok: bool, upper: sview, base: Ast::Expr, lit: i64) = lip_quant_invariant_parts(expression)
+                                            if quant.ok:
+                                                qbreaks: bool = lip_body_writes_conflict(while_body, quant.base, quant.upper, quant.lit)
+                                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.LoopInvariantNotPreserved, name: "", line: contract_line.line, expected: "", actual: ""}) if qbreaks
+                                            # An upper-bound invariant `var <= X` whose var is incremented by a
+                                            # NESTED loop that the outer guard does not bound cannot be preserved.
+                                            upper_var: sview = lip_invariant_upper_var(expression)
+                                            if upper_var != "":
+                                                nested_break: bool = lip_nested_unguarded_increment(while_body, upper_var, const_names, const_values)
+                                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.LoopInvariantNotPreserved, name: upper_var, line: contract_line.line, expected: "", actual: ""}) if nested_break
+                                    _:
+                                        pass
+                            table <- loop_invariant_walk(while_body, const_names, const_values, enable_smt, table)
+                        Stmt.If(condition, then_body, else_body, if_line):
+                            table <- loop_invariant_walk(then_body, const_names, const_values, enable_smt, table)
+                            table <- loop_invariant_walk(else_body, const_names, const_values, enable_smt, table)
+                        Stmt.For(bind, variables, iterable, for_body, for_line):
+                            table <- loop_invariant_walk(for_body, const_names, const_values, enable_smt, table)
+                        Stmt.Block(kind, clause, binding, block_body, block_line):
+                            table <- loop_invariant_walk(block_body, const_names, const_values, enable_smt, table)
+                        _:
+                            pass
+
+        def lip_walk_declarations(declarations: darray[Ast::Decl], const_names: darray[sview]&, const_values: darray[i64]&, enable_smt: bool, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |table| -> table:
+                    match declaration:
+                        Decl.Func(name, parameters, return_type, body, effects, decorators, line):
+                            table <- loop_invariant_walk(body, const_names, const_values, enable_smt, table)
+                        Decl.Module(module_name, module_body, module_line):
+                            table <- lip_walk_declarations(module_body, const_names, const_values, enable_smt, table)
+                        Decl.Scoped(scoped_body, scoped_line):
+                            table <- lip_walk_declarations(scoped_body, const_names, const_values, enable_smt, table)
+                        _:
+                            pass
+
+        # The single straight-line `return <ident>` variable of a body, else "".
+        def lip_single_return_var(statements: darray[Ast::Stmt]) -> sview:
+            can Memory.Allocate, Abort.Panic:
+                count: mutable usize = 0
+                name: mutable sview = sview("", 0, 0)
+                for statement in statements |count, name|:
+                    match statement:
+                        Stmt.Return(value, return_line):
+                            count <- count + 1
+                            name <- ident_name_of(returned) if value is returned
+                        _:
+                            pass
+                return name if count == 1 else sview("", 0, 0)
+
+        # Whether the body declares `name` initialized to the integer literal 0.
+        def lip_var_inits_zero(statements: darray[Ast::Stmt]&, name: sview) -> bool:
+            can Abort.Panic:
+                for statement in statements:
+                    match statement:
+                        Stmt.VarDecl(decl_name, decl_type, decl_value, decl_line):
+                            if decl_name == name:
+                                match decl_value:
+                                    Expr.IntLit(literal_value):
+                                        true return if literal_value == 0
+                                    _:
+                                        pass
+                        _:
+                            pass
+                return false
+
+        # Whether a while loop in the body fills `target[j] <- LIT2` (LIT2 a literal != claimed_literal)
+        # at a zero-initialized index `j` — so element 0 of `target` holds the wrong value.
+        def lip_loop_fills_conflict(statements: darray[Ast::Stmt], target: sview, claimed_literal: i64, function_body: darray[Ast::Stmt]&) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements:
+                    match statement:
+                        Stmt.While(condition, while_body, while_line):
+                            for inner in while_body:
+                                match inner:
+                                    Stmt.Assign(assign_target, operator, value, assign_line):
+                                        if operator == TokenKind.LArrow or operator == TokenKind.Assign:
+                                            match assign_target:
+                                                Expr.Index(write_base, write_index, write_index_line):
+                                                    index_name: sview = ident_name_of(write_index)
+                                                    if ident_name_of(write_base) == target and index_name != "" and lip_var_inits_zero(function_body, index_name):
+                                                        match value:
+                                                            Expr.IntLit(written_literal):
+                                                                true return if written_literal != claimed_literal
+                                                            _:
+                                                                pass
+                                                _:
+                                                    pass
+                                    _:
+                                        pass
+                        _:
+                            pass
+                return false
+
+        # A quantified `ensure forall k: (0<=k and k<N) implies result[k] == LIT` whose returned
+        # container is filled with a DIFFERENT literal is falsified at k=0 (for a non-empty range) —
+        # stage0 reports the ensure unproven. Sound: exact structural match, two distinct literals.
+        def lip_check_ensure_quant(declarations: darray[Ast::Decl], table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |table| -> table:
+                    match declaration:
+                        Decl.Func(name, parameters, return_type, body, effects, decorators, line):
+                            return_var: sview = lip_single_return_var(body)
+                            if return_var != "":
+                                for statement in body |table| -> table:
+                                    match statement:
+                                        Stmt.Contract(kind, expression, contract_line):
+                                            if kind == "ensure":
+                                                quant: (ok: bool, upper: sview, base: Ast::Expr, lit: i64) = lip_quant_invariant_parts(expression)
+                                                if quant.ok and ident_name_of(quant.base) == "result":
+                                                    conflict: bool = lip_loop_fills_conflict(body, return_var, quant.lit, body)
+                                                    table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.EnsureNotProven, name: name, line: contract_line.line, expected: "", actual: ""}) if conflict
+                                        _:
+                                            pass
+                        Decl.Module(module_name, module_body, module_line):
+                            table <- lip_check_ensure_quant(module_body, table)
+                        Decl.Scoped(scoped_body, scoped_line):
+                            table <- lip_check_ensure_quant(scoped_body, table)
+                        _:
+                            pass
+
+    public:
+        def check_loop_invariant_preserved(declarations: darray[Ast::Decl], enable_smt: bool, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                const_names: mutable darray[sview] = []
+                const_values: mutable darray[i64] = []
+                lip_collect_consts(declarations, const_names, const_values)
+                table <- lip_walk_declarations(declarations, const_names, const_values, enable_smt, table)
+                table <- lip_establishment_declarations(declarations, table)
+                table <- lip_check_ensure_quant(declarations, table)

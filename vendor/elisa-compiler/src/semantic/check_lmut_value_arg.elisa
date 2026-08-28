@@ -1,0 +1,314 @@
+# Passing a value literal to an `lmut` parameter. An `lmut T` parameter lowers to a mutable
+# reference — it must be given a PLACE (a mutable local/field), never a temporary. Passing a struct
+# LITERAL `f(Counter{...})` to such a parameter is rejected ("argument N to f expects mutable T&,
+# got T"). SOUND subset: an argument with no mutable place at a parameter position the callee declared
+# `lmut` (tracked in lmut_param_owner/pos) — either a construction literal, or an ident naming a
+# by-value binding (a param/local whose type is a bare struct Ident: no `mutable`/`&`, non-primitive).
+# Such bindings are immutable values, never mutable places.
+extend Semantic:
+    private:
+        # Whether callee's positional parameter at `position` is a `mutable T&` borrow (from the
+        # function_param registry). Like an lmut parameter, it needs a mutable PLACE — a value or
+        # a temporary is rejected the same way.
+        def mutable_ref_position_of(table: SymbolTable&, callee: sview, position: u32) -> bool:
+            can Abort.Panic:
+                # Was an O(function_param_owner.count) scan of every parameter in the whole
+                # program, per call argument — see the matching comment on
+                # function_parameter_count in resolve_expr.elisa.
+                seen: mutable u32 = 0
+                result: mutable bool = false
+                cur: mutable u32 = function_param_chain_head(table, callee)
+                while cur != 4294967295:
+                    if table.function_param_owner[cur.usize()] == callee:
+                        result <- table.function_param_mutable_ref[cur.usize()] if seen == position
+                        seen <- seen + 1
+                    cur <- table.function_param_name_next[cur.usize()]
+                return result
+
+        def place_required_position(table: SymbolTable&, callee: sview, position: u32) -> bool:
+            can Abort.Panic:
+                return lmut_threads_position(table, callee, position) or mutable_ref_position_of(table, callee, position)
+
+        # The declared bare type of callee's positional parameter at `position`, else "".
+        def value_param_type_at(table: SymbolTable&, callee: sview, position: u32) -> sview:
+            can Abort.Panic:
+                # Was an O(function_param_owner.count) scan of every parameter in the whole
+                # program, per call argument — see the matching comment on
+                # function_parameter_count in resolve_expr.elisa.
+                seen: mutable u32 = 0
+                result: mutable sview = sview("", 0, 0)
+                cur: mutable u32 = function_param_chain_head(table, callee)
+                while cur != 4294967295:
+                    if table.function_param_owner[cur.usize()] == callee:
+                        result <- table.function_param_type[cur.usize()] if seen == position
+                        seen <- seen + 1
+                    cur <- table.function_param_name_next[cur.usize()]
+                return result
+
+        # Whether a type annotation is a REFERENCE type — carries `&` or `lmut` (a borrow).
+        # A plain `mutable T` (no `&`) is a mutable VALUE, NOT a reference, and must not be
+        # treated as one (`mutable Handle` local passed by `move` to a value param is fine).
+        def lvarg_type_is_ref(type_expression: Ast::Expr) -> bool:
+            can Abort.Panic:
+                match type_expression:
+                    Expr.Unary(operator, operand, unary_line):
+                        true return if operator == TokenKind.Ampersand or operator == TokenKind.Lmut
+                        return lvarg_type_is_ref(operand)
+                    Expr.Paren(inner, paren_line):
+                        return lvarg_type_is_ref(inner)
+                    _:
+                        return false
+
+        # The base struct type of a REFERENCE argument — an ident (or `move ident`) naming a
+        # binding whose type is a reference (`&`/`lmut`, per `receiver_is_ref`) — else "". Such
+        # a borrow cannot satisfy a BY-VALUE parameter: stage0 rejects `expects C, got mutable C&`.
+        def ref_arg_base_type(argument: Ast::Expr, receiver_names: darray[sview]&, receiver_types: darray[sview]&, receiver_is_ref: darray[bool]&) -> sview:
+            can Memory.Allocate, Abort.Panic:
+                name: sview = match argument:
+                    Expr.Ident(ident_name, ident_line): ident_name
+                    Expr.Move(operand, move_line): ident_name_of(operand)
+                    Expr.Paren(inner, paren_line): ident_name_of(inner)
+                    _: sview("", 0, 0)
+                "" return if name == ""
+                index: mutable usize = 0
+                found: mutable sview = sview("", 0, 0)
+                while index < receiver_names.count |found, index|:
+                    found <- receiver_types[index] if found == "" and receiver_names[index] == name and receiver_is_ref[index]
+                    index <- index + 1
+                return found
+
+        # Look up a struct FIELD's declared type name in the field registry — the bare type
+        # (`bare_type_name`), so a value field `arena: S` yields "S" while a ref-typed field
+        # yields "" and is never treated as a placeless value. A field declared `mutable`
+        # ALSO yields "": a mutable field of a mutable place is itself a mutable place (a valid
+        # borrow target), so only a NON-mutable value field is a placeless copy. This is the
+        # distinction between `combine(p.a)` where `a: mutable C` (accepted) and `bump(h.arena)`
+        # where `arena: ScratchArena` (rejected — needs `&h.arena`).
+        def lvarg_field_type(table: SymbolTable&, struct_name: sview, field_name: sview) -> sview:
+            can Abort.Panic:
+                index: mutable usize = 0
+                found: mutable sview = sview("", 0, 0)
+                while index < table.struct_field_owner.count |found, index|:
+                    found <- table.struct_field_type[index] if found == "" and table.struct_field_owner[index] == struct_name and table.struct_field_name[index] == field_name and not table.struct_field_mutable[index]
+                    index <- index + 1
+                return found
+
+        # A receiver's base STRUCT type (peeling `mutable`/`&`/`lmut`), from the whole-function
+        # receiver map — includes ref params (`h: mutable Holder&` -> "Holder"), which the
+        # value-only map deliberately omits.
+        def lvarg_receiver_type(name: sview, receiver_names: darray[sview]&, receiver_types: darray[sview]&) -> sview:
+            can Abort.Panic:
+                index: mutable usize = 0
+                found: mutable sview = sview("", 0, 0)
+                while index < receiver_names.count |found, index|:
+                    found <- receiver_types[index] if found == "" and receiver_names[index] == name
+                    index <- index + 1
+                return found
+
+        # The value-binding type of an argument at an lmut call position, else "": a struct
+        # LITERAL (a temporary), an ident naming a by-value binding (bare struct type, not mutable/
+        # ref) in `value_names`/`value_types`, or a FIELD access `recv.field` whose field is a
+        # by-value struct — a copy, not a mutable place, so it needs an explicit `&recv.field`.
+        def lmut_value_arg_type(argument: Ast::Expr, value_names: darray[sview]&, value_types: darray[sview]&, receiver_names: darray[sview]&, receiver_types: darray[sview]&, table: SymbolTable&) -> sview:
+            can Memory.Allocate, Abort.Panic:
+                match argument:
+                    Expr.Construct(type_expression, fields, construct_line):
+                        return ident_name_of(type_expression)
+                    Expr.Ident(name, line):
+                        binding_index: mutable usize = 0
+                        found: mutable sview = sview("", 0, 0)
+                        while binding_index < value_names.count |found|:
+                            found <- value_types[binding_index] if value_names[binding_index] == name and found == ""
+                            binding_index <- binding_index + 1
+                        return found
+                    Expr.Field(receiver, field_name, field_line):
+                        receiver_name: sview = ident_name_of(receiver)
+                        "" return if receiver_name == ""
+                        receiver_type: sview = lvarg_receiver_type(receiver_name, receiver_names, receiver_types)
+                        "" return if receiver_type == ""
+                        field_type: sview = lvarg_field_type(table, receiver_type, field_name)
+                        field_type return if field_type != "" and lvarg_needs_place_tracking(field_type)
+                        return sview("", 0, 0)
+                    _:
+                        return sview("", 0, 0)
+
+        def lmut_value_check_expression(expression: Ast::Expr, value_names: darray[sview]&, value_types: darray[sview]&, receiver_names: darray[sview]&, receiver_types: darray[sview]&, receiver_is_ref: darray[bool]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Call(callee, arguments, argument_names, line):
+                        callee_name: sview = ident_name_of(callee)
+                        if callee_name != "":
+                            position: mutable u32 = 0
+                            for argument in arguments |table, position| -> table:
+                                argument_type: sview = lmut_value_arg_type(argument, value_names, value_types, receiver_names, receiver_types, table)
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.LmutValueArg, name: callee_name, line: line.line, expected: argument_type, actual: "", expected_count: position + 1}) if argument_type != "" and place_required_position(table, callee_name, position)
+                                # Inverse mismatch: a REFERENCE binding passed to a BY-VALUE param of
+                                # the same struct — a borrow cannot inhabit a value slot. Require a
+                                # registered value struct (excludes generics) and matching bases, so
+                                # this never collides with the place-required check above.
+                                ref_base: sview = ref_arg_base_type(argument, receiver_names, receiver_types, receiver_is_ref)
+                                value_param: sview = value_param_type_at(table, callee_name, position)
+                                ref_to_value: bool = ref_base != "" and value_param == ref_base and is_registered_type(value_param, table) and not place_required_position(table, callee_name, position)
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.RefArgValueParam, name: callee_name, line: line.line, expected: value_param, actual: ref_base, expected_count: position + 1}) if ref_to_value
+                                position <- position + 1
+                        for argument in arguments |table| -> table:
+                            table <- lmut_value_check_expression(argument, value_names, value_types, receiver_names, receiver_types, receiver_is_ref, table)
+                    Expr.Binary(left, operator, right, line):
+                        table <- lmut_value_check_expression(left, value_names, value_types, receiver_names, receiver_types, receiver_is_ref, table)
+                        table <- lmut_value_check_expression(right, value_names, value_types, receiver_names, receiver_types, receiver_is_ref, table)
+                    Expr.Paren(inner, line):
+                        table <- lmut_value_check_expression(inner, value_names, value_types, receiver_names, receiver_types, receiver_is_ref, table)
+                    _:
+                        pass
+
+        # A by-value binding's struct type name, else "": a bare-Ident type (no `mutable`/`&`/`?`
+        # wrapper — those are places or optionals) whose name is not a primitive. Only such value
+        # bindings are placeless and thus invalid at an lmut parameter position.
+        def lmut_value_type_name(type_expression: Ast::Expr) -> sview:
+            can Abort.Panic:
+                match type_expression:
+                    Expr.Ident(name, line):
+                        return name if name != "" and lvarg_needs_place_tracking(name) else sview("", 0, 0)
+                    _:
+                        return sview("", 0, 0)
+
+        def is_primitive_type_name(name: sview) -> bool:
+            can Abort.Panic:
+                return when name:
+                    "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "usize" | "isize" | "int" | "uint" | "f32" | "f64" | "bool" | "void" | "char" | "cstr" | "dstr" | "sview" -> true
+                    _ -> false
+
+        # `is_primitive_type_name` folds `sview`/`cstr`/`dstr` in with the true scalars — correct
+        # for its OTHER callers (e.g. `.sview()`/`.cstr()` are real builtin conversion METHOD
+        # names, so `check_field_access_type_param.elisa` needs them treated as "primitive-ish"
+        # to stay silent). But `sview`/`cstr`/`dstr` are STRUCTS: stage0 requires a mutable place
+        # for an `lmut sview`/`lmut cstr`/`lmut dstr` parameter exactly like any other struct
+        # ("argument 1 to f expects mutable sview&, got sview" — confirmed against stage0 for all
+        # three spellings). So THIS file's own place-tracking logic must NOT treat them as
+        # primitive, even though the shared helper above (by design, for its other callers) does.
+        def lvarg_needs_place_tracking(name: sview) -> bool:
+            can Abort.Panic:
+                return not is_primitive_type_name(name) or name == "sview" or name == "cstr" or name == "dstr"
+
+        # Collect by-value local declarations (recursively) into the value-binding maps.
+        def lmut_collect_value_locals(statements: darray[Ast::Stmt], value_names: mutable darray[sview]&, value_types: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |value_names, value_types|:
+                    match statement:
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            local_type: sview = lmut_value_type_name(type_expression)
+                            if local_type != "":
+                                value_names.push(name)
+                                value_types.push(local_type)
+                        Stmt.If(condition, then_body, else_body, line):
+                            lmut_collect_value_locals(then_body, value_names, value_types)
+                            lmut_collect_value_locals(else_body, value_names, value_types)
+                        Stmt.While(condition, while_body, line):
+                            lmut_collect_value_locals(while_body, value_names, value_types)
+                        Stmt.For(bind, variables, iterable, for_body, line):
+                            lmut_collect_value_locals(for_body, value_names, value_types)
+                        Stmt.Block(kind, clause, binding, body, line):
+                            lmut_collect_value_locals(body, value_names, value_types)
+                        _:
+                            pass
+
+        def lmut_value_check_statements(statements: darray[Ast::Stmt], value_names: darray[sview]&, value_types: darray[sview]&, receiver_names: darray[sview]&, receiver_types: darray[sview]&, receiver_is_ref: darray[bool]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |table| -> table:
+                    match statement:
+                        Stmt.Expr(expression, line):
+                            table <- lmut_value_check_expression(expression, value_names, value_types, receiver_names, receiver_types, receiver_is_ref, table)
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            table <- lmut_value_check_expression(value, value_names, value_types, receiver_names, receiver_types, receiver_is_ref, table)
+                        Stmt.Assign(target, operator, value, line):
+                            table <- lmut_value_check_expression(value, value_names, value_types, receiver_names, receiver_types, receiver_is_ref, table)
+                        Stmt.Return(value, line):
+                            if value is returned:
+                                table <- lmut_value_check_expression(returned, value_names, value_types, receiver_names, receiver_types, receiver_is_ref, table)
+                        Stmt.If(condition, then_body, else_body, line):
+                            table <- lmut_value_check_expression(condition, value_names, value_types, receiver_names, receiver_types, receiver_is_ref, table)
+                            table <- lmut_value_check_statements(then_body, value_names, value_types, receiver_names, receiver_types, receiver_is_ref, table)
+                            table <- lmut_value_check_statements(else_body, value_names, value_types, receiver_names, receiver_types, receiver_is_ref, table)
+                        Stmt.While(condition, while_body, line):
+                            table <- lmut_value_check_statements(while_body, value_names, value_types, receiver_names, receiver_types, receiver_is_ref, table)
+                        Stmt.For(bind, variables, iterable, for_body, line):
+                            table <- lmut_value_check_statements(for_body, value_names, value_types, receiver_names, receiver_types, receiver_is_ref, table)
+                        Stmt.Block(kind, clause, binding, body, line):
+                            table <- lmut_value_check_statements(body, value_names, value_types, receiver_names, receiver_types, receiver_is_ref, table)
+                        _:
+                            pass
+
+        # The base STRUCT type of an annotation, peeling `mutable`/`&`/`lmut`/`stack`/`heap`
+        # wrappers: `mutable Holder&` -> "Holder". Bare/primitive/non-struct annotations that
+        # bare_type_name cannot reduce to a non-primitive name yield "". Used for the receiver
+        # map so a field access through a ref receiver resolves its owning struct.
+        def lvarg_base_struct_name(type_expression: Ast::Expr) -> sview:
+            can Memory.Allocate, Abort.Panic:
+                match type_expression:
+                    Expr.Ident(name, ident_line):
+                        return name if name != "" and lvarg_needs_place_tracking(name) else sview("", 0, 0)
+                    Expr.Unary(operator, operand, unary_line):
+                        lvarg_base_struct_name(operand) return if operator == TokenKind.Mutable or operator == TokenKind.Ampersand or operator == TokenKind.Lmut or operator == TokenKind.Static or operator == TokenKind.Heap or operator == TokenKind.Stack or operator == TokenKind.Tail
+                        return sview("", 0, 0)
+                    Expr.Paren(inner, paren_line):
+                        return lvarg_base_struct_name(inner)
+                    _:
+                        return sview("", 0, 0)
+
+        # Collect the base struct type of every local decl (recursively) into the receiver map,
+        # tracking whether each binding is a reference (`&`/`lmut`) in the parallel is_ref map.
+        def lvarg_collect_receivers(statements: darray[Ast::Stmt], receiver_names: mutable darray[sview]&, receiver_types: mutable darray[sview]&, receiver_is_ref: mutable darray[bool]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |receiver_names, receiver_types, receiver_is_ref|:
+                    match statement:
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            base_type: sview = lvarg_base_struct_name(type_expression)
+                            if base_type != "":
+                                receiver_names.push(name)
+                                receiver_types.push(base_type)
+                                receiver_is_ref.push(lvarg_type_is_ref(type_expression))
+                        Stmt.If(condition, then_body, else_body, line):
+                            lvarg_collect_receivers(then_body, receiver_names, receiver_types, receiver_is_ref)
+                            lvarg_collect_receivers(else_body, receiver_names, receiver_types, receiver_is_ref)
+                        Stmt.While(condition, while_body, line):
+                            lvarg_collect_receivers(while_body, receiver_names, receiver_types, receiver_is_ref)
+                        Stmt.For(bind, variables, iterable, for_body, line):
+                            lvarg_collect_receivers(for_body, receiver_names, receiver_types, receiver_is_ref)
+                        Stmt.Block(kind, clause, binding, body, line):
+                            lvarg_collect_receivers(body, receiver_names, receiver_types, receiver_is_ref)
+                        _:
+                            pass
+
+        def check_lmut_value_arg_walk(declarations: darray[Ast::Decl], table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |table| -> table:
+                    match declaration:
+                        Decl.Func(function_name, parameters, return_type, body, effects, decorators, line):
+                            value_names: mutable darray[sview] = []
+                            value_types: mutable darray[sview] = []
+                            receiver_names: mutable darray[sview] = []
+                            receiver_types: mutable darray[sview] = []
+                            receiver_is_ref: mutable darray[bool] = []
+                            for parameter in parameters |value_names, value_types, receiver_names, receiver_types, receiver_is_ref|:
+                                parameter_type: sview = lmut_value_type_name(parameter.type_expression)
+                                if parameter_type != "":
+                                    value_names.push(parameter.name)
+                                    value_types.push(parameter_type)
+                                base_type: sview = lvarg_base_struct_name(parameter.type_expression)
+                                if base_type != "":
+                                    receiver_names.push(parameter.name)
+                                    receiver_types.push(base_type)
+                                    receiver_is_ref.push(lvarg_type_is_ref(parameter.type_expression))
+                            lmut_collect_value_locals(body, value_names, value_types)
+                            lvarg_collect_receivers(body, receiver_names, receiver_types, receiver_is_ref)
+                            table <- lmut_value_check_statements(body, value_names, value_types, receiver_names, receiver_types, receiver_is_ref, table)
+                        Decl.Module(module_name, module_body, module_line):
+                            table <- check_lmut_value_arg_walk(module_body, table)
+                        Decl.Scoped(scoped_body, scoped_line):
+                            table <- check_lmut_value_arg_walk(scoped_body, table)
+                        _:
+                            pass
+
+        def check_lmut_value_arg(file: Ast::File&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                table <- check_lmut_value_arg_walk(file.top_decls, table)

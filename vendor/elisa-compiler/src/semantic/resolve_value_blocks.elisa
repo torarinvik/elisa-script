@@ -1,0 +1,448 @@
+# docs/119 expression-unification semantic rules for value blocks:
+# E4: value-block purity (no mutation of outer bindings without capture)
+# E10: capture must name an existing outer binding
+# E11: captured binding must be mutable
+#
+# Value blocks (Expr.Block) are pure over outer state by default: they cannot write
+# back into a binding from an enclosing scope. Threading updates to outer mutables is
+# `rebind`'s job (docs/119 §5), and `|capture|` headers (docs/119 §6) are sugar over
+# that. This purity is what makes blocks safe to read locally — the header/binding site
+# tells you everything the block can change.
+
+extend Semantic:
+    private:
+        # Collect all names bound within a block's statement list (locals, loop variables,
+        # pattern bindings). Nested value blocks run their own E4 pass; their bindings
+        # are still swept up here so a write to them from an inner statement is never
+        # mis-flagged.
+        def collect_block_bound_names(statements: darray[Ast::Stmt], local: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |local|:
+                    match statement:
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            local.push(name)
+                        Stmt.Assign(target, operator, value, line):
+                            pass
+                        Stmt.If(condition, then_body, else_body, line):
+                            collect_block_bound_names(then_body, local)
+                            collect_block_bound_names(else_body, local)
+                        Stmt.While(condition, body, line):
+                            collect_block_bound_names(body, local)
+                        Stmt.For(bind, variables, iterable, body, line):
+                            local.extend(variables)
+                            collect_block_bound_names(body, local)
+                        Stmt.Block(kind, clause, binding, body, line):
+                            local.push(binding) if binding != ""
+                            collect_block_bound_names(body, local)
+                        Stmt.Match(scrutinee, arms, line):
+                            for arm in arms:
+                                gather_pattern_names(arm.pattern, local)
+                                collect_block_bound_names(arm.body, local)
+                        # Other statements bind nothing.
+                        Stmt.Expr(expression, line):
+                            pass
+                        Stmt.Return(value, line):
+                            pass
+                        Stmt.Break(label, line):
+                            pass
+                        Stmt.Continue(label, line):
+                            pass
+                        Stmt.Contract(kind, expression, line):
+                            pass
+                        Stmt.Invalid:
+                            pass
+
+
+        # Record the real mutability of a block's own `mutable` locals.
+        #
+        # Inside a value block, statements are walked by `walk_statements`, whose scope pools
+        # are IMMUTABLE parameters — it cannot push. So a block-local's mutability came only
+        # from `gather_locals` hoisting the name plus `pad_bound_mutability` padding it
+        # `false`, and every `mutable` local declared inside a block read as immutable. A
+        # nested block capturing one then reported E10 (the bulk of the 324 remaining on the
+        # compiler's own source; stage0 reports none).
+        #
+        # Appends an extra (name, true) entry rather than trying to correct the padded one:
+        # the hoist order interleaves VarDecl names, captures and pattern binds, so index
+        # alignment is fragile, and `bound_name_any_mutable` ORs over every entry anyway.
+        def mark_mutable_locals(statements: darray[Ast::Stmt], scope: mutable darray[sview]&, mutability: mutable darray[bool]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |scope, mutability|:
+                    match statement:
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            if type_is_mutable(type_expression):
+                                scope.push(name)
+                                mutability.push(true)
+                        Stmt.If(condition, then_body, else_body, line):
+                            mark_mutable_locals(then_body, scope, mutability)
+                            mark_mutable_locals(else_body, scope, mutability)
+                        Stmt.While(condition, body, line):
+                            mark_mutable_locals(body, scope, mutability)
+                        Stmt.For(bind, variables, iterable, body, line):
+                            mark_mutable_locals(body, scope, mutability)
+                        Stmt.Block(kind, clause, binding, body, line):
+                            mark_mutable_locals(body, scope, mutability)
+                        Stmt.Match(scrutinee, arms, line):
+                            for arm in arms:
+                                mark_mutable_locals(arm.body, scope, mutability)
+                        Stmt.Assign(target, operator, value, line):
+                            pass
+                        Stmt.Expr(expression, line):
+                            pass
+                        Stmt.Return(value, line):
+                            pass
+                        Stmt.Break(label, line):
+                            pass
+                        Stmt.Continue(label, line):
+                            pass
+                        Stmt.Contract(kind, expression, line):
+                            pass
+                        Stmt.Invalid:
+                            pass
+
+
+        # Names DIRECTLY assigned (`name <- …`, `name = …`, compound) anywhere in a block,
+        # including a multi-target group. Only a bare `Expr.Ident` target counts: a field or
+        # index write through the name (`structs.handles[i] <- v`) is a mutation of the
+        # POINTEE, which E4 and the readonly-ref checks own, not a re-binding of the name.
+        #
+        # Used to narrow E10. stage0 permits CAPTURING an immutable binding — verified by
+        # fixture: capturing an immutable local read-only, and capturing a non-mutable `T&`
+        # parameter, both compile under stage0 and both were reported by stage1. What stage0
+        # rejects is ASSIGNING to one ("cannot assign to immutable local"), and inside a value
+        # block E10 is the only check that fires on it, so the report must be kept for that
+        # case rather than dropped.
+        def collect_block_assigned_names(statements: darray[Ast::Stmt], assigned: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                assigned.reserve(assigned.count + statements.count)
+                for statement in statements |assigned|:
+                    match statement:
+                        Stmt.Assign(target, operator, value, line):
+                            match target:
+                                Expr.Ident(assigned_name, assigned_line):
+                                    assigned.push(assigned_name)
+                                Expr.Array(assign_elements, assign_array_line):
+                                    for assign_element in assign_elements |assigned|:
+                                        match assign_element:
+                                            Expr.Ident(element_assigned_name, element_assigned_line):
+                                                assigned.push(element_assigned_name)
+                                            _:
+                                                pass
+                                _:
+                                    pass
+                        Stmt.If(condition, then_body, else_body, line):
+                            collect_block_assigned_names(then_body, assigned)
+                            collect_block_assigned_names(else_body, assigned)
+                        Stmt.While(condition, body, line):
+                            collect_block_assigned_names(body, assigned)
+                        Stmt.For(bind, variables, iterable, body, line):
+                            collect_block_assigned_names(body, assigned)
+                        Stmt.Block(kind, clause, binding, body, line):
+                            collect_block_assigned_names(body, assigned)
+                        Stmt.Match(scrutinee, arms, line):
+                            for arm in arms:
+                                collect_block_assigned_names(arm.body, assigned)
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            pass
+                        Stmt.Expr(expression, line):
+                            pass
+                        Stmt.Return(value, line):
+                            pass
+                        Stmt.Break(label, line):
+                            pass
+                        Stmt.Continue(label, line):
+                            pass
+                        Stmt.Contract(kind, expression, line):
+                            pass
+                        Stmt.Invalid:
+                            pass
+
+
+        # Gather names from a pattern (used by collect_block_bound_names).
+        def gather_pattern_names(pattern: Ast::Pattern, local: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match pattern:
+                    Ast::Pattern.Binding(name):
+                        local.push(name)
+                    Ast::Pattern.Pin(name):
+                        pass
+                    Ast::Pattern.Tuple(elements):
+                        for element in elements:
+                            gather_pattern_names(element, local)
+                    Ast::Pattern.Rest(name):
+                        local.push(name) if name != ""
+                    Ast::Pattern.Variant(path, fields):
+                        for field in fields:
+                            gather_pattern_names(field, local)
+                    Ast::Pattern.Struct(path, fields):
+                        for field in fields:
+                            gather_pattern_names(field, local)
+                    Ast::Pattern.Field(selector, inner):
+                        for inner_pattern in inner:
+                            gather_pattern_names(inner_pattern, local)
+                    Ast::Pattern.Or(options):
+                        for option in options:
+                            gather_pattern_names(option, local)
+                    Ast::Pattern.TypeBind(bound_type, binder):
+                        local.push(binder)
+                    Ast::Pattern.As(name, inner):
+                        # docs/122 §5.4: the as-name plus the wrapped pattern's bindings.
+                        local.push(name)
+                        for inner_pattern in inner:
+                            gather_pattern_names(inner_pattern, local)
+                    # Other patterns (Wildcard, Literal, Range, Other) bind nothing.
+                    Ast::Pattern.Wildcard:
+                        pass
+                    Ast::Pattern.Literal(text):
+                        pass
+                    Ast::Pattern.Range(lo, hi, inclusive):
+                        pass
+                    Ast::Pattern.Other(text):
+                        pass
+
+
+        # Check if a name is in the local set (for efficiency, since this is called often).
+        def is_local(name: sview, locals: darray[sview]) -> bool:
+            can Abort.Panic:
+                return any local_name in locals where local_name == name
+
+
+        # Find a symbol by name in the table's symbol array.
+        def find_symbol(table: SymbolTable&, name: sview) -> Semantic::Symbol?:
+            can Abort.Panic:
+                for symbol in table.symbols:
+                    symbol return if symbol.name == name
+                return null
+
+
+        # Mutability of the nearest in-scope binding for `name`. `bound` and
+        # `bound_mutability` are parallel stacks maintained by the resolver; scanning
+        # backward makes shadowing choose the innermost declaration.
+        # Is `name` an OUTER LOCAL binding (parameter or local), as opposed to a global,
+        # function or module member? `name_known` answers true for those too — it consults
+        # the symbol table as well as `bound` — and `bound_name_is_mutable` cannot tell
+        # "found, immutable" from "not a local at all", since both return false. E10 must
+        # only speak about local bindings threaded through the block.
+        def name_is_bound_local(name: sview, bound: darray[sview]&) -> bool:
+            can Abort.Panic:
+                return any bound_name in bound where bound_name == name
+
+
+        # Is ANY entry for `name` mutable? E10 must ask this rather than "is the LAST entry
+        # mutable", because a value block's captures are appended to the ENCLOSING `bound` by
+        # gather_expression_bindings (Expr.Block: `bound.extend(captures)`) purely to flatten
+        # scope so names resolve — and pad_bound_mutability then pads those ghost entries with
+        # `false`. So `while … |cursor|` twice over a `mutable` local left an immutable ghost
+        # that the backwards scan found, and every repeat capture after the first reported E10
+        # (359 of them on the compiler's own source, where stage0 reports none).
+        #
+        # Genuine shadowing is unaffected: a block's own scope is a COPY (block_scope /
+        # block_mutability in resolve_expr_walk), so an inner immutable binding of the same
+        # name is judged there, not through this pool.
+        def bound_name_any_mutable(name: sview, bound: darray[sview]&, bound_mutability: darray[bool]&) -> bool:
+            can Abort.Panic:
+                index: mutable usize = bound.count
+                while index > 0 |index|:
+                    index <- index - 1
+                    true return if bound[index] == name and bound_mutability[index]
+                return false
+
+
+        def bound_name_is_mutable(name: sview, bound: darray[sview]&, bound_mutability: darray[bool]&) -> bool:
+            can Abort.Panic:
+                index: mutable usize = bound.count
+                while index > 0:
+                    index <- index - 1
+                    bound_mutability[index] return if bound[index] == name
+                return false
+
+
+        # Root identifier name of an assignment target expression (for mutation checks).
+        # Returns true if the target is a simple identifier or a field/index chain rooted
+        # at one; returns the name if so, empty otherwise.
+        def target_root_ident(target: Ast::Expr) -> sview:
+            can Abort.Panic:
+                match target:
+                    Ast::Expr.Ident(name, line):
+                        return name
+                    Ast::Expr.Field(object, field, line):
+                        return target_root_ident(object)
+                    Ast::Expr.Index(object, index, line):
+                        return target_root_ident(object)
+                    Ast::Expr.Slice(object, low, high, line):
+                        return target_root_ident(object)
+                    _:
+                        return ""
+
+
+        # Whether NAME is an outer binding mutated-through-a-call would violate E4: an enclosing
+        # local/param or global (not a block-local, not a compiler `__` name).
+        def value_block_is_outer(name: sview, locals: darray[sview], bound: darray[sview]&, table: SymbolTable&) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                false return if name == "" or is_local(name, locals)
+                # `_` is the DISCARD wildcard, never a real binding — name_known says so
+                # explicitly ("always resolves"), and it appears as a thread-claim discard
+                # target (`parser, _ <- parser.advance()`, docs/120 §11). Writing to it
+                # mutates nothing, so it is not an outer-binding mutation. Only the `__`
+                # compiler-synthesized prefix was excluded here, so a bare `_` reported E4.
+                false return if name == "_"
+                false return if sview_len(name) >= 2 and sview_at(name, 0) == '_' and sview_at(name, 1) == '_'
+                return (any enclosing_name in bound where enclosing_name == name) or find_symbol(table, name) is outer_symbol
+
+        # A free-function call `f(outer)` inside a value block that passes an outer binding into a
+        # `mutable T&` parameter mutates it THROUGH the call — an E4 violation.
+        def check_value_block_call_args(callee: sview, arguments: darray[Ast::Expr], locals: darray[sview], bound: darray[sview]&, line: u32, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                position: mutable usize = 0
+                for argument in arguments |table, position| -> table:
+                    argument_name: sview = ident_name_of(argument)
+                    table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.ValueBlockMutation, name: argument_name, line: line, expected: "call", actual: ""}) if value_block_is_outer(argument_name, locals, bound, table) and frame_interproc_param_mutable_ref(table, callee, position)
+                    position <- position + 1
+
+        # Walk statements looking for direct assignments to outer bindings. `outer` is any
+        # name that is a known enclosing-scope binding (a function local/param in `bound`, or a
+        # global) but NOT a block-local — mutating it from a value block violates E4.
+        def walk_value_block_mutations(statements: darray[Ast::Stmt], locals: darray[sview], bound: darray[sview]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |table| -> table:
+                    match statement:
+                        Stmt.Assign(target, operator, value, line):
+                            name: sview = target_root_ident(target)
+                            # An outer binding (an enclosing local/param or global, not a block
+                            # local) mutated inside a value block — excluding compiler-synthesized
+                            # `__` names (E4).
+                            # Uses the shared predicate rather than repeating it: this site
+                            # had its own inline copy, so the `_` discard exclusion added to
+                            # value_block_is_outer did not reach it and a `parser, _ <- ...`
+                            # thread-claim discard still reported E4.
+                            outer_binding: bool = value_block_is_outer(name, locals, bound, table)
+                            if outer_binding:
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.ValueBlockMutation, name: name, line: line.line, expected: "", actual: ""})
+                            table
+                        Stmt.If(condition, then_body, else_body, line):
+                            table <- walk_value_block_mutations(then_body, locals, bound, table)
+                            table <- walk_value_block_mutations(else_body, locals, bound, table)
+                            table
+                        Stmt.While(condition, body, line):
+                            table <- walk_value_block_mutations(body, locals, bound, table)
+                            table
+                        Stmt.For(bind, variables, iterable, body, line):
+                            table <- walk_value_block_mutations(body, locals, bound, table)
+                            table
+                        Stmt.Block(kind, clause, binding, body, line):
+                            table <- walk_value_block_mutations(body, locals, bound, table)
+                            table
+                        Stmt.Match(scrutinee, arms, line):
+                            for arm in arms |table| -> table:
+                                table <- walk_value_block_mutations(arm.body, locals, bound, table)
+                        # Other statements have no assignment targets. Explicit (no wildcard)
+                        # so a new Stmt variant forces a decision here.
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            table
+                        Stmt.Expr(expression, line):
+                            # A mutating method call on an outer binding (`outer.push(...)`) mutates
+                            # it THROUGH a call — an E4 violation like a direct assignment. Only the
+                            # mutating-method form is sound here; `f(outer)` into a mutable-ref param
+                            # needs the callee signature (interprocedural, left to stage0).
+                            match expression:
+                                Expr.Call(callee, arguments, argument_names, call_line):
+                                    match callee:
+                                        Expr.Field(receiver, method, field_line):
+                                            receiver_name: sview = target_root_ident(receiver)
+                                            receiver_in_scope: bool = (any enclosing_name in bound where enclosing_name == receiver_name) or find_symbol(table, receiver_name) is receiver_symbol
+                                            mutates_outer: bool = frame_mutating_method(method) and receiver_name != "" and not is_local(receiver_name, locals) and receiver_in_scope and not (sview_len(receiver_name) >= 2 and sview_at(receiver_name, 0) == '_' and sview_at(receiver_name, 1) == '_')
+                                            table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.ValueBlockMutation, name: receiver_name, line: line.line, expected: "call", actual: ""}) if mutates_outer
+                                        Expr.Ident(callee_name, callee_line):
+                                            table <- check_value_block_call_args(callee_name, arguments, locals, bound, line.line, table)
+                                        _:
+                                            pass
+                                _:
+                                    pass
+                            table
+                        Stmt.Return(value, line):
+                            table
+                        Stmt.Break(label, line):
+                            table
+                        Stmt.Continue(label, line):
+                            table
+                        Stmt.Contract(kind, expression, line):
+                            table
+                        Stmt.Invalid:
+                            table
+
+
+        # Check a value block (ExprBlock) for E4/E10/E11 violations (docs/119 §2/§6).
+        # E4: direct assignments to outer bindings are illegal (unless captured).
+        # E11: every capture name must be an existing outer binding.
+        # E10: a captured binding that the block ASSIGNS must be mutable — see
+        # collect_block_assigned_names for why the report is narrowed to assignment.
+        def check_value_block(expr_block: Ast::Expr, table: lmut SymbolTable, bound: darray[sview]&, bound_mutability: darray[bool]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match expr_block:
+                    Ast::Expr.Block(statements, value, captures, line):
+                        # Collect all block-local bindings.
+                        local: mutable darray[sview] = []
+                        collect_block_bound_names(statements, local)
+                        assigned: mutable darray[sview] = []
+                        collect_block_assigned_names(statements, assigned)
+                        # A YIELDING block threads its captures; a statement loop just
+                        # scopes them. Both E10 and E4 turn on this. The parser marks the
+                        # statement form by leaving the yield Invalid (parser_core_blocks
+                        # wrap_loop_header).
+                        block_yields: mutable bool = true
+                        match value:
+                            Expr.Invalid:
+                                block_yields <- false
+                            _:
+                                pass
+
+                        # Validate captures (E10/E11): every capture must name an existing
+                        # binding, and one the block assigns must be mutable.
+                        for capture in captures |table, local, assigned, block_yields| -> table:
+                            # A capture may name the block's OWN binding — most often the
+                            # loop variable it belongs to, which is the idiom used
+                            # throughout this compiler:
+                            #     for enum_index in 0..<n |enum_index, file, structs|:
+                            # The variable is introduced BY the loop, so it is not in the
+                            # enclosing `bound` when captures are validated, and E11 fired
+                            # on it (17 times on our own source; stage0 accepts). Those
+                            # names are already collected into `local` by
+                            # collect_block_bound_names (Stmt.For: local.extend(variables)),
+                            # so consult it. E10 is unaffected: it additionally requires the
+                            # name to be in `bound`, which a loop variable never is.
+                            if name_known(table, bound, capture) or is_local(capture, local):
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.CaptureImmutable, name: capture, line: line.line, expected: "", actual: ""}) if (block_yields or is_local(capture, assigned)) and name_is_bound_local(capture, bound) and not bound_name_is_mutable(capture, bound, bound_mutability)
+                                local.push(capture)
+                                table
+                            else:
+                                # Binding not found in scope (E11).
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.CaptureUndefined, name: capture, line: line.line, expected: "", actual: ""})
+                                table
+
+                        # Check E4: direct assignments to outer bindings (except captures
+                        # and compiler-synthesized `__` names).
+                        #
+                        # ONLY for a block that actually YIELDS. docs/119 E4 is about a
+                        # value block — "a block/loop expression yields new values" — and
+                        # stage0 enforces it only there. Verified by fixture, one thing
+                        # varied:
+                        #   for x in xs |position: usize = 0| -> position:  mutating an
+                        #     outer `total`            -> stage0 REJECTS (exit 1)
+                        #   while idx < limit |idx|:   mutating an outer `saw`, no yield
+                        #                              -> stage0 ACCEPTS
+                        # stage1 applied it to EVERY Expr.Block carrying a capture list,
+                        # including plain statement loops, which is 427 reports on the
+                        # compiler's own source where stage0 makes none.
+                        #
+                        # The parser marks the statement form by leaving the yield Invalid
+                        # (parser_core_blocks.elisa wrap_loop_header: "the value is the
+                        # yield (Invalid for the statement form)").
+                        #
+                        # E10/E11 above are NOT gated on this: a statement loop that
+                        # assigns an immutable capture is still an error under stage0
+                        # ("cannot assign to immutable local"), and E10 is the only check
+                        # that reports it inside a block.
+                        if block_yields:
+                            table <- walk_value_block_mutations(statements, local, bound, table)
+                    _:
+                        pass

@@ -1,0 +1,381 @@
+# Law-refinement bound violation for a local. A local `x: T is Law[bounds] = V` where Law is a
+# range/lower/upper-shaped law (`self >= lo and self <= hi`, `self >= k`, `self <= k`) and the
+# constant V falls outside the bounds is rejected ("refinement Law is violated: x does not
+# satisfy it"). Reuses check_refinement_return's law-shape machinery (law_shape, signed_int_literal)
+# for the inclusive [lo, hi] window; a constant out of window is a provable violation (never
+# overfires — non-constant V, non-range laws, or unresolved bounds are a sound miss).
+extend Semantic:
+    private:
+        # The INCLUSIVE [lo, hi] window and law name of a `T is Law[bounds]` type: two-arg
+        # `Law[a, b]`, inclusive range `Law[a..=b]` / exclusive `Law[a..b]`/`Law[a..<b]`, or a
+        # single-bound `Law[k]` (lower/upper). found=false otherwise.
+        def refinement_bound_spec(type_expression: Ast::Expr, law_names: darray[sview]&, law_predicates: darray[Ast::Expr]&) -> (found: bool, law_name: sview, lo: i64, hi: i64):
+            can Memory.Allocate, Abort.Panic:
+                match type_expression:
+                    Expr.Binary(base, operator, right, line):
+                        (false, sview("", 0, 0), 0, 0) return if operator != TokenKind.Is
+                        return refinement_application_bounds(right, law_names, law_predicates)
+                    _:
+                        return (false, sview("", 0, 0), 0, 0)
+
+        def refinement_application_bounds(application: Ast::Expr, law_names: darray[sview]&, law_predicates: darray[Ast::Expr]&) -> (found: bool, law_name: sview, lo: i64, hi: i64):
+            can Memory.Allocate, Abort.Panic:
+                match application:
+                    Expr.IndexN(object, arguments, indexn_line):
+                        law_name: sview = ident_name_of(object)
+                        lo_literal: (found: bool, value: i64) = signed_int_literal(arguments[0]) if arguments.count == 2 else (false, 0)
+                        hi_literal: (found: bool, value: i64) = signed_int_literal(arguments[1]) if arguments.count == 2 else (false, 0)
+                        usable: bool = arguments.count == 2 and lo_literal.found and hi_literal.found and law_shape(law_name, law_names, law_predicates) == "range"
+                        return (usable, law_name, lo_literal.value, hi_literal.value)
+                    Expr.Index(single_object, single_index, single_line):
+                        single_name: sview = ident_name_of(single_object)
+                        return refinement_single_index_bounds(single_name, single_index, law_names, law_predicates)
+                    _:
+                        return (false, sview("", 0, 0), 0, 0)
+
+        def refinement_single_index_bounds(law_name: sview, index_expression: Ast::Expr, law_names: darray[sview]&, law_predicates: darray[Ast::Expr]&) -> (found: bool, law_name: sview, lo: i64, hi: i64):
+            can Memory.Allocate, Abort.Panic:
+                shape: sview = law_shape(law_name, law_names, law_predicates)
+                match index_expression:
+                    Expr.Binary(range_low, range_operator, range_high, range_line):
+                        low_literal: (found: bool, value: i64) = signed_int_literal(range_low)
+                        high_literal: (found: bool, value: i64) = signed_int_literal(range_high)
+                        is_inclusive: bool = range_operator == TokenKind.RangeLe
+                        is_exclusive: bool = range_operator == TokenKind.Range or range_operator == TokenKind.RangeLt
+                        inclusive_high: i64 = high_literal.value if is_inclusive else high_literal.value - 1
+                        range_usable: bool = shape == "range" and low_literal.found and high_literal.found and (is_inclusive or is_exclusive)
+                        return (range_usable, law_name, low_literal.value, inclusive_high)
+                    _:
+                        bound_literal: (found: bool, value: i64) = signed_int_literal(index_expression)
+                        lower_usable: bool = shape == "lower" and bound_literal.found
+                        upper_usable: bool = shape == "upper" and bound_literal.found
+                        low: i64 = bound_literal.value if lower_usable else (-9223372036854775807 - 1)
+                        high: i64 = bound_literal.value if upper_usable else 9223372036854775807
+                        return (lower_usable or upper_usable, law_name, low, high)
+
+        # The self-parameter name of a SINGLE-parameter law predicate — the identifier compared
+        # against a literal (`x > 0` → "x"), or the bare bool subject (`self` → "self"). Handles
+        # `PRED and PRED` by descending the left conjunct. Defaults to "self" when indeterminate.
+        def predicate_self_variable(predicate: Ast::Expr) -> sview:
+            can Memory.Allocate, Abort.Panic:
+                match predicate:
+                    Expr.Ident(name, line):
+                        return name
+                    Expr.Paren(inner, paren_line):
+                        return predicate_self_variable(inner)
+                    Expr.Binary(left, operator, right, binary_line):
+                        predicate_self_variable(left) return if operator == TokenKind.And or operator == TokenKind.Or
+                        right_literal: (found: bool, value: i64) = where_signed_literal(right)
+                        left_name: sview = ident_name_of(left)
+                        left_name return if right_literal.found and left_name != ""
+                        left_literal: (found: bool, value: i64) = where_signed_literal(left)
+                        right_name: sview = ident_name_of(right)
+                        right_name return if left_literal.found and right_name != ""
+                        return left_name if left_name != "" else "self"
+                    Expr.Unary(operator, operand, unary_line):
+                        return predicate_self_variable(operand)
+                    _:
+                        return "self"
+
+        # Whether a single-parameter law PREDICATE is violated when its self-parameter = VALUE.
+        # Also handles a bare bool subject (`self`): false (0) violates it.
+        def bare_law_violated_by(predicate: Ast::Expr, value: i64) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                self_variable: sview = predicate_self_variable(predicate)
+                bool_subject: bool = match predicate:
+                    Expr.Ident(name, line): true
+                    _: false
+                value_is_false: bool = value == 0
+                value_is_false return if bool_subject
+                return predicate_violated_by(predicate, self_variable, value)
+
+        # The law name of a bare (no-argument) refinement type `T is Law`, or "".
+        def bare_law_of_type(type_expression: Ast::Expr) -> sview:
+            can Memory.Allocate, Abort.Panic:
+                match type_expression:
+                    Expr.Binary(base, operator, right, line):
+                        return ident_name_of(right) if operator == TokenKind.Is else sview("", 0, 0)
+                    _:
+                        return sview("", 0, 0)
+
+        # Value-parameterized ALIAS instantiation: `type SlotIndex[cap] = u32 is
+        # InRange[0, cap]` used as `x: SlotIndex[cap128]`. The alias's value params are
+        # substituted with the (const-resolved) instantiation arguments and the law's
+        # range window computed from the substituted application.
+        def alias_value_of(argument: Ast::Expr, alias_params: darray[sview]&, alias_args: darray[i64]&, global_const_names: darray[sview]&, global_const_values: darray[i64]&) -> (found: bool, value: i64):
+            can Memory.Allocate, Abort.Panic:
+                literal: (found: bool, value: i64) = signed_int_literal(argument)
+                literal return if literal.found
+                name: sview = ident_name_of(argument)
+                (false, 0) return if name == ""
+                probe: mutable usize = 0
+                found_slot: mutable i64 = -1
+                while probe < alias_params.count |probe, found_slot, name, alias_params|:
+                    found_slot <- probe.i64() if alias_params[probe] == name and found_slot < 0
+                    probe <- probe + 1
+                (true, alias_args[found_slot.usize()]) return if found_slot >= 0
+                const_probe: mutable usize = 0
+                const_slot: mutable i64 = -1
+                while const_probe < global_const_names.count |const_probe, const_slot, name, global_const_names|:
+                    const_slot <- const_probe.i64() if global_const_names[const_probe] == name and const_slot < 0
+                    const_probe <- const_probe + 1
+                (true, global_const_values[const_slot.usize()]) return if const_slot >= 0
+                return (false, 0)
+
+
+        def alias_bound_spec(type_expression: Ast::Expr, alias_names: darray[sview]&, alias_param_starts: darray[usize]&, alias_param_counts: darray[usize]&, all_alias_params: darray[sview]&, alias_bases: darray[Ast::Expr]&, global_const_names: darray[sview]&, global_const_values: darray[i64]&, law_names: darray[sview]&, law_predicates: darray[Ast::Expr]&) -> (found: bool, law_name: sview, lo: i64, hi: i64):
+            can Memory.Allocate, Abort.Panic:
+                missing: (found: bool, law_name: sview, lo: i64, hi: i64) = (false, sview("", 0, 0), 0, 0)
+                instantiation_args: mutable darray[Ast::Expr] = []
+                alias_name: mutable sview = sview("", 0, 0)
+                match type_expression:
+                    Expr.Index(object, index_argument, line):
+                        alias_name <- ident_name_of(object)
+                        instantiation_args.push(index_argument)
+                    Expr.IndexN(object_n, arguments_n, line_n):
+                        alias_name <- ident_name_of(object_n)
+                        instantiation_args.extend(arguments_n)
+                    _:
+                        pass
+                missing return if alias_name == ""
+                slot: mutable i64 = -1
+                probe: mutable usize = 0
+                while probe < alias_names.count |slot, probe, alias_name, alias_names|:
+                    slot <- probe.i64() if alias_names[probe] == alias_name and slot < 0
+                    probe <- probe + 1
+                missing return if slot < 0
+                index: usize = slot.usize()
+                missing return if alias_param_counts[index] != instantiation_args.count
+                # Resolve the instantiation arguments (literals or global consts).
+                alias_params: mutable darray[sview] = []
+                param_offset: mutable usize = 0
+                while param_offset < alias_param_counts[index] |alias_params, param_offset, index, alias_param_starts, all_alias_params|:
+                    alias_params.push(all_alias_params[alias_param_starts[index] + param_offset])
+                    param_offset <- param_offset + 1
+                no_params: darray[sview] = []
+                no_args: darray[i64] = []
+                arg_values: mutable darray[i64] = []
+                args_ok: mutable bool = true
+                for instantiation_argument in instantiation_args |arg_values, args_ok, no_params, no_args, global_const_names, global_const_values|:
+                    resolved: (found: bool, value: i64) = alias_value_of(instantiation_argument, no_params, no_args, global_const_names, global_const_values)
+                    args_ok <- false if not resolved.found
+                    arg_values.push(resolved.value)
+                missing return if not args_ok
+                # The alias base must be `T is Law[a, b]` with a range-shaped law.
+                match alias_bases[index]:
+                    Expr.Binary(base_type, operator, application, base_line):
+                        missing return if operator != TokenKind.Is
+                        match application:
+                            Expr.IndexN(law_object, law_arguments, law_line):
+                                law_name: sview = ident_name_of(law_object)
+                                missing return if law_arguments.count != 2 or law_shape(law_name, law_names, law_predicates) != "range"
+                                lo_resolved: (found: bool, value: i64) = alias_value_of(law_arguments[0], alias_params, arg_values, global_const_names, global_const_values)
+                                hi_resolved: (found: bool, value: i64) = alias_value_of(law_arguments[1], alias_params, arg_values, global_const_names, global_const_values)
+                                missing return if not (lo_resolved.found and hi_resolved.found)
+                                return (true, law_name, lo_resolved.value, hi_resolved.value)
+                            _:
+                                return missing
+                    _:
+                        return missing
+
+
+        def law_refinement_violated_statements(statements: darray[Ast::Stmt], law_names: darray[sview]&, law_predicates: darray[Ast::Expr]&, const_names: mutable darray[sview]&, const_values: mutable darray[i64]&, alias_names: darray[sview]&, alias_param_starts: darray[usize]&, alias_param_counts: darray[usize]&, all_alias_params: darray[sview]&, alias_bases: darray[Ast::Expr]&, global_const_names: darray[sview]&, global_const_values: darray[i64]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |const_names, const_values, table| -> table:
+                    match statement:
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            direct_spec: (found: bool, law_name: sview, lo: i64, hi: i64) = refinement_bound_spec(type_expression, law_names, law_predicates)
+                            instantiated_spec: (found: bool, law_name: sview, lo: i64, hi: i64) = alias_bound_spec(type_expression, alias_names, alias_param_starts, alias_param_counts, all_alias_params, alias_bases, global_const_names, global_const_values, law_names, law_predicates) if not direct_spec.found else direct_spec
+                            spec: (found: bool, law_name: sview, lo: i64, hi: i64) = direct_spec if direct_spec.found else instantiated_spec
+                            # Resolve V through folding AND earlier constant locals (`a <- 0-1; x is Pos = a`).
+                            value_literal: (found: bool, value: i64) = argument_constant(value, const_names, const_values)
+                            out_of_window: bool = spec.found and value_literal.found and (value_literal.value < spec.lo or value_literal.value > spec.hi)
+                            table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.RefinementBoundViolated, name: spec.law_name, line: line.line, expected: "", actual: name}) if out_of_window
+                            # Bare no-argument law `x: T is Law = V` — evaluate the law body with self=V.
+                            bare_law: sview = bare_law_of_type(type_expression)
+                            bare_predicate: Ast::Expr = law_predicate_by_name(bare_law, law_names, law_predicates) if bare_law != "" else (Ast::Expr.Absent)
+                            bare_has_predicate: bool = match bare_predicate:
+                                Expr.Absent: false
+                                _: true
+                            bare_violated: bool = value_literal.found and bare_has_predicate and bare_law_violated_by(bare_predicate, value_literal.value)
+                            table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.RefinementBoundViolated, name: bare_law, line: line.line, expected: "", actual: name}) if bare_violated and not spec.found
+                            # Record this local's constant value for later refinement checks.
+                            const_names.push(name) if value_literal.found
+                            const_values.push(value_literal.value) if value_literal.found
+                        Stmt.Assign(target, operator, value, line):
+                            assign_name: sview = ident_name_of(target)
+                            assign_const: (found: bool, value: i64) = argument_constant(value, const_names, const_values) if operator == TokenKind.LArrow and assign_name != "" else (false, 0)
+                            const_names.push(assign_name) if assign_const.found
+                            const_values.push(assign_const.value) if assign_const.found
+                        Stmt.If(condition, then_body, else_body, line):
+                            table <- law_refinement_violated_statements(then_body, law_names, law_predicates, const_names, const_values, alias_names, alias_param_starts, alias_param_counts, all_alias_params, alias_bases, global_const_names, global_const_values, table)
+                            table <- law_refinement_violated_statements(else_body, law_names, law_predicates, const_names, const_values, alias_names, alias_param_starts, alias_param_counts, all_alias_params, alias_bases, global_const_names, global_const_values, table)
+                        Stmt.While(condition, while_body, line):
+                            table <- law_refinement_violated_statements(while_body, law_names, law_predicates, const_names, const_values, alias_names, alias_param_starts, alias_param_counts, all_alias_params, alias_bases, global_const_names, global_const_values, table)
+                        Stmt.For(bind, variables, iterable, for_body, line):
+                            table <- law_refinement_violated_statements(for_body, law_names, law_predicates, const_names, const_values, alias_names, alias_param_starts, alias_param_counts, all_alias_params, alias_bases, global_const_names, global_const_values, table)
+                        Stmt.Block(kind, clause, binding, block_body, block_line):
+                            table <- law_refinement_violated_statements(block_body, law_names, law_predicates, const_names, const_values, alias_names, alias_param_starts, alias_param_counts, all_alias_params, alias_bases, global_const_names, global_const_values, table)
+                        _:
+                            pass
+
+        # The constant of a returnable place within one straight-line sequence: a literal, a local, or
+        # a `base.field` last assigned a constant. `found=false` when the place was assigned a
+        # non-constant (poisoned) or is untracked — so a later non-const store safely disables it.
+        def lrv_place_const(place: Ast::Expr, local_names: darray[sview]&, local_values: darray[i64]&, local_valid: darray[bool]&, field_bases: darray[sview]&, field_fields: darray[sview]&, field_values: darray[i64]&, field_valid: darray[bool]&) -> (found: bool, value: i64):
+            can Memory.Allocate, Abort.Panic:
+                direct: (found: bool, value: i64) = fold_const_int(place)
+                direct return if direct.found
+                match place:
+                    Expr.Ident(name, ident_line):
+                        scan: mutable usize = local_names.count
+                        while scan > 0 |scan, name, local_names, local_values, local_valid|:
+                            scan <- scan - 1
+                            (local_valid[scan], local_values[scan]) return if local_names[scan] == name
+                        return (false, 0)
+                    Expr.Field(object, field, field_line):
+                        base: sview = ident_name_of(object)
+                        (false, 0) return if base == ""
+                        fscan: mutable usize = field_bases.count
+                        while fscan > 0 |fscan, base, field, field_bases, field_fields, field_values, field_valid|:
+                            fscan <- fscan - 1
+                            (field_valid[fscan], field_values[fscan]) return if field_bases[fscan] == base and field_fields[fscan] == field
+                        return (false, 0)
+                    _:
+                        return (false, 0)
+
+        # Flag `return V` violating a law-refined return type `-> T is Law[bounds]` / `-> T is Law`,
+        # where V is a constant literal OR a local / `base.field` last assigned a constant in this
+        # straight-line sequence (`s.n <- 999; return s.n`). Each branch body is a fresh sequence.
+        def law_refinement_return_statements(statements: darray[Ast::Stmt], spec: (found: bool, law_name: sview, lo: i64, hi: i64), bare_law: sview, bare_predicate: Ast::Expr, bare_has_predicate: bool, law_names: darray[sview]&, law_predicates: darray[Ast::Expr]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                local_names: mutable darray[sview] = []
+                local_values: mutable darray[i64] = []
+                local_valid: mutable darray[bool] = []
+                field_bases: mutable darray[sview] = []
+                field_fields: mutable darray[sview] = []
+                field_values: mutable darray[i64] = []
+                field_valid: mutable darray[bool] = []
+                for statement in statements |local_names, local_values, local_valid, field_bases, field_fields, field_values, field_valid, table| -> table:
+                    match statement:
+                        Stmt.VarDecl(decl_name, decl_type, decl_value, decl_line):
+                            decl_const: (found: bool, value: i64) = fold_const_int(decl_value)
+                            local_names.push(decl_name)
+                            local_values.push(decl_const.value)
+                            local_valid.push(decl_const.found)
+                        Stmt.Assign(target, operator, value, assign_line):
+                            if operator == TokenKind.LArrow:
+                                assign_const: (found: bool, value: i64) = fold_const_int(value)
+                                match target:
+                                    Expr.Ident(assign_name, assign_ident_line):
+                                        local_names.push(assign_name)
+                                        local_values.push(assign_const.value)
+                                        local_valid.push(assign_const.found)
+                                    Expr.Field(assign_object, assign_field, assign_field_line):
+                                        assign_base: sview = ident_name_of(assign_object)
+                                        if assign_base != "":
+                                            field_bases.push(assign_base)
+                                            field_fields.push(assign_field)
+                                            field_values.push(assign_const.value)
+                                            field_valid.push(assign_const.found)
+                                    _:
+                                        pass
+                        Stmt.Return(value, line):
+                            if value is returned:
+                                value_literal: (found: bool, value: i64) = lrv_place_const(returned, local_names, local_values, local_valid, field_bases, field_fields, field_values, field_valid)
+                                bounds_bad: bool = spec.found and value_literal.found and (value_literal.value < spec.lo or value_literal.value > spec.hi)
+                                bare_bad: bool = value_literal.found and bare_has_predicate and not spec.found and bare_law_violated_by(bare_predicate, value_literal.value)
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.RefinementBoundViolated, name: spec.law_name if spec.found else bare_law, line: line.line, expected: "return", actual: ""}) if bounds_bad or bare_bad
+                        Stmt.If(condition, then_body, else_body, line):
+                            table <- law_refinement_return_statements(then_body, spec, bare_law, bare_predicate, bare_has_predicate, law_names, law_predicates, table)
+                            table <- law_refinement_return_statements(else_body, spec, bare_law, bare_predicate, bare_has_predicate, law_names, law_predicates, table)
+                        Stmt.While(condition, while_body, line):
+                            table <- law_refinement_return_statements(while_body, spec, bare_law, bare_predicate, bare_has_predicate, law_names, law_predicates, table)
+                        Stmt.Block(kind, clause, binding, block_body, block_line):
+                            table <- law_refinement_return_statements(block_body, spec, bare_law, bare_predicate, bare_has_predicate, law_names, law_predicates, table)
+                        _:
+                            pass
+
+        def law_refinement_check_return(return_type: Ast::Expr?, body: darray[Ast::Stmt], law_names: darray[sview]&, law_predicates: darray[Ast::Expr]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                if return_type is declared_return:
+                    spec: (found: bool, law_name: sview, lo: i64, hi: i64) = refinement_bound_spec(declared_return, law_names, law_predicates)
+                    bare_law: sview = bare_law_of_type(declared_return)
+                    bare_predicate: Ast::Expr = law_predicate_by_name(bare_law, law_names, law_predicates) if bare_law != "" else (Ast::Expr.Absent)
+                    bare_has_predicate: bool = match bare_predicate:
+                        Expr.Absent: false
+                        _: true
+                    table <- law_refinement_return_statements(body, spec, bare_law, bare_predicate, bare_has_predicate, law_names, law_predicates, table) if spec.found or bare_has_predicate
+
+        def law_refinement_violated_walk(declarations: darray[Ast::Decl], law_names: darray[sview]&, law_predicates: darray[Ast::Expr]&, alias_names: darray[sview]&, alias_param_starts: darray[usize]&, alias_param_counts: darray[usize]&, all_alias_params: darray[sview]&, alias_bases: darray[Ast::Expr]&, global_const_names: darray[sview]&, global_const_values: darray[i64]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |table| -> table:
+                    match declaration:
+                        Decl.Func(function_name, parameters, return_type, body, effects, decorators, line):
+                            const_names: mutable darray[sview] = []
+                            const_values: mutable darray[i64] = []
+                            table <- law_refinement_violated_statements(body, law_names, law_predicates, const_names, const_values, alias_names, alias_param_starts, alias_param_counts, all_alias_params, alias_bases, global_const_names, global_const_values, table)
+                            table <- law_refinement_check_return(return_type, body, law_names, law_predicates, table)
+                        Decl.Module(module_name, module_body, module_line):
+                            table <- law_refinement_violated_walk(module_body, law_names, law_predicates, alias_names, alias_param_starts, alias_param_counts, all_alias_params, alias_bases, global_const_names, global_const_values, table)
+                        Decl.Scoped(scoped_body, scoped_line):
+                            table <- law_refinement_violated_walk(scoped_body, law_names, law_predicates, alias_names, alias_param_starts, alias_param_counts, all_alias_params, alias_bases, global_const_names, global_const_values, table)
+                        _:
+                            pass
+
+
+        # Alias base expressions and global integer consts, for value-parameterized
+        # alias instantiation.
+        def collect_alias_bases_and_consts(declarations: darray[Ast::Decl], alias_names: mutable darray[sview]&, alias_bases: mutable darray[Ast::Expr]&, global_const_names: mutable darray[sview]&, global_const_values: mutable darray[i64]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |alias_names, alias_bases, global_const_names, global_const_values|:
+                    match declaration:
+                        Decl.Alias(name, target, line):
+                            alias_names.push(name)
+                            alias_bases.push(target)
+                        Decl.Const(const_name, type_expression, value, is_mutable, const_line):
+                            literal: (found: bool, value: i64) = fold_const_int(value)
+                            global_const_names.push(const_name) if literal.found
+                            global_const_values.push(literal.value) if literal.found
+                        Decl.Module(module_name, module_body, module_line):
+                            collect_alias_bases_and_consts(module_body, alias_names, alias_bases, global_const_names, global_const_values)
+                        Decl.Scoped(scoped_body, scoped_line):
+                            collect_alias_bases_and_consts(scoped_body, alias_names, alias_bases, global_const_names, global_const_values)
+                        _:
+                            pass
+
+        def check_law_refinement_violated(file: Ast::File&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                law_names: mutable darray[sview] = []
+                law_predicates: mutable darray[Ast::Expr] = []
+                collect_laws(file.top_decls, law_names, law_predicates)
+                # Value-parameterized alias registry: the parser records "__alias_owner"
+                # followed by its "__alias_param"s in order. Bases + consts are collected
+                # first so the aligned tables build in ONE pass (fewer interleaved
+                # lifetimes for region inference).
+                base_names: mutable darray[sview] = []
+                alias_bases_raw: mutable darray[Ast::Expr] = []
+                global_const_names: mutable darray[sview] = []
+                global_const_values: mutable darray[i64] = []
+                collect_alias_bases_and_consts(file.top_decls, base_names, alias_bases_raw, global_const_names, global_const_values)
+                alias_names: mutable darray[sview] = []
+                alias_param_starts: mutable darray[usize] = []
+                alias_param_counts: mutable darray[usize] = []
+                alias_bases: mutable darray[Ast::Expr] = []
+                all_alias_params: mutable darray[sview] = []
+                for annotation in file.enum_annotations |alias_names, alias_param_starts, alias_param_counts, alias_bases, all_alias_params, base_names, alias_bases_raw|:
+                    if annotation.owner == "__alias_owner":
+                        base_probe: mutable usize = 0
+                        base_slot: mutable i64 = -1
+                        while base_probe < base_names.count |base_probe, base_slot, annotation, base_names|:
+                            base_slot <- base_probe.i64() if base_names[base_probe] == annotation.name and base_slot < 0
+                            base_probe <- base_probe + 1
+                        if base_slot >= 0:
+                            alias_names.push(annotation.name)
+                            alias_param_starts.push(all_alias_params.count)
+                            alias_param_counts.push(0)
+                            alias_bases.push(alias_bases_raw[base_slot.usize()])
+                    if annotation.owner == "__alias_param" and alias_param_counts.count > 0:
+                        all_alias_params.push(annotation.name)
+                        alias_param_counts[alias_param_counts.count - 1] <- alias_param_counts[alias_param_counts.count - 1] + 1
+                table <- law_refinement_violated_walk(file.top_decls, law_names, law_predicates, alias_names, alias_param_starts, alias_param_counts, all_alias_params, alias_bases, global_const_names, global_const_values, table)

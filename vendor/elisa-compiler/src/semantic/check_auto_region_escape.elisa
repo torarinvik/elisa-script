@@ -1,0 +1,263 @@
+# Auto-region store escape: a container built in THIS function's inferred region, stored
+# into storage the CALLER owns. The inferred region is freed when the function returns, so
+# the caller is left holding freed memory.
+#
+#     def make_item() -> darray[i64]: …
+#     def fill(dst: mutable darray[darray[i64]]&) -> void:
+#         dst.push(make_item())        # <- the pushed darray dies with `fill`
+#
+# stage0's rule, pinned by probing `-emit semantic` in both directions:
+#
+#   * the TARGET must be caller-owned — a `mutable T&` parameter (a container param, or a
+#     struct param whose field is assigned). A LOCAL target is fine: it dies with the value.
+#   * the VALUE must be created HERE — a local container, or a call returning a container.
+#     A parameter as the value is already caller-lived and is fine.
+#   * a SCALAR value is fine: it is copied, not referenced.
+#   * `.extend([tmp])` is fine (stage0 accepts it — the literal copies).
+#
+# Only `push` / `put` / field-assign are modeled, which is the set stage0 flags in the
+# corpus. Anything not matching stays SILENT rather than guessing.
+extend Semantic:
+    private:
+        # Whether a type annotation names a growable container (`darray[…]` / `dict[…]`),
+        # looking through `&` and `mutable` wrappers.
+        def annotation_is_container(type_expression: Ast::Expr) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                match type_expression:
+                    Expr.Index(object, index, line):
+                        head: sview = ident_name_of(object)
+                        return when head:
+                            "darray" | "dict" -> true
+                            _ -> false
+                    Expr.IndexN(object_n, arguments_n, line_n):
+                        head_n: sview = ident_name_of(object_n)
+                        return when head_n:
+                            "darray" | "dict" -> true
+                            _ -> false
+                    Expr.Unary(operator, operand, line):
+                        return annotation_is_container(operand)
+                    Expr.Paren(inner, paren_line):
+                        return annotation_is_container(inner)
+                    _:
+                        return false
+
+
+        # Names of top-level functions whose declared return type is a container, so a call
+        # to one produces a value living in the CALLEE's inferred region.
+        def collect_container_returning_fns(declarations: darray[Ast::Decl], enum_names: darray[sview]&, out: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |out|:
+                    match declaration:
+                        Decl.Func(name, parameters, return_type, body, effects, decorators, line):
+                            if return_type is declared_return:
+                                returns_container: bool = annotation_is_container(declared_return)
+                                returns_enum: bool = any enum_name in enum_names where enum_name == bare_type_name(declared_return)
+                                out.push(name) if returns_container or returns_enum
+                        Decl.Module(module_name, module_body, module_line):
+                            collect_container_returning_fns(module_body, enum_names, out)
+                        Decl.Scoped(scoped_body, scoped_line):
+                            collect_container_returning_fns(scoped_body, enum_names, out)
+                        _:
+                            pass
+
+
+        # Whether VALUE is created in THIS function's inferred region: a local container, or
+        # a call to a container-returning function.
+        def value_is_locally_created(value: Ast::Expr, local_containers: darray[sview]&, container_fns: darray[sview]&) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                match value:
+                    Expr.Ident(name, line):
+                        return any local_name in local_containers where local_name == name
+                    Expr.Call(callee, arguments, argument_names, line):
+                        callee_name: sview = ident_name_of(callee)
+                        true return if any fn_name in container_fns where fn_name == callee_name
+                        # An enum-VARIANT construction (`Item.Row(make_vals(10))`) whose
+                        # payload is locally created lives in this function's region too.
+                        is_variant: bool = match callee:
+                            Expr.Field(variant_owner, variant_name, variant_line): true
+                            Expr.Scope(scope_owner, scope_name, scope_line): true
+                            _: false
+                        false return if not is_variant
+                        return any argument in arguments where value_is_locally_created(argument, local_containers, container_fns)
+                    Expr.Paren(inner, paren_line):
+                        return value_is_locally_created(inner, local_containers, container_fns)
+                    Expr.Array(elements, array_line):
+                        # A literal wrapping locally-created values (`[Item.Row(...)]`)
+                        # is itself a fresh local container of those values.
+                        return any element in elements where value_is_locally_created(element, local_containers, container_fns)
+                    Expr.Construct(type_expression, fields, construct_line):
+                        # A struct literal `Holder{items: make_vals(10), …}` whose FIELD carries a
+                        # locally-created container drags that fresh region in — pushing the struct
+                        # into a caller-owned container leaves the field's element dangling.
+                        return any field in fields where value_is_locally_created(field.value, local_containers, container_fns)
+                    Expr.RecordUpdate(update_type, update_fields, update_line):
+                        return any update_field in update_fields where value_is_locally_created(update_field.value, local_containers, container_fns)
+                    _:
+                        return false
+
+
+        # Local container declarations in a body, including nested blocks.
+        def collect_local_containers(body: darray[Ast::Stmt], container_fns: darray[sview]&, out: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in body |out|:
+                    match statement:
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            is_container_typed: bool = annotation_is_container(type_expression)
+                            # A local INITIALIZED from a locally-created value carries the
+                            # provenance whatever its declared type (`node: Item =
+                            # Item.Row(make_vals(10))`).
+                            initializer_local: bool = value_is_locally_created(value, out, container_fns)
+                            out.push(name) if is_container_typed or initializer_local
+                        Stmt.Block(kind, clause, binding, block_body, line):
+                            collect_local_containers(block_body, container_fns, out)
+                        Stmt.If(condition, then_body, else_body, if_line):
+                            collect_local_containers(then_body, container_fns, out)
+                            collect_local_containers(else_body, container_fns, out)
+                        Stmt.While(condition, while_body, while_line):
+                            collect_local_containers(while_body, container_fns, out)
+                        _:
+                            pass
+
+
+        def auto_escape_walk(body: darray[Ast::Stmt], caller_params: darray[sview]&, local_containers: darray[sview]&, container_fns: darray[sview]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in body |table| -> table:
+                    match statement:
+                        Stmt.Expr(expression, line):
+                            table <- auto_escape_call(expression, line.line, caller_params, local_containers, container_fns, table)
+                        # `_ = dst.put("k", make_item())` — the discarded-result form.
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            table <- auto_escape_call(value, line.line, caller_params, local_containers, container_fns, table)
+                        # `b.field <- local_container` on a caller-owned struct param.
+                        Stmt.Assign(target, operator, value, line):
+                            owner: sview = assign_target_owner(target)
+                            stores_into_caller: bool = owner != "" and (any p in caller_params where p == owner)
+                            escaping: bool = stores_into_caller and value_is_locally_created(value, local_containers, container_fns)
+                            table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.AutoRegionStoreEscape, name: "", line: line.line, expected: "", actual: ""}) if escaping
+                            # `_ = dst.put("k", make_item())` parses as an ASSIGN to `_`, so
+                            # the escaping store lives in the assigned VALUE, not the target.
+                            table <- auto_escape_call(value, line.line, caller_params, local_containers, container_fns, table) if not escaping
+                        Stmt.Block(kind, clause, binding, block_body, block_line):
+                            table <- auto_escape_walk(block_body, caller_params, local_containers, container_fns, table)
+                        Stmt.If(condition, then_body, else_body, if_line):
+                            table <- auto_escape_walk(then_body, caller_params, local_containers, container_fns, table)
+                            table <- auto_escape_walk(else_body, caller_params, local_containers, container_fns, table)
+                        Stmt.While(condition, while_body, while_line):
+                            table <- auto_escape_walk(while_body, caller_params, local_containers, container_fns, table)
+                        _:
+                            pass
+
+
+        # The base identifier a store TARGET writes through: `b.xs` -> "b", `b` -> "b".
+        def assign_target_owner(target: Ast::Expr) -> sview:
+            can Abort.Panic:
+                match target:
+                    Expr.Field(object, field, line):
+                        return ident_name_of(object)
+                    _:
+                        return sview("", 0, 0)
+
+
+        # Is the value DIRECTLY a locally-created container — a bare local, or a direct call
+        # to a container-returning fn — as opposed to one WRAPPED in a struct/variant/array
+        # literal? The wrapper has its own type, so with a single caller-owned ref param
+        # region inference unifies the fresh container's region with that param's and nothing
+        # escapes; see the 2x2 note on auto_escape_call.
+        def value_is_directly_local(value: Ast::Expr, local_containers: darray[sview]&, container_fns: darray[sview]&) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                match value:
+                    Expr.Ident(name, line):
+                        return any local_name in local_containers where local_name == name
+                    Expr.Call(callee, arguments, argument_names, line):
+                        callee_name: sview = ident_name_of(callee)
+                        return any fn_name in container_fns where fn_name == callee_name
+                    Expr.Paren(inner, paren_line):
+                        return value_is_directly_local(inner, local_containers, container_fns)
+                    _:
+                        return false
+
+
+        # `dst.push(VALUE)` / `dst.put(KEY, VALUE)` where `dst` is caller-owned.
+        def auto_escape_call(expression: Ast::Expr, line: u32, caller_params: darray[sview]&, local_containers: darray[sview]&, container_fns: darray[sview]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Call(callee, arguments, argument_names, call_line):
+                        match callee:
+                            Expr.Field(object, method, field_line):
+                                receiver: sview = ident_name_of(object)
+                                return if receiver == ""
+                                return if not (any p in caller_params where p == receiver)
+                                # `push`/`extend` take the stored value first; `put` second.
+                                stored_index: i64 = 0 if (method == "push" or method == "extend") and arguments.count == 1 else (1 if method == "put" and arguments.count == 2 else -1)
+                                return if stored_index < 0
+                                # With exactly ONE caller-owned ref param, region inference
+                                # unifies a fresh container's region with that param's, so
+                                # only a DIRECT value escapes through a push. Measured against
+                                # stage0, one thing varied at a time:
+                                #
+                                #                        1 ref param   2 ref params
+                                #   field assign            reject        reject
+                                #   push WRAPPED literal    ACCEPT        reject
+                                #   push DIRECT call        reject          -
+                                #
+                                # (The field-assign row is the Stmt.Assign path above, which
+                                # is unchanged.) Making wrappers opaque UNCONDITIONALLY was
+                                # tried and broke the internal-suite oracle, whose case has
+                                # TWO ref params — that is the cell this count distinguishes.
+                                stored_value: Ast::Expr = arguments[stored_index.usize()]
+                                escaping: bool = value_is_directly_local(stored_value, local_containers, container_fns) if caller_params.count <= 1 else value_is_locally_created(stored_value, local_containers, container_fns)
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.AutoRegionStoreEscape, name: "", line: line, expected: "", actual: ""}) if escaping
+                            _:
+                                pass
+                    _:
+                        pass
+
+
+        def check_auto_region_escape_walk(declarations: darray[Ast::Decl], container_fns: darray[sview]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |table| -> table:
+                    match declaration:
+                        Decl.Func(name, parameters, return_type, body, effects, decorators, line):
+                            # Caller-owned targets: `mutable T&` parameters. A by-value param
+                            # is a copy, and an immutable ref cannot be stored into.
+                            # A parameter with a DECLARED region tie (`m: mutable Mod& @r`)
+                            # names CALLER-provided storage, so nothing stored through it
+                            # escapes; stage0 returns early on it (lookupRegionParam). Without
+                            # this every region-POLYMORPHIC function looked like a caller-owned
+                            # target. NOTE: value_is_locally_created is deliberately NOT
+                            # touched — an earlier attempt made struct literals opaque on the
+                            # strength of a fixture, and the internal-suite oracle disproves
+                            # it: `out.push(Holder{items: make_vals(10), tag: 5})` expects
+                            # exactly 1 error.
+                            caller_params: mutable darray[sview] = []
+                            for parameter in parameters |caller_params, table|:
+                                region_tied: bool = any tied_name in table.region_tied_param_names where tied_name == parameter.name
+                                caller_params.push(parameter.name) if param_is_mutable_ref(parameter) and not region_tied
+                            continue if caller_params.count == 0
+                            local_containers: mutable darray[sview] = []
+                            collect_local_containers(body, container_fns, local_containers)
+                            table <- auto_escape_walk(body, caller_params, local_containers, container_fns, table)
+                        Decl.Module(module_name, module_body, module_line):
+                            table <- check_auto_region_escape_walk(module_body, container_fns, table)
+                        Decl.Scoped(scoped_body, scoped_line):
+                            table <- check_auto_region_escape_walk(scoped_body, container_fns, table)
+                        _:
+                            pass
+
+    public:
+        def check_auto_region_escape(declarations: darray[Ast::Decl], table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                # Only REGION-BACKED enums count as container-returning.
+                # collect_enum_type_names returns EVERY enum, but a plain non-recursive one is
+                # a value — stage0 accepts pushing an enum-returning result into a caller
+                # container (fixture reg_g), since its type carries no region.
+                # packed_enum_names is exactly the region-backed set: explicitly
+                # `packed enum` plus the recursive ones record_recursive_enum auto-promotes
+                # into region-backed packed trees.
+                all_enum_names: mutable darray[sview] = []
+                collect_enum_type_names(declarations, all_enum_names)
+                enum_names: mutable darray[sview] = []
+                enum_names.extend([candidate_enum for candidate_enum in all_enum_names if any packed_name in table.packed_enum_names where packed_name == candidate_enum])
+                container_fns: mutable darray[sview] = []
+                collect_container_returning_fns(declarations, enum_names, container_fns)
+                table <- check_auto_region_escape_walk(declarations, container_fns, table)

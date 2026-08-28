@@ -1,0 +1,232 @@
+module Lexer:
+    public:
+        # ============================================================
+        # Self-hosted frontend token model
+        # ============================================================
+
+        const enum TokenKind of u8:
+            Eof
+            Newline
+            Indent
+            Dedent
+            Ident
+            IntLit
+            FloatLit
+            HexLit
+            StringLit
+            Def
+            Error
+            Enum
+            Struct
+            Const
+            Global
+            Extern
+            Export
+            If
+            Match
+            Elif
+            Else
+            While
+            Break
+            Continue
+            Return
+            Heap
+            Stack
+            Owned
+            Static
+            Mutable
+            Repr
+            Packed
+            Aligned
+            Pass
+            Panic
+            Not
+            And
+            Or
+            Null
+            True
+            False
+            Zeroed
+            Sizeof
+            Alignof
+            Offsetof
+            Tail
+            Try
+            Catch
+            Raise
+            Region
+            New
+            As
+            In
+            With
+            Colon
+            Scope
+            Arrow
+            Dot
+            Range
+            RangeLt
+            RangeGt
+            RangeLe
+            Comma
+            LParen
+            RParen
+            LBracket
+            RBracket
+            Hash
+            Ampersand
+            Question
+            QAssign
+            Bang
+            At
+            Ellipsis
+            LArrow
+            PlusEq
+            MinusEq
+            StarEq
+            SlashEq
+            PercentEq
+            CaretEq
+            PipeEq
+            AmpEq
+            LShiftEq
+            RShiftEq
+            Assign
+            EqEq
+            BangEq
+            Lt
+            Gt
+            LtEq
+            GtEq
+            Plus
+            Minus
+            Star
+            Slash
+            Percent
+            Pipe
+            Caret
+            LShift
+            RShift
+            Tilde
+            CharLit
+            Is
+            FatArrow
+            To
+            LBrace
+            RBrace
+            PipeGt
+            Semicolon
+            # Comments never enter the main token stream (the parser and the
+            # stage0 parity checksum never see them). They are collected into a
+            # side list (Lexer.comments) purely for tooling like the LSP's
+            # semantic-token highlighter. Appended last so existing ordinals —
+            # and the stage0 ordinal bridge — stay stable.
+            Comment
+            # An f-string literal `f"...{EXPR}..."`. The token text spans the RAW
+            # interior (between the quotes, escapes and `{EXPR}` spans undecoded);
+            # the parser splits it and desugars to a `__fstr(...)` call, mirroring
+            # stage0. Appended last (ordinal stability, same as Comment).
+            FString
+            # `lmut T` (linear-mutable) type-position qualifier, mirroring stage0's
+            # TOKEN_LMUT. Parsed as a prefix operator like `mutable` (parser_expr_ops).
+            # Appended last for ordinal stability.
+            Lmut
+
+        struct LexerPosition:
+            line: mutable int
+            column: mutable int
+            offset: mutable usize
+
+        struct GroupedBlockContext:
+            group_depth: mutable int
+            base_indent: mutable usize
+
+        struct Token:
+            line: mutable u32
+            column: mutable u32
+            start: mutable u32
+            length: mutable u32
+            suffix_length: mutable u16
+            kind: mutable TokenKind
+            flags: bitset:
+                has_suffix
+
+        struct Lexer:
+            indentation_stack: mutable darray[usize]
+            pending_tokens: mutable darray[Token]
+            # Side channel for skipped comments — never merged into the main
+            # stream; read by tooling via frontend_tokenize_comments_with_length.
+            comments: mutable darray[Token]
+            grouped_block_contexts: mutable darray[GroupedBlockContext]
+            filename: mutable sview
+            source: mutable u8&
+            source_length: mutable usize
+            position: mutable usize
+            line: mutable int
+            column: mutable int
+            pending_start: mutable usize
+            group_depth: mutable int
+            at_line_start: mutable bool
+            pending_grouped_block: mutable bool
+            # Scratch kind used by the number scanner's state machine. It is
+            # reset for every numeric token and belongs to the driven lexer
+            # resource so machine arms do not mutate foreign state.
+            number_kind: mutable TokenKind
+            # Nesting depth for the f-string scanner's expression state machine.
+            fstring_depth: mutable usize
+            # End span and termination latch for the shared quoted-literal machine.
+            quoted_text_end: mutable usize
+            quoted_done: mutable bool
+            # Typed scratch payloads for lexer-owned machines. Keeping evolving
+            # scanner values on the driven resource makes the mutation boundary
+            # explicit and preserves the machine arm ownership law.
+            machine_usize: mutable usize
+            machine_int: mutable int
+            machine_bool: mutable bool
+            machine_token: mutable Token
+            machine_tokens: mutable darray[Token]
+
+        const NULL_CHAR = 0
+
+        const FRONTEND_TAB_WIDTH: usize = 4
+
+
+        def empty_sview() -> sview:
+            return sview("", 0, 0)
+
+
+        def LexerPosition(line: int, column: int, offset: usize) -> LexerPosition:
+            return LexerPosition{line: line, column: column, offset: offset}
+
+
+        def Token(kind: TokenKind, position: LexerPosition, start: usize, text_end: usize, suffix_end: usize) -> Token:
+            token: mutable Token = zeroed
+            token.kind <- kind
+            token.line <- position.line.u32()
+            token.column <- position.column.u32()
+            token.start <- start.u32()
+            token.length <- (text_end - start).u32()
+            token.suffix_length <- (suffix_end - text_end).u16()
+            token.flags.has_suffix <- suffix_end > text_end
+            return token
+
+
+        def Token(kind: TokenKind, position: LexerPosition, start: usize, text_end: usize) -> Token:
+            return Token(kind, position, start, text_end, text_end)
+
+
+        def text(token: Token&, source: u8&) -> sview?:
+            start: usize = token.start.usize()
+            return make_source_view(source, start, start + token.length.usize())
+
+
+        def text_or_empty(token: Token&, source: u8&) -> sview:
+            return get token.text(source) else empty_sview()
+
+        def source_view_or_empty(source: u8&, start: usize, end: usize) -> sview:
+            return get make_source_view(source, start, end) else empty_sview()
+
+
+        def suffix(token: Token&, source: u8&) -> sview?:
+            null return if not token.flags.has_suffix
+            start: usize = token.start.usize() + token.length.usize()
+            return make_source_view(source, start, start + token.suffix_length.usize())

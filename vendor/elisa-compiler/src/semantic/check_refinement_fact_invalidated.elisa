@@ -1,0 +1,453 @@
+# Flow fact-invalidation (first increment of the establish->invalidate->use engine). A refinement
+# fact established by an `if SUBJ is Law:` guard is INVALIDATED when a shrinking container mutation
+# (`clear`/`truncate`/`pop`/`remove`/`resize`/`drain`) runs on SUBJ; a later call passing SUBJ to a
+# refinement-constrained parameter then "could not be proven" (stage0 emits RefinementArgNotProven).
+#
+# SOUND against the accept corpus: the diagnostic fires ONLY when a shrinking mutation sits between
+# the guard and the use. An accept-corpus file that guards then uses WITHOUT mutating (stage0 proves
+# it) has no mutation, so nothing fires. Growing ops (push/insert/extend) are deliberately excluded —
+# they cannot break `NonEmpty` or an upper `count` bound, so stage0 still proves those.
+extend Semantic:
+    private:
+        # Container ops that SHRINK (or arbitrarily resize) and so can break a `count > 0` /
+        # `i < count` refinement. Growing ops are excluded on purpose (they keep the fact live).
+        def rfi_is_shrink_method(name: sview) -> bool:
+            can Abort.Panic:
+                return when name:
+                    "clear" | "truncate" | "pop" | "remove" | "resize" | "drain" | "pop_front" | "retain" -> true
+                    _ -> false
+
+        # The receiver subject of a shrinking method call `SUBJ.shrink(...)`, or "".
+        def rfi_shrink_subject(expression: Ast::Expr) -> sview:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Call(callee, arguments, argument_names, call_line):
+                        match callee:
+                            Expr.Field(receiver, method_name, field_line):
+                                ident_name_of(receiver) return if rfi_is_shrink_method(method_name)
+                                return sview("", 0, 0)
+                            _:
+                                return sview("", 0, 0)
+                    _:
+                        return sview("", 0, 0)
+
+        # The `if SUBJ is Law:` guard subject of a condition, or "" when the condition is not a
+        # single `IDENT is LAW` refinement test.
+        def rfi_guard_subject(condition: Ast::Expr) -> sview:
+            can Memory.Allocate, Abort.Panic:
+                match condition:
+                    Expr.Binary(left, operator, right, line):
+                        sview("", 0, 0) return if operator != TokenKind.Is
+                        # The refinement is a bare law (`is NonEmpty`) or an applied law with args
+                        # (`is Bounded[0, xs.count]`, spelled Index/IndexN/Call over the law ident).
+                        # Either way the guard subject is the left operand.
+                        ident_name_of(left) return if rfi_is_law_test(right)
+                        return sview("", 0, 0)
+                    _:
+                        return sview("", 0, 0)
+
+        # Whether the right side of an `is` test names a law: a bare ident, or a law application
+        # `Law[args]` / `Law(args)` whose head is an ident.
+        def rfi_is_law_test(right: Ast::Expr) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                return match right:
+                    Expr.Ident(law_name, ident_line): true
+                    Expr.Index(object, index, index_line): ident_name_of(object) != ""
+                    Expr.IndexN(object_n, arguments_n, index_n_line): ident_name_of(object_n) != ""
+                    Expr.Call(callee, call_arguments, call_argument_names, call_line): ident_name_of(callee) != ""
+                    _: false
+
+        # Collect the container idents a guard predicate DEPENDS on: the receiver of any
+        # `.count`/`.len`/`.length` field access inside the `is Law[..]` arguments. Shrinking such
+        # a container invalidates a dependent bound like `Bounded[0, xs.count]`.
+        def rfi_collect_dep_containers(expression: Ast::Expr, out: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Field(receiver, field_name, field_line):
+                        if field_name == "count" or field_name == "len" or field_name == "length":
+                            container: sview = ident_name_of(receiver)
+                            out.push(container) if container != ""
+                        rfi_collect_dep_containers(receiver, out)
+                    Expr.Binary(left, operator, right, binary_line):
+                        rfi_collect_dep_containers(left, out)
+                        rfi_collect_dep_containers(right, out)
+                    Expr.Index(object, index, index_line):
+                        rfi_collect_dep_containers(object, out)
+                        rfi_collect_dep_containers(index, out)
+                    Expr.IndexN(object_n, arguments_n, index_n_line):
+                        rfi_collect_dep_containers(object_n, out)
+                        for argument_n in arguments_n |out|:
+                            rfi_collect_dep_containers(argument_n, out)
+                    Expr.Call(callee, call_arguments, call_argument_names, call_line):
+                        for call_argument in call_arguments |out|:
+                            rfi_collect_dep_containers(call_argument, out)
+                    Expr.Paren(inner, paren_line):
+                        rfi_collect_dep_containers(inner, out)
+                    _:
+                        pass
+
+        # Whether `name` is in `names`.
+        def rfi_contains(names: darray[sview]&, name: sview) -> bool:
+            can Abort.Panic:
+                return any candidate in names where candidate == name and name != ""
+
+        # The refinement-ensured parameter subject of a signature `ensures SUBJ is Law` predicate
+        # (`SUBJ` an Ident, right side a law test), or "".
+        def rfi_ensures_subject(predicate: Ast::Expr) -> sview:
+            can Memory.Allocate, Abort.Panic:
+                match predicate:
+                    Expr.Binary(left, operator, right, line):
+                        ident_name_of(left) return if operator == TokenKind.Is and rfi_is_law_test(right)
+                        return sview("", 0, 0)
+                    _:
+                        return sview("", 0, 0)
+
+        # The position of parameter `param_name` in `parameters`, or the parameter count if absent.
+        def rfi_param_position(parameters: darray[Ast::ParamDecl]&, param_name: sview) -> usize:
+            can Abort.Panic:
+                found: mutable usize = parameters.count
+                while probe < parameters.count |found, probe: usize = 0|:
+                    found <- probe if parameters[probe].name == param_name and found == parameters.count
+                    probe <- probe + 1
+                return found
+
+        # Whether calling `callee_name` with `&x` at parameter `position` ESTABLISHES a refinement
+        # fact on x — the callee `ensures PARAM is Law` on the parameter there.
+        def rfi_callee_establishes_at(callee_name: sview, position: usize, ensures_functions: darray[sview]&, ensures_positions: darray[usize]&) -> bool:
+            can Abort.Panic:
+                while probe < ensures_functions.count |probe: usize = 0|:
+                    true return if ensures_functions[probe] == callee_name and ensures_positions[probe] == position
+                    probe <- probe + 1
+                return false
+
+        # Establish a refinement fact on every `&SUBJ` passed to an ensures-refining callee parameter.
+        def rfi_apply_establishments(expression: Ast::Expr, ensures_functions: darray[sview]&, ensures_positions: darray[usize]&, established: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Call(callee, arguments, argument_names, call_line):
+                        callee_name: sview = rfi_call_target_name(callee)
+                        parameter_offset: usize = rfi_call_self_offset(callee)
+                        while argument_position < arguments.count |argument_position: usize = 0, established|:
+                            ref_base: sview = borrowed_ident_of(arguments[argument_position])
+                            established.push(ref_base) if ref_base != "" and rfi_callee_establishes_at(callee_name, argument_position + parameter_offset, ensures_functions, ensures_positions)
+                            rfi_apply_establishments(arguments[argument_position], ensures_functions, ensures_positions, established)
+                            argument_position <- argument_position + 1
+                    Expr.Binary(left, operator, right, binary_line):
+                        rfi_apply_establishments(left, ensures_functions, ensures_positions, established)
+                        rfi_apply_establishments(right, ensures_functions, ensures_positions, established)
+                    Expr.Paren(inner, paren_line):
+                        rfi_apply_establishments(inner, ensures_functions, ensures_positions, established)
+                    _:
+                        pass
+
+        # Collect (function, position) for every parameter a function `ensures … is Law` on, from
+        # the signature-contract side-channel (kind "ensure"/"ensures", predicate `PARAM is Law`).
+        def rfi_collect_ensures_positions(declarations: darray[Ast::Decl], contract_lines: darray[u32]&, contract_kinds: darray[sview]&, contract_exprs: darray[Ast::Expr]&, ensures_functions: mutable darray[sview]&, ensures_positions: mutable darray[usize]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |ensures_functions, ensures_positions|:
+                    match declaration:
+                        Decl.Func(function_name, parameters, return_type, body, effects, decorators, line):
+                            while probe < contract_lines.count |probe: usize = 0, ensures_functions, ensures_positions|:
+                                if contract_lines[probe] == line.line and (contract_kinds[probe] == "ensure" or contract_kinds[probe] == "ensures"):
+                                    subject: sview = rfi_ensures_subject(contract_exprs[probe])
+                                    position: usize = rfi_param_position(parameters, subject) if subject != "" else parameters.count
+                                    if subject != "" and position < parameters.count:
+                                        ensures_functions.push(function_name)
+                                        ensures_positions.push(position)
+                                probe <- probe + 1
+                        Decl.Module(module_name, module_body, module_line):
+                            rfi_collect_ensures_positions(module_body, contract_lines, contract_kinds, contract_exprs, ensures_functions, ensures_positions)
+                        Decl.Scoped(scoped_body, scoped_line):
+                            rfi_collect_ensures_positions(scoped_body, contract_lines, contract_kinds, contract_exprs, ensures_functions, ensures_positions)
+                        _:
+                            pass
+
+        # Emit for a call `f(..., SUBJ, ...)` where SUBJ (an Ident argument) is in both `guarded`
+        # and `mutated`, and f's parameter at that argument's position is refinement-constrained.
+        # Whether the call `f(..., SUBJ, ...)` passes a guarded-and-mutated subject at the
+        # refined parameter position recorded for (f, probe).
+        def rfi_call_fires_at(probe: usize, callee_name: sview, arguments: darray[Ast::Expr]&, guarded: darray[sview]&, established: darray[sview]&, mutated: darray[sview]&, param_functions: darray[sview]&, param_indices: darray[usize]&) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                false return if param_functions[probe] != callee_name
+                false return if param_indices[probe] >= arguments.count
+                argument_subject: sview = ident_name_of(arguments[param_indices[probe]])
+                had_fact: bool = rfi_contains(guarded, argument_subject) or rfi_contains(established, argument_subject)
+                return had_fact and rfi_contains(mutated, argument_subject)
+
+        def rfi_check_call(expression: Ast::Expr, line: u32, guarded: darray[sview]&, established: darray[sview]&, mutated: darray[sview]&, param_functions: darray[sview]&, param_indices: darray[usize]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Call(callee, arguments, argument_names, call_line):
+                        callee_name: sview = ident_name_of(callee)
+                        if callee_name != "":
+                            while probe < param_functions.count |probe: usize = 0, table| -> table:
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.RefinementArgNotProven, name: callee_name, line: line, expected: "", actual: "", expected_count: (param_indices[probe] + 1).u32()}) if rfi_call_fires_at(probe, callee_name, arguments, guarded, established, mutated, param_functions, param_indices)
+                                probe <- probe + 1
+                        for argument in arguments |table| -> table:
+                            table <- rfi_check_call(argument, line, guarded, established, mutated, param_functions, param_indices, table)
+                    _:
+                        pass
+
+        # Walk a statement list in order, threading the live guard subjects (`guarded`) and the
+        # accumulated shrink-mutated subjects (`mutated`). A refined-param use is checked BEFORE the
+        # statement can itself mutate, so mutation must strictly precede use.
+        # Push every dependent subject whose bound depends on the shrunk container `M` into
+        # `mutated` (parallel dep_containers[k] -> dep_subjects[k] rows), invalidating dependent
+        # bounds like `i is Bounded[0, M.count]` when `M` is shrunk.
+        def rfi_invalidate_dependents(container: sview, dep_containers: darray[sview]&, dep_subjects: darray[sview]&, mutated: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                while probe < dep_containers.count |probe: usize = 0, mutated|:
+                    mutated.push(dep_subjects[probe]) if dep_containers[probe] == container
+                    probe <- probe + 1
+
+        # Resolve a local through the alias map (`ys = &xs` records ys -> xs): returns the
+        # aliased TARGET when `name` is a known `&`-alias, else "". An alias of an alias is
+        # resolved transitively (bounded by the map size).
+        def rfi_resolve_alias(name: sview, alias_names: darray[sview]&, alias_targets: darray[sview]&) -> sview:
+            can Memory.Allocate, Abort.Panic:
+                current: mutable sview = name
+                steps: mutable usize = 0
+                found_any: mutable bool = false
+                while steps < alias_names.count |current, steps, found_any, name, alias_names, alias_targets|:
+                    hit: mutable bool = false
+                    probe: mutable usize = 0
+                    while probe < alias_names.count |hit, current, found_any, probe, alias_names, alias_targets|:
+                        if alias_names[probe] == current:
+                            current <- alias_targets[probe]
+                            hit <- true
+                            found_any <- true
+                        probe <- probe + 1
+                    break if not hit
+                    steps <- steps + 1
+                return current if found_any else sview("", 0, 0)
+
+        # The target function/method name of a call callee: a bare ident, or the method name of a
+        # `recv.method` field callee.
+        def rfi_call_target_name(callee: Ast::Expr) -> sview:
+            can Memory.Allocate, Abort.Panic:
+                return match callee:
+                    Expr.Field(receiver, method_name, field_line): method_name
+                    _: ident_name_of(callee)
+
+        # The parameter-position shift for a call: 1 for a method call (`recv.m` — receiver is self),
+        # 0 for a plain call.
+        def rfi_call_self_offset(callee: Ast::Expr) -> usize:
+            can Abort.Panic:
+                return match callee:
+                    Expr.Field(receiver, method_name, field_line): 1
+                    _: 0
+
+        # Whether calling `callee_name` with `&x` at argument `position` may mutate x: the callee's
+        # parameter there is a MUTABLE ref AND the callee declares NO frame/contract clause. A
+        # contracted callee (ensures-preserve, disjoint `changes r.value`, etc.) is conservatively
+        # assumed to leave x's refinement fact live — over-exemption only misses, never over-fires.
+        def rfi_callee_mutates_at(callee_name: sview, position: usize, mutating_functions: darray[sview]&, mutating_positions: darray[usize]&) -> bool:
+            can Abort.Panic:
+                while probe < mutating_functions.count |probe: usize = 0|:
+                    true return if mutating_functions[probe] == callee_name and mutating_positions[probe] == position
+                    probe <- probe + 1
+                return false
+
+        # Collect the base idents of every `&SUBJ` passed to a plain-mutating callee parameter — a
+        # mutable borrow that may mutate SUBJ, invalidating a refinement fact.
+        def rfi_collect_ref_pass_subjects(expression: Ast::Expr, mutating_functions: darray[sview]&, mutating_positions: darray[usize]&, alias_names: darray[sview]&, alias_targets: darray[sview]&, out: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Call(callee, arguments, argument_names, call_line):
+                        # A method call `recv.m(args)` (callee is a Field) names the impl method `m`
+                        # and shifts arguments by 1 — the receiver is the method's self parameter, so
+                        # `args[k]` maps to parameter position `k + 1`. A plain call has no shift.
+                        callee_name: sview = rfi_call_target_name(callee)
+                        parameter_offset: usize = rfi_call_self_offset(callee)
+                        while argument_position < arguments.count |argument_position: usize = 0, out|:
+                            mutates_here: bool = rfi_callee_mutates_at(callee_name, argument_position + parameter_offset, mutating_functions, mutating_positions)
+                            ref_base: sview = borrowed_ident_of(arguments[argument_position])
+                            out.push(ref_base) if ref_base != "" and mutates_here
+                            # A bare alias local (`r`, where `r = &y`) passed to a mutating ref
+                            # parameter mutates its TARGET `y` — the borrow was taken at the alias
+                            # binding, so the call reaches `y` through it.
+                            arg_ident: sview = ident_name_of(arguments[argument_position])
+                            alias_target: sview = rfi_resolve_alias(arg_ident, alias_names, alias_targets) if arg_ident != "" else sview("", 0, 0)
+                            out.push(alias_target) if alias_target != "" and mutates_here
+                            rfi_collect_ref_pass_subjects(arguments[argument_position], mutating_functions, mutating_positions, alias_names, alias_targets, out)
+                            argument_position <- argument_position + 1
+                    Expr.Binary(left, operator, right, binary_line):
+                        rfi_collect_ref_pass_subjects(left, mutating_functions, mutating_positions, alias_names, alias_targets, out)
+                        rfi_collect_ref_pass_subjects(right, mutating_functions, mutating_positions, alias_names, alias_targets, out)
+                    Expr.Paren(inner, paren_line):
+                        rfi_collect_ref_pass_subjects(inner, mutating_functions, mutating_positions, alias_names, alias_targets, out)
+                    _:
+                        pass
+
+        # Invalidate every guarded subject that this expression mutates: a shrinking method call
+        # on it, or a mutable borrow (`&SUBJ`) passed to any call. Dependents are invalidated too.
+        def rfi_apply_invalidations(expression: Ast::Expr, guarded: darray[sview]&, established: darray[sview]&, mutated: mutable darray[sview]&, dep_containers: darray[sview]&, dep_subjects: darray[sview]&, mutating_functions: darray[sview]&, mutating_positions: darray[usize]&, alias_names: darray[sview]&, alias_targets: darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                shrink_receiver: sview = rfi_shrink_subject(expression)
+                # A shrink method on an alias (`ys.clear()`, `ys = &xs`) mutates its TARGET `xs`.
+                shrink_target: sview = rfi_resolve_alias(shrink_receiver, alias_names, alias_targets) if shrink_receiver != "" else sview("", 0, 0)
+                shrink_subject: sview = shrink_target if shrink_target != "" else shrink_receiver
+                if shrink_subject != "":
+                    mutated.push(shrink_subject) if rfi_contains(guarded, shrink_subject) or rfi_contains(established, shrink_subject)
+                    rfi_invalidate_dependents(shrink_subject, dep_containers, dep_subjects, mutated)
+                ref_subjects: mutable darray[sview] = []
+                rfi_collect_ref_pass_subjects(expression, mutating_functions, mutating_positions, alias_names, alias_targets, ref_subjects)
+                for ref_subject in ref_subjects |mutated|:
+                    mutated.push(ref_subject) if rfi_contains(guarded, ref_subject) or rfi_contains(established, ref_subject)
+                    rfi_invalidate_dependents(ref_subject, dep_containers, dep_subjects, mutated)
+
+        # The assignment target's base ident (`n <- e` -> "n"), or "" for a non-ident target.
+        def rfi_assign_target_name(target: Ast::Expr) -> sview:
+            can Memory.Allocate, Abort.Panic:
+                return match target:
+                    Expr.Ident(name, ident_line): name
+                    Expr.Paren(inner, paren_line): rfi_assign_target_name(inner)
+                    _: sview("", 0, 0)
+
+        def rfi_check_statements(statements: darray[Ast::Stmt], guarded: darray[sview]&, established: mutable darray[sview]&, mutated: mutable darray[sview]&, alias_names: mutable darray[sview]&, alias_targets: mutable darray[sview]&, dep_containers: darray[sview]&, dep_subjects: darray[sview]&, param_functions: darray[sview]&, param_indices: darray[usize]&, mutating_functions: darray[sview]&, mutating_positions: darray[usize]&, ensures_functions: darray[sview]&, ensures_positions: darray[usize]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |table, mutated, established, alias_names, alias_targets| -> table:
+                    match statement:
+                        Stmt.Expr(expression, line):
+                            table <- rfi_check_call(expression, line.line, guarded, established, mutated, param_functions, param_indices, table)
+                            rfi_apply_establishments(expression, ensures_functions, ensures_positions, established)
+                            rfi_apply_invalidations(expression, guarded, established, mutated, dep_containers, dep_subjects, mutating_functions, mutating_positions, alias_names, alias_targets)
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            table <- rfi_check_call(value, line.line, guarded, established, mutated, param_functions, param_indices, table)
+                            rfi_apply_establishments(value, ensures_functions, ensures_positions, established)
+                            rfi_apply_invalidations(value, guarded, established, mutated, dep_containers, dep_subjects, mutating_functions, mutating_positions, alias_names, alias_targets)
+                            # Record an alias binding `name = &SUBJ` so a later mutation through
+                            # `name` invalidates SUBJ's refinement fact.
+                            alias_base: sview = borrowed_ident_of(value)
+                            if alias_base != "" and name != "":
+                                alias_names.push(name)
+                                alias_targets.push(alias_base)
+                        Stmt.Assign(target, operator, value, line):
+                            table <- rfi_check_call(value, line.line, guarded, established, mutated, param_functions, param_indices, table)
+                            rfi_apply_invalidations(value, guarded, established, mutated, dep_containers, dep_subjects, mutating_functions, mutating_positions, alias_names, alias_targets)
+                            # A direct reassignment `SUBJ <- e` drops any refinement fact on SUBJ.
+                            assign_target: sview = rfi_assign_target_name(target)
+                            if assign_target != "":
+                                mutated.push(assign_target) if rfi_contains(guarded, assign_target) or rfi_contains(established, assign_target)
+                                rfi_invalidate_dependents(assign_target, dep_containers, dep_subjects, mutated)
+                        Stmt.Return(value, line):
+                            if value is returned:
+                                table <- rfi_check_call(returned, line.line, guarded, established, mutated, param_functions, param_indices, table)
+                        Stmt.If(condition, then_body, else_body, line):
+                            subject: sview = rfi_guard_subject(condition)
+                            then_guarded: mutable darray[sview] = [entry for entry in guarded]
+                            then_dep_containers: mutable darray[sview] = [entry for entry in dep_containers]
+                            then_dep_subjects: mutable darray[sview] = [entry for entry in dep_subjects]
+                            if subject != "":
+                                then_guarded.push(subject)
+                                guard_deps: mutable darray[sview] = []
+                                rfi_collect_dep_containers(condition, guard_deps)
+                                for guard_dep in guard_deps |then_dep_containers, then_dep_subjects|:
+                                    then_dep_containers.push(guard_dep)
+                                    then_dep_subjects.push(subject)
+                            table <- rfi_check_statements(then_body, then_guarded, established, mutated, alias_names, alias_targets, then_dep_containers, then_dep_subjects, param_functions, param_indices, mutating_functions, mutating_positions, ensures_functions, ensures_positions, table)
+                            table <- rfi_check_statements(else_body, guarded, established, mutated, alias_names, alias_targets, dep_containers, dep_subjects, param_functions, param_indices, mutating_functions, mutating_positions, ensures_functions, ensures_positions, table)
+                        Stmt.Block(kind, clause, binding, block_body, line):
+                            table <- rfi_check_statements(block_body, guarded, established, mutated, alias_names, alias_targets, dep_containers, dep_subjects, param_functions, param_indices, mutating_functions, mutating_positions, ensures_functions, ensures_positions, table)
+                        Stmt.While(condition, while_body, while_line) | Stmt.For(_, _, _, while_body, while_line):
+                            table <- rfi_check_statements(while_body, guarded, established, mutated, alias_names, alias_targets, dep_containers, dep_subjects, param_functions, param_indices, mutating_functions, mutating_positions, ensures_functions, ensures_positions, table)
+                        _:
+                            pass
+
+        # Whether a parameter TYPE is refinement-constrained: `T is <law>` (bare or applied) or a
+        # structural `where`-refinement. Broader than collect_law_params (which needs a usable
+        # no-arg predicate) — the invalidation check only needs to know the position is refined.
+        def rfi_param_is_refined(type_expression: Ast::Expr) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                match type_expression:
+                    Expr.Binary(base, operator, right, line):
+                        return operator == TokenKind.Is and rfi_is_law_test(right)
+                    Expr.Refinement(refined_base, refined_predicate, refinement_line):
+                        return true
+                    _:
+                        return false
+
+        # Collect (function, param-index) for every refinement-constrained parameter.
+        def rfi_collect_refined_params(declarations: darray[Ast::Decl], param_functions: mutable darray[sview]&, param_indices: mutable darray[usize]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |param_functions, param_indices|:
+                    match declaration:
+                        Decl.Func(function_name, parameters, return_type, body, effects, decorators, line):
+                            while probe < parameters.count |probe: usize = 0, param_functions, param_indices|:
+                                if rfi_param_is_refined(parameters[probe].type_expression):
+                                    param_functions.push(function_name)
+                                    param_indices.push(probe)
+                                probe <- probe + 1
+                        Decl.Module(module_name, module_body, module_line):
+                            rfi_collect_refined_params(module_body, param_functions, param_indices)
+                        Decl.Scoped(scoped_body, scoped_line):
+                            rfi_collect_refined_params(scoped_body, param_functions, param_indices)
+                        _:
+                            pass
+
+        # Whether function `function_name` declares `changes ROOT` naming its parameter `param_name`
+        # (bare `changes` root, parser sentinel 3900000010).
+        def rfi_function_changes_param(annotations: darray[Ast::EnumAnnotation]&, function_name: sview, param_name: sview) -> bool:
+            can Abort.Panic:
+                return any annotation in annotations where annotation.line == 3900000010 and annotation.owner == function_name and annotation.name == param_name
+
+        # Collect (function, position) for every parameter a callee may mutate through a `&` borrow:
+        # a MUTABLE-ref parameter that is EITHER named in the callee's `changes` clause OR the callee
+        # declares no frame/contract clause at all (a plain mutating borrow). A contracted callee
+        # that does NOT change this param (ensures-preserve, disjoint `changes`) is excluded.
+        def rfi_collect_mutating_positions(declarations: darray[Ast::Decl], annotations: darray[Ast::EnumAnnotation]&, has_contract_names: darray[sview]&, mutating_functions: mutable darray[sview]&, mutating_positions: mutable darray[usize]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |mutating_functions, mutating_positions|:
+                    match declaration:
+                        Decl.Func(function_name, parameters, return_type, body, effects, decorators, line):
+                            has_contract: bool = rfi_contains(has_contract_names, function_name)
+                            while probe < parameters.count |probe: usize = 0, mutating_functions, mutating_positions|:
+                                is_mutable_ref: bool = type_marker_present_here(parameters[probe].type_expression, TokenKind.Mutable) and type_marker_present_here(parameters[probe].type_expression, TokenKind.Ampersand)
+                                changes_this: bool = rfi_function_changes_param(annotations, function_name, parameters[probe].name)
+                                if is_mutable_ref and (changes_this or not has_contract):
+                                    mutating_functions.push(function_name)
+                                    mutating_positions.push(probe)
+                                probe <- probe + 1
+                        Decl.Module(module_name, module_body, module_line):
+                            rfi_collect_mutating_positions(module_body, annotations, has_contract_names, mutating_functions, mutating_positions)
+                        Decl.Scoped(scoped_body, scoped_line):
+                            rfi_collect_mutating_positions(scoped_body, annotations, has_contract_names, mutating_functions, mutating_positions)
+                        _:
+                            pass
+
+        def rfi_walk(declarations: darray[Ast::Decl], param_functions: darray[sview]&, param_indices: darray[usize]&, mutating_functions: darray[sview]&, mutating_positions: darray[usize]&, ensures_functions: darray[sview]&, ensures_positions: darray[usize]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |table| -> table:
+                    match declaration:
+                        Decl.Func(function_name, parameters, return_type, body, effects, decorators, line):
+                            guarded: darray[sview] = []
+                            established: mutable darray[sview] = []
+                            mutated: mutable darray[sview] = []
+                            alias_names: mutable darray[sview] = []
+                            alias_targets: mutable darray[sview] = []
+                            dep_containers: darray[sview] = []
+                            dep_subjects: darray[sview] = []
+                            table <- rfi_check_statements(body, guarded, established, mutated, alias_names, alias_targets, dep_containers, dep_subjects, param_functions, param_indices, mutating_functions, mutating_positions, ensures_functions, ensures_positions, table)
+                        Decl.Module(module_name, module_body, module_line):
+                            table <- rfi_walk(module_body, param_functions, param_indices, mutating_functions, mutating_positions, ensures_functions, ensures_positions, table)
+                        Decl.Scoped(scoped_body, scoped_line):
+                            table <- rfi_walk(scoped_body, param_functions, param_indices, mutating_functions, mutating_positions, ensures_functions, ensures_positions, table)
+                        _:
+                            pass
+
+    public:
+        def check_refinement_fact_invalidated(file: Ast::File&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                param_functions: mutable darray[sview] = []
+                param_indices: mutable darray[usize] = []
+                rfi_collect_refined_params(file.top_decls, param_functions, param_indices)
+                has_contract_names: mutable darray[sview] = []
+                for annotation in file.enum_annotations |has_contract_names|:
+                    has_contract_names.push(annotation.owner) if annotation.name == "__has_contract"
+                mutating_functions: mutable darray[sview] = []
+                mutating_positions: mutable darray[usize] = []
+                rfi_collect_mutating_positions(file.top_decls, file.enum_annotations, has_contract_names, mutating_functions, mutating_positions)
+                ensures_functions: mutable darray[sview] = []
+                ensures_positions: mutable darray[usize] = []
+                rfi_collect_ensures_positions(file.top_decls, file.signature_contract_lines, file.signature_contract_kinds, file.signature_contract_exprs, ensures_functions, ensures_positions)
+                table <- rfi_walk(file.top_decls, param_functions, param_indices, mutating_functions, mutating_positions, ensures_functions, ensures_positions, table)

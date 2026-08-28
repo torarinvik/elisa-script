@@ -1,0 +1,1393 @@
+# Stage1 backend — signature FACTS: which types need an arena or the AST store, error-returning lines, f-strings.
+# Part of `module Backend` (see codegen.elisa); split out to keep each file short.
+
+extend Backend:
+    private:
+        # `__fstr(chunk_or_value, …)` — the compiler-emitted f-string builder the parser
+        # desugars `f"…{x}…"` into. Each argument is a STRING-LIKE piece (a literal chunk or an
+        # interpolated dstr/sview — the checker rejects a non-string interpolant), so lowering
+        # is stage0's: sum the byte lengths, `ctx_fstr_alloc(total)` a `%DynArray__u8`, then
+        # `ctx_fstr_append(slot, data, len)` each piece in order and load the result dstr.
+        def emit_fstr_builtin(arguments: darray[Expr]&, local_scope: mutable Scope&, fns: FnTable&, structs: mutable StructTable&, generics: mutable GenericTable&, runtime: Runtime&, m: LLVMModuleRef, ctx: LLVMContextRef, builder: LLVMBuilderRef) -> LLVMValueRef? can[Abort.Panic, Memory.Allocate, Unsafe.PointerCast]:
+            int64_type: LLVMTypeRef = LLVMInt64TypeInContext(ctx)
+            pointer_type: LLVMTypeRef = LLVMPointerTypeInContext(ctx, 0)
+            dstr_header: LLVMTypeRef = darray_llvm_type(structs, ctx)
+            datas: mutable darray[LLVMValueRef] = []
+            lengths: mutable darray[LLVMValueRef] = []
+            declined: mutable bool = false
+            for argument in arguments |datas, lengths, declined, local_scope, fns, structs, generics, runtime, m, ctx, builder|:
+                continue if declined
+                match argument:
+                    Expr.StringLit(chunk_text):
+                        # Decoded, like every other literal: an f-string's LITERAL chunks carry the
+                        # `\"` in `f"… \"{name}\" …"`, which is most of the diagnostic wording.
+                        chunk_storage: mutable darray[u8] = []
+                        chunk_global: LLVMValueRef = LLVMBuildGlobalStringPtr(builder, decoded_literal_cstr(chunk_text, chunk_storage), "fstr.chunk")
+                        datas.push(chunk_global)
+                        lengths.push(LLVMConstInt(int64_type, (chunk_storage.count - 1.usize()).u64(), 0))
+                    _:
+                        argument_type: ValueType = expression_type(argument, local_scope, fns, structs, generics)
+                        is_dstr: bool = argument_type.kind == TypeKind.DArray and darray_element_of(argument_type, structs).kind == TypeKind.Unsigned and darray_element_of(argument_type, structs).bits == 8
+                        is_sview: bool = argument_type.kind == TypeKind.SView
+                        if not is_dstr and not is_sview:
+                            declined <- true
+                        elif emit_expression(argument, argument_type, local_scope, fns, structs, generics, runtime, m, ctx, builder) is piece_value:
+                            # dstr `{ptr items, i64 count, i64 cap}` and sview `{ptr, i64 len}` both
+                            # carry the data pointer at field 0 and the byte length at field 1.
+                            datas.push(LLVMBuildExtractValue(builder, piece_value, 0, "fstr.data"))
+                            lengths.push(LLVMBuildExtractValue(builder, piece_value, 1, "fstr.len"))
+                        else:
+                            declined <- true
+            null return if declined
+            total: mutable LLVMValueRef = LLVMConstInt(int64_type, 0, 0)
+            for piece_length in lengths |total, builder|:
+                total <- LLVMBuildAdd(builder, total, piece_length, "fstr.total")
+            alloc_params: mutable darray[LLVMTypeRef] = [int64_type]
+            alloc_params_pointer: void& = (&alloc_params[0]).cast[void&] can Unsafe.PointerCast
+            alloc_type: LLVMTypeRef = LLVMFunctionType(dstr_header, alloc_params_pointer, 1, 0)
+            alloc_fn: LLVMValueRef = declare_or_get_named(m, "ctx_fstr_alloc", alloc_type)
+            alloc_args: mutable darray[LLVMValueRef] = [total]
+            alloc_args_pointer: void& = (&alloc_args[0]).cast[void&] can Unsafe.PointerCast
+            dstr_value: LLVMValueRef = LLVMBuildCall2(builder, alloc_type, alloc_fn, alloc_args_pointer, 1, "fstr.alloc")
+            fstr_slot: LLVMValueRef = LLVMBuildAlloca(builder, dstr_header, "fstr.slot")
+            _ = LLVMBuildStore(builder, dstr_value, fstr_slot)
+            append_params: mutable darray[LLVMTypeRef] = [pointer_type, pointer_type, int64_type]
+            append_params_pointer: void& = (&append_params[0]).cast[void&] can Unsafe.PointerCast
+            append_type: LLVMTypeRef = LLVMFunctionType(LLVMVoidTypeInContext(ctx), append_params_pointer, 3, 0)
+            append_fn: LLVMValueRef = declare_or_get_named(m, "ctx_fstr_append", append_type)
+            piece_index: mutable usize = 0
+            while piece_index < datas.count |piece_index, datas, lengths, fstr_slot, append_type, append_fn, builder|:
+                append_args: mutable darray[LLVMValueRef] = [fstr_slot, datas[piece_index], lengths[piece_index]]
+                append_args_pointer: void& = (&append_args[0]).cast[void&] can Unsafe.PointerCast
+                _ = LLVMBuildCall2(builder, append_type, append_fn, append_args_pointer, 3, "")
+                piece_index <- piece_index + 1
+            return LLVMBuildLoad2(builder, dstr_header, fstr_slot, "fstr.result")
+
+
+        # Whether the function declared at `line` returns an error union. The frontend
+        # records error-returning functions by LINE in File.error_set_func_lines (the
+        # `error[E]` clause is consumed at parse time; only this side table survives).
+        def line_is_error_returning(error_lines: darray[u32]&, line: u32) -> bool can[Abort.Panic]:
+            for error_line in error_lines |line|:
+                true return if error_line == line
+            return false
+
+
+        # The type PARAMETER of a generic extern with this name, or "" when the name is not
+        # one. Generic externs are instantiated at the CALL, not at their declaration.
+        def generic_extern_param_of(structs: StructTable&, name: sview) -> sview can[Abort.Panic]:
+            for index in 0..<structs.generic_extern_names.count |structs, name|:
+                continue if structs.generic_extern_names[index] != name
+                return structs.generic_extern_params[index]
+            return ""
+
+
+        # stage0's SOURCE-LEVEL spelling of a scalar type, which is what it mangles a generic
+        # instantiation with (`push__i64`). "" for anything whose spelling is not reproduced
+        # here — the caller then declines rather than guessing a symbol name that would link
+        # against the wrong instantiation.
+        def stage0_scalar_type_name(value_type: ValueType) -> sview can[Abort.Panic]:
+            if value_type.kind == TypeKind.Signed:
+                "i8" return if value_type.bits == 8
+                "i16" return if value_type.bits == 16
+                "i32" return if value_type.bits == 32
+                "i64" return if value_type.bits == 64
+            if value_type.kind == TypeKind.Unsigned:
+                "u8" return if value_type.bits == 8
+                "u16" return if value_type.bits == 16
+                "u32" return if value_type.bits == 32
+                "u64" return if value_type.bits == 64
+            if value_type.kind == TypeKind.Float:
+                "f32" return if value_type.bits == 32
+                "f64" return if value_type.bits == 64
+            "bool" return if value_type.kind == TypeKind.Bool
+            return ""
+
+
+        # Whether an error SET declares at least one PAYLOAD-carrying variant. That is the
+        # whole ABI switch: stage0 returns a plain `i32` for a fieldless set (which is what
+        # stage1 has always emitted) and a `%ErrSet__E` STRUCT for one with payloads. Gating on
+        # this keeps every fieldless program — including the compiler's own source, whose error
+        # sets are fieldless throughout — on exactly the code path it already used.
+        def error_set_has_payload(structs: StructTable&, set_name: sview) -> bool can[Abort.Panic]:
+            false return if set_name == ""
+            # The name must have been DECLARED `error Name:`. The clause alone is not proof:
+            # this compiler's own source writes `error[E]`/`error[R]` for GENERIC PARAMETERS
+            # and `error[Ident]` for an unrelated name, and matching those against the
+            # payload-enum pool switched the ABI on functions that must return i32 — which
+            # broke self-hosting outright (the driver emitted nothing, exit 2).
+            declared: mutable bool = false
+            for declared_name in structs.error_set_decl_names |declared, set_name|:
+                declared <- true if declared_name == set_name
+            false return if not declared
+            set_index: i64 = penum_index_of(structs, set_name)
+            false return if set_index < 0
+            variant_start: usize = structs.penum_variant_start[set_index.usize()]
+            variant_span: usize = structs.penum_variant_count[set_index.usize()]
+            carries: mutable bool = false
+            for offset in 0..<variant_span |carries, variant_start, structs|:
+                carries <- true if structs.penum_field_type_count[variant_start + offset] > 0.usize()
+            return carries
+
+
+        # The index of an error set variant's FIRST payload slot in the `%ErrSet__E` struct.
+        # Measured from stage0's IR: field 0 is the i32 tag, then every variant's fields
+        # CONCATENATED in declaration order — the slots are NOT overlapped, so a variant's
+        # field i sits at `1 + (sum of the preceding variants' field counts) + i`, and slots
+        # belonging to other variants are left `undef`.
+        def error_set_variant_field_base(structs: StructTable&, set_index: i64, variant_offset: usize) -> usize can[Abort.Panic]:
+            variant_start: usize = structs.penum_variant_start[set_index.usize()]
+            base: mutable usize = 1
+            for offset in 0..<variant_offset |base, variant_start, structs|:
+                base <- base + structs.penum_field_type_count[variant_start + offset]
+            return base
+
+
+        # `%ErrSet__E = type { i32, <every variant's fields, concatenated> }`.
+        def error_set_llvm_type(structs: mutable StructTable&, set_name: sview, ctx: LLVMContextRef) -> LLVMTypeRef can[Abort.Panic, Memory.Allocate, Unsafe.PointerCast]:
+            set_index: i64 = penum_index_of(structs, set_name)
+            variant_start: usize = structs.penum_variant_start[set_index.usize()]
+            variant_span: usize = structs.penum_variant_count[set_index.usize()]
+            set_fields: mutable darray[LLVMTypeRef] = [LLVMInt32TypeInContext(ctx)]
+            for offset in 0..<variant_span |set_fields, variant_start, structs, ctx|:
+                field_start: usize = structs.penum_field_type_start[variant_start + offset]
+                field_span: usize = structs.penum_field_type_count[variant_start + offset]
+                for field_offset in 0..<field_span |set_fields, field_start, structs, ctx|:
+                    set_fields.push(llvm_type_of(copied_type(structs.penum_field_types[field_start + field_offset]), structs, ctx))
+            set_pointer: void& = (&set_fields[0]).cast[void&] can Unsafe.PointerCast
+            return LLVMStructTypeInContext(ctx, set_pointer, set_fields.count.u32(), 0)
+
+
+        # The value an error function returns on SUCCESS: a bare `i32 0` for a fieldless set,
+        # and `{ i32 0, undef... }` for a payload-carrying one, whose signature declares the
+        # `%ErrSet__E` struct.
+        #
+        # This existed as an inline `LLVMConstInt(i32, 0)` at seven return sites. When the
+        # struct ABI landed, all seven kept emitting `ret i32 0` from a function declared to
+        # return the struct — malformed IR that LLVM did NOT reject: it ran correctly at -O0
+        # and MISCOMPILED at -O2 (the success value read back as 0 instead of 3). One helper,
+        # so a future ABI change cannot leave six of seven sites behind.
+        def error_success_return_value(structs: mutable StructTable&, runtime: Runtime&, ctx: LLVMContextRef) -> LLVMValueRef can[Abort.Panic, Memory.Allocate, Unsafe.PointerCast]:
+            success_code: LLVMValueRef = LLVMConstInt(LLVMInt32TypeInContext(ctx), 0, 0)
+            success_set: sview = line_error_set_name(structs.error_fn_lines, structs.error_fn_set_names, runtime.error_fn_line)
+            success_code return if not error_set_has_payload(structs, success_set)
+            # A zeroinitializer rather than insertvalue-into-undef: field 0 is the tag and 0 IS
+            # success, and the catch path reads no other field on the success branch. It also
+            # needs no builder, so every return site can call this.
+            return LLVMConstNull(error_set_llvm_type(structs, success_set, ctx))
+
+
+        # Whether the named function returns a PAYLOAD-carrying error set, i.e. whether its
+        # LLVM return value is the `%ErrSet__E` struct rather than a bare i32 code. Every catch
+        # site asks this to decide whether the code needs an `extractvalue` first.
+        #
+        # Resolved through the function's LINE rather than by introspecting the LLVM type,
+        # because LLVMGetTypeKind is not bound here — and a magic type-kind ordinal would be a
+        # silent breakage the day the enum shifts.
+        def function_returns_error_struct(fns: FnTable&, structs: StructTable&, owner: sview, name: sview) -> bool can[Abort.Panic]:
+            index: i64 = function_index_of(fns, owner, name)
+            false return if index < 0
+            false return if not fns.is_error[index.usize()]
+            return error_set_has_payload(structs, line_error_set_name(structs.error_fn_lines, structs.error_fn_set_names, fns.lines[index.usize()]))
+
+
+        # The error SET NAME declared at `line` (`-> i64 error[BackendError]` -> "BackendError"),
+        # or "" when the line declares none or the clause was not the plain `error[Ident]` form.
+        # Index-parallel with error_lines; a shorter names pool (an older serialized File) reads
+        # as "", which keeps the i32 error ABI — the conservative answer.
+        def line_error_set_name(error_lines: darray[u32]&, error_names: darray[sview]&, line: u32) -> sview can[Abort.Panic]:
+            scan: mutable usize = 0
+            while scan < error_lines.count |scan, error_lines, error_names, line|:
+                if error_lines[scan] == line:
+                    "" return if scan >= error_names.count
+                    return error_names[scan]
+                scan <- scan + 1
+            return ""
+
+
+        # Whether a struct holds a darray anywhere in its (recursive) fields — such a struct
+        # returned by value carries a darray whose BUFFER must outlive the callee, so the
+        # function must thread the caller's arena (build the darray there, not in the callee's
+        # auto-region which frees on return → a use-after-free when the caller reads it).
+        # A `dict`/`set` is a DynDict/DynSet STRUCT instantiation whose buckets hang off a
+        # raw `ptr` — there is no DArray field to find, so struct_contains_darray cannot see
+        # it. It grows exactly like a darray though, so for ABI purposes it must count:
+        # `index_it(h: mutable Holder&) -> h.m.put(...)` allocates buckets that have to
+        # outlive the call, and without the caller's arena threaded in they were allocated in
+        # the callee's auto-region and FREED on return (use-after-free on the next `.get`).
+        def is_growable_container_struct(value_type: ValueType, structs: StructTable&) -> bool can[Abort.Panic]:
+            false return if value_type.kind != TypeKind.Struct
+            container_name: sview = structs.names[value_type.bits.usize()]
+            return when container_name:
+                "DynDict" | "DynSet" -> true
+                _ -> false
+
+
+        # This fact is a graph property, not a tree property. Recursive and mutually recursive
+        # records are valid; cache 0=unknown, 1=visiting, 2=no darray, 3=contains darray so a
+        # recursive ABI query terminates and all later queries are O(1).
+        def struct_contains_darray(struct_type: ValueType, structs: mutable StructTable&) -> bool can[Abort.Panic, Memory.Allocate]:
+            can Abort.Panic, Memory.Allocate:
+                false return if struct_type.kind != TypeKind.Struct
+                true return if is_growable_container_struct(struct_type, structs)
+                struct_darray_slot: usize = struct_type.bits.usize()
+                false return if struct_darray_slot >= structs.names.count
+                while structs.struct_darray_cache.count <= struct_darray_slot |structs|:
+                    structs.struct_darray_cache <- structs.struct_darray_cache.push(0)
+                cached: u8 = structs.struct_darray_cache[struct_darray_slot]
+                true return if cached == 3
+                false return if cached == 1 or cached == 2
+                structs.struct_darray_cache[struct_darray_slot] <- 1
+                struct_darray_start: usize = structs.field_start[struct_darray_slot]
+                struct_darray_count: usize = structs.field_count[struct_darray_slot]
+                for struct_darray_index in 0..<struct_darray_count |structs, struct_darray_start|:
+                    struct_darray_field: ValueType = copied_type(structs.field_types[struct_darray_start + struct_darray_index])
+                    if struct_darray_field.kind == TypeKind.DArray or is_growable_container_struct(struct_darray_field, structs):
+                        structs.struct_darray_cache[struct_darray_slot] <- 3
+                        return true
+                    if struct_darray_field.kind == TypeKind.Struct and struct_contains_darray(struct_darray_field, structs):
+                        structs.struct_darray_cache[struct_darray_slot] <- 3
+                        return true
+                structs.struct_darray_cache[struct_darray_slot] <- 2
+                return false
+
+            # AST handles are packed enums whose payload side tables live outside the
+            # value representation. Returning one must keep those nested buffers in a
+            # region owned by the caller. Optional AST handles carry the same rule.
+        def ast_value_needs_arena(value_type: ValueType, structs: mutable StructTable&) -> bool can[Abort.Panic]:
+            can Abort.Panic:
+                if value_type.kind == TypeKind.Optional:
+                    return ast_value_needs_arena(optional_payload_of(value_type, structs), structs)
+                # Packed-enum values are handles into side-table-backed storage. The
+                # metadata name is normalized differently across module/extend forms,
+                # so key the ABI rule on representation rather than spelling.
+                return value_type.kind == TypeKind.PackedEnum
+
+            # `def f[@r](xs: darray[T] @r)` — a REGION PARAMETER. The body's `@r`-annotated locals
+            # allocate from the caller's region, and the values they build are written back into
+            # caller-visible storage, so the region must be threaded in. Nothing in such a
+            # signature need be a reference: `easm_prune_conditional_inputs[@r]` takes a
+            # `mutable darray[Function] @r` BY VALUE (the header is copied; the element storage is
+            # shared) and rebuilds each element's `inputs`/`params` darrays. With no arena
+            # threaded, stage1 gave it an auto region, allocated those darrays there, and
+            # `arena_free`d the region on return -- handing the caller freed memory. That is the
+            # intermittent (~3%) `easm_lockstep_parse_smoke` segfault: whether the munmap'd block
+            # had been remapped by the time `verify_function_header` read it was pure luck.
+            #
+            # Measured against stage0, which is the same rule: `def prune[@r](boxes: mutable
+            # darray[Box] @r)` emits `void @prune(%DynArray__Box, ptr)`; drop the `[@r]` and the
+            # trailing `ptr` disappears.
+        def line_has_region_parameter(line: u32, structs: StructTable&) -> bool:
+            for region_line in structs.region_param_lines |line|:
+                true return if region_line == line
+            return false
+
+        def signature_needs_arena(params: darray[ParamDecl]&, return_value_type: ValueType, structs: mutable StructTable&) -> bool can[Abort.Panic]:
+            can Abort.Panic, Memory.Allocate, Unsafe.PointerCast:
+                true return if ast_value_needs_arena(return_value_type, structs)
+                true return if return_value_type.kind == TypeKind.DArray
+                # A RETURNED dict/set carries bucket storage the caller reads after the call.
+                true return if is_growable_container_struct(return_value_type, structs)
+                true return if return_value_type.kind == TypeKind.Struct and struct_contains_darray(return_value_type, structs)
+                for parameter in params |structs|:
+                    parameter_type: ValueType = parameter_value_type(parameter.type_expression, structs)
+                    continue if parameter_type.kind != TypeKind.Ref
+                    arena_param_target: ValueType = ref_target_of(parameter_type, structs)
+                    # A `darray[T]&` param may be GROWN (`xs.push`); a `Struct&` whose fields hold a
+                    # darray may grow that field (`b.items.push`). Both need the CALLER's arena
+                    # threaded so the growth outlives the call (else a use-after-free).
+                    true return if arena_param_target.kind == TypeKind.DArray
+                    true return if is_growable_container_struct(arena_param_target, structs)
+                    true return if arena_param_target.kind == TypeKind.Struct and struct_contains_darray(arena_param_target, structs)
+                    true return if ast_value_needs_arena(arena_param_target, structs)
+                return false
+
+
+            # The recursive AST hierarchy is a compiler-internal packed value. Stage0 threads
+            # its shared store through the parser and backend call graph as a hidden trailing
+            # parameter. Keep the first ABI slice deliberately explicit here: the semantic
+            # implementation later refines this to transitive per-root needs, while the stage1
+            # self-host corpus has one compiler AST store (`Ast.Node`).
+            # A function which directly invokes the parser/backend must own the shared AST
+            # store before the first call. Stage0 computes this transitively from the call graph;
+            # stage1 declarations are emitted in one pass, so retain the small structural walk
+            # here and let the declaration pass mark the caller before it builds its ABI.
+            # A bare AST hierarchy enum name whose CONSTRUCTION allocates into the packed store.
+        def is_ast_enum_name(name: sview, structs: StructTable&) -> bool can[Abort.Panic]:
+            can Abort.Panic:
+                for refinement_name in structs.ast_refinement_names |name|:
+                    true return if refinement_name == name
+                # The reserved, variant-less root counts only when it IS the compiler's AST root.
+                return name == "Node" and packed_is_ast_root(structs, packed_index_of(structs, "Node"))
+
+            # Syntactic test for a packed-AST CONSTRUCTOR call `Ast::Expr.Ident(…)` /
+            # `Stmt.VarDecl(…)`: the callee is `NS::Enum.Variant` or `Enum.Variant` where Enum is
+            # an AST hierarchy root. Building the node writes the AoS store, so a global helper
+            # that constructs AST (e.g. `machine_from_is_condition`) needs the store threaded even
+            # with no AST parameter and no frontend call.
+        def callee_is_ast_constructor(callee: Expr, structs: StructTable&) -> bool can[Abort.Panic]:
+            can Abort.Panic:
+                match callee:
+                    Expr.Field(ctor_head, ctor_variant, ctor_field_line):
+                        match ctor_head:
+                            Expr.Scope(ctor_scope_base, ctor_enum, ctor_scope_line):
+                                return is_ast_enum_name(ctor_enum, structs)
+                            _:
+                                pass
+                        match ctor_head:
+                            Expr.Ident(ctor_enum_ident, ctor_enum_ident_line):
+                                return is_ast_enum_name(ctor_enum_ident, structs)
+                            _:
+                                pass
+                    _:
+                        pass
+                return false
+
+        def expression_mentions_ast_store_call(expression: Expr, structs: StructTable&) -> bool can[Abort.Panic]:
+            can Abort.Panic:
+                match expression:
+                    Expr.Call(callee, arguments, argument_names, line):
+                        match callee:
+                            Expr.Ident(name, name_line):
+                                true return if name == "frontend_parser_parse_file" or name == "frontend_parse"
+                            _:
+                                pass
+                        match callee:
+                            Expr.Scope(scope_head, scope_name, scope_line):
+                                match scope_head:
+                                    Expr.Ident(scope_owner, scope_owner_line):
+                                        true return if scope_owner == "Backend" and (scope_name == "emit_module" or scope_name == "emit_module_with_debug_trace")
+                                    _:
+                                        pass
+                            _:
+                                pass
+                        true return if callee_is_ast_constructor(callee, structs)
+                        true return if expression_mentions_ast_store_call(callee, structs)
+                        for argument in arguments |expression|:
+                            true return if expression_mentions_ast_store_call(argument, structs)
+                        return false
+                    _:
+                        pass
+                match expression:
+                    Expr.Field(field_object, field_name, field_line):
+                        return expression_mentions_ast_store_call(field_object, structs)
+                    _:
+                        pass
+                match expression:
+                    Expr.Scope(scope_base, scope_name, scope_line):
+                        return expression_mentions_ast_store_call(scope_base, structs)
+                    _:
+                        pass
+                match expression:
+                    Expr.Index(index_object, index_value, index_line):
+                        return expression_mentions_ast_store_call(index_object, structs) or expression_mentions_ast_store_call(index_value, structs)
+                    _:
+                        pass
+                match expression:
+                    Expr.Binary(binary_left, binary_operator, binary_right, binary_line):
+                        return expression_mentions_ast_store_call(binary_left, structs) or expression_mentions_ast_store_call(binary_right, structs)
+                    _:
+                        pass
+                match expression:
+                    Expr.Unary(unary_operator, unary_operand, unary_line):
+                        return expression_mentions_ast_store_call(unary_operand, structs)
+                    _:
+                        pass
+                match expression:
+                    Expr.Paren(paren_inner, paren_line):
+                        return expression_mentions_ast_store_call(paren_inner, structs)
+                    _:
+                        pass
+                match expression:
+                    Expr.If(if_condition, if_then, if_else, if_line):
+                        return expression_mentions_ast_store_call(if_condition, structs) or expression_mentions_ast_store_call(if_then, structs) or expression_mentions_ast_store_call(if_else, structs)
+                    _:
+                        pass
+                return false
+
+        def statements_mention_ast_store_call(statements: darray[Stmt]&, structs: StructTable&) -> bool can[Abort.Panic]:
+            can Abort.Panic:
+                for statement in statements:
+                    match statement:
+                        Stmt.Expr(expression, line):
+                            true return if expression_mentions_ast_store_call(expression, structs)
+                        _:
+                            pass
+                    match statement:
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            true return if expression_mentions_ast_store_call(value, structs)
+                        _:
+                            pass
+                    match statement:
+                        Stmt.Assign(target, operator, value, line):
+                            true return if expression_mentions_ast_store_call(target, structs) or expression_mentions_ast_store_call(value, structs)
+                        _:
+                            pass
+                    match statement:
+                        Stmt.Return(value_opt, line):
+                            if value_opt is value:
+                                true return if expression_mentions_ast_store_call(value, structs)
+                        _:
+                            pass
+                    match statement:
+                        Stmt.If(condition, then_body, else_body, line):
+                            true return if expression_mentions_ast_store_call(condition, structs) or statements_mention_ast_store_call(then_body, structs) or statements_mention_ast_store_call(else_body, structs)
+                        _:
+                            pass
+                    match statement:
+                        Stmt.While(condition, body, line):
+                            true return if expression_mentions_ast_store_call(condition, structs) or statements_mention_ast_store_call(body, structs)
+                        _:
+                            pass
+                    match statement:
+                        Stmt.For(bind, variables, iterable, body, line):
+                            true return if expression_mentions_ast_store_call(iterable, structs) or statements_mention_ast_store_call(body, structs)
+                        _:
+                            pass
+                    match statement:
+                        Stmt.Block(kind, clause, binding, body, line):
+                            true return if statements_mention_ast_store_call(body, structs)
+                        _:
+                            pass
+                    match statement:
+                        Stmt.Match(scrutinee, arms, line):
+                            true return if expression_mentions_ast_store_call(scrutinee, structs)
+                            for arm in arms:
+                                true return if expression_mentions_ast_store_call(arm.guard, structs) or statements_mention_ast_store_call(arm.body, structs)
+                        _:
+                            pass
+                return false
+
+        def function_needs_ast_store(owner: sview, name: sview) -> bool can[Abort.Panic]:
+            if owner == "Parser" or owner == "Backend":
+                return true
+            if name == "frontend_parser_parse_file" or name == "frontend_parse":
+                return true
+            return false
+
+        # A type that IS, or transitively contains, a packed AST node (`Ast::Stmt`,
+        # `Ast::Expr`, …). Reading/matching such a value goes through the AoS store, so a
+        # GLOBAL helper taking one (e.g. `with_decl_name(statement: Ast::Stmt)`) must have the
+        # store threaded even though its body never CONSTRUCTS a node. Follows darray element,
+        # ref target, and optional payload so `darray[Ast::Stmt]&` params count too.
+        def type_is_or_contains_packed_ast(value_type: ValueType, depth: i64, structs: mutable StructTable&) -> bool can[Abort.Panic]:
+            can Abort.Panic:
+                false return if depth > 6
+                if value_type.kind == TypeKind.PackedEnum:
+                    root: i64 = packed_root_index_of(structs, value_type.bits.i64())
+                    true return if root >= 0 and packed_is_ast_root(structs, root)
+                if value_type.kind == TypeKind.DArray:
+                    return type_is_or_contains_packed_ast(darray_element_of(value_type, structs), depth + 1, structs)
+                if value_type.kind == TypeKind.Ref:
+                    return type_is_or_contains_packed_ast(ref_target_of(value_type, structs), depth + 1, structs)
+                if value_type.kind == TypeKind.Optional:
+                    return type_is_or_contains_packed_ast(optional_payload_of(value_type, structs), depth + 1, structs)
+                # A STRUCT whose fields reach an AST node — `file: Ast::File&`, whose `top_decls`
+                # is a `darray[Decl]`. Without this a function that touches AST nodes only THROUGH
+                # a struct parameter got no hidden store, so `runtime.active_store_enum` stayed -1
+                # and every `match` on such a node declined (this is what dropped
+                # sg_enum_variant_names). Adding an unused `Ast::Decl` parameter made the same
+                # function compile, which is how the store — not the type — was identified as the
+                # gate. The existing depth cap also terminates a struct that reaches itself
+                # through a ref field.
+                if value_type.kind == TypeKind.Struct:
+                    struct_slot: usize = value_type.bits.usize()
+                    if struct_slot < structs.field_start.count:
+                        field_base: usize = structs.field_start[struct_slot]
+                        field_total: usize = structs.field_count[struct_slot]
+                        for field_offset in 0..<field_total |field_base, depth, structs|:
+                            true return if type_is_or_contains_packed_ast(copied_type(structs.field_types[field_base + field_offset]), depth + 1, structs)
+                return false
+
+        def params_include_packed_ast(param_types: darray[ValueType]&, structs: mutable StructTable&) -> bool can[Abort.Panic]:
+            can Abort.Panic:
+                for param_type in param_types |structs|:
+                    true return if type_is_or_contains_packed_ast(param_type, 0, structs)
+                return false
+
+            # Hidden arena ABI count. Parser AST routines are compiled by stage0 with two
+            # independently threaded arena positions around the packed store (`arena, store,
+            # arena`). The stage1 backend keeps both positions even though the runtime currently
+            # uses the same caller arena for each. Backend routines carry store context only;
+            # their AST handles are store-backed and do not imply a region parameter.
+        def frontend_arena_count(owner: sview, name: sview, signature_wants_arena: bool, wants_store: bool) -> usize can[Abort.Panic]:
+            can Abort.Panic:
+                if owner == "Parser" or (sview_len(name) > 7 and sview_matches_prefix(name, "Parser.", 0, 7)):
+                    return 2 if wants_store else 1
+                return 1 if signature_wants_arena else 0
+
+
+            # The darray ValueType behind `name`, whether it is a local darray or a
+            # `darray[T]&` parameter — Unmodeled when it is neither.
+        def darray_type_behind(local_scope: mutable Scope&, name: sview, structs: mutable StructTable&) -> ValueType can[Abort.Panic]:
+            can Abort.Panic:
+                bound: ValueType = lookup_type(local_scope, name)
+                bound return if bound.kind == TypeKind.DArray
+                unmodeled_type() return if bound.kind != TypeKind.Ref
+                target: ValueType = ref_target_of(bound, structs)
+                target return if target.kind == TypeKind.DArray
+                return unmodeled_type()
+
+
+            # The ADDRESS of the darray header named `name`. A local darray IS its slot; a
+            # `darray[T]&` parameter's slot holds a POINTER to the CALLER's darray, so it takes
+            # one extra load. Every darray operation goes through this so that push/count/index
+            # work identically on a local and on a borrowed one.
+            # The darray type behind an EXPR receiver: a bare Ident (`xs`) or a struct field
+            # holding a darray (`b.items`). Enables container-in-struct ops.
+        def darray_type_behind_expr(object: Expr, local_scope: mutable Scope&, structs: mutable StructTable&) -> ValueType can[Abort.Panic]:
+            can Abort.Panic:
+                match object:
+                    Expr.Ident(darray_name, darray_name_line):
+                        return darray_type_behind(local_scope, darray_name, structs)
+                    _:
+                        pass
+                match object:
+                    Expr.Field(darray_inner, darray_field, darray_field_line):
+                        inner_type: mutable ValueType = struct_chain_type(darray_inner, local_scope, structs)
+                        inner_type <- ref_target_of(inner_type, structs) if inner_type.kind == TypeKind.Ref
+                        if inner_type.kind == TypeKind.Optional:
+                            inner_payload: ValueType = optional_payload_of(inner_type, structs)
+                            inner_type <- ref_target_of(inner_payload, structs) if inner_payload.kind == TypeKind.Ref and ref_is_heap_ref(inner_payload, structs)
+                        inner_type <- arena_user_struct(structs) if inner_type.kind == TypeKind.Arena
+                        unmodeled_type() return if inner_type.kind != TypeKind.Struct
+                        inner_slot: usize = inner_type.bits.usize()
+                        position: i64 = field_index_of(structs, inner_slot, darray_field)
+                        unmodeled_type() return if position < 0
+                        field_type: ValueType = copied_type(structs.field_types[structs.field_start[inner_slot] + position.usize()])
+                        field_type return if field_type.kind == TypeKind.DArray
+                    _:
+                        pass
+                # `m[i]` where `m: darray[darray[T]]` — the indexed element is itself a darray.
+                match object:
+                    Expr.Index(indexed_darray, index_darray_expr, index_darray_line):
+                        indexed_element_type: ValueType = struct_chain_type(object, local_scope, structs)
+                        indexed_element_type return if indexed_element_type.kind == TypeKind.DArray
+                    _:
+                        pass
+                return unmodeled_type()
+
+
+            # The ADDRESS of the darray header behind an EXPR receiver. For a struct field, the
+            # header sits inline, so it is a GEP into the struct's address.
+        def darray_address_of_expr(object: Expr, local_scope: mutable Scope&, fns: FnTable&, structs: mutable StructTable&, generics: mutable GenericTable&, runtime: Runtime&, m: LLVMModuleRef, ctx: LLVMContextRef, builder: LLVMBuilderRef) -> LLVMValueRef? can[Abort.Panic, Memory.Allocate, Unsafe.PointerCast]:
+            can Abort.Panic, Memory.Allocate, Unsafe.PointerCast:
+                match object:
+                    Expr.Ident(darray_name, darray_name_line):
+                        return darray_address_of(local_scope, darray_name, structs, ctx, builder)
+                    _:
+                        pass
+                match object:
+                    Expr.Field(darray_inner, darray_field, darray_field_line):
+                        inner_type: mutable ValueType = struct_chain_type(darray_inner, local_scope, structs)
+                        inner_type <- ref_target_of(inner_type, structs) if inner_type.kind == TypeKind.Ref
+                        if inner_type.kind == TypeKind.Optional:
+                            inner_payload: ValueType = optional_payload_of(inner_type, structs)
+                            inner_type <- ref_target_of(inner_payload, structs) if inner_payload.kind == TypeKind.Ref and ref_is_heap_ref(inner_payload, structs)
+                        inner_type <- arena_user_struct(structs) if inner_type.kind == TypeKind.Arena
+                        null return if inner_type.kind != TypeKind.Struct
+                        inner_slot: usize = inner_type.bits.usize()
+                        position: i64 = field_index_of(structs, inner_slot, darray_field)
+                        null return if position < 0
+                        if struct_chain_address(darray_inner, local_scope, fns, structs, generics, runtime, m, ctx, builder) is inner_address:
+                            return LLVMBuildStructGEP2(builder, llvm_type_of(inner_type, structs, ctx), inner_address, position.u32(), "darray.field.ptr")
+                        return null
+                    _:
+                        pass
+                # `m[i]` where `m: darray[darray[T]]` — the address of the inner darray header is
+                # the address of that element in the outer buffer (nested-index address).
+                match object:
+                    Expr.Index(indexed_darray, index_darray_expr, index_darray_line):
+                        return struct_chain_address(object, local_scope, fns, structs, generics, runtime, m, ctx, builder)
+                    _:
+                        pass
+                # `make_array()[1]` — indexing a RETURNED darray. A call is an rvalue with no
+                # address of its own, so every shape above missed it and the whole expression
+                # declined. stage0 spills the result to a temporary and indexes that
+                # (`%addr.tmp = alloca %DynArray__i32`), which is what this does.
+                match object:
+                    Expr.Call(temp_callee, temp_args, temp_arg_names, temp_call_line):
+                        temp_type: ValueType = expression_type(object, local_scope, fns, structs, generics)
+                        null return if temp_type.kind != TypeKind.DArray
+                        if emit_expression(object, temp_type, local_scope, fns, structs, generics, runtime, m, ctx, builder) is temp_value:
+                            temp_slot: LLVMValueRef = LLVMBuildAlloca(builder, llvm_type_of(temp_type, structs, ctx), "addr.tmp")
+                            _ = LLVMBuildStore(builder, temp_value, temp_slot)
+                            return temp_slot
+                        return null
+                    _:
+                        pass
+                return null
+
+
+        def darray_address_of(local_scope: mutable Scope&, name: sview, structs: mutable StructTable&, ctx: LLVMContextRef, builder: LLVMBuilderRef) -> LLVMValueRef? can[Abort.Panic]:
+            can Abort.Panic:
+                bound: ValueType = lookup_type(local_scope, name)
+                if lookup_slot(local_scope, name) is bound_slot:
+                    bound_slot return if bound.kind == TypeKind.DArray
+                    null return if bound.kind != TypeKind.Ref
+                    null return if ref_target_of(bound, structs).kind != TypeKind.DArray
+                    return LLVMBuildLoad2(builder, LLVMPointerTypeInContext(ctx, 0), bound_slot, "darray.ref")
+                return null
+
+
+            # `darray.pop()` decrements the header count and returns the now-last element.
+            # Keep this as a value lowering rather than relying on a generic runtime symbol:
+            # stage0 monomorphizes `darray_pop[T]`, while a self-hosted stage1 build must be able
+            # to emit the compiler's own `u8`/Token/ValueType pops without an external generic
+            # library object.
+        def emit_darray_pop_value(slot: LLVMValueRef, array_type: ValueType, structs: mutable StructTable&, ctx: LLVMContextRef, builder: LLVMBuilderRef) -> LLVMValueRef? can[Abort.Panic, Memory.Allocate, Unsafe.PointerCast]:
+            element_type: ValueType = darray_element_of(array_type, structs)
+            header: LLVMTypeRef = darray_llvm_type(structs, ctx)
+            count_pointer: LLVMValueRef = LLVMBuildStructGEP2(builder, header, slot, 1, "pop.count.ptr")
+            count: LLVMValueRef = LLVMBuildLoad2(builder, LLVMInt64TypeInContext(ctx), count_pointer, "pop.count")
+            new_count: LLVMValueRef = LLVMBuildSub(builder, count, LLVMConstInt(LLVMInt64TypeInContext(ctx), 1, 0), "pop.new.count")
+            _ = LLVMBuildStore(builder, new_count, count_pointer)
+            items_pointer: LLVMValueRef = LLVMBuildStructGEP2(builder, header, slot, 0, "pop.items.ptr")
+            items: LLVMValueRef = LLVMBuildLoad2(builder, LLVMPointerTypeInContext(ctx, 0), items_pointer, "pop.items")
+            indices: mutable darray[LLVMValueRef] = [new_count]
+            indices_pointer: void& = (&indices[0]).cast[void&] can Unsafe.PointerCast
+            element_pointer: LLVMValueRef = LLVMBuildGEP2(builder, llvm_type_of(element_type, structs, ctx), items, indices_pointer, 1, "pop.element.ptr")
+            return LLVMBuildLoad2(builder, llvm_type_of(element_type, structs, ctx), element_pointer, "pop.value")
+
+
+        def ref_target_of(value_type: ValueType, structs: mutable StructTable&) -> ValueType can[Abort.Panic]:
+            unmodeled_type() return if value_type.kind != TypeKind.Ref
+            return copied_type(structs.ref_targets[value_type.bits.usize()])
+
+
+        # The element type of a `darray[T]`.
+        def darray_element_of(value_type: ValueType, structs: mutable StructTable&) -> ValueType can[Abort.Panic]:
+            unmodeled_type() return if value_type.kind != TypeKind.DArray
+            return copied_type(structs.darray_elements[value_type.bits.usize()])
+
+
+        # The size in BYTES of a scalar type — the stride a darray indexes by. Only scalars
+        # are modeled as darray elements, so this needs no DataLayout query.
+        # The byte stride of a darray/array element as an i64 value. A scalar uses its
+        # known width (a literal, so the fast path stays literal); a STRUCT uses LLVMSizeOf,
+        # which the datalayout resolves -- this is what lets darray[Struct] compute a correct
+        # element size instead of declining.
+        def element_stride(element_type: ValueType, structs: mutable StructTable&, ctx: LLVMContextRef) -> LLVMValueRef can[Abort.Panic]:
+            can Abort.Panic, Memory.Allocate, Unsafe.PointerCast:
+                # Only a true SCALAR has a byte size derivable from its bit width; everything else
+                # — aggregates, fat pointers, opaque handles — must be sized by its LLVM type.
+                #
+                # This deliberately whitelists the SCALARS rather than the aggregates. The previous
+                # form listed the aggregate kinds (Struct/Array/DArray/View) and let the rest fall
+                # through to scalar_byte_size, which returns `bits / 8` — and every non-scalar kind
+                # carries bits == 0, so ANY kind missing from that list silently got **stride 0**:
+                # the container allocated a 0-byte buffer and each push corrupted whatever followed
+                # it in the region. `SView` was missing, so `darray[sview]` did exactly that (two
+                # such literals in one auto-region overwrote each other; it also broke the gen2
+                # self-host). Listing the scalars instead makes the safe branch the default.
+                if element_type.kind == TypeKind.Signed or element_type.kind == TypeKind.Unsigned or element_type.kind == TypeKind.Float or element_type.kind == TypeKind.Bool:
+                    return LLVMConstInt(LLVMInt64TypeInContext(ctx), scalar_byte_size(element_type), 0)
+                return LLVMSizeOf(llvm_type_of(element_type, structs, ctx))
+
+
+        def scalar_byte_size(value_type: ValueType) -> u64:
+            1 return if value_type.kind == TypeKind.Bool
+            return (value_type.bits / 8).u64()
+
+
+        # ---- payload-enum blob sizing -------------------------------------------------
+        #
+        # A payload enum is `{ i32 tag, [N x i64] blob }` and N is NOT the variant's field
+        # count -- it is `ceil(sizeof(payload) / 8)` over stage0's C layout. Measured from
+        # stage0's own `-emit llvm`:
+        #
+        #   Wrap(i: struct{i64,i64})    -> [2 x i64]     Wrap(i: struct{u8,u8}) -> [1 x i64]
+        #   Two(x: u8, y: u8)           -> [1 x i64]     Two(x: u8 * 9)         -> [2 x i64]
+        #
+        # so the two rules coincide only when every field is a full word. These helpers
+        # answer 0 for anything OUTSIDE the scalar-and-scalar-struct subset, and 0 must be
+        # read as "cannot size this" -- never as a zero-length payload. Under-sizing the
+        # blob writes the payload past the end of the enum value, so a caller that cannot
+        # get a nonzero answer has to decline.
+        def payload_type_align(value_type: ValueType, structs: mutable StructTable&) -> u64 can[Abort.Panic]:
+            can Abort.Panic:
+                1 return if value_type.kind == TypeKind.Bool
+                if value_type.kind == TypeKind.Signed or value_type.kind == TypeKind.Unsigned or value_type.kind == TypeKind.Float:
+                    0 return if value_type.bits == 0 or value_type.bits % 8 != 0
+                    return (value_type.bits / 8).u64()
+                # A payload enum is `{i32, [N x i64]}` — the i64 array sets the alignment.
+                8 return if value_type.kind == TypeKind.PayloadEnum
+                # A fixed ARRAY aligns like its element. Missing here (and in the size
+                # function below), an array made every enclosing type UNSIZEABLE, so a payload
+                # enum carrying `i64[N]` — directly or inside a struct — was blanked by
+                # finalize_payload_enum_words and every use of it declined.
+                if value_type.kind == TypeKind.Array:
+                    return payload_type_align(array_element_of(value_type, structs), structs)
+                0 return if value_type.kind != TypeKind.Struct
+                struct_slot: usize = value_type.bits.usize()
+                0 return if struct_slot >= structs.field_start.count
+                widest_align: mutable u64 = 1
+                field_start: usize = structs.field_start[struct_slot]
+                field_count: usize = structs.field_count[struct_slot]
+                0 return if field_count == 0
+                unsized: mutable bool = false
+                for field_index in 0..<field_count |widest_align, unsized, field_start, structs|:
+                    member_align: u64 = payload_type_align(copied_type(structs.field_types[field_start + field_index]), structs)
+                    if member_align == 0:
+                        unsized <- true
+                    elif member_align > widest_align:
+                        widest_align <- member_align
+                0 return if unsized
+                return widest_align
+
+
+        def payload_type_byte_size(value_type: ValueType, structs: mutable StructTable&) -> u64 can[Abort.Panic]:
+            can Abort.Panic:
+                1 return if value_type.kind == TypeKind.Bool
+                if value_type.kind == TypeKind.Signed or value_type.kind == TypeKind.Unsigned or value_type.kind == TypeKind.Float:
+                    0 return if value_type.bits == 0 or value_type.bits % 8 != 0
+                    return (value_type.bits / 8).u64()
+                # A payload enum NESTED as another's payload: `{i32 tag, [N x i64] blob}`, whose
+                # i64 array pads the tag out to a full word. Measured against stage0 — an
+                # `Inner{X(i64), Y}` payload gives the outer `[2 x i64]`, and `X(i64, i64)` gives
+                # `[3 x i64]`, i.e. 8 + N*8.
+                if value_type.kind == TypeKind.PayloadEnum:
+                    penum_slot: usize = value_type.bits.usize()
+                    0 return if penum_slot >= structs.penum_payload_words.count
+                    return 8 + structs.penum_payload_words[penum_slot].u64() * 8
+                if value_type.kind == TypeKind.Array:
+                    array_element: ValueType = array_element_of(value_type, structs)
+                    array_element_size: u64 = payload_type_byte_size(array_element, structs)
+                    0 return if array_element_size == 0
+                    return structs.array_extents[value_type.bits.usize()].u64() * array_element_size
+                0 return if value_type.kind != TypeKind.Struct
+                struct_slot: usize = value_type.bits.usize()
+                0 return if struct_slot >= structs.field_start.count
+                field_start: usize = structs.field_start[struct_slot]
+                field_count: usize = structs.field_count[struct_slot]
+                0 return if field_count == 0
+                # C layout: each member starts at the next multiple of its own alignment, and
+                # the whole aggregate is rounded up to the widest member alignment.
+                offset: mutable u64 = 0
+                widest_align: mutable u64 = 1
+                unsized: mutable bool = false
+                for field_index in 0..<field_count |offset, widest_align, unsized, field_start, structs|:
+                    member_type: ValueType = copied_type(structs.field_types[field_start + field_index])
+                    member_align: u64 = payload_type_align(member_type, structs)
+                    member_size: u64 = payload_type_byte_size(member_type, structs)
+                    if member_align == 0 or member_size == 0:
+                        unsized <- true
+                    else:
+                        offset <- offset + (member_align - (offset % member_align)) if offset % member_align != 0
+                        offset <- offset + member_size
+                        widest_align <- member_align if member_align > widest_align
+                0 return if unsized
+                offset <- offset + (widest_align - (offset % widest_align)) if offset % widest_align != 0
+                return offset
+
+
+            # `ceil(bytes / 8)`, the `[N x i64]` extent. 0 propagates as "cannot size".
+        def payload_type_words(value_type: ValueType, structs: mutable StructTable&) -> u32 can[Abort.Panic]:
+            can Abort.Panic:
+                bytes: u64 = payload_type_byte_size(value_type, structs)
+                0 return if bytes == 0
+                return ((bytes + 7) / 8).u32()
+
+
+            # The element type of an array ValueType.
+        def array_element_of(value_type: ValueType, structs: mutable StructTable&) -> ValueType can[Abort.Panic]:
+            unmodeled_type() return if value_type.kind != TypeKind.Array
+            return copied_type(structs.array_elements[value_type.bits.usize()])
+
+
+        # The index of const enum `name`, or -1.
+        def enum_index_of(structs: mutable StructTable&, name: sview) -> i64 can[Abort.Panic]:
+            for index in 0..<structs.enum_names.count |structs, name|:
+                index.i64() return if structs.enum_names[index] == name
+            return -1
+
+
+        # The VALUE of `variant` in const enum `slot`, or -1 when it is not a member.
+        #
+        # This is what a const-enum member COMPILES TO, and it is not the ordinal: for
+        # `const enum C of int: Lo = 2; Hi = 5` the values are 2 and 5 while the ordinals are
+        # 0 and 1. Everything used enum_ordinal_of, so stage1 answered 10 where stage0
+        # answers 52 — a silent wrong answer. Nothing in src/ or elisacore_std/ has a
+        # const enum whose values differ from its ordinals, so self-hosting could not see it;
+        # it took adversarial differential testing.
+        #
+        # The note below on enum_ordinal_of ("that is what stage0 compares against") was
+        # written when value and ordinal coincided and could not distinguish the two.
+        def enum_value_of(structs: mutable StructTable&, slot: usize, variant: sview) -> i64 can[Abort.Panic]:
+            for offset in 0..<structs.enum_variant_count[slot] |structs, slot, variant|:
+                structs.enum_variant_values[structs.enum_variant_start[slot] + offset] return if structs.enum_variants[structs.enum_variant_start[slot] + offset] == variant
+            return -1
+
+
+        # The ORDINAL of `variant` in const enum `slot`, or -1. Declaration order — use
+        # enum_value_of for the value a member compiles to.
+        def enum_ordinal_of(structs: mutable StructTable&, slot: usize, variant: sview) -> i64 can[Abort.Panic]:
+            for offset in 0..<structs.enum_variant_count[slot] |structs, slot, variant|:
+                offset.i64() return if structs.enum_variants[structs.enum_variant_start[slot] + offset] == variant
+            return -1
+
+
+        # The name of the enum that owns leading-dot shorthand member `.variant`, or "".
+        #
+        # `.Variant` (Expr.ShorthandMember) names its enum from CONTEXT, but a const enum
+        # erases to a plain Signed/Unsigned ValueType -- the scrutinee's type cannot say
+        # which enum it came from. Resolve by variant NAME instead, and only when the answer
+        # is UNAMBIGUOUS: exactly one CONST enum in the program declares a member with this
+        # name. Two enums sharing a member name return "" and the caller declines, exactly as
+        # it did before -- narrower than stage0's contextual typing, but never a WRONG enum.
+        #
+        # CONST enums only, deliberately: stage0 rejects the shorthand anywhere else, with
+        # `shorthand member ".Circle" requires an expected const enum type` (read from its
+        # own -emit llvm output on a payload-enum `is`). An earlier draft also searched the
+        # payload-enum pool; that made `v is .Circle` compile and answer FALSE for a Square
+        # where stage0's -emit obj answered true -- i.e. it turned a decline into a silent
+        # divergence on a form stage0 does not even accept. Payload enums must keep
+        # declining until there is an oracle worth matching.
+        def shorthand_member_enum_name(structs: mutable StructTable&, variant: sview) -> sview can[Abort.Panic]:
+            found: mutable sview = ""
+            matches: mutable i64 = 0
+            for enum_index in 0..<structs.enum_names.count |structs, variant, found, matches|:
+                continue if enum_ordinal_of(structs, enum_index, variant) < 0
+                found <- structs.enum_names[enum_index]
+                matches <- matches + 1
+            "" return if matches != 1
+            return found
+
+
+        # `value[RoutineFlag.Imported]` on a `Flags[T]` — a BIT TEST, not a container read.
+        # Returns the member's ORDINAL, or -1 when this is not that shape. Recognised narrowly:
+        # a struct (or ref to one) with exactly ONE unsigned field named `bits`, indexed by a
+        # CONST-ENUM member. stage0 lowers it inline as `(bits & (1 << ordinal)) != 0` — the
+        # names in its IR (`flags.bits` / `flags.hit` / `flags.has`) say the shape is built into
+        # the compiler rather than user code.
+        def flags_bit_test_ordinal(receiver: ValueType, index_expression: Expr, structs: mutable StructTable&) -> i64 can[Abort.Panic]:
+            fbt_receiver: mutable ValueType = copied_type(receiver)
+            fbt_receiver <- ref_target_of(fbt_receiver, structs) if fbt_receiver.kind == TypeKind.Ref
+            -1 return if fbt_receiver.kind != TypeKind.Struct
+            fbt_slot: usize = fbt_receiver.bits.usize()
+            -1 return if structs.field_count[fbt_slot] != 1.usize()
+            -1 return if structs.field_names[structs.field_start[fbt_slot]] != "bits"
+            fbt_field: ValueType = copied_type(structs.field_types[structs.field_start[fbt_slot]])
+            -1 return if fbt_field.kind != TypeKind.Unsigned
+            # Both spellings are read directly rather than through
+            # resolved_shorthand_member: that helper BUILDS an Expr and so is
+            # region-polymorphic, which a plain i64-returning query cannot call.
+            match index_expression:
+                Expr.Field(fbt_head, fbt_variant, fbt_variant_line):
+                    match fbt_head:
+                        Expr.Ident(fbt_enum_name, fbt_enum_line):
+                            fbt_enum: i64 = enum_index_of(structs, fbt_enum_name)
+                            enum_ordinal_of(structs, fbt_enum.usize(), fbt_variant) return if fbt_enum >= 0
+                        _:
+                            pass
+                _:
+                    pass
+            match index_expression:
+                Expr.ShorthandMember(fbt_parts, fbt_short_line):
+                    if fbt_parts.count == 1:
+                        fbt_short_enum: sview = shorthand_member_enum_name(structs, fbt_parts[0])
+                        if fbt_short_enum != "":
+                            fbt_short_index: i64 = enum_index_of(structs, fbt_short_enum)
+                            enum_ordinal_of(structs, fbt_short_index.usize(), fbt_parts[0]) return if fbt_short_index >= 0
+                _:
+                    pass
+            return -1
+
+
+        # Rewrite a leading-dot shorthand `.Variant` into the equivalent `Enum.Variant`
+        # Field expression, so paths that only know the qualified spelling can emit it
+        # unchanged. Returns the expression untouched when it is not a shorthand, or when
+        # the owning enum is ambiguous/unknown (the caller then declines exactly as before).
+        def resolved_shorthand_member(expression: Expr, structs: mutable StructTable&) -> Expr can[Abort.Panic]:
+            match expression:
+                Expr.ShorthandMember(rsm_parts, rsm_line):
+                    if rsm_parts.count == 1:
+                        rsm_enum: sview = shorthand_member_enum_name(structs, rsm_parts[0])
+                        if rsm_enum != "":
+                            return (Expr.Field((Expr.Ident(rsm_enum, rsm_line)), rsm_parts[0], rsm_line))
+                _:
+                    pass
+            return expression
+
+
+        # Rewrite an UNQUALIFIED const-enum member (`IDENT` in `kind in {.IF..=IDENT}`) into
+        # `Enum.IDENT`. Only the SECOND bound of a range is ever written this way -- the first
+        # carries the leading dot -- and stage0 resolves it from the range's element type.
+        #
+        # Two guards keep it from claiming ordinary identifiers: the name must NOT be a local
+        # in scope (a range over variables, `x in {lo..=hi}`, must stay as it is), and exactly
+        # ONE const enum must declare a member with that name. Anything else is returned
+        # untouched and the caller declines exactly as before.
+        def resolved_bare_enum_member(expression: Expr, local_scope: mutable Scope&, structs: mutable StructTable&) -> Expr can[Abort.Panic]:
+            match expression:
+                Expr.Ident(rbm_name, rbm_line):
+                    if lookup_type(local_scope, rbm_name).kind == TypeKind.Unmodeled:
+                        rbm_enum: sview = shorthand_member_enum_name(structs, rbm_name)
+                        if rbm_enum != "":
+                            return (Expr.Field((Expr.Ident(rbm_enum, rbm_line)), rbm_name, rbm_line))
+                _:
+                    pass
+            return expression
+
+
+        # `.INTEGER` inside a PATTERN is `Pattern.Variant(".INTEGER", [])` -- the parser keeps
+        # the leading dot. Rebuild it as the equivalent `Enum.INTEGER` Field EXPRESSION.
+        #
+        # The member name is never sliced out of the path: the path is compared against each
+        # registered variant from OFFSET 1 (past the dot), and the TABLE's own copy of the
+        # name is what goes into the rebuilt expression. Ambiguity answers null.
+        def shorthand_pattern_as_expr(path: sview, structs: mutable StructTable&, line: u32) -> Expr? can[Abort.Panic, Memory.Allocate]:
+            null return if sview_len(path) == 0.usize()
+            # The parser consumes the dot before recording the path, so `.INTEGER` arrives as
+            # "INTEGER" -- but a dotted spelling can reach here too. Compare past the dot when
+            # there is one; never slice the sview, since nothing else in this backend does.
+            skip: i64 = 1 if sview_at(path, 0.usize()) == 46 else 0
+            found_enum: mutable sview = ""
+            found_variant: mutable sview = ""
+            matches: mutable i64 = 0
+            for enum_index in 0..<structs.enum_names.count |found_enum, found_variant, matches, path, structs|:
+                for offset in 0..<structs.enum_variant_count[enum_index] |found_enum, found_variant, matches, path, structs, enum_index|:
+                    variant: sview = structs.enum_variants[structs.enum_variant_start[enum_index] + offset]
+                    if sview_matches_prefix(path, variant, skip, sview_len(path).i64()):
+                        found_enum <- structs.enum_names[enum_index]
+                        found_variant <- variant
+                        matches <- matches + 1
+            null return if matches != 1
+            return (Expr.Field((Expr.Ident(found_enum, Ast::pos_at_line(line))), found_variant, Ast::pos_at_line(line)))
+
+
+        # Rebuild a STRUCT PATTERN as the equivalent `is`-test EXPRESSION:
+        # `Token(kind: .INTEGER, span: Span(start: start), value: value)`. The `is` emitter
+        # already lowers that spelling completely -- tag tests, nested struct fields and payload
+        # bindings -- so a match arm carrying such a pattern can be rewritten into an `if ... is`
+        # instead of growing a second struct-matching engine in the match path.
+        #
+        # Answers null for any sub-pattern outside the rebuildable subset, and the caller then
+        # keeps its existing behaviour.
+        def struct_pattern_as_expr(pattern: Pattern, structs: mutable StructTable&, line: u32) -> Expr? can[Abort.Panic, Memory.Allocate]:
+            if pattern is Pattern.Binding(spe_bound):
+                return (Expr.Ident(spe_bound, Ast::pos_at_line(line)))
+            if pattern is Pattern.Variant(spe_path, spe_variant_fields):
+                # A PARENTHESISED struct pattern (`Token(kind: .INTEGER, …)`) parses as a
+                # VARIANT with Field sub-patterns, not as Pattern.Struct -- that spelling is
+                # the BRACE form. Both rebuild to the same labelled call.
+                if spe_variant_fields.count != 0:
+                    return struct_pattern_fields_as_call(spe_path, spe_variant_fields, structs, line)
+                return shorthand_pattern_as_expr(spe_path, structs, line)
+            if pattern is Pattern.Struct(spe_struct_path, spe_fields):
+                return struct_pattern_fields_as_call(spe_struct_path, spe_fields, structs, line)
+            # An INTEGER literal field test (`Block{tag: 1}`) — the field is compared, not
+            # bound. Rebuilt as the literal so the `is` emitter's labelled-call path tests it
+            # exactly as the hand-written `b is Block(tag: 1)` spelling, which already worked.
+            # Only integer text: a string or char field test needs a different literal node and
+            # declines here rather than being rebuilt as a number.
+            if pattern is Pattern.Literal(spe_literal_text):
+                null return if sview_len(spe_literal_text) == 0
+                spe_first: u8 = sview_at(spe_literal_text, 0)
+                null return if not (spe_first >= 48 and spe_first <= 57) and spe_first != 45
+                spe_literal_value: mutable i64 = 0
+                null return if not parse_pattern_scalar(spe_literal_text, spe_literal_value)
+                return (Expr.IntLit(spe_literal_value))
+            return null
+
+
+        # A stable synthetic name for payload position `index` of an `expect` variant shape.
+        # Fixed spellings rather than a formatted string: the backend has no cheap sview
+        # formatting, and a variant with more payload fields than this simply declines.
+        def expect_payload_binder_name(index: usize) -> sview:
+            "__expect_p0" return if index == 0.usize()
+            "__expect_p1" return if index == 1.usize()
+            "__expect_p2" return if index == 2.usize()
+            "__expect_p3" return if index == 3.usize()
+            "__expect_p4" return if index == 4.usize()
+            "__expect_p5" return if index == 5.usize()
+            return ""
+
+
+        # The boolean test an `expect VALUE as SHAPE` denotes, built structurally over the
+        # pattern. Only TESTS -- the `expect` emitter declines any binding form before calling
+        # this, so every leaf is a literal, a wildcard or a rest.
+        #
+        # stage0's IR for `expect block as {stmts: [1, 2, ...]}` is exactly this conjunction:
+        # extract the field, GEP element 0 and compare it to 1, GEP element 1 and compare it
+        # to 2, and check nothing past the rest.
+        def expect_shape_test(subject: Expr, pattern: Pattern, structs: mutable StructTable&, line: u32) -> Expr? can[Abort.Panic, Memory.Allocate]:
+            if pattern is Pattern.Wildcard:
+                return (Expr.BoolLit(true))
+            if pattern is Pattern.Rest(est_rest_name):
+                return (Expr.BoolLit(true))
+            if pattern is Pattern.Literal(est_text):
+                null return if sview_len(est_text) == 0
+                est_first: u8 = sview_at(est_text, 0)
+                null return if not (est_first >= 48 and est_first <= 57) and est_first != 45
+                est_value: mutable i64 = 0
+                null return if not parse_pattern_scalar(est_text, est_value)
+                return (Expr.Binary(subject, TokenKind.EqEq, (Expr.IntLit(est_value)), Ast::pos_at_line(line)))
+            if pattern is Pattern.Struct(est_path, est_fields):
+                est_struct_test: mutable Expr = (Expr.BoolLit(true))
+                est_struct_ok: mutable bool = true
+                for est_field in est_fields |est_struct_test, est_struct_ok, subject, structs, line|:
+                    continue if not est_struct_ok
+                    if est_field is Pattern.Field(est_selector, est_inner):
+                        if est_inner.count != 1 or est_selector == "":
+                            est_struct_ok <- false
+                        elif expect_shape_test((Expr.Field(subject, est_selector, Ast::pos_at_line(line))), est_inner[0], structs, line) is est_sub:
+                            est_struct_test <- (Expr.Binary(est_struct_test, TokenKind.And, est_sub, Ast::pos_at_line(line)))
+                        else:
+                            est_struct_ok <- false
+                    else:
+                        est_struct_ok <- false
+                null return if not est_struct_ok
+                return est_struct_test
+            if pattern is Pattern.Tuple(est_elements):
+                est_list_test: mutable Expr = (Expr.BoolLit(true))
+                est_list_ok: mutable bool = true
+                est_position: mutable i64 = 0
+                est_stopped: mutable bool = false
+                for est_element in est_elements |est_list_test, est_list_ok, est_position, est_stopped, subject, structs, line|:
+                    continue if not est_list_ok or est_stopped
+                    # A rest tail ends the checking: nothing after it is constrained.
+                    if est_element is Pattern.Rest(est_tail_name):
+                        est_stopped <- true
+                    elif expect_shape_test((Expr.Index(subject, (Expr.IntLit(est_position)), Ast::pos_at_line(line))), est_element, structs, line) is est_item:
+                        est_list_test <- (Expr.Binary(est_list_test, TokenKind.And, est_item, Ast::pos_at_line(line)))
+                        est_position <- est_position + 1
+                    else:
+                        est_list_ok <- false
+                null return if not est_list_ok
+                return est_list_test
+            return null
+
+
+        # The shared tail of the two struct-pattern spellings: labelled fields to a labelled
+        # call on the type name.
+        def struct_pattern_fields_as_call(path: sview, fields: darray[Pattern], structs: mutable StructTable&, line: u32) -> Expr? can[Abort.Panic, Memory.Allocate]:
+            null return if fields.count == 0
+            spc_args: mutable darray[Expr] = []
+            spc_labels: mutable darray[sview] = []
+            spc_ok: mutable bool = true
+            for spc_field in fields |spc_args, spc_labels, spc_ok, structs, line|:
+                continue if not spc_ok
+                if spc_field is Pattern.Field(spc_selector, spc_inner):
+                    if spc_inner.count != 1:
+                        spc_ok <- false
+                    elif struct_pattern_as_expr(spc_inner[0], structs, line) is spc_sub:
+                        spc_labels.push(spc_selector)
+                        spc_args.push(spc_sub)
+                    else:
+                        spc_ok <- false
+                else:
+                    spc_ok <- false
+            null return if not spc_ok
+            return (Expr.Call((Expr.Ident(path, Ast::pos_at_line(line))), spc_args, spc_labels, Ast::pos_at_line(line)))
+
+
+        # Is this loop-filter expression a BARE VARIANT PATTERN (`where Enum.Variant(a, b)`)
+        # rather than a boolean predicate? Such a filter BINDS its arguments as payload
+        # names, so it cannot be emitted as an ordinary condition -- the loop desugaring in
+        # codegen_stmt_loops uses this to decline it instead of testing a "condition" that
+        # is really a pattern.
+        #
+        # Same shape test the semantic layer's is_bare_pattern_filter applies (dotted callee,
+        # all-bare-Ident arguments); duplicated because the two layers share no helpers.
+        # A BARE VARIANT filter with no binder list -- `for item in items where Expr.Int:`.
+        # Its sibling above requires a CALL (`where Expr.Int(value)`), so the payload-free
+        # spelling parses as a plain Field and was treated as a boolean condition, which an
+        # enum variant is not.
+        #
+        # Resolved against the TABLES, not by shape: `where item.enabled` is the same Field
+        # node, and rewriting that into an `is` test would break an ordinary boolean filter.
+        # Only a head naming a real enum, with a field naming one of ITS variants, qualifies.
+        # The STORE named by an `X in STORE is PATTERN` test inside a condition, or "". The
+        # store must stay ACTIVE for the guarded body: `if node in frozen is Expr.Wrap(child):`
+        # then `child.span` reads a common, and a common read needs an active store. The
+        # condition activates it only for its own emission.
+        def condition_in_store_name(condition: Expr) -> sview can[Abort.Panic, Memory.Allocate]:
+            match condition:
+                Expr.Binary(cis_left, cis_operator, cis_right, cis_line):
+                    if cis_operator == TokenKind.Is:
+                        match cis_left:
+                            Expr.Binary(cis_node, cis_in_operator, cis_store, cis_in_line):
+                                if cis_in_operator == TokenKind.In:
+                                    match cis_store:
+                                        Expr.Ident(cis_store_name, cis_store_name_line):
+                                            return cis_store_name
+                                        _:
+                                            pass
+                            _:
+                                pass
+                    # An `and`-chain may carry the test in either half.
+                    if cis_operator == TokenKind.And:
+                        cis_from_left: sview = condition_in_store_name(cis_left)
+                        cis_from_left return if cis_from_left != ""
+                        return condition_in_store_name(cis_right)
+                _:
+                    pass
+            match condition:
+                Expr.Paren(cis_inner, cis_paren_line):
+                    return condition_in_store_name(cis_inner)
+                _:
+                    pass
+            return ""
+
+
+        def is_bare_variant_filter_expr(expression: Expr, structs: mutable StructTable&) -> bool can[Abort.Panic]:
+            match expression:
+                Expr.Field(bvf_head, bvf_variant, bvf_line):
+                    match bvf_head:
+                        Expr.Ident(bvf_enum, bvf_enum_line):
+                            bvf_penum: i64 = penum_index_of(structs, bvf_enum)
+                            return true if bvf_penum >= 0 and penum_variant_index(structs, bvf_penum, bvf_variant) >= 0
+                            bvf_plain: i64 = enum_index_of(structs, bvf_enum)
+                            return bvf_plain >= 0 and enum_value_of(structs, bvf_plain.usize(), bvf_variant) >= 0
+                        _:
+                            pass
+                _:
+                    pass
+            return false
+
+
+        def is_bare_pattern_filter_expr(expression: Expr) -> bool can[Abort.Panic]:
+            match expression:
+                Expr.Call(bpf_callee, bpf_arguments, bpf_argument_names, bpf_line):
+                    match bpf_callee:
+                        Expr.Field(bpf_head, bpf_variant, bpf_field_line):
+                            match bpf_head:
+                                Expr.Ident(bpf_enum, bpf_enum_line):
+                                    return false if bpf_arguments.count == 0
+                                    for bpf_argument in bpf_arguments:
+                                        bare_argument: mutable bool = false
+                                        match bpf_argument:
+                                            Expr.Ident(bpf_bare_name, bpf_bare_line):
+                                                bare_argument <- true
+                                            _:
+                                                pass
+                                        return false if not bare_argument
+                                    return true
+                                _:
+                                    pass
+                        _:
+                            pass
+                _:
+                    pass
+            return false
+
+
+        # Normalise a PARENTHESISED struct pattern (`Token(kind: .INTEGER, value: v)`) into
+        # the brace spelling (`Token{kind: .INTEGER, value: v}`). The paren form parses as an
+        # ordinary CALL with argument LABELS, so every struct-pattern path that matches
+        # Expr.Construct missed it entirely.
+        #
+        # Gated on the callee naming a STRUCT and EVERY argument carrying a label: an
+        # unlabelled `f(x)` is a real call, and a partially-labelled one is not a pattern
+        # shape this models. Anything else passes through untouched.
+        def normalized_struct_pattern(expression: Expr, structs: mutable StructTable&) -> Expr can[Abort.Panic, Memory.Allocate]:
+            match expression:
+                Expr.Call(nsp_callee, nsp_arguments, nsp_argument_names, nsp_line):
+                    match nsp_callee:
+                        Expr.Ident(nsp_name, nsp_name_line):
+                            if struct_index_of(structs, nsp_name) >= 0 and nsp_arguments.count > 0 and nsp_arguments.count == nsp_argument_names.count:
+                                for nsp_argument_name in nsp_argument_names:
+                                    expression return if nsp_argument_name == ""
+                                nsp_fields: mutable darray[Ast::FieldInit] = []
+                                for nsp_index in 0..<nsp_arguments.count |nsp_fields, nsp_arguments, nsp_argument_names|:
+                                    nsp_fields.push(Ast::FieldInit{name: nsp_argument_names[nsp_index], value: nsp_arguments[nsp_index]})
+                                return (Expr.Construct((Expr.Ident(nsp_name, nsp_name_line)), nsp_fields, nsp_line))
+                        _:
+                            pass
+                _:
+                    pass
+            return expression
+
+
+        # An EXACT (owner, name) lookup. "" is the top-level owner.
+        def struct_index_of_in(structs: mutable StructTable&, owner: sview, name: sview) -> i64 can[Abort.Panic]:
+            for index in 0..<structs.names.count |structs, name, owner|:
+                if structs.names[index] == name and struct_owner_at(structs, index) == owner:
+                    return index.i64()
+            return -1
+
+
+        # The owner recorded for row `index`. Reads defensively rather than indexing
+        # blind: `owners` is index-parallel with `names`, and a registration site that
+        # forgot to grow it would otherwise be an out-of-bounds read rather than a
+        # missing owner. Every site does grow it; this is what makes that checkable.
+        def struct_owner_at(structs: mutable StructTable&, index: usize) -> sview can[Abort.Panic]:
+            return "" if index >= structs.owners.count
+            return structs.owners[index]
+
+
+        # The registry index of struct `name`, or -1.
+        #
+        # Resolved the way a name written at a use site means: the ENCLOSING module first,
+        # then a top-level struct, and only then any module's -- which is what a bare name
+        # outside every module used to mean and stays meaning, so nothing that compiled
+        # before declines now.
+        def struct_index_of(structs: mutable StructTable&, name: sview) -> i64 can[Abort.Panic]:
+            if structs.current_owner != "":
+                owned: i64 = struct_index_of_in(structs, structs.current_owner, name)
+                owned return if owned >= 0
+            top_level: i64 = struct_index_of_in(structs, "", name)
+            top_level return if top_level >= 0
+            for index in 0..<structs.names.count |structs, name|:
+                index.i64() return if structs.names[index] == name
+            return -1
+
+
+        # The position of `field` within struct `struct_index`, or -1. This IS the LLVM
+        # element index: fields are emitted in declaration order.
+        def field_index_of(structs: mutable StructTable&, struct_index: usize, field: sview) -> i64 can[Abort.Panic]:
+            for offset in 0..<structs.field_count[struct_index] |structs, struct_index, field|:
+                offset.i64() return if structs.field_names[structs.field_start[struct_index] + offset] == field
+            return -1
+
+
+        # The runtime entry points a darray needs, plus the current function's auto
+        # region. Declared once per module and threaded down, because `push` can appear
+        # anywhere an expression can.
+        #
+        # `arena` is the function's AUTO REGION: stage0 gives every function one, zeroed,
+        # with strategy 2 (lazy), and `arena_free`s it on every return path. That is the
+        # first real piece of Elisa's region model in this backend — container backing
+        # lives in a region, not in malloc.
+        struct Runtime:
+            disjoint_param_slots: mutable darray[LLVMValueRef]
+            disjoint_param_indices: mutable darray[u32]
+            disjoint_element_ptrs: mutable darray[LLVMValueRef]
+            disjoint_element_indices: mutable darray[u32]
+            # Active per-function disjoint scope state. The slot arrays are rebuilt for
+            # each body so element GEPs can be associated with their source parameter.
+            disjoint_function_name: mutable sview
+            # `arena` is per-FUNCTION (each gets its own auto region), so it is the one
+            # mutable field: the module-level Runtime carries a placeholder that
+            # emit_function_body replaces with the function's own region slot.
+            arena: mutable LLVMValueRef
+            arena_alloc: LLVMValueRef
+            arena_realloc: LLVMValueRef
+            arena_free: LLVMValueRef
+            arena_alloc_type: LLVMTypeRef
+            arena_realloc_type: LLVMTypeRef
+            arena_free_type: LLVMTypeRef
+            # `region r(4096):` — a region with an explicit CAPACITY gets its backing up
+            # front from the runtime (`call ptr @new_region_backend(i64 4096, i64 0)`)
+            # instead of the lazy strategy an auto region uses.
+            new_region_backend: LLVMValueRef
+            new_region_backend_type: LLVMTypeRef
+            # The AoS store's runtime entry points. The store is RUNTIME-CALL based rather
+            # than open-coded, which is why porting it is declaring these and calling them.
+            packed_state_new: LLVMValueRef
+            packed_state_new_type: LLVMTypeRef
+            packed_alloc: LLVMValueRef
+            packed_alloc_type: LLVMTypeRef
+            packed_alloc_result_type: LLVMTypeRef
+            packed_read_tag: LLVMValueRef
+            packed_read_tag_type: LLVMTypeRef
+            packed_read_word: LLVMValueRef
+            packed_read_word_type: LLVMTypeRef
+            packed_record_prefix: LLVMValueRef
+            packed_record_prefix_type: LLVMTypeRef
+            # The store an `in store:` block made ACTIVE, and which packed enum it stores
+            # (-1 = none). Threaded on Runtime for the same reason `arena` is: a packed
+            # constructor names no store, it uses whichever one is in scope. stage0 is
+            # explicit that this is required, not implicit -- "packed enum constructor
+            # Node.Leaf requires an active in Node.Store: scope".
+            active_store: mutable LLVMValueRef
+            active_store_enum: mutable i64
+            # When the current function returns an error union: the leading `ptr` out-param
+            # (the T value is stored through it) and a flag. A `return x` then stores x to
+            # the out-param and returns `i32 0`; a `raise` returns `i32 (ordinal + 1)`.
+            error_out: mutable LLVMValueRef
+            # `cstr == cstr` / `!=` lower to `ctx_streq(a, b)` (i64, nonzero = equal), the
+            # same content comparison stage0 emits — NOT a pointer compare.
+            streq: LLVMValueRef
+            streq_type: LLVMTypeRef
+            # `sview == sview` / `!=` lower to `ctx_string_views_eq(a, b)` (i64, nonzero =
+            # equal), taking two `%StringView` values BY VALUE.
+            sview_eq: LLVMValueRef
+            sview_eq_type: LLVMTypeRef
+            # `sview[i]` lowers to `ctx_string_view_index(sv, i)` (i64 byte), the view passed
+            # BY VALUE.
+            sview_index: LLVMValueRef
+            sview_index_type: LLVMTypeRef
+            # DWARF. A variable DIE only reaches the object when a DECLARE record ties it to
+            # its storage, so these must be available AT the alloca -- carried on Runtime
+            # (already threaded everywhere) rather than in a separate later pass.
+            # `debug_active` is false for a `-g`-less build, where every declare is skipped.
+            debug_builder: mutable LLVMDIBuilderRef
+            debug_file: mutable LLVMMetadataRef
+            # Optional stage0-compatible execution trace hook. The runtime owns the ring
+            # buffer; the backend only supplies the current function and source line.
+            trace_record: LLVMValueRef
+            trace_record_type: LLVMTypeRef
+            trace_record_value: LLVMValueRef
+            trace_record_value_type: LLVMTypeRef
+            trace_name: mutable LLVMValueRef
+            # The stage0 trace runtime installs the optional SIGSEGV/SIGBUS referee
+            # lazily. The backend calls its idempotent entry point when trace emission is
+            # enabled so fault-time records use the same ring as ordinary steps.
+            trace_fault_install: LLVMValueRef
+            trace_fault_install_type: LLVMTypeRef
+            disjoint_function_mask: mutable u64
+            packed_mode: i32
+            # True when active_store came from a REAL store (an `in store:` block, a store
+            # PARAMETER, a `new[store]` selector, a match/is scrutinee). False for the
+            # SYNTHETIC store installed at main's entry, which holds no nodes -- a
+            # common-field read that trusted it answered from an empty store (`frozen[1]`
+            # bound to a local then read gave 2 where stage0 says 6).
+            active_store_is_block: mutable bool
+            # False when `arena` is the CALLER's, handed over as the implicit trailing
+            # parameter. Freeing it then would destroy a region this function does not own
+            # and the caller is still using -- so every arena_free is gated on this.
+            owns_arena: mutable bool
+            fast_math: mutable bool
+            force_bounds_check: bool
+            in_error_fn: mutable bool
+            # The enclosing error function's declaration LINE, so `raise` can look up WHICH
+            # error set it must build. Meaningful only while in_error_fn.
+            error_fn_line: mutable u32 = 0
+            # The enclosing function's declared RETURN type. The expression emitters have no
+            # statement context (no loops/regions/return_type), so a form that has to emit a
+            # `return` from inside an expression — a `catch` arm that terminates rather than
+            # yielding — had no type to emit the returned value at. Defaulted, so a partial
+            # Runtime literal stays valid.
+            fn_return_type: mutable ValueType = unmodeled_type()
+            debug_active: mutable bool
+            trace_enabled: mutable bool
+
+
+        # LLVM function and aggregate types shared by the runtime declarations. Keeping
+        # this ABI construction separate from the Runtime value assembly makes the
+        # self-hosted backend's declaration pass small enough to lower independently.
+        struct RuntimeTypes:
+            pointer: LLVMTypeRef
+            alloc: LLVMTypeRef
+            realloc: LLVMTypeRef
+            free: LLVMTypeRef
+            backend: LLVMTypeRef
+            state_new: LLVMTypeRef
+            alloc_result: LLVMTypeRef
+            packed_alloc: LLVMTypeRef
+            read_tag: LLVMTypeRef
+            read_word: LLVMTypeRef
+            record_prefix: LLVMTypeRef
+            streq: LLVMTypeRef
+            sview: LLVMTypeRef
+            sview_eq: LLVMTypeRef
+            sview_index: LLVMTypeRef
+            trace: LLVMTypeRef
+            trace_value: LLVMTypeRef
+            trace_fault_install: LLVMTypeRef
+
+
+        struct RuntimeCoreTypes:
+            pointer: LLVMTypeRef
+            alloc: LLVMTypeRef
+            realloc: LLVMTypeRef
+            free: LLVMTypeRef
+            backend: LLVMTypeRef
+            state_new: LLVMTypeRef
+            alloc_result: LLVMTypeRef
+            packed_alloc: LLVMTypeRef
+            read_tag: LLVMTypeRef
+            read_word: LLVMTypeRef
+            record_prefix: LLVMTypeRef

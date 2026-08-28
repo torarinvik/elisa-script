@@ -1,0 +1,371 @@
+# Callee `requires` precondition, provably-false via struct-literal field constants. A caller that
+# binds a local to a struct literal with constant fields (`v: AbiView = AbiView{size: 64, ...}`) and
+# then calls a function whose `requires` predicate — over the callee's parameters and their `.field`s
+# combined with integer arithmetic — evaluates to FALSE under those constants gets flagged: stage0
+# reports "precondition of ... requires ... could not be proven statically". SOUND subset: fires only
+# when every referenced term resolves to a tracked integer constant and the comparison is definitely
+# false. A struct local that is reassigned, has a field mutated, or is address-of/moved anywhere in
+# the body is NOT tracked (a sound miss).
+extend Semantic:
+    private:
+        # A caller-scope constant: an integer literal, a const-tracked scalar local, or an arithmetic
+        # combination of those (+,-,*,/,% with guarded division).
+        def psc_caller_value(argument: Ast::Expr, sc_names: darray[sview]&, sc_vals: darray[i64]&, sf_local: darray[sview]&, sf_field: darray[sview]&, sf_val: darray[i64]&) -> (found: bool, value: i64):
+            can Memory.Allocate, Abort.Panic:
+                literal: (found: bool, value: i64) = where_signed_literal(argument)
+                literal return if literal.found
+                match argument:
+                    Expr.Paren(inner, paren_line):
+                        return psc_caller_value(inner, sc_names, sc_vals, sf_local, sf_field, sf_val)
+                    Expr.Ident(name, ident_line):
+                        probe: mutable usize = 0
+                        found: mutable bool = false
+                        value: mutable i64 = 0
+                        while probe < sc_names.count |probe, found, value, name, sc_names, sc_vals|:
+                            if sc_names[probe] == name:
+                                found <- true
+                                value <- sc_vals[probe]
+                            probe <- probe + 1
+                        return (found, value)
+                    Expr.Field(object, field, field_line):
+                        # A caller-scope `s.field` reads the tracked struct-field constant.
+                        local: sview = ident_name_of(object)
+                        psc_field_value(local, field, sf_local, sf_field, sf_val) return if local != ""
+                        return (false, 0)
+                    Expr.Binary(left, operator, right, binary_line):
+                        l: (found: bool, value: i64) = psc_caller_value(left, sc_names, sc_vals, sf_local, sf_field, sf_val)
+                        r: (found: bool, value: i64) = psc_caller_value(right, sc_names, sc_vals, sf_local, sf_field, sf_val)
+                        (false, 0) return if not l.found or not r.found
+                        return psc_fold(l.value, operator, r.value)
+                    _:
+                        return (false, 0)
+
+        # Fold `a <op> b` for integer arithmetic operators, else not-found.
+        def psc_fold(a: i64, operator: TokenKind, b: i64) -> (found: bool, value: i64):
+            can Abort.Panic:
+                (true, a + b) return if operator == TokenKind.Plus
+                (true, a - b) return if operator == TokenKind.Minus
+                (true, a * b) return if operator == TokenKind.Star
+                (true, a / b) return if operator == TokenKind.Slash and b != 0
+                (true, a % b) return if operator == TokenKind.Percent and b != 0
+                return (false, 0)
+
+        # The index of `name` in `params`, or -1.
+        def psc_param_slot(params: darray[sview]&, name: sview) -> i64:
+            can Abort.Panic:
+                probe: mutable usize = 0
+                slot: mutable i64 = -1
+                while probe < params.count |probe, slot, name, params|:
+                    slot <- probe.i64() if name != "" and params[probe] == name and slot < 0
+                    probe <- probe + 1
+                return slot
+
+        # The constant a `local.field` resolves to via the struct-field table, or not-found.
+        def psc_field_value(local: sview, field: sview, sf_local: darray[sview]&, sf_field: darray[sview]&, sf_val: darray[i64]&) -> (found: bool, value: i64):
+            can Abort.Panic:
+                probe: mutable usize = 0
+                found: mutable bool = false
+                value: mutable i64 = 0
+                while probe < sf_local.count |probe, found, value, local, field, sf_local, sf_field, sf_val|:
+                    if sf_local[probe] == local and sf_field[probe] == field:
+                        found <- true
+                        value <- sf_val[probe]
+                    probe <- probe + 1
+                return (found, value)
+
+        # `BASE.FIELD` decomposition of a field-access expression (BASE a plain ident), else not-ok.
+        def psc_field_of(expression: Ast::Expr) -> (ok: bool, base: sview, field: sview):
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Field(object, field, field_line):
+                        base: sview = ident_name_of(object)
+                        (true, base, field) return if base != ""
+                    _:
+                        pass
+                return (false, sview("", 0, 0), sview("", 0, 0))
+
+        # Does any statement write `X.field` for ANY base (poisons a callee summary)?
+        def psc_field_written_anybase(statements: darray[Ast::Stmt], field: sview) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements:
+                    match statement:
+                        Stmt.Assign(target, operator, value, line):
+                            tf: (ok: bool, base: sview, field: sview) = psc_field_of(target)
+                            true return if tf.ok and tf.field == field
+                        Stmt.If(condition, then_body, else_body, if_line):
+                            true return if psc_field_written_anybase(then_body, field)
+                            true return if psc_field_written_anybase(else_body, field)
+                        Stmt.While(while_condition, while_body, while_line):
+                            true return if psc_field_written_anybase(while_body, field)
+                        Stmt.For(bind, variables, iterable, for_body, for_line):
+                            true return if psc_field_written_anybase(for_body, field)
+                        Stmt.Block(block_kind, clause, binding, block_body, block_line):
+                            true return if psc_field_written_anybase(block_body, field)
+                        _:
+                            pass
+                return false
+
+        # Summarize a callee's NET effect on `field`: does it write it, is it unknown (conditional /
+        # non-constant write => poisoned), and the last unconditional constant value written.
+        def psc_summarize_field(statements: darray[Ast::Stmt], field: sview) -> (writes: bool, poisoned: bool, value: i64):
+            can Memory.Allocate, Abort.Panic:
+                writes: mutable bool = false
+                poisoned: mutable bool = false
+                value: mutable i64 = 0
+                for statement in statements |writes, poisoned, value|:
+                    match statement:
+                        Stmt.Assign(target, operator, assign_value, line):
+                            tf: (ok: bool, base: sview, field: sview) = psc_field_of(target)
+                            if tf.ok and tf.field == field and operator == TokenKind.LArrow:
+                                writes <- true
+                                cv: (found: bool, value: i64) = where_signed_literal(assign_value)
+                                poisoned <- true if not cv.found
+                                value <- cv.value if cv.found
+                        Stmt.If(condition, then_body, else_body, if_line):
+                            if psc_field_written_anybase(then_body, field) or psc_field_written_anybase(else_body, field):
+                                writes <- true
+                                poisoned <- true
+                        Stmt.While(while_condition, while_body, while_line):
+                            if psc_field_written_anybase(while_body, field):
+                                writes <- true
+                                poisoned <- true
+                        Stmt.For(bind, variables, iterable, for_body, for_line):
+                            if psc_field_written_anybase(for_body, field):
+                                writes <- true
+                                poisoned <- true
+                        _:
+                            pass
+                return (writes, poisoned, value)
+
+        # The ident whose address/move is taken by `&x` / `move x`, else "".
+        def psc_ref_target(argument: Ast::Expr) -> sview:
+            can Memory.Allocate, Abort.Panic:
+                match argument:
+                    Expr.Unary(operator, operand, unary_line):
+                        return ident_name_of(operand)
+                    Expr.Move(operand, move_line):
+                        return ident_name_of(operand)
+                    Expr.Paren(inner, paren_line):
+                        return psc_ref_target(inner)
+                    _:
+                        return sview("", 0, 0)
+
+        # Set / update a tracked struct-field constant (dropping any prior entry for local.field).
+        def psc_set_field(sf_local: mutable darray[sview]&, sf_field: mutable darray[sview]&, sf_val: mutable darray[i64]&, local: sview, field: sview, value: i64) -> void:
+            can Memory.Allocate, Abort.Panic:
+                probe: mutable usize = 0
+                while probe < sf_local.count |probe, local, field, sf_local, sf_field|:
+                    sf_local[probe] <- sview("", 0, 0) if sf_local[probe] == local and sf_field[probe] == field
+                    probe <- probe + 1
+                sf_local.push(local)
+                sf_field.push(field)
+                sf_val.push(value)
+
+        # Invalidate a tracked field (or all fields of a local when `field` is "").
+        def psc_drop_field(sf_local: mutable darray[sview]&, sf_field: darray[sview]&, local: sview, field: sview) -> void:
+            can Memory.Allocate, Abort.Panic:
+                probe: mutable usize = 0
+                while probe < sf_local.count |probe, local, field, sf_local, sf_field|:
+                    sf_local[probe] <- sview("", 0, 0) if sf_local[probe] == local and (field == "" or sf_field[probe] == field)
+                    probe <- probe + 1
+
+        # Evaluate a predicate TERM (over callee params / their `.field`s / arithmetic) to a constant,
+        # using the (param -> argument) mapping and the caller's scalar + struct-field constant tables.
+        def psc_eval(term: Ast::Expr, params: darray[sview]&, arguments: darray[Ast::Expr]&, sc_names: darray[sview]&, sc_vals: darray[i64]&, sf_local: darray[sview]&, sf_field: darray[sview]&, sf_val: darray[i64]&) -> (found: bool, value: i64):
+            can Memory.Allocate, Abort.Panic:
+                literal: (found: bool, value: i64) = where_signed_literal(term)
+                literal return if literal.found
+                match term:
+                    Expr.Paren(inner, paren_line):
+                        return psc_eval(inner, params, arguments, sc_names, sc_vals, sf_local, sf_field, sf_val)
+                    Expr.Ident(name, ident_line):
+                        slot: i64 = psc_param_slot(params, name)
+                        (false, 0) return if slot < 0 or slot.usize() >= arguments.count
+                        return psc_caller_value(arguments[slot.usize()], sc_names, sc_vals, sf_local, sf_field, sf_val)
+                    Expr.Field(object, field, field_line):
+                        base: sview = ident_name_of(object)
+                        slot: i64 = psc_param_slot(params, base)
+                        (false, 0) return if slot < 0 or slot.usize() >= arguments.count
+                        match arguments[slot.usize()]:
+                            Expr.Ident(local_name, arg_line):
+                                return psc_field_value(local_name, field, sf_local, sf_field, sf_val)
+                            _:
+                                pass
+                        return (false, 0)
+                    Expr.Binary(left, operator, right, binary_line):
+                        l: (found: bool, value: i64) = psc_eval(left, params, arguments, sc_names, sc_vals, sf_local, sf_field, sf_val)
+                        r: (found: bool, value: i64) = psc_eval(right, params, arguments, sc_names, sc_vals, sf_local, sf_field, sf_val)
+                        (false, 0) return if not l.found or not r.found
+                        return psc_fold(l.value, operator, r.value)
+                    _:
+                        return (false, 0)
+
+        # Is the callee's requires predicate a comparison that is DEFINITELY false under the mapping?
+        def psc_predicate_false(predicate: Ast::Expr, params: darray[sview]&, arguments: darray[Ast::Expr]&, sc_names: darray[sview]&, sc_vals: darray[i64]&, sf_local: darray[sview]&, sf_field: darray[sview]&, sf_val: darray[i64]&) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                match predicate:
+                    Expr.Paren(inner, paren_line):
+                        return psc_predicate_false(inner, params, arguments, sc_names, sc_vals, sf_local, sf_field, sf_val)
+                    Expr.Binary(left, operator, right, binary_line):
+                        false return if not is_where_comparison(operator)
+                        l: (found: bool, value: i64) = psc_eval(left, params, arguments, sc_names, sc_vals, sf_local, sf_field, sf_val)
+                        r: (found: bool, value: i64) = psc_eval(right, params, arguments, sc_names, sc_vals, sf_local, sf_field, sf_val)
+                        return l.found and r.found and not evaluate_comparison(l.value, operator, r.value)
+                    _:
+                        return false
+
+        # Collect each callee's `requires` predicates with the callee's parameter-name list.
+        def psc_collect(declarations: darray[Ast::Decl], out_fns: mutable darray[sview]&, out_preds: mutable darray[Ast::Expr]&, out_starts: mutable darray[usize]&, out_counts: mutable darray[usize]&, out_params: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |out_fns, out_preds, out_starts, out_counts, out_params|:
+                    match declaration:
+                        Decl.Func(function_name, parameters, return_type, body, effects, decorators, line):
+                            for statement in body |out_fns, out_preds, out_starts, out_counts, out_params, function_name, parameters|:
+                                match statement:
+                                    Stmt.Contract(contract_kind, contract_expr, contract_line):
+                                        if contract_kind == "requires":
+                                            out_fns.push(function_name)
+                                            out_preds.push(contract_expr)
+                                            out_starts.push(out_params.count)
+                                            out_counts.push(parameters.count)
+                                            out_params.extend([parameter.name for parameter in parameters])
+                                    _:
+                                        pass
+                        Decl.Module(module_name, module_body, module_line):
+                            psc_collect(module_body, out_fns, out_preds, out_starts, out_counts, out_params)
+                        Decl.Scoped(scoped_body, scoped_line):
+                            psc_collect(scoped_body, out_fns, out_preds, out_starts, out_counts, out_params)
+                        _:
+                            pass
+
+        # Apply the interprocedural mutation effect of any call passing `&local` (or `move local`):
+        # for each field currently tracked on that local, transfer the callee's NET effect
+        # (unconditional constant -> set; conditional / non-constant -> drop). Unknown callee -> drop
+        # every tracked field of the local. Recurses so nested calls are covered (soundness: a field
+        # whose value might have changed must never remain a stale constant).
+        def psc_apply_effects(expression: Ast::Expr, declarations: darray[Ast::Decl], sf_local: mutable darray[sview]&, sf_field: mutable darray[sview]&, sf_val: mutable darray[i64]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Call(callee, arguments, argument_names, call_line):
+                        callee_name: sview = ident_name_of(callee)
+                        for argument in arguments |sf_local, sf_field, sf_val|:
+                            target: sview = psc_ref_target(argument)
+                            if target != "":
+                                found_body: (found: bool, body: darray[Ast::Stmt]) = ebc_find_func_body(declarations, callee_name)
+                                if not found_body.found:
+                                    psc_drop_field(sf_local, sf_field, target, sview("", 0, 0))
+                                else:
+                                    # snapshot the fields currently tracked for this local
+                                    fields: mutable darray[sview] = []
+                                    scan: mutable usize = 0
+                                    while scan < sf_local.count |scan, fields, sf_local, sf_field|:
+                                        fields.push(sf_field[scan]) if sf_local[scan] == target
+                                        scan <- scan + 1
+                                    for probe_field in fields |sf_local, sf_field, sf_val|:
+                                        effect: (writes: bool, poisoned: bool, value: i64) = psc_summarize_field(found_body.body, probe_field)
+                                        psc_drop_field(sf_local, sf_field, target, probe_field) if effect.writes and effect.poisoned
+                                        psc_set_field(sf_local, sf_field, sf_val, target, probe_field, effect.value) if effect.writes and not effect.poisoned
+                        for argument in arguments |sf_local, sf_field, sf_val|:
+                            psc_apply_effects(argument, declarations, sf_local, sf_field, sf_val)
+                    Expr.Paren(inner, paren_line):
+                        psc_apply_effects(inner, declarations, sf_local, sf_field, sf_val)
+                    Expr.Unary(operator, operand, unary_line):
+                        psc_apply_effects(operand, declarations, sf_local, sf_field, sf_val)
+                    Expr.Binary(left, operator, right, binary_line):
+                        psc_apply_effects(left, declarations, sf_local, sf_field, sf_val)
+                        psc_apply_effects(right, declarations, sf_local, sf_field, sf_val)
+                    _:
+                        pass
+
+        # For a call, evaluate each matching callee `requires` predicate; flag a definite violation.
+        def psc_check_call(expression: Ast::Expr, sc_names: darray[sview]&, sc_vals: darray[i64]&, sf_local: darray[sview]&, sf_field: darray[sview]&, sf_val: darray[i64]&, out_fns: darray[sview]&, out_preds: darray[Ast::Expr]&, out_starts: darray[usize]&, out_counts: darray[usize]&, out_params: darray[sview]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Call(callee, arguments, argument_names, call_line):
+                        callee_name: sview = ident_name_of(callee)
+                        if callee_name != "":
+                            probe: mutable usize = 0
+                            while probe < out_fns.count |probe, table| -> table:
+                                if out_fns[probe] == callee_name and out_counts[probe] == arguments.count:
+                                    params: mutable darray[sview] = []
+                                    slot: mutable usize = 0
+                                    while slot < out_counts[probe] |slot, params, probe, out_starts, out_params|:
+                                        params.push(out_params[out_starts[probe] + slot])
+                                        slot <- slot + 1
+                                    table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.PreconditionUnproven, name: "requires", pos: call_line, line: call_line.line, expected: "", actual: ""}) if psc_predicate_false(out_preds[probe], params, arguments, sc_names, sc_vals, sf_local, sf_field, sf_val)
+                                probe <- probe + 1
+                    _:
+                        pass
+
+        # Walk a function's TOP-LEVEL statements flow-sensitively: track scalar-constant locals and
+        # struct-field constants (from struct literals and later `s.field <- const` writes), transfer
+        # interprocedural `&s` call effects, and check each call's callee preconditions against the
+        # current constants. Precondition is checked BEFORE the same statement's mutation effect.
+        def psc_walk_top(body: darray[Ast::Stmt], declarations: darray[Ast::Decl], out_fns: darray[sview]&, out_preds: darray[Ast::Expr]&, out_starts: darray[usize]&, out_counts: darray[usize]&, out_params: darray[sview]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                sc_names: mutable darray[sview] = []
+                sc_vals: mutable darray[i64] = []
+                sf_local: mutable darray[sview] = []
+                sf_field: mutable darray[sview] = []
+                sf_val: mutable darray[i64] = []
+                for statement in body |sc_names, sc_vals, sf_local, sf_field, sf_val, table| -> table:
+                    match statement:
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            table <- psc_check_call(value, sc_names, sc_vals, sf_local, sf_field, sf_val, out_fns, out_preds, out_starts, out_counts, out_params, table)
+                            psc_apply_effects(value, declarations, sf_local, sf_field, sf_val)
+                            psc_drop_field(sf_local, sf_field, name, sview("", 0, 0))
+                            scalar: (found: bool, value: i64) = psc_caller_value(value, sc_names, sc_vals, sf_local, sf_field, sf_val)
+                            sc_names.push(name) if scalar.found
+                            sc_vals.push(scalar.value) if scalar.found
+                            match value:
+                                Expr.Construct(type_expression2, fields, construct_line):
+                                    for field in fields |sf_local, sf_field, sf_val, name|:
+                                        fv: (found: bool, value: i64) = where_signed_literal(field.value)
+                                        psc_set_field(sf_local, sf_field, sf_val, name, field.name, fv.value) if fv.found and field.name != ""
+                                _:
+                                    pass
+                        Stmt.Assign(target, operator, value, line):
+                            table <- psc_check_call(value, sc_names, sc_vals, sf_local, sf_field, sf_val, out_fns, out_preds, out_starts, out_counts, out_params, table)
+                            psc_apply_effects(value, declarations, sf_local, sf_field, sf_val)
+                            if operator == TokenKind.LArrow or operator == TokenKind.Assign:
+                                tf: (ok: bool, base: sview, field: sview) = psc_field_of(target)
+                                if tf.ok:
+                                    fv: (found: bool, value: i64) = psc_caller_value(value, sc_names, sc_vals, sf_local, sf_field, sf_val)
+                                    psc_set_field(sf_local, sf_field, sf_val, tf.base, tf.field, fv.value) if fv.found
+                                    psc_drop_field(sf_local, sf_field, tf.base, tf.field) if not fv.found
+                                else:
+                                    reassigned: sview = ident_name_of(target)
+                                    psc_drop_field(sf_local, sf_field, reassigned, sview("", 0, 0)) if reassigned != ""
+                        Stmt.Return(value, line):
+                            if value is returned:
+                                table <- psc_check_call(returned, sc_names, sc_vals, sf_local, sf_field, sf_val, out_fns, out_preds, out_starts, out_counts, out_params, table)
+                                psc_apply_effects(returned, declarations, sf_local, sf_field, sf_val)
+                        Stmt.Expr(expression, line):
+                            table <- psc_check_call(expression, sc_names, sc_vals, sf_local, sf_field, sf_val, out_fns, out_preds, out_starts, out_counts, out_params, table)
+                            psc_apply_effects(expression, declarations, sf_local, sf_field, sf_val)
+                        _:
+                            pass
+
+        def psc_check_declarations(declarations: darray[Ast::Decl], root_decls: darray[Ast::Decl], out_fns: darray[sview]&, out_preds: darray[Ast::Expr]&, out_starts: darray[usize]&, out_counts: darray[usize]&, out_params: darray[sview]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |table| -> table:
+                    match declaration:
+                        Decl.Func(function_name, parameters, return_type, body, effects, decorators, line):
+                            table <- psc_walk_top(body, root_decls, out_fns, out_preds, out_starts, out_counts, out_params, table)
+                        Decl.Module(module_name, module_body, module_line):
+                            table <- psc_check_declarations(module_body, root_decls, out_fns, out_preds, out_starts, out_counts, out_params, table)
+                        Decl.Scoped(scoped_body, scoped_line):
+                            table <- psc_check_declarations(scoped_body, root_decls, out_fns, out_preds, out_starts, out_counts, out_params, table)
+                        _:
+                            pass
+
+    public:
+        def check_precondition_struct_const(file: Ast::File&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                out_fns: mutable darray[sview] = []
+                out_preds: mutable darray[Ast::Expr] = []
+                out_starts: mutable darray[usize] = []
+                out_counts: mutable darray[usize] = []
+                out_params: mutable darray[sview] = []
+                psc_collect(file.top_decls, out_fns, out_preds, out_starts, out_counts, out_params)
+                table <- psc_check_declarations(file.top_decls, file.top_decls, out_fns, out_preds, out_starts, out_counts, out_params, table)

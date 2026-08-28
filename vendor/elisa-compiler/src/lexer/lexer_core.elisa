@@ -1,0 +1,377 @@
+extend Lexer:
+    private:
+        # ============================================================
+        # Self-hosted frontend lexer
+        # ============================================================
+        @inline(always)
+        def pending_is_empty(lexer: Lexer&) -> bool:
+            return lexer.pending_start >= lexer.pending_tokens.count
+
+
+        def pending_push_back(lexer: lmut Lexer, token: Token):
+            lexer.pending_tokens <- lexer.pending_tokens.push(token)
+
+
+        def pending_pop_front(lexer: lmut Lexer) -> Token:
+            can Abort.Panic:
+                assert not lexer.pending_is_empty()
+                token: Token = lexer.pending_tokens[lexer.pending_start]
+                lexer.pending_start <- lexer.pending_start + 1
+                return token
+
+
+        @inline(always)
+        def cursor_position(lexer: Lexer&) -> LexerPosition:
+            return LexerPosition{line: lexer.line, column: lexer.column, offset: lexer.position}
+
+
+        @inline(always)
+        def is_end_of_source(lexer: Lexer&) -> bool:
+            return lexer.position >= lexer.source_length
+
+
+        def push_pending(lexer: lmut Lexer, token: Token):
+            lexer <- lexer.pending_push_back(token) can Memory.Allocate, Abort.Panic
+
+
+        def pop_pending(lexer: lmut Lexer) -> Token:
+            rebind token: Token, lexer = lexer.pending_pop_front() can Abort.Panic
+            return token
+
+
+        @inline(always)
+        def is_immediate_grouped_block_introducer(text: sview) -> bool:
+            return text == "do"
+
+
+        @inline(always)
+        def active_grouped_block_context(lexer: Lexer&) -> bool:
+            return lexer.grouped_block_contexts.count != 0 and lexer.group_depth >= lexer.grouped_block_contexts[lexer.grouped_block_contexts.count - 1].group_depth
+
+
+        def trim_finished_grouped_block_contexts(lexer: lmut Lexer):
+            machine over lexer.indentation_top() while lexer.grouped_block_contexts.count > 0:
+                state Trim
+                start Trim
+                Trim, current_indent if current_indent > lexer.grouped_block_contexts[lexer.grouped_block_contexts.count - 1].base_indent:
+                    break
+                Trim, _:
+                    lexer.grouped_block_contexts <- lexer.grouped_block_contexts.truncate(lexer.grouped_block_contexts.count - 1)
+                    -> Trim
+
+
+        def measure_indent(lexer: lmut Lexer) -> usize:
+            # Stage1 meta-compile: payload machines (`state Counting(indent)`) still
+            # decline; lower the indent walk as an ordinary while loop.
+            lexer.machine_usize <- 0
+            machine over lexer.current_char() while not lexer.is_end_of_source():
+                state Count
+                start Count
+                Count, ' ':
+                    lexer <- lexer.advance_char()
+                    lexer.machine_usize <- lexer.machine_usize + 1
+                    -> Count
+                Count, '\t':
+                    lexer <- lexer.advance_char()
+                    lexer.machine_usize <- lexer.machine_usize + FRONTEND_TAB_WIDTH
+                    -> Count
+                Count, _:
+                    break
+            return lexer.machine_usize
+        def indentation_top(lexer: Lexer&) -> usize:
+            return 0 if lexer.indentation_stack.count == 0 else lexer.indentation_stack[lexer.indentation_stack.count - 1]
+
+        def push_indent(lexer: lmut Lexer, value: usize):
+            can Memory.Allocate, Abort.Panic:
+                lexer.indentation_stack <- lexer.indentation_stack.push(value)
+
+        def pop_indent(lexer: lmut Lexer):
+            lexer.indentation_stack <- lexer.indentation_stack.truncate(lexer.indentation_stack.count - 1) if lexer.indentation_stack.count > 0
+
+        def skip_blank_lines(lexer: lmut Lexer):
+            machine over lexer.current_char() while not lexer.is_end_of_source() and lexer.current_char() == '\n':
+                state Skip
+                start Skip
+                Skip, _:
+                    lexer <- lexer.advance_char()
+                    -> Skip
+
+        def consume_hash_comment_trivia(lexer: lmut Lexer, at_column_zero: bool):
+            # A `#line <num> <path>` directive is only ever emitted at column 0 by
+            # include expansion; consume it only there. A `#` comment at ANY indent is
+            # trivia, so an indented comment-only line (` # note`) never leaks a
+            # spurious INDENT into the token stream (stage0 parity).
+            state CheckColumn
+            state TryDirective
+            state SkipComment
+            state Done
+            handled: bool = start CheckColumn:
+                CheckColumn:
+                    -> TryDirective if at_column_zero
+                    -> SkipComment
+                TryDirective:
+                    rebind consumed_line_directive: bool, lexer = lexer.try_consume_line_directive()
+                    -> Done if consumed_line_directive
+                    -> SkipComment
+                SkipComment:
+                    lexer <- lexer.skip_line_comment()
+                    lexer <- lexer.skip_blank_lines()
+                    -> Done
+                Done:
+                    => true
+
+        def consume_indentation_trivia(lexer: lmut Lexer, indent: usize) -> bool:
+            false return if lexer.is_end_of_source() or lexer.current_char() == '\n'
+
+            at_hash_comment: bool = lexer.current_char() == '#'
+            lexer <- lexer.consume_hash_comment_trivia(indent == 0) if at_hash_comment
+            true return if at_hash_comment
+
+            false return if not lexer.is_block_comment_start()
+
+            lexer <- lexer.skip_block_comment()
+            lexer <- lexer.skip_spaces()
+
+            false return if not lexer.is_end_of_source() and lexer.current_char() != '\n'
+            lexer <- lexer.skip_blank_lines()
+            return true
+
+        def raise_indentation(lexer: lmut Lexer, indent: usize):
+            can Memory.Allocate, Abort.Panic:
+                lexer <- lexer.push_indent(indent)
+                lexer <- lexer.emit_pending_token(TokenKind.Indent)
+
+        def apply_indentation_level(lexer: lmut Lexer, indent: usize):
+            can Memory.Allocate, Abort.Panic:
+                current: usize = lexer.indentation_top()
+                lexer <- lexer.raise_indentation(indent) if indent > current
+                return if indent >= current
+
+                machine over lexer.indentation_top() while lexer.indentation_stack.count > 0 and lexer.indentation_top() > indent:
+                    state Dedent
+                    start Dedent
+                    Dedent, _:
+                        lexer <- lexer.pop_indent()
+                        lexer <- lexer.emit_pending_token(TokenKind.Dedent)
+                        -> Dedent
+
+                lexer <- lexer.raise_indentation(indent) if lexer.indentation_top() < indent
+
+        def handle_indentation(lexer: lmut Lexer):
+            can Memory.Allocate, Abort.Panic:
+                # Stage1 meta-compile: expression-while + bare early `return` inside a
+                # value-producing loop declines; keep the same control flow as stmts.
+                rebind measured_indent: usize, lexer = lexer.measure_indent()
+                indent: mutable usize = measured_indent
+                lexer.machine_usize <- indent
+                lexer.machine_bool <- lexer.is_end_of_source() or lexer.current_char() == '\n'
+                machine over lexer.machine_bool:
+                    state Check
+                    state Trivia
+                    start Check
+                    Check, true:
+                        return
+                    Check, _:
+                        current_indent: usize = lexer.machine_usize
+                        rebind consumed_trivia: bool, lexer = lexer.consume_indentation_trivia(current_indent)
+                        lexer.machine_bool <- not consumed_trivia
+                        -> Trivia
+                    Trivia, true:
+                        break
+                    Trivia, _:
+                        rebind next_indent: usize, lexer = lexer.measure_indent()
+                        lexer.machine_usize <- next_indent
+                        lexer.machine_bool <- lexer.is_end_of_source() or lexer.current_char() == '\n'
+                        -> Check
+
+                indent <- lexer.machine_usize
+
+                lexer.at_line_start <- false
+                lexer <- lexer.apply_indentation_level(indent)
+        @inline(always)
+        def is_alpha(character: char) -> bool:
+            return character in 'a'..'z' or character in 'A'..'Z'
+        @inline(always)
+        def is_alphanumeric(character: char) -> bool:
+            return character.is_alpha() or character.is_digit()
+        @inline(always)
+        def is_identifier_start(character: char) -> bool:
+            return character == '_' or character == '$' or character.is_alpha()
+        @inline(always)
+        def is_identifier_char(character: char) -> bool:
+            return character == '_' or character == '$' or character.is_alphanumeric()
+
+        @inline(always)
+        def is_latin1_letter_codepoint(value: u8) -> bool:
+            return value == 0xAA or value == 0xB5 or value == 0xBA or value in 0xC0..0xD6 or value in 0xD8..0xF6 or value in 0xF8..0xFF
+
+        @inline(always)
+        def is_unicode2_letter_codepoint(value: int) -> bool:
+            return value in 0x00F8..0x02C1 or value in 0x02C6..0x02D1 or value in 0x02E0..0x02E4 or value == 0x02EC or value == 0x02EE or value in 0x0370..0x0374 or value in 0x0376..0x0377 or value in 0x037A..0x037D or value == 0x037F or value == 0x0386 or value in 0x0388..0x038A or value == 0x038C or value in 0x038E..0x03A1 or value in 0x03A3..0x03F5 or value in 0x03F7..0x0481 or value in 0x048A..0x052F or value in 0x0531..0x0556 or value == 0x0559 or value in 0x0560..0x0588 or value in 0x05D0..0x05EA or value in 0x05EF..0x05F2 or value in 0x0620..0x064A or value in 0x066E..0x066F or value in 0x0671..0x06D3 or value == 0x06D5 or value in 0x06E5..0x06E6 or value in 0x06EE..0x06EF or value in 0x06FA..0x06FC or value == 0x06FF or value == 0x0710 or value in 0x0712..0x072F or value in 0x074D..0x07A5 or value == 0x07B1 or value in 0x07CA..0x07EA or value in 0x07F4..0x07F5 or value == 0x07FA
+
+        @inline(always)
+        def is_unicode2_digit_codepoint(value: int) -> bool:
+            return value in 0x0660..0x0669 or value in 0x06F0..0x06F9 or value in 0x07C0..0x07C9
+
+        # Supplementary-plane letters accepted in identifiers: the Mathematical
+        # Alphanumeric Symbols block (U+1D400..U+1D7CB). Ranges are the exact
+        # unicode.IsLetter gaps over that block (holes are reserved codepoints
+        # plus the Sm operators U+1D6C1 nabla / U+1D6DB partial etc.), keeping
+        # stage1 token-for-token with stage0's rune classification.
+        def is_math_alphanumeric_letter_codepoint(value: int) -> bool:
+            return value in 0x1D400..0x1D454 or value in 0x1D456..0x1D49C or value in 0x1D49E..0x1D49F or value == 0x1D4A2 or value in 0x1D4A5..0x1D4A6 or value in 0x1D4A9..0x1D4AC or value in 0x1D4AE..0x1D4B9 or value == 0x1D4BB or value in 0x1D4BD..0x1D4C3 or value in 0x1D4C5..0x1D505 or value in 0x1D507..0x1D50A or value in 0x1D50D..0x1D514 or value in 0x1D516..0x1D51C or value in 0x1D51E..0x1D539 or value in 0x1D53B..0x1D53E or value in 0x1D540..0x1D544 or value == 0x1D546 or value in 0x1D54A..0x1D550 or value in 0x1D552..0x1D6A5 or value in 0x1D6A8..0x1D6C0 or value in 0x1D6C2..0x1D6DA or value in 0x1D6DC..0x1D6FA or value in 0x1D6FC..0x1D714 or value in 0x1D716..0x1D734 or value in 0x1D736..0x1D74E or value in 0x1D750..0x1D76E or value in 0x1D770..0x1D788 or value in 0x1D78A..0x1D7A8 or value in 0x1D7AA..0x1D7C2 or value in 0x1D7C4..0x1D7CB
+
+        @inline(always)
+        def is_math_alphanumeric_digit_codepoint(value: int) -> bool:
+            return value in 0x1D7CE..0x1D7FF
+
+        # Decode the 4-byte UTF-8 sequence at the cursor to its codepoint, or -1
+        # if the bytes at the cursor are not a valid 4-byte sequence.
+        @inline(always)
+        def four_byte_codepoint_at_cursor(lexer: Lexer&) -> int:
+            four_byte_lead_min: u8 = 0xF0
+            four_byte_lead_max: u8 = 0xF4
+            second_byte_index: usize = 1
+            third_byte_index: usize = 2
+            fourth_byte_index: usize = 3
+            four_byte_lead_offset: i64 = 0xF0
+            continuation_byte_offset: i64 = 0x80
+            lead_place_value: i64 = 0x40000
+            second_continuation_place_value: i64 = 0x1000
+            third_continuation_place_value: i64 = 0x40
+
+            first: u8 = lexer.source[lexer.position]
+            -1 return if first < four_byte_lead_min or first > four_byte_lead_max or lexer.position + fourth_byte_index >= lexer.source_length
+            -1 return if not lexer.starts_valid_utf8_sequence()
+            second: u8 = lexer.source[lexer.position + second_byte_index]
+            third: u8 = lexer.source[lexer.position + third_byte_index]
+            fourth: u8 = lexer.source[lexer.position + fourth_byte_index]
+
+            first_contribution: i64 = (first.i64() - four_byte_lead_offset) * lead_place_value
+            second_contribution: i64 = (second.i64() - continuation_byte_offset) * second_continuation_place_value
+            third_contribution: i64 = (third.i64() - continuation_byte_offset) * third_continuation_place_value
+            fourth_contribution: i64 = fourth.i64() - continuation_byte_offset
+            return (first_contribution + second_contribution + third_contribution + fourth_contribution).int()
+
+        @inline(always)
+        def is_utf8_continuation(byte: u8) -> bool:
+            return byte in 0x80..0xBF
+
+        @inline(always)
+        def starts_valid_utf8_sequence(lexer: Lexer&) -> bool:
+            first: u8 = lexer.source[lexer.position]
+            lexer.position + 1 < lexer.source_length and is_utf8_continuation(lexer.source[lexer.position + 1]) return if first in 0xC2..0xDF
+            lexer.position + 2 < lexer.source_length and lexer.source[lexer.position + 1] in 0xA0..0xBF and is_utf8_continuation(lexer.source[lexer.position + 2]) return if first == 0xE0
+            lexer.position + 2 < lexer.source_length and is_utf8_continuation(lexer.source[lexer.position + 1]) and is_utf8_continuation(lexer.source[lexer.position + 2]) return if first in 0xE1..0xEC or first in 0xEE..0xEF
+            lexer.position + 2 < lexer.source_length and lexer.source[lexer.position + 1] in 0x80..0x9F and is_utf8_continuation(lexer.source[lexer.position + 2]) return if first == 0xED
+            lexer.position + 3 < lexer.source_length and lexer.source[lexer.position + 1] in 0x90..0xBF and is_utf8_continuation(lexer.source[lexer.position + 2]) and is_utf8_continuation(lexer.source[lexer.position + 3]) return if first == 0xF0
+            lexer.position + 3 < lexer.source_length and is_utf8_continuation(lexer.source[lexer.position + 1]) and is_utf8_continuation(lexer.source[lexer.position + 2]) and is_utf8_continuation(lexer.source[lexer.position + 3]) return if first in 0xF1..0xF3
+            lexer.position + 3 < lexer.source_length and lexer.source[lexer.position + 1] in 0x80..0x8F and is_utf8_continuation(lexer.source[lexer.position + 2]) and is_utf8_continuation(lexer.source[lexer.position + 3]) return if first == 0xF4
+            return false
+
+        @inline(always)
+        def unicode_identifier_start_width(lexer: Lexer&) -> u8:
+            first: u8 = lexer.source[lexer.position]
+            has_second: bool = lexer.position + 1 < lexer.source_length
+            second: u8 = lexer.source[lexer.position + 1] if has_second else 0
+            2 return if has_second and first == 0xC2 and second.is_latin1_letter_codepoint()
+            2 return if has_second and first == 0xC3 and second in 0x80..0xBF and (0xC0 + (second - 0x80)).u8().is_latin1_letter_codepoint()
+            2 return if has_second and first in 0xC4..0xDF and second.is_utf8_continuation() and ((first.i64() - 0xC0) * 64 + (second.i64() - 0x80)).int().is_unicode2_letter_codepoint()
+            4 return if first >= 0xF0 and lexer.four_byte_codepoint_at_cursor().is_math_alphanumeric_letter_codepoint()
+            1 return if first.is_latin1_letter_codepoint() and not lexer.starts_valid_utf8_sequence()
+            return 0
+
+        @inline(always)
+        def unicode_identifier_char_width(lexer: Lexer&) -> u8:
+            start_width: u8 = lexer.unicode_identifier_start_width()
+            start_width return if start_width > 0
+
+            first: u8 = lexer.source[lexer.position]
+            has_second: bool = lexer.position + 1 < lexer.source_length
+            second: u8 = lexer.source[lexer.position + 1] if has_second else 0
+            2 return if has_second and first in 0xD9..0xDF and second.is_utf8_continuation() and ((first.i64() - 0xC0) * 64 + (second.i64() - 0x80)).int().is_unicode2_digit_codepoint()
+            4 return if first >= 0xF0 and lexer.four_byte_codepoint_at_cursor().is_math_alphanumeric_digit_codepoint()
+            return 0
+
+        @inline(always)
+        def starts_unicode_identifier(lexer: Lexer&) -> bool:
+            return lexer.unicode_identifier_start_width() > 0
+
+        @inline(always)
+        def continues_unicode_identifier(lexer: Lexer&) -> bool:
+            return lexer.unicode_identifier_char_width() > 0
+
+        @inline(always)
+        def advance_latin1_identifier_char(lexer: lmut Lexer):
+            width: u8 = lexer.unicode_identifier_char_width()
+            match width:
+                0:
+                    pass
+                1:
+                    lexer <- lexer.advance_char()
+                _:
+                    lexer <- lexer.advance_chars(width)
+
+        @inline(always)
+        def valid_suffix(view: sview) -> bool:
+            return when view:
+                "u" | "u8" | "u16" | "u32" | "u64" | "usize" | "i8" | "i16" | "i32" | "i64" | "isize" | "f32" | "f64" -> true
+                _ -> false
+
+
+        def read_type_suffix(lexer: lmut Lexer) -> sview?:
+            return Lexer::read_type_suffix_at(lexer.source, lexer.source_length, lexer.position)
+
+        def read_type_suffix_at(source: u8&, source_length: usize, start: usize) -> sview?:
+            first: char = char_at(source, source_length, start)
+            null return if not (first == 'u' or first == 'i' or first == 'f')
+            probe: mutable usize = start + 1
+            probe <- probe + 1 if probe < source_length and char_at(source, source_length, probe).is_alphanumeric()
+            probe <- probe + 1 if probe < source_length and char_at(source, source_length, probe).is_alphanumeric()
+            probe <- probe + 1 if probe < source_length and char_at(source, source_length, probe).is_alphanumeric()
+            probe <- probe + 1 if probe < source_length and char_at(source, source_length, probe).is_alphanumeric()
+            probe <- probe + 1 if probe < source_length and char_at(source, source_length, probe).is_alphanumeric()
+            match make_source_view(source, start, probe):
+                suffix:
+                    suffix_length: usize = probe - start
+                    # `u`/`i` widths and `f32`/`f64` are a closed suffix grammar. Returning the
+                    # complete predicate from a `when` avoids the old mutable-validity ladder,
+                    # where each later assignment could accidentally broaden an earlier case.
+                    valid: bool = when first:
+                        'u' -> suffix_length == 1 or (suffix_length == 2 and char_at(source, source_length, start + 1) == '8') or (suffix_length == 3 and (char_at(source, source_length, start + 1) == '1' or char_at(source, source_length, start + 1) == '3' or char_at(source, source_length, start + 1) == '6') and (char_at(source, source_length, start + 2) == '2' or char_at(source, source_length, start + 2) == '4' or char_at(source, source_length, start + 2) == '6')) or (suffix_length == 5 and char_at(source, source_length, start + 1) == 's' and char_at(source, source_length, start + 2) == 'i' and char_at(source, source_length, start + 3) == 'z' and char_at(source, source_length, start + 4) == 'e')
+                        'i' -> suffix_length == 2 and char_at(source, source_length, start + 1) == '8' or (suffix_length == 3 and (char_at(source, source_length, start + 1) == '1' or char_at(source, source_length, start + 1) == '3' or char_at(source, source_length, start + 1) == '6') and (char_at(source, source_length, start + 2) == '2' or char_at(source, source_length, start + 2) == '4' or char_at(source, source_length, start + 2) == '6')) or (suffix_length == 5 and char_at(source, source_length, start + 1) == 's' and char_at(source, source_length, start + 2) == 'i' and char_at(source, source_length, start + 3) == 'z' and char_at(source, source_length, start + 4) == 'e')
+                        'f' -> suffix_length == 3 and ((char_at(source, source_length, start + 1) == '3' and char_at(source, source_length, start + 2) == '2') or (char_at(source, source_length, start + 1) == '6' and char_at(source, source_length, start + 2) == '4'))
+                        _ -> false
+                    suffix return if valid
+                _:
+                    pass
+            return null
+
+        @inline(always)
+        def read_identifier(lexer: lmut Lexer) -> Token:
+            position: LexerPosition = lexer.cursor_position()
+            start: usize = lexer.position
+            machine over lexer.current_char() while not lexer.is_end_of_source():
+                state ScanIdentifier
+                start ScanIdentifier
+                ScanIdentifier, character if is_identifier_char(character):
+                    lexer <- lexer.advance_char()
+                    -> ScanIdentifier
+                ScanIdentifier, _ if lexer.continues_unicode_identifier():
+                    lexer <- lexer.advance_latin1_identifier_char()
+                    -> ScanIdentifier
+                ScanIdentifier, _:
+                    break
+            # SLICE the source, do not call the `sview(base, start, end)` CONSTRUCTOR: that
+            # one clamps against `strlen(base)` (stage0's std semantics, which stage1 now
+            # matches), and `base` here is the WHOLE source buffer — so a constructor call
+            # per identifier token is a full scan of the file per token. Measured: 30s ->
+            # 76s to compile test/breadth/parse_report.elisa, enough to cross the
+            # differential corpus's 60s compile timeout. The lexer's own offsets are in
+            # range by construction, which is exactly what every other token-text read here
+            # already relies on (Token.text -> make_source_view -> `source[start:end]`).
+            text: sview = source_view_or_empty(lexer.source, start, lexer.position)
+            kind: TokenKind = frontend_lookup_keyword(text)
+            lexer.pending_grouped_block <- false
+            lexer.pending_grouped_block <- true if kind == TokenKind.Ident and is_immediate_grouped_block_introducer(text)
+            return Token(kind, position, start, lexer.position)

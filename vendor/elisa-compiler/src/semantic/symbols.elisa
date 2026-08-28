@@ -1,0 +1,680 @@
+extend Semantic:
+    private:
+        # Stage1 semantic layer — symbol collection (internal helpers, module-private).
+        #
+        # Walk the declaration tree (File.top_decls and each Module's body), collecting every
+        # top-level and module-scoped declaration into a SymbolTable and flagging duplicates.
+        # Each child list is a `darray` side-table on its node's payload (docs/76), so we walk
+        # it directly with `match` — no flat store, no index ranges.
+
+
+        # FNV-1a hash of a name's bytes — the key into the SymbolTable name index. u64
+        # multiplication wraps (unsigned), which is the intended hashing behavior.
+        def name_hash(name: sview) -> u64:
+            hash: u64 =
+                for byte in name |hash: u64 = 14695981039346656037| -> hash:
+                    hash <- (hash ^ byte.u64()) * 1099511628211
+            return hash
+
+
+        # Whether `name` is already in the table's name index — O(1) expected (one hash probe
+        # plus a scan of the tiny collision overflow), replacing an O(n) scan of `symbols`.
+        def name_indexed(table: SymbolTable&, name: sview) -> bool:
+            can Abort.Panic:
+                true return if table.name_primary.get(name_hash(name)) is primary and primary == name
+                # Primary slot empty or holding a different name (a hash collision) — the
+                # queried name, if present, is in the overflow list. Must run in BOTH cases,
+                # so this is deliberately outside the `if` (no `else`).
+                return any overflow_name in table.name_overflow where overflow_name == name
+
+
+        # Whether a name is already stored at hash `hash` in the primary slot. Read through a
+        # const `table` so `dict.get` yields a const (not mutable) interior ref — a mutable
+        # `.get` would surface an Unsafe.PointerCast the safe read does not need.
+        def hash_occupied(table: SymbolTable&, hash: u64) -> bool:
+            can Abort.Panic:
+                return true if table.name_primary.get(hash) is occupant else false
+                    
+        # Record `name` in the index (idempotent). The first name at a given hash lands in
+        # `name_primary`; a colliding different name goes to `name_overflow`.
+        def index_name(table: lmut SymbolTable, name: sview) -> void:
+            can Memory.Allocate, Abort.Panic:
+                return if name_indexed(table, name)
+                hash: u64 = name_hash(name)
+                # `name` is known-absent (guard above), so an occupied slot here is a different
+                # name sharing the hash — a collision that goes to the overflow list.
+                table.name_overflow <- table.name_overflow.push(name) if hash_occupied(table, hash)
+                table.name_primary <- table.name_primary.put(hash, name) if not hash_occupied(table, hash)
+
+
+        # The index of the FIRST function_param_owner entry whose owner hashes to `name`'s
+        # hash, else the sentinel 4294967295 ("no such chain"). A reader walks forward via
+        # function_param_name_next from this starting point, checking the owner name at each
+        # step (a hash COLLISION between two different names is possible in principle, so
+        # every step still compares the real name — this index narrows the candidate set, it
+        # does not skip the check). See the SymbolTable field comment for the chain shape.
+        def function_param_chain_head(table: SymbolTable&, name: sview) -> u32:
+            can Abort.Panic:
+                return head if table.function_param_name_head.get(name_hash(name)) is head else 4294967295
+
+
+        # The recorded tail index for `hash`, else the sentinel 4294967295. Read through a
+        # const `table` (mirrors hash_occupied's note above it) so `dict.get` yields a const
+        # interior ref — a mutable `.get` (calling this straight from `lmut` table) surfaces
+        # an avoidable Unsafe.PointerCast warning.
+        def function_param_tail_at(table: SymbolTable&, hash: u64) -> u32:
+            can Abort.Panic:
+                return tail_row if table.function_param_name_tail.get(hash) is tail_row else 4294967295
+
+
+        # Append function_param_owner[index] (whose owner is `name`) onto its hash chain —
+        # O(1): extend the same hash's existing chain by one link, or start a new one. Must be
+        # called exactly once per function_param_owner push, in push order (collect_range's
+        # per-parameter loop), so the chain visits a function's parameters in declaration
+        # order and multiple overloads/declarations of the same name concatenate in the order
+        # they were declared — matching what the O(n) scans this replaces used to visit.
+        def index_function_param(table: lmut SymbolTable, name: sview, index: usize) -> void:
+            can Memory.Allocate, Abort.Panic:
+                table.function_param_name_next <- table.function_param_name_next.push(4294967295)
+                hash: u64 = name_hash(name)
+                tail_row: u32 = function_param_tail_at(table, hash)
+                if tail_row != 4294967295:
+                    table.function_param_name_next[tail_row.usize()] <- index.u32()
+                else:
+                    table.function_param_name_head <- table.function_param_name_head.put(hash, index.u32())
+                table.function_param_name_tail <- table.function_param_name_tail.put(hash, index.u32())
+
+
+        # The `symbols` analogue of function_param_chain_head above — the index of the FIRST
+        # `symbols` row whose name hashes to `name`'s hash, else 4294967295. See that
+        # function's comment for the hash-collision handling (every reader still compares the
+        # real name at each step).
+        def symbol_chain_head(table: SymbolTable&, name: sview) -> u32:
+            can Abort.Panic:
+                return head if table.symbol_name_head.get(name_hash(name)) is head else 4294967295
+
+
+        # The `symbols` analogue of function_param_tail_at above.
+        def symbol_tail_at(table: SymbolTable&, hash: u64) -> u32:
+            can Abort.Panic:
+                return tail_row if table.symbol_name_tail.get(hash) is tail_row else 4294967295
+
+
+        # The `symbols` analogue of index_function_param above — append symbols[index] (whose
+        # name is `name`) onto its hash chain. Must be called exactly once per `symbols` push,
+        # in push order, so the chain visits same-named declarations (overloads) in the order
+        # they were declared, matching what the O(n) scans this replaces used to visit.
+        def index_symbol(table: lmut SymbolTable, name: sview, index: usize) -> void:
+            can Memory.Allocate, Abort.Panic:
+                table.symbol_name_next <- table.symbol_name_next.push(4294967295)
+                hash: u64 = name_hash(name)
+                tail_row: u32 = symbol_tail_at(table, hash)
+                if tail_row != 4294967295:
+                    table.symbol_name_next[tail_row.usize()] <- index.u32()
+                else:
+                    table.symbol_name_head <- table.symbol_name_head.put(hash, index.u32())
+                table.symbol_name_tail <- table.symbol_name_tail.put(hash, index.u32())
+
+
+        # Seed the table with language builtins and keyword-leaf identifiers that the parser
+        # surfaces as bare `Expr.Ident` leaves (`null`, `zeroed`, `sizeof`, `panic`, …) plus the
+        # few runtime externs the frontend calls unqualified. These are always in scope, so they
+        # must not count as unresolved references.
+        def seed_builtins(table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                # Primitive type names resolve as value-constructor callees (`i64(x)`,
+                # `bool(f)` — the postfix-call/ctor cast form), so they seed too.
+                names: darray[sview] = ["null", "zeroed", "sizeof", "size_of", "alignof", "align_of", "offsetof", "offset_of", "panic", "raise", "error", "abort", "assert", "print", "println", "eprint", "runtime_strlen", "ctx_hash_value", "sview", "sview_len", "sview_at", "__fstr", "readonly", "split_at", "chunks_exact", "reduce_sum", "clone", "copy", "zip_map", "dense_key", "node_table_fill", "rev", "i8", "i16", "i32", "i64", "int", "isize", "u8", "u16", "u32", "u64", "usize", "uintptr", "f32", "f64", "bool", "char", "cstr", "dstr"]
+                # Push directly into the caller-owned table: a `[... for builtin_name in names]`
+                # comprehension would build the rows in a short-lived auto-region, and
+                # extending the longer-lived table from it trips the region checker.
+                for builtin_name in names |table| -> table:
+                    builtin_row: usize = table.symbols.count
+                    table.symbols <- table.symbols.push(Symbol{name: builtin_name, kind: SymbolKind.Unknown, line: 0, arity_min: 0, arity_max: 0, return_type: sview("", 0, 0)})
+                    table <- index_name(table, builtin_name)
+                    table <- index_symbol(table, builtin_name, builtin_row)
+                # Stage0's analyzer_builtins.go installs these compiler-owned carrier
+                # structs before user declarations are analyzed. Register the same type
+                # identities here; field registries remain conservative until their
+                # structural metadata is ported, so this resolves names without inventing
+                # field facts. The affine subset feeds existing single-use checks.
+                # The builtin generic container TYPE names. They appear in type position
+                # (`v: darray[f64]`, handled by the type parser) but ALSO inside generic
+                # type-argument brackets that the resolver walks as value expressions
+                # (`clone[darray[f64]](a)`); seeding them as types lets `darray` resolve
+                # there instead of reporting "undefined identifier 'darray'".
+                builtin_structs: darray[sview] = ["Thread", "Task", "ThreadPool", "TaskGroup", "Mutex", "MutexGuard", "CondVar", "atomic", "Region", "Arena", "ArenaMark", "PackedStoreAllocResult", "PackedStoreIndexAllocResult", "StringView", "DynArray", "DynArrayView", "SplitView", "EnumerateView", "TreeKindFilteredView", "ChunksExactView", "TreeChildren", "TreeAttributeSeq", "NodeKey", "NodeTable", "DictBucket", "DynDict", "SetBucket", "DynSet", "darray", "dict", "set", "array", "view"]
+                for builtin_struct in builtin_structs |table| -> table:
+                    builtin_struct_row: usize = table.symbols.count
+                    table.symbols <- table.symbols.push(Symbol{name: builtin_struct, kind: SymbolKind.Struct, line: 0, arity_min: 0, arity_max: 0, return_type: sview("", 0, 0)})
+                    table <- index_name(table, builtin_struct)
+                    table <- index_symbol(table, builtin_struct, builtin_struct_row)
+                affine_builtins: darray[sview] = ["Thread", "Task", "ThreadPool", "TaskGroup", "MutexGuard"]
+                for affine_builtin in affine_builtins |table| -> table:
+                    table.struct_affine_owner <- table.struct_affine_owner.push(affine_builtin)
+
+
+        # Append a symbol into the (flat, whole-program) resolution index. Duplicate
+        # DIAGNOSTICS are NOT raised here — a flat index conflates overloads, reopened
+        # modules, and cross-module names; duplicate detection is done per-scope by
+        # check_scope_duplicates instead. This just makes every declared name resolvable.
+        def add_symbol(table: lmut SymbolTable, name: sview, kind: SymbolKind, line: u32, arity_min: u32 = 0, arity_max: u32 = 0, return_type: sview = sview("", 0, 0), return_type_id: u32 = 0) -> void:
+            can Memory.Allocate, Abort.Panic:
+                new_symbol_row: usize = table.symbols.count
+                table.symbols <- table.symbols.push(Symbol{name: name, kind: kind, line: line, arity_min: arity_min, arity_max: arity_max, return_type: return_type, return_type_id: return_type_id})
+                table <- index_name(table, name)
+                table <- index_symbol(table, name, new_symbol_row)
+
+
+        # Count the statements in `statements`, recursing into nested blocks and match arms.
+        def count_statements(statements: darray[Ast::Stmt], table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |table| -> table:
+                    table.statements <- table.statements + 1
+                    match statement:
+                        Stmt.If(condition, then_body, else_body, line):
+                            table <- count_statements(then_body, table)
+                            table <- count_statements(else_body, table)
+                        Stmt.While(condition, body, line):
+                            table <- count_statements(body, table)
+                        Stmt.For(bind, variables, iterable, body, line):
+                            table <- count_statements(body, table)
+                        Stmt.Block(kind, clause, binding, body, line):
+                            table <- count_statements(body, table)
+                        Stmt.Match(scrutinee, arms, line):
+                            for arm in arms |table| -> table:
+                                table <- count_statements(arm.body, table)
+                        # Leaf statements with no nested block. Explicit (no wildcard) so a new
+                        # Stmt variant forces a decision here rather than being silently uncounted.
+                        Stmt.Invalid:
+                            pass
+                        Stmt.Expr(expression, line):
+                            pass
+                        Stmt.Contract(kind, expression, line):
+                            pass
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            pass
+                        Stmt.Assign(target, operator, value, line):
+                            pass
+                        Stmt.Return(value, line):
+                            pass
+                        Stmt.Break(label, line):
+                            pass
+                        Stmt.Continue(label, line):
+                            pass
+
+
+        # Conservative structural equality over the small set of type-expression forms
+        # that appear in signatures (`i64`, `Mod::T`, `darray[T]`, `mutable T&`, …).
+        # Any form not modeled here compares UNequal — so two signatures are only ever
+        # judged identical when we are certain, keeping overloads (judged distinct) from
+        # being flagged as duplicates.
+        def same_type_expression(type_a: Ast::Expr, type_b: Ast::Expr) -> bool:
+            can Abort.Panic:
+                return match type_a:
+                    Ast::Expr.Ident(a_name, a_line):
+                        match type_b:
+                            Ast::Expr.Ident(b_name, b_line):
+                                a_name == b_name
+                            _:
+                                false
+                    Ast::Expr.Scope(a_base, a_name, a_line):
+                        match type_b:
+                            Ast::Expr.Scope(b_base, b_name, b_line):
+                                a_name == b_name and same_type_expression(a_base, b_base)
+                            _:
+                                false
+                    Ast::Expr.Index(a_object, a_index, a_line):
+                        match type_b:
+                            Ast::Expr.Index(b_object, b_index, b_line):
+                                same_type_expression(a_object, b_object) and same_type_expression(a_index, b_index)
+                            _:
+                                false
+                    Ast::Expr.Unary(a_operator, a_operand, a_line):
+                        match type_b:
+                            Ast::Expr.Unary(b_operator, b_operand, b_line):
+                                a_operator == b_operator and same_type_expression(a_operand, b_operand)
+                            _:
+                                false
+                    Ast::Expr.Paren(a_inner, a_line):
+                        match type_b:
+                            Ast::Expr.Paren(b_inner, b_line):
+                                same_type_expression(a_inner, b_inner)
+                            _:
+                                false
+                    _:
+                        false
+
+
+        # Two parameter lists have identical types (names/mutability/defaults ignored —
+        # they are not part of a function's signature for overload purposes).
+        def same_params(params_a: darray[Ast::ParamDecl]&, params_b: darray[Ast::ParamDecl]&) -> bool:
+            can Abort.Panic:
+                false return if params_a.count != params_b.count
+                while param_index < params_a.count |param_index: usize = 0|:
+                    false return if not same_type_expression(params_a[param_index].type_expression, params_b[param_index].type_expression)
+                    param_index <- param_index + 1
+                return true
+
+
+        # Is this a CONSTRUCTOR — a function whose RETURN TYPE names the function itself?
+        # `def Token(…) -> Token`. stage0 exempts these from the prefix rule below.
+        #
+        # Uses bare_type_name rather than matching Expr.Ident by hand: a return annotation is
+        # not always a bare Ident (it can carry `mutable`/`&`/generic-argument wrappers), and
+        # hand-matching one shape silently failed to exempt `def Token(…) -> Token`.
+        def declaration_is_constructor(function_name: sview, return_type: Ast::Expr?) -> bool:
+            can Abort.Panic:
+                if return_type is declared_return:
+                    return bare_type_name(declared_return) == function_name
+                return false
+
+
+        # Do two same-name overloads CONFLICT? MEASURED against stage0, every row a probe:
+        #     (i64)      vs (i64, i64)              REJECTED
+        #     (i64)      vs (i64, bool)             REJECTED
+        #     (i64, i64) vs (i64)                   REJECTED   order-independent
+        #     (i64)      vs (bool, i64)             accepted   first type differs
+        #     prefix pair inside `module M:`        REJECTED   scope is NOT the factor
+        #     name is a type but returns i64        REJECTED   return type alone is not enough
+        #     name T with no type T declared        REJECTED   the name alone is not enough
+        #     struct T + `def T(…) -> T`            ACCEPTED   the CONSTRUCTOR exemption
+        #
+        # So the shorter parameter-type list must not be a PREFIX of the longer, unless the
+        # declaration is a constructor. That exemption is what keeps this compiler's own
+        # source legal: src/lexer/tokens.elisa declares `def Token(kind, position, start,
+        # text_end, suffix_end) -> Token` beside the 4-parameter `def Token(…) -> Token`, an
+        # exact prefix pair, and src/lexer/lexer_tokens.elisa has `Lexer` 2/3.
+        #
+        # AN EARLIER ATTEMPT SHIPPED THIS WITHOUT THE EXEMPTION AND BROKE THE SELF-HOST
+        # (`duplicate declaration 'Token'`). The check that missed it was a per-file
+        # parse_report sweep showing 0 findings — but the driver compiles the FLATTENED unit,
+        # where every include shares one scope. Validate a change here by BUILDING the
+        # compiler (scripts/self_host_gen2.sh, gate ON) AND by a per-file sweep; they are
+        # different scopes and catch different things.
+        def params_prefix_conflict(params_a: darray[Ast::ParamDecl]&, params_b: darray[Ast::ParamDecl]&) -> bool:
+            can Abort.Panic:
+                false return if params_a.count == params_b.count
+                shorter: usize = params_a.count if params_a.count < params_b.count else params_b.count
+                false return if shorter == 0
+                while prefix_index < shorter |prefix_index: usize = 0|:
+                    false return if not same_type_expression(params_a[prefix_index].type_expression, params_b[prefix_index].type_expression)
+                    prefix_index <- prefix_index + 1
+                return true
+
+
+        # Optional return-type equality (both absent == equal; one absent == unequal).
+        def same_return_type(return_a: Ast::Expr?, return_b: Ast::Expr?) -> bool:
+            can Abort.Panic:
+                result: mutable bool = false
+                if return_a is a_value:
+                    if return_b is b_value:
+                        result <- same_type_expression(a_value, b_value)
+                else:
+                    if not (return_b is b_value_2):
+                        result <- true
+                return result
+
+
+        # Whether two Func decls share a signature (params + return type). Same name +
+        # same signature == a real duplicate; a different signature is a legal overload.
+        def function_declarations_same_signature(decl_a: Ast::Decl, decl_b: Ast::Decl) -> bool:
+            can Abort.Panic:
+                return match decl_a:
+                    Ast::Decl.Func(a_name, a_params, a_return_type, a_body, a_effects, a_decorators, a_line):
+                        match decl_b:
+                            Ast::Decl.Func(b_name, b_params, b_return_type, b_body, b_effects, b_decorators, b_line):
+                                (same_params(a_params, b_params) and same_return_type(a_return_type, b_return_type)) or (params_prefix_conflict(a_params, b_params) and not declaration_is_constructor(a_name, a_return_type) and not declaration_is_constructor(b_name, b_return_type))
+                            _:
+                                false
+                    _:
+                        false
+
+
+        # Two alias decls with the SAME name conflict only when their targets DIFFER. An
+        # identical `type X = T` repeated (e.g. across `static if` branches) is idempotent and
+        # accepted by stage0; a differing `type X = u32` / `type X = usize` is a `duplicate type`.
+        # Returns false unless BOTH are aliases — a type/struct-vs-alias name clash is handled by
+        # the caller's unconditional category-1 rule.
+        def alias_declarations_conflict(decl_a: Ast::Decl, decl_b: Ast::Decl) -> bool:
+            can Abort.Panic:
+                return match decl_a:
+                    Ast::Decl.Alias(a_name, a_target, a_line):
+                        match decl_b:
+                            Ast::Decl.Alias(b_name, b_target, b_line):
+                                not same_type_expression(a_target, b_target)
+                            _:
+                                false
+                    _:
+                        false
+
+        # Whether a declaration is a type alias (`type X = T`) — an Alias with a real target.
+        def declaration_is_alias(declaration: Ast::Decl) -> bool:
+            can Abort.Panic:
+                return match declaration:
+                    Ast::Decl.Alias(name, target, line): not (target is Ast::Expr.Invalid)
+                    _:                                    false
+
+        # Duplicate-detection category of a declaration: 1 = TYPE namespace (struct/enum — these
+        # cannot overload or reopen), 2 = FUNCTION namespace (overloadable by signature),
+        # 0 = skipped. Const/Alias/Module/Import/Extern/Law are skipped: they legitimately
+        # repeat via `static if` conditional branches, module reopening, associated-type
+        # aliases, extern forward decls, or imports — none of which stage1 can currently
+        # distinguish from a true redefinition, so flagging them would be a false positive.
+        def declaration_duplicate_category(declaration: Ast::Decl) -> int:
+            can Abort.Panic:
+                return match declaration:
+                    Ast::Decl.Struct(name, members, affinity, _, _, _, line):  1
+                    Ast::Decl.Enum(name, variants, enum_is_const, enum_storage, line):             1
+                    Ast::Decl.Func(name, params, return_type, body, effects, decorators, line): 2
+                    Ast::Decl.Const(name, type_expression, value, is_mutable, line): 3
+                    # `type X = T` collapses to Alias with a real target expression and is a
+                    # type declaration (category 1). Permission/effect/protocol/plain `alias`
+                    # decls also collapse to Alias but carry an Invalid target — those legitimately
+                    # repeat names across runtime includes, so they are NOT duplicate-type candidates.
+                    Ast::Decl.Alias(name, target, line):             (0 if target is Ast::Expr.Invalid else 1)
+                    _:                                                0
+
+
+        # Declared name of a declaration (empty for Invalid).
+        def declaration_duplicate_name(declaration: Ast::Decl) -> sview:
+            can Abort.Panic:
+                return match declaration:
+                    Ast::Decl.Struct(name, members, affinity, _, _, _, line):  name
+                    Ast::Decl.Enum(name, variants, enum_is_const, enum_storage, line):             name
+                    Ast::Decl.Func(name, params, return_type, body, effects, decorators, line): name
+                    Ast::Decl.Const(name, type_expression, value, is_mutable, line): name
+                    Ast::Decl.Alias(name, target, line):             name
+                    _:                                                sview("", 0, 0)
+
+
+        # Source line of a declaration (0 for Invalid).
+        def declaration_duplicate_line(declaration: Ast::Decl) -> u32:
+            can Abort.Panic:
+                return match declaration:
+                    Ast::Decl.Struct(name, members, affinity, _, _, _, line):  line.line
+                    Ast::Decl.Enum(name, variants, enum_is_const, enum_storage, line):             line.line
+                    Ast::Decl.Func(name, params, return_type, body, effects, decorators, line): line.line
+                    Ast::Decl.Const(name, type_expression, value, is_mutable, line): line.line
+                    Ast::Decl.Alias(name, target, line):             line.line
+                    _:                                                0
+
+
+        def module_member_decl_name(declaration: Ast::Decl) -> sview:
+            can Abort.Panic:
+                return match declaration:
+                    Decl.Func(name, _, _, _, _, _, _): name
+                    Decl.Struct(name, _, _, _, _, _, _): name
+                    Decl.Enum(name, _, _, _, _): name
+                    Decl.Alias(name, _, _): name
+                    Decl.Law(name, _, _): name
+                    Decl.Extern(name, _, _, _, _, _, _, _): name
+                    Decl.Const(name, _, _, _, _): name
+                    Decl.Module(name, _, _): name
+                    _: ""
+
+
+        def record_module_members(declarations: darray[Ast::Decl]&, owner: sview, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |table|:
+                    member_name: sview = module_member_decl_name(declaration)
+                    table.module_member_owner <- table.module_member_owner.push(owner) if member_name != ""
+                    table.module_member_name <- table.module_member_name.push(member_name) if member_name != ""
+                    match declaration:
+                        Decl.Scoped(body, line):
+                            table <- record_module_members(body, owner, table)
+
+
+                        _:
+                            pass
+        # Builtin type names pre-registered in stage0's type scope (analyzer_builtins.go).
+        # A user type declaration reusing one of these collides with the builtin, so stage0
+        # reports `duplicate type` at the user decl even though it is the FIRST user-level
+        # occurrence. The state markers (Local/Frozen/Joinable/Pending/Held) are the only
+        # plausibly-collidable names; the primitives are included for exact parity.
+        def is_builtin_type_name(name: sview) -> bool:
+            can Abort.Panic:
+                return name in {"void", "bool", "char", "int", "i8", "i16", "i32", "i64", "isize", "u8", "u16", "u32", "u64", "usize", "uintptr", "f32", "f64", "Local", "Frozen", "Joinable", "Pending", "Held"}
+
+
+        # Per-scope duplicate detection over ONE declaration list (top-level, or a single
+        # module body). Only compares decls WITHIN this scope, so a name reused across
+        # different modules (`Lexer::get` vs `Parser::get`) never collides. A type
+        # redeclaration is always a duplicate; two same-named functions are a duplicate
+        # only when their signatures match (an overload is not). Reported at the second
+        # occurrence's line.
+        def check_scope_duplicates(declarations: darray[Ast::Decl]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                while decl_index < declarations.count |decl_index: usize = 0|:
+                    current_decl: Ast::Decl = declarations[decl_index]
+                    current_category: int = declaration_duplicate_category(current_decl)
+                    current_name: sview = declaration_duplicate_name(current_decl)
+                    if current_category != 0 and current_name != "":
+                        # A type decl (category 1) reusing a builtin type name collides with
+                        # the pre-registered builtin, so it is a duplicate even with no earlier
+                        # user decl in this scope.
+                        seeded_builtin: bool = current_category == 1 and is_builtin_type_name(current_name)
+                        is_duplicate: bool =
+                            while earlier_index < decl_index |is_duplicate = seeded_builtin, earlier_index: usize = 0| -> is_duplicate:
+                                earlier_decl: Ast::Decl = declarations[earlier_index]
+                                if not is_duplicate and declaration_duplicate_category(earlier_decl) == current_category and declaration_duplicate_name(earlier_decl) == current_name:
+                                    # Types (1) and globals (3) collide unconditionally; functions
+                                    # (2) only when their signatures match (overloads are distinct).
+                                    if current_category == 1:
+                                        # struct/enum name clash: always a duplicate. Two type
+                                        # aliases: a duplicate only when their targets differ
+                                        # (identical `type X = T` repeats are idempotent).
+                                        if declaration_is_alias(current_decl) and declaration_is_alias(earlier_decl):
+                                            is_duplicate <- true if alias_declarations_conflict(current_decl, earlier_decl)
+                                        else:
+                                            is_duplicate <- true
+                                    elif current_category == 3:
+                                        is_duplicate <- true
+                                    elif function_declarations_same_signature(current_decl, earlier_decl):
+                                        is_duplicate <- true
+                                earlier_index <- earlier_index + 1
+                        table.duplicates <- table.duplicates + 1 if is_duplicate
+                        # Types (category 1) and functions (2) use distinct messages,
+                        # matching stage0's `duplicate type` vs `duplicate declaration`.
+                        duplicate_kind: DiagnosticKind = DiagnosticKind.DuplicateType if current_category == 1 else DiagnosticKind.DuplicateDecl
+                        duplicate_as: sview = "global" if current_category == 3 else sview("", 0, 0)
+                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: duplicate_kind, name: current_name, line: declaration_duplicate_line(current_decl), expected: "", actual: duplicate_as}) if is_duplicate
+                    decl_index <- decl_index + 1
+
+
+        # Payload enums synthesized by function-local `state`/`start` live in parser-owned
+        # flat metadata (their hoisted Decl's nested field arrays do not survive the
+        # function-body parse region). Import any payload rows not already collected from
+        # an ordinary source enum, so constructor argument checks remain strongly typed.
+        def collect_payload_enum_metadata(file: Ast::File&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for enum_index in 0..<file.payload_enum_names.count |table| -> table:
+                    enum_name: sview = file.payload_enum_names[enum_index]
+                    variant_start: usize = file.payload_enum_variant_starts[enum_index]
+                    variant_count: usize = file.payload_enum_variant_counts[enum_index]
+                    for variant_offset in 0..<variant_count |table| -> table:
+                        variant_slot: usize = variant_start + variant_offset
+                        variant_name: sview = file.payload_enum_variant_names[variant_slot]
+                        field_start: usize = file.payload_enum_variant_field_starts[variant_slot]
+                        field_count: usize = file.payload_enum_variant_field_counts[variant_slot]
+                        for field_offset in 0..<field_count |table| -> table:
+                            field_name: sview = file.payload_enum_variant_field_names[field_start + field_offset]
+                            already_collected: mutable bool = false
+                            for row in 0..<table.enum_payload_owner.count |already_collected|:
+                                already_collected <- true if table.enum_payload_owner[row] == enum_name and table.enum_payload_variant[row] == variant_name and table.enum_payload_name[row] == field_name
+                            if not already_collected:
+                                table.enum_payload_owner <- table.enum_payload_owner.push(enum_name)
+                                table.enum_payload_variant <- table.enum_payload_variant.push(variant_name)
+                                table.enum_payload_name <- table.enum_payload_name.push(field_name)
+                                table.enum_payload_type <- table.enum_payload_type.push(bare_type_name_through_ref(file.payload_enum_variant_fields[field_start + field_offset]))
+
+        # Collect the declarations in `declarations` into `table`, recursing into module bodies. The
+        # element type is Decl, so the match handles exactly Decl's variants directly — no Node
+        # subtype-narrowing and no wildcard category arm.
+        def collect_range(declarations: darray[Ast::Decl], table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                # Duplicate detection is PER-SCOPE (this declaration list only); name resolution's
+                # global index is built separately by add_symbol below.
+                table <- check_scope_duplicates(declarations, table)
+                for declaration in declarations |table|:
+                    match declaration:
+                        Decl.Func(name, params, return_type, body, effects, decorators, line):
+                            # docs/119 §3: required-argument count is a pure fold.
+                            required: u32 =
+                                for parameter in params |required_count = 0| -> required_count:
+                                    required_count <- required_count + 1 if not parameter.has_default
+                            return_type_name: mutable sview = sview("", 0, 0)
+                            return_type_name <- bare_type_name(return_type_expr) if return_type is return_type_expr
+                            # Structural return TypeId (Phase C). Return-position
+                            # annotations read correctly (unlike param position —
+                            # see the KNOWN HOLE in intern_declared_types).
+                            return_id: mutable u32 = 0
+                            if return_type is structural_return_expr:
+                                return_id <- annotation_type_id(structural_return_expr, table)
+                            table <- table.add_symbol(name, SymbolKind.Func, line.line, required, params.count.u32(), return_type_name, return_id)
+                            while parameter_index < params.count |parameter_index: usize = 0|:
+                                new_param_row: usize = table.function_param_owner.count
+                                table.function_param_owner <- table.function_param_owner.push(name)
+                                table.function_param_name <- table.function_param_name.push(params[parameter_index].name)
+                                table.function_param_has_default <- table.function_param_has_default.push(params[parameter_index].has_default)
+                                table.function_param_type <- table.function_param_type.push(bare_type_name(params[parameter_index].type_expression))
+                                table.function_param_type_id <- table.function_param_type_id.push(annotation_type_id(params[parameter_index].type_expression, table))
+                                table.function_param_mutable_ref <- table.function_param_mutable_ref.push(param_is_mutable_ref(params[parameter_index]))
+                                table <- index_function_param(table, name, new_param_row)
+                                parameter_index <- parameter_index + 1
+                            # Record this function's `lmut` parameter positions for the
+                            # call-site aliasing check. One row per lmut position; the
+                            # check itself poisons overloaded names (unique decls only).
+                            while lmut_param_index < params.count |lmut_param_index: usize = 0|:
+                                table.lmut_param_owner <- table.lmut_param_owner.push(name) if type_is_lmut(params[lmut_param_index].type_expression)
+                                table.lmut_param_pos <- table.lmut_param_pos.push(lmut_param_index.u32()) if type_is_lmut(params[lmut_param_index].type_expression)
+                                lmut_param_index <- lmut_param_index + 1
+                            # Record this function's declared signature effect refs (one row
+                            # per `can[...]` entry), for call-site effect-requirement checking.
+                            while effect_index < effects.count |effect_index: usize = 0|:
+                                table.function_effect_owner <- table.function_effect_owner.push(name)
+                                table.function_effect_name <- table.function_effect_name.push(effects[effect_index])
+                                effect_index <- effect_index + 1
+                            table <- count_statements(body, table)
+                        Decl.Struct(name, members, affinity, _, _, _, line):
+                            table <- table.add_symbol(name, SymbolKind.Struct, line.line)
+                            # Record affinity-disciplined ("linear"/"affine") structs — linear
+                            # handle types that cannot be dict keys or set elements.
+                            struct_affinity: sview = affinity
+                            struct_contains_affine: mutable bool = false
+                            # Duplicate field names within the struct (parity with stage0).
+                            seen_fields: mutable darray[sview] = []
+                            seen_required: mutable darray[bool] = []
+                            seen_types: mutable darray[sview] = []
+                            seen_mutable: mutable darray[bool] = []
+                            seen_type_ids: mutable darray[u32] = []
+                            # An anonymous/positional member means the parser could not
+                            # fully model this struct's field set — leave it UNregistered
+                            # so UnknownField bails rather than flagging against a partial
+                            # set (sound: only cleanly-named structs get a closed set).
+                            has_anonymous: mutable bool = false
+                            for member in members |has_anonymous, struct_contains_affine, table|:
+                                # Skip anonymous/positional members (empty name) so two of them
+                                # never collide as a spurious duplicate.
+                                has_anonymous <- true if member.name == ""
+                                continue if member.name == ""
+                                member_head: sview = bare_type_name_through_ref(member.type_expression)
+                                struct_contains_affine <- true if member_head in {"Thread", "Task", "MutexGuard"} or struct_is_affine(table, member_head)
+                                duplicate_field: bool = any seen_field in seen_fields where seen_field == member.name
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.DuplicateField, name: member.name, line: line.line, expected: name, actual: ""}) if duplicate_field
+                                seen_fields.push(member.name) if not duplicate_field
+                                seen_required.push(not member.omittable) if not duplicate_field
+                                # `layout(soa)`: the field is a COLUMN, so it types as a mutable
+                                # darray of the declared element -- the shape every column
+                                # operation (`.push`, `.reserve`, `.truncate`, `.count`) checks
+                                # against.
+                                member_is_column: bool = any soa_owner in table.soa_layout_owners where soa_owner == name
+                                seen_types.push("darray" if member_is_column else bare_type_name(member.type_expression)) if not duplicate_field
+                                seen_mutable.push(true if member_is_column else type_is_mutable(member.type_expression)) if not duplicate_field
+                                seen_type_ids.push(annotation_type_id(member.type_expression, table)) if not duplicate_field
+                            table.struct_affine_owner <- table.struct_affine_owner.push(name) if struct_affinity != "" or struct_contains_affine
+                            table.struct_affine_container_owner <- table.struct_affine_container_owner.push(name) if struct_contains_affine
+                            # Record the named fields for UnknownField / MissingField
+                            # construction checks, but only when every member was cleanly
+                            # named (so the field set is known-complete).
+                            if not has_anonymous:
+                                while field_index < seen_fields.count |field_index: usize = 0|:
+                                    table.struct_field_owner <- table.struct_field_owner.push(name)
+                                    table.struct_field_module <- table.struct_field_module.push(table.current_module)
+                                    table.struct_field_name <- table.struct_field_name.push(seen_fields[field_index])
+                                    table.struct_field_required <- table.struct_field_required.push(seen_required[field_index])
+                                    table.struct_field_type <- table.struct_field_type.push(seen_types[field_index])
+                                    table.struct_field_mutable <- table.struct_field_mutable.push(seen_mutable[field_index])
+                                    table.struct_field_type_id <- table.struct_field_type_id.push(seen_type_ids[field_index])
+                                    field_index <- field_index + 1
+                        Decl.Enum(name, variants, enum_is_const, enum_storage, line):
+                            table <- table.add_symbol(name, SymbolKind.Enum, line.line)
+                            seen_variants: mutable darray[sview] = []
+                            for variant in variants |table, seen_variants|:
+                                # Duplicate variant names within the enum (parity with stage0).
+                                duplicate_variant: bool = any seen_variant in seen_variants where seen_variant == variant.name
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.DuplicateVariant, name: variant.name, line: line.line, expected: name, actual: ""}) if duplicate_variant
+                                seen_variants.push(variant.name) if not duplicate_variant
+                                table.enum_variant_owner <- table.enum_variant_owner.push(name)
+                                table.enum_variant_name <- table.enum_variant_name.push(variant.name)
+                                table.enum_variant_arity <- table.enum_variant_arity.push(variant.fields.count.u32())
+                                while payload_index < variant.field_names.count |payload_index: usize = 0|:
+                                    table.enum_payload_owner <- table.enum_payload_owner.push(name)
+                                    table.enum_payload_variant <- table.enum_payload_variant.push(variant.name)
+                                    table.enum_payload_name <- table.enum_payload_name.push(variant.field_names[payload_index])
+                                    table.enum_payload_type <- table.enum_payload_type.push(bare_type_name_through_ref(variant.fields[payload_index]))
+                                    payload_index <- payload_index + 1
+                        Decl.Const(name, type_expression, value, is_mutable, line):
+                            table <- table.add_symbol(name, SymbolKind.Const, line.line)
+                            table.immutable_const_names <- table.immutable_const_names.push(name) if not is_mutable
+                            match value:
+                                Expr.IntLit(const_value):
+                                    table.const_int_names <- table.const_int_names.push(name) if not is_mutable
+                                    table.const_int_values <- table.const_int_values.push(const_value) if not is_mutable
+                                _:
+                                    pass
+                        Decl.Alias(name, target, line):
+                            table <- table.add_symbol(name, SymbolKind.Alias, line.line)
+                        Decl.Law(name, predicate, line):
+                            table <- table.add_symbol(name, SymbolKind.Law, line.line)
+                        Decl.Import(module_path, line):
+                            table <- table.add_symbol(module_path, SymbolKind.Import, line.line)
+                        Decl.Extern(name, extern_params, arity, variadic, callable, _, decorators, line):
+                            extern_kind: SymbolKind = SymbolKind.Func if callable else SymbolKind.Extern
+                            extern_min: u32 = arity if callable else 0
+                            extern_max: u32 = (4294967295 if variadic else arity) if callable else 0
+                            table <- table.add_symbol(name, extern_kind, line.line, extern_min, extern_max)
+                        Decl.Module(name, body, line):
+                            table <- table.add_symbol(name, SymbolKind.Module, line.line)
+                            table <- record_module_members(body, name, table)
+                            for member in body |table|:
+                                match member:
+                                    Decl.Struct(type_name, _, _, _, _, _, _):
+                                        table.qualified_type_module <- table.qualified_type_module.push(name)
+                                        table.qualified_type_name <- table.qualified_type_name.push(type_name)
+                                    Decl.Enum(type_name, _, _, _, _):
+                                        table.qualified_type_module <- table.qualified_type_module.push(name)
+                                        table.qualified_type_name <- table.qualified_type_name.push(type_name)
+                                    Decl.Alias(type_name, _, _):
+                                        table.qualified_type_module <- table.qualified_type_module.push(name)
+                                        table.qualified_type_name <- table.qualified_type_name.push(type_name)
+                                    Decl.Extern(type_name, _, _, _, _, _, _, _):
+                                        table.qualified_type_module <- table.qualified_type_module.push(name)
+                                        table.qualified_type_name <- table.qualified_type_name.push(type_name)
+                                    _:
+                                        pass
+                            # `current_module` while the body is collected, so a struct
+                            # declared here records the module it belongs to. Restored, so a
+                            # nested module leaves the outer one intact.
+                            outer_module: sview = table.current_module
+                            table.current_module <- name
+                            table <- collect_range(body, table)
+                            table.current_module <- outer_module
+                        Decl.Scoped(body, line):
+                            # A static-if branch or impl body: an isolated scope. Register
+                            # its decls for resolution, but its own duplicate detection runs
+                            # in isolation, so same-name decls in sibling scopes (other
+                            # branches / other impls) never collide.
+                            table <- collect_range(body, table)
+                        Decl.Invalid:
+                            pass

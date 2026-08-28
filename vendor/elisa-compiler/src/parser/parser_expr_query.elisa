@@ -1,0 +1,437 @@
+extend Parser:
+    private:
+        # `get EXPR else <recovery>`: yields the guarded EXPR's value. The `else` clause
+        # is consumed but not modeled — a control-flow statement (`return`/`break`/
+        # `continue`) or a fallback expression. The guarded expression is returned as the
+        # node (the recovery semantics are erased until an explicit Get/Try node exists).
+        def get_expression(parser: lmut Parser) -> Ast::Expr?:
+            rebind get_token: Token, parser = parser.advance()      # consume `get`
+            rebind inner: Ast::Expr?, parser = parser.expression()
+            rebind accepted_else: bool, parser = parser.accept(TokenKind.Else)
+            if get_token.kind == TokenKind.Try and not accepted_else:
+                try_owner: sview = parser.try_expression_owner(try_expression) if inner is try_expression else "__noncall"
+                parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: try_owner, name: "__try_without_else", line: get_token.line})
+            fallback: mutable Ast::Expr? = null
+            # The control-flow recovery, RETAINED (not discarded): `get f() else return 7`
+            # binds a `T`, and the early return is the only reason that is sound.
+            recovery: mutable darray[Ast::Stmt] = []
+            if accepted_else:
+                match parser.peek():
+                    # `raise` belongs here, not with the value fallbacks below: it TERMINATES.
+                    # Parsed as an expression it became the fallback half of a Refinement node,
+                    # which types the recovered expression by a value the branch never produces
+                    # -- so `ptr: T = get alloc(n) else raise MemoryError.OutOfMemory` lost the
+                    # branch that makes unwrapping the optional sound.
+                    TokenKind.Return | TokenKind.Raise | TokenKind.Break | TokenKind.Continue:
+                        rebind recovery_statement: Ast::Stmt?, parser = parser.statement()
+                        recovery.push(recovery_statement_value) if recovery_statement is recovery_statement_value
+                    TokenKind.Ident if parser.peek_at(1) == TokenKind.Colon:
+                        # Error-binding recovery: `try f() else err: BLOCK`. RETAIN the block
+                        # in the GetElse node so its statements (a `raise`, a call) are walked
+                        # by later passes rather than silently discarded.
+                        parser, _ <- parser.advance()
+                        rebind recovery_block: darray[Ast::Stmt], parser = parser.parse_block()
+                        recovery.extend(recovery_block)
+                    _:
+                        parser, fallback <- parser.expression()               # fallback-expression else-clause
+            # A value fallback determines the recovered expression's non-optional
+            # result type while the guarded optional is still retained and walked.
+            # Refinement(base, predicate) provides exactly that two-child shape:
+            # semantic type inference follows the base; resolution visits both.
+            if fallback is fallback_expression:
+                if inner is guarded_expression:
+                    return (Ast::Expr.Refinement(fallback_expression, guarded_expression, Ast::pos_of_token(get_token)))
+            # A CONTROL-FLOW recovery keeps its body, so the guarded optional and the branch
+            # that makes unwrapping it sound stay in one node.
+            if inner is control_flow_guarded:
+                recovered: Ast::Expr? = (Ast::Expr.GetElse(control_flow_guarded, recovery, Ast::pos_of_token(get_token)))
+                recovered return if recovery.count > 0
+            # A BARE `get xs[i]` returns the inner expression unchanged (an optional-
+            # producing checked access), so its checked-ness would be lost to the
+            # strict-unsafe pass; record the line so `get`-guarded indexes are exempt.
+            parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: "__checked_get", name: "", line: get_token.line})
+            return inner
+
+        def try_expression_owner(parser: Parser&, expression: Ast::Expr) -> sview:
+            can Abort.Panic:
+                match expression:
+                    Ast::Expr.Call(callee, arguments, argument_names, line):
+                        match callee:
+                            Ast::Expr.Ident(name, ident_line):
+                                return name
+                            _:
+                                return "__unknown_call"
+                    _:
+                        return "__noncall"
+
+
+        # Quantifier `any|all VAR in ITER where COND` — a boolean over ITER. VAR is
+        # bound in COND (not in ITER). Modeled as a Comprehension with no body. The
+        # `any`/`all` head is the current token.
+        def quantifier_expression(parser: lmut Parser) -> Ast::Expr?:
+            rebind head: Token, parser = parser.advance()             # `any` / `all`
+            rebind variable_token: Token, parser = parser.expect(TokenKind.Ident)
+            # The query's BINDER, paired with the `__query` head row the caller just pushed.
+            # The head marker alone is keyed by LINE, and the lookup returns the first row for
+            # a line, so two queries on one line collided:
+            #     (count x in xs where x > 2) * 10 + (sum y in xs where y > 2)
+            # read the `sum` as a `count` — 33 where stage0 answers 42, silently. One row per
+            # query in each pool, pushed in query order, keeps the two index-aligned; a NESTED
+            # query cannot interleave them because the binder is parsed before the iterable.
+            parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: "__query_binder_of", name: Lexer::text_or_empty(variable_token, parser.source), line: head.line})
+            # Extra query variables (`count k, v in m where …`) — the first variable is the
+            # canonical binder recorded on the Comprehension node; the rest are line-paired
+            # to the head as `__query_binder` markers so the resolver still scopes them.
+            while parser.accept(TokenKind.Comma) |parser|:
+                rebind extra_binder_token: Token, parser = parser.expect(TokenKind.Ident)
+                parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: Lexer::text_or_empty(extra_binder_token, parser.source), name: "__query_binder", line: head.line})
+            parser, _ <- parser.expect(TokenKind.In)
+            # Parse only the iterable precedence expression; the following contextual
+            # `where` belongs to this query rather than to an expression-level view.
+            rebind iterable_left: Ast::Expr, parser = get parser.unary_expression()
+            rebind iterable_expression: Ast::Expr, parser = parser.binary_expression_at_level(iterable_left, 1)
+            condition_expression: mutable Ast::Expr = (Ast::Expr.Absent)
+            guard_expression: mutable Ast::Expr = (Ast::Expr.Absent)
+            where_token: Token = parser.cursor()
+            saw_where: mutable bool = false
+            if parser.peek() == TokenKind.Ident and Lexer::text_or_empty(where_token, parser.source) == "where":
+                saw_where <- true
+                parser, _ <- parser.advance()                       # `where`
+                guarded_pattern: bool = parser.query_pattern_filter_head()
+                rebind parsed_condition_opt: Ast::Expr?, parser = parser.expression()
+                condition_expression <- parsed_condition if parsed_condition_opt is parsed_condition
+                # Guarded pattern filter: `where PATTERN: PRED` or
+                # `where subject is PATTERN: PRED`. Keep the PATTERN in the condition slot
+                # (its `is`-payload bindings must scope PRED) and put PRED in the body slot,
+                # so resolution binds the pattern before walking the guard. Previously PRED
+                # overwrote the condition, dropping the pattern's bindings.
+                if guarded_pattern and parser.peek() == TokenKind.Colon:
+                    parser, _ <- parser.advance()
+                    rebind guard_opt: Ast::Expr?, parser = parser.expression()
+                    guard_expression <- guard if guard_opt is guard
+                    # The body slot of a leading-keyword query means two different things:
+                    # a GUARD here, and a PROJECTION in `EXPR for each x in xs` (which the
+                    # projection parser fills). The backend cannot tell them apart from the
+                    # node, and pushing a guard as the collected ELEMENT would be a wrong
+                    # answer, so the guarded case is marked explicitly.
+                    parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: "__query_guard", name: "", line: head.line}) if guard_opt is guard_marker
+            # `count x in xs` with NO filter is not a query at all in stage0 — it reports
+            # `expected IDENT` and then `expected "where"`. MEASURED across the whole keyword
+            # family: `sum` and `product` accept the bare form, `count` does not. (any/all/
+            # first/min/max/each reject the bare form too, but stage1 already declines those
+            # downstream, so only `count` is a live divergence.) Narrow on purpose — this is
+            # the oracle's rule, not a generalisation of it.
+            parser <- parser.error_at(Ast::ParseErrorKind.UnexpectedToken, where_token) if not saw_where and Lexer::text_or_empty(head, parser.source) == "count"
+            return (Ast::Expr.Comprehension(Lexer::text_or_empty(variable_token, parser.source), iterable_expression, condition_expression, guard_expression, Ast::pos_of_token(head)))
+
+        # A guarded query pattern starts either with a qualified variant pattern
+        # (`Expr.Int(...)`) or contains a top-level `is` subject separator. This keeps
+        # an enclosing statement's block colon out of the query expression.
+        def query_pattern_filter_head(parser: Parser&) -> bool:
+            true return if parser.peek_where_view_pattern_filter()
+            scan: mutable usize = 0
+            depth: mutable int = 0
+            while parser.peek_at(scan) != TokenKind.Newline and parser.peek_at(scan) != TokenKind.Eof |scan, depth|:
+                kind: TokenKind = parser.peek_at(scan)
+                true return if depth == 0 and kind == TokenKind.Is
+                break if depth == 0 and kind == TokenKind.Colon
+                depth <- depth + 1 if kind == TokenKind.LParen or kind == TokenKind.LBracket or kind == TokenKind.LBrace
+                depth <- depth - 1 if kind == TokenKind.RParen or kind == TokenKind.RBracket or kind == TokenKind.RBrace
+                scan <- scan + 1
+            return false
+
+
+        # A `where`-clause variant/struct pattern head is a CAPITALIZED type name —
+        # `Expr.Int(n)`, `Color.Red`, `Point{...}` — never a lowercase field access
+        # like `directive.kind`. Mirrors stage0's peekWhereViewPatternFilter: without
+        # the capitalization gate, `where directive.kind in {...}:` was misread as a
+        # guarded pattern filter, stealing the enclosing `if`'s block colon.
+        def peek_where_view_pattern_filter(parser: Parser&) -> bool:
+            false return if parser.peek() != TokenKind.Ident
+            head_token: Token = parser.cursor()
+            head_text: sview = Lexer::text_or_empty(head_token, parser.source)
+            false return if sview_len(head_text) == 0
+            first: u8 = sview_at(head_text, 0)
+            capitalized: bool = first >= 65 and first <= 90
+            next: TokenKind = parser.peek_at(1)
+            true return if capitalized and (next == TokenKind.LParen or next == TokenKind.LBrace)
+            false return if next != TokenKind.Dot
+            false return if not capitalized
+            # Walk the dotted chain `Ident (.Ident)*`, then require the token after it
+            # to be one that can legitimately follow a pattern head.
+            index: mutable usize = 1
+            while parser.peek_at(index) == TokenKind.Dot and parser.peek_at(index + 1) == TokenKind.Ident |index|:
+                index <- index + 2
+            after: TokenKind = parser.peek_at(index)
+            return when after:
+                TokenKind.LParen | TokenKind.Colon | TokenKind.RParen | TokenKind.RBracket | TokenKind.Comma | TokenKind.Newline | TokenKind.Eof -> true
+                _ -> false
+
+
+        # Non-destructive check that the token stream after a query keyword has the
+        # `VAR (, VAR)* in` shape that selects the query-expression form (mirrors
+        # stage0's looksLikeQueryExpr).
+        def looks_like_query_expression(parser: Parser&) -> bool:
+            false return if parser.peek_at(1) != TokenKind.Ident
+            scan_index: mutable usize = 2
+            while parser.peek_at(scan_index) == TokenKind.Comma |scan_index, parser|:
+                    false return if parser.peek_at(scan_index + 1) != TokenKind.Ident
+                    scan_index <- scan_index + 2
+            return parser.peek_at(scan_index) == TokenKind.In
+
+
+        # Non-destructive check that the current lambda-keyword token begins a lambda:
+        # the parenthesized param signature (+ optional `-> T`) must be followed by a
+        # `:` or `=>`. Saves and restores the parse position so a bare `fn` reference /
+        # `fn(x)` call (both very common — `fn` is an ordinary local name) is NOT
+        # misread as a lambda.
+        def lambda_return_type_probe(parser: lmut Parser) -> bool:
+            accepted_arrow: bool = parser.peek() == TokenKind.Arrow
+            parser, _ <- parser.advance() if accepted_arrow
+            if accepted_arrow:
+                return_type_depth: mutable int = 0
+                while parser.peek() != TokenKind.Eof |parser, return_type_depth|:
+                    kind: TokenKind = parser.peek()
+                    break if return_type_depth == 0 and (kind == TokenKind.Colon or kind == TokenKind.FatArrow or kind == TokenKind.Newline)
+                    return_type_depth <- return_type_depth + 1 if kind == TokenKind.LParen or kind == TokenKind.LBracket
+                    return_type_depth <- return_type_depth - 1 if kind == TokenKind.RParen or kind == TokenKind.RBracket
+                    parser, _ <- parser.advance()
+            return accepted_arrow
+
+        def looks_like_lambda(parser: lmut Parser) -> bool:
+            saved: usize = parser.position
+            parser, _ <- parser.advance()                           # the lambda keyword
+            rebind ok: bool, parser = parser.lambda_signature_probe()
+            result: mutable bool = false
+            if ok:
+                # Optional return type `-> T`: skip to the depth-0 `:` / `=>` / line end.
+                rebind accepted_arrow: bool, parser = parser.lambda_return_type_probe()
+                result <- parser.peek() == TokenKind.Colon or parser.peek() == TokenKind.FatArrow
+                # A `fn(A) -> R` with a return arrow but NO `:`/`=>` body is a fn-TYPE (not a
+                # call): in a TYPE-annotation context (a local `f: fn(A)->R = …`) accept it so it
+                # resolves to a Fn type rather than parsing `fn(i64)` as a call to a fn named `fn`.
+                result <- true if accepted_arrow and parser.in_type_annotation
+            parser.position <- saved
+            return result
+
+
+        # Non-destructive check that the current lambda-keyword token begins the
+        # *removed* shorthand param shape `fn x: x` / `fn a, b: expression` (unparenthesized
+        # — dropped in bd208ae, parens are now required). Scans `IDENT (, IDENT)*`
+        # directly after the keyword for a top-level `:`; a bare `fn(...)` call/paren
+        # signature never enters this path since it starts with LParen, not Ident. Saves
+        # and restores position like `looks_like_lambda`.
+        def looks_like_removed_shorthand_lambda(parser: lmut Parser) -> bool:
+            saved: usize = parser.position
+            parser, _ <- parser.advance()                           # the lambda keyword
+            result: mutable bool = false
+            if parser.peek() == TokenKind.Ident:
+                parser, _ <- parser.advance()
+                while parser.accept(TokenKind.Comma) |parser|:
+                    break if parser.peek() != TokenKind.Ident
+                    parser, _ <- parser.advance()
+                result <- parser.peek() == TokenKind.Colon
+            parser.position <- saved
+            return result
+
+
+        def skip_lambda_parameter_type_probe(parser: lmut Parser) -> bool:
+            paren_depth: mutable int = 0
+            while parser.peek() != TokenKind.Eof |parser, paren_depth|:
+                token_kind: TokenKind = parser.peek()
+                break if paren_depth == 0 and token_kind == TokenKind.RParen
+                false return if paren_depth == 0 and token_kind == TokenKind.Newline
+                break if paren_depth == 0 and token_kind == TokenKind.Comma
+                if token_kind == TokenKind.LBracket:
+                    parser, _ <- parser.advance()
+                    parser <- parser.skip_bracketed_group()
+                    continue
+                paren_depth <- paren_depth + 1 if token_kind == TokenKind.LParen
+                paren_depth <- paren_depth - 1 if token_kind == TokenKind.RParen
+                parser, _ <- parser.advance()
+            return true
+
+        # Consume a lambda parameter signature (used only inside the probe): a
+        # parenthesized list `(a: T, b, …)` (types skipped, paren/bracket-balanced).
+        # Parameters are always parenthesized — the shorthand form has been removed.
+        def lambda_signature_probe(parser: lmut Parser) -> bool:
+            false return if parser.peek() != TokenKind.LParen
+            parser, _ <- parser.advance()
+            if parser.peek() != TokenKind.RParen:
+                while true |parser|:
+                    parser, _ <- parser.accept(TokenKind.Mutable)
+                    false return if parser.peek() != TokenKind.Ident
+                    parser, _ <- parser.advance()                   # param name
+                    rebind accepted_colon: bool, parser = parser.accept(TokenKind.Colon)
+                    if accepted_colon:
+                        # Skip the param type to a top-level `,` or the closing `)`.
+                        false return if not parser.skip_lambda_parameter_type_probe()
+                    elif parser.peek() == TokenKind.LBracket:
+                        # In a function TYPE, a bare parameter is itself a type head
+                        # (`fn(Slice[i64])`). The probe must consume its generic argument
+                        # list or it will reject the signature before the real parser can
+                        # preserve the complete type expression.
+                        #
+                        # `skip_bracketed_group` starts at depth 1 — it expects the opening
+                        # `[` to be CONSUMED already (every other caller accepts it first).
+                        # Called with the cursor still on `[`, it ran past the closing `]`
+                        # and ate the signature's `)`, so the probe rejected the whole
+                        # signature: `fn(darray[i64]) -> i64` was then parsed as a CALL to a
+                        # value named `fn`, and the parameter's type reached the backend as a
+                        # non-Lambda node it could only decline.
+                        parser, _ <- parser.advance()
+                        parser <- parser.skip_bracketed_group()
+                    # Postfix type qualifiers on a BARE parameter (`fn(u8&)`, `fn(T?)`,
+                    # `fn(mutable void&)`). lambda_expression already consumes this run when it
+                    # builds the parameter's type expression, but the PROBE did not — so the
+                    # cursor stopped on the `&`, neither `,` nor `)` matched, and the probe
+                    # rejected the whole signature. `fn(mutable void&) -> void&` then parsed as a
+                    # CALL to a value named `fn` plus a trailing binary `->`, reaching the backend
+                    # as a non-Lambda node it could only decline. Kept in step with the real
+                    # parser's own qualifier loop.
+                    while parser.peek() == TokenKind.Ampersand or parser.peek() == TokenKind.Question |parser|:
+                        parser, _ <- parser.advance()
+                    rebind accepted_comma: bool, parser = parser.accept(TokenKind.Comma)
+                    break if not accepted_comma
+            rebind accepted_rparen: bool, parser = parser.accept(TokenKind.RParen)
+            return accepted_rparen
+
+
+        # Parse a lambda `fn(parameters) [-> T] => EXPR` (expression body) / `fn(parameters):`
+        # + block (keyword already confirmed by looks_like_lambda). Params are always
+        # parenthesized. The `=> EXPR` body is normalized to a single `return EXPR` so
+        # the body is uniformly `darray[Stmt]`; the `:` form reuses parse_block. Param
+        # types and the return type are consumed but not modeled.
+        # Consume an optional `error[Set]` suffix on a lambda return type
+        # (`fn() -> i64 error[IoErr] => ...`). The bare type before it is parsed by the
+        # ordinary expression parser, which stops at `error`; this picks up the tail.
+        def skip_optional_error_set(parser: lmut Parser) -> void:
+            return if parser.peek() != TokenKind.Error
+            parser, _ <- parser.advance()                       # `error`
+            rebind accepted_error_bracket: bool, parser = parser.accept(TokenKind.LBracket)
+            parser <- parser.skip_bracketed_group() if accepted_error_bracket
+
+        def lambda_expression(parser: lmut Parser) -> Ast::Expr?:
+            rebind token: Token, parser = parser.advance()              # the lambda keyword
+            parameters: mutable darray[sview] = []
+            rebind accepted_lparen: bool, parser = parser.accept(TokenKind.LParen)
+            if accepted_lparen:
+                while parser.peek() != TokenKind.RParen and parser.peek() != TokenKind.Eof |parser|:
+                    parser, _ <- parser.accept(TokenKind.Mutable)
+                    rebind parameter_name_token: Token, parser = parser.expect(TokenKind.Ident)
+                    parameters.push(Lexer::text_or_empty(parameter_name_token, parser.source))
+                    rebind accepted_colon_2: bool, parser = parser.accept(TokenKind.Colon)
+                    # Capture each param's TYPE HEAD (in order) on `__lambda_param`, keyed by the
+                    # lambda's line, mirroring `__lambda_return` — the AST's `parameters` keeps
+                    # only names, so a `fn(i64, u8) -> R` TYPE annotation would otherwise lose its
+                    # param types. Two spellings: with a colon (`fn(x: i64)`) the head is the token
+                    # AFTER the colon; a bare TYPE param (`fn(i64)` — the fn-TYPE form, where the
+                    # "name" IS the type) has no colon, so the param-name token itself is the head.
+                    # (A value lambda `fn(v) =>` records its param NAME here, which is harmless: a
+                    # lambda value's param types come from the EXPECTED fn type, not from itself.)
+                    param_type_token: Token = parser.cursor() if accepted_colon_2 else parameter_name_token
+                    # Widen the recorded head over a BARE parameter's postfix `&`/`?` run, for the
+                    # same reason as the return type: the head alone made `fn(Box&?)` record "Box",
+                    # and the semantic variance check reads this row — so assigning a
+                    # `fn(Box&) -> int` to a `fn(Box&?) -> int` compared "Box" against "Box" and
+                    # stopped reporting the widening. (The full param type expression is kept
+                    # separately in fn_type_param_exprs; this legacy head row is what the semantic
+                    # pass consumes.) The cursor sits just past the name here, so the run is ahead.
+                    param_head_end: mutable usize = (param_type_token.start + param_type_token.length).usize()
+                    param_qualifier_scan: mutable usize = 0
+                    while not accepted_colon_2 and (parser.peek_at(param_qualifier_scan) == TokenKind.Ampersand or parser.peek_at(param_qualifier_scan) == TokenKind.Question) |parser, param_qualifier_scan, param_head_end, accepted_colon_2|:
+                        param_qualifier_token: Token = parser.tokens[parser.position + param_qualifier_scan]
+                        param_head_end <- (param_qualifier_token.start + param_qualifier_token.length).usize()
+                        param_qualifier_scan <- param_qualifier_scan + 1
+                    param_head_view: sview = Lexer::source_view_or_empty(parser.source, param_type_token.start.usize(), param_head_end)
+                    parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: "__lambda_param", name: param_head_view, line: token.line})
+                    # Keep the complete type expression as well as the legacy head row. This
+                    # matters for function-value ABI signatures such as `fn(Slice[T]) -> i64`;
+                    # the head-only row is retained for older semantic consumers.
+                    if accepted_colon_2:
+                        rebind parsed_param_type_opt: Ast::Expr?, parser = parser.expression()
+                        if parsed_param_type_opt is parsed_param_type:
+                            parser.fn_type_param_lines <- parser.fn_type_param_lines.push(token.line)
+                            parser.fn_type_param_exprs <- parser.fn_type_param_exprs.push(parsed_param_type)
+                    else:
+                        bare_param_type: mutable Ast::Expr = Ast::Expr.Ident(Lexer::text_or_empty(parameter_name_token, parser.source), Ast::pos_of_token(parameter_name_token))
+                        if parser.peek() == TokenKind.LBracket:
+                            rebind subscripted_type: Ast::Expr, parser = parser.subscript_suffix(bare_param_type, parser.cursor())
+                            bare_param_type <- subscripted_type
+                        # Postfix type qualifiers on bare function-type parameters, matching
+                        # stage0: `fn(u8&) -> int`, `fn(T?) -> T`, `fn(mutable T&) -> void`.
+                        while parser.peek() == TokenKind.Ampersand or parser.peek() == TokenKind.Question |parser, bare_param_type|:
+                            rebind qualifier_token: Token, parser = parser.advance()
+                            bare_param_type <- Ast::Expr.Unary(qualifier_token.kind, bare_param_type, Ast::pos_of_token(qualifier_token))
+                        parser.fn_type_param_lines <- parser.fn_type_param_lines.push(token.line)
+                        parser.fn_type_param_exprs <- parser.fn_type_param_exprs.push(bare_param_type)
+                    rebind accepted_comma_2: bool, parser = parser.accept(TokenKind.Comma)
+                    break if not accepted_comma_2
+                parser, _ <- parser.expect(TokenKind.RParen)
+
+            rebind accepted_arrow_2: bool, parser = parser.accept(TokenKind.Arrow)
+            # Capture the return type's head token before consuming it — a `fn(...) -> T` type
+            # annotation is an Expr.Lambda whose return type the AST otherwise drops, so the
+            # head name is recorded on `__lambda_return` (keyed by the lambda's line) for the
+            # semantic lambda-argument return-type check.
+            return_type_token: Token = parser.cursor()
+            return_scan_start: usize = parser.position
+            # KEEP the parsed return type, do not discard it. The widened head recorded below
+            # is a STRING, so a generic application (`-> Task[R, Pending]`) arrived at the
+            # backend as the bare name "Task" — and since every instantiation registers under
+            # its bare base name, the fn value's result resolved to whichever `Task__*` was
+            # registered FIRST. That put `ret %Task__opt0__unknown` in a function declared to
+            # return `%Task__i64__unknown`: two structurally identical `{i64, ptr}` types, but
+            # LLVM's are NOMINAL, so the module was invalid and the -O3 pipeline died on it.
+            # The parameters have kept their full expressions all along (fn_type_param_exprs);
+            # this is the same row for the return.
+            if accepted_arrow_2:
+                rebind parsed_return_type_opt: Ast::Expr?, parser = parser.expression()
+                if parsed_return_type_opt is parsed_return_type:
+                    parser.fn_type_return_lines <- parser.fn_type_return_lines.push(token.line)
+                    parser.fn_type_return_exprs <- parser.fn_type_return_exprs.push(parsed_return_type)
+            # The head token ALONE loses a postfix qualifier: `-> void&` recorded "void", so the
+            # backend resolved the fn's result as VOID (or a bare scalar for `-> u8&`) — a WRONG
+            # type rather than a decline, which for an indirect call is an ABI mismatch. The
+            # qualifiers are contiguous with the head in the source, so widen the recorded span
+            # over the trailing `&`/`?` run instead of adding a parallel side table. A return type
+            # that is not a simple head with qualifiers (`-> darray[u8]`) still records its head,
+            # exactly as before.
+            return_head_end: mutable usize = (return_type_token.start + return_type_token.length).usize()
+            return_qualifier_scan: mutable usize = return_scan_start + 1
+            while accepted_arrow_2 and return_qualifier_scan < parser.position |parser, return_qualifier_scan, return_head_end, accepted_arrow_2|:
+                qualifier_candidate: Token = parser.tokens[return_qualifier_scan]
+                break if qualifier_candidate.kind != TokenKind.Ampersand and qualifier_candidate.kind != TokenKind.Question
+                return_head_end <- (qualifier_candidate.start + qualifier_candidate.length).usize()
+                return_qualifier_scan <- return_qualifier_scan + 1
+            return_head_view: sview = Lexer::source_view_or_empty(parser.source, return_type_token.start.usize(), return_head_end)
+            parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: "__lambda_return", name: return_head_view, line: token.line}) if accepted_arrow_2
+            parser <- parser.skip_optional_error_set() if accepted_arrow_2   # optional `error[Set]` tail
+            # Function-type effect clause: `fn(...) -> R can[P]` (permission-polymorphic
+            # stage0 wrappers). Consume and record; effects are semantic-only.
+            can_token: Token = parser.cursor()
+            if accepted_arrow_2 and parser.peek() == TokenKind.Ident and Lexer::text_or_empty(can_token, parser.source) == "can":
+                parser, _ <- parser.advance()
+                rebind accepted_can_bracket: bool, parser = parser.accept(TokenKind.LBracket)
+                parser <- parser.skip_bracketed_group() if accepted_can_bracket
+
+            body: mutable darray[Ast::Stmt] = []
+            rebind accepted_fatarrow: bool, parser = parser.accept(TokenKind.FatArrow)
+            if accepted_fatarrow:
+                # `=> EXPR` — normalize to a single `return EXPR` body (region-poly
+                # helper so the darray survives being stored in the Lambda payload).
+                value_token: Token = parser.cursor()
+                return_value: mutable Ast::Expr? = null
+                rebind value_opt: Ast::Expr?, parser = parser.expression()
+                return_value <- value if value_opt is value
+                body, parser <- parser.single_statement_body((Ast::Stmt.Return(return_value, Ast::pos_of_token(value_token))))
+            else:
+                # `: <block>` body; anything else leaves the body empty. In a TYPE annotation
+                # (a `fn(A)->R` return type), the following `:` is the enclosing function's body
+                # — not the lambda's — so it must NOT be consumed here.
+                body, parser <- parser.parse_block() if parser.peek() == TokenKind.Colon and not parser.in_type_annotation
+
+            parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: "", name: "__block_lambda", line: token.line}) if not accepted_fatarrow
+            parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: "", name: "__typed_lambda", line: token.line}) if accepted_arrow_2
+
+            return (Ast::Expr.Lambda(parameters, body, Ast::pos_of_token(token)))

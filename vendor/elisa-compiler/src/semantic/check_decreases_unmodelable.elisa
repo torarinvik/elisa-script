@@ -1,0 +1,525 @@
+# Loop `decreases` measure the termination analyzer STRUCTURALLY declines to model. When a
+# `while` loop carries a `decreases` clause and its body contains a call, a non-arithmetic write
+# (an indexed/field store target), or control flow (if/loop/match/break/continue), stage0 does not
+# even attempt the arithmetic proof — it emits a fixed warning and falls back to the runtime
+# loop-progress check. This is the anti-prover (the structural bail), so it is decidable
+# syntactically. A purely-arithmetic body instead goes through the interval prover (a DIFFERENT
+# message, prover-bound) and is deliberately NOT covered here.
+extend Semantic:
+    private:
+        # Whether a call is a numeric-cast method call: `X.usize()` / `X.i64()` / ... with a
+        # scalar type name as the selector and no arguments.
+        def call_is_numeric_cast(callee: Ast::Expr, arguments: darray[Ast::Expr]&) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                false return if arguments.count != 0
+                match callee:
+                    Expr.Field(object, field, line):
+                        return is_integer_type_name(field) or is_float_type_name(field)
+                    _:
+                        return false
+
+
+        # The receiver a cast is applied to, so the walk continues through it.
+        def cast_receiver_of(callee: Ast::Expr) -> Ast::Expr:
+            can Abort.Panic:
+                match callee:
+                    Expr.Field(object, field, line):
+                        return object
+                    _:
+                        return callee
+
+
+        # Whether an expression contains a call anywhere.
+        def decreases_expr_has_call(expression: Ast::Expr) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Call(callee, arguments, argument_names, line):
+                        # A NUMERIC CAST (`(i - 1).usize()`) is not a call for this purpose:
+                        # it is a representation change on an arithmetic value, and stage0
+                        # still runs the interval prover through it. Treating it as a call
+                        # made stage1 emit the structural bail where stage0 is silent.
+                        return decreases_expr_has_call(cast_receiver_of(callee)) if call_is_numeric_cast(callee, arguments) else true
+                    Expr.Binary(left, operator, right, line):
+                        return decreases_expr_has_call(left) or decreases_expr_has_call(right)
+                    Expr.Unary(operator, operand, line):
+                        return decreases_expr_has_call(operand)
+                    Expr.Paren(inner, line):
+                        return decreases_expr_has_call(inner)
+                    Expr.Index(object, index, line):
+                        return decreases_expr_has_call(object) or decreases_expr_has_call(index)
+                    _:
+                        return false
+
+        # An assignment target that is NOT a bare local ident is a non-arithmetic write (an
+        # indexed store `arr[j] <-`, a field store `x.f <-`), which the analyzer cannot model.
+        def decreases_target_is_nonlocal(target: Ast::Expr) -> bool:
+            can Abort.Panic:
+                return match target:
+                    Expr.Ident(name, line): false
+                    _: true
+
+        # An indexed element store whose index is a BARE identifier (`c[j] <- …`). Element assignment
+        # is length-preserving, so it cannot affect a `.count`/`.len` measure over the container; and a
+        # bare-ident index is the modeled loop position, so stage0's focused capture routes it to the
+        # real interval prover instead of the structural bail. A COMPOUND index (`c[j+1] <- …`) stays
+        # opaque (the analyzer does not track that position), matching stage0.
+        def decreases_element_store_bare_index(target: Ast::Expr) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                match target:
+                    Expr.Paren(inner, paren_line):
+                        return decreases_element_store_bare_index(inner)
+                    Expr.Index(object, index, index_line):
+                        return match index:
+                            Expr.Ident(index_name, ident_line): true
+                            _: false
+                    _:
+                        return false
+
+        # Identifiers a measure expression mentions — the FOCUS set. stage0's capture is
+        # focused: only effects touching a measure variable can make the body unmodelable
+        # (`captureLoopBodyEffectForTerminationFocused`), and guard-`if` bodies go through
+        # per-path modeling (a DIFFERENT, prover-bound message when that proof fails).
+        def decreases_measure_idents(expression: Ast::Expr, out: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Ident(name, line):
+                        out.push(name)
+                    Expr.Binary(left, operator, right, line):
+                        decreases_measure_idents(left, out)
+                        decreases_measure_idents(right, out)
+                    Expr.Unary(operator, operand, line):
+                        decreases_measure_idents(operand, out)
+                    Expr.Paren(inner, line):
+                        decreases_measure_idents(inner, out)
+                    Expr.Call(callee, arguments, argument_names, line):
+                        decreases_measure_idents(cast_receiver_of(callee), out)
+                    Expr.Field(object, field, line):
+                        # `self.xs.count` focuses on its ROOT `self` — the same base
+                        # `decreases_target_base` reports for a write to `self.xs[..]`, so a store
+                        # into the measure's own container is correctly seen as opaque.
+                        decreases_measure_idents(object, out)
+                    Expr.Index(object, index, line):
+                        decreases_measure_idents(object, out)
+                        decreases_measure_idents(index, out)
+                    _:
+                        pass
+
+
+        # The base identifier a store target writes through (`arr[j]` -> arr, `x.f` -> x).
+        def decreases_target_base(target: Ast::Expr) -> sview:
+            can Memory.Allocate, Abort.Panic:
+                match target:
+                    Expr.Ident(name, line):
+                        return name
+                    Expr.Index(object, index, line):
+                        return decreases_target_base(object)
+                    Expr.Field(object, field, line):
+                        return decreases_target_base(object)
+                    Expr.Paren(inner, line):
+                        return decreases_target_base(inner)
+                    _:
+                        return sview("", 0, 0)
+
+
+        # An OPAQUE statement: a call in any value position, or a non-arithmetic write.
+        # The measure analyzer cannot model its effect.
+        def decreases_statement_opaque(statement: Ast::Stmt, measure_focus: darray[sview]&) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                return match statement:
+                    # A non-arithmetic write is opaque ONLY when its base is a MEASURE variable —
+                    # `arr[j] <- …` cannot affect a measure `n - j` (arr not in the focus set), so
+                    # stage0 (focused capture) tolerates it and still proves the decrease.
+                    Stmt.Assign(target, operator, value, assign_line): (decreases_target_is_nonlocal(target) and not decreases_element_store_bare_index(target) and (any focus_name in measure_focus where focus_name == decreases_target_base(target))) or decreases_expr_has_call(value)
+                    Stmt.Expr(expression, expr_line): decreases_expr_has_call(expression)
+                    Stmt.VarDecl(name, type_expression, value, decl_line): decreases_expr_has_call(value)
+                    _: false
+
+
+        # Whether a branch EXITS the loop/function (contains a return/break) — an exiting
+        # path never re-tests the measure, so opaque statements on it are tolerated
+        # (pinned: `if …: _ = hit(j); return` is clean, the same without `return` bails).
+        def decreases_branch_exits(statements: darray[Ast::Stmt]) -> bool:
+            can Abort.Panic:
+                for statement in statements:
+                    match statement:
+                        Stmt.Return(value, line):
+                            return true
+                        Stmt.Break(label, line):
+                            return true
+                        _:
+                            pass
+                return false
+
+
+        # Whether a BRANCH (the loop's fall-through body, or an if arm) is unmodelable:
+        # a nested loop/match/block anywhere, or — on a NON-exiting branch — any opaque
+        # statement. Guard-`if` arms recurse (stage0's per-path modeling); calls in the
+        # guard CONDITION itself are fine.
+        def decreases_branch_unmodelable(statements: darray[Ast::Stmt], exits: bool, measure_focus: darray[sview]&) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |exits, measure_focus|:
+                    match statement:
+                        Stmt.While(condition, while_body, while_line):
+                            return true
+                        Stmt.For(bind, variables, iterable, for_body, for_line):
+                            return true
+                        Stmt.Match(scrutinee, arms, match_line):
+                            return true
+                        Stmt.Block(kind, clause, binding, body, block_line):
+                            return true
+                        Stmt.If(condition, then_body, else_body, if_line):
+                            true return if decreases_branch_unmodelable(then_body, decreases_branch_exits(then_body), measure_focus)
+                            true return if decreases_branch_unmodelable(else_body, decreases_branch_exits(else_body), measure_focus)
+                        _:
+                            true return if not exits and decreases_statement_opaque(statement, measure_focus)
+                return false
+
+        # The `decreases` clause line in a loop body (its first `decreases` contract), or 0 when
+        # none. `decreases*` is the unbounded escape hatch (its own check) and is excluded.
+        def decreases_body_line(statements: darray[Ast::Stmt]) -> u32:
+            can Abort.Panic:
+                found: u32 =
+                    for statement in statements |line: u32 = 0| -> line:
+                        line <- match statement:
+                            Stmt.Contract(kind, expression, contract_line): contract_line.line if kind == "decreases" and line == 0 else line
+                            _: line
+                return found
+
+        # Whether the loop body is unmodelable. The fall-through body never exits (the
+        # loop re-tests), so top-level opaque statements always bail.
+        def decreases_body_unmodelable(statements: darray[Ast::Stmt], measure_focus: darray[sview]&) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                return decreases_branch_unmodelable(statements, false, measure_focus)
+
+
+        # Build the measure as a linear form over its VARYING (bare-ident) terms, treating any
+        # non-linear sub-term (`self.xs.count`, `n.usize()`, an index read) as loop-INVARIANT and
+        # dropping it — sound here because a body that reaches the decrease judge has no length-changing
+        # or opaque write to those terms (element stores preserve `.count`; other writes bail earlier).
+        # Only the per-iteration DELTA matters, so an invariant term contributes nothing.
+        def decreases_int_literal(expression: Ast::Expr) -> (found: bool, value: i64):
+            can Memory.Allocate, Abort.Panic:
+                return match expression:
+                    Expr.IntLit(literal_value): (true, literal_value)
+                    Expr.Paren(inner, paren_line): decreases_int_literal(inner)
+                    _: (false, 0)
+
+        def decreases_measure_form(expression: Ast::Expr, sign: i64, names: mutable darray[sview]&, coeffs: mutable darray[i64]&, konst: mutable i64&, modeled: mutable bool&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Paren(inner, paren_line):
+                        decreases_measure_form(inner, sign, names, coeffs, konst, modeled)
+                    Expr.Binary(left, operator, right, binary_line):
+                        if operator == TokenKind.Plus:
+                            decreases_measure_form(left, sign, names, coeffs, konst, modeled)
+                            decreases_measure_form(right, sign, names, coeffs, konst, modeled)
+                        else:
+                            if operator == TokenKind.Minus:
+                                decreases_measure_form(left, sign, names, coeffs, konst, modeled)
+                                decreases_measure_form(right, 0 - sign, names, coeffs, konst, modeled)
+                            else:
+                                if operator == TokenKind.Star:
+                                    left_const: (found: bool, value: i64) = decreases_int_literal(left)
+                                    right_const: (found: bool, value: i64) = decreases_int_literal(right)
+                                    if left_const.found:
+                                        decreases_measure_form(right, sign * left_const.value, names, coeffs, konst, modeled)
+                                    else:
+                                        if right_const.found:
+                                            decreases_measure_form(left, sign * right_const.value, names, coeffs, konst, modeled)
+                                        else:
+                                            modeled <- false
+                                else:
+                                    modeled <- false
+                    Expr.Ident(name, ident_line):
+                        slot: mutable i64 = -1
+                        probe: mutable usize = 0
+                        while probe < names.count |slot, probe, name, names|:
+                            slot <- probe.i64() if names[probe] == name and slot < 0
+                            probe <- probe + 1
+                        if slot < 0:
+                            names.push(name)
+                            coeffs.push(sign)
+                        else:
+                            coeffs[slot.usize()] <- coeffs[slot.usize()] + sign
+                    Expr.IntLit(literal_value):
+                        konst <- konst + sign * literal_value
+                    Expr.Call(callee, arguments, argument_names, call_line):
+                        # A numeric cast is a representation change on its receiver — recurse through it.
+                        if call_is_numeric_cast(callee, arguments):
+                            decreases_measure_form(cast_receiver_of(callee), sign, names, coeffs, konst, modeled)
+                        else:
+                            modeled <- false
+                    Expr.Field(object, field, field_line):
+                        # A field term (`self.xs.count`) is loop-invariant here (no length-changing write
+                        # reaches the judge) — it contributes nothing to the per-iteration delta.
+                        pass
+                    Expr.Index(object, index_expression, index_line):
+                        pass
+                    _:
+                        modeled <- false
+
+        # PER-PATH decrease proof (the port of stage0's straight-line capture + guard-`if`
+        # path enumeration): every NON-EXITING path through the body must move the
+        # measure by <= -1. An `if` forks into `then + rest` / `else + rest` (flattening
+        # handles nesting); return/break end a path with no obligation; `continue`
+        # re-tests immediately, so its path carries the obligation. An assignment to a
+        # measure variable not of the `v <- v + c` shape makes the body unmodeled
+        # (prover territory — stay silent).
+        def decreases_paths_decrease(statements: darray[Ast::Stmt], index: usize, delta: i64, measure_names: darray[sview]&, measure_coeffs: darray[i64]&, modeled: mutable bool&) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                # Recursive per-statement walk (index-carried), so every exit is a plain
+                # boolean and the fall-through obligation is the tail case.
+                (delta <= (0 - 1)) return if index >= statements.count
+                match statements[index]:
+                    Stmt.Return(value, line):
+                        return true
+                    Stmt.Break(label, line):
+                        return true
+                    Stmt.Continue(label, line):
+                        return delta <= (0 - 1)
+                    Stmt.If(condition, then_body, else_body, if_line):
+                        rest: mutable darray[Ast::Stmt] = []
+                        rest_index: mutable usize = index + 1
+                        while rest_index < statements.count |rest, rest_index, statements|:
+                            rest.push(statements[rest_index])
+                            rest_index <- rest_index + 1
+                        then_seq: mutable darray[Ast::Stmt] = []
+                        then_seq.extend(then_body)
+                        then_seq.extend(rest)
+                        else_seq: mutable darray[Ast::Stmt] = []
+                        else_seq.extend(else_body)
+                        else_seq.extend(rest)
+                        false return if not decreases_paths_decrease(then_seq, 0, delta, measure_names, measure_coeffs, modeled)
+                        return decreases_paths_decrease(else_seq, 0, delta, measure_names, measure_coeffs, modeled)
+                    Stmt.Assign(target, operator, value, line):
+                        assigned: sview = ident_name_of(target)
+                        slot: mutable i64 = -1
+                        probe: mutable usize = 0
+                        while probe < measure_names.count |slot, probe, assigned, measure_names|:
+                            slot <- probe.i64() if measure_names[probe] == assigned and slot < 0
+                            probe <- probe + 1
+                        (decreases_paths_decrease(statements, index + 1, delta, measure_names, measure_coeffs, modeled)) return if slot < 0 or assigned == ""
+                        value_names: mutable darray[sview] = []
+                        value_coeffs: mutable darray[i64] = []
+                        value_konst: mutable i64 = 0
+                        value_linear: bool = lin_add(value, 1, value_names, value_coeffs, value_konst, Ast::Expr.Invalid, false, 0)
+                        self_shape: mutable bool = value_linear
+                        term: mutable usize = 0
+                        while term < value_names.count |self_shape, term, assigned, value_names, value_coeffs|:
+                            keeps_self: bool = value_names[term] == assigned and value_coeffs[term] == 1
+                            self_shape <- false if value_coeffs[term] != 0 and not keeps_self
+                            term <- term + 1
+                        modeled <- false if not self_shape
+                        (true) return if not self_shape
+                        return decreases_paths_decrease(statements, index + 1, delta + measure_coeffs[slot.usize()] * value_konst, measure_names, measure_coeffs, modeled)
+                    _:
+                        return decreases_paths_decrease(statements, index + 1, delta, measure_names, measure_coeffs, modeled)
+
+        # Whether a bare type name is a SIGNED integer (can hold a very negative value, so a
+        # subtraction against it may overflow the bitvector — stage0's SMT tier rejects it).
+        def du_is_signed_int_type(type_name: sview) -> bool:
+            can Abort.Panic:
+                return when type_name:
+                    "i8" | "i16" | "i32" | "i64" | "i128" | "int" | "isize" -> true
+                    _ -> false
+
+        # Names of params + locals whose declared type is a signed integer.
+        def du_collect_signed_names(parameters: darray[Ast::ParamDecl], body: darray[Ast::Stmt], out: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                out.extend([parameter.name for parameter in parameters if du_is_signed_int_type(bare_type_name(parameter.type_expression))])
+                du_collect_signed_locals(body, out)
+
+        def du_collect_signed_locals(statements: darray[Ast::Stmt], out: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |out|:
+                    match statement:
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            out.push(name) if du_is_signed_int_type(bare_type_name(type_expression))
+                        Stmt.If(condition, then_body, else_body, if_line):
+                            du_collect_signed_locals(then_body, out)
+                            du_collect_signed_locals(else_body, out)
+                        Stmt.While(while_condition, while_body, while_line):
+                            du_collect_signed_locals(while_body, out)
+                        Stmt.For(for_bind, for_variables, for_iterable, for_body, for_line):
+                            du_collect_signed_locals(for_body, out)
+                        Stmt.Block(block_kind, block_clause, block_binding, block_body, block_line):
+                            du_collect_signed_locals(block_body, out)
+                        Stmt.Match(scrutinee, arms, match_line):
+                            for arm in arms |out|:
+                                du_collect_signed_locals(arm.body, out)
+                        _:
+                            pass
+
+        # Every identifier appearing anywhere in an expression.
+        def du_all_idents(expression: Ast::Expr, out: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Ident(name, line):
+                        out.push(name)
+                    Expr.Paren(inner, paren_line):
+                        du_all_idents(inner, out)
+                    Expr.Unary(operator, operand, unary_line):
+                        du_all_idents(operand, out)
+                    Expr.Binary(binary_left, operator, binary_right, binary_line):
+                        du_all_idents(binary_left, out)
+                        du_all_idents(binary_right, out)
+                    Expr.Field(object, field, field_line):
+                        du_all_idents(object, out)
+                    Expr.Call(callee, arguments, argument_names, call_line):
+                        for argument in arguments |out|:
+                            du_all_idents(argument, out)
+                    _:
+                        pass
+
+        # Identifiers that appear in a SUBTRAHEND position (right of a `-`, or under a unary
+        # minus) — the operands whose large-magnitude negativity can overflow the measure.
+        def du_subtrahend_idents(expression: Ast::Expr, out: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Binary(binary_left, operator, binary_right, binary_line):
+                        du_subtrahend_idents(binary_left, out)
+                        du_all_idents(binary_right, out) if operator == TokenKind.Minus
+                        du_subtrahend_idents(binary_right, out) if operator != TokenKind.Minus
+                    Expr.Unary(operator, operand, unary_line):
+                        du_all_idents(operand, out) if operator == TokenKind.Minus
+                        du_subtrahend_idents(operand, out) if operator != TokenKind.Minus
+                    Expr.Paren(inner, paren_line):
+                        du_subtrahend_idents(inner, out)
+                    _:
+                        pass
+
+        # Whether an invariant/requires-style predicate lower-bounds NAME (`name >= c`, `name > c`,
+        # or the mirrored `c <= name` / `c < name`), splitting `and` conjunctions.
+        def du_predicate_lower_bounds(predicate: Ast::Expr, name: sview) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                match predicate:
+                    Expr.Paren(inner, paren_line):
+                        return du_predicate_lower_bounds(inner, name)
+                    Expr.Binary(binary_left, operator, binary_right, binary_line):
+                        du_predicate_lower_bounds(binary_left, name) or du_predicate_lower_bounds(binary_right, name) return if operator == TokenKind.And
+                        forward: bool = ident_name_of(binary_left) == name and (operator == TokenKind.GtEq or operator == TokenKind.Gt)
+                        mirrored: bool = ident_name_of(binary_right) == name and (operator == TokenKind.LtEq or operator == TokenKind.Lt)
+                        return forward or mirrored
+                    _:
+                        return false
+
+        # Whether some loop `invariant` lower-bounds NAME — the fact that rules out the
+        # subtracted variable's negative-overflow case (stage0 accepts `invariant i >= 0`).
+        def du_invariant_lower_bounds(while_body: darray[Ast::Stmt], name: sview) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                for statement in while_body:
+                    match statement:
+                        Stmt.Contract(kind, expression, contract_line):
+                            true return if kind == "invariant" and du_predicate_lower_bounds(expression, name)
+                        _:
+                            pass
+                return false
+
+        def du_name_present(names: darray[sview]&, wanted: sview) -> bool:
+            can Abort.Panic:
+                return any candidate in names where candidate == wanted
+
+        # Whether the measure subtracts a SIGNED variable whose negativity is not ruled out by
+        # a lower-bounding invariant — a bitvector-overflow the SMT tier rejects (stage0 warns).
+        def du_measure_overflow_risk(measure_expression: Ast::Expr, while_body: darray[Ast::Stmt], signed_names: darray[sview]&) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                subtrahends: mutable darray[sview] = []
+                du_subtrahend_idents(measure_expression, subtrahends)
+                for candidate in subtrahends |while_body, signed_names|:
+                    true return if candidate != "" and du_name_present(signed_names, candidate) and not du_invariant_lower_bounds(while_body, candidate)
+                return false
+
+        def decreases_unmodelable_statements(statements: darray[Ast::Stmt], enable_smt: bool, signed_names: darray[sview]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |table| -> table:
+                    match statement:
+                        Stmt.While(condition, while_body, line):
+                            decreases_line: u32 = decreases_body_line(while_body)
+                            # The measure and its FOCUS identifiers: only effects touching one of
+                            # these make the body unmodelable (a write to a non-measure container is
+                            # inert to the decrease proof, which stage0 tolerates).
+                            measure_expression: mutable Ast::Expr = Ast::Expr.Absent
+                            has_measure: mutable bool = false
+                            for body_statement in while_body |measure_expression, has_measure|:
+                                match body_statement:
+                                    Stmt.Contract(kind, expression, contract_line):
+                                        if kind == "decreases" and not has_measure:
+                                            measure_expression <- expression
+                                            has_measure <- true
+                                    _:
+                                        pass
+                            measure_focus: mutable darray[sview] = []
+                            decreases_measure_idents(measure_expression, measure_focus) if has_measure
+                            unmodelable: bool = decreases_line != 0 and decreases_body_unmodelable(while_body, measure_focus)
+                            table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.DecreasesRuntimeUnmodelable, name: "", line: decreases_line, expected: "", actual: ""}) if unmodelable
+                            # A MODELABLE body gets the per-path decrease proof; a
+                            # refuted or stagnant measure gets stage0's prover message.
+                            judge: bool = decreases_line != 0 and not unmodelable and has_measure
+                            measure_names: mutable darray[sview] = []
+                            measure_coeffs: mutable darray[i64] = []
+                            measure_konst: mutable i64 = 0
+                            measure_form_modeled: mutable bool = true
+                            decreases_measure_form(measure_expression, 1, measure_names, measure_coeffs, measure_konst, measure_form_modeled) if judge
+                            measure_linear: bool = judge and measure_form_modeled and measure_names.count > 0
+                            modeled: mutable bool = true
+                            all_paths_decrease: bool = measure_linear and decreases_paths_decrease(while_body, 0, 0, measure_names, measure_coeffs, modeled)
+                            # stage0 proves loop termination ONLY through its SMT tier (recordProof
+                            # ProofProvenSMT); with SMT OFF it can prove none and warns on every
+                            # modelable measure. stage1's affine per-path prover is stage0's SMT
+                            # stand-in, so it may only DISCHARGE the measure when SMT is enabled —
+                            # otherwise the loop reports the same "could not be proven" fallback.
+                            non_decreasing: bool = judge and measure_linear and modeled and (not all_paths_decrease or not enable_smt)
+                            # OVERFLOW tier (pinned against stage0's bitvector SMT): even a
+                            # strictly-decreasing measure is REJECTED when it subtracts a signed
+                            # variable whose negativity is not ruled out by a lower-bounding
+                            # invariant — `decreases n - i` (i: i64) may overflow at i=INT_MIN, so
+                            # `invariant i >= 0` is required (usize measures carry it inherently).
+                            overflow_risk: bool = judge and has_measure and du_measure_overflow_risk(measure_expression, while_body, signed_names)
+                            table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.DecreasesLoopNotDecreasing, name: "", line: decreases_line, expected: "", actual: ""}) if non_decreasing or overflow_risk
+                            # A LEXICOGRAPHIC measure `(c0, c1, ...)` whose LEADING component provably
+                            # strictly INCREASES on every path can never decrease (the first component
+                            # dominates the order), so stage0 always reports it — never proves it,
+                            # regardless of overflow. Detect it by testing the negated leading component
+                            # (coeff -1) for a strict decrease.
+                            if judge:
+                                match measure_expression:
+                                    Expr.Tuple(tuple_elements, _):
+                                        if tuple_elements.count >= 1:
+                                            leading_name: sview = ident_name_of(tuple_elements[0])
+                                            if leading_name != "":
+                                                lead_names: mutable darray[sview] = [leading_name]
+                                                lead_coeffs: mutable darray[i64] = [0 - 1]
+                                                lead_modeled: mutable bool = true
+                                                lead_increases: bool = decreases_paths_decrease(while_body, 0, 0, lead_names, lead_coeffs, lead_modeled)
+                                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.DecreasesLoopNotDecreasing, name: "", line: decreases_line, expected: "", actual: ""}) if lead_modeled and lead_increases
+                                    _:
+                                        pass
+                            table <- decreases_unmodelable_statements(while_body, enable_smt, signed_names, table)
+                        Stmt.If(condition, then_body, else_body, line):
+                            table <- decreases_unmodelable_statements(then_body, enable_smt, signed_names, table)
+                            table <- decreases_unmodelable_statements(else_body, enable_smt, signed_names, table)
+                        Stmt.For(bind, variables, iterable, for_body, line):
+                            table <- decreases_unmodelable_statements(for_body, enable_smt, signed_names, table)
+                        Stmt.Block(kind, clause, binding, body, block_line):
+                            # `can Unsafe.AssumeProgress:` (or `trusted …`) is the explicit
+                            # termination escape hatch: the programmer asserts progress, so
+                            # stage0 suppresses ALL `decreases` diagnostics in its body.
+                            assume_progress: bool = (kind == "can" or kind == "trusted") and (any grant in clause where grant == "Unsafe.AssumeProgress")
+                            table <- decreases_unmodelable_statements(body, enable_smt, signed_names, table) if not assume_progress
+                        _:
+                            pass
+
+        def check_decreases_unmodelable(declarations: darray[Ast::Decl], enable_smt: bool, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |table| -> table:
+                    match declaration:
+                        Decl.Func(function_name, parameters, return_type, body, effects, decorators, line):
+                            signed_names: mutable darray[sview] = []
+                            du_collect_signed_names(parameters, body, signed_names)
+                            table <- decreases_unmodelable_statements(body, enable_smt, signed_names, table)
+                        Decl.Module(module_name, module_body, module_line):
+                            table <- check_decreases_unmodelable(module_body, enable_smt, table)
+                        Decl.Scoped(scoped_body, scoped_line):
+                            table <- check_decreases_unmodelable(scoped_body, enable_smt, table)
+                        _:
+                            pass

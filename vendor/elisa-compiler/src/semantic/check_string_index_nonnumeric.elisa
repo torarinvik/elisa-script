@@ -1,0 +1,207 @@
+# Check for indexing with a firm non-numeric index (firm Bool, String or Tuple) into a
+# receiver that is only ever indexable by an integer: a STRING (`s[i]`) or a POSITIONAL
+# container, array/darray (`xs[i]`). Such an index can never be valid.
+#
+# Only fires when the receiver is firmly SemTypeKind.String (cstr/dstr/sview) or firmly an
+# array/darray. Unknown and Named receivers are excluded (a Named could be a dict keyed by
+# non-int), and so is `dict` itself — it is indexed BY ITS KEY TYPE, where a string index is
+# correct; DictIndexKeyTypeMismatch owns that case. Type-application brackets (`.cast[T]`,
+# generics) are always excluded.
+
+extend Semantic:
+    private:
+
+        # Whether an index RECEIVER is POSITIONAL — indexable only by an integer, so any
+        # firm non-numeric index is an outright error. Deliberately just array/darray: a
+        # `dict` is a Container too and is indexed BY ITS KEY TYPE, where a string index is
+        # correct (DictIndexKeyTypeMismatch owns that case); `set` and `sview` are excluded
+        # for the same reason a Named receiver is — the cost of a false positive here is
+        # rejecting a valid program.
+        def index_receiver_is_positional(object_type: InferType) -> bool:
+            can Abort.Panic:
+                false return if object_type.kind != SemTypeKind.Container
+                return object_type.name == "array" or object_type.name == "darray"
+
+
+        # Whether `object[index]` is a firm non-numeric index into something that can only
+        # be indexed numerically — a string or a positional container.
+        def index_is_firm_non_numeric_at(object_type: InferType, index_type: InferType) -> bool:
+            can Abort.Panic:
+                false return if not kind_is_firm_non_numeric(index_type)
+                return object_type.kind == SemTypeKind.String or index_receiver_is_positional(object_type)
+
+
+        # Whether a receiver can be SLICED (`xs[a:b]`), where both bounds are always
+        # positions and so always numeric. Wider than index_receiver_is_positional on
+        # purpose: `dict` and `set` have no slice form at all, so any Container reaching
+        # here is positional by construction — which is what lets `sview` be covered
+        # (stage0 checks `s[k:2]` on an sview receiver, and InferType may model sview as
+        # either a String or a Container named "sview" depending on how it was bound).
+        def slice_receiver_is_positional(object_type: InferType) -> bool:
+            can Abort.Panic:
+                return object_type.kind == SemTypeKind.String or object_type.kind == SemTypeKind.Container
+
+
+        # Report a firm non-numeric slice bound. `bound_name` is stage0's own word for the
+        # position, "start" or "end".
+        def check_slice_bound_non_numeric(object_type: InferType, bound: Ast::Expr, bound_name: sview, line: i64, table: lmut SymbolTable, var_types: mutable darray[sview]&, type_names: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                return if not slice_receiver_is_positional(object_type)
+                bound_type: InferType = infer_expression_type(bound, var_types, type_names, table)
+                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.SliceBoundNonNumeric, name: bound_name, line: line, expected: "", actual: stage0_index_spelling(bound_type)}) if kind_is_firm_non_numeric(bound_type)
+
+
+        # Walk through expressions, checking for indexing of non-indexable scalar types.
+        def walk_expression_for_string_index_nonnumeric(expression: Ast::Expr, table: lmut SymbolTable, var_types: mutable darray[sview]&, type_names: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Binary(left, operator, right, line):
+                        table <- walk_expression_for_string_index_nonnumeric(left, table, var_types, type_names)
+                        table <- walk_expression_for_string_index_nonnumeric(right, table, var_types, type_names) if operator != TokenKind.Is and operator != TokenKind.As
+                    Expr.Call(callee, arguments, argument_names, line):
+                        table <- walk_expression_for_string_index_nonnumeric(callee, table, var_types, type_names)
+                        for argument in arguments |table|:
+                            table <- walk_expression_for_string_index_nonnumeric(argument, table, var_types, type_names)
+                    Expr.Field(object, field, line):
+                        table <- walk_expression_for_string_index_nonnumeric(object, table, var_types, type_names)
+                    Expr.Scope(base, name, line):
+                        table <- walk_expression_for_string_index_nonnumeric(base, table, var_types, type_names)
+                    Expr.Index(object, index, line):
+                        if not index_receiver_is_type_application(object):
+                            object_type: InferType = infer_expression_type(object, var_types, type_names, table)
+                            index_type: InferType = infer_expression_type(index, var_types, type_names, table)
+                            table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.StringIndexNonNumeric, name: "", line: line.line, expected: "", actual: stage0_index_spelling(index_type)}) if index_is_firm_non_numeric_at(object_type, index_type)
+                        table <- walk_expression_for_string_index_nonnumeric(object, table, var_types, type_names)
+                        table <- walk_expression_for_string_index_nonnumeric(index, table, var_types, type_names) if not index_receiver_is_type_application(object)
+                    Expr.Unary(operator, operand, line):
+                        table <- walk_expression_for_string_index_nonnumeric(operand, table, var_types, type_names)
+                    Expr.Paren(inner, line):
+                        table <- walk_expression_for_string_index_nonnumeric(inner, table, var_types, type_names)
+                    Expr.Array(elements, line):
+                        for element in elements |table|:
+                            table <- walk_expression_for_string_index_nonnumeric(element, table, var_types, type_names)
+                    Expr.Tuple(elements, line):
+                        for element in elements |table|:
+                            table <- walk_expression_for_string_index_nonnumeric(element, table, var_types, type_names)
+                    Expr.Slice(object, low, high, line):
+                        slice_object_type: InferType = infer_expression_type(object, var_types, type_names, table)
+                        table <- check_slice_bound_non_numeric(slice_object_type, low, "start", line.line, table, var_types, type_names)
+                        table <- check_slice_bound_non_numeric(slice_object_type, high, "end", line.line, table, var_types, type_names)
+                        table <- walk_expression_for_string_index_nonnumeric(object, table, var_types, type_names)
+                        table <- walk_expression_for_string_index_nonnumeric(low, table, var_types, type_names)
+                        table <- walk_expression_for_string_index_nonnumeric(high, table, var_types, type_names)
+                    Expr.IndexN(object, arguments, line):
+                        if not index_receiver_is_type_application(object):
+                            object_type: InferType = infer_expression_type(object, var_types, type_names, table)
+                            for argument in arguments |table|:
+                                argument_type: InferType = infer_expression_type(argument, var_types, type_names, table)
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.StringIndexNonNumeric, name: "", line: line.line, expected: "", actual: stage0_index_spelling(argument_type)}) if index_is_firm_non_numeric_at(object_type, argument_type)
+                        table <- walk_expression_for_string_index_nonnumeric(object, table, var_types, type_names)
+                        for argument in arguments |table|:
+                            table <- walk_expression_for_string_index_nonnumeric(argument, table, var_types, type_names) if not index_receiver_is_type_application(object)
+                    Expr.SetLit(elements, line):
+                        for element in elements |table|:
+                            table <- walk_expression_for_string_index_nonnumeric(element, table, var_types, type_names)
+                    Expr.DictLit(entries, line):
+                        for entry in entries |table|:
+                            table <- walk_expression_for_string_index_nonnumeric(entry.key, table, var_types, type_names)
+                            table <- walk_expression_for_string_index_nonnumeric(entry.value, table, var_types, type_names)
+                    Expr.Construct(type_expression, fields, line):
+                        table <- walk_expression_for_string_index_nonnumeric(type_expression, table, var_types, type_names)
+                        for field in fields |table|:
+                            table <- walk_expression_for_string_index_nonnumeric(field.value, table, var_types, type_names)
+                    Expr.RecordUpdate(base, fields, line):
+                        table <- walk_expression_for_string_index_nonnumeric(base, table, var_types, type_names)
+                        for field in fields |table|:
+                            table <- walk_expression_for_string_index_nonnumeric(field.value, table, var_types, type_names)
+                    Expr.If(condition, then_expr, else_expr, line):
+                        table <- walk_expression_for_string_index_nonnumeric(condition, table, var_types, type_names)
+                        table <- walk_expression_for_string_index_nonnumeric(then_expr, table, var_types, type_names)
+                        table <- walk_expression_for_string_index_nonnumeric(else_expr, table, var_types, type_names)
+                    Expr.Comprehension(loop_variable, iterable, condition, body, line):
+                        table <- walk_expression_for_string_index_nonnumeric(iterable, table, var_types, type_names)
+                        table <- walk_expression_for_string_index_nonnumeric(condition, table, var_types, type_names)
+                        table <- walk_expression_for_string_index_nonnumeric(body, table, var_types, type_names)
+                    Expr.Lambda(parameters, body, line):
+                        table <- walk_statements_for_string_index_nonnumeric(body, table, var_types, type_names)
+                    Expr.Block(statements, value, captures, line):
+                        table <- walk_statements_for_string_index_nonnumeric(statements, table, var_types, type_names)
+                        table <- walk_expression_for_string_index_nonnumeric(value, table, var_types, type_names)
+                    Expr.Match(scrutinee, arms, line):
+                        table <- walk_expression_for_string_index_nonnumeric(scrutinee, table, var_types, type_names)
+                        for arm in arms |table|:
+                            table <- walk_statements_for_string_index_nonnumeric(arm.body, table, var_types, type_names)
+                    # Literals and other expressions don't contain relevant sub-expressions
+                    _:
+                        pass
+
+        # Walk through statements, tracking variable types and checking for non-indexable indexing.
+        def walk_statements_for_string_index_nonnumeric(statements: darray[Ast::Stmt], table: lmut SymbolTable, var_types: mutable darray[sview]&, type_names: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |table|:
+                    match statement:
+                        Stmt.Expr(expression, line):
+                            table <- walk_expression_for_string_index_nonnumeric(expression, table, var_types, type_names)
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            # Record the type for this variable
+                            type_name: sview = bare_type_name(type_expression)
+                            note_local_type(var_types, type_names, name, type_name)
+                            table <- walk_expression_for_string_index_nonnumeric(value, table, var_types, type_names)
+                        Stmt.Assign(target, operator, value, line):
+                            table <- walk_expression_for_string_index_nonnumeric(target, table, var_types, type_names)
+                            table <- walk_expression_for_string_index_nonnumeric(value, table, var_types, type_names)
+                        Stmt.If(condition, then_body, else_body, line):
+                            table <- walk_expression_for_string_index_nonnumeric(condition, table, var_types, type_names)
+                            table <- walk_statements_for_string_index_nonnumeric(then_body, table, var_types, type_names)
+                            table <- walk_statements_for_string_index_nonnumeric(else_body, table, var_types, type_names)
+                        Stmt.While(condition, body, line):
+                            table <- walk_expression_for_string_index_nonnumeric(condition, table, var_types, type_names)
+                            table <- walk_statements_for_string_index_nonnumeric(body, table, var_types, type_names)
+                        Stmt.For(bind, variables, iterable, body, line):
+                            table <- walk_expression_for_string_index_nonnumeric(iterable, table, var_types, type_names)
+                            table <- walk_statements_for_string_index_nonnumeric(body, table, var_types, type_names)
+                        Stmt.Block(kind, clause, binding, body, line):
+                            table <- walk_statements_for_string_index_nonnumeric(body, table, var_types, type_names)
+                        Stmt.Match(scrutinee, arms, line):
+                            table <- walk_expression_for_string_index_nonnumeric(scrutinee, table, var_types, type_names)
+                            for arm in arms |table|:
+                                table <- walk_expression_for_string_index_nonnumeric(arm.guard, table, var_types, type_names)
+                                table <- walk_statements_for_string_index_nonnumeric(arm.body, table, var_types, type_names)
+                        Stmt.Return(value, line):
+                            table <- walk_expression_for_string_index_nonnumeric(return_value, table, var_types, type_names) if value is return_value
+                        Stmt.Contract(kind, expression, line):
+                            table <- walk_expression_for_string_index_nonnumeric(expression, table, var_types, type_names)
+                        Stmt.Invalid:
+                            pass
+                        Stmt.Break(label, line):
+                            pass
+                        Stmt.Continue(label, line):
+                            pass
+
+        # Walk through function declarations.
+        def check_string_index_nonnumeric_declarations(declarations: darray[Ast::Decl], table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |table|:
+                    match declaration:
+                        Decl.Func(name, params, return_type, body, effects, decorators, line):
+                            # Create fresh type tracking for this function
+                            var_types: mutable darray[sview] = []
+                            type_names: mutable darray[sview] = []
+                            # Record parameter types
+                            for param in params |table|:
+                                param_type: sview = bare_type_name(param.type_expression)
+                                note_local_type(var_types, type_names, param.name, param_type)
+                            # Walk the function body
+                            table <- walk_statements_for_string_index_nonnumeric(body, table, var_types, type_names)
+                        Decl.Module(module_name, body, line):
+                            table <- check_string_index_nonnumeric_declarations(body, table)
+                        Decl.Scoped(body, line):
+                            table <- check_string_index_nonnumeric_declarations(body, table)
+                        _:
+                            pass
+
+    public:
+        # Public entry point for the check.
+        def check_string_index_nonnumeric(declarations: darray[Ast::Decl], table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                table <- check_string_index_nonnumeric_declarations(declarations, table)

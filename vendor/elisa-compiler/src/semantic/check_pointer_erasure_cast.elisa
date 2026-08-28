@@ -1,0 +1,294 @@
+# A field-backed typed pointer erased to `void&` is an unsafe pointer reinterpretation.
+# Keep this deliberately structural: numeric conversions and pointer casts encapsulated
+# inside trusted/runtime wrappers are outside this check's ownership.
+extend Semantic:
+    private:
+        def pointer_erasure_target(expression: Ast::Expr) -> bool:
+            can Abort.Panic:
+                return bare_type_name_through_ref(expression) == "void"
+
+
+        def pointer_erasure_field_receiver(expression: Ast::Expr) -> bool:
+            can Abort.Panic:
+                match expression:
+                    Expr.Field(_, _, _):
+                        return true
+                    _:
+                        return false
+
+
+        # Whether a `.cast[T]` target spelling is pointer-like (any ref wrapper).
+        # A bare non-ref target (`value.cast[SymbolTableId]`, numeric/id value casts)
+        # is NOT a pointer cast — stage0 requires no Unsafe grant for it.
+        def cast_target_is_pointer(expression: Ast::Expr) -> bool:
+            can Abort.Panic:
+                match expression:
+                    # ANY unary type wrapper (`&`, mutable, lmut, heap, ...) marks a
+                    # pointer-ish target; a value cast target is a bare (possibly
+                    # generic) type name with no wrapper.
+                    Expr.Unary(operator, operand, unary_line):
+                        return true
+                    Expr.Paren(inner, paren_line):
+                        return cast_target_is_pointer(inner)
+                    _:
+                        return false
+
+        # Whether a cast TARGET spells a MUTABLE reference (`mutable T&`) — the
+        # default-mode warning shape: reinterpreting an address as a mutable
+        # borrow. A shared-ref target (`T&`) is accepted silently by stage0.
+        def cast_target_is_mutable_ref(expression: Ast::Expr) -> bool:
+            can Abort.Panic:
+                match expression:
+                    Expr.Unary(operator, operand, unary_line):
+                        true return if operator == TokenKind.Mutable
+                        return cast_target_is_mutable_ref(operand)
+                    Expr.Paren(inner, paren_line):
+                        return cast_target_is_mutable_ref(inner)
+                    _:
+                        return false
+
+        # The bare ident under a visible address-of receiver (`(&x)` -> "x"; "" otherwise).
+        def address_of_base_name(expression: Ast::Expr) -> sview:
+            can Abort.Panic:
+                match expression:
+                    Expr.Unary(operator, operand, unary_line):
+                        ident_name_of(operand) return if operator == TokenKind.Ampersand
+                        return address_of_base_name(operand)
+                    Expr.Paren(inner, paren_line):
+                        return address_of_base_name(inner)
+                    _:
+                        return sview("", 0, 0)
+
+        # Whether the cast RECEIVER is visibly an address-of (`(&x).cast[usize]`) —
+        # a ref-to-integer erasure that stays a pointer cast even with a scalar target.
+        def cast_receiver_is_address(expression: Ast::Expr) -> bool:
+            can Abort.Panic:
+                match expression:
+                    Expr.Unary(operator, operand, unary_line):
+                        return operator == TokenKind.Ampersand or cast_receiver_is_address(operand)
+                    Expr.Paren(inner, paren_line):
+                        return cast_receiver_is_address(inner)
+                    _:
+                        return false
+
+        # `static u8&` / `mutable static u8&` — an UNBOUNDED string target. Casting an
+        # interior pointer to one erases the container's length, so a C-string scan can run
+        # off the end. Distinct from the ungranted-effect diagnostic: stage0 reports this
+        # even INSIDE a `can`/`trusted` block (verified for both), because the grant says
+        # "I accept the pointer cast", not "I accept losing the bound".
+        def unbounded_string_target(target: Ast::Expr) -> sview:
+            can Memory.Allocate, Abort.Panic:
+                is_static: bool = type_marker_present_here(target, TokenKind.Static)
+                is_ref: bool = type_marker_present_here(target, TokenKind.Ampersand)
+                # NOT bare_type_name_through_ref: that returns "" the moment it meets a
+                # marker outside {mutable, &, lmut}, and `static` is exactly such a marker,
+                # so it reports "" for every `static u8&` and the check never fired.
+                base: sview = erasure_base_type_name(target)
+                empty_target: sview = sview("", 0, 0)
+                empty_target return if not (is_static and is_ref and base == "u8")
+                return "static mutable u8&" if type_marker_present_here(target, TokenKind.Mutable) else "static u8&"
+
+
+        # The base type name, walking through EVERY unary type marker (`static`, `mutable`,
+        # `&`, `lmut`).
+        def erasure_base_type_name(type_expression: Ast::Expr) -> sview:
+            can Memory.Allocate, Abort.Panic:
+                match type_expression:
+                    Expr.Unary(operator, operand, line):
+                        return erasure_base_type_name(operand)
+                    Expr.Paren(inner, paren_line):
+                        return erasure_base_type_name(inner)
+                    Expr.Ident(name, ident_line):
+                        return name
+                    _:
+                        return sview("", 0, 0)
+
+
+        def type_marker_present_here(type_expression: Ast::Expr, marker: TokenKind) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                match type_expression:
+                    Expr.Unary(operator, operand, line):
+                        true return if operator == marker
+                        return type_marker_present_here(operand, marker)
+                    _:
+                        return false
+
+
+        # Whether RECEIVER is an address-of an INDEX (`&self.data[off]`) -- an interior
+        # pointer into a container, which is what makes the length meaningful to lose.
+        def receiver_is_interior_pointer(receiver: Ast::Expr) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                match receiver:
+                    Expr.Unary(operator, operand, line):
+                        false return if operator != TokenKind.Ampersand
+                        return match operand:
+                            Expr.Index(object, index, index_line): true
+                            _: false
+                    Expr.Paren(inner, paren_line):
+                        return receiver_is_interior_pointer(inner)
+                    _:
+                        return false
+
+
+        def check_pointer_erasure_expression(expression: Ast::Expr, in_trusted: bool, enforce_unsafe_permissions: bool, signature_granted: bool, block_granted: bool, legacy_walk: bool, immutable_params: darray[sview]&, numeric_locals: darray[sview]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Index(Expr.Field(receiver, selector, field_line), target, line):
+                        field_receiver: bool = pointer_erasure_field_receiver(receiver)
+                        # A `can`/`trusted` BLOCK grants the effect and suppresses THIS diagnostic; a
+                        # SIGNATURE `can[...]` does not (stage0 verified both ways), which is why
+                        # this is `block_granted` and not `signature_granted` (seeded from the
+                        # signature's effect list). The length-erasure warning above is separate
+                        # and deliberately NOT suppressed -- a grant accepts the cast, not the
+                        # loss of the bound.
+                        strict_pointer_cast: bool = enforce_unsafe_permissions and not block_granted and (cast_target_is_pointer(target) or cast_receiver_is_address(receiver) or field_receiver)
+                        # Default (non-strict) mode still WARNS on a visible
+                        # pointer reinterpretation: a ref-typed cast target over an
+                        # address-of receiver (`(&x).cast[mutable T&]`).
+                        address_base: sview = address_of_base_name(receiver)
+                        default_pointer_cast: bool = not enforce_unsafe_permissions and not signature_granted and cast_target_is_mutable_ref(target) and address_base != "" and (any p in immutable_params where p == address_base)
+                        # General numeric -> reference reinterpret (`addr.cast[T&]`, addr a numeric
+                        # local/param): stage0's `IsNumericType(src) && isPointerLikeCastType(dst)`
+                        # rule. A numeric value is never SameType/AssignableTo a ref, so this has
+                        # no region/state subtlety — fire in default mode whenever ungranted.
+                        receiver_numeric: bool = match receiver:
+                            Expr.Ident(receiver_name, receiver_line): (any local_name in numeric_locals where local_name == receiver_name)
+                            _: false
+                        numeric_pointer_cast: bool = not block_granted and not signature_granted and receiver_numeric and type_marker_present_here(target, TokenKind.Ampersand)
+                        # Erasing a typed reference param to `void&` (`p.cast[void&]`, p a ref
+                        # param) is an unsafe pointer reinterpretation stage0 warns on in ANY mode.
+                        # The field-receiver form is handled by the legacy branch below; this covers
+                        # a bare ref-param ident receiver. Interior-pointer/syscall-buffer void& casts
+                        # have field/index receivers (not bare idents) and are unaffected.
+                        receiver_ref_param: bool = match receiver:
+                            Expr.Ident(receiver_ident_name, receiver_ident_line): (any p in immutable_params where p == receiver_ident_name)
+                            _: false
+                        default_void_erasure: bool = not block_granted and not signature_granted and receiver_ref_param and pointer_erasure_target(target)
+                        # The length-erasure warning, INDEPENDENT of any grant.
+                        erasure_target: sview = unbounded_string_target(target)
+                        erases_length: bool = selector == "cast" and erasure_target != "" and receiver_is_interior_pointer(receiver)
+                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.UnboundedStringErasure, name: "", line: line.line, expected: "", actual: erasure_target}) if erases_length
+                        # A DIFFERENT interior-pointer hazard, also grant-INDEPENDENT: casting the
+                        # interior pointer of a byte darray to a ref of a concretely WIDER TYPED
+                        # value (`(&self.data[off]).cast[Header&]`) reads more bytes than the index
+                        # bounds guarantee. Excludes byte targets (u8/i8 — same width) and `void&`
+                        # (an opaque erasure, not a wider typed read — the runtime uses it for
+                        # syscall buffers, which stage0 accepts).
+                        widen_base: sview = erasure_base_type_name(target)
+                        reinterprets_wider: bool = selector == "cast" and receiver_is_interior_pointer(receiver) and type_marker_present_here(target, TokenKind.Ampersand) and widen_base != "" and widen_base != "u8" and widen_base != "i8" and widen_base != "void" and not erases_length
+                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.InteriorPointerWiden, name: "", line: line.line, expected: "", actual: widen_base}) if reinterprets_wider
+                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.UngrantedPointerCast, name: "", line: line.line, expected: "", actual: "", detail: "warn" if default_pointer_cast or default_void_erasure or (numeric_pointer_cast and not enforce_unsafe_permissions) else ""}) if not in_trusted and selector == "cast" and (strict_pointer_cast or default_pointer_cast or numeric_pointer_cast or default_void_erasure or (legacy_walk and field_receiver and pointer_erasure_target(target)))
+                        table <- check_pointer_erasure_expression(receiver, in_trusted, enforce_unsafe_permissions, signature_granted, block_granted, legacy_walk, immutable_params, numeric_locals, table)
+                    Expr.Call(callee, arguments, argument_names, line):
+                        for argument in arguments |table|:
+                            table <- check_pointer_erasure_expression(argument, in_trusted, enforce_unsafe_permissions, signature_granted, block_granted, legacy_walk, immutable_params, numeric_locals, table)
+                    Expr.Binary(left, operator, right, line):
+                        table <- check_pointer_erasure_expression(left, in_trusted, enforce_unsafe_permissions, signature_granted, block_granted, legacy_walk, immutable_params, numeric_locals, table)
+                        table <- check_pointer_erasure_expression(right, in_trusted, enforce_unsafe_permissions, signature_granted, block_granted, legacy_walk, immutable_params, numeric_locals, table)
+                    Expr.Paren(inner, line) | Expr.Unary(_, inner, line):
+                        table <- check_pointer_erasure_expression(inner, in_trusted, enforce_unsafe_permissions, signature_granted, block_granted, legacy_walk, immutable_params, numeric_locals, table)
+                    Expr.Construct(type_expression, fields, line) | Expr.RecordUpdate(type_expression, fields, line):
+                        for field in fields |table|:
+                            table <- check_pointer_erasure_expression(field.value, in_trusted, enforce_unsafe_permissions, signature_granted, block_granted, legacy_walk, immutable_params, numeric_locals, table)
+                    _:
+                        pass
+
+
+        def check_pointer_erasure_statements(statements: darray[Ast::Stmt], in_trusted: bool, enforce_unsafe_permissions: bool, signature_granted: bool, block_granted: bool, legacy_walk: bool, immutable_params: darray[sview]&, numeric_locals: darray[sview]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |table|:
+                    match statement:
+                        Stmt.VarDecl(name, type_expression, value, line) | Stmt.Assign(type_expression, _, value, line):
+                            table <- check_pointer_erasure_expression(value, in_trusted, enforce_unsafe_permissions, signature_granted, block_granted, legacy_walk, immutable_params, numeric_locals, table)
+                        Stmt.Expr(expression, line):
+                            table <- check_pointer_erasure_expression(expression, in_trusted, enforce_unsafe_permissions, signature_granted, block_granted, legacy_walk, immutable_params, numeric_locals, table)
+                        Stmt.Return(value, line):
+                            table <- check_pointer_erasure_expression(returned, in_trusted, enforce_unsafe_permissions, signature_granted, block_granted, legacy_walk, immutable_params, numeric_locals, table) if value is returned
+                        Stmt.If(condition, then_body, else_body, line):
+                            table <- check_pointer_erasure_expression(condition, in_trusted, enforce_unsafe_permissions, signature_granted, block_granted, legacy_walk, immutable_params, numeric_locals, table)
+                            table <- check_pointer_erasure_statements(then_body, in_trusted, enforce_unsafe_permissions, signature_granted, block_granted, legacy_walk, immutable_params, numeric_locals, table)
+                            table <- check_pointer_erasure_statements(else_body, in_trusted, enforce_unsafe_permissions, signature_granted, block_granted, legacy_walk, immutable_params, numeric_locals, table)
+                        Stmt.Block(kind, clause, binding, body, line):
+                            table <- check_pointer_erasure_statements(body, in_trusted or kind == "trusted", enforce_unsafe_permissions, signature_granted or kind == "can" or kind == "trusted", block_granted or kind == "can" or kind == "trusted", legacy_walk, immutable_params, numeric_locals, table)
+                        Stmt.While(_, body, line) | Stmt.For(_, _, _, body, line):
+                            table <- check_pointer_erasure_statements(body, in_trusted, enforce_unsafe_permissions, signature_granted, block_granted, legacy_walk, immutable_params, numeric_locals, table)
+                        _:
+                            pass
+
+
+        def pointer_erasure_generic_line(lines: darray[u32]&, line: u32) -> bool:
+            can Abort.Panic:
+                for generic_line in lines:
+                    true return if generic_line == line
+                return false
+
+
+        # A bare primitive numeric type name — the `IsNumericType` side of stage0's pointer-cast
+        # rule. Excludes bool/cstr/void (non-numeric) and every non-primitive.
+        def pec_numeric_name(name: sview) -> bool:
+            can Abort.Panic:
+                return when name:
+                    "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "usize" | "isize" | "uintptr" | "int" | "uint" | "f16" | "f32" | "f64" | "byte" -> true
+                    _ -> false
+
+        # Whether a local/param TYPE spelling is a plain numeric value (walks through `mutable`/
+        # `lmut` value markers but NOT through `&` — a ref type is pointer-like, not numeric).
+        def pec_type_is_numeric(type_expression: Ast::Expr) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                match type_expression:
+                    Expr.Unary(operator, operand, unary_line):
+                        false return if operator == TokenKind.Ampersand
+                        return pec_type_is_numeric(operand)
+                    Expr.Paren(inner, paren_line):
+                        return pec_type_is_numeric(inner)
+                    Expr.Ident(name, ident_line):
+                        return pec_numeric_name(name)
+                    _:
+                        return false
+
+        # Collect the names of every numeric-typed local declared anywhere in a function body,
+        # so a `name.cast[T&]` receiver can be classified as a numeric->ref pointer cast.
+        def pec_collect_numeric_locals(statements: darray[Ast::Stmt], numeric_locals: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |numeric_locals|:
+                    match statement:
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            numeric_locals.push(name) if pec_type_is_numeric(type_expression)
+                        Stmt.If(condition, then_body, else_body, line):
+                            pec_collect_numeric_locals(then_body, numeric_locals)
+                            pec_collect_numeric_locals(else_body, numeric_locals)
+                        Stmt.Block(kind, clause, binding, body, line):
+                            pec_collect_numeric_locals(body, numeric_locals)
+                        Stmt.While(condition, while_body, while_line) | Stmt.For(_, _, _, while_body, while_line):
+                            pec_collect_numeric_locals(while_body, numeric_locals)
+                        Stmt.Match(scrutinee, arms, match_line):
+                            for arm in arms |numeric_locals|:
+                                pec_collect_numeric_locals(arm.body, numeric_locals)
+                        _:
+                            pass
+
+        def check_pointer_erasure_declarations(declarations: darray[Ast::Decl], generic_lines: darray[u32]&, enforce_unsafe_permissions: bool, runtime_std: bool, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |table|:
+                    match declaration:
+                        Decl.Func(name, params, return_type, body, effects, decorators, line):
+                            immutable_params: mutable darray[sview] = []
+                            # The numeric->ref pointer-cast warning is suppressed in runtime-std
+                            # mode (stage0 trusts the runtime prelude and never emits unsafe
+                            # warnings there); leaving `numeric_locals` empty disables it.
+                            numeric_locals: mutable darray[sview] = []
+                            for parameter in params |immutable_params, numeric_locals|:
+                                is_mutable_binding: bool = parameter.is_mutable or type_marker_present_here(parameter.type_expression, TokenKind.Mutable)
+                                immutable_params.push(parameter.name) if not is_mutable_binding
+                                numeric_locals.push(parameter.name) if pec_type_is_numeric(parameter.type_expression) and not runtime_std
+                            pec_collect_numeric_locals(body, numeric_locals) if not runtime_std
+                            table <- check_pointer_erasure_statements(body, false, enforce_unsafe_permissions, effects.count > 0, false, enforce_unsafe_permissions or pointer_erasure_generic_line(generic_lines, line.line), immutable_params, numeric_locals, table)
+                        Decl.Module(name, body, line) | Decl.Scoped(body, line):
+                            table <- check_pointer_erasure_declarations(body, generic_lines, enforce_unsafe_permissions, runtime_std, table)
+                        _:
+                            pass
+
+    public:
+        def check_pointer_erasure_cast(file: Ast::File&, enforce_unsafe_permissions: bool, runtime_std: bool, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                table <- check_pointer_erasure_declarations(file.top_decls, file.generic_param_lines, enforce_unsafe_permissions, runtime_std, table)

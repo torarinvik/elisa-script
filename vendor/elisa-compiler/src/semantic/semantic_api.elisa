@@ -1,0 +1,552 @@
+extend Semantic:
+    public:
+        # Public entry points for the semantic layer (module-public).
+
+
+        # Build the symbol table for a parsed file (top-level + module-scoped decls).
+        # `table.diagnostics` carries any duplicate-declaration findings.
+        def collect_symbols(file: Ast::File&) -> SymbolTable:
+            can Memory.Allocate, Abort.Panic:
+                table: mutable SymbolTable = SymbolTable()
+                # BEFORE collect_range: the struct field pass needs to know which structs are
+                # column-major, and the general annotation loop below runs after it.
+                for soa_annotation in file.enum_annotations |table|:
+                    table.soa_layout_owners <- table.soa_layout_owners.push(soa_annotation.owner) if soa_annotation.name == "__layout_soa"
+                table <- collect_range(file.top_decls, table)
+                table <- collect_payload_enum_metadata(file, table)
+                return table
+
+
+        # Run the full semantic check over a parsed file: collect symbols (recording
+        # duplicate-declaration diagnostics) then resolve references (recording
+        # undefined-name diagnostics). The returned table's `diagnostics` is the located,
+        # LSP-facing finding list. Built inline so its container literals seed this
+        # function's auto-region (the region a region-polymorphic return is adopted into).
+        def check_with_unsafe_permissions(file: Ast::File&, enforce_unsafe_permissions: bool) -> SymbolTable:
+            can Unsafe.PointerCast:
+                can Memory.Allocate, Abort.Panic:
+                    return check_full(file, enforce_unsafe_permissions, false, false, false, false, false, false, false, false, false, 64)
+
+            # Full-option entry: strict Unsafe permissions and/or the docs/125 §6b
+            # flow-strict lint (every statement-position block `if` is an error).
+            # `runtime_std` marks the compilation unit as trusted stdlib (mirrors stage0's
+            # isRuntimeStdPermissionInternal): passes that only apply to user code — currently
+            # the raw-atomic-surface removal — are skipped for it.
+            # `enforce_unsafe_permissions` here is the UNION of stage0's EnforceUnsafePermissions
+            # and EnforceStrictProofs (both replayed via `# strict`), preserving every existing
+            # strict-gated check. `enforce_raw_unsafe` is the NARROWER pure-EnforceUnsafePermissions
+            # signal: the raw-extern-call obligation (markRawExternFuncType is gated on
+            # EnforceUnsafePermissions ALONE in stage0) must fire only under it, else a
+            # proof-only case (`EnforceStrictProofs` without `EnforceUnsafePermissions`) would
+            # spuriously demand `Unsafe.RawExtern` for its extern calls.
+        def check_full(file: Ast::File&, enforce_unsafe_permissions: bool, flow_strict: bool, runtime_std: bool, flow_warn: bool, enable_smt: bool, warn_discarded: bool, enforce_progress: bool, enforce_extern_contracts: bool, enforce_raw_unsafe: bool, emit_proof_hole: bool, region_stack_cap: i64) -> SymbolTable:
+            can Memory.Allocate, Abort.Panic:
+                table: mutable SymbolTable = SymbolTable()
+                table <- seed_builtins(table)
+                table <- append_parse_errors(file, table)
+                # BEFORE collect_range: the struct field pass needs to know which structs are
+                # column-major, and the general annotation loop below runs after it.
+                for soa_annotation in file.enum_annotations |table|:
+                    table.soa_layout_owners <- table.soa_layout_owners.push(soa_annotation.owner) if soa_annotation.name == "__layout_soa"
+                table <- collect_range(file.top_decls, table)
+                table <- collect_payload_enum_metadata(file, table)
+                table.generic_param_lines <- file.generic_param_lines
+                table.generic_param_names <- file.generic_param_names
+                table.packed_enum_names <- file.packed_enum_names
+                for annotation in file.enum_annotations |table|:
+                    table.imported_modules <- table.imported_modules.push(annotation.owner) if annotation.name == "__using"
+                    # `using Mod as M` — the ALIAS is a module name in its own right, and
+                    # the module it stands for is imported. Without the symbol, `M::f()`
+                    # resolved to `undefined identifier 'M'`.
+                    table <- table.add_symbol(annotation.owner, SymbolKind.Module, annotation.line) if annotation.name == "__using_alias"
+                    table.imported_modules <- table.imported_modules.push(annotation.owner) if annotation.name == "__using_alias_target"
+                    table.imported_members <- table.imported_members.push(annotation.name) if annotation.owner == "__from_member"
+                    table.catch_match_lines <- table.catch_match_lines.push(annotation.line) if annotation.name == "__catch_match"
+                    table.new_construct_lines <- table.new_construct_lines.push(annotation.line) if annotation.name == "__new_construct"
+                    table.forward_arg_lines <- table.forward_arg_lines.push(annotation.line) if annotation.name == "__arg_forward"
+                    table.block_if_lines <- table.block_if_lines.push(annotation.line) if annotation.name == "__block_if"
+                    table.region_names <- table.region_names.push(annotation.owner) if annotation.name == "__region_name"
+                    table.query_binder_lines <- table.query_binder_lines.push(annotation.line) if annotation.name == "__query_binder"
+                    table.query_binder_names <- table.query_binder_names.push(annotation.owner) if annotation.name == "__query_binder"
+                    table.is_variant_alias_lines <- table.is_variant_alias_lines.push(annotation.line) if annotation.name == "__is_variant_alias"
+                    table.is_variant_alias_names <- table.is_variant_alias_names.push(annotation.owner) if annotation.name == "__is_variant_alias"
+                    table.declared_packed_names <- table.declared_packed_names.push(annotation.owner) if annotation.name == "__declared_packed"
+                    table.ast_refinement_names <- table.ast_refinement_names.push(annotation.owner) if annotation.name == "__ast_refinement"
+                    table.enum_hierarchy_child <- table.enum_hierarchy_child.push(annotation.owner) if annotation.line == 3900000008
+                    table.enum_hierarchy_parent <- table.enum_hierarchy_parent.push(annotation.name) if annotation.line == 3900000008
+                table.enum_common_owners <- file.enum_common_owners
+                table.enum_common_counts <- file.enum_common_counts
+                # Validate struct layouts (field types + self-recursion) after symbol
+                # collection so the symbol table is complete (all structs/enums registered).
+                for region_annotation in file.local_region_annotations |table|:
+                    table.region_tied_param_names <- table.region_tied_param_names.push(region_annotation.name) if region_annotation.region != "" and region_annotation.name != "__region_local"
+                table <- validate_struct_layouts(file, table)
+                # Skip name resolution when the parse failed: a partial AST yields cascading,
+                # misleading undefined-name diagnostics that bury the real syntax error.
+                # Symbol collection (duplicate-declaration) still runs over whatever parsed.
+                if file.errors.count == 0:
+                    table <- resolve_declarations(file.top_decls, table)
+                    # stage0→stage1 diagnostic ports (batch).
+                    table <- check_self_assignment(file.top_decls, table)
+                    table <- check_self_comparison(file.top_decls, table)
+                    table <- check_unused_expression(file.top_decls, table)
+                    table <- check_constant_condition(file.top_decls, table) if flow_warn or flow_strict
+                    table <- check_redundant_bool_compare(file.top_decls, table)
+                    table <- check_duplicate_import(file.top_decls, table)
+                    table <- check_duplicate_match_arm(file.top_decls, table)
+                    table <- check_division_by_zero(file.top_decls, table)
+                    table <- check_array_literal_arity(file.top_decls, table)
+                    table <- check_unknown_type_name(file.top_decls, table)
+                    table <- check_cstr_pointer_compare(file.top_decls, table)
+                    table <- check_alias_target_type(file, table)
+                    table <- check_duplicate_dict_key(file.top_decls, table)
+                    table <- check_duplicate_set_element(file.top_decls, table)
+                    table <- check_index_out_of_bounds(file, table)
+                    table <- check_enum_tag_index(file.top_decls, table)
+                    table <- check_packed_enum_cast(file.top_decls, file.packed_enum_names, table)
+                    table <- check_auto_region_escape(file.top_decls, table)
+                    table <- check_structural_decreases(file.top_decls, table)
+                    table <- check_local_refinement_unproven(file.top_decls, table)
+                    table <- check_field_source_refinement(file, table)
+                    table <- check_owned_region(file.top_decls, table)
+                    table <- check_ensures_hof_args(file.top_decls, table)
+                    table <- check_assert_by(file, table)
+                    table <- check_loop_invariant_preserved(file.top_decls, enable_smt, table)
+                    table <- check_field_fact_precondition(file, table)
+                    table <- check_region_tied_return(file, table) if not runtime_std
+                    table <- check_quantified_refinement(file.top_decls, table)
+                    table <- check_guest_overlay(file, table)
+                    table <- check_self_arithmetic(file.top_decls, table)
+                    table <- check_double_negation(file.top_decls, table)
+                    table <- check_infinite_loop(file.top_decls, table) if flow_warn or flow_strict
+                    table <- check_redundant_arithmetic(file.top_decls, table)
+                    table <- check_empty_range(file.top_decls, table)
+                    table <- check_assign_to_loop_var(file.top_decls, table)
+                    table <- check_constant_comparison(file.top_decls, table)
+                    table <- check_duplicate_condition(file.top_decls, table)
+                    table <- check_discarded_call_result(file.top_decls, table) if warn_discarded
+                    table <- check_void_value_use(file.top_decls, table)
+                    table <- check_literal_arg_type_mismatch(file.top_decls, table)
+                    table <- check_oversized_shift(file.top_decls, table)
+                    table <- check_negative_shift(file.top_decls, table)
+                    table <- check_literal_assign_out_of_range(file.top_decls, table)
+                    table <- check_literal_comparison_impossible(file.top_decls, table)
+                    table <- check_duplicate_variant_field(file.top_decls, table)
+                    table <- check_identical_logical_operands(file.top_decls, table)
+                    table <- check_logical_constant_operand(file.top_decls, table)
+                    table <- check_identical_branches(file.top_decls, table)
+                    table <- check_empty_iterable(file.top_decls, table)
+                    table <- check_unused_import(file.top_decls, table)
+                    table <- check_float_equality(file.top_decls, table)
+                    table <- check_negative_index(file.top_decls, table)
+                    table <- check_sentinel_index(file.top_decls, table)
+                    table <- check_untyped_darray_builder(file.top_decls, table)
+                    table <- check_duplicate_pattern_binding(file.top_decls, table)
+                    table <- check_immediate_overwrite(file.top_decls, table) if flow_warn or flow_strict
+                    table <- check_modulo_by_zero(file.top_decls, table)
+                    table <- check_shift_by_zero(file.top_decls, table)
+                    table <- check_duplicate_decorator(file.top_decls, table)
+                    table <- check_redundant_continue(file.top_decls, table)
+                    table <- check_negated_comparison(file.top_decls, table)
+                    table <- check_field_access_on_primitive(file.top_decls, table)
+                    table <- check_index_non_indexable(file.top_decls, table)
+                    table <- check_firm_arg_type_mismatch(file, table)
+                    table <- check_nonbool_match_guard(file.top_decls, table)
+                    table <- check_redundant_cast(file.top_decls, table)
+                    table <- check_unknown_field_access(file.top_decls, table)
+                    table <- check_is_pattern_field(file.top_decls, table)
+                    table <- check_construct_field_type(file.top_decls, table)
+                    table <- check_truthy_or_bindings(file.top_decls, table)
+                    table <- check_readonly_refs(file.top_decls, table)
+                    table <- check_named_type_mismatch(file.top_decls, table)
+                    table <- check_void_argument(file.top_decls, table)
+                    table <- check_nonnumeric_shift_operand(file.top_decls, table)
+                    table <- check_compound_assign_nonnumeric(file.top_decls, table)
+                    table <- check_string_index_nonnumeric(file.top_decls, table)
+                    table <- check_void_field_access(file.top_decls, table)
+                    table <- check_void_index(file.top_decls, table)
+                    table <- check_call_non_function(file.top_decls, table)
+                    table <- check_shift_non_integral(file.top_decls, table)
+                    table <- check_void_operand(file.top_decls, table)
+                    table <- check_void_condition(file.top_decls, table)
+                    table <- check_ternary_branch_mismatch(file.top_decls, table)
+                    table <- check_array_literal_element(file.top_decls, table)
+                    table <- check_string_index_nonintegral(file.top_decls, table)
+                    table <- check_void_collection_element(file.top_decls, table)
+                    table <- check_void_unary_operand(file.top_decls, table)
+                    table <- check_void_match_scrutinee(file.top_decls, table)
+                    table <- check_ordering_non_numeric(file.top_decls, table)
+                    table <- check_range_bound_non_integral(file.top_decls, table)
+                    table <- check_darray_element_mismatch(file.top_decls, table)
+                    table <- check_set_element_mismatch(file.top_decls, table)
+                    table <- check_dict_value_mismatch(file.top_decls, table)
+                    table <- check_dict_key_mismatch(file.top_decls, table)
+                    table <- check_call_named_non_function(file.top_decls, table)
+                    table <- check_callback_named_args(file.top_decls, table)
+                    table <- check_struct_pattern_type_mismatch(file.top_decls, table)
+                    table <- check_match_arm_enum_mismatch(file.top_decls, table)
+                    table <- check_invalid_bool_cast(file.top_decls, table)
+                    table <- check_field_immutable_assign(file.top_decls, table)
+                    table <- collect_extern_effects(file.enum_annotations, table)
+                    table <- collect_effect_sources(file.top_decls, table)
+                    table <- check_ungranted_panic(file.top_decls, file.allocation_region_names, file.allocation_region_lines, file.enum_annotations, enforce_unsafe_permissions, table)
+                    table.diagnostics.extend(unknown_permission_member_diagnostics(file.enum_annotations))
+                    table <- check_contract_position(file.top_decls, table)
+                    table <- check_contract_result_void(file.top_decls, enforce_unsafe_permissions or enable_smt, table)
+                    table <- check_affine_collection(file.top_decls, table)
+                    table <- check_byvalue_grown_container(file.top_decls, table)
+                    table <- check_affine_use_flow(file, table)
+                    table <- check_interior_ref_uaf(file.top_decls, table)
+                    table <- check_darray_linear_consume(file.top_decls, table)
+                    table <- check_thread_shareability(file.top_decls, table)
+                    table <- check_export_boundary(file, table)
+                    table <- check_block_lambda_context(file, table)
+                    table <- check_legacy_error_syntax(file, table)
+                    table <- check_nullable_flow(file, table)
+                    table <- check_aggregate_state_arity(file, table)
+                    table <- check_derived_state_constructor(file, table)
+                    table <- check_derived_state_flow(file, table)
+                    table <- check_pointer_erasure_cast(file, enforce_unsafe_permissions, runtime_std, table)
+                    table <- check_dense_node_key_root(file.top_decls, table)
+                    table <- check_thread_transfer_provenance(file, table)
+                    table <- check_function_variance(file.top_decls, file.fn_type_param_lines, file.fn_type_param_exprs, table)
+                    table <- check_catch_exhaustive(file, table)
+                    table <- check_enum_tail_payload(file, table)
+                    table <- check_try_fallible(file, table)
+                    table <- check_errorset_wrapper_return(file, table)
+                    table <- check_lmut_rebind_claim(file, table)
+                    table <- check_static_generate_interp(file, table)
+                    table <- check_mutual_decreases_cycle(file, enable_smt, table)
+                    table <- check_where_arg_const_false(file, table)
+                    table <- check_precondition_struct_const(file, table)
+                    table <- check_old_delta_ensure(file.top_decls, table)
+                    table <- check_recursive_precondition_range(file.top_decls, table)
+                    table <- check_transitive_precondition_violated(file, table)
+                    table <- check_parametric_index_violated(file, table)
+                    table <- check_hot_disjoint_kernel(file, table)
+                    table <- check_const_float_cast(file.top_decls, table)
+                    table <- check_container_shape_return(file.top_decls, table)
+                    table <- check_fresh_shape_calls(file, table)
+                    table <- check_uses_contract(file.top_decls, file, table)
+                    table <- check_strict_unsafe_ops(file, enforce_raw_unsafe, table) if enforce_unsafe_permissions
+                    table <- check_fixed_index_range(file.top_decls, table) if enforce_unsafe_permissions
+                    table <- check_mutable_alias_local(file.top_decls, table) if enforce_unsafe_permissions
+                    table <- check_mutable_alias_borrow(file.top_decls, table) if enforce_unsafe_permissions
+                    table <- check_pointer_arith_grant(file.top_decls, table) if enforce_unsafe_permissions
+                    # Protocol default methods join the ensure-strict input (full-file context is
+                    # collected from the combined list, and the default bodies get their ensure
+                    # obligation checked) — but NOT the other checks, which would over-fire on a
+                    # protocol-scoped method.
+                    obligation_decls: mutable darray[Ast::Decl] = []
+                    obligation_decls.extend(file.top_decls)
+                    obligation_decls.extend(file.protocol_default_methods)
+                    # Protocol method ensure predicate source spans (parser sentinel 3900000073),
+                    # keyed by method name — lets strict-ensure discharge a generic function that
+                    # returns a protocol method's result carrying the same postcondition.
+                    protocol_ensure_owners: mutable darray[sview] = []
+                    protocol_ensure_spans: mutable darray[sview] = []
+                    protocol_law_spans: mutable darray[sview] = []
+                    for pe_annotation in file.enum_annotations |protocol_ensure_owners, protocol_ensure_spans, protocol_law_spans|:
+                        if pe_annotation.line == 3900000073:
+                            protocol_ensure_owners.push(pe_annotation.owner)
+                            protocol_ensure_spans.push(pe_annotation.name)
+                        protocol_law_spans.push(pe_annotation.name) if pe_annotation.line == 3900000078
+                    table <- check_ensure_strict(obligation_decls, protocol_ensure_owners, protocol_ensure_spans, protocol_law_spans, table) if enforce_unsafe_permissions
+                    table <- check_protocol_precondition_unproven(file, table) if enforce_unsafe_permissions
+                    table <- check_recursive_callee_progress(file, table) if enforce_unsafe_permissions
+                    table <- check_assert_proof_hole(file, table) if emit_proof_hole
+                    table <- check_ensure_branch_const(file.top_decls, table) if enforce_unsafe_permissions
+                    table <- check_function_invariant(file, table)
+                    table <- check_branchy_nonnull_ensure(file.top_decls, table) if enforce_unsafe_permissions
+                    table <- check_refinement_return(file.top_decls, enable_smt, table)
+                    table <- check_refine_cycle(file.top_decls, table)
+                    table <- check_where_reassign_walk(file.top_decls, table)
+                    table <- check_precondition_violated(file, table)
+                    table <- check_precondition_invariant_violated(file.top_decls, table)
+                    table <- check_precondition_unproven(file, table)
+                    table <- check_call_precondition_unproven(file, table)
+                    table <- check_call_quantified_precondition(file, table)
+                    table <- check_call_struct_field_precondition(file, table)
+                    table <- check_ensure_field_clobbered(file, table)
+                    table <- check_loop_invariant_establish(file, table)
+                    table <- check_noalloc_allocates(file, table)
+                    table <- check_refinement_arg_violated(file.top_decls, table)
+                    table <- check_refinement_fact_invalidated(file, table)
+                    table <- check_refinement_arg_unproven(file, table)
+                    table <- check_recursive_affine_ensure(file, table)
+                    table <- check_raw_atomic_surface(file.top_decls, table) if not runtime_std
+                    table <- check_raw_concurrency_surface(file.top_decls, table) if not runtime_std
+                    table <- check_where_scope(file.top_decls, table)
+                    table <- check_push_loop_lint(file.top_decls, table)
+                    table <- check_char_classifier_guard(file.top_decls, table)
+                    table <- check_flags_const_enum(file.top_decls, table)
+                    table <- check_boundary_pointer_args(file, table)
+                    table <- check_errorset_param_inference(file, table)
+                    table <- check_fulfills_whole_function(file, table)
+                    table <- check_inbounds_index(file.top_decls, table)
+                    table <- check_contract_purity(file.top_decls, table)
+                    table <- check_requires_contradictory(file, table)
+                    table <- check_uninitialized_zeroed(file.top_decls, table)
+                    table <- check_redundant_grant(file.top_decls, table)
+                    table <- check_flow_shapes(file.top_decls, table) if flow_warn or flow_strict
+                    table <- check_def_shadows_builtin(file.top_decls, table)
+                    table <- check_async_entry_annotations(file.top_decls, table)
+                    table <- check_reentrant_safe_calls(file.top_decls, table)
+                    table <- check_export_names(file, table)
+                    table <- check_frame_conformance(file, table)
+                    table <- check_static_assert(file, table)
+                    table <- check_static_error(file, table)
+                    table <- check_static_eval(file, table)
+                    table <- check_assert_nonbool(file.top_decls, table)
+                    table <- check_set_membership_element(file.top_decls, table)
+                    table <- check_runtime_dict_key(file.top_decls, table)
+                    table <- check_error_union_unhandled(file, table)
+                    table <- check_where_predicate_bool(file.top_decls, table)
+                    table <- check_static_call_context(file, table)
+                    table <- check_effect_law_fulfillment(file, table)
+                    table <- check_nobounds_index(file, table)
+                    table <- check_permission_includes(file, table)
+                    table <- check_can_cast_unsound(file, table)
+                    table <- check_segment_agnostic_grant(file, table)
+                    table <- check_optional_compare(file, table)
+                    table <- check_callconv(file, table)
+                    table <- check_extern_segment(file, table)
+                    table <- check_opaque_refine_assign(file, table)
+                    table <- check_field_return_refinement(file, table)
+                    table <- check_bounded_return_product(file, table)
+                    table <- check_ensures_range_assign(file, table)
+                    table <- check_field_access_type_param(file, table)
+                    table <- check_region_owner_leak(file, table)
+                    table <- check_segment_flow(file, table)
+                    table <- check_local_arena_escape(file, table)
+                    table <- check_region_stack_lifetime(file, region_stack_cap, table)
+                    table <- check_region_param_uninferable(file, table)
+                    table <- check_assoc_index_bounds(file, table)
+                    table <- check_contract_wellformed(file, table)
+                    table <- check_drain_discipline(file, table)
+                    table <- check_linear_reference(file, table)
+                    table <- check_clone_builtin(file, table)
+                    table <- check_field_push_arena(file, table)
+                    table <- check_counting_fill_reserve(file, table)
+                    table <- check_closure_capture(file, table)
+                    table <- check_law_purity(file, table)
+                    table <- check_field_default_type(file, table)
+                    table <- check_id_newtype_return(file, table)
+                    table <- check_catch_param_binder(file, table)
+                    table <- check_enumerate_index_variant(file, table)
+                    table <- check_void_bindable(file, table)
+                    table <- check_index_else_fallback(file, table)
+                    table <- check_assign_ref_to_aggregate(file, table)
+                    table <- check_narrowed_arg_enum(file, table)
+                    table <- check_flags_index_type(file, table)
+                    table <- check_ufcs_unknown_method(file, table)
+                    table <- check_brace_shorthand(file, table)
+                    table <- check_lambda_arg_return(file, table)
+                    table <- check_static_runtime_stmt(file, table)
+                    table <- check_catch_out_of_set(file, table)
+                    table <- check_nolock_blocking(file, table)
+                    table <- check_typestate_flow(file, table)
+                    table <- check_named_call_args(file, table)
+                    table <- check_impl_conformance(file, table)
+                    table <- check_extern_signature_mismatch(file, table)
+                    table <- check_frame_write(file, table)
+                    table <- check_frame_interproc(file, table)
+                    table <- check_preserves_conflict(file, table)
+                    table <- check_preserves_write(file, table)
+                    table <- check_refine_alias_binder(file, table)
+                    table <- check_unknown_interface(file, table)
+                    table <- check_lmut_value_arg(file, table)
+                    table <- check_changes_target_param(file, table)
+                    table <- check_refinement_is_law(file, table)
+                    table <- check_typestate_scope(file, table)
+                    table <- check_region_escape(file, table)
+                    table <- check_arena_grow_escape(file, table)
+                    table <- check_dview_removed(file.top_decls, table)
+                    table <- check_noalloc_arguments(file.top_decls, table)
+                    table <- check_hot_contract(file.top_decls, file.annotation_args, table)
+                    table <- check_decreases_star_reason(file.top_decls, table)
+                    table <- check_decreases_unmodelable(file.top_decls, enable_smt, table) if not runtime_std
+                    table <- check_progress_safety(file.top_decls, table) if enforce_progress
+                    table <- check_else_void_context(file.top_decls, table)
+                    table <- check_extern_contract(file.top_decls, file.signature_contract_lines, file.enum_annotations, table) if enforce_extern_contracts
+                    table <- check_ensures_structural(file, table)
+                    table <- check_protocol_variance(file, table)
+                    table <- check_deprecated_call(file, table)
+                    table <- check_in_auto_deprecated(file.top_decls, table)
+                    for new_auto_annotation in file.enum_annotations |table|:
+                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.NewAutoDeprecated, name: "", line: new_auto_annotation.line, expected: "", actual: ""}) if new_auto_annotation.owner == "__new_auto"
+                    table <- check_permission_reserved(file.enum_annotations, table)
+                    table <- pr_check_declarations(file.top_decls, table)
+                    table <- check_extern_decorators(file.top_decls, file.annotation_args, table)
+                    table <- check_extern_link_name_conflict(file, table)
+                    table <- check_lmut_mutation_reassignment(file, table)
+                    table <- check_default_param_ref(file, table)
+                    table <- check_import_conflict(file, table)
+                    table <- check_measure_shape_law_value_is(file, table)
+                    table <- check_defer_rules(file, table)
+                    table <- check_law_subject(file, table)
+                    table <- check_cast_constant_truncated(file, table)
+                    table <- check_enum_refine_parent(file, table)
+                    table <- check_mutate_while_iterating(file, table)
+                    table <- check_index_fallback_type(file, table)
+                    table <- check_optional_comparison(file, table)
+                    table <- check_match_literal_arms(file, table)
+                    table <- check_offset_of_field(file, table)
+                    table <- check_copy_builtin(file, table)
+                    table <- check_arg_forwarding(file, table)
+                    table <- check_id_unwrap_operand(file, table)
+                    table <- check_readonly_view_assign(file, table)
+                    table <- check_rowid_soa(file, table)
+                    table <- check_sparse_requires_soa(file, table)
+                    table <- check_law_subject_type(file, table)
+                    table <- check_brace_membership_context(file, table)
+                    table <- check_cbind_requires_c_layout(file, table)
+                    table <- check_const_enum_value_fits(file.top_decls, table)
+                    table <- check_literal_type_overflow(file.top_decls, table)
+                    table <- check_overlay_field(file.top_decls, table)
+                    table <- check_struct_field_where_scope(file.top_decls, table)
+                    table <- check_struct_field_construct_unproven(file.top_decls, table)
+                    table <- check_call_where_precondition(file.top_decls, table)
+                    table <- check_local_where_violated(file.top_decls, table)
+                    table <- check_law_refinement_violated(file, table)
+                    table <- check_ensures_assign_violated(file, table)
+                    table <- check_precondition_multiparam(file, table)
+                    table <- check_struct_field_violated(file.top_decls, table)
+                    table <- check_struct_field_law_violated(file.top_decls, table)
+                    table <- check_positional_construction(file.top_decls, table)
+                    table <- check_zip_map_readonly(file.top_decls, table)
+                    if flow_strict:
+                        flagged_if_lines: mutable darray[u32] = []
+                        flow_strict_flagged_if_lines(file.top_decls, table.block_if_lines, flagged_if_lines)
+                        for flagged_line in flagged_if_lines |table|:
+                            table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.FlowStrictBlockIf, name: "", line: flagged_line, expected: "", actual: ""})
+                    table <- check_internal_runtime_carrier(file, table)
+                    table <- check_signal_effect(file, table)
+                    table <- check_ufcs_ambiguous(file, table)
+                    table <- check_generic_interface_bounds(file, table)
+                    table <- check_generic_operator_no_bound(file, table)
+                    table <- check_parallel_for_grant(file, table)
+                    table <- check_unused_decreases(file.top_decls, table)
+                    table <- check_ghost_field_default(file.top_decls, table)
+                    table <- check_ghost_local_read(file, table)
+                    table <- check_ghost_field_read(file, table)
+                    table <- check_const_dict_index(file, table)
+                    table <- check_ambiguous_error_variant(file, table)
+                    table <- check_private_member_access(file, table)
+                    table <- check_frame_preserves(file, table)
+                    table <- check_static_def_recursion(file, table)
+                    table <- check_errorset_shadow(file, table)
+                    table <- check_ghost_function(file, table)
+                    table <- check_const_enum_storage(file.top_decls, table)
+                    table <- check_machine_decreases_type(file, table)
+                    table <- check_typestate_call_widening(file, table)
+                    table <- check_const_enum_member_value(file.top_decls, table)
+                    table <- check_raise_without_error_set(file, table)
+                    table <- check_lambda_raise_conformance(file, table)
+                    while suffix_index < file.numeric_suffix_names.count |suffix_index: usize = 0|:
+                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.NumericLiteralSuffix, name: file.numeric_suffix_names[suffix_index], line: file.numeric_suffix_lines[suffix_index], expected: "", actual: ""})
+                        suffix_index <- suffix_index + 1
+                    table <- check_machine_tag_coverage(file, table)
+                    table <- check_region_annotation_scalar(file.top_decls, table)
+                    table <- check_region_backing(file.top_decls, file.enum_annotations, table)
+                    table <- check_region_linear_alloc(file.top_decls, table)
+                    table <- check_local_region_annotation(file, table)
+                    table <- check_destroyed_region(file, table)
+                    table <- check_region_storage_stability(file, table)
+                    table <- check_removed_packed_annotation(file, table)
+                    table <- check_duplicate_bit_group_member(file.top_decls, table)
+                    table <- check_named_states_without_derive(file.top_decls, table)
+                    table <- check_flow_flag(file.top_decls, table)
+                    table <- check_if_value_missing_else(file.top_decls, table)
+                    table <- check_tuple_pattern_arity(file.top_decls, table)
+                    table <- check_or_pattern_bindings(file.top_decls, table)
+                    table <- collect_tuple_binding_spellings(file, table)
+                    table <- check_tuple_var_scalar_mismatch(file, table)
+                    table <- check_packed_move_store(file, table)
+                    table <- check_packed_match_store(file.top_decls, file.enum_annotations, table)
+                    table <- check_unknown_function_annotation(file, table)
+                    table <- check_fixed_array_shape(file.top_decls, table)
+                    table <- check_fresh_shape_wrapper(file.top_decls, table)
+                    table <- check_atomic_payload(file.top_decls, table)
+                return table
+
+
+        def check(file: Ast::File&) -> SymbolTable:
+            can Unsafe.PointerCast:
+                can Memory.Allocate, Abort.Panic:
+                    return check_with_unsafe_permissions(file, false)
+
+
+            # Resolve all references and return the full table (diagnostics included) —
+            # the located-findings sibling of `unresolved_references` for harness probes that
+            # need per-diagnostic lines, without the parse-error gating of `check`.
+        def unresolved_table(file: Ast::File&) -> SymbolTable:
+            can Memory.Allocate, Abort.Panic:
+                table: mutable SymbolTable = SymbolTable()
+                table <- seed_builtins(table)
+                table <- collect_range(file.top_decls, table)
+                table.generic_param_lines <- file.generic_param_lines
+                table.generic_param_names <- file.generic_param_names
+                table.packed_enum_names <- file.packed_enum_names
+                for annotation in file.enum_annotations |table|:
+                    table.imported_modules <- table.imported_modules.push(annotation.owner) if annotation.name == "__using"
+                    # `using Mod as M` — the ALIAS is a module name in its own right, and
+                    # the module it stands for is imported. Without the symbol, `M::f()`
+                    # resolved to `undefined identifier 'M'`.
+                    table <- table.add_symbol(annotation.owner, SymbolKind.Module, annotation.line) if annotation.name == "__using_alias"
+                    table.imported_modules <- table.imported_modules.push(annotation.owner) if annotation.name == "__using_alias_target"
+                    table.imported_members <- table.imported_members.push(annotation.name) if annotation.owner == "__from_member"
+                    table.catch_match_lines <- table.catch_match_lines.push(annotation.line) if annotation.name == "__catch_match"
+                    table.new_construct_lines <- table.new_construct_lines.push(annotation.line) if annotation.name == "__new_construct"
+                    table.forward_arg_lines <- table.forward_arg_lines.push(annotation.line) if annotation.name == "__arg_forward"
+                    table.block_if_lines <- table.block_if_lines.push(annotation.line) if annotation.name == "__block_if"
+                    table.region_names <- table.region_names.push(annotation.owner) if annotation.name == "__region_name"
+                    table.query_binder_lines <- table.query_binder_lines.push(annotation.line) if annotation.name == "__query_binder"
+                    table.query_binder_names <- table.query_binder_names.push(annotation.owner) if annotation.name == "__query_binder"
+                    table.enum_hierarchy_child <- table.enum_hierarchy_child.push(annotation.owner) if annotation.line == 3900000008
+                    table.enum_hierarchy_parent <- table.enum_hierarchy_parent.push(annotation.name) if annotation.line == 3900000008
+                table.enum_common_owners <- file.enum_common_owners
+                table.enum_common_counts <- file.enum_common_counts
+                table <- validate_struct_layouts(file, table)
+                table <- resolve_declarations(file.top_decls, table)
+                return table
+
+
+        # Resolve all references in a parsed file; returns the count of unresolved
+        # (undefined) value-position identifier references — the number of UndefinedName
+        # diagnostics. Anchors the resolver call graph for the smoke harness.
+        def unresolved_references(file: Ast::File&) -> u64:
+            can Memory.Allocate, Abort.Panic:
+                table: mutable SymbolTable = SymbolTable()
+                table <- seed_builtins(table)
+                table <- collect_range(file.top_decls, table)
+                table.generic_param_lines <- file.generic_param_lines
+                table.generic_param_names <- file.generic_param_names
+                table.packed_enum_names <- file.packed_enum_names
+                for annotation in file.enum_annotations |table|:
+                    table.imported_modules <- table.imported_modules.push(annotation.owner) if annotation.name == "__using"
+                    # `using Mod as M` — the ALIAS is a module name in its own right, and
+                    # the module it stands for is imported. Without the symbol, `M::f()`
+                    # resolved to `undefined identifier 'M'`.
+                    table <- table.add_symbol(annotation.owner, SymbolKind.Module, annotation.line) if annotation.name == "__using_alias"
+                    table.imported_modules <- table.imported_modules.push(annotation.owner) if annotation.name == "__using_alias_target"
+                    table.imported_members <- table.imported_members.push(annotation.name) if annotation.owner == "__from_member"
+                    table.catch_match_lines <- table.catch_match_lines.push(annotation.line) if annotation.name == "__catch_match"
+                    table.new_construct_lines <- table.new_construct_lines.push(annotation.line) if annotation.name == "__new_construct"
+                    table.forward_arg_lines <- table.forward_arg_lines.push(annotation.line) if annotation.name == "__arg_forward"
+                    table.block_if_lines <- table.block_if_lines.push(annotation.line) if annotation.name == "__block_if"
+                    table.region_names <- table.region_names.push(annotation.owner) if annotation.name == "__region_name"
+                    table.query_binder_lines <- table.query_binder_lines.push(annotation.line) if annotation.name == "__query_binder"
+                    table.query_binder_names <- table.query_binder_names.push(annotation.owner) if annotation.name == "__query_binder"
+                    table.enum_hierarchy_child <- table.enum_hierarchy_child.push(annotation.owner) if annotation.line == 3900000008
+                    table.enum_hierarchy_parent <- table.enum_hierarchy_parent.push(annotation.name) if annotation.line == 3900000008
+                table.enum_common_owners <- file.enum_common_owners
+                table.enum_common_counts <- file.enum_common_counts
+                table <- validate_struct_layouts(file, table)
+                table <- resolve_declarations(file.top_decls, table)
+                # docs/119 §3: count UndefinedName diagnostics with a loop-expression fold —
+                # the accumulator is loop-private and the body is pure over outer state.
+                count: u64 =
+                    for diagnostic in table.diagnostics |undefined_count = 0| -> undefined_count:
+                        undefined_count <- undefined_count + 1 if diagnostic.kind == DiagnosticKind.UndefinedName
+                return count
