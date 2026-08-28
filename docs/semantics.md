@@ -181,6 +181,13 @@ uses mode `0755` before the process umask is applied. `current_directory` return
 owned nominal snapshot, so a later directory change cannot mutate the saved path.
 Empty paths and embedded NUL bytes are rejected before entering the POSIX boundary.
 
+`list_directory(path: Path) -> darray[sview] error[DirectoryError]
+can[Directory.Read]` returns owned entry basenames. It omits the synthetic `.` and
+`..` entries and sorts remaining names by unsigned byte order, making discovery
+deterministic rather than dependent on filesystem enumeration order. Opening,
+enumeration, and close failures remain structured errors. Returned names do not
+borrow the operating system's reusable directory-entry buffer.
+
 ## Compile-time validation
 
 `check_typed_literals.elisa` validates constant string payloads during the existing

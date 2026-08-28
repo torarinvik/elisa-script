@@ -74,6 +74,12 @@ extend EsIr:
             failure: mutable InterpretFailure
 
 
+        struct DirectoryScanner:
+            names: mutable darray[dstr]
+            directory: mutable heap void&
+            failed: mutable bool
+
+
         struct InstructionDispatch:
             value: mutable RuntimeValue
             opcode: Opcode
@@ -1092,6 +1098,87 @@ extend EsIr:
                 return runtime_text(bytes_view(bytes))
 
 
+        def append_directory_name(scanner: mutable DirectoryScanner&, entry: ElisascriptDirectoryEntry&) -> void can[Memory.Allocate, Abort.Panic]:
+            length: usize = entry.name_length.usize()
+            return if length == 1 and entry.name[0] == 46
+            return if length == 2 and entry.name[0] == 46 and entry.name[1] == 46
+            name: mutable dstr = ctx_fstr_alloc(length)
+            ctx_fstr_append(name, &entry.name[0], length)
+            scanner.names.push(name)
+
+
+        def directory_next(scanner: mutable DirectoryScanner&) -> bool can[Memory.Allocate, Abort.Panic]:
+            can Blocking.IO:
+                error_pointer: mutable int& = elisascript_darwin_errno()
+                error_pointer[0] <- 0
+                entry: mutable ElisascriptDirectoryEntry&? = elisascript_posix_readdir(scanner.directory)
+                if entry == null:
+                    scanner.failed <- error_pointer[0] != 0
+                    return false
+                live_entry: mutable ElisascriptDirectoryEntry& = entry
+                append_directory_name(scanner, live_entry)
+                return true
+
+
+        def directory_name_less(left: dstr, right: dstr) -> bool:
+            left_view: sview = bytes_view(left)
+            right_view: sview = bytes_view(right)
+            shared: usize = sview_len(left_view) if sview_len(left_view) < sview_len(right_view) else sview_len(right_view)
+            for index in 0..<shared |left_view, right_view|:
+                true return if sview_at(left_view, index) < sview_at(right_view, index)
+                false return if sview_at(left_view, index) > sview_at(right_view, index)
+            return sview_len(left_view) < sview_len(right_view)
+
+
+        def sort_directory_names(names: mutable darray[dstr]&) -> void:
+            for index in 1..<names.count |names|:
+                cursor: mutable usize = index
+                while cursor > 0 and directory_name_less(names[cursor], names[cursor - 1]):
+                    previous: dstr = names[cursor - 1]
+                    names[cursor - 1] <- names[cursor]
+                    names[cursor] <- previous
+                    cursor <- cursor - 1
+
+
+        def evaluate_list_directory(machine: mutable Machine&, storage: mutable darray[RuntimeValue]&, path: RuntimeValue) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+            if path.kind != RuntimeValueKind.Text:
+                machine.failure <- InterpretFailure.TypeMismatch
+                return runtime_void()
+            if sview_len(path.text) == 0 or text_has_nul(path.text):
+                machine.failure <- InterpretFailure.Directory
+                return runtime_void()
+            c_path: dstr = nul_terminated_text(path.text)
+            if c_path.items == null:
+                machine.failure <- InterpretFailure.Directory
+                return runtime_void()
+            path_items: u8& = c_path.items
+            can Blocking.IO, Memory.Allocate, Memory.Release:
+                handle: mutable heap void&? = elisascript_posix_opendir(path_items.cast[cstr])
+                if handle == null:
+                    machine.failure <- InterpretFailure.Directory
+                    return runtime_void()
+                directory: mutable heap void& = handle
+                scanner: mutable DirectoryScanner = DirectoryScanner{names: [], directory: directory, failed: false}
+                machine over directory_next(scanner):
+                    state Scan
+                    start Scan
+
+                    Scan, true:
+                        -> Scan
+                    Scan, _:
+                        break
+                close_status: int = elisascript_posix_closedir(directory)
+                if scanner.failed or close_status != 0:
+                    machine.failure <- InterpretFailure.Directory
+                    return runtime_void()
+                sort_directory_names(scanner.names)
+                start: u32 = storage.count.u32()
+                storage.reserve(storage.count + scanner.names.count)
+                for name in scanner.names |storage|:
+                    storage.push(runtime_text(bytes_view(name)))
+                return runtime_array(start, scanner.names.count.u32())
+
+
         def evaluate_concat(machine: mutable Machine&, storage: mutable darray[RuntimeValue]&, left: RuntimeValue, right: RuntimeValue) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
             if left.kind == RuntimeValueKind.Array and right.kind == RuntimeValueKind.Array:
                 start: u32 = storage.count.u32()
@@ -1288,6 +1375,11 @@ extend EsIr:
 
                         Dispatch, Opcode.CurrentDirectory:
                             dispatch.value <- evaluate_current_directory(machine)
+                            break
+
+                        Dispatch, Opcode.ListDirectory:
+                            path_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
+                            dispatch.value <- evaluate_list_directory(machine, storage, path_value)
                             break
 
                         Dispatch, Opcode.Concat:

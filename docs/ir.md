@@ -182,6 +182,12 @@ string truncation hazards, and execute through explicit exhaustive opcode arms.
 `CurrentDirectory` takes no operands, returns `Named(Path)`, and requires
 `Directory.Read` plus the same error. All four have explicit opcode-machine arms;
 the cwd result is copied before the POSIX allocation is released.
+`ListDirectory` verifies as `Named(Path) -> Array[Text]` with `Directory.Read` and
+`DirectoryError`. The reference interpreter drives `readdir` through an explicit
+scan machine, copies each entry before the next transition, removes dot entries,
+and sorts owned names before materializing the runtime array. The current low-level
+entry layout bridge is isolated and Darwin-specific; other native targets must
+supply their platform `dirent` layout without changing this IR contract.
 Named direct-call arguments are resolved against predeclared parameter labels and
 then emitted in canonical signature order. Their expressions still execute once in
 source order. Missing parameters materialize their Elisa default expressions in
