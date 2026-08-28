@@ -16,11 +16,13 @@ extend EsIr:
             Void
             Bool
             Int
+            Float
             Text
 
 
         struct RuntimeValue:
             text: sview = ""
+            decimal: f64 = 0.0
             integer: i64 = 0
             kind: RuntimeValueKind
             boolean: bool = false
@@ -55,6 +57,31 @@ extend EsIr:
             failure: mutable InterpretFailure
 
 
+        struct InstructionDispatch:
+            value: mutable RuntimeValue
+            opcode: Opcode
+            produces_value: mutable bool
+
+
+        const enum DecimalClass of u8:
+            Digit
+            Dot
+            Exponent
+            Plus
+            Minus
+            Other
+
+
+        struct DecimalParser:
+            text: sview
+            value: mutable f64
+            place: mutable f64
+            exponent: mutable i64
+            index: mutable usize
+            negative: mutable bool
+            exponent_negative: mutable bool
+
+
         def runtime_void() -> RuntimeValue:
             return RuntimeValue{kind: RuntimeValueKind.Void}
 
@@ -67,8 +94,114 @@ extend EsIr:
             return RuntimeValue{kind: RuntimeValueKind.Int, integer: value}
 
 
+        def runtime_float(value: f64) -> RuntimeValue:
+            return RuntimeValue{kind: RuntimeValueKind.Float, decimal: value}
+
+
         def runtime_text(value: sview) -> RuntimeValue:
             return RuntimeValue{kind: RuntimeValueKind.Text, text: value}
+
+
+        def decimal_class(parser: DecimalParser&) -> DecimalClass:
+            return DecimalClass.Other if parser.index >= sview_len(parser.text)
+            byte: u8 = sview_at(parser.text, parser.index)
+            return DecimalClass.Digit if byte >= 48 and byte <= 57
+            return DecimalClass.Dot if byte == 46
+            return DecimalClass.Exponent if byte == 69 or byte == 101
+            return DecimalClass.Plus if byte == 43
+            return DecimalClass.Minus if byte == 45
+            return DecimalClass.Other
+
+
+        def consume_decimal_digit(parser: mutable DecimalParser&, fractional: bool) -> void:
+            digit: f64 = (sview_at(parser.text, parser.index) - 48).f64()
+            if fractional:
+                parser.value <- parser.value + digit * parser.place
+                parser.place <- parser.place * 0.1
+            else:
+                parser.value <- parser.value * 10.0 + digit
+            parser.index <- parser.index + 1
+
+
+        def consume_exponent_digit(parser: mutable DecimalParser&) -> void:
+            parser.exponent <- parser.exponent * 10 + (sview_at(parser.text, parser.index) - 48).i64()
+            parser.index <- parser.index + 1
+
+
+        def parse_decimal(text: sview) -> f64:
+            parser: mutable DecimalParser = DecimalParser{text: text, value: 0.0, place: 0.1, exponent: 0, index: 0, negative: false, exponent_negative: false}
+            machine over decimal_class(parser) while parser.index < sview_len(parser.text):
+                state Lead
+                state Whole
+                state Fraction
+                state ExponentLead
+                state ExponentDigits
+                state Done
+                start Lead
+
+                Lead, DecimalClass.Minus:
+                    parser.negative <- true
+                    parser.index <- parser.index + 1
+                    -> Whole
+                Lead, DecimalClass.Digit | DecimalClass.Dot | DecimalClass.Exponent | DecimalClass.Plus | DecimalClass.Other:
+                    -> Whole
+
+                Whole, DecimalClass.Digit:
+                    consume_decimal_digit(parser, false)
+                    -> Whole
+                Whole, DecimalClass.Dot:
+                    parser.index <- parser.index + 1
+                    -> Fraction
+                Whole, DecimalClass.Exponent:
+                    parser.index <- parser.index + 1
+                    -> ExponentLead
+                Whole, DecimalClass.Plus | DecimalClass.Minus | DecimalClass.Other:
+                    -> Done
+
+                Fraction, DecimalClass.Digit:
+                    consume_decimal_digit(parser, true)
+                    -> Fraction
+                Fraction, DecimalClass.Exponent:
+                    parser.index <- parser.index + 1
+                    -> ExponentLead
+                Fraction, DecimalClass.Dot | DecimalClass.Plus | DecimalClass.Minus | DecimalClass.Other:
+                    -> Done
+
+                ExponentLead, DecimalClass.Minus:
+                    parser.exponent_negative <- true
+                    parser.index <- parser.index + 1
+                    -> ExponentDigits
+                ExponentLead, DecimalClass.Plus:
+                    parser.index <- parser.index + 1
+                    -> ExponentDigits
+                ExponentLead, DecimalClass.Digit:
+                    -> ExponentDigits
+                ExponentLead, DecimalClass.Dot | DecimalClass.Exponent | DecimalClass.Other:
+                    -> Done
+
+                ExponentDigits, DecimalClass.Digit:
+                    consume_exponent_digit(parser)
+                    -> ExponentDigits
+                ExponentDigits, DecimalClass.Dot | DecimalClass.Exponent | DecimalClass.Plus | DecimalClass.Minus | DecimalClass.Other:
+                    -> Done
+
+                Done, DecimalClass.Digit | DecimalClass.Dot | DecimalClass.Exponent | DecimalClass.Plus | DecimalClass.Minus | DecimalClass.Other:
+                    break
+
+            parser.exponent <- -parser.exponent if parser.exponent_negative
+            machine over parser.exponent > 0 while parser.exponent != 0:
+                state Scale
+                start Scale
+                Scale, true:
+                    parser.value <- parser.value * 10.0
+                    parser.exponent <- parser.exponent - 1
+                    -> Scale
+                Scale, _:
+                    parser.value <- parser.value * 0.1
+                    parser.exponent <- parser.exponent + 1
+                    -> Scale
+            return -parser.value if parser.negative
+            return parser.value
 
 
         def find_function(module: Module&, name: sview) -> usize:
@@ -107,6 +240,95 @@ extend EsIr:
             return true
 
 
+        def evaluate_constant(instruction: Instruction, machine: mutable Machine&) -> RuntimeValue:
+            match instruction.result_type.kind:
+                TypeKind.Bool:
+                    return runtime_bool(instruction.boolean)
+                TypeKind.Int:
+                    return runtime_int(instruction.integer)
+                TypeKind.Float:
+                    return runtime_float(parse_decimal(instruction.decimal))
+                TypeKind.Text | TypeKind.Char:
+                    return runtime_text(instruction.text)
+                _:
+                    machine.failure <- InterpretFailure.UnsupportedInstruction
+                    return runtime_void()
+
+
+        def evaluate_negate(operand: RuntimeValue, machine: mutable Machine&) -> RuntimeValue:
+            match operand.kind:
+                RuntimeValueKind.Int:
+                    return runtime_int(-operand.integer)
+                RuntimeValueKind.Float:
+                    return runtime_float(-operand.decimal)
+                _:
+                    machine.failure <- InterpretFailure.TypeMismatch
+                    return runtime_void()
+
+
+        def evaluate_not(operand: RuntimeValue, machine: mutable Machine&) -> RuntimeValue:
+            if operand.kind != RuntimeValueKind.Bool:
+                machine.failure <- InterpretFailure.TypeMismatch
+                return runtime_void()
+            return runtime_bool(not operand.boolean)
+
+
+        def evaluate_binary(opcode: Opcode, left: RuntimeValue, right: RuntimeValue, machine: mutable Machine&) -> RuntimeValue:
+            if opcode == Opcode.Equal or opcode == Opcode.NotEqual:
+                if left.kind != right.kind:
+                    machine.failure <- InterpretFailure.TypeMismatch
+                    return runtime_void()
+                equal: mutable bool = false
+                equal <- left.integer == right.integer if left.kind == RuntimeValueKind.Int
+                equal <- left.boolean == right.boolean if left.kind == RuntimeValueKind.Bool
+                equal <- left.decimal == right.decimal if left.kind == RuntimeValueKind.Float
+                equal <- left.text == right.text if left.kind == RuntimeValueKind.Text
+                return runtime_bool(equal) if opcode == Opcode.Equal
+                return runtime_bool(not equal)
+            if left.kind == RuntimeValueKind.Int and right.kind == RuntimeValueKind.Int:
+                return runtime_int(left.integer + right.integer) if opcode == Opcode.Add
+                return runtime_int(left.integer - right.integer) if opcode == Opcode.Subtract
+                return runtime_int(left.integer * right.integer) if opcode == Opcode.Multiply
+                if opcode == Opcode.Divide or opcode == Opcode.Remainder:
+                    if right.integer == 0:
+                        machine.failure <- InterpretFailure.DivisionByZero
+                        return runtime_void()
+                    return runtime_int(left.integer / right.integer) if opcode == Opcode.Divide
+                    return runtime_int(left.integer % right.integer)
+                return runtime_bool(left.integer < right.integer) if opcode == Opcode.Less
+                return runtime_bool(left.integer <= right.integer) if opcode == Opcode.LessEqual
+                return runtime_bool(left.integer > right.integer) if opcode == Opcode.Greater
+                return runtime_bool(left.integer >= right.integer)
+            if left.kind == RuntimeValueKind.Float and right.kind == RuntimeValueKind.Float and opcode != Opcode.Remainder:
+                return runtime_float(left.decimal + right.decimal) if opcode == Opcode.Add
+                return runtime_float(left.decimal - right.decimal) if opcode == Opcode.Subtract
+                return runtime_float(left.decimal * right.decimal) if opcode == Opcode.Multiply
+                return runtime_float(left.decimal / right.decimal) if opcode == Opcode.Divide
+                return runtime_bool(left.decimal < right.decimal) if opcode == Opcode.Less
+                return runtime_bool(left.decimal <= right.decimal) if opcode == Opcode.LessEqual
+                return runtime_bool(left.decimal > right.decimal) if opcode == Opcode.Greater
+                return runtime_bool(left.decimal >= right.decimal)
+            machine.failure <- InterpretFailure.TypeMismatch
+            return runtime_void()
+
+
+        def note_observation(observations: mutable darray[Observation]&, trace: u64, value: RuntimeValue) -> void can[Memory.Allocate, Abort.Panic]:
+            observations.push(Observation{trace: trace, value: value})
+
+
+        def note_unsupported(machine: mutable Machine&) -> void:
+            machine.failure <- InterpretFailure.UnsupportedInstruction
+
+
+        def evaluate_call(machine: mutable Machine&, observations: mutable darray[Observation]&, module: Module&, fn: Function&, instruction: Instruction, ids: darray[u32]&, values: darray[RuntimeValue]&) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+            callee_index: usize = find_function(module, instruction.symbol)
+            call_arguments: mutable darray[RuntimeValue] = []
+            for offset in 0..<instruction.operand_count.usize() |machine, fn, instruction, ids, values, call_arguments|:
+                call_arguments.push(frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + offset], machine))
+            return execute_function(machine, observations, module, callee_index, call_arguments) if machine.failure == InterpretFailure.None
+            return runtime_void()
+
+
         def execute_function(machine: mutable Machine&, observations: mutable darray[Observation]&, module: Module&, function_index: usize, arguments: darray[RuntimeValue]&) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
             if function_index >= module.functions.count:
                 machine.failure <- InterpretFailure.UnknownFunction
@@ -134,70 +356,53 @@ extend EsIr:
                 for instruction_index in block.instruction_start.usize()..<instruction_end |machine, observations, module, fn, ids, values|:
                     runtime_void() return if not tick(machine)
                     instruction: Instruction = fn.instruction_pool[instruction_index]
-                    value: mutable RuntimeValue = runtime_void()
-                    produces_value: mutable bool = instruction.result != 0
-                    if instruction.opcode == Opcode.Constant:
-                        if instruction.result_type.kind == TypeKind.Bool:
-                            value <- runtime_bool(instruction.boolean)
-                        else:
-                            if instruction.result_type.kind == TypeKind.Int:
-                                value <- runtime_int(instruction.integer)
-                            else:
-                                if instruction.result_type.kind == TypeKind.Text or instruction.result_type.kind == TypeKind.Char:
-                                    value <- runtime_text(instruction.text)
-                                else:
-                                    machine.failure <- InterpretFailure.UnsupportedInstruction
-                    else:
-                        if instruction.opcode == Opcode.Copy:
-                            value <- frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
-                        else:
-                            if instruction.opcode in {Opcode.Add, Opcode.Subtract, Opcode.Multiply, Opcode.Divide, Opcode.Equal, Opcode.Less}:
-                                left: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
-                                right: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1], machine)
-                                if machine.failure == InterpretFailure.None:
-                                    if instruction.opcode == Opcode.Equal:
-                                        if left.kind == RuntimeValueKind.Int and right.kind == RuntimeValueKind.Int:
-                                            value <- runtime_bool(left.integer == right.integer)
-                                        else:
-                                            if left.kind == RuntimeValueKind.Bool and right.kind == RuntimeValueKind.Bool:
-                                                value <- runtime_bool(left.boolean == right.boolean)
-                                            else:
-                                                machine.failure <- InterpretFailure.TypeMismatch
-                                    else:
-                                        if left.kind != RuntimeValueKind.Int or right.kind != RuntimeValueKind.Int:
-                                            machine.failure <- InterpretFailure.TypeMismatch
-                                        else:
-                                            if instruction.opcode == Opcode.Add:
-                                                value <- runtime_int(left.integer + right.integer)
-                                            if instruction.opcode == Opcode.Subtract:
-                                                value <- runtime_int(left.integer - right.integer)
-                                            if instruction.opcode == Opcode.Multiply:
-                                                value <- runtime_int(left.integer * right.integer)
-                                            if instruction.opcode == Opcode.Divide:
-                                                if right.integer == 0:
-                                                    machine.failure <- InterpretFailure.DivisionByZero
-                                                else:
-                                                    value <- runtime_int(left.integer / right.integer)
-                                            if instruction.opcode == Opcode.Less:
-                                                value <- runtime_bool(left.integer < right.integer)
-                            else:
-                                if instruction.opcode == Opcode.Call:
-                                    callee_index: usize = find_function(module, instruction.symbol)
-                                    call_arguments: mutable darray[RuntimeValue] = []
-                                    for offset in 0..<instruction.operand_count.usize() |machine, fn, instruction, ids, values, call_arguments|:
-                                        call_arguments.push(frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + offset], machine))
-                                    value <- execute_function(machine, observations, module, callee_index, call_arguments) if machine.failure == InterpretFailure.None
-                                else:
-                                    if instruction.opcode == Opcode.Observe:
-                                        observed: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
-                                        observations.push(Observation{trace: instruction.trace.id, value: observed}) if machine.failure == InterpretFailure.None
-                                        produces_value <- false
-                                    else:
-                                        if instruction.opcode == Opcode.HandlerPush or instruction.opcode == Opcode.HandlerPop:
-                                            produces_value <- false
-                                        else:
-                                            machine.failure <- InterpretFailure.UnsupportedInstruction
-                    set_frame_value(ids, values, instruction.result, value) if machine.failure == InterpretFailure.None and produces_value
+                    dispatch: mutable InstructionDispatch = InstructionDispatch{value: runtime_void(), opcode: instruction.opcode, produces_value: instruction.result != 0}
+                    machine over dispatch.opcode:
+                        state Dispatch
+                        start Dispatch
+
+                        Dispatch, Opcode.Constant:
+                            dispatch.value <- evaluate_constant(instruction, machine)
+                            break
+
+                        Dispatch, Opcode.Copy:
+                            dispatch.value <- frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
+                            break
+
+                        Dispatch, Opcode.Negate:
+                            operand: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
+                            dispatch.value <- evaluate_negate(operand, machine)
+                            break
+
+                        Dispatch, Opcode.Not:
+                            operand: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
+                            dispatch.value <- evaluate_not(operand, machine)
+                            break
+
+                        Dispatch, Opcode.Add | Opcode.Subtract | Opcode.Multiply | Opcode.Divide | Opcode.Remainder | Opcode.Equal | Opcode.NotEqual | Opcode.Less | Opcode.LessEqual | Opcode.Greater | Opcode.GreaterEqual:
+                            left: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
+                            right: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1], machine)
+                            dispatch.value <- evaluate_binary(instruction.opcode, left, right, machine)
+                            break
+
+                        Dispatch, Opcode.Call:
+                            dispatch.value <- evaluate_call(machine, observations, module, fn, instruction, ids, values)
+                            break
+
+                        Dispatch, Opcode.Observe:
+                            observed: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
+                            note_observation(observations, instruction.trace.id, observed)
+                            dispatch.produces_value <- false
+                            break
+
+                        Dispatch, Opcode.HandlerPush | Opcode.HandlerPop:
+                            dispatch.produces_value <- false
+                            break
+
+                        Dispatch, Opcode.Perform | Opcode.Resume:
+                            note_unsupported(machine)
+                            break
+                    set_frame_value(ids, values, instruction.result, dispatch.value) if machine.failure == InterpretFailure.None and dispatch.produces_value
 
                 runtime_void() return if machine.failure != InterpretFailure.None
                 terminator: Terminator = block.terminator

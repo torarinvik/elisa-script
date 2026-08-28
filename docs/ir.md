@@ -102,11 +102,20 @@ testing an ordered trace without embedding a region-bearing collection in the
 error-union return ABI. A deterministic step limit makes runaway programs a
 typed `StepLimitExceeded` failure.
 
+The interpreter's opcode dispatcher is an Elisa `machine` over the closed
+`Opcode` enum. Every opcode is named explicitly—there is no wildcard arm—so
+adding an instruction forces the semantic oracle to classify it at compile
+time. Machine arms only drive dispatch state; typed arithmetic and value checks
+live in focused helpers, respecting Elisa's machine ownership rules. Decimal
+lexeme evaluation likewise uses explicit whole, fraction, exponent, and scaling
+states instead of nested scanner conditionals.
+
 ## Planned increments
 
 The AST lowering now handles functions, typed parameters and returns,
 integer/float/string/character/boolean constants, immutable local bindings, direct
-calls, arithmetic/comparison operations, returns, structured `if` branches with
+calls, unary numeric negation and boolean negation, the core arithmetic family
+(`+`, `-`, `*`, `/`, `%`), all six scalar comparisons, returns, structured `if` branches with
 fallthrough merges, and `while` loops with explicit headers/backedges/exits.
 Unlabeled `break` and `continue` resolve through nested loop-target stacks. It produces structured
 lowering issues for every unsupported construct; it never drops a statement or
