@@ -315,6 +315,7 @@ module EsBytecode:
                 equal: mutable bool = false
                 equal <- left.integer == right.integer if left.kind == RuntimeValueKind.Int
                 equal <- left.boolean == right.boolean if left.kind == RuntimeValueKind.Bool
+                equal <- left.text == right.text if left.kind == RuntimeValueKind.Text
                 if opcode == Opcode.Equal:
                     return runtime_bool(equal)
                 return runtime_bool(not equal)
@@ -353,12 +354,14 @@ module EsBytecode:
 
         def bytecode_direct_scalar_type(type: Type&) -> bool:
             return true if type.kind == TypeKind.Bool
+            return true if type.kind == TypeKind.Text or type.kind == TypeKind.Char
+            return true if type.kind == TypeKind.Named and type.name in {"Path", "Glob", "Regex", "Executable", "Url"}
             return type.kind == TypeKind.Int and type.bits == 64
 
 
         def bytecode_direct_value_type(type: Type&) -> bool:
             return true if bytecode_direct_scalar_type(type)
-            return type.kind == TypeKind.Array and (type.element_kind == TypeKind.Bool or (type.element_kind == TypeKind.Int and type.element_bits == 64))
+            return type.kind == TypeKind.Array and (type.element_kind == TypeKind.Bool or (type.element_kind == TypeKind.Int and type.element_bits == 64) or type.element_kind == TypeKind.Text or type.element_kind == TypeKind.Char)
 
 
         def bytecode_direct_array_equal(storage: darray[RuntimeValue]&, left: RuntimeValue, right: RuntimeValue) -> bool:
@@ -370,18 +373,90 @@ module EsBytecode:
                 false return if left_value.kind != right_value.kind
                 false return if left_value.kind == RuntimeValueKind.Int and left_value.integer != right_value.integer
                 false return if left_value.kind == RuntimeValueKind.Bool and left_value.boolean != right_value.boolean
+                false return if left_value.kind == RuntimeValueKind.Text and left_value.text != right_value.text
             return true
 
 
+        def bytecode_direct_text_matches_at(text: sview, separator: sview, start: usize) -> bool:
+            false return if start + sview_len(separator) > sview_len(text)
+            for offset in 0..<sview_len(separator) |text, separator, start|:
+                false return if sview_at(text, start + offset) != sview_at(separator, offset)
+            return true
+
+
+        def bytecode_direct_text_contains(haystack: sview, needle: sview) -> bool:
+            true return if sview_len(needle) == 0
+            false return if sview_len(needle) > sview_len(haystack)
+            for start in 0..=(sview_len(haystack) - sview_len(needle)) |haystack, needle|:
+                matched: mutable bool = true
+                for offset in 0..<sview_len(needle) |haystack, needle, start, matched|:
+                    matched <- false if sview_at(haystack, start + offset) != sview_at(needle, offset)
+                true return if matched
+            return false
+
+
+        def bytecode_direct_text_concat(left: RuntimeValue, right: RuntimeValue) -> RuntimeValue error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+            raise InterpretError.TypeMismatch if left.kind != RuntimeValueKind.Text or right.kind != RuntimeValueKind.Text
+            total: usize = sview_len(left.text) + sview_len(right.text)
+            bytes: mutable dstr = ctx_fstr_alloc(total)
+            ctx_fstr_append(bytes, left.text.data, sview_len(left.text))
+            ctx_fstr_append(bytes, right.text.data, sview_len(right.text))
+            return runtime_text(bytes_view(bytes))
+
+
+        def bytecode_direct_split(storage: mutable darray[RuntimeValue]&, text: RuntimeValue, separator: RuntimeValue) -> RuntimeValue error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+            raise InterpretError.TypeMismatch if text.kind != RuntimeValueKind.Text or separator.kind != RuntimeValueKind.Text
+            start: u32 = storage.count.u32()
+            separator_length: usize = sview_len(separator.text)
+            if separator_length == 0:
+                for index in 0..<sview_len(text.text) |storage, text|:
+                    storage.push(runtime_text(text.text[index:index + 1]))
+                return runtime_array(start, sview_len(text.text).u32())
+            field_start: mutable usize = 0
+            cursor: mutable usize = 0
+            fields: mutable u32 = 0
+            while cursor + separator_length <= sview_len(text.text):
+                if bytecode_direct_text_matches_at(text.text, separator.text, cursor):
+                    storage.push(runtime_text(text.text[field_start:cursor]))
+                    fields <- fields + 1
+                    cursor <- cursor + separator_length
+                    field_start <- cursor
+                else:
+                    cursor <- cursor + 1
+            storage.push(runtime_text(text.text[field_start:sview_len(text.text)]))
+            return runtime_array(start, fields + 1)
+
+
+        def bytecode_direct_join(storage: darray[RuntimeValue]&, fields: RuntimeValue, separator: RuntimeValue) -> RuntimeValue error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+            raise InterpretError.TypeMismatch if fields.kind != RuntimeValueKind.Array or separator.kind != RuntimeValueKind.Text
+            return runtime_text("") if fields.array_count == 0
+            total: mutable usize = sview_len(separator.text) * (fields.array_count.usize() - 1)
+            for offset in 0..<fields.array_count.usize() |storage, fields, total|:
+                field: RuntimeValue = storage[fields.array_start.usize() + offset]
+                raise InterpretError.TypeMismatch if field.kind != RuntimeValueKind.Text
+                total <- total + sview_len(field.text)
+            bytes: mutable dstr = ctx_fstr_alloc(total)
+            for offset in 0..<fields.array_count.usize() |storage, fields, separator, bytes|:
+                if offset > 0:
+                    ctx_fstr_append(bytes, separator.text.data, sview_len(separator.text))
+                field: RuntimeValue = storage[fields.array_start.usize() + offset]
+                ctx_fstr_append(bytes, field.text.data, sview_len(field.text))
+            return runtime_text(bytes_view(bytes))
+
+
         def bytecode_direct_index(storage: darray[RuntimeValue]&, collection: RuntimeValue, index: RuntimeValue) -> RuntimeValue error[InterpretError]:
-            raise InterpretError.TypeMismatch if collection.kind != RuntimeValueKind.Array or index.kind != RuntimeValueKind.Int
-            raise InterpretError.IndexOutOfBounds if index.integer < 0 or index.integer >= collection.array_count.i64()
+            raise InterpretError.TypeMismatch if collection.kind not in {RuntimeValueKind.Array, RuntimeValueKind.Text} or index.kind != RuntimeValueKind.Int
+            length: i64 = collection.array_count.i64() if collection.kind == RuntimeValueKind.Array else sview_len(collection.text).i64()
+            raise InterpretError.IndexOutOfBounds if index.integer < 0 or index.integer >= length
+            return runtime_text(collection.text[index.integer.usize():index.integer.usize() + 1]) if collection.kind == RuntimeValueKind.Text
             return storage[collection.array_start.usize() + index.integer.usize()]
 
 
         def bytecode_direct_slice(collection: RuntimeValue, low: RuntimeValue, high: RuntimeValue) -> RuntimeValue error[InterpretError]:
-            raise InterpretError.TypeMismatch if collection.kind != RuntimeValueKind.Array or low.kind != RuntimeValueKind.Int or high.kind != RuntimeValueKind.Int
-            raise InterpretError.IndexOutOfBounds if low.integer < 0 or high.integer < low.integer or high.integer > collection.array_count.i64()
+            raise InterpretError.TypeMismatch if collection.kind not in {RuntimeValueKind.Array, RuntimeValueKind.Text} or low.kind != RuntimeValueKind.Int or high.kind != RuntimeValueKind.Int
+            length: i64 = collection.array_count.i64() if collection.kind == RuntimeValueKind.Array else sview_len(collection.text).i64()
+            raise InterpretError.IndexOutOfBounds if low.integer < 0 or high.integer < low.integer or high.integer > length
+            return runtime_text(collection.text[low.integer.usize():high.integer.usize()]) if collection.kind == RuntimeValueKind.Text
             return runtime_array(collection.array_start + low.integer.u32(), (high.integer - low.integer).u32())
 
 
@@ -399,6 +474,8 @@ module EsBytecode:
 
 
         def bytecode_direct_concat(storage: mutable darray[RuntimeValue]&, left: RuntimeValue, right: RuntimeValue) -> RuntimeValue error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+            if left.kind == RuntimeValueKind.Text and right.kind == RuntimeValueKind.Text:
+                return try bytecode_direct_text_concat(left, right)
             raise InterpretError.TypeMismatch if left.kind != RuntimeValueKind.Array or right.kind != RuntimeValueKind.Array
             start: u32 = storage.count.u32()
             storage.reserve(storage.count + left.array_count.usize() + right.array_count.usize())
@@ -435,7 +512,7 @@ module EsBytecode:
             high_value: mutable RuntimeValue = runtime_void()
             needle: mutable RuntimeValue = runtime_void()
             replacement: mutable RuntimeValue = runtime_void()
-            if instruction.opcode in {Opcode.Index, Opcode.Length, Opcode.Slice, Opcode.Contains, Opcode.SetIndex, Opcode.Concat}:
+            if instruction.opcode in {Opcode.Index, Opcode.Length, Opcode.Slice, Opcode.Contains, Opcode.SetIndex, Opcode.Concat, Opcode.Split, Opcode.Join}:
                 collection <- bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()])
             if instruction.opcode == Opcode.Index or instruction.opcode == Opcode.SetIndex:
                 index_value <- bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1])
@@ -445,6 +522,9 @@ module EsBytecode:
             if instruction.opcode == Opcode.Contains:
                 needle <- bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()])
                 collection <- bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1])
+            separator: mutable RuntimeValue = runtime_void()
+            if instruction.opcode == Opcode.Split or instruction.opcode == Opcode.Join:
+                separator <- bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1])
             if instruction.opcode == Opcode.SetIndex:
                 replacement <- bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 2])
             array_value: mutable RuntimeValue = runtime_void()
@@ -461,16 +541,21 @@ module EsBytecode:
                 sliced_value <- try bytecode_direct_slice(collection, low_value, high_value)
             length_value: mutable RuntimeValue = runtime_void()
             if instruction.opcode == Opcode.Length:
-                raise InterpretError.TypeMismatch if collection.kind != RuntimeValueKind.Array
-                length_value <- runtime_int(collection.array_count.i64())
+                raise InterpretError.TypeMismatch if collection.kind not in {RuntimeValueKind.Array, RuntimeValueKind.Text}
+                length_value <- runtime_int(collection.array_count.i64()) if collection.kind == RuntimeValueKind.Array
+                length_value <- runtime_int(sview_len(collection.text).i64()) if collection.kind == RuntimeValueKind.Text
             contains_value: mutable RuntimeValue = runtime_void()
             if instruction.opcode == Opcode.Contains:
-                raise InterpretError.TypeMismatch if collection.kind != RuntimeValueKind.Array
-                found: mutable bool = false
-                for offset in 0..<collection.array_count.usize() |storage, collection, needle, found|:
-                    element: RuntimeValue = storage[collection.array_start.usize() + offset]
-                    found <- found or (element.kind == needle.kind and ((element.kind == RuntimeValueKind.Int and element.integer == needle.integer) or (element.kind == RuntimeValueKind.Bool and element.boolean == needle.boolean)))
-                contains_value <- runtime_bool(found)
+                if collection.kind == RuntimeValueKind.Text:
+                    raise InterpretError.TypeMismatch if needle.kind != RuntimeValueKind.Text
+                    contains_value <- runtime_bool(bytecode_direct_text_contains(collection.text, needle.text))
+                else:
+                    raise InterpretError.TypeMismatch if collection.kind != RuntimeValueKind.Array
+                    found: mutable bool = false
+                    for offset in 0..<collection.array_count.usize() |storage, collection, needle, found|:
+                        element: RuntimeValue = storage[collection.array_start.usize() + offset]
+                        found <- found or (element.kind == needle.kind and ((element.kind == RuntimeValueKind.Int and element.integer == needle.integer) or (element.kind == RuntimeValueKind.Bool and element.boolean == needle.boolean) or (element.kind == RuntimeValueKind.Text and element.text == needle.text)))
+                    contains_value <- runtime_bool(found)
             updated_value: mutable RuntimeValue = runtime_void()
             if instruction.opcode == Opcode.SetIndex:
                 updated_value <- try bytecode_direct_set_index(storage, collection, index_value, replacement)
@@ -478,6 +563,12 @@ module EsBytecode:
             if instruction.opcode == Opcode.Concat:
                 right <- bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1])
                 concatenated_value <- try bytecode_direct_concat(storage, collection, right)
+            split_value: mutable RuntimeValue = runtime_void()
+            if instruction.opcode == Opcode.Split:
+                split_value <- try bytecode_direct_split(storage, collection, separator)
+            joined_value: mutable RuntimeValue = runtime_void()
+            if instruction.opcode == Opcode.Join:
+                joined_value <- try bytecode_direct_join(storage, collection, separator)
             binary_value: mutable RuntimeValue = runtime_void()
             if binary:
                 if (instruction.opcode == Opcode.Equal or instruction.opcode == Opcode.NotEqual) and left.kind == RuntimeValueKind.Array:
@@ -497,6 +588,10 @@ module EsBytecode:
                     -> Execute
                 Execute, BytecodeValueState.Execute if instruction.opcode == Opcode.Constant and instruction.result_type.kind == TypeKind.Int:
                     cursor.value <- runtime_int(instruction.integer)
+                    cursor.state <- BytecodeValueState.Done
+                    -> Execute
+                Execute, BytecodeValueState.Execute if instruction.opcode == Opcode.Constant and instruction.result_type.kind in {TypeKind.Text, TypeKind.Char, TypeKind.Named}:
+                    cursor.value <- runtime_text(instruction.text)
                     cursor.state <- BytecodeValueState.Done
                     -> Execute
                 Execute, BytecodeValueState.Execute if instruction.opcode == Opcode.Copy:
@@ -547,6 +642,14 @@ module EsBytecode:
                     cursor.value <- concatenated_value
                     cursor.state <- BytecodeValueState.Done
                     -> Execute
+                Execute, BytecodeValueState.Execute if instruction.opcode == Opcode.Split:
+                    cursor.value <- split_value
+                    cursor.state <- BytecodeValueState.Done
+                    -> Execute
+                Execute, BytecodeValueState.Execute if instruction.opcode == Opcode.Join:
+                    cursor.value <- joined_value
+                    cursor.state <- BytecodeValueState.Done
+                    -> Execute
                 Execute, BytecodeValueState.Execute if instruction.opcode == Opcode.Observe:
                     observations.push(Observation{trace: instruction.trace.id, value: observed})
                     cursor.state <- BytecodeValueState.Done
@@ -572,9 +675,9 @@ module EsBytecode:
                     if not bytecode_direct_value_type(parameter.type):
                         return false
                 for instruction in function.instructions:
-                    if instruction.opcode not in {Opcode.Constant, Opcode.Copy, Opcode.Negate, Opcode.Not, Opcode.BitNot, Opcode.Add, Opcode.Subtract, Opcode.Multiply, Opcode.Equal, Opcode.Less, Opcode.NotEqual, Opcode.LessEqual, Opcode.Greater, Opcode.GreaterEqual, Opcode.BitAnd, Opcode.BitOr, Opcode.BitXor, Opcode.Observe, Opcode.MakeArray, Opcode.Index, Opcode.Length, Opcode.Slice, Opcode.Contains, Opcode.SetIndex, Opcode.Concat}:
+                    if instruction.opcode not in {Opcode.Constant, Opcode.Copy, Opcode.Negate, Opcode.Not, Opcode.BitNot, Opcode.Add, Opcode.Subtract, Opcode.Multiply, Opcode.Equal, Opcode.Less, Opcode.NotEqual, Opcode.LessEqual, Opcode.Greater, Opcode.GreaterEqual, Opcode.BitAnd, Opcode.BitOr, Opcode.BitXor, Opcode.Observe, Opcode.MakeArray, Opcode.Index, Opcode.Length, Opcode.Slice, Opcode.Contains, Opcode.SetIndex, Opcode.Concat, Opcode.Split, Opcode.Join}:
                         return false
-                    if instruction.opcode == Opcode.Constant and instruction.result_type.kind != TypeKind.Bool and (instruction.result_type.kind != TypeKind.Int or instruction.result_type.bits != 64):
+                    if instruction.opcode == Opcode.Constant and not bytecode_direct_scalar_type(instruction.result_type):
                         return false
                     if instruction.opcode != Opcode.Observe and not bytecode_direct_value_type(instruction.result_type):
                         return false
