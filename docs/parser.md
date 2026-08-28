@@ -45,6 +45,13 @@ explicit state machine, so a wrong suffix is rejected before any source bytes
 are parsed. This gives future CLI, editor, and differential-test adapters one
 consistent contract instead of each reimplementing frontend sequencing.
 
+When the source already lives on disk, `EsIr.lower_elisascript_file` performs the
+same pipeline after reading the file. It validates the suffix before opening the
+path, copies both the filename and source bytes into permanent runtime storage,
+and raises `ElisascriptSourceError.FileIo` for open, seek, read, or close
+failures. The permanent backing keeps source spans and text constants valid after
+the loader returns.
+
 ## Typed literal desugaring
 
 An identifier immediately adjacent to a string literal is parsed as a one-argument
