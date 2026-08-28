@@ -130,6 +130,11 @@ language's regex behavior. Character ranges and Perl-style shorthand classes hav
 fixed ASCII definitions rather than platform locale semantics. Top-level
 alternation is split only at unescaped pipes outside character classes, and each
 branch runs through the same bounded matcher states.
+`RegexReplace` has signature `Text × Named(Regex) × Text -> Text`. It reuses the
+same branch matcher to locate non-overlapping spans, copies unmatched and literal
+replacement bytes into fresh storage, and advances after zero-width matches so an
+empty pattern cannot loop forever. Capture groups and replacement interpolation are
+reserved until recursive regex IR values are defined.
 
 The AST-to-IR boundary reports the same mistakes as structured `TypeMismatch`
 lowering issues, before a backend sees the module. This covers declared binding

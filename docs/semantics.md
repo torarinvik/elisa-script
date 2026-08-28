@@ -80,7 +80,12 @@ is present. Top-level `|` alternation evaluates branches from left to right, wit
 `^` and `$` scoped to the branch in which they occur; escaped pipes and pipes inside
 character classes remain literal members. Grouping, captures, and replacement are
 reserved for the shared compiled regex engine; they are not silently delegated to
-a host regex implementation.
+a host regex implementation. `replace_regex(text, pattern, replacement) -> sview`
+provides deterministic substitution for this grammar: it finds non-overlapping
+matches from left to right and inserts the replacement text literally. Empty matches
+advance one input byte (while retaining that byte) so replacement always terminates;
+capture interpolation such as `$1` is intentionally not implied by the literal
+replacement argument.
 
 ## Text field processing
 
