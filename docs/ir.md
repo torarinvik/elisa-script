@@ -64,6 +64,10 @@ a terminal handler and rejects unknown or unbalanced handler operations.
 
 Handler failures are stored in explicit error-set rows on handlers and functions.
 They are not represented as `Result` values and are not merged into effect rows.
+Installing a handler subtracts its handled families from the effects required at
+that program point. Effects introduced by running the handler and its explicit
+`error[...]` sets are propagated into the enclosing function's respective rows.
+The verifier checks both sides of this contract independently.
 
 Multi-shot behavior is never inferred. `MultiClone` requires every captured value
 to be classified `Unrestricted`; affine, linear, borrowed, region-bound, and opaque

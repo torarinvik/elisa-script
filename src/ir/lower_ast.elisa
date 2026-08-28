@@ -61,6 +61,8 @@ extend EsIr:
             function_names: darray[sview]&
             function_returns: darray[Type]&
             handlers: darray[Handler]&
+            required_effects: mutable darray[sview]
+            required_errors: mutable darray[sview]
             next_value: mutable u32
             current_block: mutable u32
             next_block: mutable u32
@@ -185,6 +187,15 @@ extend EsIr:
 
         def add_unique_name(names: mutable darray[sview]&, name: sview) -> void can[Memory.Allocate, Abort.Panic]:
             names.push(name) if name != "" and not any existing in names where existing == name
+
+
+        def add_handler_contract(state: mutable LowerState&, handler_name: sview) -> void can[Memory.Allocate, Abort.Panic]:
+            index: usize = handler_index(state.handlers, handler_name)
+            if index < state.handlers.count:
+                for effect in state.handlers[index].introduces_effects |state|:
+                    state.required_effects.push(effect) if effect != "" and not has_text(state.required_effects, effect)
+                for error_set in state.handlers[index].errors |state|:
+                    state.required_errors.push(error_set) if error_set != "" and not has_text(state.required_errors, error_set)
 
 
         def collect_assigned_names(statements: darray[Ast::Stmt]&, names: mutable darray[sview]&) -> void can[Memory.Allocate, Abort.Panic]:
@@ -521,6 +532,7 @@ extend EsIr:
                     else:
                         if kind == "with" and clause.count >= 2 and clause[0] == "handler":
                             handler_name: sview = clause[1]
+                            add_handler_contract(state, handler_name)
                             state.instructions.push(Instruction{opcode: Opcode.HandlerPush, result: 0, result_type: void_ir_type(), symbol: handler_name, trace: trace_site(state, handler_name, pos), span: ir_span(pos)})
                             scope_mark: usize = state.names.count
                             for nested in body |state, return_type|:
@@ -543,10 +555,12 @@ extend EsIr:
                     add_issue(state, LowerIssueKind.UnsupportedStatement, 0, "statement is not in the initial IR lowering subset")
 
 
-        def lower_function(name: sview, params: darray[Ast::ParamDecl]&, return_type_opt: Ast::Expr?, body: darray[Ast::Stmt]&, effects: darray[sview]&, pos: Ast::Pos&, function_names: darray[sview]&, function_returns: darray[Type]&, handlers: darray[Handler]&, outer_issues: mutable darray[LowerIssue]&) -> Function can[Memory.Allocate, Abort.Panic]:
+        def lower_function(name: sview, params: darray[Ast::ParamDecl]&, return_type_opt: Ast::Expr?, body: darray[Ast::Stmt]&, effects: darray[sview]&, declared_error: sview, pos: Ast::Pos&, function_names: darray[sview]&, function_returns: darray[Type]&, handlers: darray[Handler]&, outer_issues: mutable darray[LowerIssue]&) -> Function can[Memory.Allocate, Abort.Panic]:
             return_type: mutable Type = void_ir_type()
             return_type <- type_from_expression(return_expression) if return_type_opt is return_expression
-            state: mutable LowerState = LowerState{function: name, next_value: 1, current_block: 1, next_block: 2, instruction_start: 0, structured_depth: 0, blocks: [], names: [], values: [], types: [], instructions: [], operand_pool: [], edge_arg_pool: [], issues: [], break_targets: [], continue_targets: [], pending_parameter_blocks: [], pending_parameters: [], block_parameter_pool: [], loop_context_starts: [], loop_context_counts: [], loop_carried_indices: [], terminated: false, terminator: Terminator{kind: TerminatorKind.Unreachable, span: ir_span(pos)}, function_names: function_names, function_returns: function_returns, handlers: handlers}
+            state: mutable LowerState = LowerState{function: name, next_value: 1, current_block: 1, next_block: 2, instruction_start: 0, structured_depth: 0, blocks: [], names: [], values: [], types: [], instructions: [], operand_pool: [], edge_arg_pool: [], issues: [], break_targets: [], continue_targets: [], pending_parameter_blocks: [], pending_parameters: [], block_parameter_pool: [], loop_context_starts: [], loop_context_counts: [], loop_carried_indices: [], terminated: false, terminator: Terminator{kind: TerminatorKind.Unreachable, span: ir_span(pos)}, function_names: function_names, function_returns: function_returns, handlers: handlers, required_effects: [], required_errors: []}
+            state.required_effects.extend(effects)
+            state.required_errors.push(declared_error) if declared_error != ""
             lowered_params: mutable darray[Parameter] = []
             for parameter in params |state, lowered_params|:
                 parameter_type: Type = type_from_expression(parameter.type_expression)
@@ -565,9 +579,7 @@ extend EsIr:
             finish_block(state) if state.current_block != 0
             for found in state.issues |outer_issues|:
                 outer_issues.push(found)
-            lowered_effects: mutable darray[sview] = []
-            lowered_effects.extend(effects)
-            return Function{name: name, parameters: lowered_params, return_type: return_type, effects: lowered_effects, operand_pool: state.operand_pool, edge_arg_pool: state.edge_arg_pool, block_parameter_pool: state.block_parameter_pool, instruction_pool: state.instructions, blocks: state.blocks, entry: 1}
+            return Function{name: name, parameters: lowered_params, return_type: return_type, effects: state.required_effects, operand_pool: state.operand_pool, edge_arg_pool: state.edge_arg_pool, block_parameter_pool: state.block_parameter_pool, instruction_pool: state.instructions, blocks: state.blocks, entry: 1, errors: state.required_errors}
 
 
     public:
@@ -590,7 +602,10 @@ extend EsIr:
             for declaration in file.top_decls |functions, issues, names, returns|:
                 match declaration:
                     Decl.Func(name, params, return_type_opt, body, effects, decorators, pos):
-                        functions.push(lower_function(name, params, return_type_opt, body, effects, pos, names, returns, handlers, issues))
+                        declared_error: mutable sview = ""
+                        for error_index in 0..<file.error_set_func_lines.count |file, pos, declared_error|:
+                            declared_error <- file.error_set_func_names[error_index] if file.error_set_func_lines[error_index] == pos.line
+                        functions.push(lower_function(name, params, return_type_opt, body, effects, declared_error, pos, names, returns, handlers, issues))
                     _:
                         issues.push(LowerIssue{kind: LowerIssueKind.UnsupportedDeclaration, function: "", line: 0, message: "declaration is not in the initial IR lowering subset"})
             lowered_handlers: mutable darray[Handler] = []
