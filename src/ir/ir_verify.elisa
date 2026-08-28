@@ -26,6 +26,12 @@ extend EsIr:
             return handlers.count
 
 
+        def function_index(functions: darray[Function]&, name: sview) -> usize:
+            for index in 0..<functions.count |functions, name|:
+                index return if functions[index].name == name
+            return functions.count
+
+
         def active_handler_covers(installed: darray[sview]&, handlers: darray[Handler]&, family: sview) -> bool:
             while stack_index > 0 |stack_index: usize = installed.count|:
                 stack_index <- stack_index - 1
@@ -66,6 +72,14 @@ extend EsIr:
 
         def array_element_type(array_type: Type&) -> Type:
             return Type{kind: array_type.element_kind, name: array_type.element_name, bits: array_type.element_bits, signed: array_type.element_signed}
+
+
+        def numeric_type(value: Type&) -> bool:
+            return value.kind == TypeKind.Int or value.kind == TypeKind.Float
+
+
+        def equality_type(value: Type&) -> bool:
+            return value.kind in {TypeKind.Bool, TypeKind.Int, TypeKind.Float, TypeKind.Char, TypeKind.Text}
 
 
         def verify_edge(fn: Function&, source: Block&, target_id: u32, argument_start: u32, argument_count: u16, defined: darray[u32]&, definition_blocks: darray[u32]&, definition_types: darray[Type]&, issues: mutable darray[Issue]&) -> void can[Memory.Allocate, Abort.Panic]:
@@ -135,7 +149,7 @@ extend EsIr:
                     issues.push(issue(IssueKind.InvalidTerminator, fn.name, block.id, 0, 0, "unreachable cannot carry operands or targets")) if block.terminator.operand_count != 0 or block.terminator.target_count != 0
 
 
-        def verify_function(fn: Function&, handlers: darray[Handler]&, issues: mutable darray[Issue]&) -> void can[Memory.Allocate, Abort.Panic]:
+        def verify_function(fn: Function&, module: Module&, issues: mutable darray[Issue]&) -> void can[Memory.Allocate, Abort.Panic]:
             block_ids: mutable darray[u32] = []
             for block in fn.blocks |block_ids, issues|:
                 issues.push(issue(IssueKind.DuplicateBlock, fn.name, block.id, 0, 0, "block id is defined more than once")) if has_u32(block_ids, block.id)
@@ -180,6 +194,32 @@ extend EsIr:
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "copy must have exactly one operand")) if instruction.opcode == Opcode.Copy and instruction.operand_count != 1
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "binary instruction must have exactly two operands")) if instruction.opcode in {Opcode.Add, Opcode.Subtract, Opcode.Multiply, Opcode.Divide, Opcode.Remainder, Opcode.Equal, Opcode.NotEqual, Opcode.Less, Opcode.LessEqual, Opcode.Greater, Opcode.GreaterEqual} and instruction.operand_count != 2
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "unary instruction must have exactly one operand")) if instruction.opcode in {Opcode.Negate, Opcode.Not} and instruction.operand_count != 1
+                    if instruction.opcode == Opcode.Copy and instruction.operand_count == 1 and operand_end <= fn.operand_pool.count:
+                        operand: u32 = fn.operand_pool[instruction.operand_start.usize()]
+                        if has_u32(defined, operand):
+                            operand_type: Type = definition_type(defined, definition_types, operand)
+                            issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "copy result type must match its operand")) if not same_type(instruction.result_type, operand_type)
+                    if instruction.opcode in {Opcode.Negate, Opcode.Not} and instruction.operand_count == 1 and operand_end <= fn.operand_pool.count:
+                        operand: u32 = fn.operand_pool[instruction.operand_start.usize()]
+                        if has_u32(defined, operand):
+                            operand_type: Type = definition_type(defined, definition_types, operand)
+                            valid_negate: bool = instruction.opcode == Opcode.Negate and numeric_type(operand_type) and same_type(instruction.result_type, operand_type)
+                            valid_not: bool = instruction.opcode == Opcode.Not and operand_type.kind == TypeKind.Bool and instruction.result_type.kind == TypeKind.Bool
+                            issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "unary operand and result types do not match the operation")) if not valid_negate and not valid_not
+                    if instruction.opcode in {Opcode.Add, Opcode.Subtract, Opcode.Multiply, Opcode.Divide, Opcode.Remainder, Opcode.Equal, Opcode.NotEqual, Opcode.Less, Opcode.LessEqual, Opcode.Greater, Opcode.GreaterEqual} and instruction.operand_count == 2 and operand_end <= fn.operand_pool.count:
+                        left_value: u32 = fn.operand_pool[instruction.operand_start.usize()]
+                        right_value: u32 = fn.operand_pool[instruction.operand_start.usize() + 1]
+                        if has_u32(defined, left_value) and has_u32(defined, right_value):
+                            left_type: Type = definition_type(defined, definition_types, left_value)
+                            right_type: Type = definition_type(defined, definition_types, right_value)
+                            operands_match: bool = same_type(left_type, right_type)
+                            arithmetic: bool = instruction.opcode in {Opcode.Add, Opcode.Subtract, Opcode.Multiply, Opcode.Divide, Opcode.Remainder}
+                            equality: bool = instruction.opcode == Opcode.Equal or instruction.opcode == Opcode.NotEqual
+                            ordering: bool = instruction.opcode in {Opcode.Less, Opcode.LessEqual, Opcode.Greater, Opcode.GreaterEqual}
+                            arithmetic_valid: bool = arithmetic and operands_match and numeric_type(left_type) and same_type(instruction.result_type, left_type) and (instruction.opcode != Opcode.Remainder or left_type.kind == TypeKind.Int)
+                            equality_valid: bool = equality and operands_match and equality_type(left_type) and instruction.result_type.kind == TypeKind.Bool
+                            ordering_valid: bool = ordering and operands_match and numeric_type(left_type) and instruction.result_type.kind == TypeKind.Bool
+                            issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "binary operand and result types do not match the operation")) if not arithmetic_valid and not equality_valid and not ordering_valid
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "array construction must produce an array type")) if instruction.opcode == Opcode.MakeArray and instruction.result_type.kind != TypeKind.Array
                     if instruction.opcode == Opcode.MakeArray and instruction.result_type.kind == TypeKind.Array:
                         element_type: Type = array_element_type(instruction.result_type)
@@ -201,6 +241,19 @@ extend EsIr:
                         collection_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize()])
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "length operand must be an array")) if collection_type.kind != TypeKind.Array
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "length result must be an integer")) if instruction.result_type.kind != TypeKind.Int
+                    if instruction.opcode == Opcode.Call and operand_end <= fn.operand_pool.count:
+                        callee_index: usize = function_index(module.functions, instruction.symbol)
+                        issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "call names an unknown function")) if callee_index == module.functions.count
+                        if callee_index < module.functions.count:
+                            callee: Function = module.functions[callee_index]
+                            issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "call argument count does not match the function signature")) if instruction.operand_count != callee.parameters.count
+                            paired: usize = instruction.operand_count.usize() if instruction.operand_count < callee.parameters.count else callee.parameters.count
+                            for offset in 0..<paired |fn, instruction, defined, definition_types, issues, callee|:
+                                operand: u32 = fn.operand_pool[instruction.operand_start.usize() + offset]
+                                if has_u32(defined, operand):
+                                    actual: Type = definition_type(defined, definition_types, operand)
+                                    issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "call argument type does not match the function parameter")) if not same_type(actual, callee.parameters[offset].type)
+                            issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "call result type does not match the function return type")) if not same_type(instruction.result_type, callee.return_type)
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "handler stack instruction must not have operands")) if instruction.opcode in {Opcode.HandlerPush, Opcode.HandlerPop} and instruction.operand_count != 0
                     if instruction.result != 0:
                         issues.push(issue(IssueKind.DuplicateValue, fn.name, block.id, instruction.result, instruction.trace.id, "instruction result violates SSA uniqueness")) if has_u32(defined, instruction.result)
@@ -209,15 +262,15 @@ extend EsIr:
                         definition_types.push(instruction.result_type) if definition_types.count < defined.count
                     if instruction.opcode == Opcode.Perform:
                         issues.push(issue(IssueKind.InvalidPerform, fn.name, block.id, instruction.result, instruction.trace.id, "perform must name an effect family and operation")) if instruction.effect_family == "" or instruction.effect_operation == ""
-                        covered: bool = active_handler_covers(handler_stack, handlers, instruction.effect_family)
+                        covered: bool = active_handler_covers(handler_stack, module.handlers, instruction.effect_family)
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "performed effect is neither dynamically handled nor present in the function effect row")) if instruction.effect_family != "" and not covered and not effect_granted(fn.effects, instruction.effect_family)
                     if instruction.opcode == Opcode.HandlerPush:
-                        pushed_index: usize = handler_index(handlers, instruction.symbol)
-                        issues.push(issue(IssueKind.UnknownHandler, fn.name, block.id, instruction.result, instruction.trace.id, "dynamic handler is not declared in the IR module")) if pushed_index == handlers.count
-                        if pushed_index < handlers.count:
-                            for introduced in handlers[pushed_index].introduces_effects |fn, block, instruction, issues|:
+                        pushed_index: usize = handler_index(module.handlers, instruction.symbol)
+                        issues.push(issue(IssueKind.UnknownHandler, fn.name, block.id, instruction.result, instruction.trace.id, "dynamic handler is not declared in the IR module")) if pushed_index == module.handlers.count
+                        if pushed_index < module.handlers.count:
+                            for introduced in module.handlers[pushed_index].introduces_effects |fn, block, instruction, issues|:
                                 issues.push(issue(IssueKind.HandlerContract, fn.name, block.id, 0, instruction.trace.id, "handler-introduced effect is absent from the function effect row")) if not effect_granted(fn.effects, introduced)
-                            for handler_error in handlers[pushed_index].errors |fn, block, instruction, issues|:
+                            for handler_error in module.handlers[pushed_index].errors |fn, block, instruction, issues|:
                                 issues.push(issue(IssueKind.HandlerContract, fn.name, block.id, 0, instruction.trace.id, "handler error set is absent from the function error row")) if not has_text(fn.errors, handler_error)
                         handler_stack.push(instruction.symbol)
                     if instruction.opcode == Opcode.HandlerPop:
@@ -226,9 +279,9 @@ extend EsIr:
                         else:
                             _ = handler_stack.pop()
                     if instruction.opcode == Opcode.Resume:
-                        index: usize = handler_index(handlers, instruction.symbol)
-                        issues.push(issue(IssueKind.UnknownHandler, fn.name, block.id, instruction.result, instruction.trace.id, "resume names an unknown handler")) if index == handlers.count
-                        issues.push(issue(IssueKind.InvalidResume, fn.name, block.id, instruction.result, instruction.trace.id, "terminal handlers cannot resume continuations")) if index < handlers.count and handlers[index].continuation == ContinuationPolicy.Terminal
+                        index: usize = handler_index(module.handlers, instruction.symbol)
+                        issues.push(issue(IssueKind.UnknownHandler, fn.name, block.id, instruction.result, instruction.trace.id, "resume names an unknown handler")) if index == module.handlers.count
+                        issues.push(issue(IssueKind.InvalidResume, fn.name, block.id, instruction.result, instruction.trace.id, "terminal handlers cannot resume continuations")) if index < module.handlers.count and module.handlers[index].continuation == ContinuationPolicy.Terminal
                     if instruction.opcode == Opcode.Observe and instruction.result != 0:
                         issues.push(issue(IssueKind.InvalidObserve, fn.name, block.id, instruction.result, instruction.trace.id, "observe records values but cannot define one"))
                     issues.push(issue(IssueKind.InvalidObserve, fn.name, block.id, instruction.result, instruction.trace.id, "observe requires exactly one operand")) if instruction.opcode == Opcode.Observe and instruction.operand_count != 1
@@ -249,6 +302,6 @@ extend EsIr:
                 validate_handler(module.handlers[index], issues)
                 for earlier in 0..<index |module, issues, index|:
                     issues.push(issue(IssueKind.DuplicateHandler, "", 0, 0, 0, "handler name is declared more than once")) if module.handlers[index].name == module.handlers[earlier].name
-            for fn in module.functions |issues|:
-                verify_function(fn, module.handlers, issues)
+            for fn in module.functions |issues, module|:
+                verify_function(fn, module, issues)
             return issues

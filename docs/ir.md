@@ -87,6 +87,13 @@ a value created in one branch cannot be consumed from its sibling branch. Every 
 verified module, preventing backend-specific recovery from becoming an observable
 semantic difference.
 
+Core operation types are verified rather than delegated to a runtime engine.
+Copies preserve their exact type; arithmetic requires identical numeric operands
+and a matching result; remainder is integer-only; equality and ordering produce
+booleans over their supported operand families. Direct calls must name a declared
+function and match its parameter and return types exactly. There are no implicit
+integer-width or integer/float conversions at the IR boundary.
+
 ## Reference interpreter
 
 `interpret` is the first executable consumer of verified IR and the semantic
