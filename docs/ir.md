@@ -137,7 +137,8 @@ states instead of nested scanner conditionals.
 The AST lowering now handles functions, typed parameters and returns,
 integer/float/string/character/boolean constants, immutable local bindings, direct
 calls, unary numeric negation and boolean negation, the core arithmetic family
-(`+`, `-`, `*`, `/`, `%`), all six scalar comparisons, short-circuit `and`/`or`,
+(`+`, `-`, `*`, `/`, `%`), integer bitwise operations (`&`, `|`, `^`) and shifts
+(`<<`, `>>`), all six scalar comparisons, short-circuit `and`/`or`,
 conditional expressions, returns, structured `if` branches with
 fallthrough merges, and `while` loops with explicit headers/backedges/exits.
 It also lowers homogeneous immutable array literals, scalar `darray[T]`/`array[T]`
