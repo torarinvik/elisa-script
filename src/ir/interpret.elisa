@@ -13,6 +13,7 @@ error InterpretError:
     Console
     InvalidShift
     IndexOutOfBounds
+    InvalidContinuation
     InvalidControlFlow
     UnsupportedInstruction
     StepLimitExceeded
@@ -65,15 +66,38 @@ extend EsIr:
             Console
             InvalidShift
             IndexOutOfBounds
+            InvalidContinuation
             InvalidControlFlow
             UnsupportedInstruction
             StepLimitExceeded
+
+
+        struct ContinuationFrame:
+            handler: sview
+            policy: ContinuationPolicy
+            consumed: mutable bool
+
+
+        const enum ContinuationDecisionKind of u8:
+            Terminal
+            LinearAvailable
+            LinearConsumed
+            MultiShot
+
+
+        struct ContinuationDecision:
+            kind: ContinuationDecisionKind
+            failure: mutable InterpretFailure
+            accepted: mutable bool
 
 
         struct Machine:
             steps: mutable u64
             step_limit: u64
             failure: mutable InterpretFailure
+            continuations: mutable darray[ContinuationFrame]
+            resume_requested: mutable bool
+            resume_value: mutable RuntimeValue
 
 
         struct DirectoryScanner:
@@ -517,6 +541,57 @@ extend EsIr:
             return any covered in handler.handles where covered == family
 
 
+        def continuation_decision(policy: ContinuationPolicy, consumed: bool) -> ContinuationDecisionKind:
+            return ContinuationDecisionKind.Terminal if policy == ContinuationPolicy.Terminal
+            if policy == ContinuationPolicy.Linear or policy == ContinuationPolicy.Affine:
+                return ContinuationDecisionKind.LinearConsumed if consumed else ContinuationDecisionKind.LinearAvailable
+            return ContinuationDecisionKind.MultiShot
+
+
+        def request_continuation_resume(machine: mutable Machine&, instruction: Instruction, payload_id: u32, ids: darray[u32]&, values: darray[RuntimeValue]&) -> void:
+            if instruction.operand_count != 1:
+                machine.failure <- InterpretFailure.InvalidContinuation
+                return
+            continuation_index: mutable usize = machine.continuations.count
+            found: mutable bool = false
+            while continuation_index > 0 and not found |continuation_index, found|:
+                continuation_index <- continuation_index - 1
+                found <- machine.continuations[continuation_index].handler == instruction.symbol
+            if not found:
+                machine.failure <- InterpretFailure.InvalidContinuation
+                return
+            continuation: ContinuationFrame = machine.continuations[continuation_index]
+            payload: RuntimeValue = frame_value(ids, values, payload_id, machine)
+            return if machine.failure != InterpretFailure.None
+            decision: mutable ContinuationDecision = ContinuationDecision{kind: continuation_decision(continuation.policy, continuation.consumed), failure: InterpretFailure.None, accepted: false}
+            machine over decision.kind:
+                state Dispatch
+                start Dispatch
+
+                Dispatch, ContinuationDecisionKind.Terminal:
+                    decision.failure <- InterpretFailure.InvalidContinuation
+                    break
+
+                Dispatch, ContinuationDecisionKind.LinearAvailable:
+                    decision.accepted <- true
+                    break
+
+                Dispatch, ContinuationDecisionKind.LinearConsumed:
+                    decision.failure <- InterpretFailure.InvalidContinuation
+                    break
+
+                Dispatch, ContinuationDecisionKind.MultiShot:
+                    decision.failure <- InterpretFailure.UnsupportedInstruction
+                    break
+
+            if decision.failure != InterpretFailure.None:
+                machine.failure <- decision.failure
+                return
+            machine.continuations[continuation_index].consumed <- true
+            machine.resume_value <- payload
+            machine.resume_requested <- true
+
+
         def pop_runtime_handler(machine: mutable Machine&, handler_stack: mutable darray[sview]&, expected: sview) -> void:
             if handler_stack.count == 0 or handler_stack[handler_stack.count - 1] != expected:
                 machine.failure <- InterpretFailure.InvalidControlFlow
@@ -546,7 +621,14 @@ extend EsIr:
                                 for offset in 0..<instruction.operand_count.usize() |machine, fn, instruction, ids, values, arguments|:
                                     arguments.push(frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + offset], machine))
                                 callback_index: usize = find_function(module, clause.function)
-                                return execute_function(machine, observations, storage, handler_stack, module, callback_index, arguments) if machine.failure == InterpretFailure.None
+                                machine.continuations.push(ContinuationFrame{handler: handler.name, policy: handler.continuation, consumed: false})
+                                callback_value: RuntimeValue = execute_function(machine, observations, storage, handler_stack, module, callback_index, arguments)
+                                _ = machine.continuations.pop()
+                                if machine.resume_requested:
+                                    resumed: RuntimeValue = machine.resume_value
+                                    machine.resume_requested <- false
+                                    return resumed
+                                return callback_value if machine.failure == InterpretFailure.None
                                 return runtime_void()
                         note_unsupported(machine)
                         return runtime_void()
@@ -2138,8 +2220,11 @@ extend EsIr:
                             break
 
                         Dispatch, Opcode.Resume:
-                            note_unsupported(machine)
+                            payload_id: u32 = fn.operand_pool[instruction.operand_start.usize()]
+                            request_continuation_resume(machine, instruction, payload_id, ids, values)
+                            dispatch.value <- machine.resume_value
                             break
+                    return dispatch.value if machine.resume_requested
                     set_frame_value(ids, values, instruction.result, dispatch.value) if machine.failure == InterpretFailure.None and dispatch.produces_value
 
                 runtime_void() return if machine.failure != InterpretFailure.None
@@ -2226,6 +2311,9 @@ extend EsIr:
                 Dispatch, InterpretFailure.IndexOutOfBounds:
                     raise InterpretError.IndexOutOfBounds
                     break
+                Dispatch, InterpretFailure.InvalidContinuation:
+                    raise InterpretError.InvalidContinuation
+                    break
                 Dispatch, InterpretFailure.InvalidControlFlow:
                     raise InterpretError.InvalidControlFlow
                     break
@@ -2242,7 +2330,7 @@ extend EsIr:
             raise InterpretError.VerificationFailed if verify(module).count != 0
             function_index: usize = find_function(module, entry)
             raise InterpretError.UnknownFunction if function_index == module.functions.count
-            machine: mutable Machine = Machine{steps: 0, step_limit: step_limit, failure: InterpretFailure.None}
+            machine: mutable Machine = Machine{steps: 0, step_limit: step_limit, failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void()}
             handler_stack: mutable darray[sview] = []
             value: RuntimeValue = execute_function(machine, observations, storage, handler_stack, module, function_index, arguments)
             try raise_interpret_failure(machine.failure) if machine.failure != InterpretFailure.None

@@ -74,9 +74,11 @@ with handler sandbox:
 
 The IR declares each handler's covered effect families, introduced effects,
 `error[...]` sets, and continuation policy (`Terminal`, `Linear`, `Affine`,
-`MultiReplay`, or `MultiClone`). `HandlerPush` and `HandlerPop` delimit dynamic installation. `Resume`
-names the handler whose continuation it consumes; the verifier rejects resume for
-a terminal handler and rejects unknown or unbalanced handler operations.
+`MultiReplay`, or `MultiClone`). `HandlerPush` and `HandlerPop` delimit dynamic
+installation. `Resume` names the handler whose continuation it consumes and
+requires one payload operand plus a typed result; the verifier rejects terminal
+handlers, malformed payload/result pairs, unknown handlers, and unbalanced
+handler operations.
 Executable handler clauses map an exact effect family and operation to an ordinary
 typed IR function. At each covered `Perform`, verification matches the performed
 payload to that function's parameters and its return type to the resumed value.
@@ -95,7 +97,13 @@ Structured lowering emits explicit handler unwinding before `return`, `break`,
 and `continue`. Loop exits unwind only handlers installed inside that loop;
 handlers surrounding the loop remain active until their own lexical scope ends.
 
-Multi-shot behavior is never inferred. `MultiClone` requires every captured value
+Multi-shot behavior is never inferred. The reference interpreter currently
+executes a callback's `Resume` as a typed tail resumption: its payload becomes the
+value of the suspended `Perform`, the callback frame stops immediately, and a
+`Linear` or `Affine` continuation frame is consumed exactly once. A missing,
+already-consumed, or terminal continuation raises `InterpretError.InvalidContinuation`.
+Post-resume callback code and true multi-shot execution require the later explicit
+continuation representation. `MultiClone` requires every captured value
 to be classified `Unrestricted`; affine, linear, borrowed, region-bound, and opaque
 captures are rejected. `MultiReplay` re-executes from a deterministic checkpoint
 and requires every effect introduced by the handler to appear in its statically
@@ -244,9 +252,11 @@ and comparisons, direct calls, branches, loops, SSA edge arguments, and returns.
 `HandlerPush` and `HandlerPop` maintain a real runtime stack shared across direct-call
 frames. `Perform` searches it from innermost to outermost and invokes the exact typed
 operation clause of the nearest covering handler; linear clauses return one resumed
-value and execution continues. Handler contract metadata without an operation clause
-is deliberately not treated as executable behavior. Explicit `Resume`, affine choice,
-terminal transfer, and multi-shot continuation execution remain later increments.
+value and execution continues. A callback may instead issue a typed tail `Resume`,
+which transfers its payload back to the suspended `Perform` through a runtime
+continuation frame. Handler contract metadata without an operation clause is
+deliberately not treated as executable behavior. Post-resume code, terminal
+transfer, and multi-shot continuation execution remain later increments.
 
 Interpreter failures use `error[InterpretError]`, never a result wrapper. Stable
 `observe` events and array elements are appended to caller-owned storage; this
@@ -408,8 +418,8 @@ edge arguments and a fresh merge-block parameter. Loop-carried locals receive
 typed header and exit parameters; initial entry, normal backedges, `continue`, and
 `break` edges all pass the binding's current SSA value.
 
-1. Add complete structural types, handler installation, resume,
-   and explicit ownership/region operations.
+1. Add complete structural types, post-resume continuation capture, and explicit
+   ownership/region operations.
 2. Define the artifact container and versioned metadata around the canonical IR
    bytes. The structural encoding and `u64` module fingerprint are already
    available for artifact correlation.
