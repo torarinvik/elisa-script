@@ -115,7 +115,8 @@ states instead of nested scanner conditionals.
 The AST lowering now handles functions, typed parameters and returns,
 integer/float/string/character/boolean constants, immutable local bindings, direct
 calls, unary numeric negation and boolean negation, the core arithmetic family
-(`+`, `-`, `*`, `/`, `%`), all six scalar comparisons, returns, structured `if` branches with
+(`+`, `-`, `*`, `/`, `%`), all six scalar comparisons, short-circuit `and`/`or`,
+conditional expressions, returns, structured `if` branches with
 fallthrough merges, and `while` loops with explicit headers/backedges/exits.
 Unlabeled `break` and `continue` resolve through nested loop-target stacks. It produces structured
 lowering issues for every unsupported construct; it never drops a statement or
@@ -125,6 +126,12 @@ Control-flow edges carry arguments through a function-owned flat pool. The verif
 requires each edge slice to match its target block parameters in both arity and type.
 This is the backend-neutral equivalent of SSA phi nodes and is the basis for values
 merged from mutable branches and loop backedges.
+
+Logical and conditional expressions use those same CFG primitives. `and`/`or`
+branch before lowering the right operand and merge through a typed block parameter,
+so skipped calls, effects, and observations are genuinely not executed. Conditional
+expressions likewise lower each value arm into a separate block rather than an eager
+select instruction.
 
 Straight-line `<-` mutation is reconstructed as an SSA name rebind: the
 new expression result becomes the binding's current value and no memory slot is
