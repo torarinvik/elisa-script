@@ -62,7 +62,10 @@ the working directory, while stdin remains length-delimited so binary-compatible
 fixtures are possible.
 
 For a native or adapter process, the materialization path should use the IR
-`capture_process_result(executable, arguments, stdin)` intrinsic. It returns one
+`capture_process_result(executable(target), arguments, stdin)` intrinsic. The
+explicit `executable` constructor gives a runtime target the same nominal type as an
+`exe"..."` literal and rejects empty/NUL-containing names before launch. The capture
+returns one
 typed `ProcessCapture` snapshot, whose `process_exit_status`, `process_stdout`, and
 `process_stderr` accessors populate the corresponding `DifferentialRun` fields. This
 single execution is important for nondeterministic tools: separate stdout, stderr,
