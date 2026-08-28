@@ -37,6 +37,13 @@ non-cryptographic `u64` fingerprint suitable for backend and differential-test
 artifact correlation; neither is a security identity or a replacement for IR
 verification.
 
+`EsIrArtifact.ModuleArtifact` is the small typed metadata envelope used by
+differential reports today. It records format version, backend label, source
+revision, and fingerprint; the owned canonical byte stream is kept as the
+separate `canonical_module_bytes` value so its inferred region remains with the
+artifact writer. `artifact_fingerprint_matches_module` provides the corresponding
+constant-time metadata check.
+
 ## Algebraic effects
 
 `Perform` is an IR operation, not an early rewrite to a runtime function call. It
