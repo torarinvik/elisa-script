@@ -108,7 +108,10 @@ suffix is stored per AST literal rather than inferred from line metadata, so two
 differently suffixed literals on the same line cannot exchange types. `char` and
 `u8` are distinct IR families: characters participate in text operations, while
 `u8` is an unsigned numeric type. Unsuffixed integer literals remain `i64`, and
-no implicit widening occurs in arithmetic or comparisons.
+no implicit widening occurs in arithmetic or comparisons. Narrow explicit literals
+must fit their suffix range. Signed minimum spellings are lowered atomically—such
+as `-128i8`—so the compiler never has to construct the invalid intermediate
+positive literal `128i8`; negating an explicitly unsigned literal is rejected.
 Compiler-known typed literals use `Named` constants with immutable text payloads.
 The verifier admits this representation explicitly, and the interpreter retains
 the text payload while all static compatibility decisions continue to use the
