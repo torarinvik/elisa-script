@@ -55,6 +55,14 @@ Nominal values cannot implicitly initialize primitive scalars:
 bad: i64 = path"src"  # type error: expected i64, got Path
 ```
 
+The shared IR recognizes these five compiler-known calls when no source function
+shadows the prefix and the payload is a constant string. It emits a nominal
+`Constant`, preserving `Path`/`Glob`/`Regex`/`Executable`/`Url` identity while the
+reference runtime stores the validated payload as immutable text. Nominal values
+can cross exactly typed function boundaries and use exact nominal equality; they
+do not implicitly become `sview` or one another. Dynamic constructor payloads stay
+explicit lowering errors until the corresponding standard-library runtime parser exists.
+
 ## Compile-time validation
 
 `check_typed_literals.elisa` validates constant string payloads during the existing

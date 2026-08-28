@@ -102,6 +102,10 @@ and a matching result; remainder is integer-only; equality and ordering produce
 booleans over their supported operand families. Direct calls must name a declared
 function and match its parameter and return types exactly. There are no implicit
 integer-width or integer/float conversions at the IR boundary.
+Compiler-known typed literals use `Named` constants with immutable text payloads.
+The verifier admits this representation explicitly, and the interpreter retains
+the text payload while all static compatibility decisions continue to use the
+nominal IR type.
 
 The AST-to-IR boundary reports the same mistakes as structured `TypeMismatch`
 lowering issues, before a backend sees the module. This covers declared binding
