@@ -184,6 +184,12 @@ markers and mutable parameters opt into SSA rebinding. `<-`, compound assignment
 `ImmutableBinding` issue before emitting an update. Scope truncation keeps names,
 types, values, and mutability facts aligned across value blocks, match arms,
 handlers, branches, and loops.
+`mutable_array[index] <- value` lowers to the semantic `SetIndex` operation and
+then rebinds the array's SSA name. The receiver must be mutable, the index must be
+an integer, the replacement must exactly match the element type, and compound
+indexed assignment is not inferred implicitly. The interpreter checks bounds,
+copies the source array into fresh value storage, replaces one element, and leaves
+all aliases of the old array unchanged; invalid indices raise `IndexOutOfBounds`.
 Membership lowers to the typed `Contains` operation. Array needles must exactly
 match the element type; text accepts either an 8-bit `char` or a text substring.
 Search is deterministic and linear, the empty text is contained in every text,
