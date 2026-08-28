@@ -150,6 +150,13 @@ seek, read, close, and wait failures raise `ProcessError`. Exit status is delibe
 orthogonal to captured bytes; a missing executable therefore yields empty output,
 while `run_process` exposes its status `127` when status is the required observation.
 
+`capture_process_stdout_with_stdin(executable: Executable, arguments: darray[sview],
+input: sview) -> sview error[ProcessError] can[Process.Run]` uses the same argv
+contract while feeding an owned text snapshot through the child's standard input.
+Input is staged in a temporary file before the child starts, so the operation has no
+pipe-size deadlock or truncation behavior. The child sees exactly the supplied bytes;
+wildcards, spaces, and quotes in both arguments and input remain ordinary bytes.
+
 ## Standard streams
 
 Standard streams are explicit typed operations rather than implicit print or shell

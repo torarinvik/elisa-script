@@ -173,6 +173,11 @@ its result. Its opcode is handled by the interpreter's exhaustive Elisa dispatch
 machine. Execution redirects only stdout into an anonymous temporary file, reaps
 the child, and returns owned length-delimited bytes. It does not reinterpret output
 as a C string, impose a pipe-sized backpressure limit, or capture stderr.
+`CaptureProcessStdoutWithStdin` verifies as `Named(Executable) × Array[Text] × Text
+-> Text` with the same `Process.Run` effect and `ProcessError` row. The interpreter
+stages the input in a temporary file, redirects descriptors 0 and 1 in the child,
+and drives input writing and process waiting through explicit state machines before
+returning the complete owned stdout snapshot.
 `GetEnvironment`, `SetEnvironment`, and `UnsetEnvironment` operate on `Text`
 operands. Reads produce owned `Text` under `Environment.Read`; mutations produce
 `Bool` under `Environment.Write`. All three require `EnvironmentError`, reject C

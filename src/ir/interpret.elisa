@@ -114,6 +114,31 @@ extend EsIr:
             failed: mutable bool
 
 
+        const enum ProcessInputState of u8:
+            Progress
+            Done
+            Error
+
+
+        struct ProcessInputWriter:
+            stream: heap void&
+            data: u8&
+            length: usize
+            offset: mutable usize
+            failed: mutable bool
+
+
+        const enum ProcessWaitState of u8:
+            Exited
+            Error
+
+
+        struct ProcessWaiter:
+            pid: int
+            status: mutable int
+            failed: mutable bool
+
+
         struct InstructionDispatch:
             value: mutable RuntimeValue
             opcode: Opcode
@@ -1023,6 +1048,155 @@ extend EsIr:
                 return runtime_text(bytes_view(bytes))
 
 
+        def process_input_next(writer: mutable ProcessInputWriter&) -> ProcessInputState:
+            return ProcessInputState.Done if writer.offset >= writer.length
+            remaining: usize = writer.length - writer.offset
+            buffer: mutable u8& = writer.data + writer.offset
+            can Blocking.IO:
+                amount: usize = fwrite(buffer.cast[void&], 1, remaining, writer.stream)
+                if amount == 0:
+                    writer.failed <- true
+                    return ProcessInputState.Error
+                writer.offset <- writer.offset + amount
+                return ProcessInputState.Done if writer.offset >= writer.length
+                return ProcessInputState.Progress
+
+
+        def process_wait_next(waiter: mutable ProcessWaiter&) -> ProcessWaitState can[Blocking.IO]:
+            waited: int = elisascript_posix_waitpid(waiter.pid, waiter.status, 0)
+            if waited != waiter.pid:
+                waiter.failed <- true
+                return ProcessWaitState.Error
+            return ProcessWaitState.Exited
+
+
+        def evaluate_capture_process_stdout_with_stdin(machine: mutable Machine&, storage: mutable darray[RuntimeValue]&, executable: RuntimeValue, arguments: RuntimeValue, input: RuntimeValue) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+            if executable.kind != RuntimeValueKind.Text or arguments.kind != RuntimeValueKind.Array or input.kind != RuntimeValueKind.Text:
+                machine.failure <- InterpretFailure.TypeMismatch
+                return runtime_void()
+            executable_bytes: dstr = nul_terminated_text(executable.text)
+            if executable_bytes.items == null:
+                machine.failure <- InterpretFailure.Process
+                return runtime_void()
+            executable_items: u8& = executable_bytes.items
+            owned_arguments: mutable darray[dstr] = []
+            argv: mutable darray[cstr] = []
+            owned_arguments.reserve(arguments.array_count.usize())
+            argv.reserve(arguments.array_count.usize() + 2)
+            argv.push(executable_items.cast[cstr])
+            for offset in 0..<arguments.array_count.usize() |machine, storage, arguments, owned_arguments, argv|:
+                argument: RuntimeValue = storage[arguments.array_start.usize() + offset]
+                if argument.kind != RuntimeValueKind.Text:
+                    machine.failure <- InterpretFailure.TypeMismatch
+                    return runtime_void()
+                argument_bytes: dstr = nul_terminated_text(argument.text)
+                if argument_bytes.items == null:
+                    machine.failure <- InterpretFailure.Process
+                    return runtime_void()
+                owned_arguments.push(argument_bytes)
+                argument_storage: mutable u8&? = owned_arguments[owned_arguments.count - 1].items
+                if argument_storage == null:
+                    machine.failure <- InterpretFailure.Process
+                    return runtime_void()
+                argument_items: mutable u8& = argument_storage
+                argv.push(argument_items.cast[cstr])
+            argv.push(executable_items.cast[cstr])
+            if argv.items == null:
+                machine.failure <- InterpretFailure.Process
+                return runtime_void()
+            terminator: mutable void& = (&argv[argv.count - 1]).cast[mutable void&] can Unsafe.PointerCast
+            _ = memset(terminator, 0, 8)
+            argv_items: void& = argv.items.cast[void&] can Unsafe.PointerCast
+            can Blocking.IO, Memory.Allocate, Memory.Release:
+                input_handle: mutable heap void&? = elisascript_posix_tmpfile()
+                if input_handle == null:
+                    machine.failure <- InterpretFailure.Process
+                    return runtime_void()
+                input_stream: mutable heap void& = input_handle
+                input_descriptor: int = elisascript_posix_fileno(input_stream)
+                if input_descriptor < 0:
+                    _ = fclose(input_stream)
+                    machine.failure <- InterpretFailure.Process
+                    return runtime_void()
+                input_writer: mutable ProcessInputWriter = ProcessInputWriter{stream: input_stream, data: input.text.data, length: sview_len(input.text), offset: 0, failed: false}
+                machine over process_input_next(input_writer):
+                    state Write
+                    start Write
+
+                    Write, ProcessInputState.Progress:
+                        -> Write
+                    Write, ProcessInputState.Done:
+                        break
+                    Write, ProcessInputState.Error:
+                        break
+                if input_writer.failed or fseek(input_stream, 0, FILEIO_SEEK_SET) != 0:
+                    _ = fclose(input_stream)
+                    machine.failure <- InterpretFailure.Process
+                    return runtime_void()
+                output_handle: mutable heap void&? = elisascript_posix_tmpfile()
+                if output_handle == null:
+                    _ = fclose(input_stream)
+                    machine.failure <- InterpretFailure.Process
+                    return runtime_void()
+                output_stream: mutable heap void& = output_handle
+                output_descriptor: int = elisascript_posix_fileno(output_stream)
+                if output_descriptor < 0:
+                    _ = fclose(input_stream)
+                    _ = fclose(output_stream)
+                    machine.failure <- InterpretFailure.Process
+                    return runtime_void()
+                pid: int = elisascript_posix_fork()
+                if pid < 0:
+                    _ = fclose(input_stream)
+                    _ = fclose(output_stream)
+                    machine.failure <- InterpretFailure.Process
+                    return runtime_void()
+                if pid == 0:
+                    elisascript_posix_exit(126) if elisascript_posix_dup2(input_descriptor, 0) < 0
+                    elisascript_posix_exit(126) if elisascript_posix_dup2(output_descriptor, 1) < 0
+                    _ = elisascript_posix_execvp(executable_items.cast[cstr], argv_items)
+                    elisascript_posix_exit(127)
+                    return runtime_void()
+                waiter: mutable ProcessWaiter = ProcessWaiter{pid: pid, status: 0, failed: false}
+                machine over process_wait_next(waiter):
+                    state Wait
+                    start Wait
+
+                    Wait, ProcessWaitState.Exited:
+                        break
+                    Wait, ProcessWaitState.Error:
+                        break
+                input_close_status: int = fclose(input_stream)
+                if waiter.failed or input_close_status != 0 or fseek(output_stream, 0, FILEIO_SEEK_END) != 0:
+                    _ = fclose(output_stream)
+                    machine.failure <- InterpretFailure.Process
+                    return runtime_void()
+                size: i64 = ftell(output_stream)
+                if size < 0 or fseek(output_stream, 0, FILEIO_SEEK_SET) != 0:
+                    _ = fclose(output_stream)
+                    machine.failure <- InterpretFailure.Process
+                    return runtime_void()
+                if size == 0:
+                    close_status: int = fclose(output_stream)
+                    if close_status != 0:
+                        machine.failure <- InterpretFailure.Process
+                        return runtime_void()
+                    return runtime_text("")
+                bytes: mutable dstr = ctx_fstr_alloc(size.usize())
+                if bytes.items == null:
+                    _ = fclose(output_stream)
+                    machine.failure <- InterpretFailure.Process
+                    return runtime_void()
+                byte_items: mutable u8& = bytes.items
+                read_count: usize = fread(byte_items.cast[mutable void&], 1, size.usize(), output_stream)
+                close_status: int = fclose(output_stream)
+                if read_count != size.usize() or close_status != 0:
+                    machine.failure <- InterpretFailure.Process
+                    return runtime_void()
+                bytes.count <- size.usize()
+                return runtime_text(bytes_view(bytes))
+
+
         def text_has_nul(value: sview) -> bool:
             for index in 0..<sview_len(value) |value|:
                 true return if sview_at(value, index) == 0
@@ -1762,6 +1936,13 @@ extend EsIr:
                             executable_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
                             arguments_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1], machine)
                             dispatch.value <- evaluate_capture_process_stdout(machine, storage, executable_value, arguments_value)
+                            break
+
+                        Dispatch, Opcode.CaptureProcessStdoutWithStdin:
+                            executable_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
+                            arguments_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1], machine)
+                            input_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 2], machine)
+                            dispatch.value <- evaluate_capture_process_stdout_with_stdin(machine, storage, executable_value, arguments_value, input_value)
                             break
 
                         Dispatch, Opcode.GetEnvironment:
