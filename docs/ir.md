@@ -177,6 +177,13 @@ into a fresh array value and rebind the receiver. Mutation discovery treats thes
 calls as assignments, so updates inside `if`, `while`, and `for` flow through the
 same typed merge, header, latch, and exit parameters as explicit `<-` rebinding.
 Named arguments, mismatched element types, and non-array receivers are rejected.
+Lowering retains one mutability fact alongside every lexical binding. Plain locals,
+parameters, loop variables, and match binders are immutable; `mutable` local type
+markers and mutable parameters opt into SSA rebinding. `<-`, compound assignment,
+`push`, and `extend` all check the same fact and produce the structured
+`ImmutableBinding` issue before emitting an update. Scope truncation keeps names,
+types, values, and mutability facts aligned across value blocks, match arms,
+handlers, branches, and loops.
 Membership lowers to the typed `Contains` operation. Array needles must exactly
 match the element type; text accepts either an 8-bit `char` or a text substring.
 Search is deterministic and linear, the empty text is contained in every text,
