@@ -57,13 +57,21 @@ with handler sandbox:
 ```
 
 The IR declares each handler's covered effect families, introduced effects,
-`error[...]` sets, and continuation policy (`Terminal`, `Linear`, `Affine`, or
-`Multi`). `HandlerPush` and `HandlerPop` delimit dynamic installation. `Resume`
+`error[...]` sets, and continuation policy (`Terminal`, `Linear`, `Affine`,
+`MultiReplay`, or `MultiClone`). `HandlerPush` and `HandlerPop` delimit dynamic installation. `Resume`
 names the handler whose continuation it consumes; the verifier rejects resume for
 a terminal handler and rejects unknown or unbalanced handler operations.
 
 Handler failures are stored in explicit error-set rows on handlers and functions.
 They are not represented as `Result` values and are not merged into effect rows.
+
+Multi-shot behavior is never inferred. `MultiClone` requires every captured value
+to be classified `Unrestricted`; affine, linear, borrowed, region-bound, and opaque
+captures are rejected. `MultiReplay` re-executes from a deterministic checkpoint
+and requires every effect introduced by the handler to appear in its statically
+verified replay-safe effect set. This makes replay the preferred early mechanism
+for search, model checking, and differential exploration while reserving cloning
+for continuations whose complete captured environment is provably duplicable.
 
 The IR verifier rejects missing/duplicate trace sites, ungranted effects,
 undefined or duplicate SSA values, bad entry blocks, unknown branch targets, and
