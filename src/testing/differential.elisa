@@ -37,6 +37,161 @@ module EsDifferential:
             observations: darray[DifferentialObservation]
 
 
+        # A runner is a typed, shell-free execution specification. `target` is
+        # an executable/module/adapter path for external runners and a symbol
+        # or function identifier for in-process runners. `arguments` stays a
+        # vector so adapters never need to reconstruct a command string.
+        const enum DifferentialRunnerKind of u8:
+            InProcessFunction
+            NativeProcess
+            PythonAdapter
+            CAbiFunction
+            WasmModule
+            Service
+
+
+        struct DifferentialRunner:
+            kind: DifferentialRunnerKind
+            name: sview
+            target: sview
+            entry: sview = ""
+            arguments: darray[sview]
+            working_directory: sview = ""
+            stdin: sview = ""
+            protocol: sview = ""
+            timeout_steps: u64 = 1
+            required_effects: darray[sview] = []
+            required_errors: darray[sview] = []
+
+
+        const enum DifferentialRunnerIssueKind of u8:
+            None
+            MissingName
+            MissingTarget
+            MissingEntry
+            InvalidTimeout
+            EmbeddedNul
+
+
+        struct DifferentialRunnerCheck:
+            reason: mutable sview = ""
+            argument_index: mutable u32 = 0
+            valid: mutable bool
+            issue: mutable DifferentialRunnerIssueKind
+
+
+        const enum DifferentialRunnerCheckState of u8:
+            Name
+            Target
+            Entry
+            Arguments
+            Timeout
+            Done
+
+
+        struct DifferentialRunnerCursor:
+            state: mutable DifferentialRunnerCheckState
+            argument_index: mutable usize
+            result: mutable DifferentialRunnerCheck
+
+
+        def differential_sview_has_nul(value: sview) -> bool:
+            index: mutable usize = 0
+            machine over sview_at(value, index) while index < sview_len(value):
+                state Scan
+                start Scan
+
+                Scan, 0:
+                    index <- sview_len(value) + 1
+                    break
+                Scan, _:
+                    index <- index + 1
+                    -> Scan
+
+            return index > sview_len(value)
+
+
+        def differential_runner_needs_entry(kind: DifferentialRunnerKind) -> bool:
+            return kind == DifferentialRunnerKind.PythonAdapter or kind == DifferentialRunnerKind.CAbiFunction or kind == DifferentialRunnerKind.WasmModule or kind == DifferentialRunnerKind.Service
+
+
+        # Validate the complete runner contract before an adapter is allowed to
+        # launch. The machine makes the validation order deterministic: name,
+        # target, optional entry, argv, then timeout.
+        def validate_differential_runner(runner: DifferentialRunner&) -> DifferentialRunnerCheck:
+            cursor: mutable DifferentialRunnerCursor = DifferentialRunnerCursor{state: DifferentialRunnerCheckState.Name, argument_index: 0, result: DifferentialRunnerCheck{valid: true, issue: DifferentialRunnerIssueKind.None}}
+            machine over cursor.state while cursor.result.valid:
+                state Validate
+                start Validate
+
+                Validate, DifferentialRunnerCheckState.Name if runner.name != "":
+                    cursor.state <- DifferentialRunnerCheckState.Target
+                    -> Validate
+                Validate, DifferentialRunnerCheckState.Name:
+                    cursor.result.valid <- false
+                    cursor.result.issue <- DifferentialRunnerIssueKind.MissingName
+                    cursor.result.reason <- "runner name is required"
+                    -> Validate
+
+                Validate, DifferentialRunnerCheckState.Target if runner.target == "":
+                    cursor.result.valid <- false
+                    cursor.result.issue <- DifferentialRunnerIssueKind.MissingTarget
+                    cursor.result.reason <- "runner target is required"
+                    -> Validate
+                Validate, DifferentialRunnerCheckState.Target if differential_sview_has_nul(runner.target):
+                    cursor.result.valid <- false
+                    cursor.result.issue <- DifferentialRunnerIssueKind.EmbeddedNul
+                    cursor.result.reason <- "runner target contains NUL"
+                    -> Validate
+                Validate, DifferentialRunnerCheckState.Target if differential_runner_needs_entry(runner.kind):
+                    cursor.state <- DifferentialRunnerCheckState.Entry
+                    -> Validate
+                Validate, DifferentialRunnerCheckState.Target:
+                    cursor.state <- DifferentialRunnerCheckState.Arguments
+                    -> Validate
+
+                Validate, DifferentialRunnerCheckState.Entry if runner.entry == "":
+                    cursor.result.valid <- false
+                    cursor.result.issue <- DifferentialRunnerIssueKind.MissingEntry
+                    cursor.result.reason <- "runner entry is required"
+                    -> Validate
+                Validate, DifferentialRunnerCheckState.Entry if differential_sview_has_nul(runner.entry):
+                    cursor.result.valid <- false
+                    cursor.result.issue <- DifferentialRunnerIssueKind.EmbeddedNul
+                    cursor.result.reason <- "runner entry contains NUL"
+                    -> Validate
+                Validate, DifferentialRunnerCheckState.Entry:
+                    cursor.state <- DifferentialRunnerCheckState.Arguments
+                    -> Validate
+
+                Validate, DifferentialRunnerCheckState.Arguments if cursor.argument_index >= runner.arguments.count:
+                    cursor.state <- DifferentialRunnerCheckState.Timeout
+                    -> Validate
+                Validate, DifferentialRunnerCheckState.Arguments if differential_sview_has_nul(runner.arguments[cursor.argument_index]):
+                    cursor.result.valid <- false
+                    cursor.result.issue <- DifferentialRunnerIssueKind.EmbeddedNul
+                    cursor.result.reason <- "runner argument contains NUL"
+                    cursor.result.argument_index <- cursor.argument_index.u32()
+                    -> Validate
+                Validate, DifferentialRunnerCheckState.Arguments:
+                    cursor.argument_index <- cursor.argument_index + 1
+                    -> Validate
+
+                Validate, DifferentialRunnerCheckState.Timeout if runner.timeout_steps > 0:
+                    cursor.state <- DifferentialRunnerCheckState.Done
+                    -> Validate
+                Validate, DifferentialRunnerCheckState.Timeout:
+                    cursor.result.valid <- false
+                    cursor.result.issue <- DifferentialRunnerIssueKind.InvalidTimeout
+                    cursor.result.reason <- "runner timeout must be positive"
+                    -> Validate
+
+                Validate, DifferentialRunnerCheckState.Done:
+                    break
+
+            return cursor.result
+
+
         const enum DifferentialDifferenceKind of u8:
             Equal
             ExitStatus

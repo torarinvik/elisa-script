@@ -38,6 +38,22 @@ text or values; identical runs return `DifferentialDifferenceKind.Equal`. The
 comparator is implemented as an explicit Elisa state machine, so it cannot skip a
 comparison phase or silently continue after a mismatch.
 
+The executable contract is `EsDifferential.DifferentialRunner`. It is a typed
+specification, not a command-string escape hatch: the target, optional entry point,
+working directory, stdin, protocol, timeout, required effects, and required errors
+are separate fields, while process arguments remain a `darray[sview]`. Call
+`validate_differential_runner` before handing the value to an adapter. Its explicit
+validation machine checks the name and target, requires an entry for adapter/module
+runner kinds, scans every argument for embedded NUL bytes, and requires a positive
+timeout. A failed check returns `DifferentialRunnerCheck` with a stable issue kind
+and argument index; it does not launch anything.
+
+The current runner kinds are `InProcessFunction`, `NativeProcess`, `PythonAdapter`,
+`CAbiFunction`, `WasmModule`, and `Service`. Adapters are responsible for turning a
+validated specification into a `DifferentialRun`; keeping that execution layer
+separate lets native, Python, and Elisascript adapters share the same deterministic
+comparison and artifact machinery.
+
 ## Runner types
 
 First-class runners should cover:
