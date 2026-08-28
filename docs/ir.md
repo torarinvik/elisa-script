@@ -352,7 +352,9 @@ observation stream, so helper functions remain behaviorally identical to the
 reference interpreter. The first filesystem operations (`PathExists`, `ReadText`,
 `WriteText`, `RemovePath`, and `MakeExecutable`) use the same typed resource
 wrappers as the oracle, while retaining the packed program-counter machine. Its
-value dispatcher is itself an explicit state machine. The eligibility gate rejects
+value dispatcher is itself an explicit state machine, and its direct binary helper
+uses a typed selection machine that separates equality, floating-point, and integer
+operations before reaching a terminal value state. The eligibility gate rejects
 other widths, nested arrays, handlers, and continuations; failure-sensitive integer
 divide/remainder/shift operations remain on the interpreter path, while `f64`
 division is direct.
