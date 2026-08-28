@@ -105,6 +105,19 @@ module EsBytecode:
             instruction_index: mutable usize
             action: mutable BytecodeControlAction
             target: mutable u32
+            edge_start: mutable u32
+            edge_count: mutable u16
+
+
+        const enum BytecodeValueState of u8:
+            Execute
+            Done
+
+
+        struct BytecodeValueCursor:
+            state: mutable BytecodeValueState
+            opcode: Opcode
+            value: mutable RuntimeValue
 
 
         def empty_bytecode_module(name: sview) -> BytecodeModule:
@@ -252,16 +265,22 @@ module EsBytecode:
                 Step, BytecodeControlState.Terminator if function.blocks[cursor.block_index].terminator.kind == TerminatorKind.Jump:
                     cursor.action <- BytecodeControlAction.Jump
                     cursor.target <- function.blocks[cursor.block_index].terminator.target0
+                    cursor.edge_start <- function.blocks[cursor.block_index].terminator.edge0_arg_start
+                    cursor.edge_count <- function.blocks[cursor.block_index].terminator.edge0_arg_count
                     cursor.state <- BytecodeControlState.Done
                     -> Step
                 Step, BytecodeControlState.Terminator if function.blocks[cursor.block_index].terminator.kind == TerminatorKind.Branch and branch_condition:
                     cursor.action <- BytecodeControlAction.Jump
                     cursor.target <- function.blocks[cursor.block_index].terminator.target0
+                    cursor.edge_start <- function.blocks[cursor.block_index].terminator.edge0_arg_start
+                    cursor.edge_count <- function.blocks[cursor.block_index].terminator.edge0_arg_count
                     cursor.state <- BytecodeControlState.Done
                     -> Step
                 Step, BytecodeControlState.Terminator if function.blocks[cursor.block_index].terminator.kind == TerminatorKind.Branch:
                     cursor.action <- BytecodeControlAction.Jump
                     cursor.target <- function.blocks[cursor.block_index].terminator.target1
+                    cursor.edge_start <- function.blocks[cursor.block_index].terminator.edge1_arg_start
+                    cursor.edge_count <- function.blocks[cursor.block_index].terminator.edge1_arg_count
                     cursor.state <- BytecodeControlState.Done
                     -> Step
                 Step, BytecodeControlState.Terminator:
@@ -272,6 +291,222 @@ module EsBytecode:
                     break
 
             return cursor.action
+
+
+        def bytecode_direct_frame_value(ids: darray[u32]&, values: darray[RuntimeValue]&, id: u32) -> RuntimeValue:
+            for index in 0..<ids.count |ids, values, id|:
+                return values[index] if ids[index] == id
+            return runtime_void()
+
+
+        def bytecode_direct_set_frame_value(ids: mutable darray[u32]&, values: mutable darray[RuntimeValue]&, id: u32, value: RuntimeValue) can[Memory.Allocate, Abort.Panic]:
+            for index in 0..<ids.count |ids, values, id, value|:
+                if ids[index] == id:
+                    values[index] <- value
+                    return
+            ids.push(id)
+            values.push(value)
+
+
+        def bytecode_direct_binary(opcode: Opcode, left: RuntimeValue, right: RuntimeValue) -> RuntimeValue:
+            if opcode == Opcode.Equal or opcode == Opcode.NotEqual:
+                if left.kind != right.kind:
+                    return runtime_void()
+                equal: mutable bool = false
+                equal <- left.integer == right.integer if left.kind == RuntimeValueKind.Int
+                equal <- left.boolean == right.boolean if left.kind == RuntimeValueKind.Bool
+                if opcode == Opcode.Equal:
+                    return runtime_bool(equal)
+                return runtime_bool(not equal)
+            if left.kind != RuntimeValueKind.Int or right.kind != RuntimeValueKind.Int:
+                return runtime_void()
+            if opcode == Opcode.Add:
+                return runtime_int(left.integer + right.integer)
+            if opcode == Opcode.Subtract:
+                return runtime_int(left.integer - right.integer)
+            if opcode == Opcode.Multiply:
+                return runtime_int(left.integer * right.integer)
+            if opcode == Opcode.Divide:
+                return runtime_void() if right.integer == 0
+                return runtime_int(left.integer / right.integer)
+            if opcode == Opcode.Remainder:
+                return runtime_void() if right.integer == 0
+                return runtime_int(left.integer % right.integer)
+            if opcode == Opcode.BitAnd:
+                return runtime_int(left.integer & right.integer)
+            if opcode == Opcode.BitOr:
+                return runtime_int(left.integer | right.integer)
+            if opcode == Opcode.BitXor:
+                return runtime_int(left.integer ^ right.integer)
+            if opcode == Opcode.ShiftLeft or opcode == Opcode.ShiftRight:
+                return runtime_void() if right.integer < 0 or right.integer >= 64
+                return runtime_int(left.integer << right.integer.u32()) if opcode == Opcode.ShiftLeft
+                return runtime_int(left.integer >> right.integer.u32())
+            if opcode == Opcode.Less:
+                return runtime_bool(left.integer < right.integer)
+            if opcode == Opcode.LessEqual:
+                return runtime_bool(left.integer <= right.integer)
+            if opcode == Opcode.Greater:
+                return runtime_bool(left.integer > right.integer)
+            return runtime_bool(left.integer >= right.integer)
+
+
+        def bytecode_direct_scalar_type(type: Type&) -> bool:
+            return true if type.kind == TypeKind.Bool
+            return type.kind == TypeKind.Int and type.bits == 64 and type.signed
+
+
+        # Evaluate the scalar subset through a state machine driven by the
+        # instruction cursor. Unsupported families never enter this path.
+        def bytecode_direct_instruction(instruction: Instruction, fn: BytecodeFunction&, ids: darray[u32]&, values: darray[RuntimeValue]&, observations: mutable darray[Observation]&) -> RuntimeValue error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+            operand: mutable RuntimeValue = runtime_void()
+            if instruction.opcode == Opcode.Negate or instruction.opcode == Opcode.Not or instruction.opcode == Opcode.BitNot:
+                operand <- bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()])
+            raise InterpretError.TypeMismatch if instruction.opcode == Opcode.Negate and operand.kind != RuntimeValueKind.Int
+            raise InterpretError.TypeMismatch if instruction.opcode == Opcode.Not and operand.kind != RuntimeValueKind.Bool
+            raise InterpretError.TypeMismatch if instruction.opcode == Opcode.BitNot and operand.kind != RuntimeValueKind.Int
+            raise InterpretError.IntegerOverflow if instruction.opcode == Opcode.Negate and operand.integer == -9223372036854775807 - 1
+            left: mutable RuntimeValue = runtime_void()
+            right: mutable RuntimeValue = runtime_void()
+            if instruction.opcode in {Opcode.Add, Opcode.Subtract, Opcode.Multiply, Opcode.Divide, Opcode.Equal, Opcode.Less, Opcode.Remainder, Opcode.NotEqual, Opcode.LessEqual, Opcode.Greater, Opcode.GreaterEqual, Opcode.BitAnd, Opcode.BitOr, Opcode.BitXor, Opcode.ShiftLeft, Opcode.ShiftRight}:
+                left <- bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()])
+                right <- bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1])
+            observed: mutable RuntimeValue = runtime_void()
+            if instruction.opcode == Opcode.Observe:
+                observed <- bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()])
+            cursor: mutable BytecodeValueCursor = BytecodeValueCursor{state: BytecodeValueState.Execute, opcode: instruction.opcode, value: runtime_void()}
+            machine over cursor.state:
+                state Execute
+                start Execute
+
+                Execute, BytecodeValueState.Execute if instruction.opcode == Opcode.Constant and instruction.result_type.kind == TypeKind.Bool:
+                    cursor.value <- runtime_bool(instruction.boolean)
+                    cursor.state <- BytecodeValueState.Done
+                    -> Execute
+                Execute, BytecodeValueState.Execute if instruction.opcode == Opcode.Constant and instruction.result_type.kind == TypeKind.Int:
+                    cursor.value <- runtime_int(instruction.integer)
+                    cursor.state <- BytecodeValueState.Done
+                    -> Execute
+                Execute, BytecodeValueState.Execute if instruction.opcode == Opcode.Copy:
+                    cursor.value <- bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()])
+                    cursor.state <- BytecodeValueState.Done
+                    -> Execute
+                Execute, BytecodeValueState.Execute if instruction.opcode == Opcode.Negate:
+                    cursor.value <- runtime_int(-operand.integer)
+                    cursor.state <- BytecodeValueState.Done
+                    -> Execute
+                Execute, BytecodeValueState.Execute if instruction.opcode == Opcode.Not:
+                    cursor.value <- runtime_bool(not operand.boolean)
+                    cursor.state <- BytecodeValueState.Done
+                    -> Execute
+                Execute, BytecodeValueState.Execute if instruction.opcode == Opcode.BitNot:
+                    cursor.value <- runtime_int(~operand.integer)
+                    cursor.state <- BytecodeValueState.Done
+                    -> Execute
+                Execute, BytecodeValueState.Execute if instruction.opcode in {Opcode.Add, Opcode.Subtract, Opcode.Multiply, Opcode.Divide, Opcode.Equal, Opcode.Less, Opcode.Remainder, Opcode.NotEqual, Opcode.LessEqual, Opcode.Greater, Opcode.GreaterEqual, Opcode.BitAnd, Opcode.BitOr, Opcode.BitXor, Opcode.ShiftLeft, Opcode.ShiftRight}:
+                    cursor.value <- bytecode_direct_binary(instruction.opcode, left, right)
+                    cursor.state <- BytecodeValueState.Done
+                    -> Execute
+                Execute, BytecodeValueState.Execute if instruction.opcode == Opcode.Observe:
+                    observations.push(Observation{trace: instruction.trace.id, value: observed})
+                    cursor.state <- BytecodeValueState.Done
+                    -> Execute
+                Execute, BytecodeValueState.Execute:
+                    raise InterpretError.UnsupportedInstruction
+                    break
+
+                Execute, BytecodeValueState.Done:
+                    break
+
+            return cursor.value
+
+
+        def bytecode_direct_supported(module: BytecodeModule&) -> bool:
+            for function in module.functions:
+                if function.return_type.kind != TypeKind.Void and not bytecode_direct_scalar_type(function.return_type):
+                    return false
+                for parameter in function.parameters:
+                    if not bytecode_direct_scalar_type(parameter.type):
+                        return false
+                for parameter in function.block_parameter_pool:
+                    if not bytecode_direct_scalar_type(parameter.type):
+                        return false
+                for instruction in function.instructions:
+                    if instruction.opcode not in {Opcode.Constant, Opcode.Copy, Opcode.Negate, Opcode.Not, Opcode.BitNot, Opcode.Add, Opcode.Subtract, Opcode.Multiply, Opcode.Equal, Opcode.Less, Opcode.NotEqual, Opcode.LessEqual, Opcode.Greater, Opcode.GreaterEqual, Opcode.BitAnd, Opcode.BitOr, Opcode.BitXor, Opcode.Observe}:
+                        return false
+                    if instruction.opcode == Opcode.Constant and instruction.result_type.kind != TypeKind.Bool and (instruction.result_type.kind != TypeKind.Int or instruction.result_type.bits != 64 or not instruction.result_type.signed):
+                        return false
+                    if instruction.opcode != Opcode.Observe and not bytecode_direct_scalar_type(instruction.result_type):
+                        return false
+            return true
+
+
+        def bytecode_function_index(module: BytecodeModule&, name: sview) -> usize:
+            for index in 0..<module.functions.count |module, name|:
+                return index if module.functions[index].name == name
+            return module.functions.count
+
+
+        def bytecode_block_index(function: BytecodeFunction&, id: u32) -> usize:
+            for index in 0..<function.blocks.count |function, id|:
+                return index if function.blocks[index].id == id
+            return function.blocks.count
+
+
+        def execute_bytecode_direct(module: BytecodeModule&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, step_limit: u64 = 1000000) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+            function_index: usize = bytecode_function_index(module, entry)
+            raise InterpretError.UnknownFunction if function_index == module.functions.count
+            fn: BytecodeFunction = module.functions[function_index]
+            raise InterpretError.ArgumentMismatch if arguments.count != fn.parameters.count
+            ids: mutable darray[u32] = []
+            values: mutable darray[RuntimeValue] = []
+            for index in 0..<arguments.count |fn, arguments, ids, values|:
+                ids.push(fn.parameters[index].value)
+                values.push(arguments[index])
+            cursor: mutable BytecodeControlCursor = BytecodeControlCursor{state: BytecodeControlState.Instruction, block_index: bytecode_block_index(fn, fn.entry), instruction_index: 0, action: BytecodeControlAction.Invalid, target: 0, edge_start: 0, edge_count: 0}
+            entered: mutable bool = true
+            steps: mutable u64 = 0
+            while true:
+                raise InterpretError.InvalidControlFlow if cursor.block_index >= fn.blocks.count
+                if entered:
+                    entered <- false
+                    # The reference interpreter ticks once on block entry.
+                    steps <- steps + 1
+                    raise InterpretError.StepLimitExceeded if steps > step_limit
+                branch_condition: mutable bool = false
+                if cursor.instruction_index >= fn.blocks[cursor.block_index].instruction_count.usize() and fn.blocks[cursor.block_index].terminator.kind == TerminatorKind.Branch:
+                    condition: RuntimeValue = bytecode_direct_frame_value(ids, values, fn.blocks[cursor.block_index].terminator.operand)
+                    raise InterpretError.TypeMismatch if condition.kind != RuntimeValueKind.Bool
+                    branch_condition <- condition.boolean
+                action: BytecodeControlAction = bytecode_next_control(fn, cursor, branch_condition)
+                if action == BytecodeControlAction.ExecuteInstruction:
+                    instruction_index: usize = fn.blocks[cursor.block_index].instruction_offset.usize() + cursor.instruction_index - 1
+                    steps <- steps + 1
+                    raise InterpretError.StepLimitExceeded if steps > step_limit
+                    value: RuntimeValue = try bytecode_direct_instruction(fn.instructions[instruction_index], fn, ids, values, observations)
+                    if fn.instructions[instruction_index].opcode != Opcode.Observe:
+                        bytecode_direct_set_frame_value(ids, values, fn.instructions[instruction_index].result, value)
+                    cursor.state <- BytecodeControlState.Instruction
+                    continue
+                if action == BytecodeControlAction.Return:
+                    terminator: Terminator = fn.blocks[cursor.block_index].terminator
+                    return Execution{value: runtime_void(), steps: steps} if terminator.operand_count == 0
+                    return Execution{value: bytecode_direct_frame_value(ids, values, terminator.operand), steps: steps}
+                if action != BytecodeControlAction.Jump:
+                    raise InterpretError.InvalidControlFlow
+                target_index: usize = bytecode_block_index(fn, cursor.target)
+                raise InterpretError.InvalidControlFlow if target_index == fn.blocks.count or cursor.edge_count != fn.blocks[target_index].parameter_count
+                pending: mutable darray[RuntimeValue] = []
+                for offset in 0..<cursor.edge_count.usize() |fn, cursor, ids, values, pending|:
+                    pending.push(bytecode_direct_frame_value(ids, values, fn.edge_arg_pool[cursor.edge_start.usize() + offset]))
+                for offset in 0..<cursor.edge_count.usize() |fn, target_index, pending, ids, values|:
+                    parameter: Parameter = fn.block_parameter_pool[fn.blocks[target_index].parameter_start.usize() + offset]
+                    bytecode_direct_set_frame_value(ids, values, parameter.value, pending[offset])
+                cursor.block_index <- target_index
+                cursor.instruction_index <- 0
+                cursor.state <- BytecodeControlState.Instruction
+                entered <- true
+            return Execution{value: runtime_void(), steps: steps}
 
 
         def bytecode_block_offset(function: BytecodeFunction&, block_id: u32) -> u32:
@@ -323,4 +558,6 @@ module EsBytecode:
             raise InterpretError.VerificationFailed if not bytecode_dispatch_table_valid(module)
             region bytecode_execution(1048576) using malloc:
                 ir_module: Module = bytecode_to_ir(module)
+                raise InterpretError.VerificationFailed if verify(ir_module).count != 0
+                return execute_bytecode_direct(module, entry, arguments, observations, storage, step_limit) if bytecode_direct_supported(module)
                 return interpret(ir_module, entry, arguments, observations, storage, step_limit)
