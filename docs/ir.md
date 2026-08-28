@@ -57,6 +57,13 @@ representation deliberately preserves semantic `Opcode` values, giving a future
 packed encoder and VM one checked source of truth while the reference interpreter
 continues to define behavior.
 
+Each bytecode function also carries a parallel `dispatch_classes` table. The
+exhaustive `bytecode_opcode_class` state machine groups every semantic opcode into
+the handler family that a packed VM will use (literal, frame, aggregate, process,
+effect, continuation, and so on). `bytecode_dispatch_table_valid` walks functions
+and instructions with explicit preflight states and rejects a missing, stale, or
+invalid class entry before execution.
+
 `EsBytecode.execute_bytecode` is the bootstrap execution entry point. It rebuilds
 the verified IR shape from the bytecode tables inside a scoped allocation region
 and delegates to `EsIr.interpret`, so effects, dynamic handlers, errors, process
