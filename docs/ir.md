@@ -125,8 +125,9 @@ typed IR function. At each covered `Perform`, verification matches the performed
 payload to that function's parameters and its return type to the resumed value.
 Clause families must belong to the handler coverage set, callback symbols must
 exist, and duplicate operation clauses are rejected. Terminal handlers cannot use
-this implicitly resuming clause form; the current executable form requires the
-`Linear` continuation policy so exactly one resumption is guaranteed.
+this resuming clause form; nonterminal policies select whether the captured frame
+is consumed once (`Linear`/`Affine`) or remains available for repeated callback-local
+resumptions (`MultiReplay`/`MultiClone`).
 
 Handler failures are stored in explicit error-set rows on handlers and functions.
 They are not represented as `Result` values and are not merged into effect rows.
@@ -138,19 +139,20 @@ Structured lowering emits explicit handler unwinding before `return`, `break`,
 and `continue`. Loop exits unwind only handlers installed inside that loop;
 handlers surrounding the loop remain active until their own lexical scope ends.
 
-Multi-shot behavior is never inferred. The reference interpreter currently
-executes a callback's `Resume` as a typed tail resumption: its payload becomes the
-value of the suspended `Perform`, the callback frame stops immediately, and a
-`Linear` or `Affine` continuation frame is consumed exactly once. A missing,
+Multi-shot behavior is never inferred. The reference interpreter executes a
+callback's `Resume` as a typed tail resumption for `Linear` and `Affine`: its
+payload becomes the value of the suspended `Perform`, the callback frame stops
+immediately, and the continuation frame is consumed exactly once. A missing,
 already-consumed, or terminal continuation raises `InterpretError.InvalidContinuation`.
-Post-resume callback code and true multi-shot execution require the later explicit
-continuation representation. `MultiClone` requires every captured value
-to be classified `Unrestricted`; affine, linear, borrowed, region-bound, and opaque
-captures are rejected. `MultiReplay` re-executes from a deterministic checkpoint
-and requires every effect introduced by the handler to appear in its statically
-verified replay-safe effect set. This makes replay the preferred early mechanism
-for search, model checking, and differential exploration while reserving cloning
-for continuations whose complete captured environment is provably duplicable.
+`MultiReplay` and `MultiClone` now retain their captured frame while the callback is
+active, so each `Resume` returns its payload as an ordinary callback value and the
+same frame can be resumed repeatedly; the enclosing `Perform` receives the callback's
+final return value. The frame records the resumption count for tracing and future
+checkpoint/clone storage. `MultiClone` requires every captured value to be classified
+`Unrestricted`; affine, linear, borrowed, region-bound, and opaque captures are
+rejected. `MultiReplay` requires every effect introduced by the handler to appear in
+its statically verified replay-safe effect set. Full suspended-stack replay and
+environment cloning remain the next representation increment.
 
 The IR verifier rejects missing/duplicate trace sites, ungranted effects,
 undefined or duplicate SSA values, bad entry blocks, unknown branch targets, and
