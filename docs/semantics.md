@@ -194,6 +194,15 @@ return `false`; successful opens are closed before returning `true`, and close
 failures remain errors. This predicate is also the traversal gate for native `**`
 glob expansion, preventing ordinary files from becoming recursive scan nodes.
 
+`expand_glob(pattern: Glob) -> darray[sview] error[DirectoryError]
+can[Directory.Read]` expands path components with `*`, `?`, bracket classes and
+backslash escapes. A component beginning with a wildcard does not match a leading
+dot, matching shell glob behavior; an explicit leading dot does. A component exactly
+equal to `**` recursively traverses directories to a bounded depth of 128, does not
+follow symlink directories, and can match files at the terminal position. Results
+are relative or absolute in the same form as the pattern, sorted by unsigned byte
+order, deduplicated, and empty when there are no matches.
+
 ## Compile-time validation
 
 `check_typed_literals.elisa` validates constant string payloads during the existing

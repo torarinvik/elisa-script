@@ -76,7 +76,14 @@ extend EsIr:
 
         struct DirectoryScanner:
             names: mutable darray[dstr]
-            directory: mutable heap void&
+            kinds: mutable darray[u8]
+            directory: mutable heap void&?
+            opened: mutable bool
+            failed: mutable bool
+
+
+        struct GlobWalker:
+            matches: mutable darray[dstr]
             failed: mutable bool
 
 
@@ -596,7 +603,7 @@ extend EsIr:
             cursor <- cursor + 1 if negated
             found: mutable bool = false
             while cursor < class_end and not found:
-                first: u8 = sview_at(pattern, cursor)
+                first: mutable u8 = sview_at(pattern, cursor)
                 first_width: mutable usize = 1
                 if first == 92 and cursor + 1 < class_end:
                     first_width <- 2
@@ -1105,13 +1112,16 @@ extend EsIr:
             name: mutable dstr = ctx_fstr_alloc(length)
             ctx_fstr_append(name, &entry.name[0], length)
             scanner.names.push(name)
+            scanner.kinds.push(entry.kind)
 
 
         def directory_next(scanner: mutable DirectoryScanner&) -> bool can[Memory.Allocate, Abort.Panic]:
+            return false if scanner.directory == null
+            directory: mutable heap void& = scanner.directory
             can Blocking.IO:
                 error_pointer: mutable int& = elisascript_darwin_errno()
                 error_pointer[0] <- 0
-                entry: mutable ElisascriptDirectoryEntry&? = elisascript_posix_readdir(scanner.directory)
+                entry: mutable ElisascriptDirectoryEntry&? = elisascript_posix_readdir(directory)
                 if entry == null:
                     scanner.failed <- error_pointer[0] != 0
                     return false
@@ -1140,25 +1150,31 @@ extend EsIr:
                     cursor <- cursor - 1
 
 
-        def evaluate_list_directory(machine: mutable Machine&, storage: mutable darray[RuntimeValue]&, path: RuntimeValue) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
-            if path.kind != RuntimeValueKind.Text:
-                machine.failure <- InterpretFailure.TypeMismatch
-                return runtime_void()
-            if sview_len(path.text) == 0 or text_has_nul(path.text):
-                machine.failure <- InterpretFailure.Directory
-                return runtime_void()
-            c_path: dstr = nul_terminated_text(path.text)
+        def sort_directory_entries(names: mutable darray[dstr]&, kinds: mutable darray[u8]&) -> void:
+            for index in 1..<names.count |names, kinds|:
+                cursor: mutable usize = index
+                while cursor > 0 and directory_name_less(names[cursor], names[cursor - 1]):
+                    previous_name: dstr = names[cursor - 1]
+                    previous_kind: u8 = kinds[cursor - 1]
+                    names[cursor - 1] <- names[cursor]
+                    kinds[cursor - 1] <- kinds[cursor]
+                    names[cursor] <- previous_name
+                    kinds[cursor] <- previous_kind
+                    cursor <- cursor - 1
+
+
+        def read_owned_directory(path: sview, scanner: mutable DirectoryScanner&) -> void can[Memory.Allocate, Abort.Panic]:
+            c_path: dstr = nul_terminated_text(path)
             if c_path.items == null:
-                machine.failure <- InterpretFailure.Directory
-                return runtime_void()
+                scanner.failed <- true
+                return
             path_items: u8& = c_path.items
             can Blocking.IO, Memory.Allocate, Memory.Release:
                 handle: mutable heap void&? = elisascript_posix_opendir(path_items.cast[cstr])
-                if handle == null:
-                    machine.failure <- InterpretFailure.Directory
-                    return runtime_void()
+                return if handle == null
                 directory: mutable heap void& = handle
-                scanner: mutable DirectoryScanner = DirectoryScanner{names: [], directory: directory, failed: false}
+                scanner.directory <- directory
+                scanner.opened <- true
                 machine over directory_next(scanner):
                     state Scan
                     start Scan
@@ -1168,15 +1184,27 @@ extend EsIr:
                     Scan, _:
                         break
                 close_status: int = elisascript_posix_closedir(directory)
-                if scanner.failed or close_status != 0:
-                    machine.failure <- InterpretFailure.Directory
-                    return runtime_void()
-                sort_directory_names(scanner.names)
-                start: u32 = storage.count.u32()
-                storage.reserve(storage.count + scanner.names.count)
-                for name in scanner.names |storage|:
-                    storage.push(runtime_text(bytes_view(name)))
-                return runtime_array(start, scanner.names.count.u32())
+                scanner.failed <- true if scanner.failed or close_status != 0 else false
+                sort_directory_entries(scanner.names, scanner.kinds) if not scanner.failed
+
+
+        def evaluate_list_directory(machine: mutable Machine&, storage: mutable darray[RuntimeValue]&, path: RuntimeValue) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+            if path.kind != RuntimeValueKind.Text:
+                machine.failure <- InterpretFailure.TypeMismatch
+                return runtime_void()
+            if sview_len(path.text) == 0 or text_has_nul(path.text):
+                machine.failure <- InterpretFailure.Directory
+                return runtime_void()
+            scanner: mutable DirectoryScanner = DirectoryScanner{names: [], kinds: [], directory: null, opened: false, failed: false}
+            read_owned_directory(path.text, scanner)
+            if not scanner.opened or scanner.failed:
+                machine.failure <- InterpretFailure.Directory
+                return runtime_void()
+            start: u32 = storage.count.u32()
+            storage.reserve(storage.count + scanner.names.count)
+            for name in scanner.names |storage|:
+                storage.push(runtime_text(bytes_view(name)))
+            return runtime_array(start, scanner.names.count.u32())
 
 
         def evaluate_is_directory(machine: mutable Machine&, path: RuntimeValue) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
@@ -1199,6 +1227,268 @@ extend EsIr:
                     machine.failure <- InterpretFailure.Directory
                     return runtime_void()
                 return runtime_bool(true)
+
+
+        def glob_class_width(pattern: sview, index: usize, end: usize) -> usize:
+            cursor: mutable usize = index + 1
+            escaped: mutable bool = false
+            while cursor < end:
+                byte: u8 = sview_at(pattern, cursor)
+                if escaped:
+                    escaped <- false
+                elif byte == 92:
+                    escaped <- true
+                elif byte == 93:
+                    return cursor - index + 1
+                cursor <- cursor + 1
+            return 1
+
+
+        def glob_class_matches(pattern: sview, index: usize, width: usize, value: u8) -> bool:
+            class_end: usize = index + width - 1
+            cursor: mutable usize = index + 1
+            negated: bool = cursor < class_end and (sview_at(pattern, cursor) == 33 or sview_at(pattern, cursor) == 94)
+            cursor <- cursor + 1 if negated
+            found: mutable bool = false
+            while cursor < class_end and not found:
+                first: mutable u8 = sview_at(pattern, cursor)
+                first_width: mutable usize = 1
+                if first == 92 and cursor + 1 < class_end:
+                    first <- sview_at(pattern, cursor + 1)
+                    first_width <- 2
+                found <- first == value
+                range_marker: usize = cursor + first_width
+                if not found and range_marker + 1 < class_end and sview_at(pattern, range_marker) == 45:
+                    last: u8 = sview_at(pattern, range_marker + 1)
+                    found <- value >= first and value <= last
+                    cursor <- range_marker + 2
+                else:
+                    cursor <- cursor + first_width
+            return not found if negated else found
+
+
+        def glob_component_match_at(pattern: sview, pattern_index: usize, pattern_end: usize, name: sview, name_index: usize) -> bool:
+            return name_index == sview_len(name) if pattern_index >= pattern_end
+            token: u8 = sview_at(pattern, pattern_index)
+            if token == 42:
+                next: mutable usize = pattern_index + 1
+                while next < pattern_end and sview_at(pattern, next) == 42:
+                    next <- next + 1
+                return true if next >= pattern_end
+                for candidate in name_index..=sview_len(name) |pattern, pattern_end, name, next|:
+                    true return if glob_component_match_at(pattern, next, pattern_end, name, candidate)
+                return false
+            return false if name_index >= sview_len(name)
+            if token == 63:
+                return glob_component_match_at(pattern, pattern_index + 1, pattern_end, name, name_index + 1)
+            if token == 92 and pattern_index + 1 < pattern_end:
+                return false if sview_at(pattern, pattern_index + 1) != sview_at(name, name_index)
+                return glob_component_match_at(pattern, pattern_index + 2, pattern_end, name, name_index + 1)
+            if token == 91:
+                width: usize = glob_class_width(pattern, pattern_index, pattern_end)
+                if width > 1:
+                    return false if not glob_class_matches(pattern, pattern_index, width, sview_at(name, name_index))
+                    return glob_component_match_at(pattern, pattern_index + width, pattern_end, name, name_index + 1)
+            return false if token != sview_at(name, name_index)
+            return glob_component_match_at(pattern, pattern_index + 1, pattern_end, name, name_index + 1)
+
+
+        def glob_component_matches(pattern: sview, start: usize, end: usize, name: sview) -> bool:
+            explicit_dot: bool = start < end and (sview_at(pattern, start) == 46 or (sview_at(pattern, start) == 92 and start + 1 < end and sview_at(pattern, start + 1) == 46))
+            return false if sview_len(name) > 0 and sview_at(name, 0) == 46 and not explicit_dot
+            return glob_component_match_at(pattern, start, end, name, 0)
+
+
+        def glob_join_path(base: dstr, name: dstr) -> dstr can[Memory.Allocate, Abort.Panic]:
+            base_view: sview = bytes_view(base)
+            name_view: sview = bytes_view(name)
+            separator: bool = sview_len(base_view) > 0 and sview_at(base_view, sview_len(base_view) - 1) != 47
+            total: usize = sview_len(base_view) + sview_len(name_view) + (1 if separator else 0)
+            joined: mutable dstr = ctx_fstr_alloc(total)
+            ctx_fstr_append(joined, base_view.data, sview_len(base_view))
+            ctx_fstr_append(joined, "/", 1) if separator
+            ctx_fstr_append(joined, name_view.data, sview_len(name_view))
+            return joined
+
+
+        def append_glob_match(walker: mutable GlobWalker&, path: dstr) -> void can[Memory.Allocate, Abort.Panic]:
+            view: sview = bytes_view(path)
+            owned: mutable dstr = ctx_fstr_alloc(sview_len(view))
+            ctx_fstr_append(owned, view.data, sview_len(view))
+            walker.matches.push(owned)
+
+
+        def append_glob_range(out: mutable dstr&, source: sview, start: usize, end: usize) -> void:
+            ctx_fstr_append(out, source.data + start, end - start)
+
+
+        def copy_glob_pattern(prefix: sview, alternative: sview, suffix: sview, suffix_start: usize) -> dstr can[Memory.Allocate, Abort.Panic]:
+            left: usize = sview_len(prefix)
+            total: usize = left + sview_len(alternative) + sview_len(suffix) - suffix_start
+            result: mutable dstr = ctx_fstr_alloc(total)
+            append_glob_range(result, prefix, 0, left)
+            ctx_fstr_append(result, alternative.data, sview_len(alternative))
+            append_glob_range(result, suffix, suffix_start, sview_len(suffix))
+            return result
+
+
+        def next_glob_alternative(pattern: sview, start: usize, close: usize) -> usize:
+            cursor: mutable usize = start
+            nested: mutable usize = 0
+            in_class: mutable bool = false
+            while cursor < close:
+                byte: u8 = sview_at(pattern, cursor)
+                if byte == 92:
+                    cursor <- cursor + 2
+                    continue
+                if byte == 91:
+                    in_class <- true
+                elif byte == 93:
+                    in_class <- false
+                elif not in_class and byte == 123:
+                    nested <- nested + 1
+                elif not in_class and byte == 125 and nested > 0:
+                    nested <- nested - 1
+                elif not in_class and byte == 44 and nested == 0:
+                    return cursor
+                cursor <- cursor + 1
+            return close
+
+
+        def collect_glob_variants(variants: mutable darray[dstr]&, pattern: sview) -> void can[Memory.Allocate, Abort.Panic]:
+            open: mutable usize = 0
+            close: mutable usize = sview_len(pattern)
+            comma: mutable usize = sview_len(pattern)
+            depth: mutable usize = 0
+            cursor: mutable usize = 0
+            in_class: mutable bool = false
+            while cursor < sview_len(pattern):
+                byte: u8 = sview_at(pattern, cursor)
+                if byte == 92:
+                    cursor <- cursor + 2
+                    continue
+                if byte == 91:
+                    in_class <- true
+                elif byte == 93:
+                    in_class <- false
+                elif not in_class and byte == 123:
+                    if depth == 0:
+                        open <- cursor
+                    depth <- depth + 1
+                elif not in_class and byte == 125 and depth > 0:
+                    depth <- depth - 1
+                    close <- cursor if depth == 0
+                    break if depth == 0
+                elif not in_class and byte == 44 and depth == 1:
+                    comma <- cursor if comma == sview_len(pattern)
+                cursor <- cursor + 1
+            if open == 0 and (sview_len(pattern) == 0 or sview_at(pattern, 0) != 123):
+                variant: mutable dstr = ctx_fstr_alloc(sview_len(pattern))
+                ctx_fstr_append(variant, pattern.data, sview_len(pattern))
+                variants.push(variant)
+                return
+            if close == sview_len(pattern) or comma == sview_len(pattern):
+                variant: mutable dstr = ctx_fstr_alloc(sview_len(pattern))
+                ctx_fstr_append(variant, pattern.data, sview_len(pattern))
+                variants.push(variant)
+                return
+            prefix: sview = string_view_slice(pattern, 0, open.i64())
+            suffix: sview = pattern
+            left: usize = open + 1
+            alternative_start: mutable usize = left
+            alternative_end: mutable usize = next_glob_alternative(pattern, alternative_start, close)
+            while alternative_start <= close:
+                alternative: sview = string_view_slice(pattern, alternative_start.i64(), alternative_end.i64())
+                variant: dstr = copy_glob_pattern(prefix, alternative, suffix, close + 1)
+                collect_glob_variants(variants, bytes_view(variant))
+                break if alternative_end == close
+                alternative_start <- alternative_end + 1
+                alternative_end <- next_glob_alternative(pattern, alternative_start, close)
+
+
+        def glob_walk(walker: mutable GlobWalker&, base: dstr, pattern: sview, pattern_index: usize, depth: usize) -> void can[Memory.Allocate, Abort.Panic]:
+            if depth > 128:
+                walker.failed <- true
+                return
+            index: mutable usize = pattern_index
+            while index < sview_len(pattern) and sview_at(pattern, index) == 47:
+                index <- index + 1
+            if index >= sview_len(pattern):
+                append_glob_match(walker, base) if base.count > 0
+                return
+            component_end: mutable usize = index
+            while component_end < sview_len(pattern) and sview_at(pattern, component_end) != 47:
+                component_end <- component_end + 1
+            next_index: mutable usize = component_end
+            while next_index < sview_len(pattern) and sview_at(pattern, next_index) == 47:
+                next_index <- next_index + 1
+            recursive: bool = component_end - index == 2 and sview_at(pattern, index) == 42 and sview_at(pattern, index + 1) == 42
+            directory_path: sview = bytes_view(base) if base.count > 0 else "."
+            scanner: mutable DirectoryScanner = DirectoryScanner{names: [], kinds: [], directory: null, opened: false, failed: false}
+            if recursive:
+                glob_walk(walker, base, pattern, next_index, depth + 1)
+                read_owned_directory(directory_path, scanner)
+                if scanner.failed:
+                    walker.failed <- true
+                    return
+                return if not scanner.opened
+                for entry_index in 0..<scanner.names.count |walker, base, pattern, index, depth, scanner|:
+                    name: dstr = scanner.names[entry_index]
+                    name_view: sview = bytes_view(name)
+                    continue if sview_len(name_view) > 0 and sview_at(name_view, 0) == 46
+                    child: dstr = glob_join_path(base, name)
+                    kind: u8 = scanner.kinds[entry_index]
+                    append_glob_match(walker, child) if next_index >= sview_len(pattern)
+                    glob_walk(walker, child, pattern, index, depth + 1) if kind == 4 or kind == 0
+                return
+            read_owned_directory(directory_path, scanner)
+            if scanner.failed:
+                walker.failed <- true
+                return
+            return if not scanner.opened
+            for entry_index in 0..<scanner.names.count |walker, base, pattern, index, component_end, next_index, depth, scanner|:
+                name: dstr = scanner.names[entry_index]
+                continue if not glob_component_matches(pattern, index, component_end, bytes_view(name))
+                child: dstr = glob_join_path(base, name)
+                if next_index >= sview_len(pattern):
+                    append_glob_match(walker, child)
+                else:
+                    glob_walk(walker, child, pattern, next_index, depth + 1)
+
+
+        def evaluate_expand_glob(machine: mutable Machine&, storage: mutable darray[RuntimeValue]&, pattern: RuntimeValue) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+            if pattern.kind != RuntimeValueKind.Text:
+                machine.failure <- InterpretFailure.TypeMismatch
+                return runtime_void()
+            if sview_len(pattern.text) == 0 or text_has_nul(pattern.text):
+                machine.failure <- InterpretFailure.Directory
+                return runtime_void()
+            variants: mutable darray[dstr] = []
+            collect_glob_variants(variants, pattern.text)
+            walker: mutable GlobWalker = GlobWalker{matches: [], failed: false}
+            for variant in variants |walker|:
+                base: mutable dstr = []
+                pattern_index: mutable usize = 0
+                variant_view: sview = bytes_view(variant)
+                if sview_at(variant_view, 0) == 47:
+                    base <- ctx_fstr_alloc(1)
+                    ctx_fstr_append(base, "/", 1)
+                    pattern_index <- 1
+                glob_walk(walker, base, variant_view, pattern_index, 0)
+            if walker.failed:
+                machine.failure <- InterpretFailure.Directory
+                return runtime_void()
+            sort_directory_names(walker.matches)
+            start: u32 = storage.count.u32()
+            previous: mutable sview = ""
+            have_previous: mutable bool = false
+            for matched in walker.matches |storage, previous, have_previous|:
+                view: sview = bytes_view(matched)
+                if not have_previous or view != previous:
+                    storage.push(runtime_text(view))
+                    previous <- view
+                    have_previous <- true
+            return runtime_array(start, (storage.count.u32() - start))
 
 
         def evaluate_concat(machine: mutable Machine&, storage: mutable darray[RuntimeValue]&, left: RuntimeValue, right: RuntimeValue) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
@@ -1407,6 +1697,11 @@ extend EsIr:
                         Dispatch, Opcode.IsDirectory:
                             path_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
                             dispatch.value <- evaluate_is_directory(machine, path_value)
+                            break
+
+                        Dispatch, Opcode.ExpandGlob:
+                            pattern_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
+                            dispatch.value <- evaluate_expand_glob(machine, storage, pattern_value)
                             break
 
                         Dispatch, Opcode.Concat:

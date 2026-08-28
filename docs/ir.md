@@ -191,6 +191,10 @@ supply their platform `dirent` layout without changing this IR contract.
 `IsDirectory` verifies as `Named(Path) -> Bool` with `Directory.Read` and
 `DirectoryError`. It has its own exhaustive dispatch arm and uses the same isolated
 directory bridge that recursive glob traversal builds upon.
+`ExpandGlob` verifies as `Named(Glob) -> Array[Text]` with `Directory.Read` and
+`DirectoryError`. The interpreter performs component matching and recursive `**`
+traversal in Elisa, filters symlink recursion, sorts and deduplicates owned matches,
+and enforces a depth bound to make malformed/cyclic trees terminate deterministically.
 Named direct-call arguments are resolved against predeclared parameter labels and
 then emitted in canonical signature order. Their expressions still execute once in
 source order. Missing parameters materialize their Elisa default expressions in
