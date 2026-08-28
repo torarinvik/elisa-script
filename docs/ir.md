@@ -173,6 +173,9 @@ its result. Its opcode is handled by the interpreter's exhaustive Elisa dispatch
 machine. Execution redirects only stdout into an anonymous temporary file, reaps
 the child, and returns owned length-delimited bytes. It does not reinterpret output
 as a C string, impose a pipe-sized backpressure limit, or capture stderr.
+`CaptureProcessStderr` has the same verified signature and redirects descriptor 2
+instead; descriptor 1 remains inherited. The shared stream-capture implementation
+keeps byte ownership, wait behavior, and shell-free argument handling identical.
 `CaptureProcessStdoutWithStdin` verifies as `Named(Executable) × Array[Text] × Text
 -> Text` with the same `Process.Run` effect and `ProcessError` row. The interpreter
 stages the input in a temporary file, redirects descriptors 0 and 1 in the child,

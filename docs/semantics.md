@@ -150,6 +150,12 @@ seek, read, close, and wait failures raise `ProcessError`. Exit status is delibe
 orthogonal to captured bytes; a missing executable therefore yields empty output,
 while `run_process` exposes its status `127` when status is the required observation.
 
+`capture_process_stderr(executable: Executable, arguments: darray[sview]) -> sview
+error[ProcessError] can[Process.Run]` is the descriptor-2 counterpart: it captures
+every byte written to standard error, while standard output remains inherited. Both
+capture operations use the same typed argv and temporary-file behavior, so selecting
+which stream to observe is explicit in the function name and effect contract.
+
 `capture_process_stdout_with_stdin(executable: Executable, arguments: darray[sview],
 input: sview) -> sview error[ProcessError] can[Process.Run]` uses the same argv
 contract while feeding an owned text snapshot through the child's standard input.
