@@ -135,6 +135,14 @@ command must reproduce the failure:
 es diff reproduce artifacts/differential/z80-step/.../case.elisadiff
 ```
 
+When either side is an Elisascript module, the artifact also records its verified
+IR `module_fingerprint`. This field-wise, order-sensitive `u64` fingerprint is
+stable across the interpreter, bytecode, JIT, native, and Wasm lowerings, so a
+report can prove that all engines ran the same typed module without depending on
+host pointers or backend instruction numbering. It is a correlation key rather
+than a cryptographic digest; the verified module and source revision remain part
+of the reproducible artifact.
+
 ## Generation and shrinking
 
 Differential cases should integrate property-based generation and deterministic

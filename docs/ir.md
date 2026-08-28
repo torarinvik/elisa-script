@@ -23,6 +23,17 @@ sizes, bytecode slots, or host ABI facts. Those belong to target-specific loweri
 The copied compiler's EASM remains a later machine-level representation and is
 not used as the shared IR.
 
+Every verified module also has a canonical structural fingerprint through
+`module_fingerprint(module)` (with `canonical_module_hash` as the explicit
+algorithm name). The reference implementation uses a fixed FNV-1a-style `u64`
+fold over schema markers, scalar fields, types, source spans, trace sites, ordered
+SSA pools, blocks, functions, and handlers. Collection lengths are included before
+their elements. No pointers, allocator addresses, padding, host word sizes, or
+backend instruction layout enter the hash. This makes the value suitable for
+backend and differential-test artifact correlation; it is a deterministic
+non-cryptographic fingerprint, not a security identity or a replacement for IR
+verification.
+
 ## Algebraic effects
 
 `Perform` is an IR operation, not an early rewrite to a runtime function call. It
@@ -396,7 +407,9 @@ typed header and exit parameters; initial entry, normal backedges, `continue`, a
 
 1. Add complete structural types, handler installation, resume,
    and explicit ownership/region operations.
-2. Define canonical serialization and hashing for artifacts and trace-site ids.
+2. Define the remaining canonical serialization format for artifacts. The
+   structural `u64` module fingerprint is already available for artifact
+   correlation; serialized bytes will use the same field order and version markers.
 3. Extend the reference interpreter from its current scalar/control-flow core
    through effects, errors, structural values, and ownership operations. The
    interpreter already executes verified integer/boolean/text constants,
