@@ -150,6 +150,23 @@ seek, read, close, and wait failures raise `ProcessError`. Exit status is delibe
 orthogonal to captured bytes; a missing executable therefore yields empty output,
 while `run_process` exposes its status `127` when status is the required observation.
 
+## Standard streams
+
+Standard streams are explicit typed operations rather than implicit print or shell
+behavior:
+
+- `read_stdin() -> sview error[ConsoleError] can[Console.Read]` reads all bytes from
+  file descriptor 0 until EOF and returns an owned text snapshot. Read failures are
+  errors; an empty stream is a successful empty value.
+- `write_stdout(text: sview) -> usize error[ConsoleError] can[Console.Write]` writes
+  every byte to file descriptor 1 and returns the exact byte count.
+- `write_stderr(text: sview) -> usize error[ConsoleError] can[Console.Write]` has the
+  same contract for file descriptor 2.
+
+Writes retry partial progress through the explicit stream state machine, so a short
+POSIX write is never reported as successful completion. Neither operation parses or
+constructs a command string, keeping stream data independent from shell quoting.
+
 ## Process environment
 
 Environment access is explicit and typed rather than implicit global string magic:

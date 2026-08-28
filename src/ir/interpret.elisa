@@ -10,6 +10,7 @@ error InterpretError:
     Process
     Environment
     Directory
+    Console
     InvalidShift
     IndexOutOfBounds
     InvalidControlFlow
@@ -61,6 +62,7 @@ extend EsIr:
             Process
             Environment
             Directory
+            Console
             InvalidShift
             IndexOutOfBounds
             InvalidControlFlow
@@ -84,6 +86,31 @@ extend EsIr:
 
         struct GlobWalker:
             matches: mutable darray[dstr]
+            failed: mutable bool
+
+
+        const enum StdioReadState of u8:
+            Data
+            End
+            Error
+
+
+        struct StdioReader:
+            bytes: mutable dstr
+            failed: mutable bool
+
+
+        const enum StdioWriteState of u8:
+            Progress
+            Done
+            Error
+
+
+        struct StdioWriter:
+            fd: FileDescriptor
+            data: u8&
+            length: usize
+            offset: mutable usize
             failed: mutable bool
 
 
@@ -1491,6 +1518,79 @@ extend EsIr:
             return runtime_array(start, (storage.count.u32() - start))
 
 
+        def stdio_read_next(reader: mutable StdioReader&) -> StdioReadState can[Memory.Allocate, Abort.Panic]:
+            chunk: mutable u8[4096] = zeroed
+            can Blocking.IO:
+                amount: isize = elisascript_posix_read(0, (&chunk[0]).cast[mutable void&], 4096)
+                if amount < 0:
+                    reader.failed <- true
+                    return StdioReadState.Error
+                if amount == 0:
+                    return StdioReadState.End
+                count: usize = amount.usize()
+                for index in 0..<count |reader, chunk|:
+                    reader.bytes.push(chunk[index])
+                return StdioReadState.Data
+
+
+        def stdio_write_next(writer: mutable StdioWriter&) -> StdioWriteState can[Console.Write]:
+            return StdioWriteState.Done if writer.offset >= writer.length
+            remaining: usize = writer.length - writer.offset
+            buffer: mutable u8& = writer.data + writer.offset
+            can Blocking.IO:
+                amount: isize = runtime_write(writer.fd, buffer.cast[void&], remaining)
+                if amount <= 0:
+                    writer.failed <- true
+                    return StdioWriteState.Error
+                writer.offset <- writer.offset + amount.usize()
+                return StdioWriteState.Done if writer.offset >= writer.length
+                return StdioWriteState.Progress
+
+
+        def evaluate_read_stdin(machine: mutable Machine&) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+            reader: mutable StdioReader = StdioReader{bytes: [], failed: false}
+            can Blocking.IO, Memory.Allocate, Abort.Panic:
+                machine over stdio_read_next(reader):
+                    state Read
+                    start Read
+
+                    Read, StdioReadState.Data:
+                        -> Read
+                    Read, StdioReadState.End:
+                        break
+                    Read, StdioReadState.Error:
+                        break
+            if reader.failed:
+                machine.failure <- InterpretFailure.Console
+                return runtime_void()
+            return runtime_text("") if reader.bytes.count == 0
+            bytes: mutable dstr = ctx_fstr_alloc(reader.bytes.count)
+            ctx_fstr_append(bytes, reader.bytes.items, reader.bytes.count)
+            return runtime_text(bytes_view(bytes))
+
+
+        def evaluate_write_stream(machine: mutable Machine&, text: RuntimeValue, fd: FileDescriptor) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+            if text.kind != RuntimeValueKind.Text:
+                machine.failure <- InterpretFailure.TypeMismatch
+                return runtime_void()
+            writer: mutable StdioWriter = StdioWriter{fd: fd, data: text.text.data, length: sview_len(text.text), offset: 0, failed: false}
+            can Blocking.IO:
+                machine over stdio_write_next(writer):
+                    state Write
+                    start Write
+
+                    Write, StdioWriteState.Progress:
+                        -> Write
+                    Write, StdioWriteState.Done:
+                        break
+                    Write, StdioWriteState.Error:
+                        break
+            if writer.failed:
+                machine.failure <- InterpretFailure.Console
+                return runtime_void()
+            return runtime_int(writer.offset.i64())
+
+
         def evaluate_concat(machine: mutable Machine&, storage: mutable darray[RuntimeValue]&, left: RuntimeValue, right: RuntimeValue) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
             if left.kind == RuntimeValueKind.Array and right.kind == RuntimeValueKind.Array:
                 start: u32 = storage.count.u32()
@@ -1702,6 +1802,20 @@ extend EsIr:
                         Dispatch, Opcode.ExpandGlob:
                             pattern_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
                             dispatch.value <- evaluate_expand_glob(machine, storage, pattern_value)
+                            break
+
+                        Dispatch, Opcode.ReadStdin:
+                            dispatch.value <- evaluate_read_stdin(machine)
+                            break
+
+                        Dispatch, Opcode.WriteStdout:
+                            text_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
+                            dispatch.value <- evaluate_write_stream(machine, text_value, FileDescriptor.Output)
+                            break
+
+                        Dispatch, Opcode.WriteStderr:
+                            text_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
+                            dispatch.value <- evaluate_write_stream(machine, text_value, FileDescriptor.Error)
                             break
 
                         Dispatch, Opcode.Concat:
