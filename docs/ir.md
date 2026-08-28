@@ -57,6 +57,13 @@ representation deliberately preserves semantic `Opcode` values, giving a future
 packed encoder and VM one checked source of truth while the reference interpreter
 continues to define behavior.
 
+`EsBytecode.execute_bytecode` is the bootstrap execution entry point. It rebuilds
+the verified IR shape from the bytecode tables inside a scoped allocation region
+and delegates to `EsIr.interpret`, so effects, dynamic handlers, errors, process
+capture, and continuations have exactly the reference semantics while the packed
+bytecode dispatch loop is developed. The bytecode test suite compares result,
+step count, and observation trace/value against direct IR interpretation.
+
 ## Algebraic effects
 
 `Perform` is an IR operation, not an early rewrite to a runtime function call. It
