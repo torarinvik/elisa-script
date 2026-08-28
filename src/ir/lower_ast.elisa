@@ -18,6 +18,7 @@ extend EsIr:
             UnsupportedLoopLabel
             UnsupportedAssignmentTarget
             MutableMergePending
+            TypeMismatch
 
 
         struct LowerIssue:
@@ -62,6 +63,9 @@ extend EsIr:
             function: sview
             function_names: darray[sview]&
             function_returns: darray[Type]&
+            function_parameter_starts: darray[u32]&
+            function_parameter_counts: darray[u16]&
+            function_parameter_types: darray[Type]&
             handlers: darray[Handler]&
             function_return_type: Type
             required_effects: mutable darray[sview]
@@ -247,6 +251,12 @@ extend EsIr:
             return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
 
 
+        def lowered_function_index(state: LowerState&, name: sview) -> usize:
+            for index in 0..<state.function_names.count |state, name|:
+                index return if state.function_names[index] == name
+            return state.function_names.count
+
+
         def emit_constant(state: mutable LowerState&, type: Type, integer: i64, decimal: sview, text: sview, boolean: bool, span: SourceSpan) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
             result: u32 = fresh_value(state)
             state.instructions.push(Instruction{opcode: Opcode.Constant, result: result, result_type: type, integer: integer, decimal: decimal, text: text, boolean: boolean, span: span})
@@ -322,6 +332,9 @@ extend EsIr:
                     if lowered_collection.type.kind != TypeKind.Array:
                         add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "index lowering currently requires an array value")
                         return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+                    if lowered_index.type.kind != TypeKind.Int:
+                        add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "array index must have an integer type")
+                        return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
                     result_type: Type = array_element_type(lowered_collection.type)
                     operand_start: u32 = state.operand_pool.count.u32()
                     state.operand_pool.push(lowered_collection.value)
@@ -352,6 +365,12 @@ extend EsIr:
                     if not supported:
                         add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "unary operator is not in the core IR lowering subset")
                         return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+                    if opcode == Opcode.Negate and not numeric_type(lowered_operand.type):
+                        add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "numeric negation requires an integer or floating-point operand")
+                        return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+                    if opcode == Opcode.Not and lowered_operand.type.kind != TypeKind.Bool:
+                        add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "boolean negation requires a boolean operand")
+                        return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
                     result_type: Type = type_from_name("bool") if opcode == Opcode.Not else lowered_operand.type
                     result: u32 = fresh_value(state)
                     operand_start: u32 = state.operand_pool.count.u32()
@@ -362,6 +381,9 @@ extend EsIr:
                     lowered_left: LoweredValue = lower_expression(left, state)
                     if operator == TokenKind.And or operator == TokenKind.Or:
                         LoweredValue{valid: false, value: 0, type: unknown_ir_type()} return if not lowered_left.valid
+                        if lowered_left.type.kind != TypeKind.Bool:
+                            add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "short-circuit operators require boolean operands")
+                            return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
                         right_block: u32 = fresh_block(state)
                         short_block: u32 = fresh_block(state)
                         merge_block: u32 = fresh_block(state)
@@ -371,7 +393,11 @@ extend EsIr:
                         state.current_block <- right_block
                         state.terminated <- false
                         lowered_right: LoweredValue = lower_expression(right, state)
-                        if lowered_right.valid:
+                        right_valid: mutable bool = lowered_right.valid
+                        if lowered_right.valid and lowered_right.type.kind != TypeKind.Bool:
+                            add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "short-circuit operators require boolean operands")
+                            right_valid <- false
+                        if right_valid:
                             right_edge_start: u32 = state.edge_arg_pool.count.u32()
                             state.edge_arg_pool.push(lowered_right.value)
                             state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: merge_block, target_count: 1, edge0_arg_start: right_edge_start, edge0_arg_count: 1, span: ir_span(pos)}
@@ -391,7 +417,7 @@ extend EsIr:
                         state.pending_parameters.push(Parameter{value: result, type: result_type, name: "short-circuit"})
                         state.current_block <- merge_block
                         state.terminated <- false
-                        return LoweredValue{valid: lowered_right.valid, value: result, type: result_type}
+                        return LoweredValue{valid: right_valid, value: result, type: result_type}
                     lowered_right: LoweredValue = lower_expression(right, state)
                     LoweredValue{valid: false, value: 0, type: unknown_ir_type()} return if not lowered_left.valid or not lowered_right.valid
                     opcode: mutable Opcode = Opcode.Add
@@ -412,6 +438,16 @@ extend EsIr:
                         add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "binary operator is not in the initial IR lowering subset")
                         return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
                     comparison: bool = operator in {TokenKind.EqEq, TokenKind.BangEq, TokenKind.Lt, TokenKind.LtEq, TokenKind.Gt, TokenKind.GtEq}
+                    operands_match: bool = same_type(lowered_left.type, lowered_right.type)
+                    arithmetic: bool = operator in {TokenKind.Plus, TokenKind.Minus, TokenKind.Star, TokenKind.Slash, TokenKind.Percent}
+                    equality: bool = operator == TokenKind.EqEq or operator == TokenKind.BangEq
+                    ordering: bool = operator in {TokenKind.Lt, TokenKind.LtEq, TokenKind.Gt, TokenKind.GtEq}
+                    valid_arithmetic: bool = arithmetic and operands_match and numeric_type(lowered_left.type) and (operator != TokenKind.Percent or lowered_left.type.kind == TypeKind.Int)
+                    valid_equality: bool = equality and operands_match and equality_type(lowered_left.type)
+                    valid_ordering: bool = ordering and operands_match and numeric_type(lowered_left.type)
+                    if not valid_arithmetic and not valid_equality and not valid_ordering:
+                        add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "binary operands do not have compatible static types for this operator")
+                        return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
                     result_type: Type = type_from_name("bool") if comparison else lowered_left.type
                     result: u32 = fresh_value(state)
                     operand_start: u32 = state.operand_pool.count.u32()
@@ -422,6 +458,9 @@ extend EsIr:
                 Expr.If(condition, selected, alternative, pos):
                     lowered_condition: LoweredValue = lower_expression(condition, state)
                     LoweredValue{valid: false, value: 0, type: unknown_ir_type()} return if not lowered_condition.valid
+                    if lowered_condition.type.kind != TypeKind.Bool:
+                        add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "conditional expression requires a boolean condition")
+                        return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
                     selected_block: u32 = fresh_block(state)
                     alternative_block: u32 = fresh_block(state)
                     merge_block: u32 = fresh_block(state)
@@ -440,7 +479,11 @@ extend EsIr:
                     state.current_block <- alternative_block
                     state.terminated <- false
                     alternative_value: LoweredValue = lower_expression(alternative, state)
-                    if alternative_value.valid:
+                    alternative_valid: mutable bool = alternative_value.valid
+                    if selected_value.valid and alternative_value.valid and not same_type(selected_value.type, alternative_value.type):
+                        add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "conditional expression branches must produce the same static type")
+                        alternative_valid <- false
+                    if alternative_valid:
                         alternative_edge_start: u32 = state.edge_arg_pool.count.u32()
                         state.edge_arg_pool.push(alternative_value.value)
                         state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: merge_block, target_count: 1, edge0_arg_start: alternative_edge_start, edge0_arg_count: 1, span: ir_span(pos)}
@@ -452,7 +495,7 @@ extend EsIr:
                     state.pending_parameters.push(Parameter{value: result, type: result_type, name: "conditional"})
                     state.current_block <- merge_block
                     state.terminated <- false
-                    return LoweredValue{valid: selected_value.valid and alternative_value.valid, value: result, type: result_type}
+                    return LoweredValue{valid: selected_value.valid and alternative_valid, value: result, type: result_type}
                 Expr.Call(callee, arguments, argument_names, pos):
                     callee_name: mutable sview = ""
                     match callee:
@@ -475,11 +518,24 @@ extend EsIr:
                         add_issue(state, LowerIssueKind.UnknownCallee, pos.line, "only known direct function calls are in the initial lowering subset")
                         return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
                     operands: mutable darray[u32] = []
+                    operand_types: mutable darray[Type] = []
                     valid: mutable bool = true
-                    for argument in arguments |operands, valid, state|:
+                    for argument in arguments |operands, operand_types, valid, state|:
                         lowered_argument: LoweredValue = lower_expression(argument, state)
                         operands.push(lowered_argument.value) if lowered_argument.valid
+                        operand_types.push(lowered_argument.type) if lowered_argument.valid
                         valid <- false if not lowered_argument.valid
+                    LoweredValue{valid: false, value: 0, type: signature.type} return if not valid
+                    callee_index: usize = lowered_function_index(state, callee_name)
+                    expected_count: u16 = state.function_parameter_counts[callee_index]
+                    if operands.count != expected_count.usize():
+                        add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "call argument count does not match the function signature")
+                        return LoweredValue{valid: false, value: 0, type: signature.type}
+                    parameter_start: usize = state.function_parameter_starts[callee_index].usize()
+                    for index in 0..<operands.count |state, operand_types, parameter_start, pos, valid|:
+                        if not same_type(operand_types[index], state.function_parameter_types[parameter_start + index]):
+                            add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "call argument does not match the function parameter type")
+                            valid <- false
                     LoweredValue{valid: false, value: 0, type: signature.type} return if not valid
                     result: mutable u32 = 0
                     result <- fresh_value(state) if signature.type.kind != TypeKind.Void
@@ -502,9 +558,12 @@ extend EsIr:
                     if lowered.valid:
                         declared: Type = type_from_expression(type_expression)
                         binding_type: Type = lowered.type if type_expression is Expr.Invalid else declared
-                        state.names.push(name)
-                        state.values.push(lowered.value)
-                        state.types.push(binding_type)
+                        if type_expression is not Expr.Invalid and not same_type(declared, lowered.type):
+                            add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "binding initializer does not match its declared type")
+                        else:
+                            state.names.push(name)
+                            state.values.push(lowered.value)
+                            state.types.push(binding_type)
                 Stmt.Expr(expression, pos):
                     _ = lower_expression(expression, state)
                 Stmt.Assign(target, operator, value, pos):
@@ -523,20 +582,33 @@ extend EsIr:
                         else:
                             lowered: LoweredValue = lower_expression(value, state)
                             if lowered.valid:
-                                state.values[index] <- lowered.value
-                                state.types[index] <- lowered.type
+                                if not same_type(state.types[index], lowered.type):
+                                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "assignment cannot change a binding's static type")
+                                else:
+                                    state.values[index] <- lowered.value
                 Stmt.Return(value_opt, pos):
                     if value_opt is value:
                         lowered: LoweredValue = lower_expression(value, state)
-                        emit_handler_unwind(state, 0, pos) if lowered.valid
-                        state.terminator <- Terminator{kind: TerminatorKind.Return, operand: lowered.value, operand_count: 1, span: ir_span(pos)} if lowered.valid
+                        return_valid: mutable bool = lowered.valid
+                        if lowered.valid and not same_type(return_type, lowered.type):
+                            add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "return value does not match the function return type")
+                            return_valid <- false
+                        emit_handler_unwind(state, 0, pos) if return_valid
+                        state.terminator <- Terminator{kind: TerminatorKind.Return, operand: lowered.value, operand_count: 1, span: ir_span(pos)} if return_valid
                     else:
-                        emit_handler_unwind(state, 0, pos)
-                        state.terminator <- Terminator{kind: TerminatorKind.Return, span: ir_span(pos)}
+                        if return_type.kind != TypeKind.Void:
+                            add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "non-void function return requires a value")
+                        else:
+                            emit_handler_unwind(state, 0, pos)
+                            state.terminator <- Terminator{kind: TerminatorKind.Return, span: ir_span(pos)}
                     state.terminated <- true
                 Stmt.If(condition, then_body, else_body, pos):
                     condition_value: LoweredValue = lower_expression(condition, state)
-                    if condition_value.valid:
+                    condition_valid: mutable bool = condition_value.valid
+                    if condition_value.valid and condition_value.type.kind != TypeKind.Bool:
+                        add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "if condition must have boolean type")
+                        condition_valid <- false
+                    if condition_valid:
                         then_block: u32 = fresh_block(state)
                         else_block: u32 = fresh_block(state)
                         merge_block: u32 = fresh_block(state)
@@ -644,7 +716,11 @@ extend EsIr:
                     state.current_block <- header_block
                     state.terminated <- false
                     condition_value: LoweredValue = lower_expression(condition, state)
-                    if condition_value.valid:
+                    condition_valid: mutable bool = condition_value.valid
+                    if condition_value.valid and condition_value.type.kind != TypeKind.Bool:
+                        add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "while condition must have boolean type")
+                        condition_valid <- false
+                    if condition_valid:
                         exit_args: (start: u32, count: u16) = append_context_arguments(state, context)
                         state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: condition_value.value, operand_count: 1, target0: body_block, target1: exit_block, target_count: 2, edge1_arg_start: exit_args.start, edge1_arg_count: exit_args.count, span: ir_span(pos)}
                     finish_block(state)
@@ -738,10 +814,10 @@ extend EsIr:
                     add_issue(state, LowerIssueKind.UnsupportedStatement, 0, "statement is not in the initial IR lowering subset")
 
 
-        def lower_function(name: sview, params: darray[Ast::ParamDecl]&, return_type_opt: Ast::Expr?, body: darray[Ast::Stmt]&, effects: darray[sview]&, declared_error: sview, pos: Ast::Pos&, function_names: darray[sview]&, function_returns: darray[Type]&, handlers: darray[Handler]&, outer_issues: mutable darray[LowerIssue]&) -> Function can[Memory.Allocate, Abort.Panic]:
+        def lower_function(name: sview, params: darray[Ast::ParamDecl]&, return_type_opt: Ast::Expr?, body: darray[Ast::Stmt]&, effects: darray[sview]&, declared_error: sview, pos: Ast::Pos&, function_names: darray[sview]&, function_returns: darray[Type]&, function_parameter_starts: darray[u32]&, function_parameter_counts: darray[u16]&, function_parameter_types: darray[Type]&, handlers: darray[Handler]&, outer_issues: mutable darray[LowerIssue]&) -> Function can[Memory.Allocate, Abort.Panic]:
             return_type: mutable Type = void_ir_type()
             return_type <- type_from_expression(return_expression) if return_type_opt is return_expression
-            state: mutable LowerState = LowerState{function: name, next_value: 1, current_block: 1, next_block: 2, instruction_start: 0, structured_depth: 0, blocks: [], names: [], values: [], types: [], instructions: [], operand_pool: [], edge_arg_pool: [], issues: [], break_targets: [], continue_targets: [], pending_parameter_blocks: [], pending_parameters: [], block_parameter_pool: [], loop_context_starts: [], loop_context_counts: [], loop_carried_indices: [], loop_handler_depths: [], active_handlers: [], terminated: false, terminator: Terminator{kind: TerminatorKind.Unreachable, span: ir_span(pos)}, function_names: function_names, function_returns: function_returns, handlers: handlers, function_return_type: return_type, required_effects: [], required_errors: []}
+            state: mutable LowerState = LowerState{function: name, next_value: 1, current_block: 1, next_block: 2, instruction_start: 0, structured_depth: 0, blocks: [], names: [], values: [], types: [], instructions: [], operand_pool: [], edge_arg_pool: [], issues: [], break_targets: [], continue_targets: [], pending_parameter_blocks: [], pending_parameters: [], block_parameter_pool: [], loop_context_starts: [], loop_context_counts: [], loop_carried_indices: [], loop_handler_depths: [], active_handlers: [], terminated: false, terminator: Terminator{kind: TerminatorKind.Unreachable, span: ir_span(pos)}, function_names: function_names, function_returns: function_returns, function_parameter_starts: function_parameter_starts, function_parameter_counts: function_parameter_counts, function_parameter_types: function_parameter_types, handlers: handlers, function_return_type: return_type, required_effects: [], required_errors: []}
             state.required_effects.extend(effects)
             state.required_errors.push(declared_error) if declared_error != ""
             lowered_params: mutable darray[Parameter] = []
@@ -771,24 +847,31 @@ extend EsIr:
         def lower_file_with_handlers(file: Ast::File&, module_name: sview, handlers: darray[Handler]&) -> LowerResult can[Memory.Allocate, Abort.Panic]:
             names: mutable darray[sview] = []
             returns: mutable darray[Type] = []
-            for declaration in file.top_decls |names, returns|:
+            parameter_starts: mutable darray[u32] = []
+            parameter_counts: mutable darray[u16] = []
+            parameter_types: mutable darray[Type] = []
+            for declaration in file.top_decls |names, returns, parameter_starts, parameter_counts, parameter_types|:
                 match declaration:
                     Decl.Func(name, params, return_type_opt, body, effects, decorators, pos):
                         return_type: mutable Type = void_ir_type()
                         return_type <- type_from_expression(return_expression) if return_type_opt is return_expression
                         names.push(name)
                         returns.push(return_type)
+                        parameter_starts.push(parameter_types.count.u32())
+                        parameter_counts.push(params.count.u16())
+                        for parameter in params |parameter_types|:
+                            parameter_types.push(type_from_expression(parameter.type_expression))
                     _:
                         pass
             functions: mutable darray[Function] = []
             issues: mutable darray[LowerIssue] = []
-            for declaration in file.top_decls |functions, issues, names, returns|:
+            for declaration in file.top_decls |functions, issues, names, returns, parameter_starts, parameter_counts, parameter_types|:
                 match declaration:
                     Decl.Func(name, params, return_type_opt, body, effects, decorators, pos):
                         declared_error: mutable sview = ""
                         for error_index in 0..<file.error_set_func_lines.count |file, pos, declared_error|:
                             declared_error <- file.error_set_func_names[error_index] if file.error_set_func_lines[error_index] == pos.line
-                        functions.push(lower_function(name, params, return_type_opt, body, effects, declared_error, pos, names, returns, handlers, issues))
+                        functions.push(lower_function(name, params, return_type_opt, body, effects, declared_error, pos, names, returns, parameter_starts, parameter_counts, parameter_types, handlers, issues))
                     _:
                         issues.push(LowerIssue{kind: LowerIssueKind.UnsupportedDeclaration, function: "", line: 0, message: "declaration is not in the initial IR lowering subset"})
             lowered_handlers: mutable darray[Handler] = []

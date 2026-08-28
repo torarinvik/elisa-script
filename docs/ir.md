@@ -94,6 +94,13 @@ booleans over their supported operand families. Direct calls must name a declare
 function and match its parameter and return types exactly. There are no implicit
 integer-width or integer/float conversions at the IR boundary.
 
+The AST-to-IR boundary reports the same mistakes as structured `TypeMismatch`
+lowering issues, before a backend sees the module. This covers declared binding
+initializers, mutation without type changes, unary and binary operators, boolean
+conditions, conditional-expression arm agreement, returns, array indices, and
+direct-call arity and parameter types. Function signatures are predeclared, so
+forward calls receive the same checks as calls to earlier declarations.
+
 ## Reference interpreter
 
 `interpret` is the first executable consumer of verified IR and the semantic
