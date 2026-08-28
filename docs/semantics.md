@@ -56,12 +56,14 @@ bad: i64 = path"src"  # type error: expected i64, got Path
 ```
 
 The shared IR recognizes these five compiler-known calls when no source function
-shadows the prefix and the payload is a constant string. It emits a nominal
-`Constant`, preserving `Path`/`Glob`/`Regex`/`Executable`/`Url` identity while the
-reference runtime stores the validated payload as immutable text. Nominal values
-can cross exactly typed function boundaries and use exact nominal equality; they
-do not implicitly become `sview` or one another. Dynamic constructor payloads stay
-explicit lowering errors until the corresponding standard-library runtime parser exists.
+shadows the prefix. A constant string payload emits a nominal `Constant`; a runtime
+`sview` payload emits an explicit nominal constructor (`MakePath`, `MakeGlob`,
+`MakeRegex`, `MakeExecutable`, or `MakeUrl`). Both forms preserve
+`Path`/`Glob`/`Regex`/`Executable`/`Url` identity while the reference runtime stores
+the payload as immutable text. Nominal values can cross exactly typed function
+boundaries and use exact nominal equality; they do not implicitly become `sview` or
+one another. Runtime constructors currently perform the type-safe text adaptation;
+the corresponding path/glob/regex/URL parsers remain shared-library increments.
 
 The first executable regex operation is the compiler-known, strongly typed search
 `matches(text, pattern) -> bool`, where `text` is `sview` and `pattern` is `Regex`:

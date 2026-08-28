@@ -181,10 +181,12 @@ negation. A result outside its declared type raises `InterpretError.IntegerOverf
 through Elisa's `error[...]` channel. Unsigned complement masks unused host bits, so
 `~1u8` is `254u8` rather than the host `i64` value `-2`. These checks happen before
 the host operation wherever the host intermediate could overflow.
-Compiler-known typed literals use `Named` constants with immutable text payloads.
-The verifier admits this representation explicitly, and the interpreter retains
-the text payload while all static compatibility decisions continue to use the
-nominal IR type.
+Compiler-known typed literals use `Named` constants with immutable text payloads;
+runtime `sview` adaptation uses explicit `MakePath`, `MakeGlob`, `MakeRegex`, and
+`MakeUrl` constructors (with `MakeExecutable` for the existing executable adapter).
+The verifier admits both representations, and the interpreter retains the text
+payload while all static compatibility decisions continue to use the nominal IR
+type.
 `RegexSearch` is a separate semantic opcode with the exact signature
 `Text × Named(Regex) -> Bool`. The reference interpreter executes it through an
 explicit search machine with greedy backtracking; future bytecode, JIT, and native
@@ -337,7 +339,7 @@ and effect-handler state.
 The verified bytecode facade uses the same program-counter machine for execution.
 Modules containing only the currently closed scalar, text, regex, and one-level
 homogeneous-array subset (boolean or 64-bit integer values, text/nominal constants,
-array construction, indexing, length, slicing, membership, concatenation, split,
+array construction, nominal path/glob/regex/URL constructors, indexing, length, slicing, membership, concatenation, split,
 join, regex search/replacement, indexed updates, unary/binary operators,
 observations, pure direct calls, and typed filesystem/process operations) take a
 direct packed-instruction path. Calls use recursive state-machine frames with one
