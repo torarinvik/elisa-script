@@ -64,6 +64,21 @@ extend EsIr:
             accepted: mutable bool
 
 
+        const enum PerformDispatchState of u8:
+            SearchHandler
+            SearchClause
+            Invoke
+            Done
+
+
+        struct PerformDispatch:
+            state: mutable PerformDispatchState
+            installed_index: mutable usize
+            handler_index: mutable usize
+            clause_index: mutable usize
+            result: mutable RuntimeValue
+
+
         struct Machine:
             steps: mutable u64
             step_limit: u64
@@ -578,32 +593,57 @@ extend EsIr:
             return runtime_void()
 
 
+        def invoke_perform(machine: mutable Machine&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, handler_stack: mutable darray[sview]&, module: Module&, fn: Function&, instruction: Instruction, ids: darray[u32]&, values: darray[RuntimeValue]&, handler_index: usize, clause_index: usize) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+            arguments: mutable darray[RuntimeValue] = []
+            for offset in 0..<instruction.operand_count.usize() |machine, fn, instruction, ids, values, arguments|:
+                arguments.push(frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + offset], machine))
+            callback_index: usize = find_function(module, module.handlers[handler_index].clauses[clause_index].function)
+            machine.continuations.push(ContinuationFrame{handler: module.handlers[handler_index].name, policy: module.handlers[handler_index].continuation, consumed: false})
+            callback_value: RuntimeValue = execute_function(machine, observations, storage, handler_stack, module, callback_index, arguments)
+            _ = machine.continuations.pop()
+            result: mutable RuntimeValue = callback_value
+            if machine.resume_requested:
+                result <- machine.resume_value
+                machine.resume_requested <- false
+            return result
+
+
         def evaluate_perform(machine: mutable Machine&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, handler_stack: mutable darray[sview]&, module: Module&, fn: Function&, instruction: Instruction, ids: darray[u32]&, values: darray[RuntimeValue]&) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
-            while installed > 0 |installed: usize = handler_stack.count|:
-                installed <- installed - 1
-                handler_index: usize = runtime_handler_index(module, handler_stack[installed])
-                if handler_index < module.handlers.count:
-                    handler: Handler = module.handlers[handler_index]
-                    if handler_covers(handler, instruction.effect_family):
-                        for clause in handler.clauses |machine, observations, storage, handler_stack, module, fn, instruction, ids, values|:
-                            if clause.effect_family == instruction.effect_family and clause.effect_operation == instruction.effect_operation:
-                                arguments: mutable darray[RuntimeValue] = []
-                                for offset in 0..<instruction.operand_count.usize() |machine, fn, instruction, ids, values, arguments|:
-                                    arguments.push(frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + offset], machine))
-                                callback_index: usize = find_function(module, clause.function)
-                                machine.continuations.push(ContinuationFrame{handler: handler.name, policy: handler.continuation, consumed: false})
-                                callback_value: RuntimeValue = execute_function(machine, observations, storage, handler_stack, module, callback_index, arguments)
-                                _ = machine.continuations.pop()
-                                if machine.resume_requested:
-                                    resumed: RuntimeValue = machine.resume_value
-                                    machine.resume_requested <- false
-                                    return resumed
-                                return callback_value if machine.failure == InterpretFailure.None
-                                return runtime_void()
-                        note_unsupported(machine)
-                        return runtime_void()
-            note_unsupported(machine)
-            return runtime_void()
+            cursor: mutable PerformDispatch = PerformDispatch{state: PerformDispatchState.SearchHandler, installed_index: handler_stack.count, handler_index: module.handlers.count, clause_index: 0, result: runtime_void()}
+            machine over cursor.state:
+                state Dispatch
+                start Dispatch
+
+                Dispatch, PerformDispatchState.SearchHandler if cursor.installed_index == 0:
+                    note_unsupported(machine)
+                    cursor.state <- PerformDispatchState.Done
+                    -> Dispatch
+                Dispatch, PerformDispatchState.SearchHandler:
+                    cursor.installed_index <- cursor.installed_index - 1
+                    cursor.handler_index <- runtime_handler_index(module, handler_stack[cursor.installed_index])
+                    cursor.state <- PerformDispatchState.SearchClause if cursor.handler_index < module.handlers.count and handler_covers(module.handlers[cursor.handler_index], instruction.effect_family) else PerformDispatchState.SearchHandler
+                    -> Dispatch
+
+                Dispatch, PerformDispatchState.SearchClause if cursor.clause_index >= module.handlers[cursor.handler_index].clauses.count:
+                    note_unsupported(machine)
+                    cursor.state <- PerformDispatchState.Done
+                    -> Dispatch
+                Dispatch, PerformDispatchState.SearchClause if module.handlers[cursor.handler_index].clauses[cursor.clause_index].effect_family == instruction.effect_family and module.handlers[cursor.handler_index].clauses[cursor.clause_index].effect_operation == instruction.effect_operation:
+                    cursor.state <- PerformDispatchState.Invoke
+                    -> Dispatch
+                Dispatch, PerformDispatchState.SearchClause:
+                    cursor.clause_index <- cursor.clause_index + 1
+                    -> Dispatch
+
+                Dispatch, PerformDispatchState.Invoke:
+                    cursor.result <- invoke_perform(machine, observations, storage, handler_stack, module, fn, instruction, ids, values, cursor.handler_index, cursor.clause_index)
+                    cursor.state <- PerformDispatchState.Done
+                    -> Dispatch
+
+                Dispatch, PerformDispatchState.Done:
+                    break
+
+            return cursor.result
 
 
         def evaluate_array(machine: mutable Machine&, storage: mutable darray[RuntimeValue]&, fn: Function&, instruction: Instruction, ids: darray[u32]&, values: darray[RuntimeValue]&) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
