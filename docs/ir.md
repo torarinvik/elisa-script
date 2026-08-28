@@ -321,7 +321,10 @@ environment cloning are later increments.
 Interpreter failures use `error[InterpretError]`, never a result wrapper. Stable
 `observe` events and array elements are appended to caller-owned storage; this
 gives differential testing an ordered trace and keeps region-bearing collections
-out of the error-union return ABI. Invalid indexing is a typed
+out of the error-union return ABI. Flat runtime arrays validate their complete
+`[array_start, array_start + array_count)` storage range before every read, so
+malformed values supplied by an adapter fail deterministically instead of
+becoming an unchecked host-memory access. Invalid indexing is a typed
 `IndexOutOfBounds` failure. A deterministic step limit makes runaway programs a
 typed `StepLimitExceeded` failure. The private failure-to-error conversion is an
 exhaustive Elisa machine over `InterpretFailure`, so adding a new runtime failure
@@ -362,6 +365,10 @@ implicit host control-flow state. The eligibility gate rejects
 other widths, arrays nested deeper than two levels, handlers, and continuations; failure-sensitive integer
 divide/remainder/shift operations remain on the interpreter path, while `f64`
 division is direct.
+The direct path uses the same overflow-safe flat-array range predicate as the
+interpreter for indexing, slicing, membership, joining, concatenation, indexed
+updates, equality, and process argument vectors; malformed external arguments
+therefore cannot diverge between engines.
 Process execution and capture (`RunProcess`, stdout/stderr
 capture, stdin transport, and `ProcessCapture` accessors) use the same typed argv
 and stream helpers as the oracle. Unsupported modules deterministically rebuild
