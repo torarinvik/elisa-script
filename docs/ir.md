@@ -133,6 +133,11 @@ so skipped calls, effects, and observations are genuinely not executed. Conditio
 expressions likewise lower each value arm into a separate block rather than an eager
 select instruction.
 
+Elisa value blocks lower their leading statements in a lexical binding scope and
+then yield the tail expression. This makes the idiomatic multiline `return if ...:`
+form executable while ensuring branch-local names do not leak past the value block;
+mutations of already-existing outer SSA bindings remain visible as expected.
+
 Straight-line `<-` mutation is reconstructed as an SSA name rebind: the
 new expression result becomes the binding's current value and no memory slot is
 introduced. Mutation across `if` fallthrough edges is reconstructed with typed
