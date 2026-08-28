@@ -159,6 +159,10 @@ Integer, float, boolean, character, and text literal arms are typed against the
 scrutinee; pin patterns compare an existing binding, and binding/wildcard arms
 form catch-alls. A guarded arm receives a distinct CFG state: a false guard resumes
 the ordered pattern chain, and its pattern bindings cannot escape into later arms.
+Numeric range patterns use two comparison states: the lower-bound state branches
+to an upper-bound state only when `value >= low`, then `..<` or `..=` selects a
+strict or inclusive upper comparison. Bounds are evaluated as typed constants,
+and guards run only after both comparisons succeed.
 Each arm has lexical bindings, while mutations of outer locals converge through
 typed merge-block parameters. Structural patterns remain explicit errors until
 structural IR values are available.
