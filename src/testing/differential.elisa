@@ -8,6 +8,11 @@
 include "../../vendor/elisa-compiler/elisacore_std/elisacore_runtime.elisa"
 
 
+error DifferentialRunnerError:
+    Invalid
+    UnsupportedKind
+
+
 module EsDifferential:
     public:
         const enum DifferentialValueKind of u8:
@@ -85,6 +90,7 @@ module EsDifferential:
             Target
             Entry
             Arguments
+            WorkingDirectory
             Timeout
             Done
 
@@ -93,6 +99,30 @@ module EsDifferential:
             state: mutable DifferentialRunnerCheckState
             argument_index: mutable usize
             result: mutable DifferentialRunnerCheck
+
+
+        # The host adapter consumes this shell-free invocation. `executable` is
+        # kept separate from the argv vector so no quoting or expansion step can
+        # be introduced between validation and launch.
+        struct DifferentialProcessInvocation:
+            executable: sview
+            entry: sview = ""
+            arguments: darray[sview]
+            working_directory: sview = ""
+            stdin: sview = ""
+            protocol: sview = ""
+            timeout_steps: u64 = 1
+
+
+        const enum DifferentialPrepareState of u8:
+            PrefixEntry
+            Arguments
+            Done
+
+
+        struct DifferentialPrepareCursor:
+            state: mutable DifferentialPrepareState
+            argument_index: mutable usize
 
 
         def differential_sview_has_nul(value: sview) -> bool:
@@ -165,7 +195,7 @@ module EsDifferential:
                     -> Validate
 
                 Validate, DifferentialRunnerCheckState.Arguments if cursor.argument_index >= runner.arguments.count:
-                    cursor.state <- DifferentialRunnerCheckState.Timeout
+                    cursor.state <- DifferentialRunnerCheckState.WorkingDirectory
                     -> Validate
                 Validate, DifferentialRunnerCheckState.Arguments if differential_sview_has_nul(runner.arguments[cursor.argument_index]):
                     cursor.result.valid <- false
@@ -175,6 +205,15 @@ module EsDifferential:
                     -> Validate
                 Validate, DifferentialRunnerCheckState.Arguments:
                     cursor.argument_index <- cursor.argument_index + 1
+                    -> Validate
+
+                Validate, DifferentialRunnerCheckState.WorkingDirectory if differential_sview_has_nul(runner.working_directory):
+                    cursor.result.valid <- false
+                    cursor.result.issue <- DifferentialRunnerIssueKind.EmbeddedNul
+                    cursor.result.reason <- "runner working directory contains NUL"
+                    -> Validate
+                Validate, DifferentialRunnerCheckState.WorkingDirectory:
+                    cursor.state <- DifferentialRunnerCheckState.Timeout
                     -> Validate
 
                 Validate, DifferentialRunnerCheckState.Timeout if runner.timeout_steps > 0:
@@ -190,6 +229,39 @@ module EsDifferential:
                     break
 
             return cursor.result
+
+
+        # Prepare only the process-shaped runner kinds. Execution is deliberately
+        # left to the host adapter, which can apply cwd and timeout policy using
+        # the same invocation without exposing a shell.
+        def prepare_differential_process(runner: DifferentialRunner&) -> DifferentialProcessInvocation error[DifferentialRunnerError] can[Memory.Allocate, Abort.Panic]:
+            check: DifferentialRunnerCheck = validate_differential_runner(runner)
+            raise DifferentialRunnerError.Invalid if not check.valid
+            raise DifferentialRunnerError.UnsupportedKind if runner.kind != DifferentialRunnerKind.NativeProcess and runner.kind != DifferentialRunnerKind.PythonAdapter
+            cursor: mutable DifferentialPrepareCursor = DifferentialPrepareCursor{state: DifferentialPrepareState.PrefixEntry, argument_index: 0}
+            machine over cursor.state:
+                state Prepare
+                start Prepare
+
+                Prepare, DifferentialPrepareState.PrefixEntry if runner.kind == DifferentialRunnerKind.PythonAdapter:
+                    cursor.state <- DifferentialPrepareState.Arguments
+                    -> Prepare
+                Prepare, DifferentialPrepareState.PrefixEntry:
+                    cursor.state <- DifferentialPrepareState.Arguments
+                    -> Prepare
+
+                Prepare, DifferentialPrepareState.Arguments if cursor.argument_index >= runner.arguments.count:
+                    cursor.state <- DifferentialPrepareState.Done
+                    -> Prepare
+                Prepare, DifferentialPrepareState.Arguments:
+                    cursor.argument_index <- cursor.argument_index + 1
+                    -> Prepare
+
+                Prepare, DifferentialPrepareState.Done:
+                    break
+
+            entry: sview = runner.entry if runner.kind == DifferentialRunnerKind.PythonAdapter else ""
+            return DifferentialProcessInvocation{executable: runner.target, entry: entry, arguments: runner.arguments, working_directory: runner.working_directory, stdin: runner.stdin, protocol: runner.protocol, timeout_steps: runner.timeout_steps}
 
 
         const enum DifferentialDifferenceKind of u8:

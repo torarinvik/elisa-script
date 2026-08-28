@@ -39,7 +39,7 @@ comparator is implemented as an explicit Elisa state machine, so it cannot skip 
 comparison phase or silently continue after a mismatch.
 
 The executable contract is `EsDifferential.DifferentialRunner`. It is a typed
-specification, not a command-string escape hatch: the target, optional entry point,
+specification, not a command-string escape hatch: the target executable, optional entry point,
 working directory, stdin, protocol, timeout, required effects, and required errors
 are separate fields, while process arguments remain a `darray[sview]`. Call
 `validate_differential_runner` before handing the value to an adapter. Its explicit
@@ -53,6 +53,13 @@ The current runner kinds are `InProcessFunction`, `NativeProcess`, `PythonAdapte
 validated specification into a `DifferentialRun`; keeping that execution layer
 separate lets native, Python, and Elisascript adapters share the same deterministic
 comparison and artifact machinery.
+
+For `NativeProcess`, `target` is the executable and `arguments` are passed unchanged.
+For `PythonAdapter`, `target` is the Python interpreter and `entry` names the adapter
+script or module; the host adapter keeps that entry separate until it constructs the
+argv vector. The validator rejects NUL bytes in executable-facing fields, including
+the working directory, while stdin remains length-delimited so binary-compatible
+fixtures are possible.
 
 For a native or adapter process, the materialization path should use the IR
 `capture_process_result(executable, arguments, stdin)` intrinsic. It returns one
