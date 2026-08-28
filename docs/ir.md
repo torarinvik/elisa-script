@@ -188,6 +188,9 @@ scan machine, copies each entry before the next transition, removes dot entries,
 and sorts owned names before materializing the runtime array. The current low-level
 entry layout bridge is isolated and Darwin-specific; other native targets must
 supply their platform `dirent` layout without changing this IR contract.
+`IsDirectory` verifies as `Named(Path) -> Bool` with `Directory.Read` and
+`DirectoryError`. It has its own exhaustive dispatch arm and uses the same isolated
+directory bridge that recursive glob traversal builds upon.
 Named direct-call arguments are resolved against predeclared parameter labels and
 then emitted in canonical signature order. Their expressions still execute once in
 source order. Missing parameters materialize their Elisa default expressions in

@@ -188,6 +188,12 @@ deterministic rather than dependent on filesystem enumeration order. Opening,
 enumeration, and close failures remain structured errors. Returned names do not
 borrow the operating system's reusable directory-entry buffer.
 
+`is_directory(path: Path) -> bool error[DirectoryError] can[Directory.Read]`
+tests whether a path can be opened as a directory. Missing paths and ordinary files
+return `false`; successful opens are closed before returning `true`, and close
+failures remain errors. This predicate is also the traversal gate for native `**`
+glob expansion, preventing ordinary files from becoming recursive scan nodes.
+
 ## Compile-time validation
 
 `check_typed_literals.elisa` validates constant string payloads during the existing
