@@ -101,6 +101,12 @@ conditions, conditional-expression arm agreement, returns, array indices, and
 direct-call arity and parameter types. Function signatures are predeclared, so
 forward calls receive the same checks as calls to earlier declarations.
 
+Direct calls also preserve algebraic-effect and `error[...]` contracts. Lowering
+adds every unhandled callee effect to the caller effect row and propagates callee
+error sets independently. The verifier repeats this check from IR alone: a
+dynamically active handler may discharge a covered effect family, while errors
+must still appear explicitly in the caller's error row.
+
 ## Reference interpreter
 
 `interpret` is the first executable consumer of verified IR and the semantic
