@@ -155,6 +155,12 @@ Elisa-compatible `sview` model, `.count` is a byte count and `text[index]` or
 `for character in text` yields one 8-bit `char`; invalid indices raise the same
 typed `IndexOutOfBounds` interpreter error as arrays. This byte contract is
 explicit rather than silently pretending to provide Unicode grapheme indexing.
+`collection[low:high]` lowers to the dedicated typed `Slice` operation. Either
+bound may be absent: the lower default is zero and the upper default is one
+`Length` evaluation of the already-evaluated collection. Slices are half-open,
+preserve the exact array or text type, and require `0 <= low <= high <= count`;
+violations raise typed `IndexOutOfBounds`. Immutable array slices share their
+backing value storage, while text slices are byte views under the `sview` contract.
 Integer ranges use the same CFG shape. `low..<high` is exclusive ascending,
 `low..=high` is inclusive ascending, and `high..>low` is strict descending.
 The range-owned stride spelling (`low..<high..step`) requires a positive constant;
