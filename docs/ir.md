@@ -64,6 +64,13 @@ effect, continuation, and so on). `bytecode_dispatch_table_valid` walks function
 and instructions with explicit preflight states and rejects a missing, stale, or
 invalid class entry before execution.
 
+`bytecode_next_control` is the first executable packed-loop primitive. Its
+program-counter cursor advances one instruction at a time and then selects a
+verified `Return`, `Jump`, `Branch`, or `Invalid` action through explicit control
+states. Branch selection is supplied by the value engine; this keeps control-flow
+ownership separate from effects and runtime values while the remaining opcode
+families are migrated.
+
 `EsBytecode.execute_bytecode` is the bootstrap execution entry point. It rebuilds
 the verified IR shape from the bytecode tables inside a scoped allocation region
 and delegates to `EsIr.interpret`, so effects, dynamic handlers, errors, process
@@ -475,4 +482,6 @@ typed header and exit parameters; initial entry, normal backedges, `continue`, a
    arithmetic and comparisons, direct calls, SSA block arguments, branches,
    loops, returns, handler installation/uninstallation, and `observe` trace sites.
 4. Lower the same verified modules to bytecode and LLVM, then test all engines
-   differentially against the interpreter.
+   differentially against the interpreter. The bytecode backend now has typed
+   dispatch classes, table preflight, and a state-machine program-counter step;
+   the next increment is wiring opcode-family handlers into that loop.
