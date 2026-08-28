@@ -129,6 +129,18 @@ complete filesystem round trip without shell or Python.
 unremovable path returns `false`, following the core Elisa `remove_file` contract.
 The nominal operand prevents accidental deletion through an arbitrary text value.
 
+## Process execution
+
+`run_process(executable: Executable, arguments: darray[sview]) -> i64
+error[ProcessError] can[Process.Run]` starts a process from an explicitly typed
+executable and argument vector. It never inserts a shell: spaces, wildcard characters,
+quotes, and other shell syntax in an argument remain ordinary argument bytes.
+
+The return value is the process exit status. Normal exits produce `0` through `255`;
+signal termination produces `128 + signal`. Failure to create or wait for the process
+raises `ProcessError`. If the executable cannot be resolved, the child exits with
+status `127`.
+
 ## Compile-time validation
 
 `check_typed_literals.elisa` validates constant string payloads during the existing

@@ -164,6 +164,10 @@ target file deterministically.
 core unlink wrapper using the same owned NUL-terminated path conversion as the other
 filesystem operations. Missing paths produce `false`; they are not conflated with
 interpreter failure or wrapped in a result value.
+`RunProcess` verifies as `Named(Executable) × Array[Text] -> Int(signed, 64)` and
+requires `Process.Run` plus `ProcessError`. The interpreter executes it directly as
+a POSIX `fork`/`execvp`/`waitpid` state transition with a NUL-terminated argv. No
+command string or shell expansion exists between typed IR and the operating system.
 Named direct-call arguments are resolved against predeclared parameter labels and
 then emitted in canonical signature order. Their expressions still execute once in
 source order. Missing parameters materialize their Elisa default expressions in
