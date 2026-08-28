@@ -23,15 +23,18 @@ sizes, bytecode slots, or host ABI facts. Those belong to target-specific loweri
 The copied compiler's EASM remains a later machine-level representation and is
 not used as the shared IR.
 
-Every verified module also has a canonical structural fingerprint through
+Every verified module also has canonical structural bytes through
+`canonical_module_bytes(module)` and a compact fingerprint through
 `module_fingerprint(module)` (with `canonical_module_hash` as the explicit
-algorithm name). The reference implementation uses a fixed FNV-1a-style `u64`
-fold over schema markers, scalar fields, types, source spans, trace sites, ordered
-SSA pools, blocks, functions, and handlers. Collection lengths are included before
-their elements. No pointers, allocator addresses, padding, host word sizes, or
-backend instruction layout enter the hash. This makes the value suitable for
-backend and differential-test artifact correlation; it is a deterministic
-non-cryptographic fingerprint, not a security identity or a replacement for IR
+algorithm name). The reference implementation uses fixed little-endian scalar
+encodings and schema markers over types, source spans, trace sites, ordered SSA
+pools, blocks, functions, and handlers. The module stream begins with `ES` and
+format version `1`; collection lengths are included before their elements, and
+hashing those exact bytes yields the module fingerprint. No pointers, allocator
+addresses, padding, host word sizes, or backend instruction layout enter the
+encoding. This makes the bytes and their deterministic
+non-cryptographic `u64` fingerprint suitable for backend and differential-test
+artifact correlation; neither is a security identity or a replacement for IR
 verification.
 
 ## Algebraic effects
@@ -407,9 +410,9 @@ typed header and exit parameters; initial entry, normal backedges, `continue`, a
 
 1. Add complete structural types, handler installation, resume,
    and explicit ownership/region operations.
-2. Define the remaining canonical serialization format for artifacts. The
-   structural `u64` module fingerprint is already available for artifact
-   correlation; serialized bytes will use the same field order and version markers.
+2. Define the artifact container and versioned metadata around the canonical IR
+   bytes. The structural encoding and `u64` module fingerprint are already
+   available for artifact correlation.
 3. Extend the reference interpreter from its current scalar/control-flow core
    through effects, errors, structural values, and ownership operations. The
    interpreter already executes verified integer/boolean/text constants,
