@@ -72,6 +72,12 @@ single execution is important for nondeterministic tools: separate stdout, stder
 and status calls would observe three different runs. The intrinsic remains
 shell-free and keeps process failures in `error[ProcessError]`.
 
+`differential_run_from_process_capture` is the typed adapter for that boundary. It
+accepts the interpreter's `EsIr::RuntimeValue` snapshot plus structured observations
+and materializes one `DifferentialRun`; a non-`ProcessCapture` value becomes a stable
+adapter error. Its validation/materialization path is an explicit state machine, so
+the process result cannot be partially copied.
+
 ## Runner types
 
 First-class runners should cover:
