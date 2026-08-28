@@ -92,6 +92,11 @@ the conventional `126`/`127` setup/exec statuses, remains ordinary
 `DifferentialRun.exit_status` data for comparison. Launch, wait, and capture
 failures use `DifferentialRunnerError.Process`.
 
+`run_differential_process` is the convenience entry point for this complete
+path: it validates and prepares a `DifferentialRunner`, then executes the
+resulting invocation in one typed call. Hosts that need to inspect the exact
+argv/cwd/timeout before launch can keep using the two lower-level operations.
+
 `differential_run_from_process_capture` is the typed adapter for that boundary. It
 accepts the interpreter's `EsIr::RuntimeValue` snapshot plus structured observations
 and materializes one `DifferentialRun`; an optional `DifferentialRun.values` pool
