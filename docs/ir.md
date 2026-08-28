@@ -112,10 +112,13 @@ must still appear explicitly in the caller's error row.
 `interpret` is the first executable consumer of verified IR and the semantic
 oracle for later bytecode, JIT, and native backends. Its initial core executes
 integer and boolean scalars, text constants, homogeneous immutable arrays,
-array/text indexing and length, arithmetic and comparisons, direct calls, branches,
+array/text indexing, length, slicing, membership, and concatenation, arithmetic
+and comparisons, direct calls, branches,
 loops, SSA edge arguments, and returns. `HandlerPush` and
 `HandlerPop` preserve lexical execution structure while effect dispatch and
-continuation resumption remain the next interpreter increment.
+continuation resumption remain the next interpreter increment. Correct execution
+requires handler operation clauses to be represented in the module first; handler
+contract metadata alone is deliberately not treated as an executable callback.
 
 Interpreter failures use `error[InterpretError]`, never a result wrapper. Stable
 `observe` events and array elements are appended to caller-owned storage; this
@@ -161,6 +164,12 @@ bound may be absent: the lower default is zero and the upper default is one
 preserve the exact array or text type, and require `0 <= low <= high <= count`;
 violations raise typed `IndexOutOfBounds`. Immutable array slices share their
 backing value storage, while text slices are byte views under the `sview` contract.
+Exact-type `array + array` and `text + text` lower to the semantic `Concat`
+operation rather than numeric `Add`. Array concatenation copies both inputs into
+fresh value storage. Text concatenation copies both byte views into permanent,
+length-aware Elisa runtime storage, so chained results and results involving
+empty text do not borrow temporary buffers. Mixed element or collection types are
+rejected statically.
 Membership lowers to the typed `Contains` operation. Array needles must exactly
 match the element type; text accepts either an 8-bit `char` or a text substring.
 Search is deterministic and linear, the empty text is contained in every text,
