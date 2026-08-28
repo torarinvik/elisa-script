@@ -30,6 +30,14 @@ def z80_step_matches_original() -> DifferentialCase[CpuInput, CpuObservation]:
 The framework runs both sides from the same generated or recorded input and
 compares structured observations.
 
+The first shared comparison primitive is `EsDifferential.compare_differential_runs`.
+It compares exit status, named error, stdout, stderr, observation count, and then
+each `(trace, value)` pair in that fixed order. It returns a typed
+`DifferentialComparison` describing the first difference, including the relevant
+text or values; identical runs return `DifferentialDifferenceKind.Equal`. The
+comparator is implemented as an explicit Elisa state machine, so it cannot skip a
+comparison phase or silently continue after a mismatch.
+
 ## Runner types
 
 First-class runners should cover:
@@ -198,6 +206,7 @@ framework as user port-validation projects.
 ## Planned library layout
 
 ```text
+src/testing/differential.elisa   # initial typed run/observation comparator
 stdlib/testing/differential/
   case.elisa
   runner.elisa
