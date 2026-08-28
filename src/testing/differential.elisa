@@ -6,13 +6,17 @@
 # production language still reports failures through Elisa's error[...] channel.
 
 include "../../vendor/elisa-compiler/elisacore_std/elisacore_runtime.elisa"
+include "../../vendor/elisa-compiler/elisacore_std/elisacore_fileio.elisa"
 include "../ir/ir_model.elisa"
 include "../ir/runtime_model.elisa"
+include "../runtime/process_posix.elisa"
 
 
 error DifferentialRunnerError:
     Invalid
     UnsupportedKind
+    Process
+    Timeout
 
 
 module EsDifferential:
@@ -207,6 +211,20 @@ module EsDifferential:
             timeout_steps: u64 = 1
 
 
+        const DIFFERENTIAL_WAIT_NOHANG: int = 1
+        const DIFFERENTIAL_SIGNAL_KILL: int = 9
+
+
+        @link_name(chdir)
+        extern elisascript_posix_chdir(path: cstr) -> int can[Blocking.IO]
+
+        @link_name(kill)
+        extern elisascript_posix_kill(pid: int, signal: int) -> int can[Blocking.IO]
+
+        @link_name(usleep)
+        extern elisascript_posix_usleep(microseconds: u32) -> int can[Blocking.IO]
+
+
         const enum DifferentialPrepareState of u8:
             PrefixEntry
             Arguments
@@ -355,6 +373,174 @@ module EsDifferential:
 
             entry: sview = runner.entry if runner.kind == DifferentialRunnerKind.PythonAdapter else ""
             return DifferentialProcessInvocation{executable: runner.target, entry: entry, arguments: runner.arguments, working_directory: runner.working_directory, stdin: runner.stdin, protocol: runner.protocol, timeout_steps: runner.timeout_steps}
+
+
+        def differential_cstring(value: sview) -> dstr can[Memory.Allocate, Abort.Panic]:
+            bytes: mutable dstr = ctx_fstr_alloc(sview_len(value) + 1)
+            ctx_fstr_append(bytes, value.data, sview_len(value))
+            ctx_fstr_append(bytes, "\0", 1)
+            return bytes
+
+
+        def differential_read_stream(stream: heap void&) -> sview error[DifferentialRunnerError] can[Memory.Allocate, Memory.Release, Blocking.IO]:
+            if fseek(stream, 0, FILEIO_SEEK_END) != 0:
+                _ = fclose(stream)
+                raise DifferentialRunnerError.Process
+            size: i64 = ftell(stream)
+            if size < 0 or fseek(stream, 0, FILEIO_SEEK_SET) != 0:
+                _ = fclose(stream)
+                raise DifferentialRunnerError.Process
+            if size == 0:
+                if fclose(stream) != 0:
+                    raise DifferentialRunnerError.Process
+                return sview("", 0, 0)
+            bytes: mutable dstr = ctx_fstr_alloc(size.usize())
+            if bytes.items == null:
+                _ = fclose(stream)
+                raise DifferentialRunnerError.Process
+            byte_items: mutable u8& = bytes.items
+            read_count: usize = fread(byte_items.cast[mutable void&], 1, size.usize(), stream)
+            close_status: int = fclose(stream)
+            if read_count != size.usize() or close_status != 0:
+                raise DifferentialRunnerError.Process
+            bytes.count <- size.usize()
+            return bytes_view(bytes)
+
+
+        def differential_process_status(status: int) -> i64:
+            signal_number: int = status & 0x7f
+            return ((status >> 8) & 0xff).i64() if signal_number == 0 else (128 + signal_number).i64()
+
+
+        # Execute a validated process invocation without a shell.  The optional
+        # entry is the first argv element for adapter-style invocations (for
+        # example `python3 adapter.py ...`).  stdout, stderr, and stdin use
+        # temporary files so a child cannot deadlock the parent by filling a
+        # pipe while it runs.  `timeout_steps` counts bounded wait polls; a
+        # timed-out child is killed and reported through the typed error channel.
+        def execute_differential_process(invocation: DifferentialProcessInvocation) -> DifferentialRun error[DifferentialRunnerError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            raise DifferentialRunnerError.Invalid if invocation.executable == "" or differential_sview_has_nul(invocation.executable) or differential_sview_has_nul(invocation.entry) or differential_sview_has_nul(invocation.working_directory) or invocation.timeout_steps == 0
+            for argument in invocation.arguments:
+                raise DifferentialRunnerError.Invalid if differential_sview_has_nul(argument)
+
+            executable_bytes: dstr = differential_cstring(invocation.executable)
+            if executable_bytes.items == null:
+                raise DifferentialRunnerError.Process
+            executable_items: u8& = executable_bytes.items
+            owned_arguments: mutable darray[dstr] = []
+            argv: mutable darray[cstr] = []
+            owned_arguments.reserve(invocation.arguments.count + 1)
+            argv.reserve(invocation.arguments.count + 3)
+            argv.push(executable_items.cast[cstr])
+            if invocation.entry != "":
+                entry_bytes: dstr = differential_cstring(invocation.entry)
+                if entry_bytes.items == null:
+                    raise DifferentialRunnerError.Process
+                owned_arguments.push(entry_bytes)
+                entry_items: mutable u8&? = owned_arguments[owned_arguments.count - 1].items
+                if entry_items == null:
+                    raise DifferentialRunnerError.Process
+                argv.push(entry_items.cast[cstr])
+            for argument in invocation.arguments |owned_arguments, argv|:
+                argument_bytes: dstr = differential_cstring(argument)
+                if argument_bytes.items == null:
+                    raise DifferentialRunnerError.Process
+                owned_arguments.push(argument_bytes)
+                argument_items: mutable u8&? = owned_arguments[owned_arguments.count - 1].items
+                if argument_items == null:
+                    raise DifferentialRunnerError.Process
+                argv.push(argument_items.cast[cstr])
+            argv.push(executable_items.cast[cstr])
+            terminator: mutable void& = (&argv[argv.count - 1]).cast[mutable void&] can Unsafe.PointerCast
+            _ = memset(terminator, 0, 8)
+            argv_items: void& = (&argv[0]).cast[void&] can Unsafe.PointerCast
+
+            can Blocking.IO, Memory.Allocate, Memory.Release:
+                input_handle: mutable heap void&? = elisascript_posix_tmpfile()
+                if input_handle == null:
+                    raise DifferentialRunnerError.Process
+                input_stream: mutable heap void& = input_handle
+                if sview_len(invocation.stdin) > 0 and fwrite(invocation.stdin.data.cast[void&], 1, sview_len(invocation.stdin), input_stream) != sview_len(invocation.stdin):
+                    _ = fclose(input_stream)
+                    raise DifferentialRunnerError.Process
+                if fseek(input_stream, 0, FILEIO_SEEK_SET) != 0:
+                    _ = fclose(input_stream)
+                    raise DifferentialRunnerError.Process
+                input_descriptor: int = elisascript_posix_fileno(input_stream)
+                if input_descriptor < 0:
+                    _ = fclose(input_stream)
+                    raise DifferentialRunnerError.Process
+
+                stdout_handle: mutable heap void&? = elisascript_posix_tmpfile()
+                if stdout_handle == null:
+                    _ = fclose(input_stream)
+                    raise DifferentialRunnerError.Process
+                stdout_stream: mutable heap void& = stdout_handle
+                stdout_descriptor: int = elisascript_posix_fileno(stdout_stream)
+                if stdout_descriptor < 0:
+                    _ = fclose(input_stream)
+                    _ = fclose(stdout_stream)
+                    raise DifferentialRunnerError.Process
+
+                stderr_handle: mutable heap void&? = elisascript_posix_tmpfile()
+                if stderr_handle == null:
+                    _ = fclose(input_stream)
+                    _ = fclose(stdout_stream)
+                    raise DifferentialRunnerError.Process
+                stderr_stream: mutable heap void& = stderr_handle
+                stderr_descriptor: int = elisascript_posix_fileno(stderr_stream)
+                if stderr_descriptor < 0:
+                    _ = fclose(input_stream)
+                    _ = fclose(stdout_stream)
+                    _ = fclose(stderr_stream)
+                    raise DifferentialRunnerError.Process
+
+                pid: int = elisascript_posix_fork()
+                if pid < 0:
+                    _ = fclose(input_stream)
+                    _ = fclose(stdout_stream)
+                    _ = fclose(stderr_stream)
+                    raise DifferentialRunnerError.Process
+                if pid == 0:
+                    elisascript_posix_exit(126) if elisascript_posix_dup2(input_descriptor, 0) < 0
+                    elisascript_posix_exit(126) if elisascript_posix_dup2(stdout_descriptor, 1) < 0
+                    elisascript_posix_exit(126) if elisascript_posix_dup2(stderr_descriptor, 2) < 0
+                    if invocation.working_directory != "":
+                        working_directory_bytes: dstr = differential_cstring(invocation.working_directory)
+                        elisascript_posix_exit(126) if working_directory_bytes.items == null or elisascript_posix_chdir(working_directory_bytes.items.cast[cstr]) != 0
+                    _ = elisascript_posix_execvp(executable_items.cast[cstr], argv_items)
+                    elisascript_posix_exit(127)
+                    return DifferentialRun{observations: []}
+
+                status: mutable int = 0
+                polls: mutable u64 = 0
+                finished: mutable bool = false
+                while not finished:
+                    waited: int = elisascript_posix_waitpid(pid, status, DIFFERENTIAL_WAIT_NOHANG)
+                    if waited == pid:
+                        finished <- true
+                    elif waited < 0:
+                        _ = fclose(input_stream)
+                        _ = fclose(stdout_stream)
+                        _ = fclose(stderr_stream)
+                        raise DifferentialRunnerError.Process
+                    else:
+                        polls <- polls + 1
+                        if polls >= invocation.timeout_steps:
+                            _ = elisascript_posix_kill(pid, DIFFERENTIAL_SIGNAL_KILL)
+                            _ = elisascript_posix_waitpid(pid, status, 0)
+                            _ = fclose(input_stream)
+                            _ = fclose(stdout_stream)
+                            _ = fclose(stderr_stream)
+                            raise DifferentialRunnerError.Timeout
+                        _ = elisascript_posix_usleep(1000)
+                if fclose(input_stream) != 0:
+                    _ = fclose(stdout_stream)
+                    _ = fclose(stderr_stream)
+                    raise DifferentialRunnerError.Process
+                stdout_text: sview = try differential_read_stream(stdout_stream)
+                stderr_text: sview = try differential_read_stream(stderr_stream)
+                return DifferentialRun{exit_status: differential_process_status(status), stdout: stdout_text, stderr: stderr_text, observations: []}
 
 
         const enum DifferentialDifferenceKind of u8:

@@ -81,6 +81,17 @@ single execution is important for nondeterministic tools: separate stdout, stder
 and status calls would observe three different runs. The intrinsic remains
 shell-free and keeps process failures in `error[ProcessError]`.
 
+The standalone host boundary `execute_differential_process` consumes the same
+`DifferentialProcessInvocation` produced by `prepare_differential_process`. It
+constructs an argv vector directly (never a shell command), feeds stdin through
+a temporary file, captures stdout and stderr independently, and applies an
+optional working directory in the child just before `execvp`. The timeout is a
+bounded wait-poll budget; an expired child is killed and raises
+`DifferentialRunnerError.Timeout`. A normal nonzero process status, including
+the conventional `126`/`127` setup/exec statuses, remains ordinary
+`DifferentialRun.exit_status` data for comparison. Launch, wait, and capture
+failures use `DifferentialRunnerError.Process`.
+
 `differential_run_from_process_capture` is the typed adapter for that boundary. It
 accepts the interpreter's `EsIr::RuntimeValue` snapshot plus structured observations
 and materializes one `DifferentialRun`; an optional `DifferentialRun.values` pool
