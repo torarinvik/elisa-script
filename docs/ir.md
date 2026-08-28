@@ -342,7 +342,7 @@ and effect-handler state.
 
 The verified bytecode facade uses the same program-counter machine for execution.
 Modules containing only the currently closed scalar, text, regex, and one-level
-homogeneous-array subset (boolean or 64-bit integer values, text/nominal constants,
+homogeneous-array subset (boolean, 64-bit integer, or 64-bit float values, text/nominal constants,
 array construction, nominal path/glob/regex/URL constructors, indexing, length, slicing, membership, concatenation, split,
 join, regex search/replacement, indexed updates, unary/binary operators,
 observations, pure direct calls, and typed filesystem/process operations) take a
