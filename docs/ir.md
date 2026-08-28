@@ -185,9 +185,11 @@ markers and mutable parameters opt into SSA rebinding. `<-`, compound assignment
 types, values, and mutability facts aligned across value blocks, match arms,
 handlers, branches, and loops.
 `mutable_array[index] <- value` lowers to the semantic `SetIndex` operation and
-then rebinds the array's SSA name. The receiver must be mutable, the index must be
-an integer, the replacement must exactly match the element type, and compound
-indexed assignment is not inferred implicitly. The interpreter checks bounds,
+then rebinds the array's SSA name. Indexed `+=`, `-=`, `*=`, `/=`, `%=`, `&=`,
+`|=`, `^=`, `<<=`, and `>>=` first enter an `Index` read state, apply the same
+typed arithmetic or bitwise operation as scalar compound assignment, and finish
+in `SetIndex`. The receiver must be mutable, the index must be an integer, and the
+replacement must exactly match the element type. The interpreter checks bounds,
 copies the source array into fresh value storage, replaces one element, and leaves
 all aliases of the old array unchanged; invalid indices raise `IndexOutOfBounds`.
 Membership lowers to the typed `Contains` operation. Array needles must exactly
