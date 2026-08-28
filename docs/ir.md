@@ -161,6 +161,11 @@ bound may be absent: the lower default is zero and the upper default is one
 preserve the exact array or text type, and require `0 <= low <= high <= count`;
 violations raise typed `IndexOutOfBounds`. Immutable array slices share their
 backing value storage, while text slices are byte views under the `sview` contract.
+Membership lowers to the typed `Contains` operation. Array needles must exactly
+match the element type; text accepts either an 8-bit `char` or a text substring.
+Search is deterministic and linear, the empty text is contained in every text,
+and `not in` remains the ordinary typed boolean `Not` of `Contains`. Consequently
+membership composes with the existing branch-based short-circuit machinery.
 Integer ranges use the same CFG shape. `low..<high` is exclusive ascending,
 `low..=high` is inclusive ascending, and `high..>low` is strict descending.
 The range-owned stride spelling (`low..<high..step`) requires a positive constant;
