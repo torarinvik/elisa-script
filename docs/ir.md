@@ -91,15 +91,17 @@ semantic difference.
 
 `interpret` is the first executable consumer of verified IR and the semantic
 oracle for later bytecode, JIT, and native backends. Its initial core executes
-integer and boolean scalars, text constants, arithmetic and comparisons, direct
-calls, branches, loops, SSA edge arguments, and returns. `HandlerPush` and
+integer and boolean scalars, text constants, homogeneous immutable arrays,
+indexing, array length, arithmetic and comparisons, direct calls, branches,
+loops, SSA edge arguments, and returns. `HandlerPush` and
 `HandlerPop` preserve lexical execution structure while effect dispatch and
 continuation resumption remain the next interpreter increment.
 
 Interpreter failures use `error[InterpretError]`, never a result wrapper. Stable
-`observe` events are appended to a caller-owned array; this gives differential
-testing an ordered trace without embedding a region-bearing collection in the
-error-union return ABI. A deterministic step limit makes runaway programs a
+`observe` events and array elements are appended to caller-owned storage; this
+gives differential testing an ordered trace and keeps region-bearing collections
+out of the error-union return ABI. Invalid indexing is a typed
+`IndexOutOfBounds` failure. A deterministic step limit makes runaway programs a
 typed `StepLimitExceeded` failure.
 
 The interpreter's opcode dispatcher is an Elisa `machine` over the closed
@@ -118,6 +120,9 @@ calls, unary numeric negation and boolean negation, the core arithmetic family
 (`+`, `-`, `*`, `/`, `%`), all six scalar comparisons, short-circuit `and`/`or`,
 conditional expressions, returns, structured `if` branches with
 fallthrough merges, and `while` loops with explicit headers/backedges/exits.
+It also lowers non-empty homogeneous immutable array literals, integer indexing,
+and the `.count` field. Empty and nested array literals remain explicit lowering
+errors until element type syntax and recursive IR type descriptors are defined.
 Unlabeled `break` and `continue` resolve through nested loop-target stacks. It produces structured
 lowering issues for every unsupported construct; it never drops a statement or
 expression silently.

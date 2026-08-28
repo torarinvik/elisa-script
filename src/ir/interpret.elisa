@@ -5,6 +5,7 @@ error InterpretError:
     MissingValue
     TypeMismatch
     DivisionByZero
+    IndexOutOfBounds
     InvalidControlFlow
     UnsupportedInstruction
     StepLimitExceeded
@@ -17,6 +18,7 @@ extend EsIr:
             Bool
             Int
             Float
+            Array
             Text
 
 
@@ -24,6 +26,8 @@ extend EsIr:
             text: sview = ""
             decimal: f64 = 0.0
             integer: i64 = 0
+            array_start: u32 = 0
+            array_count: u32 = 0
             kind: RuntimeValueKind
             boolean: bool = false
 
@@ -46,6 +50,7 @@ extend EsIr:
             MissingValue
             TypeMismatch
             DivisionByZero
+            IndexOutOfBounds
             InvalidControlFlow
             UnsupportedInstruction
             StepLimitExceeded
@@ -100,6 +105,10 @@ extend EsIr:
 
         def runtime_text(value: sview) -> RuntimeValue:
             return RuntimeValue{kind: RuntimeValueKind.Text, text: value}
+
+
+        def runtime_array(start: u32, count: u32) -> RuntimeValue:
+            return RuntimeValue{kind: RuntimeValueKind.Array, array_start: start, array_count: count}
 
 
         def decimal_class(parser: DecimalParser&) -> DecimalClass:
@@ -320,16 +329,40 @@ extend EsIr:
             machine.failure <- InterpretFailure.UnsupportedInstruction
 
 
-        def evaluate_call(machine: mutable Machine&, observations: mutable darray[Observation]&, module: Module&, fn: Function&, instruction: Instruction, ids: darray[u32]&, values: darray[RuntimeValue]&) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+        def evaluate_call(machine: mutable Machine&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, module: Module&, fn: Function&, instruction: Instruction, ids: darray[u32]&, values: darray[RuntimeValue]&) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
             callee_index: usize = find_function(module, instruction.symbol)
             call_arguments: mutable darray[RuntimeValue] = []
             for offset in 0..<instruction.operand_count.usize() |machine, fn, instruction, ids, values, call_arguments|:
                 call_arguments.push(frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + offset], machine))
-            return execute_function(machine, observations, module, callee_index, call_arguments) if machine.failure == InterpretFailure.None
+            return execute_function(machine, observations, storage, module, callee_index, call_arguments) if machine.failure == InterpretFailure.None
             return runtime_void()
 
 
-        def execute_function(machine: mutable Machine&, observations: mutable darray[Observation]&, module: Module&, function_index: usize, arguments: darray[RuntimeValue]&) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+        def evaluate_array(machine: mutable Machine&, storage: mutable darray[RuntimeValue]&, fn: Function&, instruction: Instruction, ids: darray[u32]&, values: darray[RuntimeValue]&) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+            start: u32 = storage.count.u32()
+            for offset in 0..<instruction.operand_count.usize() |machine, storage, fn, instruction, ids, values|:
+                storage.push(frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + offset], machine))
+            return runtime_array(start, instruction.operand_count.u32())
+
+
+        def evaluate_index(machine: mutable Machine&, storage: darray[RuntimeValue]&, collection: RuntimeValue, index: RuntimeValue) -> RuntimeValue:
+            if collection.kind != RuntimeValueKind.Array or index.kind != RuntimeValueKind.Int:
+                machine.failure <- InterpretFailure.TypeMismatch
+                return runtime_void()
+            if index.integer < 0 or index.integer >= collection.array_count.i64():
+                machine.failure <- InterpretFailure.IndexOutOfBounds
+                return runtime_void()
+            return storage[collection.array_start.usize() + index.integer.usize()]
+
+
+        def evaluate_length(machine: mutable Machine&, collection: RuntimeValue) -> RuntimeValue:
+            if collection.kind != RuntimeValueKind.Array:
+                machine.failure <- InterpretFailure.TypeMismatch
+                return runtime_void()
+            return runtime_int(collection.array_count.i64())
+
+
+        def execute_function(machine: mutable Machine&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, module: Module&, function_index: usize, arguments: darray[RuntimeValue]&) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
             if function_index >= module.functions.count:
                 machine.failure <- InterpretFailure.UnknownFunction
                 return runtime_void()
@@ -353,7 +386,7 @@ extend EsIr:
                     return runtime_void()
                 block: Block = fn.blocks[block_index]
                 instruction_end: usize = block.instruction_start.usize() + block.instruction_count.usize()
-                for instruction_index in block.instruction_start.usize()..<instruction_end |machine, observations, module, fn, ids, values|:
+                for instruction_index in block.instruction_start.usize()..<instruction_end |machine, observations, storage, module, fn, ids, values|:
                     runtime_void() return if not tick(machine)
                     instruction: Instruction = fn.instruction_pool[instruction_index]
                     dispatch: mutable InstructionDispatch = InstructionDispatch{value: runtime_void(), opcode: instruction.opcode, produces_value: instruction.result != 0}
@@ -379,6 +412,21 @@ extend EsIr:
                             dispatch.value <- evaluate_not(operand, machine)
                             break
 
+                        Dispatch, Opcode.MakeArray:
+                            dispatch.value <- evaluate_array(machine, storage, fn, instruction, ids, values)
+                            break
+
+                        Dispatch, Opcode.Index:
+                            collection: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
+                            index: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1], machine)
+                            dispatch.value <- evaluate_index(machine, storage, collection, index)
+                            break
+
+                        Dispatch, Opcode.Length:
+                            collection: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
+                            dispatch.value <- evaluate_length(machine, collection)
+                            break
+
                         Dispatch, Opcode.Add | Opcode.Subtract | Opcode.Multiply | Opcode.Divide | Opcode.Remainder | Opcode.Equal | Opcode.NotEqual | Opcode.Less | Opcode.LessEqual | Opcode.Greater | Opcode.GreaterEqual:
                             left: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
                             right: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1], machine)
@@ -386,7 +434,7 @@ extend EsIr:
                             break
 
                         Dispatch, Opcode.Call:
-                            dispatch.value <- evaluate_call(machine, observations, module, fn, instruction, ids, values)
+                            dispatch.value <- evaluate_call(machine, observations, storage, module, fn, instruction, ids, values)
                             break
 
                         Dispatch, Opcode.Observe:
@@ -453,6 +501,8 @@ extend EsIr:
                 raise InterpretError.TypeMismatch
             if failure == InterpretFailure.DivisionByZero:
                 raise InterpretError.DivisionByZero
+            if failure == InterpretFailure.IndexOutOfBounds:
+                raise InterpretError.IndexOutOfBounds
             if failure == InterpretFailure.InvalidControlFlow:
                 raise InterpretError.InvalidControlFlow
             if failure == InterpretFailure.UnsupportedInstruction:
@@ -462,11 +512,11 @@ extend EsIr:
 
 
     public:
-        def interpret(module: Module&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, step_limit: u64 = 1000000) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+        def interpret(module: Module&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, step_limit: u64 = 1000000) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             raise InterpretError.VerificationFailed if verify(module).count != 0
             function_index: usize = find_function(module, entry)
             raise InterpretError.UnknownFunction if function_index == module.functions.count
             machine: mutable Machine = Machine{steps: 0, step_limit: step_limit, failure: InterpretFailure.None}
-            value: RuntimeValue = execute_function(machine, observations, module, function_index, arguments)
+            value: RuntimeValue = execute_function(machine, observations, storage, module, function_index, arguments)
             try raise_interpret_failure(machine.failure) if machine.failure != InterpretFailure.None
             return Execution{value: value, steps: machine.steps}
