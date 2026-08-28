@@ -353,7 +353,9 @@ reference interpreter. The first filesystem operations (`PathExists`, `ReadText`
 `WriteText`, `RemovePath`, and `MakeExecutable`) use the same typed resource
 wrappers as the oracle, while retaining the packed program-counter machine. Its
 value dispatcher is itself an explicit state machine. The eligibility gate rejects
-other widths, nested arrays, handlers, and continuations.
+other widths, nested arrays, handlers, and continuations; failure-sensitive integer
+divide/remainder/shift operations remain on the interpreter path, while `f64`
+division is direct.
 Process execution and capture (`RunProcess`, stdout/stderr
 capture, stdin transport, and `ProcessCapture` accessors) use the same typed argv
 and stream helpers as the oracle. Unsupported modules deterministically rebuild
