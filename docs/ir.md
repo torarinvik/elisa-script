@@ -31,7 +31,9 @@ and must be covered by the enclosing function's effect row. A backend may lower
 it to an interpreter dispatch, VM opcode, continuation operation, or optimized
 native handler only after semantic optimizations are complete.
 
-Elisa's existing `signal Family.Operation` syntax lowers directly to `Perform`.
+Elisa's `signal Family.Operation` and `signal Family.Operation(payload, ...)`
+syntax lower directly to `Perform`; payload expressions are evaluated once in
+source order and become its typed operand slice.
 The function effect row may grant the complete operation or its family. Every
 perform receives a stable source-derived trace identity.
 

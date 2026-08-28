@@ -63,12 +63,27 @@ This provides several useful properties:
 Only direct byte adjacency enables the shorthand. Whitespace separates the
 identifier from the literal and does not trigger desugaring.
 
+## Effect payloads
+
+Elisa's contextual signal statement accepts an optional ordinary argument list:
+
+```elisa
+signal Progress.Tick(current + 1, "compile")
+```
+
+The existing call-suffix parser handles positional payload expressions, so evaluation
+order and expression syntax are identical to Elisa calls. Named payloads are rejected
+until operation declarations provide authoritative parameter labels. Until the recursive AST
+ABI gains a dedicated signal node, the arguments are stored as ordered expression
+statements in `Stmt.Block("signal", ...)`; existing semantic block visitors therefore
+resolve and type-check them without a parallel traversal.
+
 ## Deferred parser work
 
 The following features belong to later, explicitly designed changes:
 
 - Algebraic `effect` declarations
-- Handler declarations and installation blocks
+- Source handler declarations, operation clauses, and explicit `resume` expressions
 - Multiline/raw typed literals
 - Script-level dependency declarations if decorators are insufficient
 - CLI derivation rules for `@command`
@@ -79,4 +94,4 @@ The following features belong to later, explicitly designed changes:
 - `test/parser/elisa_compat/parser_ast_test.elisa`: copied Elisa AST regression suite
 - `test/parser/elisa_compat/parser_smoke.elisa`: copied parser embedding/codegen surface
 
-Current result: 102 parser tests pass—100 inherited and 2 Elisascript-specific.
+Current result: 103 parser tests pass—100 inherited and 3 Elisascript-specific.
