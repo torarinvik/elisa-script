@@ -154,6 +154,12 @@ Integer ranges use the same CFG shape. `low..<high` is exclusive ascending,
 `low..=high` is inclusive ascending, and `high..>low` is strict descending.
 The range-owned stride spelling (`low..<high..step`) requires a positive constant;
 the latch adds or subtracts it according to direction, including after `continue`.
+Scalar statement `match` lowers to an ordered comparison-and-branch state machine.
+Integer, float, boolean, character, and text literal arms are typed against the
+scrutinee; pin patterns compare an existing binding, and final binding/wildcard
+arms form catch-alls. Each arm has lexical bindings, while mutations of outer
+locals converge through typed merge-block parameters. Structural patterns and
+guarded arms remain explicit errors until structural IR values are available.
 Unlabeled `break` and `continue` resolve through nested loop-target stacks. It produces structured
 lowering issues for every unsupported construct; it never drops a statement or
 expression silently.
