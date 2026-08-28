@@ -111,7 +111,9 @@ nominal IR type.
 explicit search machine with greedy backtracking; future bytecode, JIT, and native
 lowerings therefore share the operation contract without inheriting a host
 language's regex behavior. Character ranges and Perl-style shorthand classes have
-fixed ASCII definitions rather than platform locale semantics.
+fixed ASCII definitions rather than platform locale semantics. Top-level
+alternation is split only at unescaped pipes outside character classes, and each
+branch runs through the same bounded matcher states.
 
 The AST-to-IR boundary reports the same mistakes as structured `TypeMismatch`
 lowering issues, before a backend sees the module. This covers declared binding

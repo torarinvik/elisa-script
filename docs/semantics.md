@@ -76,9 +76,11 @@ Its initial runtime grammar supports literal characters, `.`, start/end anchors
 classes `\d`, `\D`, `\w`, `\W`, `\s`, and `\S` work both as atoms and inside
 classes. Their meaning is deliberately ASCII and locale-independent so differential
 tests observe identical behavior on every backend. Search is unanchored unless `^`
-is present. Alternation, grouping, captures, and replacement are reserved for the
-shared compiled regex engine; they are not silently delegated to a host regex
-implementation.
+is present. Top-level `|` alternation evaluates branches from left to right, with
+`^` and `$` scoped to the branch in which they occur; escaped pipes and pipes inside
+character classes remain literal members. Grouping, captures, and replacement are
+reserved for the shared compiled regex engine; they are not silently delegated to
+a host regex implementation.
 
 ## Compile-time validation
 
