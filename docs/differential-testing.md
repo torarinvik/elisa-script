@@ -125,6 +125,9 @@ and `observe` events into owned differential values, and propagates source and
 runtime error families unchanged. Its `timeout_steps` field is the VM step limit;
 filesystem and process effects therefore remain visible through the same typed
 capabilities as ordinary script execution.
+The in-process adapter rejects nonempty `working_directory`, `environment`,
+`stdin`, or `protocol` fields with `DifferentialRunnerError.UnsupportedConfiguration`;
+use a process runner when a candidate must execute in a separate configured world.
 
 For a runnable script that follows the launcher ABI, use `ElisascriptProgram` and
 omit `entry`; its `handlers` field has the same meaning. `run_differential_elisascript_program` invokes
