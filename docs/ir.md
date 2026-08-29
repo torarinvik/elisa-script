@@ -219,8 +219,9 @@ language's regex behavior. Character ranges and Perl-style shorthand classes hav
 fixed ASCII definitions rather than platform locale semantics. Top-level
 alternation is split only at unescaped pipes outside character classes, and each
 branch runs through the same bounded matcher states. Parenthesized groups are
-matched recursively, including nested alternation and quantifiers, but do not
-capture values.
+matched recursively, including nested alternation and quantifiers. Perl-style
+named group markers (`(?<name>...)`) are accepted for matching; replacement
+captures use their positional `$1` through `$9` references.
 `RegexReplace` has signature `Text × Named(Regex) × Text -> Text`. It reuses the
 same branch matcher to locate non-overlapping spans, copies unmatched and replacement
 bytes into fresh storage, expands `$0` to each complete matched span, and advances

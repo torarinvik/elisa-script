@@ -85,7 +85,8 @@ participate in alternation and greedy quantifiers. Group-local `^` and `$` retai
 their ordinary whole-text meaning. `replace_regex(text, pattern, replacement) -> sview`
 provides deterministic substitution for this grammar: it finds non-overlapping
 matches from left to right and inserts the replacement text, expanding the portable
-`$0` token to the complete matched span. `$1` through `$9` expand for flat,
+`$0` token to the complete matched span. Perl-style named group markers
+(`(?<name>...)`) are accepted, and `$1` through `$9` expand for flat,
 non-quantified capture groups when their spans
 can be proven against the complete match (for example, `([a-z]+)=([0-9]+)`).
 Nested, quantified, or top-level-alternating capture layouts remain literal rather
