@@ -203,7 +203,9 @@ existing `FormatInt`/`FormatFloat` conversion for numeric values. Integers use
 canonical decimal formatting and floats use the core `%g` spelling. Literal
 pieces use the same escape decoder as ordinary strings, and expressions are
 evaluated exactly once from left to right. Booleans and aggregates are rejected
-until an explicit formatting operation is used. Consequently the reference
+until an explicit formatting operation is used. `format_bool(value: bool) ->
+sview` provides canonical lowercase `true`/`false` text for boolean values.
+Consequently the reference
 interpreter and packed bytecode path produce identical text without a hidden
 formatting or shell layer.
 
@@ -249,6 +251,7 @@ optional sign, fractional part, and `e`/`E` exponent (including an exponent sign
 It rejects missing digits, trailing characters, and incomplete exponents. The
 matching `format_float(value: f64) -> sview` uses Elisa's `%g`-style canonical
 runtime spelling and keeps the returned text in permanent storage.
+`format_bool(value: bool) -> sview` returns canonical lowercase `true` or `false`.
 
 ## Filesystem capability
 
