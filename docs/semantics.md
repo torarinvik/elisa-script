@@ -182,9 +182,14 @@ same bounded aggregate-depth rule as dictionary literals. Duplicate keys replace
 the prior value while preserving the runtime's insertion order.
 The accumulator is an SSA loop-carried value updated with `Concat` for arrays or
 immutable `SetIndex` copies for maps, and the header, filter, append, latch, and
-exit are ordinary state-machine blocks. Set comprehensions, tuple binders, and
-quantifier/query forms remain explicit unsupported diagnostics until their
-collection representation and semantics are defined.
+exit are ordinary state-machine blocks. Quantifiers use the same loop shape but
+carry a `bool`: `any` exits early on the first true predicate, while `all` exits
+early on the first false predicate. Empty inputs therefore produce `false` for
+`any` and `true` for `all`. The verification spellings `exists x in values: predicate`
+and `forall x in values: predicate` are equivalent existential and
+universal forms. Quantifier predicates must be statically boolean and straight-line;
+effectful or multi-binder forms are rejected until their semantics are specified.
+Set comprehensions remain an explicit unsupported diagnostic.
 
 ## Text field processing
 

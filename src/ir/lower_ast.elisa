@@ -346,6 +346,12 @@ extend EsIr:
             return "array"
 
 
+        def comprehension_query_kind(state: LowerState&, pos: Ast::Pos&) -> sview:
+            for annotation in state.comprehension_kinds |pos|:
+                return annotation.name if annotation.owner == "__query" and annotation.line == pos.line
+            return ""
+
+
         def emit_handler_unwind(state: mutable LowerState&, target_depth: usize, pos: Ast::Pos&) -> void can[Memory.Allocate, Abort.Panic]:
             while handler_index > target_depth |handler_index: usize = state.active_handlers.count|:
                 handler_index <- handler_index - 1
@@ -957,6 +963,169 @@ extend EsIr:
             return result
 
 
+        # Quantifier comprehensions (`any`/`exists` and `all`/`forall`) reduce an
+        # array or text iterable to one typed boolean. The predicate is evaluated
+        # once per element; a matching existential or failing universal branches
+        # directly to the exit state, while the opposite result advances through
+        # the latch. Non-boolean truthiness is intentionally rejected.
+        def lower_query_comprehension(variable: sview, iterable: Ast::Expr, condition: Ast::Expr, body: Ast::Expr, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+            result_type: Type = type_from_name("bool")
+            selector: sview = comprehension_query_kind(state, pos)
+            existential: bool = selector == "any" or selector == "exists"
+            universal: bool = selector == "all" or selector == "forall"
+            if not existential and not universal:
+                add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "only any/all quantifiers are in the initial IR lowering subset")
+                return LoweredValue{valid: false, value: 0, type: result_type}
+            body_absent: mutable bool = false
+            match body:
+                Expr.Absent:
+                    body_absent <- true
+                _:
+                    pass
+            if variable == "" or not body_absent:
+                add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "quantifiers require a bound predicate rather than a projection")
+                return LoweredValue{valid: false, value: 0, type: result_type}
+            collection: LoweredValue = lower_expression(iterable, state)
+            if not collection.valid:
+                return LoweredValue{valid: false, value: 0, type: result_type}
+            if collection.type.kind != TypeKind.Array and collection.type.kind != TypeKind.Text:
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "quantifiers require an array or text iterable")
+                return LoweredValue{valid: false, value: 0, type: result_type}
+            element_type: Type = type_from_name("char") if collection.type.kind == TypeKind.Text else array_element_type(collection.type)
+            condition_absent: mutable bool = false
+            match condition:
+                Expr.Absent:
+                    condition_absent <- true
+                _:
+                    pass
+            if condition_absent and element_type.kind != TypeKind.Bool:
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "quantifier predicates must have boolean type")
+                return LoweredValue{valid: false, value: 0, type: result_type}
+
+            accumulator_name: sview = "__es_comprehension_accumulator"
+            initial_accumulator: LoweredValue = emit_constant(state, result_type, 0, "", "", not existential, ir_span(pos))
+            state.names.push(accumulator_name)
+            state.values.push(initial_accumulator.value)
+            state.types.push(result_type)
+            state.mutables.push(true)
+            accumulator_index: usize = state.names.count - 1
+            context_start: u32 = state.loop_carried_indices.count.u32()
+            state.loop_carried_indices.push(accumulator_index.u32())
+            state.loop_context_starts.push(context_start)
+            state.loop_context_counts.push(1)
+            state.loop_handler_depths.push(state.active_handlers.count.u32())
+            context: usize = state.loop_context_counts.count - 1
+            header_block: u32 = fresh_block(state)
+            body_block: u32 = fresh_block(state)
+            latch_block: u32 = fresh_block(state)
+            exit_block: u32 = fresh_block(state)
+            index_type: Type = type_from_name("usize")
+            initial_index: LoweredValue = emit_constant(state, index_type, 0, "", "", false, ir_span(pos))
+            entry_args: (start: u32, count: u16) = append_context_arguments(state, context)
+            state.edge_arg_pool.push(initial_index.value)
+            state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: header_block, target_count: 1, edge0_arg_start: entry_args.start, edge0_arg_count: entry_args.count + 1, span: ir_span(pos)}
+            finish_block(state)
+
+            header_accumulator: u32 = fresh_value(state)
+            latch_accumulator: u32 = fresh_value(state)
+            exit_accumulator: u32 = fresh_value(state)
+            header_index: u32 = fresh_value(state)
+            state.pending_parameter_blocks.push(header_block)
+            state.pending_parameters.push(Parameter{value: header_accumulator, type: result_type, name: accumulator_name})
+            state.pending_parameter_blocks.push(latch_block)
+            state.pending_parameters.push(Parameter{value: latch_accumulator, type: result_type, name: accumulator_name})
+            state.pending_parameter_blocks.push(exit_block)
+            state.pending_parameters.push(Parameter{value: exit_accumulator, type: result_type, name: accumulator_name})
+            state.pending_parameter_blocks.push(header_block)
+            state.pending_parameters.push(Parameter{value: header_index, type: index_type, name: "comprehension-index"})
+            state.values[accumulator_index] <- header_accumulator
+
+            state.current_block <- header_block
+            state.terminated <- false
+            length_result: u32 = fresh_value(state)
+            length_start: u32 = state.operand_pool.count.u32()
+            state.operand_pool.push(collection.value)
+            state.instructions.push(Instruction{opcode: Opcode.Length, result: length_result, result_type: index_type, operand_start: length_start, operand_count: 1, span: ir_span(pos)})
+            condition_result: u32 = fresh_value(state)
+            condition_start: u32 = state.operand_pool.count.u32()
+            state.operand_pool.push(header_index)
+            state.operand_pool.push(length_result)
+            state.instructions.push(Instruction{opcode: Opcode.Less, result: condition_result, result_type: result_type, operand_start: condition_start, operand_count: 2, span: ir_span(pos)})
+            exit_args: (start: u32, count: u16) = append_context_arguments(state, context)
+            state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: condition_result, operand_count: 1, target0: body_block, target1: exit_block, target_count: 2, edge1_arg_start: exit_args.start, edge1_arg_count: exit_args.count, span: ir_span(pos)}
+            finish_block(state)
+
+            outer_scope: usize = state.names.count
+            state.structured_depth <- state.structured_depth + 1
+            state.break_targets.push(exit_block)
+            state.continue_targets.push(latch_block)
+            state.current_block <- body_block
+            state.terminated <- false
+            element_result: u32 = fresh_value(state)
+            element_start: u32 = state.operand_pool.count.u32()
+            state.operand_pool.push(collection.value)
+            state.operand_pool.push(header_index)
+            state.instructions.push(Instruction{opcode: Opcode.Index, result: element_result, result_type: element_type, operand_start: element_start, operand_count: 2, span: ir_span(pos)})
+            state.names.push(variable)
+            state.values.push(element_result)
+            state.types.push(element_type)
+            state.mutables.push(false)
+            predicate: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: result_type}
+            if condition_absent:
+                predicate <- LoweredValue{valid: true, value: element_result, type: result_type}
+            else:
+                predicate <- lower_expression(condition, state)
+            predicate_valid: mutable bool = predicate.valid and predicate.type.kind == TypeKind.Bool and state.current_block == body_block and not state.terminated
+            if predicate.valid and predicate.type.kind != TypeKind.Bool:
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "quantifier predicate must have boolean type")
+            if not predicate_valid:
+                add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "quantifier predicate must be a straight-line boolean expression") if predicate.valid
+                invalid_args: (start: u32, count: u16) = append_context_arguments(state, context)
+                state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: latch_block, target_count: 1, edge0_arg_start: invalid_args.start, edge0_arg_count: invalid_args.count, span: ir_span(pos)} if not state.terminated
+            else:
+                early_value: LoweredValue = emit_constant(state, result_type, 0, "", "", existential, ir_span(pos))
+                current_args: (start: u32, count: u16) = append_context_arguments(state, context)
+                early_start: u32 = state.edge_arg_pool.count.u32()
+                state.edge_arg_pool.push(early_value.value)
+                state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: predicate.value, operand_count: 1, target0: (exit_block if existential else latch_block), target1: (latch_block if existential else exit_block), target_count: 2, edge0_arg_start: (early_start if existential else current_args.start), edge0_arg_count: 1, edge1_arg_start: (current_args.start if existential else early_start), edge1_arg_count: 1, span: ir_span(pos)}
+            finish_block(state)
+            _ = state.break_targets.pop()
+            _ = state.continue_targets.pop()
+            state.names.truncate(outer_scope)
+            state.values.truncate(outer_scope)
+            state.types.truncate(outer_scope)
+            state.mutables.truncate(outer_scope)
+
+            state.current_block <- latch_block
+            state.terminated <- false
+            state.values[accumulator_index] <- latch_accumulator
+            one: LoweredValue = emit_constant(state, index_type, 1, "", "", false, ir_span(pos))
+            next_index: u32 = fresh_value(state)
+            increment_start: u32 = state.operand_pool.count.u32()
+            state.operand_pool.push(header_index)
+            state.operand_pool.push(one.value)
+            state.instructions.push(Instruction{opcode: Opcode.Add, result: next_index, result_type: index_type, operand_start: increment_start, operand_count: 2, span: ir_span(pos)})
+            backedge_args: (start: u32, count: u16) = append_context_arguments(state, context)
+            state.edge_arg_pool.push(next_index)
+            state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: header_block, target_count: 1, edge0_arg_start: backedge_args.start, edge0_arg_count: backedge_args.count + 1, span: ir_span(pos)}
+            finish_block(state)
+
+            state.current_block <- exit_block
+            state.terminated <- false
+            state.values[accumulator_index] <- exit_accumulator
+            result: LoweredValue = LoweredValue{valid: predicate_valid, value: exit_accumulator, type: result_type}
+            _ = state.loop_context_starts.pop()
+            _ = state.loop_context_counts.pop()
+            _ = state.loop_handler_depths.pop()
+            state.loop_carried_indices.truncate(context_start.usize())
+            state.structured_depth <- state.structured_depth - 1
+            state.names.truncate(accumulator_index)
+            state.values.truncate(accumulator_index)
+            state.types.truncate(accumulator_index)
+            state.mutables.truncate(accumulator_index)
+            return result
+
+
         # The parser lowers every f-string to `__fstr(chunk, value, chunk, ...)`.
         # Text pieces pass through directly; signed i64 and f64 pieces use the
         # existing deterministic formatting opcodes. Other values stay rejected
@@ -1319,6 +1488,7 @@ extend EsIr:
                     return LoweredValue{valid: true, value: result, type: result_type}
                 Expr.Comprehension(variable, iterable, condition, body, pos):
                     return lower_map_comprehension(variable, iterable, condition, body, pos, state) if comprehension_kind(state, pos) == "map"
+                    return lower_query_comprehension(variable, iterable, condition, body, pos, state) if comprehension_kind(state, pos) == "query"
                     return lower_array_comprehension(variable, iterable, condition, body, pos, state)
                 Expr.DictLit(entries, pos):
                     if entries.count == 0:
