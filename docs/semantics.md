@@ -85,10 +85,10 @@ participate in alternation and greedy quantifiers, but are matching-only groups:
 captures are not exposed. Group-local `^` and `$` retain their ordinary whole-text
 meaning. `replace_regex(text, pattern, replacement) -> sview`
 provides deterministic substitution for this grammar: it finds non-overlapping
-matches from left to right and inserts the replacement text literally. Empty matches
-advance one input byte (while retaining that byte) so replacement always terminates;
-capture interpolation such as `$1` is intentionally not implied by the literal
-replacement argument.
+matches from left to right and inserts the replacement text, expanding the portable
+`$0` token to the complete matched span. Empty matches advance one input byte (while
+retaining that byte) so replacement always terminates; other `$n` forms, including
+`$1`, remain literal until capture values are defined.
 
 `split_regex(text, pattern) -> darray[sview]` uses the same matcher for
 Perl/AWK-style field boundaries. It preserves empty fields before, between, and

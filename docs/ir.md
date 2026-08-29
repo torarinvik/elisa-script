@@ -209,10 +209,11 @@ branch runs through the same bounded matcher states. Parenthesized groups are
 matched recursively, including nested alternation and quantifiers, but do not
 capture values.
 `RegexReplace` has signature `Text × Named(Regex) × Text -> Text`. It reuses the
-same branch matcher to locate non-overlapping spans, copies unmatched and literal
-replacement bytes into fresh storage, and advances after zero-width matches so an
-empty pattern cannot loop forever. Capture groups and replacement interpolation are
-reserved until recursive regex match values are defined.
+same branch matcher to locate non-overlapping spans, copies unmatched and replacement
+bytes into fresh storage, expands `$0` to each complete matched span, and advances
+after zero-width matches so an empty pattern cannot loop forever. Capture groups and
+`$n` interpolation beyond `$0` are reserved until recursive regex match values are
+defined.
 `RegexSplit` has signature `Text × Named(Regex) -> Array[Text]`. It uses those same
 spans as field boundaries, preserves empty fields, and applies an explicit one-byte
 advance for zero-width matches. The result is materialized in caller-owned flat
