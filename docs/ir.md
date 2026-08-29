@@ -208,6 +208,11 @@ same branch matcher to locate non-overlapping spans, copies unmatched and litera
 replacement bytes into fresh storage, and advances after zero-width matches so an
 empty pattern cannot loop forever. Capture groups and replacement interpolation are
 reserved until recursive regex match values are defined.
+`RegexSplit` has signature `Text × Named(Regex) -> Array[Text]`. It uses those same
+spans as field boundaries, preserves empty fields, and applies an explicit one-byte
+advance for zero-width matches. The result is materialized in caller-owned flat
+storage, so indexing, iteration, and structural equality remain ordinary verified
+array operations.
 
 `Map` is the closed aggregate counterpart to `Array`. Its `Type` descriptor carries
 one exact key type and one exact value type; `MakeMap` consumes an even key/value
@@ -391,7 +396,7 @@ Modules containing only the currently closed scalar, text, regex, homogeneous-ar
 and scalar-map subset (boolean, 64-bit integer, or 64-bit float values, text/nominal constants,
 including one nested array level,
 array/map construction and key extraction, nominal path/glob/regex/URL constructors, typed path composition/decomposition, indexing, length, slicing, membership, concatenation, split,
-join, typed integer/float parsing and formatting, regex search/replacement, indexed updates, unary/binary operators,
+join, typed integer/float parsing and formatting, regex search/replacement/splitting, indexed updates, unary/binary operators,
 observations, pure direct calls, and typed filesystem/process operations) take a
 direct packed-instruction path. Calls use recursive state-machine frames with one
 shared step budget, storage, and

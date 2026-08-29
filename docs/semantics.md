@@ -90,6 +90,13 @@ advance one input byte (while retaining that byte) so replacement always termina
 capture interpolation such as `$1` is intentionally not implied by the literal
 replacement argument.
 
+`split_regex(text, pattern) -> darray[sview]` uses the same matcher for
+Perl/AWK-style field boundaries. It preserves empty fields before, between, and
+after non-overlapping matches. A zero-width match emits its current field, advances
+the search position by one byte, and retains that byte for the next field; this
+explicit progress rule makes even an empty or anchor-only pattern total. The
+operation is pure and lowers to a dedicated verified `RegexSplit` instruction.
+
 ## Text field processing
 
 Elisascript provides a strongly typed compiler-known split operation for the core
