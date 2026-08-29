@@ -82,7 +82,9 @@ glob("src/**/*.elisa")
 
 The shorthand also accepts a triple-quoted payload, so `regex"""..."""` and
 similar forms have the same AST shape while allowing embedded newlines. Bare
-triple-quoted text remains a block comment at the lexer boundary.
+triple-quoted text remains a block comment at the lexer boundary. An escaped
+closing delimiter is retained as payload, so quote runs can be embedded without
+changing the desugared call shape.
 
 Explicit integer suffixes are carried on the literal AST node itself. For example,
 `1u8 + 2u8` contains two `IntLitTyped` nodes, each with its own suffix. This avoids

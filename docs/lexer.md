@@ -61,6 +61,9 @@ payload may span physical lines; its source bytes (including newlines and unknow
 backslash escapes) are preserved until the shared literal decoder runs. Elisa's
 known escapes (`\\n`, `\\t`, `\\r`, `\\0`, `\\\\`, `\\"`, `\\'`, `\\xNN`, and `\\uNNNN`)
 are decoded consistently by the reference interpreter and bytecode engine.
+The closing delimiter is escape-aware: a `"""` run preceded by an odd number of
+backslashes stays in the payload, allowing embedded quote runs; an even run closes
+the literal normally.
 
 Bare `"""..."""` remains an Elisa block comment. Triple-quoted literal mode is
 therefore only selected when the opening delimiter is directly adjacent to an

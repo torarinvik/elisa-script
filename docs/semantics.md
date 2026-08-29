@@ -61,7 +61,8 @@ adjacent triple-quoted literals recognize Elisa's standard escapes (`\\n`, `\\t`
 escapes remain literal. Triple-quoted payloads may span lines, while a bare
 `"""..."""` sequence continues to denote an Elisa block comment. The reference
 interpreter and packed bytecode path call the same decoder, so differential tests
-observe identical text values.
+observe identical text values. In a triple-quoted payload, a closing `"""` run
+preceded by an odd number of backslashes is data rather than a terminator.
 
 The shared IR recognizes these five compiler-known calls when no source function
 shadows the prefix. A constant string payload emits a nominal `Constant`; a runtime
