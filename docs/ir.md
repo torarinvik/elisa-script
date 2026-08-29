@@ -683,7 +683,10 @@ and add/subtract the positive constant stride in the latch. Range bounds and
 stride are lowered once, so ranges never allocate a temporary collection. An
 optional boolean filter branches to the append state or directly to the latch.
 Array projections become singleton `MakeArray` values and `Concat` produces the
-next accumulator. Dictionary projections lower their key and value separately
+next accumulator. When an array projection uses two dictionary binders, the
+canonical array binder comes from a `MapKeys` snapshot and the value binder is a
+checked `Index` lookup before the projection executes. Dictionary projections
+lower their key and value separately
 and use immutable `SetIndex` copies, retaining duplicate-key replacement
 semantics; range-backed dictionary projections use the same counter directly as
 the key/value source. A two-binder dictionary iterable snapshots `MapKeys` once,

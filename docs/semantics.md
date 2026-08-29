@@ -168,6 +168,7 @@ doubled: darray[i64] = [value * 2i64 for value in values]
 evens: darray[i64] = [value for value in values if value % 2i64 == 0i64]
 letters: darray[char] = [character for character in text]
 doubled_range: darray[i64] = [value * 2i64 for value in 0i64..<4i64]
+values_only: darray[i64] = [value * 2i64 for key, value in values]
 indexed: dict[i64, i64] = {value: value * 10i64 for value in values if value > 0i64}
 remapped: dict[i64, i64] = {key: value * 2i64 for key, value in values}
 positive_count: usize = count value in values where value > 0i64
@@ -176,10 +177,13 @@ positive_product: i64 = product value in values where value > 0i64
 ```
 
 The initial lowering supports one binder over an array, text value, or integer
-range and an optional boolean `if` filter. Dictionary comprehensions additionally
-support two read-only binders (`key, value`) over a dictionary iterable. Array/text
-iteration uses checked `Length`/`Index` operations; text iteration produces
-one-character values.
+range and an optional boolean `if` filter. Array and dictionary comprehensions
+also support two read-only binders (`key, value`) over a dictionary iterable; the
+array form projects a value sequence while the dictionary form can use either
+binder in its `key: value` projection. Array/text iteration uses checked
+`Length`/`Index` operations; map iteration snapshots keys once and performs a
+checked value lookup for the second binder. Text iteration produces one-character
+values.
 Integer ranges stay counter-driven and do not materialize a temporary array:
 `low..<high` is exclusive ascending, `low..=high` is inclusive ascending, and
 `high..>low` is strict descending. The range-owned stride spelling
