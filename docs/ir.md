@@ -304,7 +304,8 @@ requires `Process.Run` plus `ProcessError`. The interpreter executes it directly
 a POSIX `fork`/`execvp`/`waitpid` state transition with a NUL-terminated argv. No
 command string or shell expansion exists between typed IR and the operating system.
 The explicit `executable(text)` constructor adapts a runtime `Text` value to the
-nominal `Executable` type for validated runner configurations. It rejects empty or
+nominal `Executable` type for validated runner configurations. It contributes
+`ProcessError` to the enclosing function's error row and rejects empty or
 embedded-NUL names at execution time; every process opcode applies the same NUL
 check to its executable and argument values before constructing C strings.
 `CaptureProcessStdout` has the same operands, effect, and error row, with `Text` as
