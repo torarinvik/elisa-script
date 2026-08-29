@@ -689,8 +689,9 @@ initialized to the identity (`false` for existential `any` / `exists`, `true` fo
 universal `all` / `forall`); a predicate branch targets the exit block on the
 decisive result and otherwise advances to the latch. The initial shared IR
 also lowers `each` queries as identity array comprehensions. It deliberately
-declines set, multi-binder, and non-straight-line query predicates rather than
-lowering them with guessed semantics.
+lowers `count` queries as a `usize` accumulator with a conditional increment.
+It deliberately declines set, multi-binder, and non-straight-line query
+predicates rather than lowering them with guessed semantics.
 
 Elisa value blocks lower their leading statements in a lexical binding scope and
 then yield the tail expression. This makes the idiomatic multiline `return if ...:`

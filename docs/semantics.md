@@ -168,6 +168,7 @@ doubled: darray[i64] = [value * 2i64 for value in values]
 evens: darray[i64] = [value for value in values if value % 2i64 == 0i64]
 letters: darray[char] = [character for character in text]
 indexed: dict[i64, i64] = {value: value * 10i64 for value in values if value > 0i64}
+positive_count: usize = count value in values where value > 0i64
 ```
 
 The initial lowering supports one binder over an array or text value and an
@@ -189,6 +190,8 @@ early on the first false predicate. Empty inputs therefore produce `false` for
 and `forall x in values: predicate` are equivalent existential and
 universal forms. Quantifier predicates must be statically boolean and straight-line;
 effectful or multi-binder forms are rejected until their semantics are specified.
+`count` is a typed `usize` fold over the same array/text iterables and increments
+its loop-carried counter only for matching elements.
 The collection query `each x in values where predicate` is the typed identity
 projection, equivalent to `[x for x in values if predicate]`. Set comprehensions
 remain an explicit unsupported diagnostic.
