@@ -80,9 +80,10 @@ classes. Their meaning is deliberately ASCII and locale-independent so different
 tests observe identical behavior on every backend. Search is unanchored unless `^`
 is present. Top-level `|` alternation evaluates branches from left to right, with
 `^` and `$` scoped to the branch in which they occur; escaped pipes and pipes inside
-character classes remain literal members. Grouping, captures, and replacement are
-reserved for the shared compiled regex engine; they are not silently delegated to
-a host regex implementation. `replace_regex(text, pattern, replacement) -> sview`
+character classes remain literal members. Parenthesized groups may nest and
+participate in alternation and greedy quantifiers, but are matching-only groups:
+captures are not exposed. Group-local `^` and `$` retain their ordinary whole-text
+meaning. `replace_regex(text, pattern, replacement) -> sview`
 provides deterministic substitution for this grammar: it finds non-overlapping
 matches from left to right and inserts the replacement text literally. Empty matches
 advance one input byte (while retaining that byte) so replacement always terminates;

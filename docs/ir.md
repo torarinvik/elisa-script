@@ -200,12 +200,14 @@ lowerings therefore share the operation contract without inheriting a host
 language's regex behavior. Character ranges and Perl-style shorthand classes have
 fixed ASCII definitions rather than platform locale semantics. Top-level
 alternation is split only at unescaped pipes outside character classes, and each
-branch runs through the same bounded matcher states.
+branch runs through the same bounded matcher states. Parenthesized groups are
+matched recursively, including nested alternation and quantifiers, but do not
+capture values.
 `RegexReplace` has signature `Text × Named(Regex) × Text -> Text`. It reuses the
 same branch matcher to locate non-overlapping spans, copies unmatched and literal
 replacement bytes into fresh storage, and advances after zero-width matches so an
 empty pattern cannot loop forever. Capture groups and replacement interpolation are
-reserved until recursive regex IR values are defined.
+reserved until recursive regex match values are defined.
 
 The AST-to-IR boundary reports the same mistakes as structured `TypeMismatch`
 lowering issues, before a backend sees the module. This covers declared binding
