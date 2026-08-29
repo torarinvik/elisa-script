@@ -241,7 +241,7 @@ non-overlapping matched span. Zero-width matches advance explicitly, matching th
 termination rule used by `RegexSplit` and `RegexReplace`.
 
 `Map` is the closed aggregate counterpart to `Array`. Its `Type` descriptor carries
-one exact scalar key type and one exact value type, with one inline array layer for
+one exact scalar key type and one exact value type, with two inline array layers for
 values; `MakeMap` consumes an even key/value
 operand sequence and produces the corresponding map. `Index`, `IndexValid`, `Contains`,
 `Length`, and `SetIndex` accept maps with typed key/value contracts. Runtime map payloads are
@@ -249,7 +249,7 @@ interleaved key/value pairs in caller-owned flat storage and validate their comp
 pair range before access. Missing keys use the existing typed
 `IndexOutOfBounds` error rather than a sentinel value. The reference interpreter and
 the bytecode facade share this representation. Maps whose key and value types are
-direct scalar/nominal representations and one-level array values use the packed path
+direct scalar/nominal representations and up to two-level array values use the packed path
 for construction, lookup, membership, equality, updates, and key extraction; maps
 containing unsupported aggregate components continue through the verified interpreter
 oracle. `MapKeys`
