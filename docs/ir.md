@@ -666,6 +666,9 @@ dispatch when supported and otherwise preserves interpreter semantics for dynami
 effects and continuations.
 The file-backed boundary also rejects embedded NUL bytes before tokenization;
 source cannot be silently truncated by the C-string compatibility boundary.
+Hosts with an explicit in-memory byte span can use
+`lower_elisascript_source_bytes` (or its `_with_handlers` variant), which checks
+the supplied length for NUL bytes before constructing the terminated parser buffer.
 
 The launcher-facing ABI is `main(arguments: darray[sview]) -> i64`. The program
 runner appends each host argument to caller-owned runtime storage, passes one typed
