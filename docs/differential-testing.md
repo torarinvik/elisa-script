@@ -39,11 +39,13 @@ comparator is implemented as an explicit Elisa state machine, so it cannot skip 
 comparison phase or silently continue after a mismatch.
 
 Observation values include `Void`, `Bool`, `Int`, exact `Float`, `Text`, recursive
-`Array`, and structured `ProcessCapture` kinds. Arrays use a flat, owned value
-pool (`DifferentialRun.values`) with `(array_start, array_count)` slices, so nested
-observations remain deterministic without borrowing an interpreter's runtime
-storage. `append_differential_observations_from_runtime` performs that conversion
-and rejects out-of-bounds snapshots through `DifferentialRunnerError`. Float
+`Array`, order-insensitive `Map`, and structured `ProcessCapture` kinds. Arrays
+use a flat, owned value pool (`DifferentialRun.values`) with `(array_start,
+array_count)` slices; maps use interleaved `(key, value)` pairs with
+`(map_start, map_count)`, so nested observations remain deterministic without
+borrowing an interpreter's runtime storage. `append_differential_observations_from_runtime`
+performs that conversion and rejects out-of-bounds snapshots through
+`DifferentialRunnerError`. Float
 observations are compared exactly by default; a future tolerance policy can be
 layered on top without weakening the baseline comparator.
 
