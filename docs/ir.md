@@ -360,7 +360,7 @@ Modules containing only the currently closed scalar, text, regex, and homogeneou
 subset (boolean, 64-bit integer, or 64-bit float values, text/nominal constants,
 including one nested array level,
 array construction, nominal path/glob/regex/URL constructors, indexing, length, slicing, membership, concatenation, split,
-join, typed integer parsing/formatting, regex search/replacement, indexed updates, unary/binary operators,
+join, typed integer/float parsing and formatting, regex search/replacement, indexed updates, unary/binary operators,
 observations, pure direct calls, and typed filesystem/process operations) take a
 direct packed-instruction path. Calls use recursive state-machine frames with one
 shared step budget, storage, and
@@ -453,6 +453,12 @@ compiler-known `parse_int` call lowers to this opcode. `FormatInt` has type
 `Int(signed, 64) -> Text`; it uses Elisa's permanent string runtime so the returned
 view remains valid after the instruction and is eligible for the direct bytecode
 path without introducing a shell or host-language conversion.
+`ParseFloat` has type `Text -> Float(64)` and shares the `ParseError` row. Its
+validation machine requires a decimal mantissa and, when present, a complete
+exponent before invoking the shared decimal evaluator; malformed input therefore
+cannot silently become zero. `FormatFloat` has type `Float(64) -> Text` and copies
+the core `%g` spelling into permanent storage before returning its view. Both
+opcodes are classified into the packed text dispatch family.
 Exact-type `array + array` and `text + text` lower to the semantic `Concat`
 operation rather than numeric `Add`. Array concatenation copies both inputs into
 fresh value storage. Text concatenation copies both byte views into permanent,

@@ -121,6 +121,11 @@ the failure is never represented as a sentinel integer. `format_int(value: i64) 
 sview` produces the canonical base-10 spelling, including `-0` normalization to
 `0`. Both operations are compiler-known, shadowable by a source declaration, and
 share exact behavior between the reference interpreter and packed bytecode.
+`parse_float(text) -> f64 error[ParseError]` accepts decimal mantissas with an
+optional sign, fractional part, and `e`/`E` exponent (including an exponent sign).
+It rejects missing digits, trailing characters, and incomplete exponents. The
+matching `format_float(value: f64) -> sview` uses Elisa's `%g`-style canonical
+runtime spelling and keeps the returned text in permanent storage.
 
 ## Filesystem capability
 
