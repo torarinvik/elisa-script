@@ -18,6 +18,12 @@ serialization:
 - Source spans survive lowering for diagnostics and reproducible failures.
 - Nominal types retain their Elisa name instead of collapsing to a machine representation.
 
+Aggregate type descriptors are deliberately bounded and structural: an array
+stores its element descriptor plus two nested element descriptors, and a map
+stores a scalar key and a value descriptor with one array layer. This keeps
+verification backend-neutral while leaving a future recursive type table as an
+explicit extension point.
+
 The vocabulary intentionally contains no LLVM values, native registers, pointer
 sizes, bytecode slots, or host ABI facts. Those belong to target-specific lowering.
 The copied compiler's EASM remains a later machine-level representation and is
@@ -428,7 +434,7 @@ and effect-handler state.
 The verified bytecode facade uses the same program-counter machine for execution.
 Modules containing only the currently closed scalar, text, regex, homogeneous-array,
 and scalar-map subset (boolean, 64-bit integer, or 64-bit float values, text/nominal constants,
-including one nested array level,
+including two nested array levels,
 array/map construction and key extraction, nominal path/glob/regex/URL constructors, typed path composition/decomposition, indexing, length, slicing, membership, concatenation, split,
 join, typed integer/float parsing and formatting, regex search/replacement/splitting/extraction, indexed updates, unary/binary operators,
 observations, pure direct calls, and typed filesystem/process operations) take a
@@ -444,7 +450,9 @@ operations before reaching a terminal value state. The packed executor wraps the
 control cursor in another explicit machine for block entry, condition staging,
 instruction storage, jump-edge collection, and returns, so its direct loop has no
 implicit host control-flow state. The eligibility gate rejects
-other widths, arrays nested deeper than two levels, handlers, and continuations.
+other widths, arrays nested deeper than two levels, array-valued maps, handlers,
+and continuations. Array-valued maps remain fully supported by the reference
+interpreter, which recursively compares and indexes their runtime values.
 Error guards are eligible for the direct path: `ErrorGuardPush`/`ErrorGuardPop`
 maintain a checked fallback stack, and recoverable typed failures jump to the
 verified fallback block without wrapping the value in a result object.
@@ -554,7 +562,9 @@ compares lengths first and then elements deterministically from left to right;
 empty arrays, slices, concatenated arrays, separate equal allocations, and shared
 or copy-on-update storage therefore follow one value-semantic rule. Mixed array
 element types remain static errors; nested arrays use the same recursive runtime
-comparison within the supported one-level descriptor.
+comparison within the supported two-level descriptor. The compact structural type
+descriptor currently carries three array layers; a fourth layer is reserved for a
+future recursive type table.
 Statement-form `array.push(value)` and `array.extend(values)` are ownership-safe
 SSA updates rather than hidden aliasing mutations. `push` constructs a typed
 singleton and `extend` accepts the receiver's exact array type; both concatenate
