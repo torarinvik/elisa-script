@@ -130,7 +130,9 @@ through the ordinary `error[...]` channel. Indexed assignment is immutable-updat
 semantics at the IR boundary: a mutable binding receives a fresh map, replacing an
 existing key or inserting a new one. The reference runtime stores interleaved
 key/value pairs in caller-owned flat storage, so differential observations remain
-deterministic and allocation ownership is explicit.
+deterministic and allocation ownership is explicit. A read-only `for key in map`
+loop walks a materialized key array in insertion order; mutable iteration remains
+restricted to arrays so map updates always use explicit typed index assignment.
 
 ## Numeric text conversion
 

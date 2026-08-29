@@ -218,7 +218,9 @@ pair range before access. Missing keys use the existing typed
 `IndexOutOfBounds` error rather than a sentinel value. The reference interpreter and
 the bytecode facade share this representation; the direct packed eligibility gate
 currently routes map-bearing modules through the verified interpreter oracle while
-the packed map instruction family is completed.
+the packed map instruction family is completed. `MapKeys` materializes a stable
+array of keys in insertion order, allowing the existing loop state machine to lower
+`for key in map` without evaluating the map expression more than once.
 
 The AST-to-IR boundary reports the same mistakes as structured `TypeMismatch`
 lowering issues, before a backend sees the module. This covers declared binding
