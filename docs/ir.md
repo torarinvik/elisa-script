@@ -268,10 +268,10 @@ interleaved key/value pairs in caller-owned flat storage and validate their comp
 pair range before access. Missing keys use the existing typed
 `IndexOutOfBounds` error rather than a sentinel value. The reference interpreter and
 the bytecode facade share this representation. Maps whose key and value types are
-direct scalar/nominal representations and supported array values use the packed path
-for construction, lookup, membership, equality, updates, and key extraction. Nested
-maps and other aggregates continue through the verified interpreter oracle when the
-direct bytecode subset does not support them. `MapKeys`
+direct scalar/nominal representations, supported arrays, or recursively supported
+nested maps use the packed path for construction, lookup, membership, equality,
+updates, and key extraction. Other aggregates continue through the verified
+interpreter oracle when the direct bytecode subset does not support them. `MapKeys`
 materializes a stable array of keys in insertion order, allowing the existing loop
 state machine to lower `for key in map` without evaluating the map expression more
 than once. A two-binding read-only loop, `for key, value in map`, uses that same
