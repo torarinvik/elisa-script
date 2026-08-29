@@ -1,0 +1,58 @@
+# Elisascript command-line driver.
+#
+# The host ABI is intentionally tiny (`main(argc, argv)`). Everything after
+# that boundary is typed: argv becomes darray[sview], the request parser checks
+# the source contract, and the canonical program runner owns source loading,
+# verification, lowering, and execution.
+
+include "../ir/ir.elisa"
+
+using EsIr
+
+
+def elisascript_driver_write_stderr(message: sview) -> void can[Console.Write, Unsafe.PointerCast]:
+    return if sview_is_empty(message)
+    _ = runtime_write(FileDescriptor.Error, message.data.cast[void&], sview_len(message)) can Console.Write
+
+
+def elisascript_driver_collect_arguments(argc: i64, slots: mutable cstr&&) -> darray[sview] can[Memory.Allocate, Abort.Panic]:
+    arguments: mutable darray[sview] = []
+    index: mutable i64 = 1
+    while index < argc |index, slots, arguments|:
+        arguments.push(sview(slots[index.usize()].cast[cstr], 0, -1))
+        index <- index + 1
+    return arguments
+
+
+def elisascript_driver_failed_execution() -> Execution:
+    return Execution{value: runtime_void(), steps: 0}
+
+
+def elisascript_driver_parse[@r](arguments: darray[sview]&, request: mutable ElisascriptCliRequest& @r) -> bool can[Memory.Allocate, Abort.Panic]:
+    try parse_elisascript_cli(arguments, request) else return false
+    return true
+
+
+def main(argc: i64, argv: mutable void&) -> i64 can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast, Console.Write, Blocking.IO, Memory.Release]:
+    slots: mutable cstr&& = argv.cast[mutable cstr&&]
+    raw_arguments: darray[sview] = elisascript_driver_collect_arguments(argc, slots)
+    request: mutable ElisascriptCliRequest = ElisascriptCliRequest{source: "", arguments: []}
+    if not elisascript_driver_parse(raw_arguments, request):
+        elisascript_driver_write_stderr("usage: elisascript <file.elisascript> [arguments...]\n")
+        return 2
+
+    path_bytes: mutable dstr = ctx_fstr_alloc(sview_len(request.source) + 1)
+    ctx_fstr_append(path_bytes, request.source.data, sview_len(request.source))
+    ctx_fstr_append(path_bytes, "\0", 1)
+    if path_bytes.items == null:
+        elisascript_driver_write_stderr("elisascript: unable to allocate source path\n")
+        return 1
+    path_items: mutable u8& = path_bytes.items
+
+    observations: mutable darray[Observation] = []
+    storage: mutable darray[RuntimeValue] = []
+    execution: Execution = try execute_elisascript_program_file(path_items, request.arguments, observations, storage) else elisascript_driver_failed_execution()
+    if execution.value.kind == RuntimeValueKind.Int:
+        return execution.value.integer
+    elisascript_driver_write_stderr("elisascript: main returned a non-integer status\n")
+    return 1

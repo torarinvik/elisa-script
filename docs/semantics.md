@@ -339,6 +339,13 @@ non-conforming `main` before bytecode execution, and
 `execute_elisascript_program_source/file` provide the corresponding source and
 file launch APIs.
 
+The bundled driver (`src/driver/elisascript.elisa`) converts host `argv` into a
+typed `darray[sview]` request. It performs no shell quoting, splitting, globbing,
+or environment interpolation. `parse_elisascript_cli` requires the first value
+to name a `.elisascript` file, rejects embedded NUL bytes, and preserves all
+following values exactly; usage errors use process status `2`, while source or
+execution failures use status `1`.
+
 ## Standard streams
 
 Standard streams are explicit typed operations rather than implicit print or shell
