@@ -18,11 +18,13 @@ serialization:
 - Source spans survive lowering for diagnostics and reproducible failures.
 - Nominal types retain their Elisa name instead of collapsing to a machine representation.
 
-Aggregate type descriptors are deliberately bounded and structural: an array
-stores its element descriptor plus two nested element descriptors, and a map
-stores a scalar key and a value descriptor with one array layer. This keeps
-verification backend-neutral while leaving a future recursive type table as an
-explicit extension point.
+Aggregate `Type` fields remain bounded for compatibility with the first lowering,
+but every lowered module also carries a pointer-free `TypeTable`. Its one-based
+`TypeDescriptor` rows refer to child rows through a flat `u32` pool; interning
+deduplicates `(kind, name, width, signedness, children)` structurally. This is the
+recursive descriptor seam for future tuples, records, and arbitrarily nested
+containers, without putting recursive values or allocator addresses in the IR.
+Legacy inline fields stay populated while verifier and backend consumers migrate.
 
 The vocabulary intentionally contains no LLVM values, native registers, pointer
 sizes, bytecode slots, or host ABI facts. Those belong to target-specific lowering.
@@ -42,6 +44,11 @@ encoding. This makes the bytes and their deterministic
 non-cryptographic `u64` fingerprint suitable for backend and differential-test
 artifact correlation; neither is a security identity or a replacement for IR
 verification.
+
+When a module has an interned `TypeTable`, the canonical stream appends tagged
+descriptor-row and child-pool records before the function collection. Empty tables
+are omitted so hand-built legacy modules retain their original version-1 encoding;
+the table records are still included in the fingerprint whenever present.
 
 `EsIrArtifact.ModuleArtifact` is the small typed metadata envelope used by
 differential reports today. It records format version, backend label, source
@@ -491,10 +498,12 @@ It also lowers homogeneous immutable array literals, scalar `darray[T]`/`array[T
 type annotations, integer indexing, and the `.count` field. Empty literals use
 their expected array type in bindings, assignments, returns, and call arguments,
 so `[]` never introduces an untyped dynamic collection. Arrays may nest two levels
-(`darray[darray[darray[T]]]`) using the flat descriptor's bounded structural fields;
-a fourth array layer remains an explicit lowering error until fully recursive IR
-descriptors are defined. Dictionary values may be scalar or one-level arrays; maps
-whose values need a deeper descriptor are rejected at the source boundary.
+(`darray[darray[darray[T]]]`) using the compatibility fields; a fourth array layer
+remains an explicit lowering error until the recursive table is used directly by
+source typing. Dictionary values may be scalar or one-level arrays; maps whose
+values need a deeper descriptor are rejected at the source boundary. The
+`intern_module_types` pass records every type-bearing IR position in the shared
+table, and malformed ranges or duplicate rows are verifier errors.
 Plain single-binder `for value in array` loops lower to explicit header, body,
 latch, and exit blocks. The collection is evaluated once; length and indexing stay
 typed IR operations. `continue` targets the incrementing latch, `break` targets the
@@ -566,8 +575,9 @@ empty arrays, slices, concatenated arrays, separate equal allocations, and share
 or copy-on-update storage therefore follow one value-semantic rule. Mixed array
 element types remain static errors; nested arrays use the same recursive runtime
 comparison within the supported two-level descriptor. The compact structural type
-descriptor currently carries three array layers; a fourth layer is reserved for a
-future recursive type table.
+descriptor currently carries three array layers; a fourth layer is reserved for
+the next migration step, where source typing will emit recursive table ids
+directly.
 Statement-form `array.push(value)` and `array.extend(values)` are ownership-safe
 SSA updates rather than hidden aliasing mutations. `push` constructs a typed
 singleton and `extend` accepts the receiver's exact array type; both concatenate

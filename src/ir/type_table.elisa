@@ -1,0 +1,117 @@
+# Pointer-free structural type interning for the backend-neutral IR.
+#
+# The legacy `Type` record remains intentionally flat while the IR migrates. This
+# table is the compatibility seam: every descriptor is represented by a row and a
+# child-id slice, so future recursive containers can be interned without adding
+# recursive fields or allocator-dependent pointers to `Type`.
+
+extend EsIr:
+    private:
+        def type_descriptor_matches(row: TypeDescriptor, kind: TypeKind, name: sview, bits: u16, signed: bool, children: darray[u32]&, table: TypeTable&) -> bool:
+            false return if row.kind != kind or row.name != name or row.bits != bits or row.signed != signed
+            return false if row.child_count.u32() != children.count.u32()
+            for offset in 0..<children.count |row, children, table|:
+                return false if table.children[(row.child_start + offset.u32()).usize()] != children[offset]
+            return true
+
+
+        def type_descriptor_children_equal(left: TypeDescriptor, right: TypeDescriptor, table: TypeTable&) -> bool:
+            return false if left.child_count != right.child_count
+            for offset in 0..<left.child_count.usize() |left, right, offset, table|:
+                return false if table.children[(left.child_start + offset.u32()).usize()] != table.children[(right.child_start + offset.u32()).usize()]
+            return true
+
+
+        def inline_type_child(value: Type&, position: u8) -> Type:
+            if value.kind == TypeKind.Array:
+                return Type{kind: value.element_kind, name: value.element_name, bits: value.element_bits, signed: value.element_signed, element_kind: value.element_element_kind, element_name: value.element_element_name, element_bits: value.element_element_bits, element_signed: value.element_element_signed, element_element_kind: value.element_element_element_kind, element_element_name: value.element_element_element_name, element_element_bits: value.element_element_element_bits, element_element_signed: value.element_element_element_signed}
+            if value.kind == TypeKind.Map and position == 0:
+                return Type{kind: value.element_kind, name: value.element_name, bits: value.element_bits, signed: value.element_signed}
+            if value.kind == TypeKind.Map and position == 1:
+                return Type{kind: value.element_element_kind, name: value.element_element_name, bits: value.element_element_bits, signed: value.element_element_signed, element_kind: value.element_element_element_kind, element_name: value.element_element_element_name, element_bits: value.element_element_element_bits, element_signed: value.element_element_element_signed}
+            return Type{kind: TypeKind.Void}
+
+
+        def inline_type_child_count(value: Type&) -> u8:
+            return 1 if value.kind == TypeKind.Array
+            return 2 if value.kind == TypeKind.Map
+            return 0
+
+
+        def intern_inline_type(value: mutable Type&, table: mutable TypeTable&) -> u32 can[Memory.Allocate, Abort.Panic]:
+            children: mutable darray[u32] = []
+            child_count: u8 = inline_type_child_count(value)
+            for position in 0..<child_count.usize() |value, children, table|:
+                child: mutable Type = inline_type_child(value, position.u8())
+                children.push(intern_inline_type(child, table))
+            return intern_type_descriptor(value.kind, value.name, value.bits, value.signed, children, table)
+
+
+    public:
+        # Intern a descriptor by structural identity. Existing rows are reused, so
+        # returned ids are canonical within one module and stable across backends.
+        def intern_type_descriptor(kind: TypeKind, name: sview, bits: u16, signed: bool, children: darray[u32]&, table: mutable TypeTable&) -> u32 can[Memory.Allocate, Abort.Panic]:
+            for index in 0..<table.rows.count |index, kind, name, bits, signed, children, table|:
+                (index + 1).u32() return if type_descriptor_matches(table.rows[index], kind, name, bits, signed, children, table)
+            child_start: u32 = table.children.count.u32()
+            table.children.extend(children)
+            table.rows.push(TypeDescriptor{kind: kind, name: name, bits: bits, signed: signed, child_start: child_start, child_count: children.count.u16()})
+            row_count: usize = table.rows.count
+            return row_count.u32()
+
+
+        # Adapt the legacy inline descriptor to the recursive table. This is the
+        # public bridge used by backends while source lowering still emits `Type`.
+        def intern_structural_type(value: Type, table: mutable TypeTable&) -> u32 can[Memory.Allocate, Abort.Panic]:
+            copy: mutable Type = value
+            return intern_inline_type(copy, table)
+
+
+        # Rebuild a module's table from every type-bearing IR position. This pass is
+        # deterministic (function, parameter, block, instruction, then handler order)
+        # and leaves the inline fields intact for older helpers and serializers.
+        def intern_module_types(module: mutable Module&) -> void can[Memory.Allocate, Abort.Panic]:
+            table: mutable TypeTable = TypeTable{rows: [], children: []}
+            for fn in module.functions |table|:
+                return_type: mutable Type = fn.return_type
+                _ = intern_inline_type(return_type, table)
+                for parameter in fn.parameters |table|:
+                    parameter_type: mutable Type = parameter.type
+                    _ = intern_inline_type(parameter_type, table)
+                for parameter in fn.block_parameter_pool |table|:
+                    parameter_type: mutable Type = parameter.type
+                    _ = intern_inline_type(parameter_type, table)
+                for instruction in fn.instruction_pool |table|:
+                    result_type: mutable Type = instruction.result_type
+                    _ = intern_inline_type(result_type, table)
+            for handler in module.handlers |table|:
+                for capture in handler.captures |table|:
+                    capture_type: mutable Type = capture.type
+                    _ = intern_inline_type(capture_type, table)
+            module.type_table <- TypeTable{rows: [], children: []}
+            for row in table.rows |module|:
+                module.type_table.rows.push(row)
+            for child in table.children |module|:
+                module.type_table.children.push(child)
+
+
+        def type_table_child(type_id: u32, position: u16, table: TypeTable&) -> u32:
+            return 0 if type_id == 0 or type_id.usize() > table.rows.count
+            row: TypeDescriptor = table.rows[type_id.usize() - 1]
+            return 0 if position >= row.child_count
+            return table.children[(row.child_start + position.u32()).usize()]
+
+
+        # Check bounds and canonical deduplication before a backend consumes the
+        # table. Empty tables are valid for hand-built legacy modules.
+        def type_table_valid(table: TypeTable&) -> bool:
+            for index in 0..<table.rows.count |index, table|:
+                row: TypeDescriptor = table.rows[index]
+                child_end: usize = row.child_start.usize() + row.child_count.usize()
+                return false if child_end > table.children.count
+                for child_offset in 0..<row.child_count.usize() |row, child_offset, table|:
+                    child_id: u32 = table.children[(row.child_start.usize() + child_offset)]
+                    return false if child_id == 0 or child_id.usize() > table.rows.count
+                for earlier in 0..<index |index, earlier, table|:
+                    return false if row.kind == table.rows[earlier].kind and row.name == table.rows[earlier].name and row.bits == table.rows[earlier].bits and row.signed == table.rows[earlier].signed and type_descriptor_children_equal(row, table.rows[earlier], table)
+            return true
