@@ -31,14 +31,14 @@ The framework runs both sides from the same generated or recorded input and
 compares structured observations.
 
 The first shared comparison primitive is `EsDifferential.compare_differential_runs`.
-It compares exit status, named error, stdout, stderr, observation count, and then
-each `(trace, value)` pair in that fixed order. It returns a typed
+It compares exit status, named error, stdout, stderr, the typed return value,
+observation count, and then each `(trace, value)` pair in that fixed order. It returns a typed
 `DifferentialComparison` describing the first difference, including the relevant
 text or values; identical runs return `DifferentialDifferenceKind.Equal`. The
 comparator is implemented as an explicit Elisa state machine, so it cannot skip a
 comparison phase or silently continue after a mismatch.
 
-Observation values include `Void`, `Bool`, `Int`, exact `Float`, `Text`, recursive
+Observation and return values include `Void`, `Bool`, `Int`, exact `Float`, `Text`, recursive
 `Array`, order-insensitive `Map`, and structured `ProcessCapture` kinds. Arrays
 use a flat, owned value pool (`DifferentialRun.values`) with `(array_start,
 array_count)` slices; maps use interleaved `(key, value)` pairs with
@@ -61,7 +61,7 @@ runner kinds, scans every argument for embedded NUL bytes, and requires a positi
 timeout. A failed check returns `DifferentialRunnerCheck` with a stable issue kind
 and argument index; it does not launch anything.
 
-The current runner kinds are `InProcessFunction`, `NativeProcess`, `PythonAdapter`,
+The current runner kinds are `InProcessFunction`, `ElisascriptFile`, `NativeProcess`, `PythonAdapter`,
 `CAbiFunction`, `WasmModule`, and `Service`. Adapters are responsible for turning a
 validated specification into a `DifferentialRun`; keeping that execution layer
 separate lets native, Python, and Elisascript adapters share the same deterministic
@@ -108,6 +108,15 @@ same child invocation.
 path: it validates and prepares a `DifferentialRunner`, then executes the
 resulting invocation in one typed call. Hosts that need to inspect the exact
 argv/cwd/timeout before launch can keep using the two lower-level operations.
+
+`run_differential_elisascript` is the in-process counterpart for a candidate
+`.elisascript` file. Set `kind` to `ElisascriptFile`, `target` to the source path,
+`entry` to the function to invoke, and keep arguments as a text vector. The helper
+uses the canonical source/file execution boundary, converts the typed return value
+and `observe` events into owned differential values, and propagates source and
+runtime error families unchanged. Its `timeout_steps` field is the VM step limit;
+filesystem and process effects therefore remain visible through the same typed
+capabilities as ordinary script execution.
 
 `differential_run_from_process_capture` is the typed adapter for that boundary. It
 accepts the interpreter's `EsIr::RuntimeValue` snapshot plus structured observations

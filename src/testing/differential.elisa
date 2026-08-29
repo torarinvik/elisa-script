@@ -7,9 +7,7 @@
 
 include "../../vendor/elisa-compiler/elisacore_std/elisacore_runtime.elisa"
 include "../../vendor/elisa-compiler/elisacore_std/elisacore_fileio.elisa"
-include "../ir/ir_model.elisa"
-include "../ir/runtime_model.elisa"
-include "../runtime/process_posix.elisa"
+include "../ir/ir.elisa"
 
 
 error DifferentialRunnerError:
@@ -59,8 +57,9 @@ module EsDifferential:
             error_text: sview = ""
             stdout: sview = ""
             stderr: sview = ""
-            observations: darray[DifferentialObservation]
-            values: darray[DifferentialValue] = []
+            observations: mutable darray[DifferentialObservation]
+            values: mutable darray[DifferentialValue] = []
+            return_value: mutable DifferentialValue = DifferentialValue{kind: DifferentialValueKind.Void}
 
 
         const enum DifferentialCaptureState of u8:
@@ -165,6 +164,7 @@ module EsDifferential:
         # vector so adapters never need to reconstruct a command string.
         const enum DifferentialRunnerKind of u8:
             InProcessFunction
+            ElisascriptFile
             NativeProcess
             PythonAdapter
             CAbiFunction
@@ -273,7 +273,7 @@ module EsDifferential:
 
 
         def differential_runner_needs_entry(kind: DifferentialRunnerKind) -> bool:
-            return kind == DifferentialRunnerKind.PythonAdapter or kind == DifferentialRunnerKind.CAbiFunction or kind == DifferentialRunnerKind.WasmModule or kind == DifferentialRunnerKind.Service
+            return kind == DifferentialRunnerKind.ElisascriptFile or kind == DifferentialRunnerKind.PythonAdapter or kind == DifferentialRunnerKind.CAbiFunction or kind == DifferentialRunnerKind.WasmModule or kind == DifferentialRunnerKind.Service
 
 
         # Validate the complete runner contract before an adapter is allowed to
@@ -573,12 +573,37 @@ module EsDifferential:
                 return try execute_differential_process(invocation)
 
 
+        # Execute an Elisascript file in-process through the same source loader,
+        # verifier, and bytecode boundary used by ordinary launchers. Arguments
+        # remain typed text values and observations are copied into the owned
+        # differential pool before the temporary runtime storage is released.
+        def run_differential_elisascript[@r](runner: DifferentialRunner&, result: mutable DifferentialRun& @r) -> void error[DifferentialRunnerError, ElisascriptSourceError, InterpretError] can[Memory.Allocate, Abort.Panic, Blocking.IO, Console.Format, Console.Write, Memory.Release, Unsafe.PointerCast]:
+            check: DifferentialRunnerCheck = validate_differential_runner(runner)
+            raise DifferentialRunnerError.Invalid if not check.valid
+            raise DifferentialRunnerError.UnsupportedKind if runner.kind != DifferentialRunnerKind.ElisascriptFile
+            path_bytes: mutable dstr = ctx_fstr_alloc(sview_len(runner.target) + 1)
+            if path_bytes.items == null:
+                raise DifferentialRunnerError.Process
+            ctx_fstr_append(path_bytes, runner.target.data, sview_len(runner.target))
+            ctx_fstr_append(path_bytes, "\0", 1)
+            path_items: mutable u8& = path_bytes.items
+            arguments: mutable darray[RuntimeValue] = []
+            for argument in runner.arguments |arguments|:
+                arguments.push(runtime_text(argument))
+            observations: mutable darray[Observation] = []
+            runtime_storage: mutable darray[RuntimeValue] = []
+            execution: Execution = try execute_elisascript_file(path_items, "differential", runner.entry, arguments, observations, runtime_storage, runner.timeout_steps)
+            result.return_value <- try differential_value_from_runtime(runtime_storage, execution.value, result.values)
+            try append_differential_observations_from_runtime(runtime_storage, observations, result.values, result.observations)
+
+
         const enum DifferentialDifferenceKind of u8:
             Equal
             ExitStatus
             Error
             Stdout
             Stderr
+            ReturnValue
             ObservationCount
             ObservationTrace
             ObservationValue
@@ -600,6 +625,7 @@ module EsDifferential:
             Error
             Stdout
             Stderr
+            ReturnValue
             ObservationCount
             Observation
             Done
@@ -797,12 +823,22 @@ module EsDifferential:
                     -> Compare
 
                 Compare, DifferentialCompareState.Stderr if reference.stderr == candidate.stderr:
-                    cursor.state <- DifferentialCompareState.ObservationCount
+                    cursor.state <- DifferentialCompareState.ReturnValue
                     -> Compare
                 Compare, DifferentialCompareState.Stderr:
                     cursor.result <- differential_comparison(DifferentialDifferenceKind.Stderr, 0, "stderr differs")
                     cursor.result.reference_text <- reference.stderr
                     cursor.result.candidate_text <- candidate.stderr
+                    cursor.state <- DifferentialCompareState.Done
+                    -> Compare
+
+                Compare, DifferentialCompareState.ReturnValue if differential_values_equal(reference.values, reference.return_value, candidate.values, candidate.return_value):
+                    cursor.state <- DifferentialCompareState.ObservationCount
+                    -> Compare
+                Compare, DifferentialCompareState.ReturnValue:
+                    cursor.result <- differential_comparison(DifferentialDifferenceKind.ReturnValue, 0, "return value differs")
+                    cursor.result.reference_value <- reference.return_value
+                    cursor.result.candidate_value <- candidate.return_value
                     cursor.state <- DifferentialCompareState.Done
                     -> Compare
 
