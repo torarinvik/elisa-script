@@ -103,6 +103,24 @@ advance one input byte (with a final zero-width match at end-of-input terminatin
 the scan), so even anchor-only patterns are total. The operation is pure and uses
 the same deterministic ASCII matcher as search, replacement, and splitting.
 
+## Checked indexing and value recovery
+
+The scripting profile keeps ordinary indexing strict: `values[index]` raises a
+typed `IndexOutOfBounds` error for a missing array/text element or dictionary key.
+Use `get` when a local fallback is preferable:
+
+```elisa
+value: i64 = get values[index] else default_value()
+```
+
+The fallback is lazy. Lowering emits an `IndexValid` predicate and two CFG edges,
+so `default_value()` runs only after a bounds or key-membership miss. The success
+edge performs the same checked index as ordinary access, and both values merge at
+one statically typed result. Array and text indices must be integers; dictionary
+indices must match the exact key type; fallback and indexed values must have the
+same type. Malformed runtime storage remains an `error[...]` failure rather than
+being converted into a sentinel.
+
 ## Text field processing
 
 Elisascript provides a strongly typed compiler-known split operation for the core

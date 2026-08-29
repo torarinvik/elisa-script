@@ -219,8 +219,8 @@ termination rule used by `RegexSplit` and `RegexReplace`.
 
 `Map` is the closed aggregate counterpart to `Array`. Its `Type` descriptor carries
 one exact key type and one exact value type; `MakeMap` consumes an even key/value
-operand sequence and produces the corresponding map. `Index`, `Contains`, `Length`,
-and `SetIndex` accept maps with typed key/value contracts. Runtime map payloads are
+operand sequence and produces the corresponding map. `Index`, `IndexValid`, `Contains`,
+`Length`, and `SetIndex` accept maps with typed key/value contracts. Runtime map payloads are
 interleaved key/value pairs in caller-owned flat storage and validate their complete
 pair range before access. Missing keys use the existing typed
 `IndexOutOfBounds` error rather than a sentinel value. The reference interpreter and
@@ -481,6 +481,14 @@ Elisa-compatible `sview` model, `.count` is a byte count and `text[index]` or
 `for character in text` yields one 8-bit `char`; invalid indices raise the same
 typed `IndexOutOfBounds` interpreter error as arrays. This byte contract is
 explicit rather than silently pretending to provide Unicode grapheme indexing.
+Value recovery with `get collection[index] else fallback` is lowered as a lazy
+state-machine branch. `IndexValid` checks array/text bounds or dictionary key
+membership without raising for an ordinary miss; the success edge then performs
+the ordinary checked `Index`, while the fallback edge evaluates its expression
+only when needed. Both edges merge through one typed block parameter, so the
+fallback cannot be eagerly evaluated and the semantics remain identical in the
+reference interpreter and bytecode facade. Index and fallback types must match
+exactly, and malformed runtime storage still raises the usual typed error.
 `collection[low:high]` lowers to the dedicated typed `Slice` operation. Either
 bound may be absent: the lower default is zero and the upper default is one
 `Length` evaluation of the already-evaluated collection. Slices are half-open,

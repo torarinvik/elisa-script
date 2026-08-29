@@ -546,6 +546,74 @@ extend EsIr:
             return RangeMembership{recognized: true, value: LoweredValue{valid: true, value: result, type: result_type}}
 
 
+        # Lower the lazy checked-index form produced by `get values[index] else fallback`.
+        # The predicate is a first-class IR instruction so the fallback block is not entered
+        # (and its expressions are not evaluated) on a successful access.  This keeps the
+        # source-level recovery semantics explicit in the CFG instead of eagerly materializing
+        # a fallback value beside the ordinary `Index` operation.
+        def lower_checked_index(collection_expression: Ast::Expr, index_expression: Ast::Expr, fallback_expression: Ast::Expr, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+            collection: LoweredValue = lower_expression(collection_expression, state)
+            index: LoweredValue = lower_expression(index_expression, state)
+            LoweredValue{valid: false, value: 0, type: unknown_ir_type()} return if not collection.valid or not index.valid
+            result_type: mutable Type = unknown_ir_type()
+            valid_index: mutable bool = false
+            if collection.type.kind == TypeKind.Map:
+                key_type: Type = map_key_type(collection.type)
+                result_type <- map_value_type(collection.type)
+                valid_index <- same_type(index.type, key_type)
+            elif collection.type.kind == TypeKind.Array:
+                result_type <- array_element_type(collection.type)
+                valid_index <- index.type.kind == TypeKind.Int
+            elif collection.type.kind == TypeKind.Text:
+                result_type <- type_from_name("char")
+                valid_index <- index.type.kind == TypeKind.Int
+            else:
+                pass
+            if not valid_index:
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "checked indexing requires an array, dictionary, or text with a matching index type")
+                return LoweredValue{valid: false, value: 0, type: result_type}
+
+            predicate: u32 = fresh_value(state)
+            predicate_start: u32 = state.operand_pool.count.u32()
+            state.operand_pool.push(collection.value)
+            state.operand_pool.push(index.value)
+            state.instructions.push(Instruction{opcode: Opcode.IndexValid, result: predicate, result_type: type_from_name("bool"), operand_start: predicate_start, operand_count: 2, span: ir_span(pos)})
+            success_block: u32 = fresh_block(state)
+            fallback_block: u32 = fresh_block(state)
+            merge_block: u32 = fresh_block(state)
+            state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: predicate, operand_count: 1, target0: success_block, target1: fallback_block, target_count: 2, span: ir_span(pos)}
+            finish_block(state)
+
+            state.current_block <- success_block
+            state.terminated <- false
+            indexed: u32 = fresh_value(state)
+            index_start: u32 = state.operand_pool.count.u32()
+            state.operand_pool.push(collection.value)
+            state.operand_pool.push(index.value)
+            state.instructions.push(Instruction{opcode: Opcode.Index, result: indexed, result_type: result_type, operand_start: index_start, operand_count: 2, span: ir_span(pos)})
+            success_edge: u32 = state.edge_arg_pool.count.u32()
+            state.edge_arg_pool.push(indexed)
+            state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: merge_block, target_count: 1, edge0_arg_start: success_edge, edge0_arg_count: 1, span: ir_span(pos)}
+            finish_block(state)
+
+            state.current_block <- fallback_block
+            state.terminated <- false
+            fallback: LoweredValue = lower_expression_expected(fallback_expression, result_type, state)
+            fallback_edge: mutable u32 = 0
+            if fallback.valid:
+                fallback_edge <- state.edge_arg_pool.count.u32()
+                state.edge_arg_pool.push(fallback.value)
+                state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: merge_block, target_count: 1, edge0_arg_start: fallback_edge, edge0_arg_count: 1, span: ir_span(pos)}
+            finish_block(state)
+
+            result: u32 = fresh_value(state)
+            state.pending_parameter_blocks.push(merge_block)
+            state.pending_parameters.push(Parameter{value: result, type: result_type, name: "checked-index"})
+            state.current_block <- merge_block
+            state.terminated <- false
+            return LoweredValue{valid: fallback.valid, value: result, type: result_type}
+
+
         def lower_expression(expression: Ast::Expr, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
             match expression:
                 Expr.IntLit(value):
@@ -763,6 +831,12 @@ extend EsIr:
                     state.instructions.push(Instruction{opcode: opcode, result: result, result_type: result_type, operand_start: operand_start, operand_count: 1, span: ir_span(pos)})
                     return LoweredValue{valid: true, value: result, type: result_type}
                 Expr.Binary(left, operator, right, pos):
+                    match left:
+                        Expr.Index(collection_expression, index_expression, index_pos):
+                            if operator == TokenKind.Else:
+                                return lower_checked_index(collection_expression, index_expression, right, pos, state)
+                        _:
+                            pass
                     lowered_left: LoweredValue = lower_expression(left, state)
                     if operator == TokenKind.And or operator == TokenKind.Or:
                         LoweredValue{valid: false, value: 0, type: unknown_ir_type()} return if not lowered_left.valid
@@ -917,6 +991,18 @@ extend EsIr:
                     state.current_block <- merge_block
                     state.terminated <- false
                     return LoweredValue{valid: selected_value.valid and alternative_valid, value: result, type: result_type}
+                Expr.Refinement(base, predicate, pos):
+                    # The parser represents a value-recovery `get EXPR else FALLBACK`
+                    # as Refinement(FALLBACK, EXPR).  Recognize the index form here so
+                    # the fallback remains lazy in its own CFG branch; other refinements
+                    # belong to the semantic/type-checking surface and are not executable
+                    # values in this initial IR subset.
+                    match predicate:
+                        Expr.Index(collection_expression, index_expression, index_pos):
+                            return lower_checked_index(collection_expression, index_expression, base, pos, state)
+                        _:
+                            add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "refinement expression is not in the initial IR lowering subset")
+                            return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
                 Expr.Call(callee, arguments, argument_names, pos):
                     callee_name: mutable sview = ""
                     match callee:
