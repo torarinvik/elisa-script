@@ -663,6 +663,8 @@ can distinguish a malformed script from a failed invocation without introducing
 a result-shaped sentinel. The bytecode engine selects direct state-machine
 dispatch when supported and otherwise preserves interpreter semantics for dynamic
 effects and continuations.
+The file-backed boundary also rejects embedded NUL bytes before tokenization;
+source cannot be silently truncated by the C-string compatibility boundary.
 
 The launcher-facing ABI is `main(arguments: darray[sview]) -> i64`. The program
 runner appends each host argument to caller-owned runtime storage, passes one typed

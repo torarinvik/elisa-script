@@ -42,7 +42,7 @@ lowering, and target-independent verification. Parse, semantic, lowering, and
 verification failures are raised through `ElisascriptSourceError`; there is no
 fallback module or `Result` sentinel. The extension predicate is itself an
 explicit state machine, so a wrong suffix is rejected before any source bytes
-are parsed. This gives future CLI, editor, and differential-test adapters one
+are parsed. This gives the CLI, editor, and differential-test adapters one
 consistent contract instead of each reimplementing frontend sequencing.
 Semantic warnings remain visible to callers but do not make a valid source file
 unloadable; only severity-1 semantic diagnostics stop the pipeline.
@@ -51,8 +51,9 @@ When the source already lives on disk, `EsIr.lower_elisascript_file` performs th
 same pipeline after reading the file. It validates the suffix before opening the
 path, copies both the filename and source bytes into permanent runtime storage,
 and raises `ElisascriptSourceError.FileIo` for open, seek, read, or close
-failures. The permanent backing keeps source spans and text constants valid after
-the loader returns.
+failures. Embedded NUL bytes are rejected as `ElisascriptSourceError.EmbeddedNul`
+before parsing, rather than silently truncating a C-string source. The permanent
+backing keeps source spans and text constants valid after the loader returns.
 
 Hosts that install dynamic effect handlers can use
 `lower_elisascript_source_with_handlers` and
