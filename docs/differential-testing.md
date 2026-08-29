@@ -45,7 +45,9 @@ array_count)` slices; maps use interleaved `(key, value)` pairs with
 `(map_start, map_count)`, so nested observations remain deterministic without
 borrowing an interpreter's runtime storage. `append_differential_observations_from_runtime`
 performs that conversion and rejects out-of-bounds snapshots through
-`DifferentialRunnerError`. Float
+`DifferentialRunnerError`. Map comparison is order-insensitive but one-to-one:
+each candidate pair can satisfy at most one reference pair, including when an
+adapter supplies malformed duplicate entries. Float
 observations are compared exactly by default; a future tolerance policy can be
 layered on top without weakening the baseline comparator.
 
