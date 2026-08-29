@@ -158,6 +158,28 @@ number: i64 = try parse_int(text) else return 0i64
 The recovery block must end control flow (`return`, `break`, or `continue`);
 successful evaluation continues through the surrounding state-machine merge.
 
+## Typed comprehensions
+
+Array comprehensions keep Elisa's expression-oriented syntax while making every
+iteration and allocation explicit in the typed IR:
+
+```elisa
+doubled: darray[i64] = [value * 2i64 for value in values]
+evens: darray[i64] = [value for value in values if value % 2i64 == 0i64]
+letters: darray[char] = [character for character in text]
+```
+
+The initial lowering supports one binder over an array or text value and an
+optional boolean `if` filter. Array iteration uses checked `Length`/`Index`
+operations; text iteration produces one-character values. The result element
+type is inferred from the projection and must be storable, so heterogeneous
+results, effectful/non-straight-line projections, and void projections are
+rejected statically. An empty result is a typed empty array, not a sentinel.
+The accumulator is an SSA loop-carried value updated with `Concat`, and the
+header, filter, append, latch, and exit are ordinary state-machine blocks. Map
+comprehensions, tuple binders, and query forms remain explicit unsupported
+diagnostics until their key/value iteration semantics are added.
+
 ## Text field processing
 
 Elisascript provides a strongly typed compiler-known split operation for the core
