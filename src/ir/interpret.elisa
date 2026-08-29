@@ -1320,6 +1320,15 @@ extend EsIr:
             return pattern_index + 1
 
 
+        def regex_group_name(pattern: sview, pattern_index: usize, group_end: usize) -> sview:
+            return sview("", 0, 0) if pattern_index + 3 >= group_end or sview_at(pattern, pattern_index + 1) != 63 or sview_at(pattern, pattern_index + 2) != 60
+            cursor: mutable usize = pattern_index + 3
+            while cursor < group_end:
+                return pattern[pattern_index + 3:cursor] if sview_at(pattern, cursor) == 62
+                cursor <- cursor + 1
+            return sview("", 0, 0)
+
+
         def regex_atom_width_until(pattern: sview, pattern_index: usize, pattern_end: usize) -> usize:
             return 0 if pattern_index >= pattern_end
             return 2 if sview_at(pattern, pattern_index) == 92 and pattern_index + 1 < pattern_end
@@ -1471,7 +1480,7 @@ extend EsIr:
         # groups, and leave `$n` literal whenever the layout cannot be proven.
         # This keeps replacement behavior deterministic while the full capture
         # state machine is added later.
-        def regex_capture_group_layout(pattern: sview, opens: mutable darray[usize]&, starts: mutable darray[usize]&, ends: mutable darray[usize]&) -> bool can[Memory.Allocate, Abort.Panic]:
+        def regex_capture_group_layout(pattern: sview, opens: mutable darray[usize]&, starts: mutable darray[usize]&, ends: mutable darray[usize]&, names: mutable darray[sview]&) -> bool can[Memory.Allocate, Abort.Panic]:
             cursor: mutable usize = 0
             class_depth: mutable usize = 0
             group_depth: mutable usize = 0
@@ -1494,6 +1503,7 @@ extend EsIr:
                     opens.push(cursor)
                     group_end: usize = regex_group_width(pattern, cursor, sview_len(pattern)) + cursor - 1
                     starts.push(regex_group_content_start(pattern, cursor, group_end))
+                    names.push(regex_group_name(pattern, cursor, group_end))
                     group_depth <- group_depth + 1
                 elif class_depth == 0 and byte == 41:
                     return false if group_depth == 0
@@ -1502,14 +1512,14 @@ extend EsIr:
                     quantifier_index: usize = cursor + 1
                     return false if quantifier_index < sview_len(pattern) and sview_at(pattern, quantifier_index) in {42, 43, 63}
                 cursor <- cursor + 1
-            return group_depth == 0 and not top_level_alternation and opens.count == starts.count and starts.count == ends.count
+            return group_depth == 0 and not top_level_alternation and opens.count == starts.count and starts.count == ends.count and ends.count == names.count
 
 
-        def regex_capture_spans_for_match(text: sview, pattern: sview, span: RegexMatchSpan, captures: mutable darray[RegexMatchSpan]&) -> bool can[Memory.Allocate, Abort.Panic]:
+        def regex_capture_spans_for_match(text: sview, pattern: sview, span: RegexMatchSpan, captures: mutable darray[RegexMatchSpan]&, names: mutable darray[sview]&) -> bool can[Memory.Allocate, Abort.Panic]:
             opens: mutable darray[usize] = []
             starts: mutable darray[usize] = []
             ends: mutable darray[usize] = []
-            return false if not regex_capture_group_layout(pattern, opens, starts, ends)
+            return false if not regex_capture_group_layout(pattern, opens, starts, ends, names)
             for group_index in 0..<opens.count.usize() |text, pattern, span, captures, opens, starts, ends|:
                 open: usize = opens[group_index]
                 inner_start: usize = starts[group_index]
@@ -1531,11 +1541,12 @@ extend EsIr:
 
 
         # `$0` expands to the complete match and `$1` through `$9` expand to
-        # proven capture spans. `$$` emits a literal dollar and `&` provides the
+        # proven capture spans. `${name}` and `$<name>` expand named groups when
+        # their spans are proven. `$$` emits a literal dollar and `&` provides the
         # AWK/sed whole-match spelling; `\&` escapes that ampersand. Unknown or
         # ambiguous references remain literal. Tokens are consumed atomically,
         # including for an empty match.
-        def append_regex_replacement(out: mutable dstr&, replacement: sview, text: sview, span: RegexMatchSpan, captures: darray[RegexMatchSpan]&) -> void:
+        def append_regex_replacement(out: mutable dstr&, replacement: sview, text: sview, span: RegexMatchSpan, captures: darray[RegexMatchSpan]&, names: darray[sview]&) -> void:
             index: mutable usize = 0
             while index < sview_len(replacement):
                 byte: u8 = sview_at(replacement, index)
@@ -1545,6 +1556,31 @@ extend EsIr:
                 elif byte == 38:
                     append_regex_text(out, text, span.start, span.end)
                     index <- index + 1
+                elif byte == 36 and index + 1 < sview_len(replacement) and (sview_at(replacement, index + 1) == 123 or sview_at(replacement, index + 1) == 60):
+                    marker: u8 = sview_at(replacement, index + 1)
+                    closing: u8 = 125 if marker == 123 else 62
+                    cursor: mutable usize = index + 2
+                    while cursor < sview_len(replacement) and sview_at(replacement, cursor) != closing:
+                        cursor <- cursor + 1
+                    if cursor < sview_len(replacement):
+                        name: sview = replacement[index + 2:cursor]
+                        named_index: mutable usize = 0
+                        named_match_index: mutable usize = names.count
+                        named_matches: mutable usize = 0
+                        while named_index < names.count:
+                            if names[named_index] == name:
+                                named_match_index <- named_index
+                                named_matches <- named_matches + 1
+                            named_index <- named_index + 1
+                        if name != "" and named_matches == 1 and named_match_index < captures.count and captures[named_match_index].found:
+                            capture: RegexMatchSpan = captures[named_match_index]
+                            append_regex_text(out, text, capture.start, capture.end)
+                        else:
+                            append_regex_text(out, replacement, index, cursor + 1)
+                        index <- cursor + 1
+                    else:
+                        out.push(byte)
+                        index <- index + 1
                 elif byte == 36 and index + 1 < sview_len(replacement):
                     reference: u8 = sview_at(replacement, index + 1)
                     if reference == 36:
@@ -1581,8 +1617,9 @@ extend EsIr:
                     break
                 append_regex_text(output, text, cursor, span.start)
                 captures: mutable darray[RegexMatchSpan] = []
-                regex_capture_spans_for_match(text, pattern, span, captures)
-                append_regex_replacement(output, replacement, text, span, captures)
+                names: mutable darray[sview] = []
+                regex_capture_spans_for_match(text, pattern, span, captures, names)
+                append_regex_replacement(output, replacement, text, span, captures, names)
                 if span.start == span.end:
                     if span.start < length:
                         output.push(sview_at(text, span.start))

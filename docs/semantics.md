@@ -91,6 +91,8 @@ non-quantified capture groups when their spans
 can be proven against the complete match (for example, `([a-z]+)=([0-9]+)`).
 Nested, quantified, or top-level-alternating capture layouts remain literal rather
 than selecting an ambiguous branch; unknown or unproven `$n` forms stay literal.
+For uniquely named flat groups, `${name}` and `$<name>` expand to the same proven
+capture span; unknown or duplicate names remain literal.
 
 Replacement tokens follow familiar Perl/AWK/sed conventions while remaining
 deterministic: `$0` is the complete match, `&` is an AWK/sed spelling of the

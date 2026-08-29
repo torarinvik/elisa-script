@@ -221,7 +221,8 @@ alternation is split only at unescaped pipes outside character classes, and each
 branch runs through the same bounded matcher states. Parenthesized groups are
 matched recursively, including nested alternation and quantifiers. Perl-style
 named group markers (`(?<name>...)`) are accepted for matching; replacement
-captures use their positional `$1` through `$9` references.
+captures use their positional `$1` through `$9` references, plus `${name}` and
+`$<name>` when a flat group has one unique name.
 `RegexReplace` has signature `Text × Named(Regex) × Text -> Text`. It reuses the
 same branch matcher to locate non-overlapping spans, copies unmatched and replacement
 bytes into fresh storage, expands `$0` to each complete matched span, and advances
@@ -233,7 +234,8 @@ remain literal rather than guessing a branch; this conservative fallback keeps
 replacement behavior deterministic until recursive regex match values are defined.
 The replacement language also accepts AWK/sed's `&` whole-match token, Perl's
 `$$` literal-dollar token, and `\&` for a literal ampersand; each token is consumed
-atomically and unknown forms remain literal.
+atomically and unknown forms remain literal. Named references with unknown or
+duplicate names are also kept literal rather than selecting an ambiguous capture.
 `RegexSplit` has signature `Text × Named(Regex) -> Array[Text]`. It uses those same
 spans as field boundaries, preserves empty fields, and applies an explicit one-byte
 advance for zero-width matches. The result is materialized in caller-owned flat
