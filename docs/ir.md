@@ -320,6 +320,9 @@ returning the complete owned stdout snapshot.
 operand. The child calls `chdir` after fork, leaving the parent cwd unchanged; a
 failed child directory produces process status `126` while setup failures still
 raise `ProcessError`.
+`CaptureProcessResultWithEnvironment` extends the capture contract with a typed
+`Map[Text, Text]` operand. The child applies each override with `setenv` before
+`execvp`; no environment mutation leaks into the parent interpreter.
 `GetEnvironment`, `SetEnvironment`, and `UnsetEnvironment` operate on `Text`
 operands. Reads produce owned `Text` under `Environment.Read`; mutations produce
 `Bool` under `Environment.Write`. All three require `EnvironmentError`, reject C

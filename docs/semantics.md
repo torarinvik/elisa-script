@@ -266,6 +266,14 @@ interpreter's current directory is never changed. It captures exit status, stdou
 and stderr with the same one-shot semantics as `capture_process_result`; an invalid
 child directory is reported by the child as status `126`.
 
+`capture_process_result_with_environment(executable: Executable, arguments: darray[sview],
+input: sview, environment: dict[sview, sview]) -> ProcessCapture
+error[ProcessError] can[Process.Run]` applies the supplied name/value overrides only
+in the forked child before `exec`. The parent process environment is unchanged, and
+the returned snapshot includes the child's status, stdout, and stderr. Environment
+names must be non-empty text without NUL bytes; an invalid child `setenv` operation
+is reported as status `126`.
+
 ## Standard streams
 
 Standard streams are explicit typed operations rather than implicit print or shell
