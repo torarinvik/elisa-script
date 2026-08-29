@@ -53,8 +53,8 @@ layered on top without weakening the baseline comparator.
 
 The executable contract is `EsDifferential.DifferentialRunner`. It is a typed
 specification, not a command-string escape hatch: the target executable, optional entry point,
-working directory, environment overrides, stdin, protocol, timeout, required
-effects, and required errors are separate fields, while process arguments remain
+working directory, environment overrides, stdin, protocol, timeout, dynamic
+handlers, required effects, and required errors are separate fields, while process arguments remain
 a `darray[sview]`. Call
 `validate_differential_runner` before handing the value to an adapter. Its explicit
 validation machine checks the name and target, requires an entry for adapter/module
@@ -115,7 +115,9 @@ argv/cwd/timeout before launch can keep using the two lower-level operations.
 
 `run_differential_elisascript` is the in-process counterpart for a candidate
 `.elisascript` file. Set `kind` to `ElisascriptFile`, `target` to the source path,
-`entry` to the function to invoke, and keep arguments as a text vector. The helper
+`entry` to the function to invoke, keep arguments as a text vector, and provide
+verified host-configured handlers through `handlers` when the candidate uses
+dynamic effects. The helper
 uses the canonical source/file execution boundary, converts the typed return value
 and `observe` events into owned differential values, and propagates source and
 runtime error families unchanged. Its `timeout_steps` field is the VM step limit;
@@ -123,7 +125,7 @@ filesystem and process effects therefore remain visible through the same typed
 capabilities as ordinary script execution.
 
 For a runnable script that follows the launcher ABI, use `ElisascriptProgram` and
-omit `entry`. `run_differential_elisascript_program` invokes
+omit `entry`; its `handlers` field has the same meaning. `run_differential_elisascript_program` invokes
 `main(arguments: darray[sview]) -> i64`, preserves each argument as typed text,
 and records the returned signed integer in both `return_value` and
 `exit_status`. This makes the in-process candidate directly comparable with a
