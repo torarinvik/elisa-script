@@ -274,6 +274,15 @@ the returned snapshot includes the child's status, stdout, and stderr. Environme
 names must be non-empty text without NUL bytes; an invalid child `setenv` operation
 is reported as status `126`.
 
+`capture_process_result_in_directory_with_environment(executable: Executable,
+arguments: darray[sview], input: sview, directory: Path,
+environment: dict[sview, sview]) -> ProcessCapture error[ProcessError]
+can[Process.Run]` composes both child-only controls. The child changes to `directory`
+and applies the environment overrides after `fork` and before descriptor setup or
+`exec`; neither operation mutates the parent. Invalid directory or environment setup
+is reported by the child as status `126`, while the returned snapshot keeps the same
+exit-status, stdout, and stderr contract.
+
 ## Standard streams
 
 Standard streams are explicit typed operations rather than implicit print or shell

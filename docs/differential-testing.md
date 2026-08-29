@@ -96,6 +96,14 @@ the conventional `126`/`127` setup/exec statuses, remains ordinary
 `DifferentialRun.exit_status` data for comparison. Launch, wait, and capture
 failures use `DifferentialRunnerError.Process`.
 
+When a differential case needs both hermetic filesystem context and temporary
+environment values, use
+`capture_process_result_in_directory_with_environment(executable, arguments, stdin,
+directory, environment)`. It changes directory and applies each `dict[sview, sview]`
+override only after `fork`, so neither control leaks into the runner process. The
+single `ProcessCapture` snapshot keeps status, stdout, and stderr aligned to the
+same child invocation.
+
 `run_differential_process` is the convenience entry point for this complete
 path: it validates and prepares a `DifferentialRunner`, then executes the
 resulting invocation in one typed call. Hosts that need to inspect the exact
