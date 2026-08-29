@@ -669,6 +669,9 @@ source cannot be silently truncated by the C-string compatibility boundary.
 Hosts with an explicit in-memory byte span can use
 `lower_elisascript_source_bytes` (or its `_with_handlers` variant), which checks
 the supplied length for NUL bytes before constructing the terminated parser buffer.
+`execute_elisascript_source_bytes` and
+`execute_elisascript_program_source_bytes` expose the same length-delimited
+guarantee at the execution boundary.
 
 The launcher-facing ABI is `main(arguments: darray[sview]) -> i64`. The program
 runner appends each host argument to caller-owned runtime storage, passes one typed
