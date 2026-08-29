@@ -224,7 +224,8 @@ typed map from each element to `true`, which gives deterministic membership, cou
 and insertion-order iteration while preserving set deduplication. Mutable set bindings
 support `.add(element)` through the same immutable SSA update used by maps; duplicate
 additions leave cardinality unchanged. Mutable set bindings also support `.clear()`,
-which rebinds the set to a typed empty value. Indexed set reads and `.remove` remain
+which rebinds the set to a typed empty value, and `.remove(element)`, which removes
+the matching element if present and is otherwise a no-op. Indexed set reads remain
 semantic errors until the dedicated set runtime shape is introduced.
 
 ## Text field processing
