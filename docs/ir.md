@@ -685,8 +685,9 @@ optional boolean filter branches to the append state or directly to the latch.
 Array projections become singleton `MakeArray` values and `Concat` produces the
 next accumulator. Dictionary projections lower their key and value separately
 and use immutable `SetIndex` copies, retaining duplicate-key replacement
-semantics. Header, latch, and exit block parameters carry both the accumulator
-and iteration state through the flat edge-argument pool. Consequently the
+semantics; range-backed dictionary projections use the same counter directly as
+the key/value source. Header, latch, and exit block parameters carry both the
+accumulator and iteration state through the flat edge-argument pool. Consequently the
 interpreter, bytecode VM, and future native backends observe identical evaluation
 order and allocation behavior. Quantifier headers carry a boolean accumulator
 initialized to the identity (`false` for existential `any` / `exists`, `true` for
