@@ -213,6 +213,9 @@ spans as field boundaries, preserves empty fields, and applies an explicit one-b
 advance for zero-width matches. The result is materialized in caller-owned flat
 storage, so indexing, iteration, and structural equality remain ordinary verified
 array operations.
+`RegexFind` has the same operands and returns an `Array[Text]` containing each
+non-overlapping matched span. Zero-width matches advance explicitly, matching the
+termination rule used by `RegexSplit` and `RegexReplace`.
 
 `Map` is the closed aggregate counterpart to `Array`. Its `Type` descriptor carries
 one exact key type and one exact value type; `MakeMap` consumes an even key/value
@@ -400,7 +403,7 @@ Modules containing only the currently closed scalar, text, regex, homogeneous-ar
 and scalar-map subset (boolean, 64-bit integer, or 64-bit float values, text/nominal constants,
 including one nested array level,
 array/map construction and key extraction, nominal path/glob/regex/URL constructors, typed path composition/decomposition, indexing, length, slicing, membership, concatenation, split,
-join, typed integer/float parsing and formatting, regex search/replacement/splitting, indexed updates, unary/binary operators,
+join, typed integer/float parsing and formatting, regex search/replacement/splitting/extraction, indexed updates, unary/binary operators,
 observations, pure direct calls, and typed filesystem/process operations) take a
 direct packed-instruction path. Calls use recursive state-machine frames with one
 shared step budget, storage, and

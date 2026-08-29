@@ -97,6 +97,12 @@ the search position by one byte, and retains that byte for the next field; this
 explicit progress rule makes even an empty or anchor-only pattern total. The
 operation is pure and lowers to a dedicated verified `RegexSplit` instruction.
 
+`find_regex(text, pattern) -> darray[sview]` extracts every non-overlapping match
+as an owned text field, in left-to-right order. Empty matches are included and
+advance one input byte (with a final zero-width match at end-of-input terminating
+the scan), so even anchor-only patterns are total. The operation is pure and uses
+the same deterministic ASCII matcher as search, replacement, and splitting.
+
 ## Text field processing
 
 Elisascript provides a strongly typed compiler-known split operation for the core
