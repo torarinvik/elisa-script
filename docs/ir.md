@@ -145,14 +145,15 @@ payload becomes the value of the suspended `Perform`, the callback frame stops
 immediately, and the continuation frame is consumed exactly once. A missing,
 already-consumed, or terminal continuation raises `InterpretError.InvalidContinuation`.
 `MultiReplay` and `MultiClone` now retain their captured frame while the callback is
-active, so each `Resume` returns its payload as an ordinary callback value and the
-same frame can be resumed repeatedly; the enclosing `Perform` receives the callback's
-final return value. The frame records the resumption count for tracing and future
-checkpoint/clone storage. `MultiClone` requires every captured value to be classified
+active, so each `Resume` re-enters the suspended function at the instruction after
+`Perform`, with a fresh copy of its SSA environment and dynamic-handler stack. Each
+payload therefore observes the same post-`Perform` computation independently; the
+enclosing `Perform` receives the callback's final return value. The frame records the
+resumption count and stores its flat snapshot in machine-owned pools. `MultiClone` requires every captured value to be classified
 `Unrestricted`; affine, linear, borrowed, region-bound, and opaque captures are
 rejected. `MultiReplay` requires every effect introduced by the handler to appear in
 its statically verified replay-safe effect set. Full suspended-stack replay and
-environment cloning remain the next representation increment.
+cross-call-frame environment cloning remain the next representation increment.
 
 The IR verifier rejects missing/duplicate trace sites, ungranted effects,
 undefined or duplicate SSA values, bad entry blocks, unknown branch targets, and
@@ -525,8 +526,9 @@ edge arguments and a fresh merge-block parameter. Loop-carried locals receive
 typed header and exit parameters; initial entry, normal backedges, `continue`, and
 `break` edges all pass the binding's current SSA value.
 
-1. Add complete structural types, post-resume continuation capture, and explicit
-   ownership/region operations.
+1. Add complete structural types, cross-call-frame continuation capture, and explicit
+   ownership/region operations. The interpreter now replays the current suspended IR
+   function frame for `MultiReplay`/`MultiClone` with a cloned SSA environment.
 2. Define the artifact container and versioned metadata around the canonical IR
    bytes. The structural encoding and `u64` module fingerprint are already
    available for artifact correlation.

@@ -50,6 +50,14 @@ extend EsIr:
             policy: ContinuationPolicy
             consumed: mutable bool
             resumptions: mutable u32
+            function_index: usize
+            resume_block: u32
+            resume_instruction: usize
+            result_id: u32
+            snapshot_start: usize
+            snapshot_count: usize
+            handler_snapshot_start: usize
+            handler_snapshot_count: usize
 
 
         const enum ContinuationLookupState of u8:
@@ -109,6 +117,9 @@ extend EsIr:
             step_limit: u64
             failure: mutable InterpretFailure
             continuations: mutable darray[ContinuationFrame]
+            continuation_ids: mutable darray[u32] = []
+            continuation_values: mutable darray[RuntimeValue] = []
+            continuation_handlers: mutable darray[sview] = []
             resume_requested: mutable bool
             resume_value: mutable RuntimeValue
 
@@ -614,7 +625,7 @@ extend EsIr:
             return cursor.index if cursor.found else frames.count
 
 
-        def request_continuation_resume(machine: mutable Machine&, instruction: Instruction, payload_id: u32, ids: darray[u32]&, values: darray[RuntimeValue]&) -> void:
+        def request_continuation_resume(machine: mutable Machine&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, module: Module&, handler_stack: mutable darray[sview]&, instruction: Instruction, payload_id: u32, ids: darray[u32]&, values: darray[RuntimeValue]&) -> void can[Memory.Allocate, Abort.Panic]:
             if instruction.operand_count != 1:
                 machine.failure <- InterpretFailure.InvalidContinuation
                 return
@@ -652,8 +663,23 @@ extend EsIr:
                 return
             machine.continuations[continuation_index].consumed <- true if decision.tail_resume
             machine.continuations[continuation_index].resumptions <- machine.continuations[continuation_index].resumptions + 1
-            machine.resume_value <- payload
-            machine.resume_requested <- decision.tail_resume
+            if decision.tail_resume:
+                machine.resume_value <- payload
+                machine.resume_requested <- true
+                return
+            replay_ids: mutable darray[u32] = []
+            replay_values: mutable darray[RuntimeValue] = []
+            replay_handlers: mutable darray[sview] = []
+            for offset in 0..<continuation.snapshot_count |replay_ids, replay_values, machine, continuation|:
+                replay_ids.push(machine.continuation_ids[continuation.snapshot_start + offset])
+                replay_values.push(machine.continuation_values[continuation.snapshot_start + offset])
+            for offset in 0..<continuation.handler_snapshot_count |replay_handlers, machine, continuation|:
+                replay_handlers.push(machine.continuation_handlers[continuation.handler_snapshot_start + offset])
+            if continuation.result_id != 0:
+                set_frame_value(replay_ids, replay_values, continuation.result_id, payload)
+            empty_arguments: darray[RuntimeValue] = []
+            machine.resume_value <- execute_function(machine, observations, storage, replay_handlers, module, continuation.function_index, empty_arguments, continuation.resume_block, continuation.resume_instruction, replay_ids, replay_values)
+            machine.resume_requested <- false
 
 
         def pop_runtime_handler(machine: mutable Machine&, handler_stack: mutable darray[sview]&, expected: sview) -> void:
@@ -672,12 +698,17 @@ extend EsIr:
             return runtime_void()
 
 
-        def invoke_perform(machine: mutable Machine&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, handler_stack: mutable darray[sview]&, module: Module&, fn: Function&, instruction: Instruction, ids: darray[u32]&, values: darray[RuntimeValue]&, handler_index: usize, clause_index: usize) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+        def invoke_perform(machine: mutable Machine&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, handler_stack: mutable darray[sview]&, module: Module&, fn: Function&, function_index: usize, current_block: u32, instruction_index: usize, instruction: Instruction, ids: darray[u32]&, values: darray[RuntimeValue]&, handler_index: usize, clause_index: usize) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
             arguments: mutable darray[RuntimeValue] = []
             for offset in 0..<instruction.operand_count.usize() |machine, fn, instruction, ids, values, arguments|:
                 arguments.push(frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + offset], machine))
             callback_index: usize = find_function(module, module.handlers[handler_index].clauses[clause_index].function)
-            machine.continuations.push(ContinuationFrame{handler: module.handlers[handler_index].name, policy: module.handlers[handler_index].continuation, consumed: false, resumptions: 0})
+            snapshot_start: usize = machine.continuation_ids.count
+            handler_snapshot_start: usize = machine.continuation_handlers.count
+            machine.continuation_ids.extend(ids)
+            machine.continuation_values.extend(values)
+            machine.continuation_handlers.extend(handler_stack)
+            machine.continuations.push(ContinuationFrame{handler: module.handlers[handler_index].name, policy: module.handlers[handler_index].continuation, consumed: false, resumptions: 0, function_index: function_index, resume_block: current_block, resume_instruction: instruction_index + 1, result_id: instruction.result, snapshot_start: snapshot_start, snapshot_count: ids.count, handler_snapshot_start: handler_snapshot_start, handler_snapshot_count: handler_stack.count})
             callback_value: RuntimeValue = execute_function(machine, observations, storage, handler_stack, module, callback_index, arguments)
             _ = machine.continuations.pop()
             result: mutable RuntimeValue = callback_value
@@ -687,7 +718,7 @@ extend EsIr:
             return result
 
 
-        def evaluate_perform(machine: mutable Machine&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, handler_stack: mutable darray[sview]&, module: Module&, fn: Function&, instruction: Instruction, ids: darray[u32]&, values: darray[RuntimeValue]&) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+        def evaluate_perform(machine: mutable Machine&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, handler_stack: mutable darray[sview]&, module: Module&, fn: Function&, function_index: usize, current_block: u32, instruction_index: usize, instruction: Instruction, ids: darray[u32]&, values: darray[RuntimeValue]&) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
             cursor: mutable PerformDispatch = PerformDispatch{state: PerformDispatchState.SearchHandler, installed_index: handler_stack.count, handler_index: module.handlers.count, clause_index: 0, result: runtime_void()}
             machine over cursor.state:
                 state Dispatch
@@ -715,7 +746,7 @@ extend EsIr:
                     -> Dispatch
 
                 Dispatch, PerformDispatchState.Invoke:
-                    cursor.result <- invoke_perform(machine, observations, storage, handler_stack, module, fn, instruction, ids, values, cursor.handler_index, cursor.clause_index)
+                    cursor.result <- invoke_perform(machine, observations, storage, handler_stack, module, fn, function_index, current_block, instruction_index, instruction, ids, values, cursor.handler_index, cursor.clause_index)
                     cursor.state <- PerformDispatchState.Done
                     -> Dispatch
 
@@ -2333,21 +2364,29 @@ extend EsIr:
             return cursor
 
 
-        def execute_function(machine: mutable Machine&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, handler_stack: mutable darray[sview]&, module: Module&, function_index: usize, arguments: darray[RuntimeValue]&) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+        def execute_function(machine: mutable Machine&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, handler_stack: mutable darray[sview]&, module: Module&, function_index: usize, arguments: darray[RuntimeValue]&, resume_block: u32 = 0, resume_instruction: usize = 0, initial_ids: darray[u32] = [], initial_values: darray[RuntimeValue] = []) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
             if function_index >= module.functions.count:
                 machine.failure <- InterpretFailure.UnknownFunction
                 return runtime_void()
             fn: Function = module.functions[function_index]
-            if arguments.count != fn.parameters.count:
+            resuming: mutable bool = resume_block != 0
+            if not resuming and arguments.count != fn.parameters.count:
                 machine.failure <- InterpretFailure.ArgumentMismatch
                 return runtime_void()
 
             ids: mutable darray[u32] = []
             values: mutable darray[RuntimeValue] = []
-            for index in 0..<arguments.count |fn, arguments, ids, values|:
-                ids.push(fn.parameters[index].value)
-                values.push(arguments[index])
-            current_block: mutable u32 = fn.entry
+            if resuming:
+                if initial_ids.count != initial_values.count:
+                    machine.failure <- InterpretFailure.InvalidContinuation
+                    return runtime_void()
+                ids.extend(initial_ids)
+                values.extend(initial_values)
+            else:
+                for index in 0..<arguments.count |fn, arguments, ids, values|:
+                    ids.push(fn.parameters[index].value)
+                    values.push(arguments[index])
+            current_block: mutable u32 = fn.entry if not resuming else resume_block
 
             while machine.failure == InterpretFailure.None:
                 runtime_void() return if not tick(machine)
@@ -2356,8 +2395,15 @@ extend EsIr:
                     machine.failure <- InterpretFailure.InvalidControlFlow
                     return runtime_void()
                 block: Block = fn.blocks[block_index]
+                instruction_start: mutable usize = block.instruction_start.usize()
                 instruction_end: usize = block.instruction_start.usize() + block.instruction_count.usize()
-                for instruction_index in block.instruction_start.usize()..<instruction_end |machine, observations, storage, handler_stack, module, fn, ids, values|:
+                if resuming:
+                    if resume_instruction < instruction_start or resume_instruction > instruction_end:
+                        machine.failure <- InterpretFailure.InvalidContinuation
+                        return runtime_void()
+                    instruction_start <- resume_instruction
+                    resuming <- false
+                for instruction_index in instruction_start..<instruction_end |machine, observations, storage, handler_stack, module, fn, ids, values|:
                     runtime_void() return if not tick(machine)
                     instruction: Instruction = fn.instruction_pool[instruction_index]
                     dispatch: mutable InstructionDispatch = InstructionDispatch{value: runtime_void(), opcode: instruction.opcode, produces_value: instruction.result != 0}
@@ -2603,12 +2649,12 @@ extend EsIr:
                             break
 
                         Dispatch, Opcode.Perform:
-                            dispatch.value <- evaluate_perform(machine, observations, storage, handler_stack, module, fn, instruction, ids, values)
+                            dispatch.value <- evaluate_perform(machine, observations, storage, handler_stack, module, fn, function_index, current_block, instruction_index, instruction, ids, values)
                             break
 
                         Dispatch, Opcode.Resume:
                             payload_id: u32 = fn.operand_pool[instruction.operand_start.usize()]
-                            request_continuation_resume(machine, instruction, payload_id, ids, values)
+                            request_continuation_resume(machine, observations, storage, module, handler_stack, instruction, payload_id, ids, values)
                             dispatch.value <- machine.resume_value
                             break
                     return dispatch.value if machine.resume_requested
