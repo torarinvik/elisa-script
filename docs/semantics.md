@@ -167,6 +167,7 @@ iteration and allocation explicit in the typed IR:
 doubled: darray[i64] = [value * 2i64 for value in values]
 evens: darray[i64] = [value for value in values if value % 2i64 == 0i64]
 letters: darray[char] = [character for character in text]
+indexed: dict[i64, i64] = {value: value * 10i64 for value in values if value > 0i64}
 ```
 
 The initial lowering supports one binder over an array or text value and an
@@ -174,11 +175,16 @@ optional boolean `if` filter. Array iteration uses checked `Length`/`Index`
 operations; text iteration produces one-character values. The result element
 type is inferred from the projection and must be storable, so heterogeneous
 results, effectful/non-straight-line projections, and void projections are
-rejected statically. An empty result is a typed empty array, not a sentinel.
-The accumulator is an SSA loop-carried value updated with `Concat`, and the
-header, filter, append, latch, and exit are ordinary state-machine blocks. Map
-comprehensions, tuple binders, and query forms remain explicit unsupported
-diagnostics until their key/value iteration semantics are added.
+rejected statically. An empty result is a typed empty array or map, never a
+sentinel. Dict comprehensions use a two-element `key: value` projection and
+infer exact key/value types; keys must be scalar or nominal and values obey the
+same bounded aggregate-depth rule as dictionary literals. Duplicate keys replace
+the prior value while preserving the runtime's insertion order.
+The accumulator is an SSA loop-carried value updated with `Concat` for arrays or
+immutable `SetIndex` copies for maps, and the header, filter, append, latch, and
+exit are ordinary state-machine blocks. Set comprehensions, tuple binders, and
+quantifier/query forms remain explicit unsupported diagnostics until their
+collection representation and semantics are defined.
 
 ## Text field processing
 

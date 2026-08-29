@@ -672,16 +672,18 @@ so skipped calls, effects, and observations are genuinely not executed. Conditio
 expressions likewise lower each value arm into a separate block rather than an eager
 select instruction.
 
-Array and text comprehensions use the same state-machine discipline. The lowerer
-first probes the projection in a restored lexical scope to infer one element type
-without retaining speculative instructions, then emits an empty typed `MakeArray`
-as the loop-carried accumulator. A `Length`/`Less` header gates a checked `Index`;
-an optional boolean filter branches to the append state or directly to the latch;
-the projection becomes a singleton `MakeArray`, and `Concat` produces the next
-accumulator value. Header, latch, and exit block parameters carry both the
+Array, text, and dictionary comprehensions use the same state-machine discipline.
+The lowerer first probes the projection in a restored lexical scope to infer its
+type(s) without retaining speculative instructions, then emits an empty typed
+`MakeArray` or `MakeMap` as the loop-carried accumulator. A `Length`/`Less` header
+gates a checked `Index`; an optional boolean filter branches to the append state or
+directly to the latch. Array projections become singleton `MakeArray` values and
+`Concat` produces the next accumulator. Dictionary projections lower their key and
+value separately and use immutable `SetIndex` copies, retaining duplicate-key
+replacement semantics. Header, latch, and exit block parameters carry both the
 accumulator and index through the flat edge-argument pool. Consequently the
 interpreter, bytecode VM, and future native backends observe identical evaluation
-order and allocation behavior. The initial shared IR deliberately declines map,
+order and allocation behavior. The initial shared IR deliberately declines set,
 query, multi-binder, and non-straight-line projections rather than lowering them
 with guessed semantics.
 
