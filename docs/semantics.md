@@ -169,6 +169,8 @@ evens: darray[i64] = [value for value in values if value % 2i64 == 0i64]
 letters: darray[char] = [character for character in text]
 indexed: dict[i64, i64] = {value: value * 10i64 for value in values if value > 0i64}
 positive_count: usize = count value in values where value > 0i64
+total: i64 = sum value in values
+positive_product: i64 = product value in values where value > 0i64
 ```
 
 The initial lowering supports one binder over an array or text value and an
@@ -192,6 +194,9 @@ universal forms. Quantifier predicates must be statically boolean and straight-l
 effectful or multi-binder forms are rejected until their semantics are specified.
 `count` is a typed `usize` fold over the same array/text iterables and increments
 its loop-carried counter only for matching elements.
+`sum` and `product` are integer-only folds that carry the iterable's exact
+element type, with identities `0` and `1` respectively; no implicit widening or
+temporary collection is introduced.
 The collection query `each x in values where predicate` is the typed identity
 projection, equivalent to `[x for x in values if predicate]`. Set comprehensions
 remain an explicit unsupported diagnostic.

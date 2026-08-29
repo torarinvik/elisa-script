@@ -689,7 +689,8 @@ initialized to the identity (`false` for existential `any` / `exists`, `true` fo
 universal `all` / `forall`); a predicate branch targets the exit block on the
 decisive result and otherwise advances to the latch. The initial shared IR
 also lowers `each` queries as identity array comprehensions. It deliberately
-lowers `count` queries as a `usize` accumulator with a conditional increment.
+lowers `count` queries as a `usize` accumulator with a conditional increment,
+and `sum` / `product` queries as exact integer accumulators with identities 0 / 1.
 It deliberately declines set, multi-binder, and non-straight-line query
 predicates rather than lowering them with guessed semantics.
 
