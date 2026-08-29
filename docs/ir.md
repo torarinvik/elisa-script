@@ -699,10 +699,11 @@ also lowers `each` queries as identity array comprehensions. It deliberately
 lowers `count` queries as a `usize` accumulator with a conditional increment,
 and `sum` / `product` queries as exact integer accumulators with identities 0 / 1.
 These folds and boolean quantifiers accept integer ranges through the same
-counter-driven header/latch states, so no range collection is created.
-It deliberately declines set comprehensions, multi-binder query predicates, and
-non-straight-line query predicates rather than lowering them with guessed
-semantics.
+counter-driven header/latch states, so no range collection is created. Boolean
+quantifiers also accept two-binder dictionary iterables by snapshotting `MapKeys`
+and looking up each value in the body state. It deliberately declines set
+comprehensions, query forms with more than two binders, and non-straight-line
+query predicates rather than lowering them with guessed semantics.
 
 Elisa value blocks lower their leading statements in a lexical binding scope and
 then yield the tail expression. This makes the idiomatic multiline `return if ...:`

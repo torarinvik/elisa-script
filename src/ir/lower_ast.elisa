@@ -1145,7 +1145,7 @@ extend EsIr:
 
 
         # Quantifier comprehensions (`any`/`exists` and `all`/`forall`) reduce an
-        # array, text, or integer-range iterable to one typed boolean. The
+        # array, text, integer-range, or two-binder dictionary iterable to one typed boolean. The
         # predicate is evaluated once per element; a matching existential or
         # failing universal branches directly to the exit state, while the
         # opposite result advances through the latch. Non-boolean truthiness is
@@ -1169,10 +1169,22 @@ extend EsIr:
                 return LoweredValue{valid: false, value: 0, type: result_type}
             range_spec: ComprehensionRange = comprehension_range_parts(iterable)
             range_mode: bool = range_spec.recognized
+            extra_variable: sview = comprehension_extra_binder(state, pos)
+            map_mode: bool = extra_variable != ""
+            extra_binder_count: usize = comprehension_extra_binder_count(state, pos)
             collection: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+            iteration_collection: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+            map_collection: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
             range_low: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
             range_high: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
             range_step: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+            extra_type: mutable Type = unknown_ir_type()
+            if extra_binder_count > 1:
+                add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "quantifiers support at most key and value binders")
+                return LoweredValue{valid: false, value: 0, type: result_type}
+            if range_mode and map_mode:
+                add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "quantifiers cannot combine range iteration with multiple binders")
+                return LoweredValue{valid: false, value: 0, type: result_type}
             if range_mode:
                 range_low <- lower_expression(range_spec.low, state)
                 if not range_low.valid:
@@ -1196,6 +1208,22 @@ extend EsIr:
                     if not range_step.valid or not same_type(range_step.type, range_low.type):
                         add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "range quantifier stride must match the bound type")
                         return LoweredValue{valid: false, value: 0, type: result_type}
+            elif map_mode:
+                collection <- lower_expression(iterable, state)
+                if not collection.valid:
+                    return LoweredValue{valid: false, value: 0, type: result_type}
+                if collection.type.kind != TypeKind.Map:
+                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "multiple quantifier binders require a dictionary iterable")
+                    return LoweredValue{valid: false, value: 0, type: result_type}
+                map_collection <- collection
+                extra_type <- map_value_type(collection.type)
+                key_type: Type = map_key_type(collection.type)
+                keys_type: Type = array_ir_type(key_type)
+                keys_result: u32 = fresh_value(state)
+                keys_operand_start: u32 = state.operand_pool.count.u32()
+                state.operand_pool.push(collection.value)
+                state.instructions.push(Instruction{opcode: Opcode.MapKeys, result: keys_result, result_type: keys_type, operand_start: keys_operand_start, operand_count: 1, span: ir_span(pos)})
+                iteration_collection <- LoweredValue{valid: true, value: keys_result, type: keys_type}
             else:
                 collection <- lower_expression(iterable, state)
                 if not collection.valid:
@@ -1203,7 +1231,8 @@ extend EsIr:
                 if collection.type.kind != TypeKind.Array and collection.type.kind != TypeKind.Text:
                     add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "quantifiers require an array, text, or integer range iterable")
                     return LoweredValue{valid: false, value: 0, type: result_type}
-            element_type: Type = range_low.type if range_mode else (type_from_name("char") if collection.type.kind == TypeKind.Text else array_element_type(collection.type))
+                iteration_collection <- collection
+            element_type: Type = range_low.type if range_mode else (map_key_type(collection.type) if map_mode else (type_from_name("char") if collection.type.kind == TypeKind.Text else array_element_type(collection.type)))
             condition_absent: mutable bool = false
             match condition:
                 Expr.Absent:
@@ -1264,7 +1293,7 @@ extend EsIr:
             else:
                 length_result: u32 = fresh_value(state)
                 length_start: u32 = state.operand_pool.count.u32()
-                state.operand_pool.push(collection.value)
+                state.operand_pool.push(iteration_collection.value)
                 state.instructions.push(Instruction{opcode: Opcode.Length, result: length_result, result_type: index_type, operand_start: length_start, operand_count: 1, span: ir_span(pos)})
                 condition_start: u32 = state.operand_pool.count.u32()
                 state.operand_pool.push(header_index)
@@ -1283,13 +1312,23 @@ extend EsIr:
             element_result: u32 = header_index if range_mode else fresh_value(state)
             if not range_mode:
                 element_start: u32 = state.operand_pool.count.u32()
-                state.operand_pool.push(collection.value)
+                state.operand_pool.push(iteration_collection.value)
                 state.operand_pool.push(header_index)
                 state.instructions.push(Instruction{opcode: Opcode.Index, result: element_result, result_type: element_type, operand_start: element_start, operand_count: 2, span: ir_span(pos)})
             state.names.push(variable)
             state.values.push(element_result)
             state.types.push(element_type)
             state.mutables.push(false)
+            if map_mode:
+                value_result: u32 = fresh_value(state)
+                value_start: u32 = state.operand_pool.count.u32()
+                state.operand_pool.push(map_collection.value)
+                state.operand_pool.push(element_result)
+                state.instructions.push(Instruction{opcode: Opcode.Index, result: value_result, result_type: extra_type, operand_start: value_start, operand_count: 2, span: ir_span(pos)})
+                state.names.push(extra_variable)
+                state.values.push(value_result)
+                state.types.push(extra_type)
+                state.mutables.push(false)
             predicate: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: result_type}
             if condition_absent:
                 predicate <- LoweredValue{valid: true, value: element_result, type: result_type}

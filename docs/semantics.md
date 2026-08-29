@@ -202,8 +202,10 @@ early on the first false predicate. Empty inputs therefore produce `false` for
 `any` and `true` for `all`. The verification spellings `exists x in values: predicate`
 and `forall x in values: predicate` are equivalent existential and universal
 forms; their ordinary query-style `where` spelling is accepted too. Quantifier
-predicates must be statically boolean and straight-line; effectful or multi-binder
-quantifier forms are rejected until their semantics are specified.
+predicates must be statically boolean and straight-line; effectful quantifiers
+and forms with more than two binders are rejected until their semantics are
+specified. Two-binder quantifiers are restricted to dictionary iterables
+(`key, value`).
 `count` is a typed `usize` fold over the same array/text/range iterables and
 increments its loop-carried counter only for matching elements.
 `sum` and `product` are integer-only folds that carry the iterable's exact
