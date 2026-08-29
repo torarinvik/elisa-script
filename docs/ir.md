@@ -447,7 +447,7 @@ and effect-handler state.
 The verified bytecode facade uses the same program-counter machine for execution.
 Modules containing only the currently closed scalar, text, regex, homogeneous-array,
 and scalar-map subset (boolean, 64-bit integer, or 64-bit float values, text/nominal constants,
-including two nested array levels,
+including three nested array levels,
 array/map construction and key extraction, nominal path/glob/regex/URL constructors, typed path composition/decomposition, indexing, length, slicing, membership, concatenation, split,
 join, typed integer/float parsing and formatting, regex search/replacement/splitting/extraction, indexed updates, unary/binary operators,
 observations, pure direct calls, and typed filesystem/process operations) take a
@@ -463,7 +463,7 @@ operations before reaching a terminal value state. The packed executor wraps the
 control cursor in another explicit machine for block entry, condition staging,
 instruction storage, jump-edge collection, and returns, so its direct loop has no
 implicit host control-flow state. The eligibility gate rejects
-other widths, arrays nested deeper than two levels, handlers, and continuations.
+other widths, arrays nested deeper than four levels, handlers, and continuations.
 Map values may use the inline array layer on the packed path; nested aggregate
 shapes beyond the descriptor remain reference-interpreter-only.
 Error guards are eligible for the direct path: `ErrorGuardPush`/`ErrorGuardPop`
@@ -501,9 +501,9 @@ control-flow state without manufacturing an instruction or runtime value.
 It also lowers homogeneous immutable array literals, scalar `darray[T]`/`array[T]`
 type annotations, integer indexing, and the `.count` field. Empty literals use
 their expected array type in bindings, assignments, returns, and call arguments,
-so `[]` never introduces an untyped dynamic collection. Arrays may nest two levels
-(`darray[darray[darray[T]]]`) using the compatibility fields; a fourth array layer
-remains an explicit lowering error until the recursive table is used directly by
+so `[]` never introduces an untyped dynamic collection. Arrays may nest four levels
+(`darray[darray[darray[darray[T]]]]`) using the compatibility fields; a fifth array
+layer remains an explicit lowering error until the recursive table is used directly by
 source typing. Dictionary values may be scalar or one-level arrays; maps whose
 values need a deeper descriptor are rejected at the source boundary. The
 `intern_module_types` pass records every type-bearing IR position in the shared
@@ -581,10 +581,9 @@ compares lengths first and then elements deterministically from left to right;
 empty arrays, slices, concatenated arrays, separate equal allocations, and shared
 or copy-on-update storage therefore follow one value-semantic rule. Mixed array
 element types remain static errors; nested arrays use the same recursive runtime
-comparison within the supported two-level descriptor. The compact structural type
-descriptor currently carries three array layers; a fourth layer is reserved for
-the next migration step, where source typing will emit recursive table ids
-directly.
+comparison within the supported four-level descriptor. The compact structural type
+descriptor currently carries four array layers; a fifth layer is reserved for the
+next migration step, where source typing will emit recursive table ids directly.
 Statement-form `array.push(value)` and `array.extend(values)` are ownership-safe
 SSA updates rather than hidden aliasing mutations. `push` constructs a typed
 singleton and `extend` accepts the receiver's exact array type; both concatenate
