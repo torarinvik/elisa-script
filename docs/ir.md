@@ -224,9 +224,12 @@ capture values.
 `RegexReplace` has signature `Text × Named(Regex) × Text -> Text`. It reuses the
 same branch matcher to locate non-overlapping spans, copies unmatched and replacement
 bytes into fresh storage, expands `$0` to each complete matched span, and advances
-after zero-width matches so an empty pattern cannot loop forever. Capture groups and
-`$n` interpolation beyond `$0` are reserved until recursive regex match values are
-defined.
+after zero-width matches so an empty pattern cannot loop forever. `$1` through `$9`
+also expand when the pattern contains a flat sequence of non-quantified capture groups
+whose spans can be proven against the complete match (for example,
+`([a-z]+)=([0-9]+)`). Nested, quantified, or top-level-alternating capture layouts
+remain literal rather than guessing a branch; this conservative fallback keeps
+replacement behavior deterministic until recursive regex match values are defined.
 `RegexSplit` has signature `Text × Named(Regex) -> Array[Text]`. It uses those same
 spans as field boundaries, preserves empty fields, and applies an explicit one-byte
 advance for zero-width matches. The result is materialized in caller-owned flat
