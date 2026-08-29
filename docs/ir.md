@@ -216,11 +216,13 @@ and `SetIndex` accept maps with typed key/value contracts. Runtime map payloads 
 interleaved key/value pairs in caller-owned flat storage and validate their complete
 pair range before access. Missing keys use the existing typed
 `IndexOutOfBounds` error rather than a sentinel value. The reference interpreter and
-the bytecode facade share this representation; the direct packed eligibility gate
-currently routes map-bearing modules through the verified interpreter oracle while
-the packed map instruction family is completed. `MapKeys` materializes a stable
-array of keys in insertion order, allowing the existing loop state machine to lower
-`for key in map` without evaluating the map expression more than once.
+the bytecode facade share this representation. Maps whose key and value types are
+direct scalar/nominal representations use the packed path for construction, lookup,
+membership, equality, updates, and key extraction; maps containing unsupported
+aggregate components continue through the verified interpreter oracle. `MapKeys`
+materializes a stable array of keys in insertion order, allowing the existing loop
+state machine to lower `for key in map` without evaluating the map expression more
+than once.
 
 The AST-to-IR boundary reports the same mistakes as structured `TypeMismatch`
 lowering issues, before a backend sees the module. This covers declared binding
@@ -376,10 +378,10 @@ surrounding interpreter loop, keeping the control machine independent of storage
 and effect-handler state.
 
 The verified bytecode facade uses the same program-counter machine for execution.
-Modules containing only the currently closed scalar, text, regex, and homogeneous-array
-subset (boolean, 64-bit integer, or 64-bit float values, text/nominal constants,
+Modules containing only the currently closed scalar, text, regex, homogeneous-array,
+and scalar-map subset (boolean, 64-bit integer, or 64-bit float values, text/nominal constants,
 including one nested array level,
-array construction, nominal path/glob/regex/URL constructors, typed path composition/decomposition, indexing, length, slicing, membership, concatenation, split,
+array/map construction and key extraction, nominal path/glob/regex/URL constructors, typed path composition/decomposition, indexing, length, slicing, membership, concatenation, split,
 join, typed integer/float parsing and formatting, regex search/replacement, indexed updates, unary/binary operators,
 observations, pure direct calls, and typed filesystem/process operations) take a
 direct packed-instruction path. Calls use recursive state-machine frames with one
@@ -398,9 +400,9 @@ other widths, arrays nested deeper than two levels, handlers, and continuations.
 Integer divide/remainder/shift operations validate zero divisors, signed minimum
 overflow, and shift counts before entering host arithmetic, preserving the typed
 interpreter failures while remaining on the direct path.
-The direct path uses the same overflow-safe flat-array range predicate as the
-interpreter for indexing, slicing, membership, joining, concatenation, indexed
-updates, equality, and process argument vectors; malformed external arguments
+The direct path uses the same overflow-safe flat-array range predicates as the
+interpreter for array/map indexing, slicing, membership, joining, concatenation,
+indexed updates, equality, key extraction, and process argument vectors; malformed external arguments
 therefore cannot diverge between engines.
 Process execution and capture (`RunProcess`, stdout/stderr
 capture, stdin transport, and `ProcessCapture` accessors) use the same typed argv
