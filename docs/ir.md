@@ -636,12 +636,12 @@ typed header and exit parameters; initial entry, normal backedges, `continue`, a
 2. Define the artifact container and versioned metadata around the canonical IR
    bytes. The structural encoding and `u64` module fingerprint are already
    available for artifact correlation.
-3. Extend the reference interpreter from its current scalar/control-flow core
-   through effects, errors, structural values, and ownership operations. The
-   interpreter already executes verified integer/boolean/text constants,
-   arithmetic and comparisons, direct calls, SSA block arguments, branches,
-   loops, returns, handler installation/uninstallation, and `observe` trace sites.
-4. Lower the same verified modules to bytecode and LLVM, then test all engines
-   differentially against the interpreter. The bytecode backend now has typed
-   dispatch classes, table preflight, and a state-machine program-counter step;
-   the next increment is wiring opcode-family handlers into that loop.
+3. Continue extending the reference interpreter through the remaining structural
+   and ownership operations. The initial scripting profile already executes
+   verified scalar values, arrays/maps, filesystem and process primitives, error
+   recovery, dynamic handlers, multi-shot continuations, and `observe` trace sites.
+4. Lower the same verified modules to additional native/JIT targets and test each
+   engine differentially against the interpreter. The bytecode backend already
+   has typed dispatch classes, table preflight, a state-machine program counter,
+   and direct guarded-recovery execution; unsupported dynamic effects continue to
+   use the reference interpreter until their target lowering is defined.
