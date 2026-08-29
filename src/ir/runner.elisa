@@ -10,8 +10,102 @@
 using EsBytecode
 
 
+error ElisascriptEntrypointError:
+    MissingMain
+    InvalidMainSignature
+
+
 extend EsIr:
     public:
+        const enum ElisascriptEntrypointState of u8:
+            Search
+            Validate
+            Done
+
+
+        struct ElisascriptEntrypointCursor:
+            state: mutable ElisascriptEntrypointState
+            index: mutable usize
+            found: mutable bool
+
+
+        def elisascript_main_signature_valid(function: Function&) -> bool:
+            expected_arguments: Type = Type{kind: TypeKind.Array, element_kind: TypeKind.Text}
+            expected_return: Type = Type{kind: TypeKind.Int, bits: 64, signed: true}
+            return function.parameters.count == 1 and same_type(function.parameters[0].type, expected_arguments) and same_type(function.return_type, expected_return)
+
+
+        # The launcher ABI is intentionally narrow: one text-array argument and
+        # an i64 exit status. Effects and Elisa error rows remain unconstrained so
+        # scripts can use the complete standard library without an adapter-specific
+        # wrapper.
+        def validate_elisascript_entrypoint(module: Module&) -> void error[ElisascriptEntrypointError]:
+            cursor: mutable ElisascriptEntrypointCursor = ElisascriptEntrypointCursor{state: ElisascriptEntrypointState.Search, index: 0, found: false}
+            machine over cursor.state:
+                state Validate
+                start Validate
+
+                Validate, ElisascriptEntrypointState.Search if cursor.index >= module.functions.count and not cursor.found:
+                    raise ElisascriptEntrypointError.MissingMain
+                    break
+
+                Validate, ElisascriptEntrypointState.Search if cursor.index >= module.functions.count:
+                    cursor.state <- ElisascriptEntrypointState.Done
+                    -> Validate
+
+                Validate, ElisascriptEntrypointState.Search if module.functions[cursor.index].name != "main":
+                    cursor.index <- cursor.index + 1
+                    -> Validate
+
+                Validate, ElisascriptEntrypointState.Search:
+                    cursor.found <- true
+                    cursor.state <- ElisascriptEntrypointState.Validate
+                    -> Validate
+
+                Validate, ElisascriptEntrypointState.Validate if not elisascript_main_signature_valid(module.functions[cursor.index]):
+                    raise ElisascriptEntrypointError.InvalidMainSignature
+                    break
+
+                Validate, ElisascriptEntrypointState.Validate:
+                    cursor.state <- ElisascriptEntrypointState.Done
+                    -> Validate
+
+                Validate, ElisascriptEntrypointState.Done:
+                    break
+
+
+        # Compile and execute a standard program from source text. The caller's
+        # storage receives the argv text values, allowing the entry function to
+        # inspect them with ordinary checked array operations.
+        def execute_elisascript_program_source(filename: u8&, source: u8&, module_name: sview, arguments: darray[sview]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, step_limit: u64 = 1000000) -> Execution error[ElisascriptSourceError, ElisascriptEntrypointError, InterpretError] can[Memory.Allocate, Abort.Panic, Blocking.IO, Console.Format, Console.Write, Memory.Release, Unsafe.PointerCast]:
+            region script_program_source(1048576):
+                module: Module = try lower_elisascript_source(filename, source, module_name)
+                try validate_elisascript_entrypoint(module)
+                argument_start: u32 = storage.count.u32()
+                for argument in arguments |storage|:
+                    storage.push(runtime_text(argument))
+                runtime_arguments: darray[RuntimeValue] = [runtime_array(argument_start, arguments.count.u32())]
+                lowered: BytecodeLowerResult = lower_bytecode(module)
+                raise InterpretError.VerificationFailed if lowered.issues.count != 0
+                return execute_bytecode(lowered.module, "main", runtime_arguments, observations, storage, step_limit)
+
+
+        # File-backed standard program entry point. This is the ABI a future
+        # `.elisascript` command-line driver can call without knowing internal IR
+        # function names or constructing runtime values itself.
+        def execute_elisascript_program_file(filename: u8&, arguments: darray[sview]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, step_limit: u64 = 1000000) -> Execution error[ElisascriptSourceError, ElisascriptEntrypointError, InterpretError] can[Memory.Allocate, Abort.Panic, Blocking.IO, Console.Format, Console.Write, Memory.Release, Unsafe.PointerCast]:
+            region script_program_file(1048576):
+                module: Module = try lower_elisascript_file(filename, "elisascript-program")
+                try validate_elisascript_entrypoint(module)
+                argument_start: u32 = storage.count.u32()
+                for argument in arguments |storage|:
+                    storage.push(runtime_text(argument))
+                runtime_arguments: darray[RuntimeValue] = [runtime_array(argument_start, arguments.count.u32())]
+                lowered: BytecodeLowerResult = lower_bytecode(module)
+                raise InterpretError.VerificationFailed if lowered.issues.count != 0
+                return execute_bytecode(lowered.module, "main", runtime_arguments, observations, storage, step_limit)
+
+
         # Compile and execute source text through the canonical bytecode path.
         # Source and runtime failures remain their original Elisa error families;
         # callers can therefore distinguish malformed programs from execution

@@ -658,3 +658,10 @@ can distinguish a malformed script from a failed invocation without introducing
 a result-shaped sentinel. The bytecode engine selects direct state-machine
 dispatch when supported and otherwise preserves interpreter semantics for dynamic
 effects and continuations.
+
+The launcher-facing ABI is `main(arguments: darray[sview]) -> i64`. The program
+runner appends each host argument to caller-owned runtime storage, passes one typed
+array value to `main`, and returns the signed 64-bit result as the process status.
+`validate_elisascript_entrypoint` rejects a missing or differently typed `main`
+before lowering to bytecode; source and runtime failures continue to use their
+ordinary `error[...]` families.

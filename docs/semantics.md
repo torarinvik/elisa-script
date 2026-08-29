@@ -327,6 +327,18 @@ and applies the environment overrides after `fork` and before descriptor setup o
 is reported by the child as status `126`, while the returned snapshot keeps the same
 exit-status, stdout, and stderr contract.
 
+## Program entry point
+
+The launcher-facing program ABI is deliberately strict: a runnable script must
+declare `main(arguments: darray[sview]) -> i64`. The runtime packs the process
+arguments into one typed text array, so indexing, counting, and iteration use the
+same checked array rules as every other value. The returned signed 64-bit integer
+is the process exit status; effects and declared `error[...]` rows remain those of
+the source function. `validate_elisascript_entrypoint` rejects a missing or
+non-conforming `main` before bytecode execution, and
+`execute_elisascript_program_source/file` provide the corresponding source and
+file launch APIs.
+
 ## Standard streams
 
 Standard streams are explicit typed operations rather than implicit print or shell
