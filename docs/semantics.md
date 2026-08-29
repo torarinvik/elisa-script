@@ -134,7 +134,9 @@ deterministic and allocation ownership is explicit. A read-only `for key in map`
 loop walks a materialized key array in insertion order. `for key, value in map`
 uses that same key array and performs a typed lookup for each value; both bindings
 are immutable, and map mutation remains explicit through indexed assignment.
-Mutable iteration remains restricted to arrays.
+Mutable iteration remains restricted to arrays. Map equality is order-insensitive
+but matches pairs one-to-one, so malformed duplicate entries cannot be reused to
+hide a mismatch.
 
 ## Numeric text conversion
 

@@ -225,7 +225,8 @@ state machine to lower `for key in map` without evaluating the map expression mo
 than once. A two-binding read-only loop, `for key, value in map`, uses that same
 key array and emits a typed `Index(map, key)` for the value binding; the map
 expression is still evaluated exactly once and mutable map iteration is not
-permitted.
+permitted. Map equality is order-insensitive but bijective: each candidate pair is
+consumed at most once, including for malformed externally supplied runtime maps.
 
 The AST-to-IR boundary reports the same mistakes as structured `TypeMismatch`
 lowering issues, before a backend sees the module. This covers declared binding
