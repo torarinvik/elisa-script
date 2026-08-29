@@ -167,22 +167,29 @@ iteration and allocation explicit in the typed IR:
 doubled: darray[i64] = [value * 2i64 for value in values]
 evens: darray[i64] = [value for value in values if value % 2i64 == 0i64]
 letters: darray[char] = [character for character in text]
+doubled_range: darray[i64] = [value * 2i64 for value in 0i64..<4i64]
 indexed: dict[i64, i64] = {value: value * 10i64 for value in values if value > 0i64}
 positive_count: usize = count value in values where value > 0i64
 total: i64 = sum value in values
 positive_product: i64 = product value in values where value > 0i64
 ```
 
-The initial lowering supports one binder over an array or text value and an
-optional boolean `if` filter. Array iteration uses checked `Length`/`Index`
-operations; text iteration produces one-character values. The result element
-type is inferred from the projection and must be storable, so heterogeneous
-results, effectful/non-straight-line projections, and void projections are
-rejected statically. An empty result is a typed empty array or map, never a
-sentinel. Dict comprehensions use a two-element `key: value` projection and
-infer exact key/value types; keys must be scalar or nominal and values obey the
-same bounded aggregate-depth rule as dictionary literals. Duplicate keys replace
-the prior value while preserving the runtime's insertion order.
+The initial lowering supports one binder over an array, text value, or integer
+range and an optional boolean `if` filter. Array/text iteration uses checked
+`Length`/`Index` operations; text iteration produces one-character values.
+Integer ranges stay counter-driven and do not materialize a temporary array:
+`low..<high` is exclusive ascending, `low..=high` is inclusive ascending, and
+`high..>low` is strict descending. The range-owned stride spelling
+`low..<high..step` (and its inclusive/descending variants) requires a positive
+integer constant and is applied in the latch state. Bounds and stride are
+evaluated once. The result element type is inferred from the projection and
+must be storable, so heterogeneous results, effectful/non-straight-line
+projections, and void projections are rejected statically. An empty result is a
+typed empty array or map, never a sentinel. Dict comprehensions use a two-element
+`key: value` projection and infer exact key/value types; keys must be scalar or
+nominal and values obey the same bounded aggregate-depth rule as dictionary
+literals. Duplicate keys replace the prior value while preserving the runtime's
+insertion order.
 The accumulator is an SSA loop-carried value updated with `Concat` for arrays or
 immutable `SetIndex` copies for maps, and the header, filter, append, latch, and
 exit are ordinary state-machine blocks. Quantifiers use the same loop shape but
@@ -192,8 +199,8 @@ early on the first false predicate. Empty inputs therefore produce `false` for
 and `forall x in values: predicate` are equivalent existential and
 universal forms. Quantifier predicates must be statically boolean and straight-line;
 effectful or multi-binder forms are rejected until their semantics are specified.
-`count` is a typed `usize` fold over the same array/text iterables and increments
-its loop-carried counter only for matching elements.
+`count` is a typed `usize` fold over the same array/text/range iterables and
+increments its loop-carried counter only for matching elements.
 `sum` and `product` are integer-only folds that carry the iterable's exact
 element type, with identities `0` and `1` respectively; no implicit widening or
 temporary collection is introduced.

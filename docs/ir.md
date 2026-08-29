@@ -672,17 +672,21 @@ so skipped calls, effects, and observations are genuinely not executed. Conditio
 expressions likewise lower each value arm into a separate block rather than an eager
 select instruction.
 
-Array, text, dictionary, and boolean quantifier comprehensions use the same
-state-machine discipline.
+Array, text, integer-range, dictionary, and boolean quantifier comprehensions
+use the same state-machine discipline.
 The lowerer first probes the projection in a restored lexical scope to infer its
 type(s) without retaining speculative instructions, then emits an empty typed
-`MakeArray` or `MakeMap` as the loop-carried accumulator. A `Length`/`Less` header
-gates a checked `Index`; an optional boolean filter branches to the append state or
-directly to the latch. Array projections become singleton `MakeArray` values and
-`Concat` produces the next accumulator. Dictionary projections lower their key and
-value separately and use immutable `SetIndex` copies, retaining duplicate-key
-replacement semantics. Header, latch, and exit block parameters carry both the
-accumulator and index through the flat edge-argument pool. Consequently the
+`MakeArray` or `MakeMap` as the loop-carried accumulator. Array/text iterables use
+a `Length`/`Less` header that gates a checked `Index`; integer range iterables
+instead carry the current typed counter, compare it with the bound in the header,
+and add/subtract the positive constant stride in the latch. Range bounds and
+stride are lowered once, so ranges never allocate a temporary collection. An
+optional boolean filter branches to the append state or directly to the latch.
+Array projections become singleton `MakeArray` values and `Concat` produces the
+next accumulator. Dictionary projections lower their key and value separately
+and use immutable `SetIndex` copies, retaining duplicate-key replacement
+semantics. Header, latch, and exit block parameters carry both the accumulator
+and iteration state through the flat edge-argument pool. Consequently the
 interpreter, bytecode VM, and future native backends observe identical evaluation
 order and allocation behavior. Quantifier headers carry a boolean accumulator
 initialized to the identity (`false` for existential `any` / `exists`, `true` for
@@ -691,6 +695,8 @@ decisive result and otherwise advances to the latch. The initial shared IR
 also lowers `each` queries as identity array comprehensions. It deliberately
 lowers `count` queries as a `usize` accumulator with a conditional increment,
 and `sum` / `product` queries as exact integer accumulators with identities 0 / 1.
+These folds and boolean quantifiers accept integer ranges through the same
+counter-driven header/latch states, so no range collection is created.
 It deliberately declines set, multi-binder, and non-straight-line query
 predicates rather than lowering them with guessed semantics.
 

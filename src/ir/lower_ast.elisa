@@ -46,6 +46,18 @@ extend EsIr:
             recognized: bool
 
 
+        # A comprehension may iterate a materialized array/text value or an
+        # integer range directly.  Ranges stay syntax-level here: the lowering
+        # carries the current counter through the same explicit CFG used by
+        # statement `for` loops, so no temporary array is allocated.
+        struct ComprehensionRange:
+            recognized: mutable bool
+            low: mutable Ast::Expr
+            high: mutable Ast::Expr
+            step: mutable Ast::Expr
+            operator: mutable TokenKind
+
+
         struct ComprehensionPairProbe:
             valid: bool
             key_type: Type
@@ -110,6 +122,31 @@ extend EsIr:
 
         def ir_span(pos: Ast::Pos&) -> SourceSpan:
             return SourceSpan{file: "", line: pos.line, column: pos.column, end_line: pos.end_line, end_column: pos.end_column}
+
+
+        def comprehension_range_parts(iterable: Ast::Expr) -> ComprehensionRange:
+            range: mutable ComprehensionRange = ComprehensionRange{recognized: false, low: Expr.Absent, high: Expr.Absent, step: Expr.Absent, operator: TokenKind.Range}
+            match iterable:
+                Expr.Binary(low, operator, high, _):
+                    if operator == TokenKind.RangeLt or operator == TokenKind.RangeLe or operator == TokenKind.RangeGt:
+                        range.low <- low
+                        range.high <- high
+                        range.operator <- operator
+                        range.recognized <- true
+                    elif operator == TokenKind.Range:
+                        match low:
+                            Expr.Binary(inner_low, inner_operator, inner_high, _):
+                                if inner_operator == TokenKind.RangeLt or inner_operator == TokenKind.RangeLe or inner_operator == TokenKind.RangeGt:
+                                    range.low <- inner_low
+                                    range.high <- inner_high
+                                    range.step <- high
+                                    range.operator <- inner_operator
+                                    range.recognized <- true
+                            _:
+                                pass
+                _:
+                    pass
+            return range
 
 
         def trace_hash_text(hash: u64, text: sview) -> u64:
@@ -619,13 +656,43 @@ extend EsIr:
             if variable == "" or body_absent:
                 add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "only projected array comprehensions are in the initial IR lowering subset")
                 return LoweredValue{valid: false, value: 0, type: result_type}
-            collection: LoweredValue = lower_expression(iterable, state)
-            if not collection.valid:
-                return LoweredValue{valid: false, value: 0, type: result_type}
-            if collection.type.kind != TypeKind.Array and collection.type.kind != TypeKind.Text:
-                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "array comprehensions require an array or text iterable")
-                return LoweredValue{valid: false, value: 0, type: result_type}
-            element_type: Type = type_from_name("char") if collection.type.kind == TypeKind.Text else array_element_type(collection.type)
+            range_spec: ComprehensionRange = comprehension_range_parts(iterable)
+            range_mode: bool = range_spec.recognized
+            collection: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+            range_low: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+            range_high: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+            range_step: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+            if range_mode:
+                range_low <- lower_expression(range_spec.low, state)
+                if not range_low.valid:
+                    return LoweredValue{valid: false, value: 0, type: result_type}
+                range_high <- lower_expression_expected(range_spec.high, range_low.type, state)
+                if not range_high.valid or range_low.type.kind != TypeKind.Int or not same_type(range_low.type, range_high.type):
+                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "range comprehension bounds must have the same integer type")
+                    return LoweredValue{valid: false, value: 0, type: result_type}
+                range_step <- emit_constant(state, range_low.type, 1, "", "", false, ir_span(pos))
+                if range_spec.step is not Expr.Absent:
+                    positive_literal: mutable bool = false
+                    match range_spec.step:
+                        Expr.IntLit(value) | Expr.IntLitTyped(value, _):
+                            positive_literal <- value > 0
+                        _:
+                            pass
+                    if not positive_literal:
+                        add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "range comprehension stride must be a positive integer constant")
+                        return LoweredValue{valid: false, value: 0, type: result_type}
+                    range_step <- lower_expression_expected(range_spec.step, range_low.type, state)
+                    if not range_step.valid or not same_type(range_step.type, range_low.type):
+                        add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "range comprehension stride must match the bound type")
+                        return LoweredValue{valid: false, value: 0, type: result_type}
+            else:
+                collection <- lower_expression(iterable, state)
+                if not collection.valid:
+                    return LoweredValue{valid: false, value: 0, type: result_type}
+                if collection.type.kind != TypeKind.Array and collection.type.kind != TypeKind.Text:
+                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "array comprehensions require an array, text, or integer range iterable")
+                    return LoweredValue{valid: false, value: 0, type: result_type}
+            element_type: Type = range_low.type if range_mode else (type_from_name("char") if collection.type.kind == TypeKind.Text else array_element_type(collection.type))
             projected: LoweredValue = probe_comprehension_body(projection, variable, element_type, pos, state)
             if not projected.valid:
                 add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "comprehension projection must be a straight-line typed expression")
@@ -664,8 +731,8 @@ extend EsIr:
             append_block: u32 = body_block if condition_absent else fresh_block(state)
             latch_block: u32 = fresh_block(state)
             exit_block: u32 = fresh_block(state)
-            index_type: Type = type_from_name("usize")
-            initial_index: LoweredValue = emit_constant(state, index_type, 0, "", "", false, ir_span(pos))
+            index_type: Type = range_low.type if range_mode else type_from_name("usize")
+            initial_index: LoweredValue = range_low if range_mode else emit_constant(state, index_type, 0, "", "", false, ir_span(pos))
             entry_args: (start: u32, count: u16) = append_context_arguments(state, context)
             state.edge_arg_pool.push(initial_index.value)
             state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: header_block, target_count: 1, edge0_arg_start: entry_args.start, edge0_arg_count: entry_args.count + 1, span: ir_span(pos)}
@@ -687,15 +754,22 @@ extend EsIr:
 
             state.current_block <- header_block
             state.terminated <- false
-            length_result: u32 = fresh_value(state)
-            length_start: u32 = state.operand_pool.count.u32()
-            state.operand_pool.push(collection.value)
-            state.instructions.push(Instruction{opcode: Opcode.Length, result: length_result, result_type: index_type, operand_start: length_start, operand_count: 1, span: ir_span(pos)})
             condition_result: u32 = fresh_value(state)
-            condition_start: u32 = state.operand_pool.count.u32()
-            state.operand_pool.push(header_index)
-            state.operand_pool.push(length_result)
-            state.instructions.push(Instruction{opcode: Opcode.Less, result: condition_result, result_type: type_from_name("bool"), operand_start: condition_start, operand_count: 2, span: ir_span(pos)})
+            if range_mode:
+                condition_start: u32 = state.operand_pool.count.u32()
+                state.operand_pool.push(header_index)
+                state.operand_pool.push(range_high.value)
+                comparison: Opcode = Opcode.Greater if range_spec.operator == TokenKind.RangeGt else (Opcode.LessEqual if range_spec.operator == TokenKind.RangeLe else Opcode.Less)
+                state.instructions.push(Instruction{opcode: comparison, result: condition_result, result_type: type_from_name("bool"), operand_start: condition_start, operand_count: 2, span: ir_span(pos)})
+            else:
+                length_result: u32 = fresh_value(state)
+                length_start: u32 = state.operand_pool.count.u32()
+                state.operand_pool.push(collection.value)
+                state.instructions.push(Instruction{opcode: Opcode.Length, result: length_result, result_type: index_type, operand_start: length_start, operand_count: 1, span: ir_span(pos)})
+                condition_start: u32 = state.operand_pool.count.u32()
+                state.operand_pool.push(header_index)
+                state.operand_pool.push(length_result)
+                state.instructions.push(Instruction{opcode: Opcode.Less, result: condition_result, result_type: type_from_name("bool"), operand_start: condition_start, operand_count: 2, span: ir_span(pos)})
             exit_args: (start: u32, count: u16) = append_context_arguments(state, context)
             state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: condition_result, operand_count: 1, target0: body_block, target1: exit_block, target_count: 2, edge1_arg_start: exit_args.start, edge1_arg_count: exit_args.count, span: ir_span(pos)}
             finish_block(state)
@@ -706,11 +780,12 @@ extend EsIr:
             state.continue_targets.push(latch_block)
             state.current_block <- body_block
             state.terminated <- false
-            element_result: u32 = fresh_value(state)
-            element_start: u32 = state.operand_pool.count.u32()
-            state.operand_pool.push(collection.value)
-            state.operand_pool.push(header_index)
-            state.instructions.push(Instruction{opcode: Opcode.Index, result: element_result, result_type: element_type, operand_start: element_start, operand_count: 2, span: ir_span(pos)})
+            element_result: u32 = header_index if range_mode else fresh_value(state)
+            if not range_mode:
+                element_start: u32 = state.operand_pool.count.u32()
+                state.operand_pool.push(collection.value)
+                state.operand_pool.push(header_index)
+                state.instructions.push(Instruction{opcode: Opcode.Index, result: element_result, result_type: element_type, operand_start: element_start, operand_count: 2, span: ir_span(pos)})
             state.names.push(variable)
             state.values.push(element_result)
             state.types.push(element_type)
@@ -755,12 +830,13 @@ extend EsIr:
             state.current_block <- latch_block
             state.terminated <- false
             state.values[accumulator_index] <- latch_accumulator
-            one: LoweredValue = emit_constant(state, index_type, 1, "", "", false, ir_span(pos))
+            one: LoweredValue = range_step if range_mode else emit_constant(state, index_type, 1, "", "", false, ir_span(pos))
             next_index: u32 = fresh_value(state)
             increment_start: u32 = state.operand_pool.count.u32()
             state.operand_pool.push(header_index)
             state.operand_pool.push(one.value)
-            state.instructions.push(Instruction{opcode: Opcode.Add, result: next_index, result_type: index_type, operand_start: increment_start, operand_count: 2, span: ir_span(pos)})
+            step_opcode: Opcode = Opcode.Subtract if range_mode and range_spec.operator == TokenKind.RangeGt else Opcode.Add
+            state.instructions.push(Instruction{opcode: step_opcode, result: next_index, result_type: index_type, operand_start: increment_start, operand_count: 2, span: ir_span(pos)})
             backedge_args: (start: u32, count: u16) = append_context_arguments(state, context)
             state.edge_arg_pool.push(next_index)
             state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: header_block, target_count: 1, edge0_arg_start: backedge_args.start, edge0_arg_count: backedge_args.count + 1, span: ir_span(pos)}
@@ -989,13 +1065,43 @@ extend EsIr:
             if variable == "" or not body_absent:
                 add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "quantifiers require a bound predicate rather than a projection")
                 return LoweredValue{valid: false, value: 0, type: result_type}
-            collection: LoweredValue = lower_expression(iterable, state)
-            if not collection.valid:
-                return LoweredValue{valid: false, value: 0, type: result_type}
-            if collection.type.kind != TypeKind.Array and collection.type.kind != TypeKind.Text:
-                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "quantifiers require an array or text iterable")
-                return LoweredValue{valid: false, value: 0, type: result_type}
-            element_type: Type = type_from_name("char") if collection.type.kind == TypeKind.Text else array_element_type(collection.type)
+            range_spec: ComprehensionRange = comprehension_range_parts(iterable)
+            range_mode: bool = range_spec.recognized
+            collection: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+            range_low: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+            range_high: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+            range_step: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+            if range_mode:
+                range_low <- lower_expression(range_spec.low, state)
+                if not range_low.valid:
+                    return LoweredValue{valid: false, value: 0, type: result_type}
+                range_high <- lower_expression_expected(range_spec.high, range_low.type, state)
+                if not range_high.valid or range_low.type.kind != TypeKind.Int or not same_type(range_low.type, range_high.type):
+                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "range quantifier bounds must have the same integer type")
+                    return LoweredValue{valid: false, value: 0, type: result_type}
+                range_step <- emit_constant(state, range_low.type, 1, "", "", false, ir_span(pos))
+                if range_spec.step is not Expr.Absent:
+                    positive_literal: mutable bool = false
+                    match range_spec.step:
+                        Expr.IntLit(value) | Expr.IntLitTyped(value, _):
+                            positive_literal <- value > 0
+                        _:
+                            pass
+                    if not positive_literal:
+                        add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "range quantifier stride must be a positive integer constant")
+                        return LoweredValue{valid: false, value: 0, type: result_type}
+                    range_step <- lower_expression_expected(range_spec.step, range_low.type, state)
+                    if not range_step.valid or not same_type(range_step.type, range_low.type):
+                        add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "range quantifier stride must match the bound type")
+                        return LoweredValue{valid: false, value: 0, type: result_type}
+            else:
+                collection <- lower_expression(iterable, state)
+                if not collection.valid:
+                    return LoweredValue{valid: false, value: 0, type: result_type}
+                if collection.type.kind != TypeKind.Array and collection.type.kind != TypeKind.Text:
+                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "quantifiers require an array, text, or integer range iterable")
+                    return LoweredValue{valid: false, value: 0, type: result_type}
+            element_type: Type = range_low.type if range_mode else (type_from_name("char") if collection.type.kind == TypeKind.Text else array_element_type(collection.type))
             condition_absent: mutable bool = false
             match condition:
                 Expr.Absent:
@@ -1023,8 +1129,8 @@ extend EsIr:
             body_block: u32 = fresh_block(state)
             latch_block: u32 = fresh_block(state)
             exit_block: u32 = fresh_block(state)
-            index_type: Type = type_from_name("usize")
-            initial_index: LoweredValue = emit_constant(state, index_type, 0, "", "", false, ir_span(pos))
+            index_type: Type = range_low.type if range_mode else type_from_name("usize")
+            initial_index: LoweredValue = range_low if range_mode else emit_constant(state, index_type, 0, "", "", false, ir_span(pos))
             entry_args: (start: u32, count: u16) = append_context_arguments(state, context)
             state.edge_arg_pool.push(initial_index.value)
             state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: header_block, target_count: 1, edge0_arg_start: entry_args.start, edge0_arg_count: entry_args.count + 1, span: ir_span(pos)}
@@ -1046,15 +1152,22 @@ extend EsIr:
 
             state.current_block <- header_block
             state.terminated <- false
-            length_result: u32 = fresh_value(state)
-            length_start: u32 = state.operand_pool.count.u32()
-            state.operand_pool.push(collection.value)
-            state.instructions.push(Instruction{opcode: Opcode.Length, result: length_result, result_type: index_type, operand_start: length_start, operand_count: 1, span: ir_span(pos)})
             condition_result: u32 = fresh_value(state)
-            condition_start: u32 = state.operand_pool.count.u32()
-            state.operand_pool.push(header_index)
-            state.operand_pool.push(length_result)
-            state.instructions.push(Instruction{opcode: Opcode.Less, result: condition_result, result_type: result_type, operand_start: condition_start, operand_count: 2, span: ir_span(pos)})
+            if range_mode:
+                condition_start: u32 = state.operand_pool.count.u32()
+                state.operand_pool.push(header_index)
+                state.operand_pool.push(range_high.value)
+                comparison: Opcode = Opcode.Greater if range_spec.operator == TokenKind.RangeGt else (Opcode.LessEqual if range_spec.operator == TokenKind.RangeLe else Opcode.Less)
+                state.instructions.push(Instruction{opcode: comparison, result: condition_result, result_type: result_type, operand_start: condition_start, operand_count: 2, span: ir_span(pos)})
+            else:
+                length_result: u32 = fresh_value(state)
+                length_start: u32 = state.operand_pool.count.u32()
+                state.operand_pool.push(collection.value)
+                state.instructions.push(Instruction{opcode: Opcode.Length, result: length_result, result_type: index_type, operand_start: length_start, operand_count: 1, span: ir_span(pos)})
+                condition_start: u32 = state.operand_pool.count.u32()
+                state.operand_pool.push(header_index)
+                state.operand_pool.push(length_result)
+                state.instructions.push(Instruction{opcode: Opcode.Less, result: condition_result, result_type: result_type, operand_start: condition_start, operand_count: 2, span: ir_span(pos)})
             exit_args: (start: u32, count: u16) = append_context_arguments(state, context)
             state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: condition_result, operand_count: 1, target0: body_block, target1: exit_block, target_count: 2, edge1_arg_start: exit_args.start, edge1_arg_count: exit_args.count, span: ir_span(pos)}
             finish_block(state)
@@ -1065,11 +1178,12 @@ extend EsIr:
             state.continue_targets.push(latch_block)
             state.current_block <- body_block
             state.terminated <- false
-            element_result: u32 = fresh_value(state)
-            element_start: u32 = state.operand_pool.count.u32()
-            state.operand_pool.push(collection.value)
-            state.operand_pool.push(header_index)
-            state.instructions.push(Instruction{opcode: Opcode.Index, result: element_result, result_type: element_type, operand_start: element_start, operand_count: 2, span: ir_span(pos)})
+            element_result: u32 = header_index if range_mode else fresh_value(state)
+            if not range_mode:
+                element_start: u32 = state.operand_pool.count.u32()
+                state.operand_pool.push(collection.value)
+                state.operand_pool.push(header_index)
+                state.instructions.push(Instruction{opcode: Opcode.Index, result: element_result, result_type: element_type, operand_start: element_start, operand_count: 2, span: ir_span(pos)})
             state.names.push(variable)
             state.values.push(element_result)
             state.types.push(element_type)
@@ -1103,12 +1217,13 @@ extend EsIr:
             state.current_block <- latch_block
             state.terminated <- false
             state.values[accumulator_index] <- latch_accumulator
-            one: LoweredValue = emit_constant(state, index_type, 1, "", "", false, ir_span(pos))
+            one: LoweredValue = range_step if range_mode else emit_constant(state, index_type, 1, "", "", false, ir_span(pos))
             next_index: u32 = fresh_value(state)
             increment_start: u32 = state.operand_pool.count.u32()
             state.operand_pool.push(header_index)
             state.operand_pool.push(one.value)
-            state.instructions.push(Instruction{opcode: Opcode.Add, result: next_index, result_type: index_type, operand_start: increment_start, operand_count: 2, span: ir_span(pos)})
+            step_opcode: Opcode = Opcode.Subtract if range_mode and range_spec.operator == TokenKind.RangeGt else Opcode.Add
+            state.instructions.push(Instruction{opcode: step_opcode, result: next_index, result_type: index_type, operand_start: increment_start, operand_count: 2, span: ir_span(pos)})
             backedge_args: (start: u32, count: u16) = append_context_arguments(state, context)
             state.edge_arg_pool.push(next_index)
             state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: header_block, target_count: 1, edge0_arg_start: backedge_args.start, edge0_arg_count: backedge_args.count + 1, span: ir_span(pos)}
@@ -1149,13 +1264,43 @@ extend EsIr:
             if variable == "" or not body_absent:
                 add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "count queries require a bound predicate rather than a projection")
                 return LoweredValue{valid: false, value: 0, type: result_type}
-            collection: LoweredValue = lower_expression(iterable, state)
-            if not collection.valid:
-                return LoweredValue{valid: false, value: 0, type: result_type}
-            if collection.type.kind != TypeKind.Array and collection.type.kind != TypeKind.Text:
-                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "integer folds require an array or text iterable")
-                return LoweredValue{valid: false, value: 0, type: result_type}
-            element_type: Type = type_from_name("char") if collection.type.kind == TypeKind.Text else array_element_type(collection.type)
+            range_spec: ComprehensionRange = comprehension_range_parts(iterable)
+            range_mode: bool = range_spec.recognized
+            collection: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+            range_low: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+            range_high: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+            range_step: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+            if range_mode:
+                range_low <- lower_expression(range_spec.low, state)
+                if not range_low.valid:
+                    return LoweredValue{valid: false, value: 0, type: result_type}
+                range_high <- lower_expression_expected(range_spec.high, range_low.type, state)
+                if not range_high.valid or range_low.type.kind != TypeKind.Int or not same_type(range_low.type, range_high.type):
+                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "range fold bounds must have the same integer type")
+                    return LoweredValue{valid: false, value: 0, type: result_type}
+                range_step <- emit_constant(state, range_low.type, 1, "", "", false, ir_span(pos))
+                if range_spec.step is not Expr.Absent:
+                    positive_literal: mutable bool = false
+                    match range_spec.step:
+                        Expr.IntLit(value) | Expr.IntLitTyped(value, _):
+                            positive_literal <- value > 0
+                        _:
+                            pass
+                    if not positive_literal:
+                        add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "range fold stride must be a positive integer constant")
+                        return LoweredValue{valid: false, value: 0, type: result_type}
+                    range_step <- lower_expression_expected(range_spec.step, range_low.type, state)
+                    if not range_step.valid or not same_type(range_step.type, range_low.type):
+                        add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "range fold stride must match the bound type")
+                        return LoweredValue{valid: false, value: 0, type: result_type}
+            else:
+                collection <- lower_expression(iterable, state)
+                if not collection.valid:
+                    return LoweredValue{valid: false, value: 0, type: result_type}
+                if collection.type.kind != TypeKind.Array and collection.type.kind != TypeKind.Text:
+                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "integer folds require an array, text, or integer range iterable")
+                    return LoweredValue{valid: false, value: 0, type: result_type}
+            element_type: Type = range_low.type if range_mode else (type_from_name("char") if collection.type.kind == TypeKind.Text else array_element_type(collection.type))
             if fold_kind == "count":
                 result_type <- type_from_name("usize")
             else:
@@ -1188,8 +1333,8 @@ extend EsIr:
             hit_block: u32 = fresh_block(state)
             latch_block: u32 = fresh_block(state)
             exit_block: u32 = fresh_block(state)
-            index_type: Type = type_from_name("usize")
-            initial_index: LoweredValue = emit_constant(state, index_type, 0, "", "", false, ir_span(pos))
+            index_type: Type = range_low.type if range_mode else type_from_name("usize")
+            initial_index: LoweredValue = range_low if range_mode else emit_constant(state, index_type, 0, "", "", false, ir_span(pos))
             entry_args: (start: u32, count: u16) = append_context_arguments(state, context)
             state.edge_arg_pool.push(initial_index.value)
             state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: header_block, target_count: 1, edge0_arg_start: entry_args.start, edge0_arg_count: entry_args.count + 1, span: ir_span(pos)}
@@ -1211,15 +1356,22 @@ extend EsIr:
 
             state.current_block <- header_block
             state.terminated <- false
-            length_result: u32 = fresh_value(state)
-            length_start: u32 = state.operand_pool.count.u32()
-            state.operand_pool.push(collection.value)
-            state.instructions.push(Instruction{opcode: Opcode.Length, result: length_result, result_type: index_type, operand_start: length_start, operand_count: 1, span: ir_span(pos)})
             condition_result: u32 = fresh_value(state)
-            condition_start: u32 = state.operand_pool.count.u32()
-            state.operand_pool.push(header_index)
-            state.operand_pool.push(length_result)
-            state.instructions.push(Instruction{opcode: Opcode.Less, result: condition_result, result_type: type_from_name("bool"), operand_start: condition_start, operand_count: 2, span: ir_span(pos)})
+            if range_mode:
+                condition_start: u32 = state.operand_pool.count.u32()
+                state.operand_pool.push(header_index)
+                state.operand_pool.push(range_high.value)
+                comparison: Opcode = Opcode.Greater if range_spec.operator == TokenKind.RangeGt else (Opcode.LessEqual if range_spec.operator == TokenKind.RangeLe else Opcode.Less)
+                state.instructions.push(Instruction{opcode: comparison, result: condition_result, result_type: type_from_name("bool"), operand_start: condition_start, operand_count: 2, span: ir_span(pos)})
+            else:
+                length_result: u32 = fresh_value(state)
+                length_start: u32 = state.operand_pool.count.u32()
+                state.operand_pool.push(collection.value)
+                state.instructions.push(Instruction{opcode: Opcode.Length, result: length_result, result_type: index_type, operand_start: length_start, operand_count: 1, span: ir_span(pos)})
+                condition_start: u32 = state.operand_pool.count.u32()
+                state.operand_pool.push(header_index)
+                state.operand_pool.push(length_result)
+                state.instructions.push(Instruction{opcode: Opcode.Less, result: condition_result, result_type: type_from_name("bool"), operand_start: condition_start, operand_count: 2, span: ir_span(pos)})
             exit_args: (start: u32, count: u16) = append_context_arguments(state, context)
             state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: condition_result, operand_count: 1, target0: body_block, target1: exit_block, target_count: 2, edge1_arg_start: exit_args.start, edge1_arg_count: exit_args.count, span: ir_span(pos)}
             finish_block(state)
@@ -1230,11 +1382,12 @@ extend EsIr:
             state.continue_targets.push(latch_block)
             state.current_block <- body_block
             state.terminated <- false
-            element_result: u32 = fresh_value(state)
-            element_start: u32 = state.operand_pool.count.u32()
-            state.operand_pool.push(collection.value)
-            state.operand_pool.push(header_index)
-            state.instructions.push(Instruction{opcode: Opcode.Index, result: element_result, result_type: element_type, operand_start: element_start, operand_count: 2, span: ir_span(pos)})
+            element_result: u32 = header_index if range_mode else fresh_value(state)
+            if not range_mode:
+                element_start: u32 = state.operand_pool.count.u32()
+                state.operand_pool.push(collection.value)
+                state.operand_pool.push(header_index)
+                state.instructions.push(Instruction{opcode: Opcode.Index, result: element_result, result_type: element_type, operand_start: element_start, operand_count: 2, span: ir_span(pos)})
             state.names.push(variable)
             state.values.push(element_result)
             state.types.push(element_type)
@@ -1276,12 +1429,13 @@ extend EsIr:
             state.current_block <- latch_block
             state.terminated <- false
             state.values[accumulator_index] <- latch_accumulator
-            one_index: LoweredValue = emit_constant(state, index_type, 1, "", "", false, ir_span(pos))
+            one_index: LoweredValue = range_step if range_mode else emit_constant(state, index_type, 1, "", "", false, ir_span(pos))
             next_index: u32 = fresh_value(state)
             increment_start: u32 = state.operand_pool.count.u32()
             state.operand_pool.push(header_index)
             state.operand_pool.push(one_index.value)
-            state.instructions.push(Instruction{opcode: Opcode.Add, result: next_index, result_type: index_type, operand_start: increment_start, operand_count: 2, span: ir_span(pos)})
+            step_opcode: Opcode = Opcode.Subtract if range_mode and range_spec.operator == TokenKind.RangeGt else Opcode.Add
+            state.instructions.push(Instruction{opcode: step_opcode, result: next_index, result_type: index_type, operand_start: increment_start, operand_count: 2, span: ir_span(pos)})
             backedge_args: (start: u32, count: u16) = append_context_arguments(state, context)
             state.edge_arg_pool.push(next_index)
             state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: header_block, target_count: 1, edge0_arg_start: backedge_args.start, edge0_arg_count: backedge_args.count + 1, span: ir_span(pos)}
