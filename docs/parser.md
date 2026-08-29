@@ -44,6 +44,8 @@ fallback module or `Result` sentinel. The extension predicate is itself an
 explicit state machine, so a wrong suffix is rejected before any source bytes
 are parsed. This gives future CLI, editor, and differential-test adapters one
 consistent contract instead of each reimplementing frontend sequencing.
+Semantic warnings remain visible to callers but do not make a valid source file
+unloadable; only severity-1 semantic diagnostics stop the pipeline.
 
 When the source already lives on disk, `EsIr.lower_elisascript_file` performs the
 same pipeline after reading the file. It validates the suffix before opening the
