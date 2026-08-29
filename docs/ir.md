@@ -238,9 +238,10 @@ interleaved key/value pairs in caller-owned flat storage and validate their comp
 pair range before access. Missing keys use the existing typed
 `IndexOutOfBounds` error rather than a sentinel value. The reference interpreter and
 the bytecode facade share this representation. Maps whose key and value types are
-direct scalar/nominal representations use the packed path for construction, lookup,
-membership, equality, updates, and key extraction; maps containing unsupported
-aggregate components continue through the verified interpreter oracle. `MapKeys`
+direct scalar/nominal representations and one-level array values use the packed path
+for construction, lookup, membership, equality, updates, and key extraction; maps
+containing unsupported aggregate components continue through the verified interpreter
+oracle. `MapKeys`
 materializes a stable array of keys in insertion order, allowing the existing loop
 state machine to lower `for key in map` without evaluating the map expression more
 than once. A two-binding read-only loop, `for key, value in map`, uses that same
@@ -451,9 +452,9 @@ operations before reaching a terminal value state. The packed executor wraps the
 control cursor in another explicit machine for block entry, condition staging,
 instruction storage, jump-edge collection, and returns, so its direct loop has no
 implicit host control-flow state. The eligibility gate rejects
-other widths, arrays nested deeper than two levels, array-valued maps, handlers,
-and continuations. Array-valued maps remain fully supported by the reference
-interpreter, which recursively compares and indexes their runtime values.
+other widths, arrays nested deeper than two levels, handlers, and continuations.
+Map values may use the inline array layer on the packed path; nested aggregate
+shapes beyond the descriptor remain reference-interpreter-only.
 Error guards are eligible for the direct path: `ErrorGuardPush`/`ErrorGuardPop`
 maintain a checked fallback stack, and recoverable typed failures jump to the
 verified fallback block without wrapping the value in a result object.
