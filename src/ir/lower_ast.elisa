@@ -459,22 +459,41 @@ extend EsIr:
 
 
         # The parser lowers every f-string to `__fstr(chunk, value, chunk, ...)`.
-        # Elisascript keeps interpolation deliberately typed: each dynamic piece
-        # must already be text, and concatenation is the shared IR operation used
-        # by both execution engines. This mirrors the compiler's string-like piece
-        # contract without introducing a backend-specific formatting opcode.
+        # Text pieces pass through directly; signed i64 and f64 pieces use the
+        # existing deterministic formatting opcodes. Other values stay rejected
+        # until their textual representation is specified by the language rather
+        # than guessed by a backend.
+        def lower_fstring_piece(expression: Ast::Expr, result_type: Type, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+            piece: LoweredValue = lower_expression(expression, state)
+            return LoweredValue{valid: false, value: 0, type: result_type} if not piece.valid
+            return piece if piece.type.kind == TypeKind.Text
+            if piece.type.kind == TypeKind.Int and piece.type.bits == 64 and piece.type.signed:
+                result: u32 = fresh_value(state)
+                operand_start: u32 = state.operand_pool.count.u32()
+                state.operand_pool.push(piece.value)
+                state.instructions.push(Instruction{opcode: Opcode.FormatInt, result: result, result_type: result_type, operand_start: operand_start, operand_count: 1, span: ir_span(pos)})
+                return LoweredValue{valid: true, value: result, type: result_type}
+            if piece.type.kind == TypeKind.Float and piece.type.bits == 64:
+                result: u32 = fresh_value(state)
+                operand_start: u32 = state.operand_pool.count.u32()
+                state.operand_pool.push(piece.value)
+                state.instructions.push(Instruction{opcode: Opcode.FormatFloat, result: result, result_type: result_type, operand_start: operand_start, operand_count: 1, span: ir_span(pos)})
+                return LoweredValue{valid: true, value: result, type: result_type}
+            add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "f-string interpolation requires text, i64, or f64")
+            return LoweredValue{valid: false, value: 0, type: result_type}
+
+
         def lower_fstring(arguments: darray[Ast::Expr]&, argument_names: darray[sview]&, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
             result_type: Type = type_from_name("sview")
             valid_shape: bool = arguments.count > 0 and (argument_names.count == 0 or all name in argument_names where name == "")
             if not valid_shape:
-                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "f-string pieces must be positional text values")
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "f-string pieces must be positional values")
                 return LoweredValue{valid: false, value: 0, type: result_type}
-            result: mutable LoweredValue = lower_expression_expected(arguments[0], result_type, state)
+            result: mutable LoweredValue = lower_fstring_piece(arguments[0], result_type, pos, state)
             return result if not result.valid
             for argument_index in 1..<arguments.count |arguments, argument_names, argument_index, state, result, result_type, pos|:
-                piece: LoweredValue = lower_expression_expected(arguments[argument_index], result_type, state)
-                if not piece.valid or not same_type(piece.type, result_type):
-                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "f-string interpolation requires an sview value")
+                piece: LoweredValue = lower_fstring_piece(arguments[argument_index], result_type, pos, state)
+                if not piece.valid:
                     result <- LoweredValue{valid: false, value: 0, type: result_type}
                 else:
                     result <- emit_binary(state, Opcode.Concat, result.value, piece.value, result_type, pos)

@@ -197,11 +197,15 @@ verified read/split/join/write instructions, keeping interpreter and bytecode
 behavior identical.
 
 Interpolated strings use Elisa's `f"...{expr}..."` syntax. The parser represents
-them as ordered `__fstr` pieces; Elisascript requires every dynamic piece to be
-text and lowers the sequence to `Concat` instructions. Literal pieces use the
-same escape decoder as ordinary strings, and expressions are evaluated exactly
-once from left to right. Consequently the reference interpreter and packed
-bytecode path produce identical text without a hidden formatting or shell layer.
+them as ordered `__fstr` pieces. Elisascript accepts text, signed `i64`, and `f64`
+dynamic pieces and lowers the sequence to `Concat` instructions, inserting the
+existing `FormatInt`/`FormatFloat` conversion for numeric values. Integers use
+canonical decimal formatting and floats use the core `%g` spelling. Literal
+pieces use the same escape decoder as ordinary strings, and expressions are
+evaluated exactly once from left to right. Booleans and aggregates are rejected
+until an explicit formatting operation is used. Consequently the reference
+interpreter and packed bytecode path produce identical text without a hidden
+formatting or shell layer.
 
 ## Typed dictionaries
 
