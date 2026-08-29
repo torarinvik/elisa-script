@@ -504,6 +504,9 @@ source typing. Dictionary values may be scalar or one-level arrays; maps whose
 values need a deeper descriptor are rejected at the source boundary. The
 `intern_module_types` pass records every type-bearing IR position in the shared
 table, and malformed ranges or duplicate rows are verifier errors.
+Source annotation lowering interns function signatures into the same structural
+identity space early; the final module pass then assigns ids to all inferred
+instruction and handler types before verification.
 Plain single-binder `for value in array` loops lower to explicit header, body,
 latch, and exit blocks. The collection is evaluated once; length and indexing stay
 typed IR operations. `continue` targets the incrementing latch, `break` targets the
