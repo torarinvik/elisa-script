@@ -223,8 +223,9 @@ types. Their source-level type remains `set[T]`; the first IR represents them as
 typed map from each element to `true`, which gives deterministic membership, count,
 and insertion-order iteration while preserving set deduplication. Mutable set bindings
 support `.add(element)` through the same immutable SSA update used by maps; duplicate
-additions leave cardinality unchanged. Indexed set reads, `.remove`, and `.clear`
-remain semantic errors until the dedicated set runtime shape is introduced.
+additions leave cardinality unchanged. Mutable set bindings also support `.clear()`,
+which rebinds the set to a typed empty value. Indexed set reads and `.remove` remain
+semantic errors until the dedicated set runtime shape is introduced.
 
 ## Text field processing
 
