@@ -227,10 +227,10 @@ function's effect row. Lowering adds that effect automatically. The interpreter
 copies the path into a NUL-terminated Elisa-owned buffer before calling the
 self-hosted core file-I/O layer, so a length-delimited `sview` is never passed to
 libc as though it were a C string.
-`PathJoin`, `PathParent`, and `PathName` are pure typed path-shape operations.
+`PathJoin`, `PathParent`, `PathName`, `PathExtension`, and `PathStem` are pure typed path-shape operations.
 `PathJoin` verifies `Named(Path) × Text -> Named(Path)` and uses the core `Fs.join`
 separator/absolute-leaf rules; `PathParent` verifies `Named(Path) -> Named(Path)`;
-`PathName` verifies `Named(Path) -> Text`. They do not add filesystem effects and
+`PathName`, `PathExtension`, and `PathStem` verify `Named(Path) -> Text`. They do not add filesystem effects and
 are eligible for the direct bytecode path. Composition allocates permanent storage
 for joined paths, while parent/name preserve safe views into the existing path
 payload.

@@ -156,9 +156,11 @@ Pure path-shape helpers keep path plumbing nominal without invoking the host OS:
 `path_join(base: Path, leaf: sview) -> Path` inserts one `/` separator and lets an
 absolute leaf replace the base, `path_parent(path: Path) -> Path` returns the
 directory component (or empty `Path` when there is none), and
-`path_name(path: Path) -> sview` returns the final component. Their results are
-views over permanent or input-owned bytes and are identical in the interpreter and
-packed bytecode.
+`path_name(path: Path) -> sview` returns the final component. `path_extension`
+returns the final suffix including its dot (or empty text), while `path_stem`
+returns the final component without that suffix. Their results are views over
+permanent or input-owned bytes and are identical in the interpreter and packed
+bytecode.
 
 `copy_path(source: Path, destination: Path) -> bool error[FileIoError]
 can[File.Read, File.Write]` copies one regular file by length-delimited bytes and
