@@ -227,6 +227,13 @@ function's effect row. Lowering adds that effect automatically. The interpreter
 copies the path into a NUL-terminated Elisa-owned buffer before calling the
 self-hosted core file-I/O layer, so a length-delimited `sview` is never passed to
 libc as though it were a C string.
+`PathJoin`, `PathParent`, and `PathName` are pure typed path-shape operations.
+`PathJoin` verifies `Named(Path) × Text -> Named(Path)` and uses the core `Fs.join`
+separator/absolute-leaf rules; `PathParent` verifies `Named(Path) -> Named(Path)`;
+`PathName` verifies `Named(Path) -> Text`. They do not add filesystem effects and
+are eligible for the direct bytecode path. Composition allocates permanent storage
+for joined paths, while parent/name preserve safe views into the existing path
+payload.
 `ReadText` extends that contract to whole-file input with verified signature
 `Named(Path) -> Text`. Its function must carry both `File.Read` and `FileIoError`;
 lowering supplies both and the verifier rejects either omission. The interpreter
@@ -359,7 +366,7 @@ The verified bytecode facade uses the same program-counter machine for execution
 Modules containing only the currently closed scalar, text, regex, and homogeneous-array
 subset (boolean, 64-bit integer, or 64-bit float values, text/nominal constants,
 including one nested array level,
-array construction, nominal path/glob/regex/URL constructors, indexing, length, slicing, membership, concatenation, split,
+array construction, nominal path/glob/regex/URL constructors, typed path composition/decomposition, indexing, length, slicing, membership, concatenation, split,
 join, typed integer/float parsing and formatting, regex search/replacement, indexed updates, unary/binary operators,
 observations, pure direct calls, and typed filesystem/process operations) take a
 direct packed-instruction path. Calls use recursive state-machine frames with one
