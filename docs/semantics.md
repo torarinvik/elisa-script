@@ -121,6 +121,18 @@ indices must match the exact key type; fallback and indexed values must have the
 same type. Malformed runtime storage remains an `error[...]` failure rather than
 being converted into a sentinel.
 
+The same recovery syntax handles fallible calls declared with `error[...]`:
+
+```elisa
+number: i64 = try parse_int(text) else 0i64
+```
+
+The guarded call runs once. A declared error transfers control to the fallback
+block, while success continues through a typed merge. The fallback is therefore
+lazy and may itself be fallible; any error it raises propagates through the
+enclosing function's ordinary `error[...]` row. Recovery does not erase the
+function's static error contract or catch internal control-flow failures.
+
 ## Text field processing
 
 Elisascript provides a strongly typed compiler-known split operation for the core

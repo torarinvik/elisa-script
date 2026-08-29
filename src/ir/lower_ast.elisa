@@ -614,6 +614,45 @@ extend EsIr:
             return LoweredValue{valid: fallback.valid, value: result, type: result_type}
 
 
+        # Lower value recovery for an error-producing expression, e.g.
+        # `try parse_int(text) else 0`.  The guard is lexical in the IR: any
+        # interpreter failure raised while evaluating the guarded expression
+        # transfers to the fallback block, clears the private failure state,
+        # and merges the recovered value through a typed block parameter.
+        def lower_error_recovery(guarded_expression: Ast::Expr, fallback_expression: Ast::Expr, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+            fallback_block: u32 = fresh_block(state)
+            merge_block: u32 = fresh_block(state)
+            state.instructions.push(Instruction{opcode: Opcode.ErrorGuardPush, result: 0, result_type: void_ir_type(), integer: fallback_block.i64(), span: ir_span(pos)})
+            guarded: LoweredValue = lower_expression(guarded_expression, state)
+            if not guarded.valid:
+                return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+            if guarded.type.kind == TypeKind.Void:
+                add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "value recovery requires a non-void fallible expression")
+                return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+            state.instructions.push(Instruction{opcode: Opcode.ErrorGuardPop, result: 0, result_type: void_ir_type(), span: ir_span(pos)})
+            success_edge: u32 = state.edge_arg_pool.count.u32()
+            state.edge_arg_pool.push(guarded.value)
+            state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: merge_block, target_count: 1, edge0_arg_start: success_edge, edge0_arg_count: 1, span: ir_span(pos)}
+            finish_block(state)
+
+            state.current_block <- fallback_block
+            state.terminated <- false
+            fallback: LoweredValue = lower_expression_expected(fallback_expression, guarded.type, state)
+            fallback_edge: mutable u32 = 0
+            if fallback.valid:
+                fallback_edge <- state.edge_arg_pool.count.u32()
+                state.edge_arg_pool.push(fallback.value)
+                state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: merge_block, target_count: 1, edge0_arg_start: fallback_edge, edge0_arg_count: 1, span: ir_span(pos)}
+            finish_block(state)
+
+            result: u32 = fresh_value(state)
+            state.pending_parameter_blocks.push(merge_block)
+            state.pending_parameters.push(Parameter{value: result, type: guarded.type, name: "error-recovery"})
+            state.current_block <- merge_block
+            state.terminated <- false
+            return LoweredValue{valid: fallback.valid, value: result, type: guarded.type}
+
+
         def lower_expression(expression: Ast::Expr, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
             match expression:
                 Expr.IntLit(value):
@@ -1000,6 +1039,8 @@ extend EsIr:
                     match predicate:
                         Expr.Index(collection_expression, index_expression, index_pos):
                             return lower_checked_index(collection_expression, index_expression, base, pos, state)
+                        Expr.Call(callee, arguments, argument_names, call_pos):
+                            return lower_error_recovery(predicate, base, pos, state)
                         _:
                             add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "refinement expression is not in the initial IR lowering subset")
                             return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}

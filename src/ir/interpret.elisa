@@ -202,6 +202,11 @@ extend EsIr:
             produces_value: mutable bool
 
 
+        struct ErrorGuard:
+            target: u32
+            handler_depth: usize
+
+
         const enum TerminatorDispatchState of u8:
             Select
             Done
@@ -3020,6 +3025,10 @@ extend EsIr:
             return cursor
 
 
+        def error_guard_recoverable(failure: InterpretFailure) -> bool:
+            return failure in {InterpretFailure.DivisionByZero, InterpretFailure.IntegerOverflow, InterpretFailure.InvalidNumber, InterpretFailure.FileIo, InterpretFailure.Process, InterpretFailure.Environment, InterpretFailure.Directory, InterpretFailure.Console, InterpretFailure.InvalidShift, InterpretFailure.IndexOutOfBounds}
+
+
         def execute_function(machine: mutable Machine&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, handler_stack: mutable darray[sview]&, module: Module&, function_index: usize, arguments: darray[RuntimeValue]&, resume_block: u32 = 0, resume_instruction: usize = 0, initial_ids: darray[u32] = [], initial_values: darray[RuntimeValue] = []) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
             if function_index >= module.functions.count:
                 machine.failure <- InterpretFailure.UnknownFunction
@@ -3043,6 +3052,7 @@ extend EsIr:
                     ids.push(fn.parameters[index].value)
                     values.push(arguments[index])
             current_block: mutable u32 = fn.entry if not resuming else resume_block
+            error_guards: mutable darray[ErrorGuard] = []
 
             while machine.failure == InterpretFailure.None:
                 runtime_void() return if not tick(machine)
@@ -3050,7 +3060,7 @@ extend EsIr:
                 if block_index == fn.blocks.count:
                     machine.failure <- InterpretFailure.InvalidControlFlow
                     return runtime_void()
-                block: Block = fn.blocks[block_index]
+                block: mutable Block = fn.blocks[block_index]
                 instruction_start: mutable usize = block.instruction_start.usize()
                 instruction_end: usize = block.instruction_start.usize() + block.instruction_count.usize()
                 if resuming:
@@ -3113,6 +3123,14 @@ extend EsIr:
                             collection: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
                             index: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1], machine)
                             dispatch.value <- evaluate_index_valid(machine, storage, collection, index)
+                            break
+
+                        Dispatch, Opcode.ErrorGuardPush:
+                            dispatch.produces_value <- false
+                            break
+
+                        Dispatch, Opcode.ErrorGuardPop:
+                            dispatch.produces_value <- false
                             break
 
                         Dispatch, Opcode.Length:
@@ -3423,7 +3441,19 @@ extend EsIr:
                             request_continuation_resume(machine, observations, storage, module, handler_stack, instruction, payload_id, ids, values)
                             dispatch.value <- machine.resume_value
                             break
+
                     return dispatch.value if machine.resume_requested
+                    error_guards.push(ErrorGuard{target: instruction.integer.u32(), handler_depth: handler_stack.count}) if instruction.opcode == Opcode.ErrorGuardPush
+                    if instruction.opcode == Opcode.ErrorGuardPop:
+                        machine.failure <- InterpretFailure.InvalidControlFlow if error_guards.count == 0
+                        if error_guards.count > 0:
+                            _ = error_guards.pop()
+                    if machine.failure != InterpretFailure.None and error_guards.count > 0 and error_guard_recoverable(machine.failure):
+                        guard: ErrorGuard = error_guards.pop()
+                        handler_stack.truncate(guard.handler_depth)
+                        machine.failure <- InterpretFailure.None
+                        block.terminator <- Terminator{kind: TerminatorKind.Jump, target0: guard.target, target_count: 1, span: block.terminator.span}
+                        break
                     set_frame_value(ids, values, instruction.result, dispatch.value) if machine.failure == InterpretFailure.None and dispatch.produces_value
 
                 runtime_void() return if machine.failure != InterpretFailure.None
