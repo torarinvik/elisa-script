@@ -196,6 +196,13 @@ add an extra final newline, and reports the number of bytes written. It requires
 verified read/split/join/write instructions, keeping interpreter and bytecode
 behavior identical.
 
+Interpolated strings use Elisa's `f"...{expr}..."` syntax. The parser represents
+them as ordered `__fstr` pieces; Elisascript requires every dynamic piece to be
+text and lowers the sequence to `Concat` instructions. Literal pieces use the
+same escape decoder as ordinary strings, and expressions are evaluated exactly
+once from left to right. Consequently the reference interpreter and packed
+bytecode path produce identical text without a hidden formatting or shell layer.
+
 ## Typed dictionaries
 
 Dictionary literals use Elisa's brace syntax and a two-parameter type application:

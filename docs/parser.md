@@ -113,6 +113,20 @@ This provides several useful properties:
 Only direct byte adjacency enables the shorthand. Whitespace separates the
 identifier from the literal and does not trigger desugaring.
 
+## Interpolated strings
+
+Elisa f-strings retain their normal syntax and desugar to the compiler-owned
+`__fstr` call:
+
+```elisa
+message: sview = f"hello {name}!"
+```
+
+The result is an ordered sequence of literal and expression pieces. Elisascript's
+IR requires each interpolated expression to already be text (`sview`/`dstr`) and
+lowers the pieces to ordinary typed `Concat` operations, so evaluation order and
+allocation behavior remain visible to every backend.
+
 ## Effect payloads
 
 Elisa's contextual signal statement accepts an optional ordinary argument list:

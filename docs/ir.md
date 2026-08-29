@@ -117,6 +117,12 @@ text or source formatting.
 `Observe` without defining a result. It provides a typed, backend-independent
 checkpoint for differential tests without depending on stdout or debug logging.
 
+F-strings are parser sugar for the compiler-owned `__fstr` call. Lowering checks
+that every interpolated expression is already text and emits a left-to-right
+chain of ordinary `Concat` instructions; literal chunks remain `Constant` values.
+This keeps interpolation visible in the verified IR and gives the interpreter,
+bytecode, JIT, and native backends one ownership and evaluation-order contract.
+
 ## Dynamic handlers
 
 Elisascript uses lexically scoped, dynamically selected handlers:
