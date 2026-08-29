@@ -264,6 +264,11 @@ I/O failure becomes `InterpretError.FileIo` at the reference-interpreter boundar
 complete byte count, checks close status, and returns that count. A partial write
 never produces a successful result, and empty text still creates or truncates the
 target file deterministically.
+The line-oriented helpers `read_lines(path) -> Array[Text]` and
+`write_lines(path, lines) -> usize` are deliberately not new opcodes: lowering
+expands them to `ReadText` + `Split` and `Join` + `WriteText`, respectively. This
+keeps their effect/error rows and runtime behavior identical to the primitive
+operations while making empty lines and final-newline handling explicit.
 `RemovePath` verifies as `Named(Path) -> Bool` with `File.Write`. It calls Elisa's
 core unlink wrapper using the same owned NUL-terminated path conversion as the other
 filesystem operations. Missing paths produce `false`; they are not conflated with

@@ -112,6 +112,22 @@ empty text for an empty array. `join(split(text, separator), separator)` therefo
 round-trips text under the explicit-separator rules. Like `split`, a source-defined
 function with the same name takes precedence.
 
+Line-oriented file helpers build on those same deterministic text rules:
+
+```elisa
+lines: darray[sview] = read_lines(path"config.txt")
+written: usize = write_lines(path"generated.txt", lines)
+```
+
+`read_lines(path)` is equivalent to `split(read_text(path), "\n")`, so it preserves
+empty lines and a trailing empty field when the file ends in a newline. It requires
+`File.Read` and reports `FileIoError`. `write_lines(path, lines)` is equivalent to
+`write_text(path, join(lines, "\n"))`: it writes separators between lines but does not
+add an extra final newline, and reports the number of bytes written. It requires
+`File.Write` and reports `FileIoError`. Both helpers are lowered to the existing
+verified read/split/join/write instructions, keeping interpreter and bytecode
+behavior identical.
+
 ## Typed dictionaries
 
 Dictionary literals use Elisa's brace syntax and a two-parameter type application:
