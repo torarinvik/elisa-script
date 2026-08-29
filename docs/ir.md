@@ -688,8 +688,9 @@ order and allocation behavior. Quantifier headers carry a boolean accumulator
 initialized to the identity (`false` for existential `any` / `exists`, `true` for
 universal `all` / `forall`); a predicate branch targets the exit block on the
 decisive result and otherwise advances to the latch. The initial shared IR
-deliberately declines set, multi-binder, and non-straight-line query predicates
-rather than lowering them with guessed semantics.
+also lowers `each` queries as identity array comprehensions. It deliberately
+declines set, multi-binder, and non-straight-line query predicates rather than
+lowering them with guessed semantics.
 
 Elisa value blocks lower their leading statements in a lexical binding scope and
 then yield the tail expression. This makes the idiomatic multiline `return if ...:`

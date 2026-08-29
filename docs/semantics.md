@@ -189,7 +189,9 @@ early on the first false predicate. Empty inputs therefore produce `false` for
 and `forall x in values: predicate` are equivalent existential and
 universal forms. Quantifier predicates must be statically boolean and straight-line;
 effectful or multi-binder forms are rejected until their semantics are specified.
-Set comprehensions remain an explicit unsupported diagnostic.
+The collection query `each x in values where predicate` is the typed identity
+projection, equivalent to `[x for x in values if predicate]`. Set comprehensions
+remain an explicit unsupported diagnostic.
 
 ## Text field processing
 
