@@ -221,9 +221,10 @@ projection, equivalent to `[x for x in values if predicate]`. Set literals and
 single-binder set comprehensions are also supported for scalar or nominal element
 types. Their source-level type remains `set[T]`; the first IR represents them as a
 typed map from each element to `true`, which gives deterministic membership, count,
-and insertion-order iteration while preserving set deduplication. Indexed set reads
-and mutation methods remain semantic errors until the dedicated set runtime shape is
-introduced.
+and insertion-order iteration while preserving set deduplication. Mutable set bindings
+support `.add(element)` through the same immutable SSA update used by maps; duplicate
+additions leave cardinality unchanged. Indexed set reads, `.remove`, and `.clear`
+remain semantic errors until the dedicated set runtime shape is introduced.
 
 ## Text field processing
 

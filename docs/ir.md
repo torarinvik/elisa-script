@@ -707,8 +707,9 @@ These folds and boolean quantifiers accept integer ranges through the same
 counter-driven header/latch states, so no range collection is created. Boolean
 quantifiers also accept two-binder dictionary iterables by snapshotting `MapKeys`
 and looking up each value in the body state. Set literals and single-binder set
-comprehensions use the same verified map storage with a canonical boolean marker;
-indexed set access and set mutation remain outside this initial IR subset. Query
+comprehensions use the same verified map storage with a canonical boolean marker.
+Mutable set `.add` lowers to a typed `SetIndex` rebind and is duplicate-stable;
+indexed access, `.remove`, and `.clear` remain outside this initial IR subset. Query
 forms with more than two binders and non-straight-line query predicates remain
 explicitly rejected rather than lowered with guessed semantics.
 
