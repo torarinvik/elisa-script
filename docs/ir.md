@@ -244,7 +244,7 @@ non-overlapping matched span. Zero-width matches advance explicitly, matching th
 termination rule used by `RegexSplit` and `RegexReplace`.
 
 `Map` is the closed aggregate counterpart to `Array`. Its `Type` descriptor carries
-one exact scalar key type and one exact value type, with two inline array layers for
+one exact scalar key type and one exact value type, with three inline array layers for
 values; `MakeMap` consumes an even key/value
 operand sequence and produces the corresponding map. `Index`, `IndexValid`, `Contains`,
 `Length`, and `SetIndex` accept maps with typed key/value contracts. Runtime map payloads are
@@ -252,7 +252,7 @@ interleaved key/value pairs in caller-owned flat storage and validate their comp
 pair range before access. Missing keys use the existing typed
 `IndexOutOfBounds` error rather than a sentinel value. The reference interpreter and
 the bytecode facade share this representation. Maps whose key and value types are
-direct scalar/nominal representations and up to two-level array values use the packed path
+direct scalar/nominal representations and up to three-level array values use the packed path
 for construction, lookup, membership, equality, updates, and key extraction; maps
 containing unsupported aggregate components continue through the verified interpreter
 oracle. `MapKeys`
@@ -504,10 +504,10 @@ control-flow state without manufacturing an instruction or runtime value.
 It also lowers homogeneous immutable array literals, scalar `darray[T]`/`array[T]`
 type annotations, integer indexing, and the `.count` field. Empty literals use
 their expected array type in bindings, assignments, returns, and call arguments,
-so `[]` never introduces an untyped dynamic collection. Arrays may nest four levels
-(`darray[darray[darray[darray[T]]]]`) using the compatibility fields; a fifth array
+so `[]` never introduces an untyped dynamic collection. Arrays may nest five levels
+(`darray[darray[darray[darray[darray[T]]]]]`) using the compatibility fields; a sixth array
 layer remains an explicit lowering error until the recursive table is used directly by
-source typing. Dictionary values may be scalar or two-level arrays; maps whose
+source typing. Dictionary values may be scalar or three-level arrays; maps whose
 values need a deeper descriptor are rejected at the source boundary. The
 `intern_module_types` pass records every type-bearing IR position in the shared
 table, and malformed ranges or duplicate rows are verifier errors.
@@ -584,8 +584,8 @@ compares lengths first and then elements deterministically from left to right;
 empty arrays, slices, concatenated arrays, separate equal allocations, and shared
 or copy-on-update storage therefore follow one value-semantic rule. Mixed array
 element types remain static errors; nested arrays use the same recursive runtime
-comparison within the supported four-level descriptor. The compact structural type
-descriptor currently carries four array layers; a fifth layer is reserved for the
+comparison within the supported five-level descriptor. The compact structural type
+descriptor currently carries five array layers; a sixth layer is reserved for the
 next migration step, where source typing will emit recursive table ids directly.
 Statement-form `array.push(value)` and `array.extend(values)` are ownership-safe
 SSA updates rather than hidden aliasing mutations. `push` constructs a typed
