@@ -133,6 +133,15 @@ lazy and may itself be fallible; any error it raises propagates through the
 enclosing function's ordinary `error[...]` row. Recovery does not erase the
 function's static error contract or catch internal control-flow failures.
 
+For early propagation, the fallback may be a terminating clause:
+
+```elisa
+number: i64 = try parse_int(text) else return 0i64
+```
+
+The recovery block must end control flow (`return`, `break`, or `continue`);
+successful evaluation continues through the surrounding state-machine merge.
+
 ## Text field processing
 
 Elisascript provides a strongly typed compiler-known split operation for the core

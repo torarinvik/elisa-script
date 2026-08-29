@@ -653,6 +653,41 @@ extend EsIr:
             return LoweredValue{valid: fallback.valid, value: result, type: guarded.type}
 
 
+        # Lower terminating recovery such as `try parse_int(text) else return 0i64`.
+        # The success edge merges the guarded value into the surrounding expression;
+        # the recovery block is required to terminate (`return`, `break`, or
+        # `continue`) so it never needs a value-producing merge edge.
+        def lower_error_control_flow(guarded_expression: Ast::Expr, recovery: darray[Ast::Stmt]&, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+            fallback_block: u32 = fresh_block(state)
+            merge_block: u32 = fresh_block(state)
+            state.instructions.push(Instruction{opcode: Opcode.ErrorGuardPush, result: 0, result_type: void_ir_type(), integer: fallback_block.i64(), span: ir_span(pos)})
+            guarded: LoweredValue = lower_expression(guarded_expression, state)
+            if not guarded.valid or guarded.type.kind == TypeKind.Void:
+                add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "terminating recovery requires a non-void fallible expression") if guarded.valid and guarded.type.kind == TypeKind.Void
+                return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+            state.instructions.push(Instruction{opcode: Opcode.ErrorGuardPop, result: 0, result_type: void_ir_type(), span: ir_span(pos)})
+            success_edge: u32 = state.edge_arg_pool.count.u32()
+            state.edge_arg_pool.push(guarded.value)
+            state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: merge_block, target_count: 1, edge0_arg_start: success_edge, edge0_arg_count: 1, span: ir_span(pos)}
+            finish_block(state)
+
+            state.current_block <- fallback_block
+            state.terminated <- false
+            for statement in recovery |state|:
+                lower_statement(statement, state.function_return_type, state)
+            if not state.terminated:
+                add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "terminating recovery clause must end control flow")
+                state.terminator <- Terminator{kind: TerminatorKind.Unreachable, span: ir_span(pos)}
+            finish_block(state)
+
+            result: u32 = fresh_value(state)
+            state.pending_parameter_blocks.push(merge_block)
+            state.pending_parameters.push(Parameter{value: result, type: guarded.type, name: "error-control"})
+            state.current_block <- merge_block
+            state.terminated <- false
+            return LoweredValue{valid: true, value: result, type: guarded.type}
+
+
         def lower_expression(expression: Ast::Expr, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
             match expression:
                 Expr.IntLit(value):
@@ -1043,6 +1078,13 @@ extend EsIr:
                             return lower_error_recovery(predicate, base, pos, state)
                         _:
                             add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "refinement expression is not in the initial IR lowering subset")
+                            return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+                Expr.GetElse(guarded, recovery, pos):
+                    match guarded:
+                        Expr.Call(callee, arguments, argument_names, call_pos):
+                            return lower_error_control_flow(guarded, recovery, pos, state)
+                        _:
+                            add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "terminating recovery currently requires a direct fallible call")
                             return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
                 Expr.Call(callee, arguments, argument_names, pos):
                     callee_name: mutable sview = ""

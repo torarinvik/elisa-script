@@ -256,6 +256,10 @@ pops the guard and jumps to the same typed merge block, so `try f() else value`
 never uses a result wrapper or an eagerly evaluated fallback. Malformed runtime
 values and internal control-flow failures remain fatal and cannot be hidden by a
 source-level recovery clause.
+Terminating recovery (`try f() else return value`, or the corresponding `break`
+and `continue` forms) uses the same guard but gives the fallback its own block;
+that block must terminate, while success merges the guarded value into the
+surrounding state-machine region.
 `PathExists` is the first concrete filesystem opcode. Its verified signature is
 `Named(Path) -> Bool`, and verification also requires `File.Read` in the containing
 function's effect row. Lowering adds that effect automatically. The interpreter
