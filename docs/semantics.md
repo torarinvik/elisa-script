@@ -226,7 +226,9 @@ support `.add(element)` through the same immutable SSA update used by maps; dupl
 additions leave cardinality unchanged. Mutable set bindings also support `.clear()`,
 which rebinds the set to a typed empty value, and `.remove(element)`, which removes
 the matching element if present and is otherwise a no-op. Indexed set reads remain
-semantic errors until the dedicated set runtime shape is introduced.
+semantic errors until the dedicated set runtime shape is introduced. Mutable
+dictionaries also support `.clear()` and `.remove(key)` with the same immutable SSA
+update semantics; removing a missing key is a no-op.
 
 ## Text field processing
 
