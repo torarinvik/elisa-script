@@ -698,6 +698,7 @@ decisive result and otherwise advances to the latch. The initial shared IR
 also lowers `each` queries as identity array comprehensions. It deliberately
 lowers `count` queries as a `usize` accumulator with a conditional increment,
 and `sum` / `product` queries as exact integer accumulators with identities 0 / 1.
+Two-binder dictionary folds count entries or fold the value binder, respectively.
 These folds and boolean quantifiers accept integer ranges through the same
 counter-driven header/latch states, so no range collection is created. Boolean
 quantifiers also accept two-binder dictionary iterables by snapshotting `MapKeys`

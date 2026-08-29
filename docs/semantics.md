@@ -207,10 +207,11 @@ and forms with more than two binders are rejected until their semantics are
 specified. Two-binder quantifiers are restricted to dictionary iterables
 (`key, value`).
 `count` is a typed `usize` fold over the same array/text/range iterables and
-increments its loop-carried counter only for matching elements.
+increments its loop-carried counter only for matching elements. Two-binder
+dictionary folds count entries, while `sum` and `product` fold the value binder.
 `sum` and `product` are integer-only folds that carry the iterable's exact
-element type, with identities `0` and `1` respectively; no implicit widening or
-temporary collection is introduced.
+element type (or dictionary value type), with identities `0` and `1` respectively;
+no implicit widening or temporary collection is introduced.
 The collection query `each x in values where predicate` is the typed identity
 projection, equivalent to `[x for x in values if predicate]`. Set comprehensions
 remain an explicit unsupported diagnostic.
