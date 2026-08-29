@@ -152,8 +152,11 @@ enclosing `Perform` receives the callback's final return value. The frame record
 resumption count and stores its flat snapshot in machine-owned pools. `MultiClone` requires every captured value to be classified
 `Unrestricted`; affine, linear, borrowed, region-bound, and opaque captures are
 rejected. `MultiReplay` requires every effect introduced by the handler to appear in
-its statically verified replay-safe effect set. Full suspended-stack replay and
-cross-call-frame environment cloning remain the next representation increment.
+its statically verified replay-safe effect set. The snapshot now includes the
+active direct-call chain, so a handled effect in a helper replays the helper's
+post-`Perform` suffix and each caller's post-call suffix in order. A future
+increment can replace this flat replay chain with a general suspended-stack
+object for non-call control transfers.
 
 The IR verifier rejects missing/duplicate trace sites, ungranted effects,
 undefined or duplicate SSA values, bad entry blocks, unknown branch targets, and
@@ -526,9 +529,9 @@ edge arguments and a fresh merge-block parameter. Loop-carried locals receive
 typed header and exit parameters; initial entry, normal backedges, `continue`, and
 `break` edges all pass the binding's current SSA value.
 
-1. Add complete structural types, cross-call-frame continuation capture, and explicit
-   ownership/region operations. The interpreter now replays the current suspended IR
-   function frame for `MultiReplay`/`MultiClone` with a cloned SSA environment.
+1. Add complete structural types and explicit ownership/region operations. The
+   interpreter now replays the current suspended IR function frame and its active
+   direct-call chain for `MultiReplay`/`MultiClone` with cloned SSA environments.
 2. Define the artifact container and versioned metadata around the canonical IR
    bytes. The structural encoding and `u64` module fingerprint are already
    available for artifact correlation.

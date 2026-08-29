@@ -50,6 +50,11 @@ extend EsIr:
             policy: ContinuationPolicy
             consumed: mutable bool
             resumptions: mutable u32
+            replay_start: usize
+            replay_count: usize
+
+
+        struct ContinuationCallFrame:
             function_index: usize
             resume_block: u32
             resume_instruction: usize
@@ -117,6 +122,8 @@ extend EsIr:
             step_limit: u64
             failure: mutable InterpretFailure
             continuations: mutable darray[ContinuationFrame]
+            continuation_frames: mutable darray[ContinuationCallFrame] = []
+            active_calls: mutable darray[ContinuationCallFrame] = []
             continuation_ids: mutable darray[u32] = []
             continuation_values: mutable darray[RuntimeValue] = []
             continuation_handlers: mutable darray[sview] = []
@@ -667,18 +674,23 @@ extend EsIr:
                 machine.resume_value <- payload
                 machine.resume_requested <- true
                 return
-            replay_ids: mutable darray[u32] = []
-            replay_values: mutable darray[RuntimeValue] = []
-            replay_handlers: mutable darray[sview] = []
-            for offset in 0..<continuation.snapshot_count |replay_ids, replay_values, machine, continuation|:
-                replay_ids.push(machine.continuation_ids[continuation.snapshot_start + offset])
-                replay_values.push(machine.continuation_values[continuation.snapshot_start + offset])
-            for offset in 0..<continuation.handler_snapshot_count |replay_handlers, machine, continuation|:
-                replay_handlers.push(machine.continuation_handlers[continuation.handler_snapshot_start + offset])
-            if continuation.result_id != 0:
-                set_frame_value(replay_ids, replay_values, continuation.result_id, payload)
             empty_arguments: darray[RuntimeValue] = []
-            machine.resume_value <- execute_function(machine, observations, storage, replay_handlers, module, continuation.function_index, empty_arguments, continuation.resume_block, continuation.resume_instruction, replay_ids, replay_values)
+            replay_value: mutable RuntimeValue = payload
+            for frame_offset in 0..<continuation.replay_count |machine, continuation, frame_offset, replay_value, observations, storage, module, empty_arguments|:
+                replay_frame: ContinuationCallFrame = machine.continuation_frames[continuation.replay_start + frame_offset]
+                replay_ids: mutable darray[u32] = []
+                replay_values: mutable darray[RuntimeValue] = []
+                replay_handlers: mutable darray[sview] = []
+                for offset in 0..<replay_frame.snapshot_count |replay_ids, replay_values, machine, replay_frame|:
+                    replay_ids.push(machine.continuation_ids[replay_frame.snapshot_start + offset])
+                    replay_values.push(machine.continuation_values[replay_frame.snapshot_start + offset])
+                for offset in 0..<replay_frame.handler_snapshot_count |replay_handlers, machine, replay_frame|:
+                    replay_handlers.push(machine.continuation_handlers[replay_frame.handler_snapshot_start + offset])
+                if replay_frame.result_id != 0:
+                    set_frame_value(replay_ids, replay_values, replay_frame.result_id, replay_value)
+                machine.resume_value <- execute_function(machine, observations, storage, replay_handlers, module, replay_frame.function_index, empty_arguments, replay_frame.resume_block, replay_frame.resume_instruction, replay_ids, replay_values)
+                return if machine.failure != InterpretFailure.None
+                replay_value <- machine.resume_value
             machine.resume_requested <- false
 
 
@@ -689,13 +701,20 @@ extend EsIr:
             _ = handler_stack.pop()
 
 
-        def evaluate_call(machine: mutable Machine&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, handler_stack: mutable darray[sview]&, module: Module&, fn: Function&, instruction: Instruction, ids: darray[u32]&, values: darray[RuntimeValue]&) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+        def evaluate_call(machine: mutable Machine&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, handler_stack: mutable darray[sview]&, module: Module&, fn: Function&, function_index: usize, current_block: u32, instruction_index: usize, instruction: Instruction, ids: darray[u32]&, values: darray[RuntimeValue]&) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
             callee_index: usize = find_function(module, instruction.symbol)
             call_arguments: mutable darray[RuntimeValue] = []
             for offset in 0..<instruction.operand_count.usize() |machine, fn, instruction, ids, values, call_arguments|:
                 call_arguments.push(frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + offset], machine))
-            return execute_function(machine, observations, storage, handler_stack, module, callee_index, call_arguments) if machine.failure == InterpretFailure.None
-            return runtime_void()
+            snapshot_start: usize = machine.continuation_ids.count
+            handler_snapshot_start: usize = machine.continuation_handlers.count
+            machine.continuation_ids.extend(ids)
+            machine.continuation_values.extend(values)
+            machine.continuation_handlers.extend(handler_stack)
+            machine.active_calls.push(ContinuationCallFrame{function_index: function_index, resume_block: current_block, resume_instruction: instruction_index + 1, result_id: instruction.result, snapshot_start: snapshot_start, snapshot_count: ids.count, handler_snapshot_start: handler_snapshot_start, handler_snapshot_count: handler_stack.count})
+            result: RuntimeValue = execute_function(machine, observations, storage, handler_stack, module, callee_index, call_arguments) if machine.failure == InterpretFailure.None else runtime_void()
+            _ = machine.active_calls.pop()
+            return result
 
 
         def invoke_perform(machine: mutable Machine&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, handler_stack: mutable darray[sview]&, module: Module&, fn: Function&, function_index: usize, current_block: u32, instruction_index: usize, instruction: Instruction, ids: darray[u32]&, values: darray[RuntimeValue]&, handler_index: usize, clause_index: usize) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
@@ -708,7 +727,14 @@ extend EsIr:
             machine.continuation_ids.extend(ids)
             machine.continuation_values.extend(values)
             machine.continuation_handlers.extend(handler_stack)
-            machine.continuations.push(ContinuationFrame{handler: module.handlers[handler_index].name, policy: module.handlers[handler_index].continuation, consumed: false, resumptions: 0, function_index: function_index, resume_block: current_block, resume_instruction: instruction_index + 1, result_id: instruction.result, snapshot_start: snapshot_start, snapshot_count: ids.count, handler_snapshot_start: handler_snapshot_start, handler_snapshot_count: handler_stack.count})
+            replay_start: usize = machine.continuation_frames.count
+            machine.continuation_frames.push(ContinuationCallFrame{function_index: function_index, resume_block: current_block, resume_instruction: instruction_index + 1, result_id: instruction.result, snapshot_start: snapshot_start, snapshot_count: ids.count, handler_snapshot_start: handler_snapshot_start, handler_snapshot_count: handler_stack.count})
+            active_index: mutable usize = machine.active_calls.count
+            while active_index > 0 |machine, active_index|:
+                active_index <- active_index - 1
+                machine.continuation_frames.push(machine.active_calls[active_index])
+            replay_count: usize = machine.continuation_frames.count - replay_start
+            machine.continuations.push(ContinuationFrame{handler: module.handlers[handler_index].name, policy: module.handlers[handler_index].continuation, consumed: false, resumptions: 0, replay_start: replay_start, replay_count: replay_count})
             callback_value: RuntimeValue = execute_function(machine, observations, storage, handler_stack, module, callback_index, arguments)
             _ = machine.continuations.pop()
             result: mutable RuntimeValue = callback_value
@@ -2629,7 +2655,7 @@ extend EsIr:
                             break
 
                         Dispatch, Opcode.Call:
-                            dispatch.value <- evaluate_call(machine, observations, storage, handler_stack, module, fn, instruction, ids, values)
+                            dispatch.value <- evaluate_call(machine, observations, storage, handler_stack, module, fn, function_index, current_block, instruction_index, instruction, ids, values)
                             break
 
                         Dispatch, Opcode.Observe:
