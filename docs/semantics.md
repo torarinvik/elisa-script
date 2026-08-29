@@ -337,7 +337,9 @@ is the process exit status; effects and declared `error[...]` rows remain those 
 the source function. `validate_elisascript_entrypoint` rejects a missing or
 non-conforming `main` before bytecode execution, and
 `execute_elisascript_program_source/file` provide the corresponding source and
-file launch APIs.
+file launch APIs. Hosts that need dynamic effect interception can use the
+`*_with_handlers` variants and pass a typed `darray[Handler]`; the ordinary
+APIs install no handlers.
 
 The bundled driver (`src/driver/elisascript.elisa`) converts host `argv` into a
 typed `darray[sview]` request. It performs no shell quoting, splitting, globbing,

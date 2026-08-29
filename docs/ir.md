@@ -138,6 +138,11 @@ The verifier checks both sides of this contract independently.
 Structured lowering emits explicit handler unwinding before `return`, `break`,
 and `continue`. Loop exits unwind only handlers installed inside that loop;
 handlers surrounding the loop remain active until their own lexical scope ends.
+The canonical source boundary exposes this same configuration through
+`lower_elisascript_source_with_handlers`/`lower_elisascript_file_with_handlers`
+and the matching `execute_elisascript_*_with_handlers` entry points. The default
+loader and launcher pass an empty handler table, while hosts that need dynamic
+effect interception can provide the verified handler descriptors explicitly.
 
 Multi-shot behavior is never inferred. The reference interpreter executes a
 callback's `Resume` as a typed tail resumption for `Linear` and `Affine`: its

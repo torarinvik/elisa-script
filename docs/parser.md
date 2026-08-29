@@ -54,6 +54,12 @@ and raises `ElisascriptSourceError.FileIo` for open, seek, read, or close
 failures. The permanent backing keeps source spans and text constants valid after
 the loader returns.
 
+Hosts that install dynamic effect handlers can use
+`lower_elisascript_source_with_handlers` and
+`lower_elisascript_file_with_handlers`. These entry points keep the typed
+handler table outside parsing and semantic analysis, then attach it before IR
+verification; the no-handler APIs remain the default for ordinary scripts.
+
 ## Typed literal desugaring
 
 An identifier immediately adjacent to a string literal is parsed as a one-argument
