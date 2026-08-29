@@ -230,7 +230,8 @@ non-overlapping matched span. Zero-width matches advance explicitly, matching th
 termination rule used by `RegexSplit` and `RegexReplace`.
 
 `Map` is the closed aggregate counterpart to `Array`. Its `Type` descriptor carries
-one exact key type and one exact value type; `MakeMap` consumes an even key/value
+one exact scalar key type and one exact value type, with one inline array layer for
+values; `MakeMap` consumes an even key/value
 operand sequence and produces the corresponding map. `Index`, `IndexValid`, `Contains`,
 `Length`, and `SetIndex` accept maps with typed key/value contracts. Runtime map payloads are
 interleaved key/value pairs in caller-owned flat storage and validate their complete
@@ -488,10 +489,11 @@ control-flow state without manufacturing an instruction or runtime value.
 It also lowers homogeneous immutable array literals, scalar `darray[T]`/`array[T]`
 type annotations, integer indexing, and the `.count` field. Empty literals use
 their expected array type in bindings, assignments, returns, and call arguments,
-so `[]` never introduces an untyped dynamic collection. Arrays may nest one level
-(`darray[darray[T]]`) using the flat descriptor's bounded structural fields; deeper
-nesting remains an explicit lowering error until fully recursive IR descriptors are
-defined.
+so `[]` never introduces an untyped dynamic collection. Arrays may nest two levels
+(`darray[darray[darray[T]]]`) using the flat descriptor's bounded structural fields;
+a fourth array layer remains an explicit lowering error until fully recursive IR
+descriptors are defined. Dictionary values may be scalar or one-level arrays; maps
+whose values need a deeper descriptor are rejected at the source boundary.
 Plain single-binder `for value in array` loops lower to explicit header, body,
 latch, and exit blocks. The collection is evaluated once; length and indexing stay
 typed IR operations. `continue` targets the incrementing latch, `break` targets the
