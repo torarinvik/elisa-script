@@ -211,6 +211,12 @@ runtime `sview` adaptation uses explicit `MakePath`, `MakeGlob`, `MakeRegex`, an
 The verifier admits both representations, and the interpreter retains the text
 payload while all static compatibility decisions continue to use the nominal IR
 type.
+Text and nominal constants pass through the shared literal escape decoder before
+runtime materialization. This keeps ordinary and adjacent triple-quoted literals
+consistent across the reference interpreter and bytecode backends: standard Elisa
+escapes decode, while unknown or malformed escapes remain source bytes. Triple-
+quoted payloads can contain newlines; bare triple quotes are still lexed as block
+comments.
 `RegexSearch` is a separate semantic opcode with the exact signature
 `Text × Named(Regex) -> Bool`. The reference interpreter executes it through an
 explicit search machine with greedy backtracking; future bytecode, JIT, and native

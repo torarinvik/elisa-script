@@ -620,7 +620,75 @@ extend EsIr:
             return true
 
 
-        def evaluate_constant(instruction: Instruction, machine: mutable Machine&) -> RuntimeValue:
+        def literal_hex_digit(byte: u8) -> i64:
+            return (byte - 48).i64() if byte >= 48 and byte <= 57
+            return (byte - 97 + 10).i64() if byte >= 97 and byte <= 102
+            return (byte - 65 + 10).i64() if byte >= 65 and byte <= 70
+            return -1
+
+
+        def append_literal_utf8(output: mutable dstr&, codepoint: i64) -> void:
+            if codepoint < 128:
+                output.push(codepoint.u8())
+                return
+            if codepoint < 2048:
+                output.push((192 + codepoint / 64).u8())
+                output.push((128 + codepoint % 64).u8())
+                return
+            output.push((224 + codepoint / 4096).u8())
+            output.push((128 + (codepoint / 64) % 64).u8())
+            output.push((128 + codepoint % 64).u8())
+
+
+        # Lexer tokens intentionally retain the source interior. Decode the
+        # ordinary Elisa escape set at the IR boundary so the interpreter and
+        # packed bytecode see the same bytes as the regular compiler. Unknown or
+        # malformed escapes stay verbatim instead of being guessed; this matters
+        # for regex and shell-like payloads that deliberately use backslashes.
+        def decode_literal_text(text: sview) -> sview can[Memory.Allocate, Abort.Panic]:
+            decoded: mutable dstr = []
+            index: mutable usize = 0
+            length: usize = sview_len(text)
+            while index < length:
+                byte: u8 = sview_at(text, index)
+                if byte != 92 or index + 1 >= length:
+                    decoded.push(byte)
+                    index <- index + 1
+                    continue
+                next_byte: u8 = sview_at(text, index + 1)
+                if next_byte == 120 or next_byte == 117:
+                    hex_digits: usize = 2 if next_byte == 120 else 4
+                    hex_value: mutable i64 = 0
+                    hex_ok: mutable bool = index + 2 + hex_digits <= length
+                    hex_index: mutable usize = 0
+                    while hex_index < hex_digits and hex_ok:
+                        digit: i64 = literal_hex_digit(sview_at(text, index + 2 + hex_index))
+                        if digit < 0:
+                            hex_ok <- false
+                        else:
+                            hex_value <- hex_value * 16 + digit
+                        hex_index <- hex_index + 1
+                    if hex_ok:
+                        append_literal_utf8(decoded, hex_value) if next_byte == 117
+                        decoded.push(hex_value.u8()) if next_byte == 120
+                        index <- index + 2 + hex_digits
+                        continue
+                if next_byte == 110 or next_byte == 116 or next_byte == 114 or next_byte == 48 or next_byte == 92 or next_byte == 34 or next_byte == 39:
+                    decoded.push(10 if next_byte == 110 else 9 if next_byte == 116 else 13 if next_byte == 114 else 0 if next_byte == 48 else next_byte)
+                    index <- index + 2
+                    continue
+                # Unknown, malformed, and trailing escapes remain source bytes.
+                decoded.push(byte)
+                index <- index + 1
+            return "" if decoded.count == 0
+            bytes: mutable dstr = ctx_fstr_alloc(decoded.count)
+            if bytes.items == null:
+                return ""
+            ctx_fstr_append(bytes, decoded.items, decoded.count)
+            return bytes_view(bytes)
+
+
+        def evaluate_constant(instruction: Instruction, machine: mutable Machine&) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
             match instruction.result_type.kind:
                 TypeKind.Bool:
                     return runtime_bool(instruction.boolean)
@@ -629,7 +697,7 @@ extend EsIr:
                 TypeKind.Float:
                     return runtime_float(parse_decimal(instruction.decimal))
                 TypeKind.Text | TypeKind.Char | TypeKind.Named:
-                    return runtime_text(instruction.text)
+                    return runtime_text(decode_literal_text(instruction.text))
                 _:
                     machine.failure <- InterpretFailure.UnsupportedInstruction
                     return runtime_void()
@@ -3711,6 +3779,10 @@ extend EsIr:
         # bytecode value machine independent of its private failure state.
         def parse_decimal_value(text: sview) -> f64:
             return parse_decimal(text)
+
+
+        def decode_literal_text_value(text: sview) -> sview can[Memory.Allocate, Abort.Panic]:
+            return decode_literal_text(text)
 
 
         def parse_integer_value(text: sview) -> i64 error[InterpretError]:

@@ -55,6 +55,14 @@ Nominal values cannot implicitly initialize primitive scalars:
 bad: i64 = path"src"  # type error: expected i64, got Path
 ```
 
+String payloads are decoded once at the IR constant boundary. Ordinary and
+adjacent triple-quoted literals recognize Elisa's standard escapes (`\\n`, `\\t`,
+`\\r`, `\\0`, `\\\\`, `\\"`, `\\'`, `\\xNN`, and `\\uNNNN`); unknown or malformed
+escapes remain literal. Triple-quoted payloads may span lines, while a bare
+`"""..."""` sequence continues to denote an Elisa block comment. The reference
+interpreter and packed bytecode path call the same decoder, so differential tests
+observe identical text values.
+
 The shared IR recognizes these five compiler-known calls when no source function
 shadows the prefix. A constant string payload emits a nominal `Constant`; a runtime
 `sview` payload emits an explicit nominal constructor (`MakePath`, `MakeGlob`,

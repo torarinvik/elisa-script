@@ -43,16 +43,34 @@ remain an adjacent `Ident` and `StringLit`. The parser and semantic layer will
 interpret the prefix, validate the payload, and assign the result type. This keeps
 literal namespaces extensible without expanding `TokenKind` for every library.
 
-## Deferred lexical design
+## Multiline typed literals
 
-Multiline and raw typed literals need an explicit design before implementation.
-Bare triple quotes are currently Elisa block comments, so a future multiline form
-must preserve that behavior while giving regexes, templates, SQL, and embedded
-documents a readable representation.
+An adjacent identifier may also prefix a triple-quoted string:
+
+```elisa
+regex"""^src/.*\\.elisa$
+"""
+sql"""select *
+from files
+"""
+```
+
+The lexer emits the same adjacent `Ident` and `StringLit` pair as for an ordinary
+typed literal, and the parser applies the same one-argument call desugaring. The
+payload may span physical lines; its source bytes (including newlines and unknown
+backslash escapes) are preserved until the shared literal decoder runs. Elisa's
+known escapes (`\\n`, `\\t`, `\\r`, `\\0`, `\\\\`, `\\"`, `\\'`, `\\xNN`, and `\\uNNNN`)
+are decoded consistently by the reference interpreter and bytecode engine.
+
+Bare `"""..."""` remains an Elisa block comment. Triple-quoted literal mode is
+therefore only selected when the opening delimiter is directly adjacent to an
+identifier (including identifiers whose final character is a digit), keeping
+existing comments source-compatible.
 
 ## Verification
 
-- `test/lexer/elisascript_lexer_test.elisa` covers shebangs and typed literal tokenization.
+- `test/lexer/elisascript_lexer_test.elisa` covers shebangs, typed literal tokenization,
+  multiline payloads, and preservation of bare triple-quoted comments.
 - `test/lexer/elisa_compat/lexer_machine_state_test.elisa` retains the copied Elisa
   machine-state regression tests and their lexer fixtures.
 

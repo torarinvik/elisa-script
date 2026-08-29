@@ -80,6 +80,10 @@ regex("(?<name>[a-z]+)")
 glob("src/**/*.elisa")
 ```
 
+The shorthand also accepts a triple-quoted payload, so `regex"""..."""` and
+similar forms have the same AST shape while allowing embedded newlines. Bare
+triple-quoted text remains a block comment at the lexer boundary.
+
 Explicit integer suffixes are carried on the literal AST node itself. For example,
 `1u8 + 2u8` contains two `IntLitTyped` nodes, each with its own suffix. This avoids
 the old line-keyed metadata ambiguity when several differently typed literals occur
@@ -128,7 +132,6 @@ The following features belong to later, explicitly designed changes:
 
 - Algebraic `effect` declarations
 - Source handler declarations, operation clauses, and explicit `resume` expressions
-- Multiline/raw typed literals
 - Script-level dependency declarations if decorators are insufficient
 
 The launcher does not depend on deferred `@command` derivation: the current
