@@ -222,7 +222,10 @@ membership, equality, updates, and key extraction; maps containing unsupported
 aggregate components continue through the verified interpreter oracle. `MapKeys`
 materializes a stable array of keys in insertion order, allowing the existing loop
 state machine to lower `for key in map` without evaluating the map expression more
-than once.
+than once. A two-binding read-only loop, `for key, value in map`, uses that same
+key array and emits a typed `Index(map, key)` for the value binding; the map
+expression is still evaluated exactly once and mutable map iteration is not
+permitted.
 
 The AST-to-IR boundary reports the same mistakes as structured `TypeMismatch`
 lowering issues, before a backend sees the module. This covers declared binding
@@ -437,6 +440,9 @@ Plain single-binder `for value in array` loops lower to explicit header, body,
 latch, and exit blocks. The collection is evaluated once; length and indexing stay
 typed IR operations. `continue` targets the incrementing latch, `break` targets the
 exit, and mutations of outer bindings travel through typed loop parameters.
+Read-only dictionary loops additionally accept `for key, value in map`; the key
+binding comes from `MapKeys` and the value binding from a typed map `Index` in the
+body block.
 `for mutable value in values` additionally requires `values` to be a named mutable
 array binding. Lowering records a scoped element-owner relation; every successful
 `value <- replacement` or compound update immediately transitions the owner through

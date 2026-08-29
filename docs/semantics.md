@@ -131,8 +131,10 @@ semantics at the IR boundary: a mutable binding receives a fresh map, replacing 
 existing key or inserting a new one. The reference runtime stores interleaved
 key/value pairs in caller-owned flat storage, so differential observations remain
 deterministic and allocation ownership is explicit. A read-only `for key in map`
-loop walks a materialized key array in insertion order; mutable iteration remains
-restricted to arrays so map updates always use explicit typed index assignment.
+loop walks a materialized key array in insertion order. `for key, value in map`
+uses that same key array and performs a typed lookup for each value; both bindings
+are immutable, and map mutation remains explicit through indexed assignment.
+Mutable iteration remains restricted to arrays.
 
 ## Numeric text conversion
 
