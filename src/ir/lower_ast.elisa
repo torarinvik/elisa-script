@@ -1130,15 +1130,15 @@ extend EsIr:
             return result
 
 
-        # `count x in values where predicate` folds an array or text iterable into
-        # a usize without allocating a temporary collection. The counter is
-        # loop-carried through the same explicit header/body/latch/exit machine as
-        # comprehensions; an absent condition in a hand-built AST counts every
-        # element.
-        def lower_count_comprehension(variable: sview, iterable: Ast::Expr, condition: Ast::Expr, body: Ast::Expr, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
-            result_type: Type = type_from_name("usize")
-            if comprehension_query_kind(state, pos) != "count":
-                add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "only count queries are in the initial fold lowering subset")
+        # Integer folds (`count`, `sum`, and `product`) use one explicit
+        # state-machine loop and never materialize a temporary collection. Count
+        # accepts any element type and carries a usize; sum/product require an
+        # integer element and carry that exact element type. An absent condition
+        # in a hand-built AST folds every element.
+        def lower_integer_fold_comprehension(fold_kind: sview, variable: sview, iterable: Ast::Expr, condition: Ast::Expr, body: Ast::Expr, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+            result_type: mutable Type = unknown_ir_type()
+            if fold_kind != "count" and fold_kind != "sum" and fold_kind != "product":
+                add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "only count/sum/product queries are in the initial fold lowering subset")
                 return LoweredValue{valid: false, value: 0, type: result_type}
             body_absent: mutable bool = false
             match body:
@@ -1153,9 +1153,16 @@ extend EsIr:
             if not collection.valid:
                 return LoweredValue{valid: false, value: 0, type: result_type}
             if collection.type.kind != TypeKind.Array and collection.type.kind != TypeKind.Text:
-                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "count queries require an array or text iterable")
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "integer folds require an array or text iterable")
                 return LoweredValue{valid: false, value: 0, type: result_type}
             element_type: Type = type_from_name("char") if collection.type.kind == TypeKind.Text else array_element_type(collection.type)
+            if fold_kind == "count":
+                result_type <- type_from_name("usize")
+            else:
+                if element_type.kind != TypeKind.Int:
+                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "sum and product require an integer iterable")
+                    return LoweredValue{valid: false, value: 0, type: result_type}
+                result_type <- element_type
             condition_absent: mutable bool = false
             match condition:
                 Expr.Absent:
@@ -1164,7 +1171,7 @@ extend EsIr:
                     pass
 
             accumulator_name: sview = "__es_comprehension_accumulator"
-            initial_accumulator: LoweredValue = emit_constant(state, result_type, 0, "", "", false, ir_span(pos))
+            initial_accumulator: LoweredValue = emit_constant(state, result_type, 1 if fold_kind == "product" else 0, "", "", false, ir_span(pos))
             state.names.push(accumulator_name)
             state.values.push(initial_accumulator.value)
             state.types.push(result_type)
@@ -1236,7 +1243,7 @@ extend EsIr:
             if not condition_absent:
                 predicate <- lower_expression(condition, state)
                 if predicate.valid and predicate.type.kind != TypeKind.Bool:
-                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "count query predicate must have boolean type")
+                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "integer fold predicate must have boolean type")
                     predicate <- LoweredValue{valid: false, value: 0, type: type_from_name("bool")}
                 if predicate.valid and state.current_block == body_block and not state.terminated:
                     hit_args: (start: u32, count: u16) = append_context_arguments(state, context)
@@ -1245,8 +1252,7 @@ extend EsIr:
                     invalid_args: (start: u32, count: u16) = append_context_arguments(state, context)
                     state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: latch_block, target_count: 1, edge0_arg_start: invalid_args.start, edge0_arg_count: invalid_args.count, span: ir_span(pos)}
             else:
-                hit_args: (start: u32, count: u16) = append_context_arguments(state, context)
-                state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: hit_block, target_count: 1, edge0_arg_start: hit_args.start, edge0_arg_count: hit_args.count, span: ir_span(pos)}
+                state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: hit_block, target_count: 1, span: ir_span(pos)}
             finish_block(state)
             _ = state.break_targets.pop()
             _ = state.continue_targets.pop()
@@ -1259,7 +1265,9 @@ extend EsIr:
             state.terminated <- false
             state.values[accumulator_index] <- header_accumulator
             one_count: LoweredValue = emit_constant(state, result_type, 1, "", "", false, ir_span(pos))
-            updated_count: LoweredValue = emit_binary(state, Opcode.Add, state.values[accumulator_index], one_count.value, result_type, pos)
+            fold_opcode: Opcode = Opcode.Add if fold_kind == "count" or fold_kind == "sum" else Opcode.Multiply
+            fold_operand: u32 = one_count.value if fold_kind == "count" else element_result
+            updated_count: LoweredValue = emit_binary(state, fold_opcode, state.values[accumulator_index], fold_operand, result_type, pos)
             state.values[accumulator_index] <- updated_count.value if updated_count.valid
             hit_args: (start: u32, count: u16) = append_context_arguments(state, context)
             state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: latch_block, target_count: 1, edge0_arg_start: hit_args.start, edge0_arg_count: hit_args.count, span: ir_span(pos)} if not state.terminated
@@ -1657,7 +1665,7 @@ extend EsIr:
                     return LoweredValue{valid: true, value: result, type: result_type}
                 Expr.Comprehension(variable, iterable, condition, body, pos):
                     return lower_map_comprehension(variable, iterable, condition, body, pos, state) if comprehension_kind(state, pos) == "map"
-                    return lower_count_comprehension(variable, iterable, condition, body, pos, state) if comprehension_kind(state, pos) == "query" and comprehension_query_kind(state, pos) == "count"
+                    return lower_integer_fold_comprehension(comprehension_query_kind(state, pos), variable, iterable, condition, body, pos, state) if comprehension_kind(state, pos) == "query" and (comprehension_query_kind(state, pos) == "count" or comprehension_query_kind(state, pos) == "sum" or comprehension_query_kind(state, pos) == "product")
                     return lower_query_comprehension(variable, iterable, condition, body, pos, state) if comprehension_kind(state, pos) == "query" and comprehension_query_kind(state, pos) != "each"
                     return lower_array_comprehension(variable, iterable, condition, body, pos, state)
                 Expr.DictLit(entries, pos):
