@@ -374,9 +374,10 @@ operations before reaching a terminal value state. The packed executor wraps the
 control cursor in another explicit machine for block entry, condition staging,
 instruction storage, jump-edge collection, and returns, so its direct loop has no
 implicit host control-flow state. The eligibility gate rejects
-other widths, arrays nested deeper than two levels, handlers, and continuations; failure-sensitive integer
-divide/remainder/shift operations remain on the interpreter path, while `f64`
-division is direct.
+other widths, arrays nested deeper than two levels, handlers, and continuations.
+Integer divide/remainder/shift operations validate zero divisors, signed minimum
+overflow, and shift counts before entering host arithmetic, preserving the typed
+interpreter failures while remaining on the direct path.
 The direct path uses the same overflow-safe flat-array range predicate as the
 interpreter for indexing, slicing, membership, joining, concatenation, indexed
 updates, equality, and process argument vectors; malformed external arguments
