@@ -61,7 +61,7 @@ runner kinds, scans every argument for embedded NUL bytes, and requires a positi
 timeout. A failed check returns `DifferentialRunnerCheck` with a stable issue kind
 and argument index; it does not launch anything.
 
-The current runner kinds are `InProcessFunction`, `ElisascriptFile`, `NativeProcess`, `PythonAdapter`,
+The current runner kinds are `InProcessFunction`, `ElisascriptFile`, `ElisascriptProgram`, `NativeProcess`, `PythonAdapter`,
 `CAbiFunction`, `WasmModule`, and `Service`. Adapters are responsible for turning a
 validated specification into a `DifferentialRun`; keeping that execution layer
 separate lets native, Python, and Elisascript adapters share the same deterministic
@@ -118,12 +118,22 @@ runtime error families unchanged. Its `timeout_steps` field is the VM step limit
 filesystem and process effects therefore remain visible through the same typed
 capabilities as ordinary script execution.
 
+For a runnable script that follows the launcher ABI, use `ElisascriptProgram` and
+omit `entry`. `run_differential_elisascript_program` invokes
+`main(arguments: darray[sview]) -> i64`, preserves each argument as typed text,
+and records the returned signed integer in both `return_value` and
+`exit_status`. This makes the in-process candidate directly comparable with a
+native reference process whose exit status carries the same program result.
+
 `differential_run_from_process_capture` is the typed adapter for that boundary. It
 accepts the interpreter's `EsIr::RuntimeValue` snapshot plus structured observations
 and materializes one `DifferentialRun`; an optional `DifferentialRun.values` pool
 keeps any array observation indices attached to the same run. A non-`ProcessCapture`
-value becomes a stable adapter error. Its validation/materialization path is an
-explicit state machine, so the process result cannot be partially copied.
+value becomes a stable adapter error. Process adapters mirror their exit status in
+the typed `return_value` field as an `Int`, which lets a standard Elisascript
+program and a native executable be compared under the same return/exit contract.
+Its validation/materialization path is an explicit state machine, so the process
+result cannot be partially copied.
 
 ## Runner types
 
