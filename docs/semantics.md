@@ -136,6 +136,13 @@ complete filesystem round trip without shell or Python.
 unremovable path returns `false`, following the core Elisa `remove_file` contract.
 The nominal operand prevents accidental deletion through an arbitrary text value.
 
+`copy_path(source: Path, destination: Path) -> bool error[FileIoError]
+can[File.Read, File.Write]` copies one regular file by length-delimited bytes and
+replaces the destination. `move_path(source: Path, destination: Path) -> bool
+error[FileIoError] can[File.Write]` performs an atomic POSIX rename within the
+filesystem. Both operations reject arbitrary text at compile time and report
+operating-system failures through `error[...]`; neither constructs a shell command.
+
 ## Process execution
 
 `run_process(executable: Executable, arguments: darray[sview]) -> i64

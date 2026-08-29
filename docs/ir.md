@@ -240,6 +240,12 @@ target file deterministically.
 core unlink wrapper using the same owned NUL-terminated path conversion as the other
 filesystem operations. Missing paths produce `false`; they are not conflated with
 interpreter failure or wrapped in a result value.
+`CopyPath` verifies as `Named(Path) × Named(Path) -> Bool` with `File.Read` and
+`File.Write`, plus `FileIoError`. It copies the complete length-delimited source
+bytes into a replacement destination, including embedded NUL bytes. `MovePath` has
+the same typed path pair and `FileIoError` but only requires `File.Write`; it uses
+the POSIX rename boundary. Both operations are available on the direct bytecode
+filesystem path as well as the reference interpreter.
 `RunProcess` verifies as `Named(Executable) × Array[Text] -> Int(signed, 64)` and
 requires `Process.Run` plus `ProcessError`. The interpreter executes it directly as
 a POSIX `fork`/`execvp`/`waitpid` state transition with a NUL-terminated argv. No
