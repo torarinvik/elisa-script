@@ -483,8 +483,8 @@ control cursor in another explicit machine for block entry, condition staging,
 instruction storage, jump-edge collection, and returns, so its direct loop has no
 implicit host control-flow state. The eligibility gate rejects
 other widths, arrays nested deeper than four levels, handlers, and continuations.
-Map values may use the inline array layers on the packed path; nested aggregate
-shapes beyond the descriptor remain reference-interpreter-only.
+Map values may use the inline bounded array/map layers on the packed path; nested
+aggregate shapes beyond the descriptor remain reference-interpreter-only.
 Error guards are eligible for the direct path: `ErrorGuardPush`/`ErrorGuardPop`
 maintain a checked fallback stack, and recoverable typed failures jump to the
 verified fallback block without wrapping the value in a result object.
@@ -523,8 +523,9 @@ their expected array type in bindings, assignments, returns, and call arguments,
 so `[]` never introduces an untyped dynamic collection. Arrays may nest five levels
 (`darray[darray[darray[darray[darray[T]]]]]`) using the compatibility fields; a sixth array
 layer remains an explicit lowering error until the recursive table is used directly by
-source typing. Dictionary values may be scalar or three-level arrays; maps whose
-values need a deeper descriptor are rejected at the source boundary. The
+source typing. Dictionary values may be scalar or bounded combinations of arrays
+and nested maps; shapes whose value needs a deeper descriptor are rejected at the
+source boundary. The
 `intern_module_types` pass records every type-bearing IR position in the shared
 table, and malformed ranges or duplicate rows are verifier errors.
 Source annotation lowering interns function signatures into the same structural

@@ -283,8 +283,10 @@ has_ok: bool = "ok" in counts
 
 Every key has one exact static type and every value has one exact static type; no
 implicit conversions or heterogeneous entries are accepted. Scalar values, nested
-dictionaries, and up to three array layers in a map value are supported (for
-example, `dict[sview, dict[sview, darray[darray[i64]]]]`). `dict[K, V]` is also
+dictionaries, and bounded combinations of arrays and nested dictionaries are
+supported when they fit the inline descriptor (for example,
+`dict[sview, dict[sview, darray[darray[i64]]]]`). Deeper or unsupported aggregate
+shapes remain an explicit lowering diagnostic. `dict[K, V]` is also
 spelled `map[K, V]`. `.count` returns the number of entries, membership checks
 keys, and an indexed read of a missing key raises `InterpretError.IndexOutOfBounds`
 through the ordinary `error[...]` channel. Indexed assignment is immutable-update
