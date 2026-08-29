@@ -115,6 +115,7 @@ module EsBytecode:
             Condition
             SelectAction
             ExecuteInstruction
+            Recover
             StoreInstruction
             DispatchAction
             ValidateJump
@@ -134,6 +135,12 @@ module EsBytecode:
             value: mutable RuntimeValue
             result: mutable RuntimeValue
             steps: mutable u64
+            recovered: mutable bool
+            recovery_target: mutable u32
+
+
+        struct BytecodeErrorGuard:
+            target: u32
 
 
         const enum BytecodeValueState of u8:
@@ -1276,6 +1283,10 @@ module EsBytecode:
                     observations.push(Observation{trace: instruction.trace.id, value: observed})
                     cursor.state <- BytecodeValueState.Done
                     -> Execute
+                Execute, BytecodeValueState.Execute if instruction.opcode == Opcode.ErrorGuardPush or instruction.opcode == Opcode.ErrorGuardPop:
+                    cursor.value <- runtime_void()
+                    cursor.state <- BytecodeValueState.Done
+                    -> Execute
                 Execute, BytecodeValueState.Execute:
                     raise InterpretError.UnsupportedInstruction
                     break
@@ -1284,6 +1295,24 @@ module EsBytecode:
                     break
 
             return cursor.value
+
+
+        def bytecode_error_guard_recoverable(failure: InterpretError) -> bool:
+            return failure in {InterpretError.DivisionByZero, InterpretError.IntegerOverflow, InterpretError.InvalidNumber, InterpretError.FileIo, InterpretError.Process, InterpretError.Environment, InterpretError.Directory, InterpretError.Console, InterpretError.InvalidShift, InterpretError.IndexOutOfBounds}
+
+
+        def bytecode_direct_instruction_guarded(module: BytecodeModule&, instruction: Instruction, fn: BytecodeFunction&, ids: darray[u32]&, values: darray[RuntimeValue]&, storage: mutable darray[RuntimeValue]&, observations: mutable darray[Observation]&, step_limit: u64, steps: mutable u64&, guards: mutable darray[BytecodeErrorGuard]&, recovered: mutable bool&, recovery_target: mutable u32&) -> RuntimeValue error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+            recovered <- false
+            catch bytecode_direct_instruction(module, instruction, fn, ids, values, storage, observations, step_limit, steps):
+                ok:
+                    return ok
+                error failure:
+                    if guards.count > 0 and bytecode_error_guard_recoverable(failure):
+                        guard: BytecodeErrorGuard = guards.pop()
+                        recovered <- true
+                        recovery_target <- guard.target
+                        return runtime_void()
+                    raise failure
 
 
         def bytecode_direct_supported(module: BytecodeModule&) -> bool:
@@ -1297,6 +1326,7 @@ module EsBytecode:
                     if not bytecode_direct_value_type(parameter.type):
                         return false
                 for instruction in function.instructions:
+                    continue if instruction.opcode == Opcode.ErrorGuardPush or instruction.opcode == Opcode.ErrorGuardPop
                     if instruction.opcode not in {Opcode.Constant, Opcode.Copy, Opcode.Negate, Opcode.Not, Opcode.BitNot, Opcode.Add, Opcode.Subtract, Opcode.Multiply, Opcode.Divide, Opcode.Equal, Opcode.Less, Opcode.Remainder, Opcode.NotEqual, Opcode.LessEqual, Opcode.Greater, Opcode.GreaterEqual, Opcode.BitAnd, Opcode.BitOr, Opcode.BitXor, Opcode.ShiftLeft, Opcode.ShiftRight, Opcode.Observe, Opcode.MakeArray, Opcode.MakeMap, Opcode.MapKeys, Opcode.MakePath, Opcode.MakeGlob, Opcode.MakeRegex, Opcode.MakeUrl, Opcode.Index, Opcode.IndexValid, Opcode.Length, Opcode.Slice, Opcode.Contains, Opcode.SetIndex, Opcode.Concat, Opcode.Split, Opcode.Join, Opcode.ParseInt, Opcode.FormatInt, Opcode.ParseFloat, Opcode.FormatFloat, Opcode.RegexSearch, Opcode.RegexReplace, Opcode.RegexSplit, Opcode.RegexFind, Opcode.PathJoin, Opcode.PathParent, Opcode.PathName, Opcode.PathExtension, Opcode.PathStem, Opcode.PathExists, Opcode.ReadText, Opcode.WriteText, Opcode.RemovePath, Opcode.CopyPath, Opcode.MovePath, Opcode.MakeExecutable, Opcode.RunProcess, Opcode.CaptureProcessStdout, Opcode.CaptureProcessStderr, Opcode.CaptureProcessStdoutWithStdin, Opcode.CaptureProcessResult, Opcode.CaptureProcessResultInDirectory, Opcode.CaptureProcessResultWithEnvironment, Opcode.CaptureProcessResultInDirectoryWithEnvironment, Opcode.ProcessResultExitStatus, Opcode.ProcessResultStdout, Opcode.ProcessResultStderr, Opcode.GetEnvironment, Opcode.SetEnvironment, Opcode.UnsetEnvironment, Opcode.CreateDirectory, Opcode.RemoveDirectory, Opcode.CurrentDirectory, Opcode.ChangeDirectory, Opcode.ListDirectory, Opcode.IsDirectory, Opcode.ExpandGlob, Opcode.ReadStdin, Opcode.WriteStdout, Opcode.WriteStderr, Opcode.Call}:
                         return false
                     if instruction.opcode == Opcode.Constant and not bytecode_direct_scalar_type(instruction.result_type):
@@ -1304,6 +1334,21 @@ module EsBytecode:
                     if instruction.opcode != Opcode.Observe and not bytecode_direct_value_type(instruction.result_type):
                         return false
             return true
+
+
+        def bytecode_prepare_guard_instruction(instruction: Instruction, guards: mutable darray[BytecodeErrorGuard]&) -> void error[InterpretError]:
+            if instruction.opcode == Opcode.ErrorGuardPush:
+                guards.push(BytecodeErrorGuard{target: instruction.integer.u32()})
+                return
+            if instruction.opcode == Opcode.ErrorGuardPop:
+                raise InterpretError.InvalidControlFlow if guards.count == 0
+                _ = guards.pop()
+
+
+        def bytecode_recovery_block(function: BytecodeFunction&, target: u32) -> usize error[InterpretError]:
+            index: usize = bytecode_block_index(function, target)
+            raise InterpretError.InvalidControlFlow if index == function.blocks.count or function.blocks[index].parameter_count != 0
+            return index
 
 
         def bytecode_function_index(module: BytecodeModule&, name: sview) -> usize:
@@ -1328,7 +1373,8 @@ module EsBytecode:
             for index in 0..<arguments.count |fn, arguments, ids, values|:
                 ids.push(fn.parameters[index].value)
                 values.push(arguments[index])
-            cursor: mutable BytecodeExecutionCursor = BytecodeExecutionCursor{state: BytecodeExecutionState.EnterBlock, control: BytecodeControlCursor{state: BytecodeControlState.Instruction, block_index: bytecode_block_index(fn, fn.entry), instruction_index: 0, action: BytecodeControlAction.Invalid, target: 0, edge_start: 0, edge_count: 0}, entered: true, branch_condition: false, target_index: fn.blocks.count, edge_offset: 0, pending: [], value: runtime_void(), result: runtime_void(), steps: 0}
+            cursor: mutable BytecodeExecutionCursor = BytecodeExecutionCursor{state: BytecodeExecutionState.EnterBlock, control: BytecodeControlCursor{state: BytecodeControlState.Instruction, block_index: bytecode_block_index(fn, fn.entry), instruction_index: 0, action: BytecodeControlAction.Invalid, target: 0, edge_start: 0, edge_count: 0}, entered: true, branch_condition: false, target_index: fn.blocks.count, edge_offset: 0, pending: [], value: runtime_void(), result: runtime_void(), steps: 0, recovered: false, recovery_target: 0}
+            error_guards: mutable darray[BytecodeErrorGuard] = []
             machine over cursor.state:
                 state Execute
                 start Execute
@@ -1394,8 +1440,20 @@ module EsBytecode:
                 Execute, BytecodeExecutionState.ExecuteInstruction:
                     instruction_index: usize = fn.blocks[cursor.control.block_index].instruction_offset.usize() + cursor.control.instruction_index - 1
                     cursor.steps <- cursor.steps + 1
-                    cursor.value <- try bytecode_direct_instruction(module, fn.instructions[instruction_index], fn, ids, values, storage, observations, step_limit, cursor.steps)
-                    cursor.state <- BytecodeExecutionState.StoreInstruction
+                    instruction: Instruction = fn.instructions[instruction_index]
+                    try bytecode_prepare_guard_instruction(instruction, error_guards)
+                    cursor.value <- try bytecode_direct_instruction_guarded(module, instruction, fn, ids, values, storage, observations, step_limit, cursor.steps, error_guards, cursor.recovered, cursor.recovery_target)
+                    cursor.state <- BytecodeExecutionState.Recover if cursor.recovered else BytecodeExecutionState.StoreInstruction
+                    -> Execute
+
+                Execute, BytecodeExecutionState.Recover:
+                    cursor.target_index <- try bytecode_recovery_block(fn, cursor.recovery_target)
+                    cursor.control.block_index <- cursor.target_index
+                    cursor.control.instruction_index <- 0
+                    cursor.control.state <- BytecodeControlState.Instruction
+                    cursor.entered <- true
+                    cursor.recovered <- false
+                    cursor.state <- BytecodeExecutionState.EnterBlock
                     -> Execute
 
                 Execute, BytecodeExecutionState.StoreInstruction if fn.instructions[fn.blocks[cursor.control.block_index].instruction_offset.usize() + cursor.control.instruction_index - 1].opcode != Opcode.Observe:

@@ -71,12 +71,12 @@ states. Branch selection is supplied by the value engine; this keeps control-flo
 ownership separate from effects and runtime values while the remaining opcode
 families are migrated.
 
-`EsBytecode.execute_bytecode` is the bootstrap execution entry point. It rebuilds
-the verified IR shape from the bytecode tables inside a scoped allocation region
-and delegates to `EsIr.interpret`, so effects, dynamic handlers, errors, process
-capture, and continuations have exactly the reference semantics while the packed
-bytecode dispatch loop is developed. The bytecode test suite compares result,
-step count, and observation trace/value against direct IR interpretation.
+`EsBytecode.execute_bytecode` selects the packed loop whenever all instructions
+belong to the direct subset, including guarded error recovery. It rebuilds the
+verified IR shape and delegates to `EsIr.interpret` only for modules that still
+contain dynamic effects, handlers, continuations, or another unsupported family.
+Both paths are checked against the same result, step count, and observation
+trace/value contract in the bytecode tests.
 
 ## Algebraic effects
 
@@ -438,6 +438,9 @@ control cursor in another explicit machine for block entry, condition staging,
 instruction storage, jump-edge collection, and returns, so its direct loop has no
 implicit host control-flow state. The eligibility gate rejects
 other widths, arrays nested deeper than two levels, handlers, and continuations.
+Error guards are eligible for the direct path: `ErrorGuardPush`/`ErrorGuardPop`
+maintain a checked fallback stack, and recoverable typed failures jump to the
+verified fallback block without wrapping the value in a result object.
 Integer divide/remainder/shift operations validate zero divisors, signed minimum
 overflow, and shift counts before entering host arithmetic, preserving the typed
 interpreter failures while remaining on the direct path.
