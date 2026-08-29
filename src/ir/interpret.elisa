@@ -9,6 +9,7 @@ error InterpretError:
     TypeMismatch
     DivisionByZero
     IntegerOverflow
+    InvalidNumber
     FileIo
     Process
     Environment
@@ -32,6 +33,7 @@ extend EsIr:
             TypeMismatch
             DivisionByZero
             IntegerOverflow
+            InvalidNumber
             FileIo
             Process
             Environment
@@ -240,6 +242,92 @@ extend EsIr:
             exponent_negative: mutable bool
 
 
+        const enum IntegerParseClass of u8:
+            End
+            Digit
+            Other
+
+
+        struct IntegerParser:
+            text: sview
+            index: mutable usize
+            value: mutable i64
+            digits: mutable u32
+            negative: mutable bool
+            valid: mutable bool
+
+
+        def integer_parse_class(parser: IntegerParser&) -> IntegerParseClass:
+            return IntegerParseClass.End if parser.index >= sview_len(parser.text)
+            byte: u8 = sview_at(parser.text, parser.index)
+            return IntegerParseClass.Digit if byte >= 48 and byte <= 57
+            return IntegerParseClass.Other
+
+
+        def consume_integer_digit(parser: mutable IntegerParser&) -> void:
+            digit: i64 = (sview_at(parser.text, parser.index) - 48).i64()
+            parser.value <- parser.value * 10 - digit
+            parser.digits <- parser.digits + 1
+
+
+        def integer_digit_fits(parser: IntegerParser&) -> bool:
+            digit: i64 = (sview_at(parser.text, parser.index) - 48).i64()
+            limit: i64 = -9223372036854775807 - 1 if parser.negative else -9223372036854775807
+            return not (parser.value < limit / 10 or (parser.value == limit / 10 and -digit < limit % 10))
+
+
+        def parse_integer(text: sview, valid: mutable bool&) -> i64:
+            parser: mutable IntegerParser = IntegerParser{text: text, index: 0, value: 0, digits: 0, negative: false, valid: true}
+            machine over integer_parse_class(parser):
+                state Start
+                state Digits
+                state Done
+                start Start
+
+                Start, IntegerParseClass.End:
+                    parser.valid <- false
+                    -> Done
+                Start, IntegerParseClass.Other if sview_at(parser.text, parser.index) == 45:
+                    parser.negative <- true
+                    parser.index <- parser.index + 1
+                    -> Digits
+                Start, IntegerParseClass.Other if sview_at(parser.text, parser.index) == 43:
+                    parser.index <- parser.index + 1
+                    -> Digits
+                Start, IntegerParseClass.Digit if integer_digit_fits(parser):
+                    consume_integer_digit(parser)
+                    parser.index <- parser.index + 1
+                    -> Digits
+                Start, IntegerParseClass.Digit:
+                    parser.valid <- false
+                    -> Done
+                Start, IntegerParseClass.Other:
+                    parser.valid <- false
+                    -> Done
+
+                Digits, IntegerParseClass.Digit if integer_digit_fits(parser):
+                    consume_integer_digit(parser)
+                    parser.index <- parser.index + 1
+                    -> Digits
+                Digits, IntegerParseClass.Digit:
+                    parser.valid <- false
+                    -> Done
+                Digits, IntegerParseClass.End if parser.digits == 0:
+                    parser.valid <- false
+                    -> Done
+                Digits, IntegerParseClass.End:
+                    -> Done
+                Digits, IntegerParseClass.Other:
+                    parser.valid <- false
+                    -> Done
+
+                Done, IntegerParseClass.End | IntegerParseClass.Digit | IntegerParseClass.Other:
+                    break
+
+            valid <- parser.valid
+            return parser.value if parser.negative else -parser.value
+
+
         struct RegexMatchSpan:
             start: usize
             end: usize
@@ -397,6 +485,26 @@ extend EsIr:
                 _:
                     machine.failure <- InterpretFailure.UnsupportedInstruction
                     return runtime_void()
+
+
+        def evaluate_parse_int(operand: RuntimeValue, machine: mutable Machine&) -> RuntimeValue:
+            if operand.kind != RuntimeValueKind.Text:
+                machine.failure <- InterpretFailure.TypeMismatch
+                return runtime_void()
+            valid: mutable bool = false
+            value: i64 = parse_integer(operand.text, valid)
+            if not valid:
+                machine.failure <- InterpretFailure.InvalidNumber
+                return runtime_void()
+            return runtime_int(value)
+
+
+        def evaluate_format_int(operand: RuntimeValue, machine: mutable Machine&) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+            if operand.kind != RuntimeValueKind.Int:
+                machine.failure <- InterpretFailure.TypeMismatch
+                return runtime_void()
+            formatted: heap u8& = int_to_string(operand.integer)
+            return runtime_text(sview(formatted, 0, -1))
 
 
         def integer_min(type: Type&) -> i64:
@@ -2635,6 +2743,16 @@ extend EsIr:
                             dispatch.value <- evaluate_join(machine, storage, fields_value, separator_value)
                             break
 
+                        Dispatch, Opcode.ParseInt:
+                            text_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
+                            dispatch.value <- evaluate_parse_int(text_value, machine)
+                            break
+
+                        Dispatch, Opcode.FormatInt:
+                            integer_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
+                            dispatch.value <- evaluate_format_int(integer_value, machine)
+                            break
+
                         Dispatch, Opcode.PathExists:
                             path_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
                             dispatch.value <- evaluate_path_exists(machine, path_value)
@@ -2872,6 +2990,9 @@ extend EsIr:
                 Dispatch, InterpretFailure.IntegerOverflow:
                     raise InterpretError.IntegerOverflow
                     break
+                Dispatch, InterpretFailure.InvalidNumber:
+                    raise InterpretError.InvalidNumber
+                    break
                 Dispatch, InterpretFailure.FileIo:
                     raise InterpretError.FileIo
                     break
@@ -2913,6 +3034,18 @@ extend EsIr:
         # bytecode value machine independent of its private failure state.
         def parse_decimal_value(text: sview) -> f64:
             return parse_decimal(text)
+
+
+        def parse_integer_value(text: sview) -> i64 error[InterpretError]:
+            valid: mutable bool = false
+            value: i64 = parse_integer(text, valid)
+            raise InterpretError.InvalidNumber if not valid
+            return value
+
+
+        def format_integer_value(value: i64) -> sview can[Memory.Allocate, Console.Format, Abort.Panic]:
+            output: heap u8& = int_to_string(value)
+            return sview(output, 0, -1)
 
 
         def path_exists_text(path: sview) -> bool error[InterpretError] can[Memory.Allocate, Abort.Panic]:

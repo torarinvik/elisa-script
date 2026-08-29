@@ -360,7 +360,7 @@ Modules containing only the currently closed scalar, text, regex, and homogeneou
 subset (boolean, 64-bit integer, or 64-bit float values, text/nominal constants,
 including one nested array level,
 array construction, nominal path/glob/regex/URL constructors, indexing, length, slicing, membership, concatenation, split,
-join, regex search/replacement, indexed updates, unary/binary operators,
+join, typed integer parsing/formatting, regex search/replacement, indexed updates, unary/binary operators,
 observations, pure direct calls, and typed filesystem/process operations) take a
 direct packed-instruction path. Calls use recursive state-machine frames with one
 shared step budget, storage, and
@@ -445,6 +445,14 @@ The inverse compiler-known `join(fields, separator)` operation has type
 arrays before execution; the interpreter also validates each runtime element and
 constructs one owned output buffer. Empty arrays join to empty text, separators
 appear only between fields, and empty fields remain observable.
+`ParseInt` has type `Text -> Int(signed, 64)` and requires `ParseError` in the
+function error row. Its state-machine parser accepts only an optional sign and
+ASCII decimal digits, checks signed 64-bit overflow before each accumulation, and
+raises `InterpretError.InvalidNumber` for malformed or out-of-range input. The
+compiler-known `parse_int` call lowers to this opcode. `FormatInt` has type
+`Int(signed, 64) -> Text`; it uses Elisa's permanent string runtime so the returned
+view remains valid after the instruction and is eligible for the direct bytecode
+path without introducing a shell or host-language conversion.
 Exact-type `array + array` and `text + text` lower to the semantic `Concat`
 operation rather than numeric `Add`. Array concatenation copies both inputs into
 fresh value storage. Text concatenation copies both byte views into permanent,
