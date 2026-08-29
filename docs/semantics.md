@@ -196,8 +196,9 @@ exit are ordinary state-machine blocks. Quantifiers use the same loop shape but
 carry a `bool`: `any` exits early on the first true predicate, while `all` exits
 early on the first false predicate. Empty inputs therefore produce `false` for
 `any` and `true` for `all`. The verification spellings `exists x in values: predicate`
-and `forall x in values: predicate` are equivalent existential and
-universal forms. Quantifier predicates must be statically boolean and straight-line;
+and `forall x in values: predicate` are equivalent existential and universal
+forms; their ordinary query-style `where` spelling is accepted too. Quantifier
+predicates must be statically boolean and straight-line;
 effectful or multi-binder forms are rejected until their semantics are specified.
 `count` is a typed `usize` fold over the same array/text/range iterables and
 increments its loop-carried counter only for matching elements.
