@@ -763,7 +763,9 @@ extend EsIr:
             left.boolean == right.boolean return if left.kind == RuntimeValueKind.Bool
             left.decimal == right.decimal return if left.kind == RuntimeValueKind.Float
             left.text == right.text return if left.kind == RuntimeValueKind.Text
+            return left.process_exit_status == right.process_exit_status and left.process_stdout == right.process_stdout and left.process_stderr == right.process_stderr if left.kind == RuntimeValueKind.ProcessCapture
             return runtime_arrays_equal(storage, left, right) if left.kind == RuntimeValueKind.Array
+            return runtime_maps_equal(storage, left, right) if left.kind == RuntimeValueKind.Map
             return left.kind == RuntimeValueKind.Void
 
 
@@ -772,6 +774,22 @@ extend EsIr:
             false return if not runtime_array_range_valid(storage, left) or not runtime_array_range_valid(storage, right)
             for offset in 0..<left.array_count.usize() |storage, left, right|:
                 false return if not runtime_values_equal(storage, storage[left.array_start.usize() + offset], storage[right.array_start.usize() + offset])
+            return true
+
+
+        def runtime_maps_equal(storage: darray[RuntimeValue]&, left: RuntimeValue, right: RuntimeValue) -> bool:
+            false return if left.kind != RuntimeValueKind.Map or right.kind != RuntimeValueKind.Map
+            false return if left.map_count != right.map_count
+            false return if not runtime_map_range_valid(storage, left) or not runtime_map_range_valid(storage, right)
+            for left_offset in 0..<left.map_count.usize() |storage, left, right|:
+                left_key: RuntimeValue = storage[left.map_start.usize() + left_offset * 2]
+                left_value: RuntimeValue = storage[left.map_start.usize() + left_offset * 2 + 1]
+                found: mutable bool = false
+                for right_offset in 0..<right.map_count.usize() |storage, right, left_key, left_value, found|:
+                    right_key: RuntimeValue = storage[right.map_start.usize() + right_offset * 2]
+                    right_value: RuntimeValue = storage[right.map_start.usize() + right_offset * 2 + 1]
+                    found <- true if runtime_values_equal(storage, left_key, right_key) and runtime_values_equal(storage, left_value, right_value)
+                false return if not found
             return true
 
 
@@ -786,6 +804,7 @@ extend EsIr:
                 equal <- left.decimal == right.decimal if left.kind == RuntimeValueKind.Float
                 equal <- left.text == right.text if left.kind == RuntimeValueKind.Text
                 equal <- runtime_arrays_equal(storage, left, right) if left.kind == RuntimeValueKind.Array
+                equal <- runtime_maps_equal(storage, left, right) if left.kind == RuntimeValueKind.Map
                 return runtime_bool(equal) if opcode == Opcode.Equal
                 return runtime_bool(not equal)
             if left.kind == RuntimeValueKind.Int and right.kind == RuntimeValueKind.Int:
@@ -1061,7 +1080,26 @@ extend EsIr:
             return runtime_array(start, instruction.operand_count.u32())
 
 
+        def evaluate_map(machine: mutable Machine&, storage: mutable darray[RuntimeValue]&, fn: Function&, instruction: Instruction, ids: darray[u32]&, values: darray[RuntimeValue]&) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+            if instruction.operand_count % 2 != 0:
+                machine.failure <- InterpretFailure.TypeMismatch
+                return runtime_void()
+            start: u32 = storage.count.u32()
+            for offset in 0..<instruction.operand_count.usize() |machine, storage, fn, instruction, ids, values|:
+                storage.push(frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + offset], machine))
+            return runtime_map(start, (instruction.operand_count / 2).u32())
+
+
         def evaluate_index(machine: mutable Machine&, storage: darray[RuntimeValue]&, collection: RuntimeValue, index: RuntimeValue) -> RuntimeValue:
+            if collection.kind == RuntimeValueKind.Map:
+                if not runtime_map_range_valid(storage, collection):
+                    machine.failure <- InterpretFailure.IndexOutOfBounds
+                    return runtime_void()
+                for offset in 0..<collection.map_count.usize() |machine, storage, collection, index|:
+                    key: RuntimeValue = storage[collection.map_start.usize() + offset * 2]
+                    return storage[collection.map_start.usize() + offset * 2 + 1] if runtime_values_equal(storage, key, index)
+                machine.failure <- InterpretFailure.IndexOutOfBounds
+                return runtime_void()
             if index.kind != RuntimeValueKind.Int or collection.kind not in {RuntimeValueKind.Array, RuntimeValueKind.Text}:
                 machine.failure <- InterpretFailure.TypeMismatch
                 return runtime_void()
@@ -1077,10 +1115,11 @@ extend EsIr:
 
 
         def evaluate_length(machine: mutable Machine&, collection: RuntimeValue) -> RuntimeValue:
-            if collection.kind not in {RuntimeValueKind.Array, RuntimeValueKind.Text}:
+            if collection.kind not in {RuntimeValueKind.Array, RuntimeValueKind.Map, RuntimeValueKind.Text}:
                 machine.failure <- InterpretFailure.TypeMismatch
                 return runtime_void()
             return runtime_int(sview_len(collection.text).i64()) if collection.kind == RuntimeValueKind.Text
+            return runtime_int(collection.map_count.i64()) if collection.kind == RuntimeValueKind.Map
             return runtime_int(collection.array_count.i64())
 
 
@@ -1121,6 +1160,13 @@ extend EsIr:
                     return runtime_void()
                 for offset in 0..<collection.array_count.usize() |storage, collection, needle|:
                     runtime_bool(true) return if runtime_values_equal(storage, needle, storage[collection.array_start.usize() + offset])
+                return runtime_bool(false)
+            if collection.kind == RuntimeValueKind.Map:
+                if not runtime_map_range_valid(storage, collection):
+                    machine.failure <- InterpretFailure.IndexOutOfBounds
+                    return runtime_void()
+                for offset in 0..<collection.map_count.usize() |storage, collection, needle|:
+                    runtime_bool(true) return if runtime_values_equal(storage, needle, storage[collection.map_start.usize() + offset * 2])
                 return runtime_bool(false)
             machine.failure <- InterpretFailure.TypeMismatch
             return runtime_void()
@@ -2743,6 +2789,24 @@ extend EsIr:
 
 
         def evaluate_set_index(machine: mutable Machine&, storage: mutable darray[RuntimeValue]&, collection: RuntimeValue, index: RuntimeValue, replacement: RuntimeValue) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+            if collection.kind == RuntimeValueKind.Map:
+                if not runtime_map_range_valid(storage, collection):
+                    machine.failure <- InterpretFailure.IndexOutOfBounds
+                    return runtime_void()
+                start: u32 = storage.count.u32()
+                found: mutable bool = false
+                for offset in 0..<collection.map_count.usize() |machine, storage, collection, index, replacement, start, found|:
+                    key: RuntimeValue = storage[collection.map_start.usize() + offset * 2]
+                    old_value: RuntimeValue = storage[collection.map_start.usize() + offset * 2 + 1]
+                    storage.push(key)
+                    storage.push(replacement) if runtime_values_equal(storage, key, index)
+                    storage.push(old_value) if not runtime_values_equal(storage, key, index)
+                    found <- true if runtime_values_equal(storage, key, index)
+                if not found:
+                    storage.push(index)
+                    storage.push(replacement)
+                return runtime_map(start, collection.map_count + 1) if not found
+                return runtime_map(start, collection.map_count)
             if collection.kind != RuntimeValueKind.Array or index.kind != RuntimeValueKind.Int:
                 machine.failure <- InterpretFailure.TypeMismatch
                 return runtime_void()
@@ -2892,6 +2956,10 @@ extend EsIr:
 
                         Dispatch, Opcode.MakeArray:
                             dispatch.value <- evaluate_array(machine, storage, fn, instruction, ids, values)
+                            break
+
+                        Dispatch, Opcode.MakeMap:
+                            dispatch.value <- evaluate_map(machine, storage, fn, instruction, ids, values)
                             break
 
                         Dispatch, Opcode.Index:

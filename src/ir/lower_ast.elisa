@@ -218,6 +218,16 @@ extend EsIr:
                         _:
                             pass
                     return unknown_ir_type()
+                Expr.IndexN(collection, arguments, pos):
+                    match collection:
+                        Expr.Ident(name, collection_pos):
+                            if (name == "dict" or name == "Dict" or name == "map" or name == "Map") and arguments.count == 2:
+                                key_type: Type = type_from_expression(arguments[0])
+                                value_type: Type = type_from_expression(arguments[1])
+                                return map_ir_type(key_type, value_type)
+                        _:
+                            pass
+                    return unknown_ir_type()
                 _:
                     return unknown_ir_type()
 
@@ -233,6 +243,13 @@ extend EsIr:
 
         def array_ir_type(element: Type&) -> Type:
             return Type{kind: TypeKind.Array, element_kind: element.kind, element_name: element.name, element_bits: element.bits, element_element_kind: element.element_kind, element_element_name: element.element_name, element_element_bits: element.element_bits, element_element_signed: element.element_signed, element_signed: element.signed}
+
+
+        # Map types reuse the two descriptor slots already carried by Type: the first
+        # describes the key and the second describes the value. This keeps map identity
+        # fully structural without adding a backend-specific pointer or type table.
+        def map_ir_type(key: Type&, value: Type&) -> Type:
+            return Type{kind: TypeKind.Map, element_kind: key.kind, element_name: key.name, element_bits: key.bits, element_signed: key.signed, element_element_kind: value.kind, element_element_name: value.name, element_element_bits: value.bits, element_element_signed: value.signed}
 
 
         def owned_ir_type(value: Type&) -> Type:
@@ -599,12 +616,55 @@ extend EsIr:
                     state.operand_pool.extend(element_values)
                     state.instructions.push(Instruction{opcode: Opcode.MakeArray, result: result, result_type: result_type, operand_start: operand_start, operand_count: elements.count.u16(), span: ir_span(pos)})
                     return LoweredValue{valid: true, value: result, type: result_type}
+                Expr.DictLit(entries, pos):
+                    if entries.count == 0:
+                        add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "empty dictionary literals require an explicit dict[K, V] type")
+                        return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+                    key_type: mutable Type = unknown_ir_type()
+                    value_type: mutable Type = unknown_ir_type()
+                    valid: mutable bool = true
+                    operands: mutable darray[u32] = []
+                    for index in 0..<entries.count |entries, state, key_type, value_type, valid, operands|:
+                        key: LoweredValue = lower_expression(entries[index].key, state)
+                        value: LoweredValue = lower_expression(entries[index].value, state)
+                        if not key.valid or not value.valid:
+                            valid <- false
+                        else:
+                            key_type <- key.type if index == 0
+                            value_type <- value.type if index == 0
+                            if index > 0 and (not same_type(key_type, key.type) or not same_type(value_type, value.type)):
+                                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "dictionary entries must have one static key and value type")
+                                valid <- false
+                            if key.type.kind in {TypeKind.Array, TypeKind.Map, TypeKind.Function, TypeKind.Block, TypeKind.Void} or value.type.kind in {TypeKind.Array, TypeKind.Map, TypeKind.Function, TypeKind.Block, TypeKind.Void}:
+                                add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "dictionary keys and values must be scalar or nominal values")
+                                valid <- false
+                            operands.push(key.value)
+                            operands.push(value.value)
+                    LoweredValue{valid: false, value: 0, type: unknown_ir_type()} return if not valid
+                    result_type: Type = map_ir_type(key_type, value_type)
+                    result: u32 = fresh_value(state)
+                    operand_start: u32 = state.operand_pool.count.u32()
+                    state.operand_pool.extend(operands)
+                    state.instructions.push(Instruction{opcode: Opcode.MakeMap, result: result, result_type: result_type, operand_start: operand_start, operand_count: operands.count.u16(), span: ir_span(pos)})
+                    return LoweredValue{valid: true, value: result, type: result_type}
                 Expr.Index(collection, index_expression, pos):
                     lowered_collection: LoweredValue = lower_expression(collection, state)
                     lowered_index: LoweredValue = lower_expression(index_expression, state)
                     LoweredValue{valid: false, value: 0, type: unknown_ir_type()} return if not lowered_collection.valid or not lowered_index.valid
+                    if lowered_collection.type.kind == TypeKind.Map:
+                        key_type: Type = map_key_type(lowered_collection.type)
+                        if not same_type(lowered_index.type, key_type):
+                            add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "dictionary index must match its key type")
+                            return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+                        result_type: Type = map_value_type(lowered_collection.type)
+                        operand_start: u32 = state.operand_pool.count.u32()
+                        state.operand_pool.push(lowered_collection.value)
+                        state.operand_pool.push(lowered_index.value)
+                        result: u32 = fresh_value(state)
+                        state.instructions.push(Instruction{opcode: Opcode.Index, result: result, result_type: result_type, operand_start: operand_start, operand_count: 2, span: ir_span(pos)})
+                        return LoweredValue{valid: true, value: result, type: result_type}
                     if lowered_collection.type.kind != TypeKind.Array and lowered_collection.type.kind != TypeKind.Text:
-                        add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "index lowering requires an array or text value")
+                        add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "index lowering requires an array, dictionary, or text value")
                         return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
                     if lowered_index.type.kind != TypeKind.Int:
                         add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "collection index must have an integer type")
@@ -653,8 +713,8 @@ extend EsIr:
                 Expr.Field(collection, field, pos):
                     lowered_collection: LoweredValue = lower_expression(collection, state)
                     LoweredValue{valid: false, value: 0, type: unknown_ir_type()} return if not lowered_collection.valid
-                    if field != "count" or lowered_collection.type.kind not in {TypeKind.Array, TypeKind.Text}:
-                        add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "field lowering supports array.count and text.count")
+                    if field != "count" or lowered_collection.type.kind not in {TypeKind.Array, TypeKind.Map, TypeKind.Text}:
+                        add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "field lowering supports array.count, dictionary.count, and text.count")
                         return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
                     result_type: Type = type_from_name("usize")
                     operand_start: u32 = state.operand_pool.count.u32()
@@ -749,11 +809,11 @@ extend EsIr:
                     lowered_right: LoweredValue = lower_expression(right, state)
                     LoweredValue{valid: false, value: 0, type: unknown_ir_type()} return if not lowered_left.valid or not lowered_right.valid
                     if operator == TokenKind.In:
-                        if lowered_right.type.kind not in {TypeKind.Array, TypeKind.Text}:
-                            add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "membership right operand must be an array or text value")
+                        if lowered_right.type.kind not in {TypeKind.Array, TypeKind.Map, TypeKind.Text}:
+                            add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "membership right operand must be an array, dictionary, or text value")
                             return LoweredValue{valid: false, value: 0, type: type_from_name("bool")}
-                        element_type: Type = array_element_type(lowered_right.type)
-                        valid_needle: bool = same_type(lowered_left.type, element_type) if lowered_right.type.kind == TypeKind.Array else lowered_left.type.kind in {TypeKind.Char, TypeKind.Text}
+                        element_type: Type = map_key_type(lowered_right.type) if lowered_right.type.kind == TypeKind.Map else array_element_type(lowered_right.type)
+                        valid_needle: bool = same_type(lowered_left.type, element_type) if lowered_right.type.kind in {TypeKind.Array, TypeKind.Map} else lowered_left.type.kind in {TypeKind.Char, TypeKind.Text}
                         if not valid_needle:
                             add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "membership needle type does not match the collection element type")
                             return LoweredValue{valid: false, value: 0, type: type_from_name("bool")}
@@ -1605,6 +1665,12 @@ extend EsIr:
                         result_type: Type = owned_ir_type(expected)
                         state.instructions.push(Instruction{opcode: Opcode.MakeArray, result: result, result_type: result_type, operand_start: state.operand_pool.count.u32(), operand_count: 0, span: ir_span(pos)})
                         return LoweredValue{valid: true, value: result, type: result_type}
+                Expr.DictLit(entries, pos):
+                    if entries.count == 0 and expected.kind == TypeKind.Map:
+                        result: u32 = fresh_value(state)
+                        result_type: Type = owned_ir_type(expected)
+                        state.instructions.push(Instruction{opcode: Opcode.MakeMap, result: result, result_type: result_type, operand_start: state.operand_pool.count.u32(), operand_count: 0, span: ir_span(pos)})
+                        return LoweredValue{valid: true, value: result, type: result_type}
                 _:
                     pass
             return lower_expression(expression, state)
@@ -2159,13 +2225,14 @@ extend EsIr:
                             add_issue(state, LowerIssueKind.ImmutableBinding, pos.line, "indexed assignment requires a mutable array binding")
                         elif not supported_assignment_operator(operator):
                             add_issue(state, LowerIssueKind.UnsupportedAssignmentTarget, pos.line, "indexed assignment supports <- and typed arithmetic or bitwise compound assignment")
-                        elif state.types[index].kind != TypeKind.Array:
-                            add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "indexed assignment requires an array binding")
+                        elif state.types[index].kind != TypeKind.Array and state.types[index].kind != TypeKind.Map:
+                            add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "indexed assignment requires an array or dictionary binding")
                         else:
                             lowered_index: LoweredValue = lower_expression(index_expression, state)
-                            element_type: Type = array_element_type(state.types[index])
-                            if lowered_index.valid and lowered_index.type.kind != TypeKind.Int:
-                                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "indexed assignment index must be an integer")
+                            element_type: Type = map_value_type(state.types[index]) if state.types[index].kind == TypeKind.Map else array_element_type(state.types[index])
+                            index_type: Type = map_key_type(state.types[index]) if state.types[index].kind == TypeKind.Map else type_from_name("i64")
+                            if lowered_index.valid and ((state.types[index].kind == TypeKind.Map and not same_type(lowered_index.type, index_type)) or (state.types[index].kind == TypeKind.Array and lowered_index.type.kind != TypeKind.Int)):
+                                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "indexed assignment index must match the collection index type")
                             elif lowered_index.valid:
                                 replacement: mutable LoweredValue = LoweredValue{value: 0, type: void_ir_type(), valid: false}
                                 if operator == TokenKind.LArrow:

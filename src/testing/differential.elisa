@@ -29,6 +29,7 @@ module EsDifferential:
             Int
             Float
             Array
+            Map
             Text
             ProcessCapture
 
@@ -42,6 +43,8 @@ module EsDifferential:
             process_stderr: sview = ""
             array_start: u32 = 0
             array_count: u32 = 0
+            map_start: u32 = 0
+            map_count: u32 = 0
             kind: DifferentialValueKind
             boolean: bool = false
 
@@ -77,6 +80,12 @@ module EsDifferential:
             return DifferentialValue{kind: DifferentialValueKind.Array, array_start: start, array_count: values.count.u32()}
 
 
+        def differential_map_value(storage: mutable darray[DifferentialValue]&, keys_and_values: darray[DifferentialValue]) -> DifferentialValue can[Memory.Allocate, Abort.Panic]:
+            start: u32 = storage.count.u32()
+            storage.extend(keys_and_values)
+            return DifferentialValue{kind: DifferentialValueKind.Map, map_start: start, map_count: (keys_and_values.count / 2).u32()}
+
+
         # Convert an interpreter observation into the owned comparison value. Array
         # elements are copied recursively so a comparison never depends on the
         # interpreter's transient flat runtime storage.
@@ -104,6 +113,17 @@ module EsDifferential:
                     for offset in 0..<value.array_count.usize() |storage, value, values, start|:
                         values[start.usize() + offset] <- try differential_value_from_runtime(storage, storage[value.array_start.usize() + offset], values)
                     return DifferentialValue{kind: DifferentialValueKind.Array, array_start: start, array_count: value.array_count}
+                EsIr::RuntimeValueKind.Map:
+                    raise DifferentialRunnerError.Invalid if not EsIr::runtime_map_range_valid(storage, value)
+                    start: u32 = values.count.u32()
+                    pair_count: usize = value.map_count.usize() * 2
+                    for offset in 0..<pair_count |values|:
+                        values.push(DifferentialValue{kind: DifferentialValueKind.Void})
+                    for offset in 0..<value.map_count.usize() |storage, value, values, start|:
+                        key_offset: usize = offset * 2
+                        values[start.usize() + key_offset] <- try differential_value_from_runtime(storage, storage[value.map_start.usize() + key_offset], values)
+                        values[start.usize() + key_offset + 1] <- try differential_value_from_runtime(storage, storage[value.map_start.usize() + key_offset + 1], values)
+                    return DifferentialValue{kind: DifferentialValueKind.Map, map_start: start, map_count: value.map_count}
 
 
         def append_differential_observations_from_runtime(storage: darray[EsIr::RuntimeValue]&, observations: darray[EsIr::Observation], values: mutable darray[DifferentialValue]&, converted: mutable darray[DifferentialObservation]&) -> void error[DifferentialRunnerError] can[Memory.Allocate, Abort.Panic]:
@@ -596,6 +616,7 @@ module EsDifferential:
             Scalar
             ArrayValidate
             ArrayPush
+            MapValidate
             Done
 
 
@@ -624,9 +645,17 @@ module EsDifferential:
                 Compare, DifferentialValueEqualState.Select if cursor.pending.count == 0:
                     cursor.state <- DifferentialValueEqualState.Done
                     -> Compare
+                Compare, DifferentialValueEqualState.Select if cursor.pending[cursor.pending.count - 1].left.kind == DifferentialValueKind.Array:
+                    cursor.current <- cursor.pending.pop()
+                    cursor.state <- DifferentialValueEqualState.ArrayValidate
+                    -> Compare
+                Compare, DifferentialValueEqualState.Select if cursor.pending[cursor.pending.count - 1].left.kind == DifferentialValueKind.Map:
+                    cursor.current <- cursor.pending.pop()
+                    cursor.state <- DifferentialValueEqualState.MapValidate
+                    -> Compare
                 Compare, DifferentialValueEqualState.Select:
                     cursor.current <- cursor.pending.pop()
-                    cursor.state <- DifferentialValueEqualState.ArrayValidate if cursor.current.left.kind == DifferentialValueKind.Array else DifferentialValueEqualState.Scalar
+                    cursor.state <- DifferentialValueEqualState.Scalar
                     -> Compare
 
                 Compare, DifferentialValueEqualState.Scalar if cursor.current.left.kind != cursor.current.right.kind:
@@ -686,10 +715,39 @@ module EsDifferential:
                     cursor.index <- cursor.index + 1
                     -> Compare
 
+                Compare, DifferentialValueEqualState.MapValidate:
+                    cursor.equal <- differential_map_values_equal(left_storage, cursor.current.left, right_storage, cursor.current.right)
+                    cursor.state <- DifferentialValueEqualState.Select if cursor.equal else DifferentialValueEqualState.Done
+                    -> Compare
+
                 Compare, DifferentialValueEqualState.Done:
                     break
 
             return cursor.equal
+
+
+        # Map snapshots use the same order-insensitive key/value semantics as the
+        # interpreter.  A key/value pair is considered present when both members
+        # compare equal; duplicate entries therefore remain deterministic data.
+        def differential_map_values_equal(left_storage: darray[DifferentialValue]&, left: DifferentialValue, right_storage: darray[DifferentialValue]&, right: DifferentialValue) -> bool can[Memory.Allocate, Abort.Panic]:
+            false return if left.kind != DifferentialValueKind.Map or right.kind != DifferentialValueKind.Map
+            false return if left.map_count != right.map_count
+            left_start: usize = left.map_start.usize()
+            right_start: usize = right.map_start.usize()
+            false return if left_start > left_storage.count or right_start > right_storage.count
+            false return if left.map_count.usize() > (left_storage.count - left_start) / 2 or right.map_count.usize() > (right_storage.count - right_start) / 2
+            for left_offset in 0..<left.map_count.usize() |left_storage, right_storage, left, right|:
+                left_pair: usize = left.map_start.usize() + left_offset * 2
+                left_key: DifferentialValue = left_storage[left_pair]
+                left_value: DifferentialValue = left_storage[left_pair + 1]
+                found: mutable bool = false
+                for right_offset in 0..<right.map_count.usize() |left_storage, right_storage, right, left_key, left_value, found|:
+                    right_pair: usize = right.map_start.usize() + right_offset * 2
+                    right_key: DifferentialValue = right_storage[right_pair]
+                    right_value: DifferentialValue = right_storage[right_pair + 1]
+                    found <- true if differential_values_equal(left_storage, left_key, right_storage, right_key) and differential_values_equal(left_storage, left_value, right_storage, right_value)
+                false return if not found
+            return true
 
 
         def differential_comparison(kind: DifferentialDifferenceKind, index: u32, reason: sview) -> DifferentialComparison:

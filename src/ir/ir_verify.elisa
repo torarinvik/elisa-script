@@ -91,6 +91,14 @@ extend EsIr:
             return Type{kind: array_type.element_kind, name: array_type.element_name, bits: array_type.element_bits, signed: array_type.element_signed, element_kind: array_type.element_element_kind, element_name: array_type.element_element_name, element_bits: array_type.element_element_bits, element_signed: array_type.element_element_signed}
 
 
+        def map_key_type(map_type: Type&) -> Type:
+            return Type{kind: map_type.element_kind, name: map_type.element_name, bits: map_type.element_bits, signed: map_type.element_signed}
+
+
+        def map_value_type(map_type: Type&) -> Type:
+            return Type{kind: map_type.element_element_kind, name: map_type.element_element_name, bits: map_type.element_element_bits, signed: map_type.element_element_signed}
+
+
         def numeric_type(value: Type&) -> bool:
             return value.kind == TypeKind.Int or value.kind == TypeKind.Float
 
@@ -100,7 +108,7 @@ extend EsIr:
 
 
         def equality_type(value: Type&) -> bool:
-            return value.kind in {TypeKind.Bool, TypeKind.Int, TypeKind.Float, TypeKind.Char, TypeKind.Text, TypeKind.Array} or text_backed_named_type(value)
+            return value.kind in {TypeKind.Bool, TypeKind.Int, TypeKind.Float, TypeKind.Char, TypeKind.Text, TypeKind.Array, TypeKind.Map} or text_backed_named_type(value)
 
 
         def verify_edge(fn: Function&, source: Block&, target_id: u32, argument_start: u32, argument_count: u16, defined: darray[u32]&, definition_blocks: darray[u32]&, definition_types: darray[Type]&, issues: mutable darray[Issue]&) -> void can[Memory.Allocate, Abort.Panic]:
@@ -257,8 +265,11 @@ extend EsIr:
                         collection_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize()])
                         index_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize() + 1])
                         value_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize() + 2])
-                        element_type: Type = array_element_type(collection_type)
-                        issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "indexed update requires an array, integer index, exact element value, and unchanged array result type")) if collection_type.kind != TypeKind.Array or index_type.kind != TypeKind.Int or not same_type(value_type, element_type) or not same_type(instruction.result_type, collection_type)
+                        element_type: Type = map_value_type(collection_type) if collection_type.kind == TypeKind.Map else array_element_type(collection_type)
+                        map_key: Type = map_key_type(collection_type)
+                        map_update_valid: bool = collection_type.kind == TypeKind.Map and same_type(index_type, map_key) and same_type(value_type, element_type)
+                        array_update_valid: bool = collection_type.kind == TypeKind.Array and index_type.kind == TypeKind.Int and same_type(value_type, element_type)
+                        issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "indexed update requires an array or dictionary, matching index/value types, and unchanged collection result type")) if not map_update_valid and not array_update_valid or not same_type(instruction.result_type, collection_type)
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "array construction must produce an array type")) if instruction.opcode == Opcode.MakeArray and instruction.result_type.kind != TypeKind.Array
                     if instruction.opcode == Opcode.MakeArray and instruction.result_type.kind == TypeKind.Array:
                         element_type: Type = array_element_type(instruction.result_type)
@@ -267,18 +278,29 @@ extend EsIr:
                             if has_u32(defined, operand):
                                 actual: Type = definition_type(defined, definition_types, operand)
                                 issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "array element type does not match the array element type")) if not same_type(actual, element_type)
+                    issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "dictionary construction must produce a map type and an even key/value operand count")) if instruction.opcode == Opcode.MakeMap and (instruction.result_type.kind != TypeKind.Map or instruction.operand_count % 2 != 0)
+                    if instruction.opcode == Opcode.MakeMap and instruction.result_type.kind == TypeKind.Map:
+                        key_type: Type = map_key_type(instruction.result_type)
+                        value_type: Type = map_value_type(instruction.result_type)
+                        for operand_index in instruction.operand_start.usize()..<safe_end |fn, defined, definition_types, issues, instruction, block, key_type, value_type|:
+                            operand: u32 = fn.operand_pool[operand_index]
+                            if has_u32(defined, operand):
+                                actual: Type = definition_type(defined, definition_types, operand)
+                                expected: Type = key_type if (operand_index - instruction.operand_start.usize()) % 2 == 0 else value_type
+                                issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "dictionary key/value type does not match the map type")) if not same_type(actual, expected)
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "index requires a collection and integer index")) if instruction.opcode == Opcode.Index and instruction.operand_count != 2
                     if instruction.opcode == Opcode.Index and instruction.operand_count == 2 and operand_end <= fn.operand_pool.count:
                         collection_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize()])
                         index_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize() + 1])
-                        element_type: Type = Type{kind: TypeKind.Char, bits: 8} if collection_type.kind == TypeKind.Text else array_element_type(collection_type)
-                        issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "index first operand must be an array or text")) if collection_type.kind not in {TypeKind.Array, TypeKind.Text}
-                        issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "collection index must be an integer")) if index_type.kind != TypeKind.Int
-                        issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "index result type must match the collection element type")) if collection_type.kind in {TypeKind.Array, TypeKind.Text} and not same_type(instruction.result_type, element_type)
+                        element_type: Type = Type{kind: TypeKind.Char, bits: 8} if collection_type.kind == TypeKind.Text else map_value_type(collection_type) if collection_type.kind == TypeKind.Map else array_element_type(collection_type)
+                        issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "index first operand must be an array, dictionary, or text")) if collection_type.kind not in {TypeKind.Array, TypeKind.Map, TypeKind.Text}
+                        map_key: Type = map_key_type(collection_type)
+                        issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "collection index must match the dictionary key type or be an integer")) if collection_type.kind == TypeKind.Map and not same_type(index_type, map_key) or collection_type.kind in {TypeKind.Array, TypeKind.Text} and index_type.kind != TypeKind.Int
+                        issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "index result type must match the collection element type")) if collection_type.kind in {TypeKind.Array, TypeKind.Map, TypeKind.Text} and not same_type(instruction.result_type, element_type)
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "length requires exactly one collection operand")) if instruction.opcode == Opcode.Length and instruction.operand_count != 1
                     if instruction.opcode == Opcode.Length and instruction.operand_count == 1 and operand_end <= fn.operand_pool.count:
                         collection_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize()])
-                        issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "length operand must be an array or text")) if collection_type.kind not in {TypeKind.Array, TypeKind.Text}
+                        issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "length operand must be an array, dictionary, or text")) if collection_type.kind not in {TypeKind.Array, TypeKind.Map, TypeKind.Text}
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "length result must be an integer")) if instruction.result_type.kind != TypeKind.Int
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "slice requires a collection and two bounds")) if instruction.opcode == Opcode.Slice and instruction.operand_count != 3
                     if instruction.opcode == Opcode.Slice and instruction.operand_count == 3 and operand_end <= fn.operand_pool.count:
@@ -292,11 +314,11 @@ extend EsIr:
                     if instruction.opcode == Opcode.Contains and instruction.operand_count == 2 and operand_end <= fn.operand_pool.count:
                         needle_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize()])
                         collection_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize() + 1])
-                        collection_valid: bool = collection_type.kind in {TypeKind.Array, TypeKind.Text}
-                        element_type: Type = array_element_type(collection_type)
-                        needle_valid: bool = same_type(needle_type, element_type) if collection_type.kind == TypeKind.Array else needle_type.kind in {TypeKind.Char, TypeKind.Text}
-                        issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "contains collection must be an array or text")) if not collection_valid
-                        issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "contains needle must match the collection element type")) if collection_valid and not needle_valid
+                        collection_valid: bool = collection_type.kind in {TypeKind.Array, TypeKind.Map, TypeKind.Text}
+                        element_type: Type = map_key_type(collection_type) if collection_type.kind == TypeKind.Map else array_element_type(collection_type)
+                        needle_valid: bool = same_type(needle_type, element_type) if collection_type.kind in {TypeKind.Array, TypeKind.Map} else needle_type.kind in {TypeKind.Char, TypeKind.Text}
+                        issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "contains collection must be an array, dictionary, or text")) if not collection_valid
+                        issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "contains needle must match the collection element or dictionary key type")) if collection_valid and not needle_valid
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "contains result must be boolean")) if instruction.result_type.kind != TypeKind.Bool
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "regex search requires text and pattern operands")) if instruction.opcode == Opcode.RegexSearch and instruction.operand_count != 2
                     if instruction.opcode == Opcode.RegexSearch and instruction.operand_count == 2 and operand_end <= fn.operand_pool.count:

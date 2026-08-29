@@ -209,6 +209,17 @@ replacement bytes into fresh storage, and advances after zero-width matches so a
 empty pattern cannot loop forever. Capture groups and replacement interpolation are
 reserved until recursive regex match values are defined.
 
+`Map` is the closed aggregate counterpart to `Array`. Its `Type` descriptor carries
+one exact key type and one exact value type; `MakeMap` consumes an even key/value
+operand sequence and produces the corresponding map. `Index`, `Contains`, `Length`,
+and `SetIndex` accept maps with typed key/value contracts. Runtime map payloads are
+interleaved key/value pairs in caller-owned flat storage and validate their complete
+pair range before access. Missing keys use the existing typed
+`IndexOutOfBounds` error rather than a sentinel value. The reference interpreter and
+the bytecode facade share this representation; the direct packed eligibility gate
+currently routes map-bearing modules through the verified interpreter oracle while
+the packed map instruction family is completed.
+
 The AST-to-IR boundary reports the same mistakes as structured `TypeMismatch`
 lowering issues, before a backend sees the module. This covers declared binding
 initializers, mutation without type changes, unary and binary operators, boolean

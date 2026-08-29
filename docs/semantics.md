@@ -112,6 +112,26 @@ empty text for an empty array. `join(split(text, separator), separator)` therefo
 round-trips text under the explicit-separator rules. Like `split`, a source-defined
 function with the same name takes precedence.
 
+## Typed dictionaries
+
+Dictionary literals use Elisa's brace syntax and a two-parameter type application:
+
+```elisa
+counts: dict[sview, i64] = {"ok": 2, "failed": 1}
+total: i64 = counts["ok"]
+has_ok: bool = "ok" in counts
+```
+
+Every key has one exact static type and every value has one exact static type; no
+implicit conversions or heterogeneous entries are accepted. `dict[K, V]` is also
+spelled `map[K, V]`. `.count` returns the number of entries, membership checks
+keys, and an indexed read of a missing key raises `InterpretError.IndexOutOfBounds`
+through the ordinary `error[...]` channel. Indexed assignment is immutable-update
+semantics at the IR boundary: a mutable binding receives a fresh map, replacing an
+existing key or inserting a new one. The reference runtime stores interleaved
+key/value pairs in caller-owned flat storage, so differential observations remain
+deterministic and allocation ownership is explicit.
+
 ## Numeric text conversion
 
 `parse_int(text) -> i64 error[ParseError]` accepts an optional leading `+` or `-`
