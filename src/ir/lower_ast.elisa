@@ -261,6 +261,14 @@ extend EsIr:
                             if name == "array" or name == "Array" or name == "darray":
                                 element_type: Type = type_from_expression(element_expression)
                                 return array_ir_type(element_type)
+                            if name == "set" or name == "Set":
+                                # The first IR keeps set payloads in the existing
+                                # deterministic map storage: each element is a key
+                                # with a canonical `true` marker value. Source
+                                # semantics still distinguish `set[T]` from maps.
+                                element_type: mutable Type = type_from_expression(element_expression)
+                                marker_type: mutable Type = type_from_name("bool")
+                                return map_ir_type(element_type, marker_type)
                         _:
                             pass
                     return unknown_ir_type()
@@ -391,7 +399,7 @@ extend EsIr:
                 return annotation.name if annotation.owner == "__comprehension_kind" and annotation.line == pos.line
             # Hand-built ASTs from older clients have no parser side-table marker; retain
             # their historical array interpretation while parsed set/map/query forms carry
-            # an explicit kind and are rejected by the initial array-only lowering.
+            # an explicit kind.
             return "array"
 
 
@@ -935,6 +943,17 @@ extend EsIr:
             state.types.truncate(accumulator_index)
             state.mutables.truncate(accumulator_index)
             return result
+
+
+        # Set comprehensions reuse the map loop with a canonical `true` marker for
+        # every projected element. The source semantic layer still enforces set
+        # element rules; the IR representation preserves deterministic key order
+        # and membership/count behavior without introducing a second hash table.
+        def lower_set_comprehension(variable: sview, iterable: Ast::Expr, condition: Ast::Expr, body: Ast::Expr, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+            marker: Ast::Expr = Expr.BoolLit(true)
+            tuple_pos: Ast::Pos = Ast::Pos{line: pos.line, column: pos.column, offset: pos.offset, end_line: pos.end_line, end_column: pos.end_column, end_offset: pos.end_offset}
+            pair: Ast::Expr = Expr.Tuple([body, marker], tuple_pos)
+            return lower_map_comprehension(variable, iterable, condition, pair, pos, state)
 
 
         # Dict comprehensions use the same loop-carried state machine as list
@@ -2058,7 +2077,38 @@ extend EsIr:
                     state.operand_pool.extend(element_values)
                     state.instructions.push(Instruction{opcode: Opcode.MakeArray, result: result, result_type: result_type, operand_start: operand_start, operand_count: elements.count.u16(), span: ir_span(pos)})
                     return LoweredValue{valid: true, value: result, type: result_type}
+                Expr.SetLit(elements, pos):
+                    if elements.count == 0:
+                        add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "empty set literals require an explicit set[T] type")
+                        return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+                    element_type: mutable Type = unknown_ir_type()
+                    valid: mutable bool = true
+                    operands: mutable darray[u32] = []
+                    marker_type: Type = type_from_name("bool")
+                    for index in 0..<elements.count |elements, state, element_type, valid, operands|:
+                        element: LoweredValue = lower_expression(elements[index], state)
+                        if not element.valid:
+                            valid <- false
+                        else:
+                            element_type <- element.type if index == 0
+                            if index > 0 and not same_type(element_type, element.type):
+                                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "set literal elements must have one static type")
+                                valid <- false
+                            if element.type.kind in {TypeKind.Array, TypeKind.Map, TypeKind.Function, TypeKind.Block, TypeKind.Void}:
+                                add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "set elements must be scalar or nominal values")
+                                valid <- false
+                            marker: LoweredValue = emit_constant(state, marker_type, 0, "", "", true, ir_span(pos))
+                            operands.push(element.value)
+                            operands.push(marker.value)
+                    LoweredValue{valid: false, value: 0, type: unknown_ir_type()} return if not valid
+                    result_type: Type = map_ir_type(element_type, marker_type)
+                    result: u32 = fresh_value(state)
+                    operand_start: u32 = state.operand_pool.count.u32()
+                    state.operand_pool.extend(operands)
+                    state.instructions.push(Instruction{opcode: Opcode.MakeMap, result: result, result_type: result_type, operand_start: operand_start, operand_count: operands.count.u16(), span: ir_span(pos)})
+                    return LoweredValue{valid: true, value: result, type: result_type}
                 Expr.Comprehension(variable, iterable, condition, body, pos):
+                    return lower_set_comprehension(variable, iterable, condition, body, pos, state) if comprehension_kind(state, pos) == "set"
                     return lower_map_comprehension(variable, iterable, condition, body, pos, state) if comprehension_kind(state, pos) == "map"
                     return lower_integer_fold_comprehension(comprehension_query_kind(state, pos), variable, iterable, condition, body, pos, state) if comprehension_kind(state, pos) == "query" and (comprehension_query_kind(state, pos) == "count" or comprehension_query_kind(state, pos) == "sum" or comprehension_query_kind(state, pos) == "product")
                     return lower_query_comprehension(variable, iterable, condition, body, pos, state) if comprehension_kind(state, pos) == "query" and comprehension_query_kind(state, pos) != "each"

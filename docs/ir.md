@@ -706,9 +706,11 @@ Two-binder dictionary folds count entries or fold the value binder, respectively
 These folds and boolean quantifiers accept integer ranges through the same
 counter-driven header/latch states, so no range collection is created. Boolean
 quantifiers also accept two-binder dictionary iterables by snapshotting `MapKeys`
-and looking up each value in the body state. It deliberately declines set
-comprehensions, query forms with more than two binders, and non-straight-line
-query predicates rather than lowering them with guessed semantics.
+and looking up each value in the body state. Set literals and single-binder set
+comprehensions use the same verified map storage with a canonical boolean marker;
+indexed set access and set mutation remain outside this initial IR subset. Query
+forms with more than two binders and non-straight-line query predicates remain
+explicitly rejected rather than lowered with guessed semantics.
 
 Elisa value blocks lower their leading statements in a lexical binding scope and
 then yield the tail expression. This makes the idiomatic multiline `return if ...:`
