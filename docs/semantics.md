@@ -81,14 +81,15 @@ tests observe identical behavior on every backend. Search is unanchored unless `
 is present. Top-level `|` alternation evaluates branches from left to right, with
 `^` and `$` scoped to the branch in which they occur; escaped pipes and pipes inside
 character classes remain literal members. Parenthesized groups may nest and
-participate in alternation and greedy quantifiers, but are matching-only groups:
-captures are not exposed. Group-local `^` and `$` retain their ordinary whole-text
-meaning. `replace_regex(text, pattern, replacement) -> sview`
+participate in alternation and greedy quantifiers. Group-local `^` and `$` retain
+their ordinary whole-text meaning. `replace_regex(text, pattern, replacement) -> sview`
 provides deterministic substitution for this grammar: it finds non-overlapping
 matches from left to right and inserts the replacement text, expanding the portable
-`$0` token to the complete matched span. Empty matches advance one input byte (while
-retaining that byte) so replacement always terminates; other `$n` forms, including
-`$1`, remain literal until capture values are defined.
+`$0` token to the complete matched span. `$1` through `$9` expand for flat,
+non-quantified capture groups when their spans
+can be proven against the complete match (for example, `([a-z]+)=([0-9]+)`).
+Nested, quantified, or top-level-alternating capture layouts remain literal rather
+than selecting an ambiguous branch; unknown or unproven `$n` forms stay literal.
 
 `split_regex(text, pattern) -> darray[sview]` uses the same matcher for
 Perl/AWK-style field boundaries. It preserves empty fields before, between, and
