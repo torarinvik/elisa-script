@@ -123,7 +123,10 @@ The following features belong to later, explicitly designed changes:
 - Source handler declarations, operation clauses, and explicit `resume` expressions
 - Multiline/raw typed literals
 - Script-level dependency declarations if decorators are insufficient
-- CLI derivation rules for `@command`
+
+The launcher does not depend on deferred `@command` derivation: the current
+driver uses the explicit `main(arguments: darray[sview]) -> i64` program ABI and
+the typed `parse_elisascript_cli` boundary described in the semantics guide.
 
 ## Verification
 

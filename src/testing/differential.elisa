@@ -52,6 +52,14 @@ module EsDifferential:
             value: DifferentialValue
 
 
+        # Environment overrides are kept as an ordered list rather than a runtime
+        # dictionary: native adapters must preserve duplicate-key validation and
+        # do not require a host map representation for text keys.
+        struct DifferentialEnvironmentEntry:
+            name: sview
+            value: sview
+
+
         struct DifferentialRun:
             exit_status: mutable i64 = 0
             error_text: sview = ""
@@ -180,6 +188,7 @@ module EsDifferential:
             entry: sview = ""
             arguments: darray[sview]
             working_directory: sview = ""
+            environment: darray[DifferentialEnvironmentEntry] = []
             stdin: sview = ""
             protocol: sview = ""
             timeout_steps: u64 = 1
@@ -209,6 +218,7 @@ module EsDifferential:
             Entry
             Arguments
             WorkingDirectory
+            Environment
             Timeout
             Done
 
@@ -227,6 +237,7 @@ module EsDifferential:
             entry: sview = ""
             arguments: darray[sview]
             working_directory: sview = ""
+            environment: darray[DifferentialEnvironmentEntry] = []
             stdin: sview = ""
             protocol: sview = ""
             timeout_steps: u64 = 1
@@ -275,6 +286,15 @@ module EsDifferential:
 
         def differential_runner_needs_entry(kind: DifferentialRunnerKind) -> bool:
             return kind == DifferentialRunnerKind.ElisascriptFile or kind == DifferentialRunnerKind.PythonAdapter or kind == DifferentialRunnerKind.CAbiFunction or kind == DifferentialRunnerKind.WasmModule or kind == DifferentialRunnerKind.Service
+
+
+        def differential_environment_valid(environment: darray[DifferentialEnvironmentEntry]) -> bool:
+            for index in 0..<environment.count |environment|:
+                entry: DifferentialEnvironmentEntry = environment[index]
+                false return if entry.name == "" or differential_sview_has_nul(entry.name) or differential_sview_has_nul(entry.value)
+                for prior in 0..<index |environment, entry|:
+                    false return if environment[prior].name == entry.name
+            return true
 
 
         # Validate the complete runner contract before an adapter is allowed to
@@ -345,6 +365,16 @@ module EsDifferential:
                     cursor.result.reason <- "runner working directory contains NUL"
                     -> Validate
                 Validate, DifferentialRunnerCheckState.WorkingDirectory:
+                    cursor.state <- DifferentialRunnerCheckState.Environment
+                    -> Validate
+
+                Validate, DifferentialRunnerCheckState.Environment if not differential_environment_valid(runner.environment):
+                    cursor.result.valid <- false
+                    cursor.result.issue <- DifferentialRunnerIssueKind.EmbeddedNul
+                    cursor.result.reason <- "runner environment contains an empty or NUL value"
+                    cursor.state <- DifferentialRunnerCheckState.Done
+                    -> Validate
+                Validate, DifferentialRunnerCheckState.Environment:
                     cursor.state <- DifferentialRunnerCheckState.Timeout
                     -> Validate
 
@@ -393,7 +423,7 @@ module EsDifferential:
                     break
 
             entry: sview = runner.entry if runner.kind == DifferentialRunnerKind.PythonAdapter else ""
-            return DifferentialProcessInvocation{executable: runner.target, entry: entry, arguments: runner.arguments, working_directory: runner.working_directory, stdin: runner.stdin, protocol: runner.protocol, timeout_steps: runner.timeout_steps}
+            return DifferentialProcessInvocation{executable: runner.target, entry: entry, arguments: runner.arguments, working_directory: runner.working_directory, environment: runner.environment, stdin: runner.stdin, protocol: runner.protocol, timeout_steps: runner.timeout_steps}
 
 
         def differential_cstring(value: sview) -> dstr can[Memory.Allocate, Abort.Panic]:
@@ -443,6 +473,11 @@ module EsDifferential:
             raise DifferentialRunnerError.Invalid if invocation.executable == "" or differential_sview_has_nul(invocation.executable) or differential_sview_has_nul(invocation.entry) or differential_sview_has_nul(invocation.working_directory) or invocation.timeout_steps == 0
             for argument in invocation.arguments:
                 raise DifferentialRunnerError.Invalid if differential_sview_has_nul(argument)
+            for entry in invocation.environment:
+                raise DifferentialRunnerError.Invalid if entry.name == "" or differential_sview_has_nul(entry.name) or differential_sview_has_nul(entry.value)
+            for index in 0..<invocation.environment.count |invocation|:
+                for prior in 0..<index |invocation|:
+                    raise DifferentialRunnerError.Invalid if invocation.environment[prior].name == invocation.environment[index].name
 
             executable_bytes: dstr = differential_cstring(invocation.executable)
             if executable_bytes.items == null:
@@ -450,8 +485,12 @@ module EsDifferential:
             executable_items: u8& = executable_bytes.items
             owned_arguments: mutable darray[dstr] = []
             argv: mutable darray[cstr] = []
+            owned_environment_names: mutable darray[dstr] = []
+            owned_environment_values: mutable darray[dstr] = []
             owned_arguments.reserve(invocation.arguments.count + 1)
             argv.reserve(invocation.arguments.count + 3)
+            owned_environment_names.reserve(invocation.environment.count)
+            owned_environment_values.reserve(invocation.environment.count)
             argv.push(executable_items.cast[cstr])
             if invocation.entry != "":
                 entry_bytes: dstr = differential_cstring(invocation.entry)
@@ -471,6 +510,13 @@ module EsDifferential:
                 if argument_items == null:
                     raise DifferentialRunnerError.Process
                 argv.push(argument_items.cast[cstr])
+            for entry in invocation.environment |owned_environment_names, owned_environment_values|:
+                name_bytes: dstr = differential_cstring(entry.name)
+                value_bytes: dstr = differential_cstring(entry.value)
+                if name_bytes.items == null or value_bytes.items == null:
+                    raise DifferentialRunnerError.Process
+                owned_environment_names.push(name_bytes)
+                owned_environment_values.push(value_bytes)
             argv.push(executable_items.cast[cstr])
             terminator: mutable void& = (&argv[argv.count - 1]).cast[mutable void&] can Unsafe.PointerCast
             _ = memset(terminator, 0, 8)
@@ -529,6 +575,15 @@ module EsDifferential:
                     if invocation.working_directory != "":
                         working_directory_bytes: dstr = differential_cstring(invocation.working_directory)
                         elisascript_posix_exit(126) if working_directory_bytes.items == null or elisascript_posix_chdir(working_directory_bytes.items.cast[cstr]) != 0
+                    for offset in 0..<owned_environment_names.count |owned_environment_names, owned_environment_values|:
+                        name_storage: mutable u8&? = owned_environment_names[offset].items
+                        value_storage: mutable u8&? = owned_environment_values[offset].items
+                        if name_storage == null or value_storage == null:
+                            elisascript_posix_exit(126)
+                        else:
+                            name_items: mutable u8& = name_storage
+                            value_items: mutable u8& = value_storage
+                            elisascript_posix_exit(126) if elisascript_posix_setenv(name_items.cast[cstr], value_items.cast[cstr], 1) != 0
                     _ = elisascript_posix_execvp(executable_items.cast[cstr], argv_items)
                     elisascript_posix_exit(127)
                     return DifferentialRun{observations: []}

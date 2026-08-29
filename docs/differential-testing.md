@@ -53,8 +53,9 @@ layered on top without weakening the baseline comparator.
 
 The executable contract is `EsDifferential.DifferentialRunner`. It is a typed
 specification, not a command-string escape hatch: the target executable, optional entry point,
-working directory, stdin, protocol, timeout, required effects, and required errors
-are separate fields, while process arguments remain a `darray[sview]`. Call
+working directory, environment overrides, stdin, protocol, timeout, required
+effects, and required errors are separate fields, while process arguments remain
+a `darray[sview]`. Call
 `validate_differential_runner` before handing the value to an adapter. Its explicit
 validation machine checks the name and target, requires an entry for adapter/module
 runner kinds, scans every argument for embedded NUL bytes, and requires a positive
@@ -72,7 +73,9 @@ For `PythonAdapter`, `target` is the Python interpreter and `entry` names the ad
 script or module; the host adapter keeps that entry separate until it constructs the
 argv vector. The validator rejects NUL bytes in executable-facing fields, including
 the working directory, while stdin remains length-delimited so binary-compatible
-fixtures are possible.
+fixtures are possible. Child environment overrides are ordered typed
+`(name, value)` entries and are applied only after `fork`, so the parent
+runner's environment remains unchanged.
 
 For a native or adapter process, the materialization path should use the IR
 `capture_process_result(executable(target), arguments, stdin)` intrinsic. The
@@ -89,7 +92,8 @@ The standalone host boundary `execute_differential_process` consumes the same
 `DifferentialProcessInvocation` produced by `prepare_differential_process`. It
 constructs an argv vector directly (never a shell command), feeds stdin through
 a temporary file, captures stdout and stderr independently, and applies an
-optional working directory in the child just before `execvp`. The timeout is a
+optional working directory and explicit environment overrides in the child just
+before `execvp`. The timeout is a
 bounded wait-poll budget; an expired child is killed and raises
 `DifferentialRunnerError.Timeout`. A normal nonzero process status, including
 the conventional `126`/`127` setup/exec statuses, remains ordinary
