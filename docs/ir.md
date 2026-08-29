@@ -645,3 +645,16 @@ typed header and exit parameters; initial entry, normal backedges, `continue`, a
    has typed dispatch classes, table preflight, a state-machine program counter,
    and direct guarded-recovery execution; unsupported dynamic effects continue to
    use the reference interpreter until their target lowering is defined.
+
+## End-to-end execution boundary
+
+`execute_elisascript_source` and `execute_elisascript_file` are the canonical
+typed launch APIs. They validate the `.elisascript` suffix, parse and semantically
+check the source, lower it to verified IR, lower that IR to bytecode, and execute
+the bytecode with the supplied entry function, arguments, observation sink,
+runtime storage, and step limit. Source failures remain
+`ElisascriptSourceError`; runtime failures remain `InterpretError`, so adapters
+can distinguish a malformed script from a failed invocation without introducing
+a result-shaped sentinel. The bytecode engine selects direct state-machine
+dispatch when supported and otherwise preserves interpreter semantics for dynamic
+effects and continuations.
