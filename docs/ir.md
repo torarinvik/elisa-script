@@ -231,6 +231,9 @@ whose spans can be proven against the complete match (for example,
 `([a-z]+)=([0-9]+)`). Nested, quantified, or top-level-alternating capture layouts
 remain literal rather than guessing a branch; this conservative fallback keeps
 replacement behavior deterministic until recursive regex match values are defined.
+The replacement language also accepts AWK/sed's `&` whole-match token, Perl's
+`$$` literal-dollar token, and `\&` for a literal ampersand; each token is consumed
+atomically and unknown forms remain literal.
 `RegexSplit` has signature `Text × Named(Regex) -> Array[Text]`. It uses those same
 spans as field boundaries, preserves empty fields, and applies an explicit one-byte
 advance for zero-width matches. The result is materialized in caller-owned flat
@@ -447,7 +450,7 @@ and effect-handler state.
 The verified bytecode facade uses the same program-counter machine for execution.
 Modules containing only the currently closed scalar, text, regex, homogeneous-array,
 and scalar-map subset (boolean, 64-bit integer, or 64-bit float values, text/nominal constants,
-including three nested array levels,
+including four nested array levels,
 array/map construction and key extraction, nominal path/glob/regex/URL constructors, typed path composition/decomposition, indexing, length, slicing, membership, concatenation, split,
 join, typed integer/float parsing and formatting, regex search/replacement/splitting/extraction, indexed updates, unary/binary operators,
 observations, pure direct calls, and typed filesystem/process operations) take a

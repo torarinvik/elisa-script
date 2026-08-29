@@ -92,6 +92,9 @@ can be proven against the complete match (for example, `([a-z]+)=([0-9]+)`).
 Nested, quantified, or top-level-alternating capture layouts remain literal rather
 than selecting an ambiguous branch; unknown or unproven `$n` forms stay literal.
 
+Replacement tokens follow familiar Perl/AWK/sed conventions while remaining
+deterministic: `$0` is the complete match, `&` is an AWK/sed spelling of the
+complete match, `$$` emits a literal dollar, and `\&` emits a literal ampersand.
 `split_regex(text, pattern) -> darray[sview]` uses the same matcher for
 Perl/AWK-style field boundaries. It preserves empty fields before, between, and
 after non-overlapping matches. A zero-width match emits its current field, advances
