@@ -76,6 +76,8 @@ the working directory, while stdin remains length-delimited so binary-compatible
 fixtures are possible. Child environment overrides are ordered typed
 `(name, value)` entries and are applied only after `fork`, so the parent
 runner's environment remains unchanged.
+Environment names are validated before launch: they must be nonempty, contain no
+NUL byte, and contain no `=` separator; duplicate names are rejected as well.
 
 For a native or adapter process, the materialization path should use the IR
 `capture_process_result(executable(target), arguments, stdin)` intrinsic. The
