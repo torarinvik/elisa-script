@@ -169,14 +169,17 @@ evens: darray[i64] = [value for value in values if value % 2i64 == 0i64]
 letters: darray[char] = [character for character in text]
 doubled_range: darray[i64] = [value * 2i64 for value in 0i64..<4i64]
 indexed: dict[i64, i64] = {value: value * 10i64 for value in values if value > 0i64}
+remapped: dict[i64, i64] = {key: value * 2i64 for key, value in values}
 positive_count: usize = count value in values where value > 0i64
 total: i64 = sum value in values
 positive_product: i64 = product value in values where value > 0i64
 ```
 
 The initial lowering supports one binder over an array, text value, or integer
-range and an optional boolean `if` filter. Array/text iteration uses checked
-`Length`/`Index` operations; text iteration produces one-character values.
+range and an optional boolean `if` filter. Dictionary comprehensions additionally
+support two read-only binders (`key, value`) over a dictionary iterable. Array/text
+iteration uses checked `Length`/`Index` operations; text iteration produces
+one-character values.
 Integer ranges stay counter-driven and do not materialize a temporary array:
 `low..<high` is exclusive ascending, `low..=high` is inclusive ascending, and
 `high..>low` is strict descending. The range-owned stride spelling
@@ -199,8 +202,8 @@ early on the first false predicate. Empty inputs therefore produce `false` for
 `any` and `true` for `all`. The verification spellings `exists x in values: predicate`
 and `forall x in values: predicate` are equivalent existential and universal
 forms; their ordinary query-style `where` spelling is accepted too. Quantifier
-predicates must be statically boolean and straight-line;
-effectful or multi-binder forms are rejected until their semantics are specified.
+predicates must be statically boolean and straight-line; effectful or multi-binder
+quantifier forms are rejected until their semantics are specified.
 `count` is a typed `usize` fold over the same array/text/range iterables and
 increments its loop-carried counter only for matching elements.
 `sum` and `product` are integer-only folds that carry the iterable's exact

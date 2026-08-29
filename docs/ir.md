@@ -686,8 +686,10 @@ Array projections become singleton `MakeArray` values and `Concat` produces the
 next accumulator. Dictionary projections lower their key and value separately
 and use immutable `SetIndex` copies, retaining duplicate-key replacement
 semantics; range-backed dictionary projections use the same counter directly as
-the key/value source. Header, latch, and exit block parameters carry both the
-accumulator and iteration state through the flat edge-argument pool. Consequently the
+the key/value source. A two-binder dictionary iterable snapshots `MapKeys` once,
+then performs a checked value lookup for the second binder on each iteration.
+Header, latch, and exit block parameters carry both the accumulator and iteration
+state through the flat edge-argument pool. Consequently the
 interpreter, bytecode VM, and future native backends observe identical evaluation
 order and allocation behavior. Quantifier headers carry a boolean accumulator
 initialized to the identity (`false` for existential `any` / `exists`, `true` for
@@ -698,8 +700,9 @@ lowers `count` queries as a `usize` accumulator with a conditional increment,
 and `sum` / `product` queries as exact integer accumulators with identities 0 / 1.
 These folds and boolean quantifiers accept integer ranges through the same
 counter-driven header/latch states, so no range collection is created.
-It deliberately declines set, multi-binder, and non-straight-line query
-predicates rather than lowering them with guessed semantics.
+It deliberately declines set comprehensions, multi-binder query predicates, and
+non-straight-line query predicates rather than lowering them with guessed
+semantics.
 
 Elisa value blocks lower their leading statements in a lexical binding scope and
 then yield the tail expression. This makes the idiomatic multiline `return if ...:`
