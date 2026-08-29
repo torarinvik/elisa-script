@@ -58,9 +58,10 @@ handlers, required effects, and required errors are separate fields, while proce
 a `darray[sview]`. Call
 `validate_differential_runner` before handing the value to an adapter. Its explicit
 validation machine checks the name and target, requires an entry for adapter/module
-runner kinds, scans every argument for embedded NUL bytes, and requires a positive
-timeout. A failed check returns `DifferentialRunnerCheck` with a stable issue kind
-and argument index; it does not launch anything.
+runner kinds, rejects an entry on kinds that do not consume one, scans every argument
+for embedded NUL bytes, and requires a positive timeout. A failed check returns
+`DifferentialRunnerCheck` with a stable issue kind and argument index; it does not
+launch anything.
 
 The current runner kinds are `InProcessFunction`, `ElisascriptFile`, `ElisascriptProgram`, `NativeProcess`, `PythonAdapter`,
 `CAbiFunction`, `WasmModule`, and `Service`. Adapters are responsible for turning a
