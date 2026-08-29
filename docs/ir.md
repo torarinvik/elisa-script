@@ -313,6 +313,10 @@ returning the complete owned stdout snapshot.
  three times merely to compare its outputs. `process_exit_status`, `process_stdout`,
  and `process_stderr` are typed accessors over that value. The capture and accessor
  opcodes are separately verified and dispatched explicitly by the interpreter.
+`CaptureProcessResultInDirectory` extends the same contract with a nominal `Path`
+operand. The child calls `chdir` after fork, leaving the parent cwd unchanged; a
+failed child directory produces process status `126` while setup failures still
+raise `ProcessError`.
 `GetEnvironment`, `SetEnvironment`, and `UnsetEnvironment` operate on `Text`
 operands. Reads produce owned `Text` under `Environment.Read`; mutations produce
 `Bool` under `Environment.Write`. All three require `EnvironmentError`, reject C

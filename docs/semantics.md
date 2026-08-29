@@ -252,6 +252,14 @@ Input is staged in a temporary file before the child starts, so the operation ha
 pipe-size deadlock or truncation behavior. The child sees exactly the supplied bytes;
 wildcards, spaces, and quotes in both arguments and input remain ordinary bytes.
 
+`capture_process_result_in_directory(executable: Executable, arguments: darray[sview],
+input: sview, directory: Path) -> ProcessCapture error[ProcessError] can[Process.Run]`
+is the differential-testing variant with an explicit child working directory. The
+directory is changed after fork and before descriptor setup/exec, so the parent
+interpreter's current directory is never changed. It captures exit status, stdout,
+and stderr with the same one-shot semantics as `capture_process_result`; an invalid
+child directory is reported by the child as status `126`.
+
 ## Standard streams
 
 Standard streams are explicit typed operations rather than implicit print or shell
