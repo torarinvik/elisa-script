@@ -625,6 +625,9 @@ The `text.count(substring)` method has type `Text × Text -> usize` and lowers t
 `TextCount`. Matching is byte-oriented and non-overlapping; an empty substring
 returns one more than the input length, and both reference and direct bytecode
 paths use the same deterministic scan.
+The `text.find(substring)` method has type `Text × Text -> Int(signed, 64)` and
+lowers to `TextFind`; it returns the first byte offset, zero for an empty needle,
+and `-1` for a miss.
 `ParseInt` has type `Text -> Int(signed, 64)` and requires `ParseError` in the
 function error row. Its state-machine parser accepts only an optional sign and
 ASCII decimal digits, checks signed 64-bit overflow before each accumulation, and

@@ -140,6 +140,9 @@ Text values also provide `text.count(substring) -> usize`. The operation counts
 left-to-right non-overlapping byte matches; an empty substring counts the input
 boundaries (`length + 1`). It is pure, deterministic, and rejects non-text
 receivers or arguments during lowering.
+The companion `text.find(substring) -> i64` method returns the first byte offset,
+`0` for an empty substring, and `-1` when no match exists. It uses the same
+byte-oriented comparison rules and is pure and deterministic.
 
 The first executable regex operation is the compiler-known, strongly typed search
 `matches(text, pattern) -> bool`, where `text` is `sview` and `pattern` is `Regex`:
