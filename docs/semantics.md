@@ -264,6 +264,15 @@ advance one input byte (with a final zero-width match at end-of-input terminatin
 the scan), so even anchor-only patterns are total. The operation is pure and uses
 the same deterministic ASCII matcher as search, replacement, and splitting.
 
+`capture_regex(text, pattern) -> darray[sview]` returns the first match and its
+proven capture groups. Element `0` is the complete match; elements `1` onward
+follow positional group order, and an unmatched proven group is represented by an
+empty text field. A missing match returns an empty array. Capture spans use the
+same conservative proof as replacement: flat, non-quantified groups are exposed,
+while nested, quantified, or top-level-alternating layouts return only the complete
+match rather than guessing. `captures_regex` is an equivalent spelling for scripts
+that prefer a plural verb.
+
 ## Checked indexing and value recovery
 
 The scripting profile keeps ordinary indexing strict: `values[index]` raises a

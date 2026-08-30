@@ -259,6 +259,13 @@ array operations.
 non-overlapping matched span. Zero-width matches advance explicitly, matching the
 termination rule used by `RegexSplit` and `RegexReplace`.
 
+`RegexCapture` has the same `Text × Named(Regex)` operands and returns an
+`Array[Text]` for the first match. Element zero is the complete matched span;
+subsequent elements are proven positional capture groups. If no match exists the
+result is empty. Unsupported capture layouts conservatively return only the full
+match, preserving deterministic behavior across the interpreter and bytecode
+facade.
+
 `Map` is the closed aggregate counterpart to `Array`. Its `Type` descriptor carries
 one exact scalar key type and one recursively represented value type within the
 inline descriptor limit; `MakeMap` consumes an even key/value
