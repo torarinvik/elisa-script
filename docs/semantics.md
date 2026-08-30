@@ -743,6 +743,10 @@ Environment access is explicit and typed rather than implicit global string magi
 - `get_environment(name: sview) -> sview error[EnvironmentError]
   can[Environment.Read]` returns an owned snapshot of the value. A missing or invalid
   name raises `EnvironmentError`, so it cannot be confused with a present empty value.
+- `get_environment_or(name: sview, fallback: sview) -> sview` performs the same
+  lookup but recovers a missing or invalid name with `fallback`. The fallback is
+  evaluated lazily on the `EnvironmentError` edge, and the operation still records
+  `Environment.Read`/`EnvironmentError` in the enclosing function's contract.
 - `set_environment(name: sview, value: sview) -> bool error[EnvironmentError]
   can[Environment.Write]` replaces the process-global value and returns `true`.
 - `unset_environment(name: sview) -> bool error[EnvironmentError]

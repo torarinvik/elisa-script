@@ -2349,6 +2349,66 @@ extend EsIr:
             return LoweredValue{valid: true, value: result, type: result_type}
 
 
+        # Lower one environment lookup.  Keeping this operation in a helper
+        # lets `get_environment` and the scripting-profile `get_environment_or`
+        # share exactly the same effect and error row while the latter wraps
+        # the lookup in a lexical error guard.
+        def lower_environment_read(name_expression: Ast::Expr, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+            result_type: Type = type_from_name("sview")
+            text_type: Type = type_from_name("sview")
+            name_value: LoweredValue = lower_expression_expected(name_expression, text_type, state)
+            if not name_value.valid or name_value.type.kind != TypeKind.Text:
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "get_environment requires an sview name")
+                return LoweredValue{valid: false, value: 0, type: result_type}
+            state.required_effects.push("Environment.Read") if not has_text(state.required_effects, "Environment.Read")
+            state.required_errors.push("EnvironmentError") if not has_text(state.required_errors, "EnvironmentError")
+            operand_start: u32 = state.operand_pool.count.u32()
+            state.operand_pool.push(name_value.value)
+            result: u32 = fresh_value(state)
+            state.instructions.push(Instruction{opcode: Opcode.GetEnvironment, result: result, result_type: result_type, operand_start: operand_start, operand_count: 1, span: ir_span(pos)})
+            return LoweredValue{valid: true, value: result, type: result_type}
+
+
+        # Python's `os.environ.get(name, fallback)` shape is useful in shell
+        # ports: a missing variable is ordinary control flow rather than a
+        # process-level failure.  The fallback is evaluated only on the error
+        # edge, preserving the same lazy semantics as `try ... else ...`.
+        def lower_environment_or(arguments: darray[Ast::Expr]&, argument_names: darray[sview]&, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+            result_type: Type = type_from_name("sview")
+            valid_shape: bool = arguments.count == 2 and (argument_names.count == 0 or (argument_names.count == 2 and argument_names[0] == "" and argument_names[1] == ""))
+            if not valid_shape:
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "get_environment_or requires two positional sview values")
+                return LoweredValue{valid: false, value: 0, type: result_type}
+            fallback_block: u32 = fresh_block(state)
+            merge_block: u32 = fresh_block(state)
+            state.instructions.push(Instruction{opcode: Opcode.ErrorGuardPush, result: 0, result_type: void_ir_type(), integer: fallback_block.i64(), span: ir_span(pos)})
+            guarded: LoweredValue = lower_environment_read(arguments[0], pos, state)
+            if not guarded.valid:
+                return LoweredValue{valid: false, value: 0, type: result_type}
+            state.instructions.push(Instruction{opcode: Opcode.ErrorGuardPop, result: 0, result_type: void_ir_type(), span: ir_span(pos)})
+            success_edge: u32 = state.edge_arg_pool.count.u32()
+            state.edge_arg_pool.push(guarded.value)
+            state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: merge_block, target_count: 1, edge0_arg_start: success_edge, edge0_arg_count: 1, span: ir_span(pos)}
+            finish_block(state)
+
+            state.current_block <- fallback_block
+            state.terminated <- false
+            fallback: LoweredValue = lower_expression_expected(arguments[1], result_type, state)
+            fallback_edge: mutable u32 = 0
+            if fallback.valid:
+                fallback_edge <- state.edge_arg_pool.count.u32()
+                state.edge_arg_pool.push(fallback.value)
+                state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: merge_block, target_count: 1, edge0_arg_start: fallback_edge, edge0_arg_count: 1, span: ir_span(pos)}
+            finish_block(state)
+
+            result: u32 = fresh_value(state)
+            state.pending_parameter_blocks.push(merge_block)
+            state.pending_parameters.push(Parameter{value: result, type: result_type, name: "environment-or"})
+            state.current_block <- merge_block
+            state.terminated <- false
+            return LoweredValue{valid: fallback.valid, value: result, type: result_type}
+
+
         def lower_expression(expression: Ast::Expr, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
             match expression:
                 Expr.IntLit(value):
@@ -3947,22 +4007,13 @@ extend EsIr:
                         return LoweredValue{valid: true, value: result, type: result_type}
                     if callee_name == "get_environment" and callee_index == state.function_names.count:
                         result_type: Type = type_from_name("sview")
-                        text_type: Type = type_from_name("sview")
                         valid_shape: bool = arguments.count == 1 and (argument_names.count == 0 or argument_names[0] == "")
                         if not valid_shape:
                             add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "get_environment requires one positional sview name")
                             return LoweredValue{valid: false, value: 0, type: result_type}
-                        name_value: LoweredValue = lower_expression_expected(arguments[0], text_type, state)
-                        if not name_value.valid or name_value.type.kind != TypeKind.Text:
-                            add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "get_environment requires an sview name")
-                            return LoweredValue{valid: false, value: 0, type: result_type}
-                        state.required_effects.push("Environment.Read") if not has_text(state.required_effects, "Environment.Read")
-                        state.required_errors.push("EnvironmentError") if not has_text(state.required_errors, "EnvironmentError")
-                        operand_start: u32 = state.operand_pool.count.u32()
-                        state.operand_pool.push(name_value.value)
-                        result: u32 = fresh_value(state)
-                        state.instructions.push(Instruction{opcode: Opcode.GetEnvironment, result: result, result_type: result_type, operand_start: operand_start, operand_count: 1, span: ir_span(pos)})
-                        return LoweredValue{valid: true, value: result, type: result_type}
+                        return lower_environment_read(arguments[0], pos, state)
+                    if callee_name == "get_environment_or" and callee_index == state.function_names.count:
+                        return lower_environment_or(arguments, argument_names, pos, state)
                     if (callee_name == "set_environment" or callee_name == "unset_environment") and callee_index == state.function_names.count:
                         result_type: Type = type_from_name("bool")
                         text_type: Type = type_from_name("sview")

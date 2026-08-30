@@ -389,6 +389,10 @@ differential-testing runs.
 operands. Reads produce owned `Text` under `Environment.Read`; mutations produce
 `Bool` under `Environment.Write`. All three require `EnvironmentError`, reject C
 string truncation hazards, and execute through explicit exhaustive opcode arms.
+The scripting-profile `get_environment_or(name, fallback)` lowers to the same
+`GetEnvironment` operation wrapped by `ErrorGuardPush`/`ErrorGuardPop` and a typed
+merge block, so a missing variable follows the fallback edge without evaluating the
+fallback on successful reads.
 `CreateDirectory`, `RemoveDirectory`, and `ChangeDirectory` verify as
 `Named(Path) -> Bool` with `Directory.Write` and `DirectoryError`.
 `CurrentDirectory` takes no operands, returns `Named(Path)`, and requires
