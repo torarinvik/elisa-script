@@ -336,6 +336,11 @@ mutable array. It takes no arguments, copies elements into a fresh array in
 reverse order, and rebinds the receiver through the same ownership-safe SSA
 update. Empty arrays remain empty; immutable arrays and non-array receivers are
 rejected statically.
+`values.insert(index, element)` is the corresponding typed insertion operation.
+It requires a mutable array, an integer index, and an element of the exact array
+element type. Negative indices count from the end, indices below the start clamp
+to zero, and indices beyond the end append; the operation copies the array and
+rebinds the receiver through SSA.
 
 ## Text field processing
 
