@@ -426,7 +426,10 @@ one line at a time, preserving stdin for subsequent reads. The Python-facing
 `WriteStdout` and `WriteStderr` verify as `Text -> Int(unsigned, 64)` with
 `Console.Write` and `ConsoleError`. The reference interpreter drives input until EOF
 and drives output through explicit `Data/End/Error` and `Progress/Done/Error` stream
-machines, preserving partial-write semantics and owned read results.
+machines, preserving partial-write semantics and owned read results. `print`,
+`echo`, `println`, and `eprint` lower their typed scalar arguments to formatting
+and `Concat` instructions before one final stream write; optional `sep` and `end`
+text controls are evaluated once and use the same typed concatenation path.
 Named direct-call arguments are resolved against predeclared parameter labels and
 then emitted in canonical signature order. Their expressions still execute once in
 source order. Missing parameters materialize their Elisa default expressions in

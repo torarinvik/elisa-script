@@ -2340,31 +2340,61 @@ extend EsIr:
 
 
         # Python's `print` is a small typed convenience over the existing
-        # console write effects. Each argument is converted using the same
-        # scalar formatting rules as `str`, joined with one ASCII space, and
-        # followed by one newline. `echo` and `println` are stdout aliases and
-        # `eprint` selects stderr; all four share one stream/error contract across the
-        # interpreter, bytecode VM, and future native backends.
+        # console write effects. Each value argument is converted using the same
+        # scalar formatting rules as `str`, joined with a typed `sep` value, and
+        # followed by a typed `end` value. `echo` and `println` are stdout aliases
+        # and `eprint` selects stderr; all four share one stream/error contract
+        # across the interpreter, bytecode VM, and future native backends.
         def lower_print(arguments: darray[Ast::Expr]&, argument_names: darray[sview]&, pos: Ast::Pos&, state: mutable LowerState&, stderr: bool) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
             result_type: Type = type_from_name("usize")
-            positional: mutable bool = argument_names.count == 0
-            if argument_names.count != 0:
-                positional <- true
-                for argument_name in argument_names |positional|:
-                    positional <- false if argument_name != ""
-            if not positional:
-                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "print accepts only positional text, integer, float, or bool values")
+            if argument_names.count != 0 and argument_names.count != arguments.count:
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "print argument labels must match the argument count")
                 return LoweredValue{valid: false, value: 0, type: result_type}
 
             text_type: Type = type_from_name("sview")
-            rendered: mutable LoweredValue = emit_constant(state, text_type, 0, "", "", false, ir_span(pos))
-            for argument_index in 0..<arguments.count |arguments, argument_index, state, rendered, text_type, pos|:
-                if argument_index != 0:
-                    separator: LoweredValue = emit_constant(state, text_type, 0, "", " ", false, ir_span(pos))
-                    rendered <- emit_binary(state, Opcode.Concat, rendered.value, separator.value, text_type, pos)
-                value: mutable LoweredValue = lower_expression(arguments[argument_index], state)
-                if not value.valid:
+            separator: mutable LoweredValue = emit_constant(state, text_type, 0, "", " ", false, ir_span(pos))
+            ending: mutable LoweredValue = emit_constant(state, text_type, 0, "", "\n", false, ir_span(pos))
+            values: mutable darray[LoweredValue] = []
+            saw_named_control: mutable bool = false
+            saw_separator: mutable bool = false
+            saw_end: mutable bool = false
+            for argument_index in 0..<arguments.count |arguments, argument_names, argument_index, state, text_type, separator, ending, values, saw_named_control, saw_separator, saw_end, pos|:
+                argument_name: sview = "" if argument_names.count == 0 else argument_names[argument_index]
+                if argument_name == "":
+                    if saw_named_control:
+                        add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "print positional values must precede sep and end controls")
+                        return LoweredValue{valid: false, value: 0, type: result_type}
+                    value: LoweredValue = lower_expression(arguments[argument_index], state)
+                    if not value.valid:
+                        return LoweredValue{valid: false, value: 0, type: result_type}
+                    values.push(value)
+                    continue
+                saw_named_control <- true
+                if argument_name != "sep" and argument_name != "end":
+                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "print supports only typed sep and end controls")
                     return LoweredValue{valid: false, value: 0, type: result_type}
+                control: LoweredValue = lower_expression_expected(arguments[argument_index], text_type, state)
+                if not control.valid or control.type.kind != TypeKind.Text:
+                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "print sep and end controls must be sview values")
+                    return LoweredValue{valid: false, value: 0, type: result_type}
+                if argument_name == "sep":
+                    if saw_separator:
+                        add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "print accepts at most one sep control")
+                        return LoweredValue{valid: false, value: 0, type: result_type}
+                    separator <- control
+                    saw_separator <- true
+                else:
+                    if saw_end:
+                        add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "print accepts at most one end control")
+                        return LoweredValue{valid: false, value: 0, type: result_type}
+                    ending <- control
+                    saw_end <- true
+
+            rendered: mutable LoweredValue = emit_constant(state, text_type, 0, "", "", false, ir_span(pos))
+            for argument_index in 0..<values.count |values, argument_index, state, rendered, separator, text_type, pos|:
+                if argument_index != 0:
+                    rendered <- emit_binary(state, Opcode.Concat, rendered.value, separator.value, text_type, pos)
+                value: mutable LoweredValue = values[argument_index]
                 if value.type.kind == TypeKind.Text:
                     pass
                 else:
@@ -2385,8 +2415,7 @@ extend EsIr:
                     state.instructions.push(Instruction{opcode: opcode, result: formatted, result_type: text_type, operand_start: formatted_start, operand_count: 1, span: ir_span(pos)})
                     value <- LoweredValue{valid: true, value: formatted, type: text_type}
                 rendered <- emit_binary(state, Opcode.Concat, rendered.value, value.value, text_type, pos)
-            newline: LoweredValue = emit_constant(state, text_type, 0, "", "\n", false, ir_span(pos))
-            rendered <- emit_binary(state, Opcode.Concat, rendered.value, newline.value, text_type, pos)
+            rendered <- emit_binary(state, Opcode.Concat, rendered.value, ending.value, text_type, pos)
             state.required_effects.push("Console.Write") if not has_text(state.required_effects, "Console.Write")
             state.required_errors.push("ConsoleError") if not has_text(state.required_errors, "ConsoleError")
             operand_start: u32 = state.operand_pool.count.u32()
