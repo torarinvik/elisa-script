@@ -362,6 +362,12 @@ lexical separator, dot, and dot-dot cleanup in the core `Fs.normalize` helper,
 without filesystem or working-directory access, and is eligible for direct
 bytecode execution. The `path_normalize`, `normalize_path`, and `normpath`
 builtins plus `Path.normalize()` lower to this opcode.
+`PathAbsolute` verifies `Named(Path) -> Named(Path)` and requires
+`Directory.Read` plus `DirectoryError`. It reads the current directory through
+the existing directory state machine, joins relative input, and delegates
+separator/dot cleanup to `Fs.normalize`; absolute input is normalized without
+changing it. The `path_absolute`, `absolute_path`, and `abspath` builtins plus
+`Path.absolute()` lower to this direct-bytecode-capable operation.
 The shell-size predicate has no dedicated opcode: `is_nonempty`/`file_nonempty`
 lower to `FileSize` followed by a typed `Greater` comparison against zero. This
 keeps the existing `Named(Path) -> Int(unsigned, 64)` file-size contract while

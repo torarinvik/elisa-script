@@ -720,6 +720,15 @@ consults the current directory, or changes the filesystem. `normalize_path` and
 `normpath` are equivalent aliases, and `path.normalize()` lowers to the same
 pure typed operation.
 
+`path_absolute(path: Path) -> Path error[DirectoryError] can[Directory.Read]`
+constructs a cwd-aware absolute path using the lexical equivalent of Python
+`os.path.abspath`: it joins a relative path to the current directory and then
+applies the same normalization rules, while an already absolute path is simply
+normalized. The current directory is read once through the typed directory
+boundary; the parent process and filesystem are otherwise unchanged. The
+`absolute_path` and `abspath` aliases, plus `path.absolute()`, lower to the same
+typed operation.
+
 `copy_path(source: Path, destination: Path) -> bool error[FileIoError]
 can[File.Read, File.Write]` copies one regular file by length-delimited bytes and
 replaces the destination. `move_path(source: Path, destination: Path) -> bool
