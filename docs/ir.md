@@ -533,8 +533,9 @@ order, without requiring a mutable binding.
 The compiler-known `min(values)`/`max(values)` calls lower to `SortArray` followed
 by a checked `Index` at `0` or `-1`, preserving exact scalar element types and
 the normal empty-array failure path.
-The Python-shaped `sum(values)`/`product(values)` calls reuse the integer-fold
-state machine with identities `0`/`1`, while `any(values)`/`all(values)` reuse
+The Python-shaped `sum(values, start)`/`product(values)` calls reuse the
+integer-fold state machine with identities `start`/`1` (`sum` defaults to `0`),
+while `any(values)`/`all(values)` reuse
 the early-exit boolean-fold CFG. All four preserve exact element types and
 short-circuit or fold without materializing a second collection.
 Empty literals use

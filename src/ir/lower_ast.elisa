@@ -1477,7 +1477,7 @@ extend EsIr:
         # accepts any array/text/range element type or dictionary entries and carries a usize;
         # sum/product require an integer element and carry that exact type. An
         # absent condition in a hand-built AST folds every element.
-        def lower_integer_fold_comprehension(fold_kind: sview, variable: sview, iterable: Ast::Expr, condition: Ast::Expr, body: Ast::Expr, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+        def lower_integer_fold_comprehension(fold_kind: sview, variable: sview, iterable: Ast::Expr, condition: Ast::Expr, body: Ast::Expr, pos: Ast::Pos&, state: mutable LowerState&, initial_expression: Ast::Expr) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
             result_type: mutable Type = unknown_ir_type()
             if fold_kind != "count" and fold_kind != "sum" and fold_kind != "product":
                 add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "only count/sum/product queries are in the initial fold lowering subset")
@@ -1565,6 +1565,15 @@ extend EsIr:
                     add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "sum and product require an integer iterable")
                     return LoweredValue{valid: false, value: 0, type: result_type}
                 result_type <- fold_element_type
+            initial_accumulator: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: result_type}
+            match initial_expression:
+                Expr.Absent:
+                    initial_accumulator <- emit_constant(state, result_type, 1 if fold_kind == "product" else 0, "", "", false, ir_span(pos))
+                _:
+                    initial_accumulator <- lower_expression_expected(initial_expression, result_type, state)
+                    if not initial_accumulator.valid or not same_type(initial_accumulator.type, result_type):
+                        add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "fold start value must match the exact integer element type")
+                        return LoweredValue{valid: false, value: 0, type: result_type}
             condition_absent: mutable bool = false
             match condition:
                 Expr.Absent:
@@ -1573,7 +1582,6 @@ extend EsIr:
                     pass
 
             accumulator_name: sview = "__es_comprehension_accumulator"
-            initial_accumulator: LoweredValue = emit_constant(state, result_type, 1 if fold_kind == "product" else 0, "", "", false, ir_span(pos))
             state.names.push(accumulator_name)
             state.values.push(initial_accumulator.value)
             state.types.push(result_type)
@@ -2119,7 +2127,7 @@ extend EsIr:
                 Expr.Comprehension(variable, iterable, condition, body, pos):
                     return lower_set_comprehension(variable, iterable, condition, body, pos, state) if comprehension_kind(state, pos) == "set"
                     return lower_map_comprehension(variable, iterable, condition, body, pos, state) if comprehension_kind(state, pos) == "map"
-                    return lower_integer_fold_comprehension(comprehension_query_kind(state, pos), variable, iterable, condition, body, pos, state) if comprehension_kind(state, pos) == "query" and (comprehension_query_kind(state, pos) == "count" or comprehension_query_kind(state, pos) == "sum" or comprehension_query_kind(state, pos) == "product")
+                    return lower_integer_fold_comprehension(comprehension_query_kind(state, pos), variable, iterable, condition, body, pos, state, Expr.Absent) if comprehension_kind(state, pos) == "query" and (comprehension_query_kind(state, pos) == "count" or comprehension_query_kind(state, pos) == "sum" or comprehension_query_kind(state, pos) == "product")
                     return lower_query_comprehension(variable, iterable, condition, body, pos, state, "") if comprehension_kind(state, pos) == "query" and comprehension_query_kind(state, pos) != "each"
                     return lower_array_comprehension(variable, iterable, condition, body, pos, state)
                 Expr.DictLit(entries, pos):
@@ -2672,11 +2680,15 @@ extend EsIr:
                         state.instructions.push(Instruction{opcode: Opcode.Index, result: result, result_type: result_type, operand_start: index_start, operand_count: 2, span: ir_span(pos)})
                         return LoweredValue{valid: true, value: result, type: result_type}
                     if (callee_name == "sum" or callee_name == "product") and callee_index == state.function_names.count:
-                        valid_shape: bool = arguments.count == 1 and (argument_names.count == 0 or (argument_names.count == 1 and argument_names[0] == ""))
+                        valid_shape: mutable bool = arguments.count == 1 or (callee_name == "sum" and arguments.count == 2)
+                        if argument_names.count != 0:
+                            valid_shape <- argument_names.count == arguments.count
+                            for argument_name in argument_names |valid_shape|:
+                                valid_shape <- false if argument_name != ""
                         if not valid_shape:
-                            add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "sum/product requires exactly one positional array, text, or integer-range value")
+                            add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "sum requires one array, text, or integer-range value and an optional typed start; product requires one value")
                             return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
-                        return lower_integer_fold_comprehension(callee_name, "__value", arguments[0], Expr.Absent, Expr.Absent, pos, state)
+                        return lower_integer_fold_comprehension(callee_name, "__value", arguments[0], Expr.Absent, Expr.Absent, pos, state, arguments[1] if arguments.count == 2 else Expr.Absent)
                     if (callee_name == "any" or callee_name == "all") and callee_index == state.function_names.count:
                         valid_shape: bool = arguments.count == 1 and (argument_names.count == 0 or (argument_names.count == 1 and argument_names[0] == ""))
                         if not valid_shape:
