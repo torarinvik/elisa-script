@@ -131,6 +131,9 @@ extend EsIr:
             continuation_handlers: mutable darray[sview] = []
             resume_requested: mutable bool
             resume_value: mutable RuntimeValue
+            # Line-oriented stdin reads consume exactly one line at a time, so
+            # repeated `input()` calls can share the same interpreter machine.
+            stdin_eof: mutable bool = false
 
 
         struct DirectoryScanner:
@@ -152,9 +155,17 @@ extend EsIr:
             Error
 
 
+        const enum StdioLineReadState of u8:
+            Progress
+            Done
+            End
+            Error
+
+
         struct StdioReader:
             bytes: mutable dstr
             failed: mutable bool
+            ended: mutable bool = false
 
 
         const enum StdioWriteState of u8:
@@ -3627,6 +3638,20 @@ extend EsIr:
                 return StdioReadState.Data
 
 
+        def stdio_read_line_next(reader: mutable StdioReader&) -> StdioLineReadState can[Memory.Allocate, Abort.Panic]:
+            chunk: mutable u8[1] = zeroed
+            can Blocking.IO:
+                amount: isize = elisascript_posix_read(0, (&chunk[0]).cast[mutable void&], 1)
+                if amount < 0:
+                    reader.failed <- true
+                    return StdioLineReadState.Error
+                if amount == 0:
+                    return StdioLineReadState.End
+                return StdioLineReadState.Done if chunk[0] == 10
+                reader.bytes.push(chunk[0])
+                return StdioLineReadState.Progress
+
+
         def stdio_write_next(writer: mutable StdioWriter&) -> StdioWriteState can[Console.Write]:
             return StdioWriteState.Done if writer.offset >= writer.length
             remaining: usize = writer.length - writer.offset
@@ -3661,6 +3686,44 @@ extend EsIr:
             bytes: mutable dstr = ctx_fstr_alloc(reader.bytes.count)
             ctx_fstr_append(bytes, reader.bytes.items, reader.bytes.count)
             return runtime_text(bytes_view(bytes))
+
+
+        # Read one logical line without over-reading stdin. Unlike read_stdin,
+        # which intentionally drains the descriptor, this primitive is suitable
+        # for Python-style input() and repeated prompts in one program.
+        def evaluate_read_stdin_line(machine: mutable Machine&) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+            if machine.stdin_eof:
+                machine.failure <- InterpretFailure.Console
+                return runtime_void()
+            reader: mutable StdioReader = StdioReader{bytes: [], failed: false}
+            can Blocking.IO, Memory.Allocate, Abort.Panic:
+                machine over stdio_read_line_next(reader):
+                    state Read
+                    start Read
+
+                    Read, StdioLineReadState.Progress:
+                        -> Read
+                    Read, StdioLineReadState.Done:
+                        break
+                    Read, StdioLineReadState.End:
+                        reader.ended <- true
+                        break
+                    Read, StdioLineReadState.Error:
+                        break
+            if reader.failed:
+                machine.failure <- InterpretFailure.Console
+                return runtime_void()
+            if reader.ended and reader.bytes.count == 0:
+                machine.stdin_eof <- true
+                machine.failure <- InterpretFailure.Console
+                return runtime_void()
+            bytes: mutable dstr = ctx_fstr_alloc(reader.bytes.count)
+            ctx_fstr_append(bytes, reader.bytes.items, reader.bytes.count)
+            line: sview = bytes_view(bytes)
+            # Accept both Unix and Windows line endings, matching Python's
+            # input() behavior of returning the line without its terminator.
+            return runtime_text(string_view_prefix(line, line.len - 1)) if line.len > 0 and sview_at(line, (line.len - 1).usize()) == 13
+            return runtime_text(line)
 
 
         def evaluate_write_stream(machine: mutable Machine&, text: RuntimeValue, fd: FileDescriptor) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
@@ -4368,6 +4431,10 @@ extend EsIr:
 
                         Dispatch, Opcode.ReadStdin:
                             dispatch.value <- evaluate_read_stdin(machine)
+                            break
+
+                        Dispatch, Opcode.ReadStdinLine:
+                            dispatch.value <- evaluate_read_stdin_line(machine)
                             break
 
                         Dispatch, Opcode.WriteStdout:

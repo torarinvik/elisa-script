@@ -412,6 +412,10 @@ directory bridge that recursive glob traversal builds upon.
 traversal in Elisa, filters symlink recursion, sorts and deduplicates owned matches,
 and enforces a depth bound to make malformed/cyclic trees terminate deterministically.
 `ReadStdin` verifies as `() -> Text` with `Console.Read` and `ConsoleError`;
+`ReadStdinLine` verifies as `() -> Text` with the same effect/error row and consumes
+one line at a time, preserving stdin for subsequent reads. The Python-facing
+`input(prompt)` lowering emits an optional `WriteStdout` for the prompt followed by
+`ReadStdinLine`; EOF before a line is represented as the recoverable `Console` failure.
 `WriteStdout` and `WriteStderr` verify as `Text -> Int(unsigned, 64)` with
 `Console.Write` and `ConsoleError`. The reference interpreter drives input until EOF
 and drives output through explicit `Data/End/Error` and `Progress/Done/Error` stream
