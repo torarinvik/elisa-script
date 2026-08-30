@@ -15,6 +15,7 @@ error InterpretError:
     Environment
     Directory
     Console
+    Time
     RangeStepZero
     InvalidShift
     IndexOutOfBounds
@@ -40,6 +41,7 @@ extend EsIr:
             Environment
             Directory
             Console
+            Time
             RangeStepZero
             InvalidShift
             IndexOutOfBounds
@@ -3154,6 +3156,55 @@ extend EsIr:
             return runtime_text(bytes_view(relative))
 
 
+        # Sleep is deliberately expressed as a single semantic operation. The
+        # POSIX bridge only accepts microseconds, so the interpreter chunks long
+        # integer waits and fractional seconds into bounded calls. Invalid
+        # (negative, NaN, or infinite) seconds are typed time failures rather
+        # than silently truncating into an accidental host duration.
+        def evaluate_sleep(machine: mutable Machine&, duration: RuntimeValue, unit: i64) -> RuntimeValue:
+            if unit != 0 and unit != 1:
+                machine.failure <- InterpretFailure.TypeMismatch
+                return runtime_void()
+            if duration.kind == RuntimeValueKind.Int:
+                if duration.integer < 0:
+                    machine.failure <- InterpretFailure.Time
+                    return runtime_void()
+                remaining: mutable i64 = duration.integer
+                if unit == 0:
+                    while remaining > 0 |machine, remaining|:
+                        can Blocking.IO:
+                            if elisascript_posix_usleep(1000000u32) != 0:
+                                machine.failure <- InterpretFailure.Time
+                                return runtime_void()
+                        remaining <- remaining - 1
+                else:
+                    while remaining > 0 |machine, remaining|:
+                        chunk: i64 = 1000 if remaining > 1000 else remaining
+                        can Blocking.IO:
+                            if elisascript_posix_usleep((chunk * 1000).u32()) != 0:
+                                machine.failure <- InterpretFailure.Time
+                                return runtime_void()
+                        remaining <- remaining - chunk
+                return runtime_void()
+            if duration.kind != RuntimeValueKind.Float or unit != 0:
+                machine.failure <- InterpretFailure.TypeMismatch
+                return runtime_void()
+            if duration.decimal != duration.decimal or duration.decimal < 0.0 or duration.decimal > 9223372036854.0:
+                machine.failure <- InterpretFailure.Time
+                return runtime_void()
+            remaining_seconds: mutable f64 = duration.decimal
+            while remaining_seconds > 0.0 |machine, remaining_seconds|:
+                chunk_seconds: f64 = 1.0 if remaining_seconds > 1.0 else remaining_seconds
+                microseconds: mutable u32 = (chunk_seconds * 1000000.0).u32()
+                microseconds <- 1u32 if microseconds == 0u32
+                can Blocking.IO:
+                    if elisascript_posix_usleep(microseconds) != 0:
+                        machine.failure <- InterpretFailure.Time
+                        return runtime_void()
+                remaining_seconds <- remaining_seconds - chunk_seconds
+            return runtime_void()
+
+
         def evaluate_run_process(machine: mutable Machine&, storage: darray[RuntimeValue]&, executable: RuntimeValue, arguments: RuntimeValue) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
             if executable.kind != RuntimeValueKind.Text or arguments.kind != RuntimeValueKind.Array or text_has_nul(executable.text):
                 machine.failure <- InterpretFailure.TypeMismatch
@@ -4517,7 +4568,7 @@ extend EsIr:
 
 
         def error_guard_recoverable(failure: InterpretFailure) -> bool:
-            return failure in {InterpretFailure.DivisionByZero, InterpretFailure.IntegerOverflow, InterpretFailure.InvalidNumber, InterpretFailure.FileIo, InterpretFailure.Process, InterpretFailure.Environment, InterpretFailure.Directory, InterpretFailure.Console, InterpretFailure.RangeStepZero, InterpretFailure.InvalidShift, InterpretFailure.IndexOutOfBounds}
+            return failure in {InterpretFailure.DivisionByZero, InterpretFailure.IntegerOverflow, InterpretFailure.InvalidNumber, InterpretFailure.FileIo, InterpretFailure.Process, InterpretFailure.Environment, InterpretFailure.Directory, InterpretFailure.Console, InterpretFailure.Time, InterpretFailure.RangeStepZero, InterpretFailure.InvalidShift, InterpretFailure.IndexOutOfBounds}
 
 
         def execute_function(machine: mutable Machine&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, handler_stack: mutable darray[sview]&, module: Module&, function_index: usize, arguments: darray[RuntimeValue]&, resume_block: u32 = 0, resume_instruction: usize = 0, initial_ids: darray[u32] = [], initial_values: darray[RuntimeValue] = []) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
@@ -4918,6 +4969,11 @@ extend EsIr:
                             target_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
                             base_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1], machine)
                             dispatch.value <- evaluate_path_relative(machine, target_value, base_value)
+                            break
+
+                        Dispatch, Opcode.Sleep:
+                            duration_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
+                            dispatch.value <- evaluate_sleep(machine, duration_value, instruction.integer)
                             break
 
                         Dispatch, Opcode.PathExists:
@@ -5349,6 +5405,9 @@ extend EsIr:
                 Dispatch, InterpretFailure.Console:
                     raise InterpretError.Console
                     break
+                Dispatch, InterpretFailure.Time:
+                    raise InterpretError.Time
+                    break
                 Dispatch, InterpretFailure.RangeStepZero:
                     raise InterpretError.RangeStepZero
                     break
@@ -5453,6 +5512,12 @@ extend EsIr:
         def path_relative_value(target: sview, base: sview) -> sview can[Memory.Allocate, Abort.Panic]:
             relative: dstr = Fs::relative(&perm_arena, target, base)
             return bytes_view(relative)
+
+
+        def sleep_value(duration: RuntimeValue, unit: i64) -> void error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+            machine: mutable Machine = Machine{steps: 0, step_limit: 1, failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void()}
+            _ = evaluate_sleep(machine, duration, unit)
+            try raise_interpret_failure(machine.failure) if machine.failure != InterpretFailure.None
 
 
         def path_exists_text(path: sview) -> bool error[InterpretError] can[Memory.Allocate, Abort.Panic]:

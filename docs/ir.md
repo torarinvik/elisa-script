@@ -482,6 +482,11 @@ raise `ProcessError`.
 produces `Named(ProcessCapture)`. The directory and environment are applied only in
 the forked child, preserving the parent process state for deterministic
 differential-testing runs.
+`Sleep` takes one signed/unsigned 64-bit integer or `f64` duration operand and
+returns `Void`. Its instruction integer is `0` for seconds and `1` for
+milliseconds. Verification requires `Time.Sleep` and `TimeError`; the reference
+interpreter and direct bytecode path share the same bounded POSIX `usleep`
+implementation and reject negative or non-finite durations.
 `GetEnvironment`, `SetEnvironment`, and `UnsetEnvironment` operate on `Text`
 operands. Reads produce owned `Text` under `Environment.Read`; mutations produce
 `Bool` under `Environment.Write`. All three require `EnvironmentError`, reject C
@@ -588,7 +593,7 @@ and scalar-map subset (boolean, 64-bit integer, or 64-bit float values, text/nom
 including four nested array levels,
 array/map construction and key/value extraction, nominal path/glob/regex/URL constructors, typed path composition/decomposition, indexing, length, slicing, membership, concatenation, split,
 join, typed integer/float parsing and formatting, regex search/replacement/splitting/extraction, indexed updates, unary/binary operators,
-observations, pure direct calls, and typed filesystem/process operations) take a
+observations, pure direct calls, and typed filesystem/process/time operations) take a
 direct packed-instruction path. Calls use recursive state-machine frames with one
 shared step budget, storage, and
 observation stream, so helper functions remain behaviorally identical to the

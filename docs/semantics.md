@@ -948,6 +948,19 @@ Writes retry partial progress through the explicit stream state machine, so a sh
 POSIX write is never reported as successful completion. Neither operation parses or
 constructs a command string, keeping stream data independent from shell quoting.
 
+## Time and sleeping
+
+Sleeping is a typed blocking effect rather than a shell command. The scripting
+profile provides `sleep(seconds: f64) -> void error[TimeError] can[Time.Sleep]`
+and the integer-precise `sleep_milliseconds(milliseconds: u64)` spelling. The
+aliases `sleep_seconds` and `sleep_ms` preserve the same contracts. Integral
+64-bit values are also accepted by the seconds forms for convenient ports of
+shell `sleep`; negative values, NaN, and infinity raise `TimeError`.
+
+The operation is lowered to one unit-tagged IR instruction. Both execution
+backends call the POSIX `usleep` bridge in bounded chunks, so long waits and
+fractional seconds have the same behavior without invoking a shell.
+
 ## Process environment
 
 Environment access is explicit and typed rather than implicit global string magic:
@@ -1039,6 +1052,8 @@ must call the same implementation used at runtime so the two cannot disagree.
 - Each prefix has its expected nominal result type.
 - Malformed constant payloads produce compile-time diagnostics.
 - Nominal literal results participate in assignment type checking.
+- Shell/Python-compatible `sleep` aliases resolve as known builtins for the
+  typed lowering pass.
 
-Current result: 3/3 Elisascript semantic tests pass. Compiling this suite also
+Current result: 9/9 Elisascript semantic tests pass. Compiling this suite also
 compiles the complete retained semantic layer and its exhaustive diagnostic tables.
