@@ -536,7 +536,8 @@ returns a fresh owned array with the original element descriptor in reverse
 order, without requiring a mutable binding.
 The compiler-known `print(value, ...)` convenience formats each supported scalar,
 joins arguments with one space, appends a newline, and lowers directly to the
-existing `Concat` plus `WriteStdout` operations; no command string or separate
+existing `Concat` plus `WriteStdout` operations; `println` is the equivalent
+stdout alias and `eprint` selects `WriteStderr`. No command string or separate
 stdout runtime is introduced.
 The compiler-known `min(values)`/`max(values)` calls lower to `SortArray` followed
 by a checked `Index` at `0` or `-1`, preserving exact scalar element types and
