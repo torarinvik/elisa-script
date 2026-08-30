@@ -699,6 +699,8 @@ at the filesystem boundary, and partial writes or close failures remain
 `File.Write`. It returns `true` only when removal succeeded; a missing or otherwise
 unremovable path returns `false`, following the core Elisa `remove_file` contract.
 The nominal operand prevents accidental deletion through an arbitrary text value.
+Python's `os.remove` and `os.unlink` spellings are typed aliases with the same
+boolean result and `File.Write` effect.
 
 Pure path-shape helpers keep path plumbing nominal without invoking the host OS:
 `path_join(base: Path, leaf: sview) -> Path` inserts one `/` separator and lets an
