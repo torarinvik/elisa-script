@@ -228,7 +228,9 @@ which rebinds the set to a typed empty value, and `.remove(element)`, which remo
 the matching element if present and is otherwise a no-op. Indexed set reads remain
 semantic errors until the dedicated set runtime shape is introduced. Mutable
 dictionaries also support `.clear()` and `.remove(key)` with the same immutable SSA
-update semantics; removing a missing key is a no-op.
+update semantics; removing a missing key is a no-op. The lowered map descriptor retains
+an internal set marker, so set-only `.add()` cannot be applied to an ordinary
+`dict[T, bool]` despite the shared physical representation.
 
 ## Text field processing
 
