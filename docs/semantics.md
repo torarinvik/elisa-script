@@ -602,6 +602,12 @@ row. The reference interpreter executes it through Elisa's own
 `elisacore_fileio.elisa` runtime; it does not invoke a shell or Python. A
 source-defined `path_exists` function shadows the compiler-known operation.
 
+`is_file(path: Path) -> bool` is the regular-file predicate used by shell `test -f`
+and Python `Path.is_file()`. It contributes `File.Read`; missing paths and entries
+that are not regular files return `false`. The `path.is_file()` method lowers to the
+same typed operation, and a source-defined `is_file` shadows the compiler-known
+operation.
+
 `read_text(path: Path) -> sview error[FileIoError]` reads a whole file without
 discarding embedded bytes. It contributes the same `File.Read` effect and adds
 `FileIoError` to the enclosing error row. Open, seek, read, and close failures
@@ -649,7 +655,7 @@ have short aliases: `dirname(path)`/`basename(path)`/`suffix(path)`/`stem(path)`
 map to the corresponding path decomposition helpers, and `is_dir(path)` is an
 alias for the directory predicate. A `Path` also exposes the common `pathlib`
 shape members `path.parent`, `path.name`, `path.suffix`, and `path.stem`, plus
-`path.joinpath(leaf)`, `path.exists()`, and `path.is_dir()`; each lowers to the
+`path.joinpath(leaf)`, `path.exists()`, `path.is_file()`, and `path.is_dir()`; each lowers to the
 same typed opcode as its free-function counterpart. For direct shell scripts, the mutation aliases are:
 `pwd()` is `current_directory()`, `cd(path)` is `change_directory(path)`,
 `mkdir(path)`/`rmdir(path)` are directory creation/removal, and

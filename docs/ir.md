@@ -310,6 +310,9 @@ function's effect row. Lowering adds that effect automatically. The interpreter
 copies the path into a NUL-terminated Elisa-owned buffer before calling the
 self-hosted core file-I/O layer, so a length-delimited `sview` is never passed to
 libc as though it were a C string.
+`IsFile` has the same verified `Named(Path) -> Bool` shape and `File.Read` effect,
+but tests the POSIX mode bits and returns `false` for missing or non-regular entries.
+The scripting `is_file(path)` alias and `Path.is_file()` method lower to this opcode.
 `PathJoin`, `PathParent`, `PathName`, `PathExtension`, and `PathStem` are pure typed path-shape operations.
 `PathJoin` verifies `Named(Path) × Text -> Named(Path)` and uses the core `Fs.join`
 separator/absolute-leaf rules; `PathParent` verifies `Named(Path) -> Named(Path)`;
