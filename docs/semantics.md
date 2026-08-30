@@ -790,6 +790,10 @@ Python `pathlib` file methods are also available on nominal `Path` values:
 `path.write_bytes(bytes)`, `path.unlink()`, and `path.rename(destination)`.
 They lower to the existing typed read, write, remove, and move operations, so
 their effects, errors, and exact result types remain visible to every backend.
+`path.glob(pattern)` and `path.rglob(pattern)` accept one `sview` pattern and
+return deterministic `darray[sview]` matches rooted at the receiver; `rglob`
+adds a recursive `**/` component. Both use the same bounded, symlink-safe glob
+walker as `expand_glob` and carry `Directory.Read`/`DirectoryError`.
 The corresponding metadata and directory mutations are available as
 `path.touch()`, `path.chmod(mode)`, `path.mkdir()`, and `path.rmdir()`;
 these retain the same `File.Write` or `Directory.Write` effects and typed error

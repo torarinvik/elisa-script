@@ -317,6 +317,11 @@ The scripting `is_file(path)` alias and `Path.is_file()` method lower to this op
 selected mode is one of POSIX `R_OK`, `W_OK`, or `X_OK`, backing the
 `is_readable`, `is_writable`, and `is_executable` predicates without exposing a
 dynamic mode integer to source programs.
+`PathGlob` and `PathRGlob` verify as `Named(Path) × Text -> Array[Text]` with
+`Directory.Read` and `DirectoryError`. They join the receiver with a runtime
+pattern (`PathRGlob` prefixes `**/`) and delegate to the same bounded,
+symlink-safe glob walker as `ExpandGlob`, keeping Python `Path.glob` and
+`Path.rglob` deterministic across interpreter and bytecode execution.
 `TouchPath` verifies as `Named(Path) -> Bool` with `File.Write` and `FileIoError`.
 Its interpreter bridge opens-or-creates without truncation, then refreshes the
 timestamps through POSIX `utimes`; packed bytecode uses the same helper.
