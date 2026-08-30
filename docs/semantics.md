@@ -120,6 +120,9 @@ implicit widening. `any(values)` and `all(values)`
 fold a typed boolean array with the usual empty identities (`false` and `true`)
 and short-circuit through the same explicit loop state machine; non-boolean
 elements are rejected rather than coerced by truthiness.
+The same forms accept Python's `range(stop)`, `range(start, stop)`, and
+`range(start, stop, step)` spellings wherever an integer range query is allowed,
+using the counter directly without constructing an intermediate array.
 
 ## Text boundary predicates
 

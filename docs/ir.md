@@ -539,7 +539,9 @@ The Python-shaped `sum(values, start)`/`product(values)` calls reuse the
 integer-fold state machine with identities `start`/`1` (`sum` defaults to `0`),
 while `any(values)`/`all(values)` reuse
 the early-exit boolean-fold CFG. All four preserve exact element types and
-short-circuit or fold without materializing a second collection.
+short-circuit or fold without materializing a second collection. Their iterable
+forms also normalize Python `range(stop)`, `range(start, stop)`, and
+`range(start, stop, step)` calls to the same counter-driven fold/query CFG.
 Empty literals use
 their expected array type in bindings, assignments, returns, and call arguments,
 so `[]` never introduces an untyped dynamic collection. Arrays may nest five levels
