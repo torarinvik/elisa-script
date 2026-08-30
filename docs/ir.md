@@ -732,6 +732,10 @@ and no rebinding occurs on failure. Mutation discovery treats these calls as
 assignments, so updates inside `if`, `while`, and `for` flow through the same typed
 merge, header, latch, and exit parameters as explicit `<-` rebinding. Named
 arguments, mismatched index types, and non-array receivers are rejected.
+Mutable set bindings also accept Python's `values.discard(element)` spelling;
+it lowers to the same typed `DeleteIndex` update as `values.remove(element)`,
+but is restricted to set descriptors and remains a no-op when the element is
+absent.
 The statement-form `array.reverse()` method lowers to `ReverseArray`. It requires
 a mutable array binding and zero arguments, emits an owned reversed array value,
 and rebinds the receiver through the ordinary SSA state-machine path. The

@@ -373,7 +373,9 @@ and insertion-order iteration while preserving set deduplication. Mutable set bi
 support `.add(element)` through the same immutable SSA update used by maps; duplicate
 additions leave cardinality unchanged. Mutable set bindings also support `.clear()`,
 which rebinds the set to a typed empty value, and `.remove(element)`, which removes
-the matching element if present and is otherwise a no-op. Indexed set reads remain
+the matching element if present and is otherwise a no-op. Python's
+`.discard(element)` is an equivalent set-only spelling for the no-op-on-missing
+operation. Indexed set reads remain
 semantic errors until the dedicated set runtime shape is introduced. Mutable
 dictionaries also support `.clear()` and `.remove(key)`, and mutable arrays support
 `.clear()`, all with immutable SSA update semantics; removing a missing key is a no-op.
