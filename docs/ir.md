@@ -690,6 +690,10 @@ index may use any integer type; Python-compatible negative and out-of-range
 clamping is performed by the runtime, while the inserted value is checked
 statically against the array element descriptor. The operation produces an
 owned array and participates in the same mutation-name and CFG merge machinery.
+The expression-form `array.copy()` lowers to `CopyArray`, preserves the complete
+array element descriptor, and copies the flat payload into fresh runtime storage.
+It is available for immutable and mutable arrays alike and has no mutation-name
+side effect.
 Dictionary values also expose Python's `mapping.get(key, default)` spelling. It
 lowers to the same `IndexValid`-guarded CFG as `get mapping[key] else default`,
 so the default expression is lazy and both branches merge one exact value type.

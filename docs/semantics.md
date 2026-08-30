@@ -341,6 +341,9 @@ It requires a mutable array, an integer index, and an element of the exact array
 element type. Negative indices count from the end, indices below the start clamp
 to zero, and indices beyond the end append; the operation copies the array and
 rebinds the receiver through SSA.
+`values.copy() -> darray[T]` creates an owned shallow copy of any typed array.
+It takes no arguments and does not require a mutable receiver, so subsequent
+updates to either array do not alter the other's storage.
 
 ## Text field processing
 
