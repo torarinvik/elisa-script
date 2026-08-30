@@ -634,9 +634,13 @@ Statement-form `array.push(value)` and the Python-compatible
 ownership-safe SSA updates rather than hidden aliasing mutations. `push` constructs
 a typed singleton and `append` has exactly the same contract; `extend` accepts the
 receiver's exact array type; all three concatenate
-into a fresh array value and rebind the receiver. Mutation discovery treats these
-calls as assignments, so updates inside `if`, `while`, and `for` flow through the
-same typed merge, header, latch, and exit parameters as explicit `<-` rebinding.
+into a fresh array value and rebind the receiver. Python's zero-argument
+`array.pop()` is also available in both expression and statement position: its
+typed `PopArrayValue` result yields the removed element while `PopArray` rebinds
+the receiver to a shortened view. Both operations reject an empty array with
+`IndexOutOfBounds`, and no rebinding occurs on failure. Mutation discovery treats
+these calls as assignments, so updates inside `if`, `while`, and `for` flow through
+the same typed merge, header, latch, and exit parameters as explicit `<-` rebinding.
 Named arguments, mismatched element types, and non-array receivers are rejected.
 Lowering retains one mutability fact alongside every lexical binding. Plain locals,
 parameters, loop variables, and match binders are immutable; `mutable` local type

@@ -269,7 +269,11 @@ Mutable arrays accept both Elisa's `values.push(element)` spelling and the
 Python-compatible `values.append(element)` alias. Both require one positional
 element of the exact array element type and rebind the mutable array through the
 same ownership-safe SSA update; immutable arrays and mismatched elements are
-rejected before execution.
+rejected before execution. Python's zero-argument `values.pop()` returns the
+exact element type and rebinds the mutable array to a shortened view. Empty
+arrays raise `IndexOutOfBounds`; the failing operation does not publish a new
+binding value. `pop` is intentionally zero-argument for now, keeping indexed
+removal explicit through existing typed array operations.
 
 ## Text field processing
 

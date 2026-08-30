@@ -477,7 +477,7 @@ extend EsIr:
                     Stmt.Expr(expression, pos):
                         match expression:
                             Expr.Call(Expr.Field(Expr.Ident(name, ident_pos), method, field_pos), arguments, argument_names, call_pos):
-                                add_unique_name(names, name) if method == "push" or method == "extend" or method == "add" or method == "clear" or method == "remove"
+                                add_unique_name(names, name) if method == "push" or method == "append" or method == "pop" or method == "extend" or method == "add" or method == "clear" or method == "remove"
                             _:
                                 pass
                     Stmt.Assign(target, operator, value, pos):
@@ -2452,6 +2452,12 @@ extend EsIr:
                             callee_name <- name
                         _:
                             pass
+                    match callee:
+                        Expr.Field(Expr.Ident(receiver_name, receiver_pos), method_name, field_pos):
+                            if method_name == "pop":
+                                return lower_collection_pop(receiver_name, arguments, argument_names, pos, state)
+                        _:
+                            pass
                     if callee_name == "observe":
                         if arguments.count != 1:
                             add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "observe requires exactly one value")
@@ -3502,6 +3508,46 @@ extend EsIr:
             return lower_expression(expression, state)
 
 
+        # Lower Python-style `values.pop()` as a typed pair of semantic array
+        # operations.  PopArrayValue produces the removed element (and raises
+        # IndexOutOfBounds for an empty array); PopArray produces the shortened
+        # view that rebinds the mutable SSA name.  Keeping the two results
+        # separate lets expression and statement forms share exactly the same
+        # bounds and ownership behavior without introducing a tuple type into
+        # the initial IR.
+        def lower_collection_pop(receiver_name: sview, arguments: darray[Ast::Expr]&, argument_names: darray[sview]&, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+            invalid: LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+            binding: usize = binding_index(state, receiver_name)
+            if binding == state.names.count:
+                add_issue(state, LowerIssueKind.UnknownBinding, pos.line, "collection mutation receiver has no local binding")
+                return invalid
+            if state.types[binding].kind != TypeKind.Array:
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "pop requires an array receiver")
+                return invalid
+            if not state.mutables[binding]:
+                add_issue(state, LowerIssueKind.ImmutableBinding, pos.line, "pop requires a mutable array binding")
+                return invalid
+            named_argument: mutable bool = false
+            for argument_name in argument_names |named_argument|:
+                named_argument <- true if argument_name != ""
+            if arguments.count != 0 or named_argument:
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "pop requires no arguments")
+                return invalid
+
+            collection: u32 = state.values[binding]
+            element_type: Type = array_element_type(state.types[binding])
+            element: u32 = fresh_value(state)
+            element_start: u32 = state.operand_pool.count.u32()
+            state.operand_pool.push(collection)
+            state.instructions.push(Instruction{opcode: Opcode.PopArrayValue, result: element, result_type: element_type, operand_start: element_start, operand_count: 1, span: ir_span(pos)})
+            shortened: u32 = fresh_value(state)
+            shortened_start: u32 = state.operand_pool.count.u32()
+            state.operand_pool.push(collection)
+            state.instructions.push(Instruction{opcode: Opcode.PopArray, result: shortened, result_type: state.types[binding], operand_start: shortened_start, operand_count: 1, span: ir_span(pos)})
+            state.values[binding] <- shortened
+            return LoweredValue{valid: true, value: element, type: element_type}
+
+
         def lower_collection_mutation(expression: Ast::Expr, pos: Ast::Pos&, state: mutable LowerState&) -> bool can[Memory.Allocate, Abort.Panic]:
             receiver_name: mutable sview = ""
             method_name: mutable sview = ""
@@ -3509,7 +3555,7 @@ extend EsIr:
             argument_names: mutable darray[sview] = []
             match expression:
                 Expr.Call(Expr.Field(Expr.Ident(name, ident_pos), method, field_pos), call_arguments, call_argument_names, call_pos):
-                    if method == "push" or method == "append" or method == "extend" or method == "add" or method == "clear" or method == "remove":
+                    if method == "push" or method == "append" or method == "pop" or method == "extend" or method == "add" or method == "clear" or method == "remove":
                         receiver_name <- name
                         method_name <- method
                         arguments.extend(call_arguments)
@@ -3520,6 +3566,9 @@ extend EsIr:
             binding: usize = binding_index(state, receiver_name)
             if binding == state.names.count:
                 add_issue(state, LowerIssueKind.UnknownBinding, pos.line, "collection mutation receiver has no local binding")
+                return true
+            if method_name == "pop":
+                _ = lower_collection_pop(receiver_name, arguments, argument_names, pos, state)
                 return true
             if method_name == "clear":
                 if state.types[binding].kind != TypeKind.Map and state.types[binding].kind != TypeKind.Array:
@@ -3598,16 +3647,16 @@ extend EsIr:
                     state.values[binding] <- result
                 return true
             if state.types[binding].kind != TypeKind.Array:
-                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "push, append, and extend require an array receiver")
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "push, append, pop, and extend require an array receiver")
                 return true
             if not state.mutables[binding]:
-                add_issue(state, LowerIssueKind.ImmutableBinding, pos.line, "push, append, and extend require a mutable array binding")
+                add_issue(state, LowerIssueKind.ImmutableBinding, pos.line, "push, append, pop, and extend require a mutable array binding")
                 return true
             named_argument: mutable bool = false
             for argument_name in argument_names |named_argument|:
                 named_argument <- true if argument_name != ""
             if arguments.count != 1 or named_argument:
-                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "push, append, and extend require exactly one positional argument")
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "push, append, pop, and extend require exactly one positional argument")
                 return true
 
             appended: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: state.types[binding]}
