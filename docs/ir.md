@@ -877,6 +877,10 @@ Array comprehensions may also use the Python-compatible two-binder
 `zip(left, right)` iterable. The lowerer emits both source `Length` operations,
 selects the shorter `usize` through a merge CFG, and performs one typed `Index`
 per source in the body before projecting and concatenating the result.
+They also accept the two-binder `enumerate(collection, start)` iterable. Its
+header carries a zero-based source cursor for `Length`/`Index`; the body adds
+the one-time, exact-`usize` start value only for the public index binder, so
+non-zero starts do not alter collection bounds.
 Header, latch, and exit block parameters carry both the accumulator and iteration
 state through the flat edge-argument pool. Consequently the
 interpreter, bytecode VM, and future native backends observe identical evaluation

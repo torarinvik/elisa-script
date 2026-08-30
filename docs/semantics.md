@@ -329,7 +329,10 @@ binder in its `key: value` projection. Array/text iteration uses checked
 checked value lookup for the second binder. Text iteration produces one-character
 values. The Python-compatible `[left + right for left, right in zip(lefts, rights)]`
 form projects two array/text sources in lockstep, evaluates both once, and stops
-at the shorter source while preserving each exact element type.
+at the shorter source while preserving each exact element type. The same
+two-binder shape accepts `[value for index, value in enumerate(values, start)]`;
+the collection cursor remains zero-based for bounds and indexing while the
+typed `usize` index binding is offset by `start` (which is evaluated once).
 Integer ranges stay counter-driven and do not materialize a temporary array:
 `low..<high` is exclusive ascending, `low..=high` is inclusive ascending, and
 `high..>low` is strict descending. The range-owned stride spelling

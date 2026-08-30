@@ -716,6 +716,9 @@ extend EsIr:
             zip_mode: mutable bool = false
             zip_left_source: mutable Ast::Expr = Expr.Absent
             zip_right_source: mutable Ast::Expr = Expr.Absent
+            enumerate_mode: mutable bool = false
+            enumerate_source: mutable Ast::Expr = Expr.Absent
+            enumerate_start: mutable Ast::Expr = Expr.Absent
             match iterable:
                 Expr.Call(Expr.Ident(name, name_pos), arguments, argument_names, call_pos):
                     valid_zip_names: mutable bool = arguments.count == 2 and (argument_names.count == 0 or argument_names.count == arguments.count)
@@ -726,9 +729,18 @@ extend EsIr:
                         zip_mode <- true
                         zip_left_source <- arguments[0]
                         zip_right_source <- arguments[1]
+                    valid_enumerate_names: mutable bool = arguments.count >= 1 and arguments.count <= 2 and (argument_names.count == 0 or argument_names.count == arguments.count)
+                    if valid_enumerate_names and argument_names.count != 0:
+                        for argument_name in argument_names |valid_enumerate_names|:
+                            valid_enumerate_names <- false if argument_name != "" and argument_name != "start"
+                        valid_enumerate_names <- false if argument_names.count == 2 and argument_names[0] != ""
+                    if name == "enumerate" and valid_enumerate_names and lowered_function_index(state, name) == state.function_names.count:
+                        enumerate_mode <- true
+                        enumerate_source <- arguments[0]
+                        enumerate_start <- arguments[1] if arguments.count == 2
                 _:
                     pass
-            map_mode: bool = extra_variable != "" and not zip_mode
+            map_mode: bool = extra_variable != "" and not zip_mode and not enumerate_mode
             extra_binder_count: usize = comprehension_extra_binder_count(state, pos)
             collection: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
             iteration_collection: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
@@ -744,6 +756,9 @@ extend EsIr:
                 return LoweredValue{valid: false, value: 0, type: result_type}
             if zip_mode and extra_variable == "":
                 add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "zip comprehensions require two element binders")
+                return LoweredValue{valid: false, value: 0, type: result_type}
+            if enumerate_mode and extra_variable == "":
+                add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "enumerate comprehensions require index and value binders")
                 return LoweredValue{valid: false, value: 0, type: result_type}
             if range_mode and map_mode:
                 add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "array comprehensions cannot combine range iteration with multiple binders")
@@ -781,6 +796,15 @@ extend EsIr:
                     return LoweredValue{valid: false, value: 0, type: result_type}
                 iteration_collection <- collection
                 extra_type <- type_from_name("char") if zip_right_collection.type.kind == TypeKind.Text else array_element_type(zip_right_collection.type)
+            elif enumerate_mode:
+                collection <- lower_expression(enumerate_source, state)
+                if not collection.valid:
+                    return LoweredValue{valid: false, value: 0, type: result_type}
+                if collection.type.kind not in {TypeKind.Array, TypeKind.Text}:
+                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "enumerate comprehensions require an array or text source")
+                    return LoweredValue{valid: false, value: 0, type: result_type}
+                iteration_collection <- collection
+                extra_type <- type_from_name("char") if collection.type.kind == TypeKind.Text else array_element_type(collection.type)
             elif map_mode:
                 collection <- lower_expression(iterable, state)
                 if not collection.valid:
@@ -806,7 +830,9 @@ extend EsIr:
                     return LoweredValue{valid: false, value: 0, type: result_type}
                 iteration_collection <- collection
             element_type: Type = range_low.type if range_mode else (map_key_type(collection.type) if map_mode else (type_from_name("char") if collection.type.kind == TypeKind.Text else array_element_type(collection.type)))
-            projected: LoweredValue = probe_comprehension_body(projection, variable, element_type, extra_variable, extra_type, pos, state)
+            index_type: Type = range_low.type if range_mode else type_from_name("usize")
+            variable_type: Type = index_type if enumerate_mode else element_type
+            projected: LoweredValue = probe_comprehension_body(projection, variable, variable_type, extra_variable, extra_type, pos, state)
             if not projected.valid:
                 add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "comprehension projection must be a straight-line typed expression")
                 return LoweredValue{valid: false, value: 0, type: result_type}
@@ -844,7 +870,9 @@ extend EsIr:
             append_block: u32 = body_block if condition_absent else fresh_block(state)
             latch_block: u32 = fresh_block(state)
             exit_block: u32 = fresh_block(state)
-            index_type: Type = range_low.type if range_mode else type_from_name("usize")
+            enumerate_offset: mutable LoweredValue = LoweredValue{valid: true, value: 0, type: index_type}
+            if enumerate_mode and enumerate_start is not Expr.Absent:
+                enumerate_offset <- lower_enumerate_start(enumerate_start, pos, state)
             initial_index: LoweredValue = range_low if range_mode else emit_constant(state, index_type, 0, "", "", false, ir_span(pos))
             entry_args: (start: u32, count: u16) = append_context_arguments(state, context)
             state.edge_arg_pool.push(initial_index.value)
@@ -906,30 +934,44 @@ extend EsIr:
                 state.operand_pool.push(iteration_collection.value)
                 state.operand_pool.push(header_index)
                 state.instructions.push(Instruction{opcode: Opcode.Index, result: element_result, result_type: element_type, operand_start: element_start, operand_count: 2, span: ir_span(pos)})
-            state.names.push(variable)
-            state.values.push(element_result)
-            state.types.push(element_type)
-            state.mutables.push(false)
-            if map_mode:
-                value_result: u32 = fresh_value(state)
-                value_start: u32 = state.operand_pool.count.u32()
-                state.operand_pool.push(map_collection.value)
-                state.operand_pool.push(element_result)
-                state.instructions.push(Instruction{opcode: Opcode.Index, result: value_result, result_type: extra_type, operand_start: value_start, operand_count: 2, span: ir_span(pos)})
-                state.names.push(extra_variable)
-                state.values.push(value_result)
-                state.types.push(extra_type)
+            if enumerate_mode:
+                enumerate_index_value: mutable u32 = header_index
+                if enumerate_start is not Expr.Absent:
+                    enumerate_index: LoweredValue = emit_binary(state, Opcode.Add, header_index, enumerate_offset.value, index_type, pos)
+                    enumerate_index_value <- enumerate_index.value
+                state.names.push(variable)
+                state.values.push(enumerate_index_value)
+                state.types.push(index_type)
                 state.mutables.push(false)
-            elif zip_mode:
-                zip_element_result: u32 = fresh_value(state)
-                zip_element_start: u32 = state.operand_pool.count.u32()
-                state.operand_pool.push(zip_right_collection.value)
-                state.operand_pool.push(header_index)
-                state.instructions.push(Instruction{opcode: Opcode.Index, result: zip_element_result, result_type: extra_type, operand_start: zip_element_start, operand_count: 2, span: ir_span(pos)})
                 state.names.push(extra_variable)
-                state.values.push(zip_element_result)
-                state.types.push(extra_type)
+                state.values.push(element_result)
+                state.types.push(element_type)
                 state.mutables.push(false)
+            else:
+                state.names.push(variable)
+                state.values.push(element_result)
+                state.types.push(element_type)
+                state.mutables.push(false)
+                if map_mode:
+                    value_result: u32 = fresh_value(state)
+                    value_start: u32 = state.operand_pool.count.u32()
+                    state.operand_pool.push(map_collection.value)
+                    state.operand_pool.push(element_result)
+                    state.instructions.push(Instruction{opcode: Opcode.Index, result: value_result, result_type: extra_type, operand_start: value_start, operand_count: 2, span: ir_span(pos)})
+                    state.names.push(extra_variable)
+                    state.values.push(value_result)
+                    state.types.push(extra_type)
+                    state.mutables.push(false)
+                elif zip_mode:
+                    zip_element_result: u32 = fresh_value(state)
+                    zip_element_start: u32 = state.operand_pool.count.u32()
+                    state.operand_pool.push(zip_right_collection.value)
+                    state.operand_pool.push(header_index)
+                    state.instructions.push(Instruction{opcode: Opcode.Index, result: zip_element_result, result_type: extra_type, operand_start: zip_element_start, operand_count: 2, span: ir_span(pos)})
+                    state.names.push(extra_variable)
+                    state.values.push(zip_element_result)
+                    state.types.push(extra_type)
+                    state.mutables.push(false)
             filter_value: mutable LoweredValue = LoweredValue{valid: true, value: 0, type: type_from_name("bool")}
             if not condition_absent:
                 filter_value <- lower_expression(condition, state)
