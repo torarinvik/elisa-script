@@ -771,6 +771,8 @@ nominal `Path` argument and the same effect/error contract. For direct shell scr
 `remove_path`, `copy_path`, and `move_path`. The aliases retain nominal `Path`
 arguments, exact return types, effect rows, and error contracts; they do not add
 shell flags or recursive/stringly behavior.
+Python `os.getcwd()` and `os.chdir(path)` are typed aliases for the working-directory
+operations, and `os.listdir(path)` is spelled `listdir(path)`.
 
 ## Process execution
 
@@ -939,6 +941,7 @@ can[Directory.Read]` returns owned entry basenames. It omits the synthetic `.` a
 deterministic rather than dependent on filesystem enumeration order. Opening,
 enumeration, and close failures remain structured errors. Returned names do not
 borrow the operating system's reusable directory-entry buffer.
+The Python `listdir(path)` spelling is an equivalent typed alias.
 
 `is_directory(path: Path) -> bool error[DirectoryError] can[Directory.Read]`
 tests whether a path can be opened as a directory. Missing paths and ordinary files
