@@ -873,6 +873,8 @@ and use immutable `SetIndex` copies, retaining duplicate-key replacement
 semantics; range-backed dictionary projections use the same counter directly as
 the key/value source. A two-binder dictionary iterable snapshots `MapKeys` once,
 then performs a checked value lookup for the second binder on each iteration.
+The `mapping.items()` spelling normalizes to that same source expression, so it
+also snapshots keys once without materializing pair objects.
 Array comprehensions may also use the Python-compatible two-binder
 `zip(left, right)` iterable. The lowerer emits both source `Length` operations,
 selects the shorter `usize` through a merge CFG, and performs one typed `Index`

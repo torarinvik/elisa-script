@@ -326,7 +326,9 @@ also support two read-only binders (`key, value`) over a dictionary iterable; th
 array form projects a value sequence while the dictionary form can use either
 binder in its `key: value` projection. Array/text iteration uses checked
 `Length`/`Index` operations; map iteration snapshots keys once and performs a
-checked value lookup for the second binder. Text iteration produces one-character
+checked value lookup for the second binder. Dictionary comprehensions also accept
+the Python spelling `{key: value for key, value in mapping.items()}` and use the
+same one-time key snapshot/value lookup. Text iteration produces one-character
 values. The Python-compatible `[left + right for left, right in zip(lefts, rights)]`
 form projects two array/text sources in lockstep, evaluates both once, and stops
 at the shorter source while preserving each exact element type. The same
