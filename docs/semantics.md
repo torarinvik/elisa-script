@@ -127,6 +127,12 @@ replacement)` returns `sview`; `text.strip()`/`text.trim()` return `sview`; and
 text values, method arity is checked during lowering, and `split` intentionally
 requires an explicit separator rather than Python's implicit-whitespace mode.
 
+Dictionary values expose the Python-compatible `mapping.keys()` method. It takes
+no arguments, returns an insertion-ordered `darray[K]` for `dict[K, V]`, and uses
+the same typed `MapKeys` operation as dictionary iteration. Set values do not
+expose dictionary key views even though their first runtime representation shares
+the map payload layout.
+
 The first executable regex operation is the compiler-known, strongly typed search
 `matches(text, pattern) -> bool`, where `text` is `sview` and `pattern` is `Regex`:
 
