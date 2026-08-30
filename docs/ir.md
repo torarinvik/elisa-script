@@ -605,7 +605,10 @@ branches through a typed merge CFG so only the selected ordering path executes.
 `for mutable value in values` additionally requires `values` to be a named mutable
 array binding. Python's `range(stop)`, `range(start, stop)`, and
 `range(start, stop, step)` loop calls are normalized to the same counter-driven
-range CFG, with positive constant steps and no temporary collection. Lowering
+range CFG, with typed steps and no temporary collection. Literal steps select a
+fixed comparison direction; dynamic integer steps use `RangeCondition`, which
+selects the sign-aware direction at runtime. A zero dynamic step raises
+`RangeStepZero` through the function's error channel. Lowering
 records a scoped element-owner relation; every successful
 `value <- replacement` or compound update immediately transitions the owner through
 `SetIndex`. The updated array is loop-carried state, so writes survive conditional
@@ -843,12 +846,14 @@ an alignment state tests `(value - start) % stride == 0` for ascending ranges or
 for an out-of-bounds needle, and zero or dynamic strides are rejected statically.
 Integer ranges use the same CFG shape. `low..<high` is exclusive ascending,
 `low..=high` is inclusive ascending, and `high..>low` is strict descending.
-The range-owned stride spelling (`low..<high..step`) requires a positive constant;
-the latch adds or subtracts it according to direction, including after `continue`.
+The range-owned stride spelling (`low..<high..step`) accepts a typed integer
+expression; the latch adds or subtracts it according to direction, including after
+`continue`. Dynamic steps use `RangeCondition` in the header to choose the
+exclusive/inclusive/descending comparison mode and reject zero at runtime.
 Python `range(stop)`, `range(start, stop)`, and `range(start, stop, step)` loop
 forms are normalized to these same counter states; a negative literal step selects
-the descending state machine. Zero or dynamic steps are rejected, and no
-temporary array or pair object is created.
+the descending state machine, while a dynamic step selects by sign. No temporary
+array or pair object is created.
 Scalar statement `match` lowers to an ordered comparison-and-branch state machine.
 Integer, float, boolean, character, and text literal arms are typed against the
 scrutinee; pin patterns compare an existing binding, and binding/wildcard arms
@@ -883,8 +888,11 @@ type(s) without retaining speculative instructions, then emits an empty typed
 `MakeArray` or `MakeMap` as the loop-carried accumulator. Array/text iterables use
 a `Length`/`Less` header that gates a checked `Index`; integer range iterables
 instead carry the current typed counter, compare it with the bound in the header,
-and add/subtract the positive constant stride in the latch. Range bounds and
-stride are lowered once, so ranges never allocate a temporary collection. An
+and add/subtract the typed stride in the latch. Dynamic strides use a
+three-operand `RangeCondition` header (current, bound, step) with a mode stored in
+`Instruction.integer`; it performs the sign-aware comparison and raises
+`RangeStepZero` for zero. Range bounds and stride are lowered once, so ranges
+never allocate a temporary collection. An
 optional boolean filter branches to the append state or directly to the latch.
 Array projections become singleton `MakeArray` values and `Concat` produces the
 next accumulator. When an array projection uses two dictionary binders, the

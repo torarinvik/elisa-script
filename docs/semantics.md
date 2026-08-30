@@ -343,13 +343,14 @@ Dictionary comprehensions use the same form for typed offset keys, for example
 Integer ranges stay counter-driven and do not materialize a temporary array:
 `low..<high` is exclusive ascending, `low..=high` is inclusive ascending, and
 `high..>low` is strict descending. The range-owned stride spelling
-`low..<high..step` (and its inclusive/descending variants) requires a positive
-integer constant and is applied in the latch state. Bounds and stride are
-evaluated once. Python's `range(stop)`, `range(start, stop)`, and
+`low..<high..step` (and its inclusive/descending variants) accepts an integer
+expression and is applied in the latch state. Bounds and stride are evaluated
+once. Python's `range(stop)`, `range(start, stop)`, and
 `range(start, stop, step)` spellings are accepted in `for` loops as equivalent
-counter-driven ranges. The step must be an integer constant: positive steps are
-ascending, while a negative literal selects the existing descending range state
-machine (zero and dynamic steps are rejected). The result element type is inferred
+counter-driven ranges. A literal step selects the corresponding ascending or
+descending state machine; an expression is evaluated once, and its runtime sign
+selects the direction. Zero steps raise `RangeStepZero` through the function's
+typed error channel. The result element type is inferred
 from the projection and
 must be storable, so heterogeneous results, effectful/non-straight-line
 projections, and void projections are rejected statically. An empty result is a
