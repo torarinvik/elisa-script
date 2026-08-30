@@ -608,6 +608,11 @@ that are not regular files return `false`. The `path.is_file()` method lowers to
 same typed operation, and a source-defined `is_file` shadows the compiler-known
 operation.
 
+`is_readable(path: Path)`, `is_writable(path: Path)`, and
+`is_executable(path: Path)` are typed counterparts to shell `test -r/-w/-x` and
+Python `os.access`. They query the current process access bits through POSIX
+`access`, contribute `File.Read`, and return `false` for missing or invalid paths.
+
 `touch(path: Path) -> bool error[FileIoError] can[File.Write]` creates an empty file
 when it is missing and updates its timestamps without truncating an existing file.
 It is the typed counterpart to shell `touch`; failures remain `FileIoError` values

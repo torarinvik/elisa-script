@@ -313,6 +313,10 @@ libc as though it were a C string.
 `IsFile` has the same verified `Named(Path) -> Bool` shape and `File.Read` effect,
 but tests the POSIX mode bits and returns `false` for missing or non-regular entries.
 The scripting `is_file(path)` alias and `Path.is_file()` method lower to this opcode.
+`PathAccess` also verifies as `Named(Path) -> Bool` with `File.Read`; its compiler-
+selected mode is one of POSIX `R_OK`, `W_OK`, or `X_OK`, backing the
+`is_readable`, `is_writable`, and `is_executable` predicates without exposing a
+dynamic mode integer to source programs.
 `TouchPath` verifies as `Named(Path) -> Bool` with `File.Write` and `FileIoError`.
 Its interpreter bridge opens-or-creates without truncation, then refreshes the
 timestamps through POSIX `utimes`; packed bytecode uses the same helper.
