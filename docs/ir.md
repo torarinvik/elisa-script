@@ -511,6 +511,9 @@ machines, preserving partial-write semantics and owned read results. `print`,
 `echo`, `println`, and `eprint` lower their typed scalar arguments to formatting
 and `Concat` instructions before one final stream write; optional `sep` and `end`
 text controls are evaluated once and use the same typed concatenation path.
+The shell-shaped `printf(text)` spelling lowers directly to `WriteStdout` with the
+same literal-text, byte-count, effect, and error contract; it does not interpret
+format directives.
 Named direct-call arguments are resolved against predeclared parameter labels and
 then emitted in canonical signature order. Their expressions still execute once in
 source order. Missing parameters materialize their Elisa default expressions in
