@@ -563,7 +563,10 @@ body block. Arrays and text additionally accept `for index, value in collection`
 the first binding is the loop's typed `usize` cursor and the second is the
 ordinary `Index` result (`char` for text), so no pair materialization is needed.
 The Elisa-compatible `collection.enumerate()` suffix is sugar for the same
-lowering and is only valid with the two bindings.
+lowering and is only valid with the two bindings. The Python-compatible
+`mapping.items()` suffix is likewise sugar for the existing map-pair loop: it
+snapshots keys once, performs typed value indexes in the body, and never creates
+pair objects.
 `for mutable value in values` additionally requires `values` to be a named mutable
 array binding. Lowering records a scoped element-owner relation; every successful
 `value <- replacement` or compound update immediately transitions the owner through
