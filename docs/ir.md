@@ -320,6 +320,10 @@ timestamps through POSIX `utimes`; packed bytecode uses the same helper.
 and `FileIoError`; both execution engines call the POSIX `chmod` boundary directly.
 `FileSize` verifies as `Named(Path) -> Int(unsigned, 64)` with `File.Read` and
 `FileIoError`, returning the `st_size` field from the same POSIX `stat` bridge.
+`FileMode` verifies as `Named(Path) -> Int(unsigned, 64)` with `File.Read` and
+`FileIoError`, returning the `st_mode` bits from that bridge. It preserves the
+file-kind and permission bits so scripts can inspect a mode before or after a
+typed `ChmodPath` operation.
 `IsSymlink` verifies as `Named(Path) -> Bool` with `File.Read`; it uses POSIX
 `lstat` mode bits so the predicate observes the link itself rather than its target.
 `ReadLink` verifies as `Named(Path) -> Named(Path)` with `File.Read` and

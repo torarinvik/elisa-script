@@ -623,6 +623,12 @@ length reported by POSIX `stat`, including regular files and directory entries.
 Missing paths and invalid names raise `FileIoError`; the result is an unsigned,
 64-bit byte count suitable for direct comparisons and differential tests.
 
+`file_mode(path: Path) -> u64 error[FileIoError] can[File.Read]` returns the
+POSIX `st_mode` bits reported by `stat`, including the file-kind and permission
+bits. It is the typed counterpart to shell `stat` mode queries and Python
+`Path.stat().st_mode`, and pairs with `chmod` without requiring a stringly
+metadata parser.
+
 `is_symlink(path: Path) -> bool` is the shell `test -L` and Python
 `Path.is_symlink()` predicate. It uses `lstat` rather than following the target,
 contributes `File.Read`, and returns `false` for missing or non-symlink entries.
