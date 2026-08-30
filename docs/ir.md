@@ -614,9 +614,9 @@ Python-shaped text method aliases lower to these existing typed operations as
 well: `startswith`/`starts_with` and `endswith`/`ends_with` lower to
 `StartsWith`/`EndsWith`, `replace(old, replacement)` lowers to `TextReplace`,
 `strip()`/`trim()`/`lstrip()`/`rstrip()` lower to `TrimText` (modes 0/0/1/2),
-and `split(separator)` lowers to `Split`.
-The method forms require text receivers, exact positional arity, and an explicit
-separator for `split`; no dynamic dispatch or implicit-whitespace mode is added.
+and `split(separator)`/`split()` lower to `Split` (modes 0/1). The method forms
+require text receivers and exact positional arity; zero-argument `split()` uses
+ASCII-whitespace runs and produces no empty fields.
 The Python-compatible `separator.join(fields)` method lowers to the existing
 `Join` opcode with the fields operand first and the text receiver as separator.
 The Python-compatible `mapping.keys()` method is also compiler-known: it requires

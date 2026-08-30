@@ -125,9 +125,10 @@ operations: `text.startswith(prefix)`/`text.starts_with(prefix)` and
 replacement)` returns `sview`; `text.strip()`/`text.trim()` return `sview`;
 `text.lstrip()`/`text.rstrip()` return `sview` views trimmed only on the left or
 right boundary respectively; and
-`text.split(separator)` returns `darray[sview]`. Receivers and arguments must be
-text values, method arity is checked during lowering, and `split` intentionally
-requires an explicit separator rather than Python's implicit-whitespace mode.
+`text.split(separator)` and `text.split()` return `darray[sview]`. Receivers and
+arguments must be text values, and method arity is checked during lowering.
+The zero-argument form splits on runs of ASCII whitespace, drops leading and
+trailing whitespace, and returns an empty array for whitespace-only input.
 All trim spellings remove the same ASCII whitespace set, take no arguments, and
 preserve interior whitespace.
 The Python-compatible `separator.join(fields)` method is also available for a
