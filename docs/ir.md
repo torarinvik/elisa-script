@@ -518,7 +518,10 @@ fallthrough merges, and `while` loops with explicit headers/backedges/exits.
 `pass` is a true lowering no-op: it advances through the surrounding structured
 control-flow state without manufacturing an instruction or runtime value.
 It also lowers homogeneous immutable array literals, scalar `darray[T]`/`array[T]`
-type annotations, integer indexing, and the `.count` field. Empty literals use
+type annotations, integer indexing, the `.count` field, and the Python-compatible
+`len(value)` builtin. `len` is a compiler-known alias for the verified `Length`
+opcode over arrays, dictionaries, and byte-oriented text, and remains shadowable
+by an ordinary source function. Empty literals use
 their expected array type in bindings, assignments, returns, and call arguments,
 so `[]` never introduces an untyped dynamic collection. Arrays may nest five levels
 (`darray[darray[darray[darray[darray[T]]]]]`) using the compatibility fields; a sixth array

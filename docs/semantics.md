@@ -74,6 +74,16 @@ boundaries and use exact nominal equality; they do not implicitly become `sview`
 one another. Runtime constructors currently perform the type-safe text adaptation;
 the corresponding path/glob/regex/URL parsers remain shared-library increments.
 
+## Python-compatible length
+
+The compiler-known `len(value) -> usize` builtin is the scripting-profile
+spelling for collection and text length. It accepts exactly one positional
+`darray[T]`, `dict[K, V]`/`map[K, V]`, or `sview` value and lowers to the same
+verified `Length` operation as `.count` and slice bounds. Text length follows
+Elisa's byte-oriented `sview` contract. A source function named `len` shadows
+the builtin like any other direct call, so ports can introduce a local helper
+without changing resolution rules.
+
 The first executable regex operation is the compiler-known, strongly typed search
 `matches(text, pattern) -> bool`, where `text` is `sview` and `pattern` is `Regex`:
 
