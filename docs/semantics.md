@@ -557,6 +557,12 @@ The Python-compatible `str(value) -> sview` facade accepts text (identity),
 signed `i64`, `f64`, and `bool`, selecting the corresponding typed formatter
 without implicit aggregate or width conversions. A source function named `str`
 shadows this compiler-known operation.
+The scalar constructors `int(value) -> i64` and `float(value) -> f64` accept
+their exact target scalar as an identity or parse `sview` through the checked
+`ParseError` path. `bool(value) -> bool` is likewise an exact-type identity.
+They reject lossy numeric coercions, truthiness conversions, aggregates, and
+other integer widths; source declarations named `int`, `float`, or `bool`
+shadow these compiler-known facades.
 
 ## Filesystem capability
 

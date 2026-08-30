@@ -696,6 +696,10 @@ The Python-compatible `str(value)` facade selects `FormatInt`, `FormatFloat`,
 or `FormatBool` for the corresponding exact scalar type and returns text
 unchanged for text values; aggregates and other integer widths are rejected
 before emission.
+The `int(value)` and `float(value)` facades reuse `ParseInt`/`ParseFloat` for
+text and return exact `i64`/`f64` operands unchanged; `bool(value)` is an exact
+boolean identity. Lossy numeric and truthiness conversions are rejected before
+emission, and all three names remain shadowable by source functions.
 Exact-type `array + array` and `text + text` lower to the semantic `Concat`
 operation rather than numeric `Add`. Array concatenation copies both inputs into
 fresh value storage. Text concatenation copies both byte views into permanent,
