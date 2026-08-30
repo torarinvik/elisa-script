@@ -5121,6 +5121,27 @@ extend EsIr:
             return LoweredValue{valid: true, value: result, type: index_type}
 
 
+        # Python's enumerate accepts an optional starting cursor.  Keep the
+        # loop binding exactly usize-typed: non-negative integer literals are
+        # safely normalized to usize, while dynamic starts must already be an
+        # exact usize value rather than relying on a lossy coercion.
+        def lower_enumerate_start(expression: Ast::Expr, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+            index_type: Type = type_from_name("usize")
+            match expression:
+                Expr.IntLit(value) | Expr.IntLitTyped(value, _):
+                    if value >= 0:
+                        return emit_constant(state, index_type, value, "", "", false, ir_span(pos))
+                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "enumerate start must be a non-negative integer")
+                    return LoweredValue{valid: false, value: 0, type: index_type}
+                _:
+                    pass
+            lowered: LoweredValue = lower_expression(expression, state)
+            if not lowered.valid or lowered.type.kind != TypeKind.Int or not same_type(lowered.type, index_type):
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "enumerate start must have exact usize type")
+                return LoweredValue{valid: false, value: 0, type: index_type}
+            return lowered
+
+
         def decimal_pattern_integer(text: sview, valid: mutable bool&) -> i64:
             valid <- false
             0 return if sview_len(text) == 0
@@ -5700,6 +5721,7 @@ extend EsIr:
                     iterable_name: mutable sview = ""
                     enumerate_sugar: mutable bool = false
                     enumerate_source: mutable Ast::Expr = Expr.Absent
+                    enumerate_start: mutable Ast::Expr = Expr.Absent
                     items_sugar: mutable bool = false
                     items_source: mutable Ast::Expr = Expr.Absent
                     range_sugar: mutable bool = false
@@ -5747,10 +5769,15 @@ extend EsIr:
                                                     pass
                                             bounded_range: Ast::Expr = Expr.Binary(arguments[0], range_operator, arguments[1], call_pos)
                                             range_source <- Expr.Binary(bounded_range, TokenKind.Range, range_step, call_pos)
-                                    valid_enumerate_names: bool = arguments.count == 1 and (argument_names.count == 0 or (argument_names.count == 1 and argument_names[0] == ""))
+                                    valid_enumerate_names: mutable bool = arguments.count >= 1 and arguments.count <= 2 and (argument_names.count == 0 or argument_names.count == arguments.count)
+                                    if valid_enumerate_names and argument_names.count != 0:
+                                        for argument_name in argument_names |valid_enumerate_names|:
+                                            valid_enumerate_names <- false if argument_name != "" and argument_name != "start"
+                                        valid_enumerate_names <- false if argument_names.count == 2 and argument_names[0] != ""
                                     if name == "enumerate" and valid_enumerate_names and lowered_function_index(state, name) == state.function_names.count:
                                         enumerate_sugar <- true
                                         enumerate_source <- arguments[0]
+                                        enumerate_start <- arguments[1] if arguments.count == 2
                                     valid_zip_names: mutable bool = arguments.count == 2 and (argument_names.count == 0 or argument_names.count == arguments.count)
                                     if valid_zip_names:
                                         for argument_name in argument_names |valid_zip_names|:
@@ -5847,6 +5874,14 @@ extend EsIr:
                             context: usize = state.loop_context_counts.count - 1
 
                             index_type: Type = type_from_name("usize")
+                            # Keep the source cursor independent from the
+                            # public enumerate index. A non-zero start must
+                            # not be used for collection indexing or the loop
+                            # bound; add it only when materializing the first
+                            # binding in the body.
+                            enumerate_offset: mutable LoweredValue = LoweredValue{valid: true, value: 0, type: index_type}
+                            if enumerate_sugar and enumerate_start is not Expr.Absent:
+                                enumerate_offset <- lower_enumerate_start(enumerate_start, pos, state)
                             initial_index: LoweredValue = emit_constant(state, index_type, 0, "", "", false, ir_span(pos))
                             entry_args: (start: u32, count: u16) = append_context_arguments(state, context)
                             state.edge_arg_pool.push(initial_index.value)
@@ -5919,6 +5954,10 @@ extend EsIr:
                                 state.operand_pool.push(index_value)
                                 zip_element_type <- type_from_name("char") if zip_right_collection.type.kind == TypeKind.Text else array_element_type(zip_right_collection.type)
                                 state.instructions.push(Instruction{opcode: Opcode.Index, result: zip_element_result, result_type: zip_element_type, operand_start: zip_element_operand_start, operand_count: 2, span: ir_span(pos)})
+                            enumerate_index_value: mutable u32 = index_value
+                            if enumerate_sugar and enumerate_start is not Expr.Absent:
+                                enumerate_index: LoweredValue = emit_binary(state, Opcode.Add, index_value, enumerate_offset.value, index_type, pos)
+                                enumerate_index_value <- enumerate_index.value
                             if map_pair:
                                 state.names.push(variables[0])
                                 state.values.push(element_result)
@@ -5947,7 +5986,7 @@ extend EsIr:
                                 # first binding, matching Python's enumerate
                                 # shape while retaining exact usize typing.
                                 state.names.push(variables[0])
-                                state.values.push(index_value)
+                                state.values.push(enumerate_index_value)
                                 state.types.push(index_type)
                                 state.mutables.push(false)
                                 state.names.push(variables[1])

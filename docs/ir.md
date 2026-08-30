@@ -564,9 +564,10 @@ the first binding is the loop's typed `usize` cursor and the second is the
 ordinary `Index` result (`char` for text), so no pair materialization is needed.
 The Elisa-compatible `collection.enumerate()` suffix is sugar for the same
 lowering and is only valid with the two bindings. The Python-compatible
-`enumerate(collection)` call is equivalent for one positional array or text
-source, remains shadowable by a source function, and preserves the typed `usize`
-cursor. The Python-compatible
+`enumerate(collection, start)` accepts one array/text source and an optional
+non-negative integer start; literals normalize to `usize`, while dynamic starts
+must already be exact `usize`. The form remains shadowable by a source function
+and preserves the typed `usize` cursor. The Python-compatible
 `mapping.items()` suffix is likewise sugar for the existing map-pair loop: it
 snapshots keys once, performs typed value indexes in the body, and never creates
 pair objects.
