@@ -768,6 +768,15 @@ target is returned unchanged. The `relative_path` and `relpath` aliases, plus
 `target.relative_to(base)` as a scripting convenience, lower to the same pure
 typed operation.
 
+`path_real(path: Path) -> Path error[FileIoError] can[File.Read]` resolves a path
+through the host filesystem, following symbolic links and returning the
+canonical absolute path. It matches the common `readlink -f`,
+`os.path.realpath`, and `Path.resolve()` porting shape; the `realpath` and
+`resolve_path` aliases are equivalent, and `path.realpath()`/`path.resolve()`
+are method forms. Unlike `path_normalize`, this operation consults the
+filesystem and reports `FileIoError` when the input is empty, contains an
+embedded NUL, or cannot be resolved.
+
 `copy_path(source: Path, destination: Path) -> bool error[FileIoError]
 can[File.Read, File.Write]` copies one regular file by length-delimited bytes and
 replaces the destination. `move_path(source: Path, destination: Path) -> bool

@@ -391,6 +391,12 @@ the target as its first operand and the base as its second. It is pure, does not
 consult the filesystem, and is eligible for direct bytecode execution. The
 `path_relative`, `relative_path`, and `relpath` builtins plus the scripting
 convenience `Path.relative_to()` lower to this operation.
+`PathReal` verifies `Named(Path) -> Named(Path)` and requires `File.Read` plus
+`FileIoError`; it follows symbolic links through the host filesystem and returns
+an owned canonical absolute path. The `path_real`, `realpath`, and `resolve_path`
+builtins plus `Path.realpath()`/`Path.resolve()` lower to this operation. It is
+eligible for direct bytecode execution and is distinct from the pure lexical
+`PathNormalize` operation and the non-following `ReadLink` operation.
 The shell-size predicate has no dedicated opcode: `is_nonempty`/`file_nonempty`
 lower to `FileSize` followed by a typed `Greater` comparison against zero. This
 keeps the existing `Named(Path) -> Int(unsigned, 64)` file-size contract while
