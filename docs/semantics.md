@@ -758,6 +758,15 @@ boundary; the parent process and filesystem are otherwise unchanged. The
 `absolute_path` and `abspath` aliases, plus `path.absolute()`, lower to the same
 typed operation.
 
+`path_relative(target: Path, base: Path) -> Path` computes a normalized lexical
+path from `base` to `target`, matching the common `os.path.relpath` porting shape
+without touching the filesystem. Shared path components are removed, each
+remaining base component contributes `..`, and an otherwise empty result is `.`.
+Rooted and relative operands have different roots; for that case the normalized
+target is returned unchanged. The `relative_path` and `relpath` aliases, plus
+`target.relative_to(base)` as a scripting convenience, lower to the same pure
+typed operation.
+
 `copy_path(source: Path, destination: Path) -> bool error[FileIoError]
 can[File.Read, File.Write]` copies one regular file by length-delimited bytes and
 replaces the destination. `move_path(source: Path, destination: Path) -> bool

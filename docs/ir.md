@@ -385,6 +385,12 @@ the existing directory state machine, joins relative input, and delegates
 separator/dot cleanup to `Fs.normalize`; absolute input is normalized without
 changing it. The `path_absolute`, `absolute_path`, and `abspath` builtins plus
 `Path.absolute()` lower to this direct-bytecode-capable operation.
+`PathRelative` verifies `Named(Path) × Named(Path) -> Named(Path)` and performs
+the same lexical normalization and component subtraction as `Fs.relative`, with
+the target as its first operand and the base as its second. It is pure, does not
+consult the filesystem, and is eligible for direct bytecode execution. The
+`path_relative`, `relative_path`, and `relpath` builtins plus the scripting
+convenience `Path.relative_to()` lower to this operation.
 The shell-size predicate has no dedicated opcode: `is_nonempty`/`file_nonempty`
 lower to `FileSize` followed by a typed `Greater` comparison against zero. This
 keeps the existing `Named(Path) -> Int(unsigned, 64)` file-size contract while
