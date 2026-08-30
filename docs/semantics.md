@@ -326,6 +326,11 @@ exact element type and rebinds the mutable array to a shortened view. Empty
 arrays raise `IndexOutOfBounds`; the failing operation does not publish a new
 binding value. `pop` is intentionally zero-argument for now, keeping indexed
 removal explicit through existing typed array operations.
+`values.reverse()` is the Python-compatible in-place spelling for reversing a
+mutable array. It takes no arguments, copies elements into a fresh array in
+reverse order, and rebinds the receiver through the same ownership-safe SSA
+update. Empty arrays remain empty; immutable arrays and non-array receivers are
+rejected statically.
 
 ## Text field processing
 

@@ -678,6 +678,11 @@ the receiver to a shortened view. Both operations reject an empty array with
 these calls as assignments, so updates inside `if`, `while`, and `for` flow through
 the same typed merge, header, latch, and exit parameters as explicit `<-` rebinding.
 Named arguments, mismatched element types, and non-array receivers are rejected.
+The statement-form `array.reverse()` method lowers to `ReverseArray`. It requires
+a mutable array binding and zero arguments, emits an owned reversed array value,
+and rebinds the receiver through the ordinary SSA state-machine path. The
+interpreter and direct bytecode backend both preserve the exact element type and
+leave empty arrays empty.
 Dictionary values also expose Python's `mapping.get(key, default)` spelling. It
 lowers to the same `IndexValid`-guarded CFG as `get mapping[key] else default`,
 so the default expression is lazy and both branches merge one exact value type.
