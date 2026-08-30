@@ -316,7 +316,8 @@ separator/absolute-leaf rules; `PathParent` verifies `Named(Path) -> Named(Path)
 `PathName`, `PathExtension`, and `PathStem` verify `Named(Path) -> Text`. They do not add filesystem effects and
 are eligible for the direct bytecode path. Composition allocates permanent storage
 for joined paths, while parent/name preserve safe views into the existing path
-payload.
+payload. The scripting-profile aliases `dirname`, `basename`, `suffix`, and
+`stem` lower to these same opcodes and retain source-level shadowing rules.
 `ReadText` extends that contract to whole-file input with verified signature
 `Named(Path) -> Text`. Its function must carry both `File.Read` and `FileIoError`;
 lowering supplies both and the verifier rejects either omission. The interpreter
@@ -413,7 +414,8 @@ entry layout bridge is isolated and Darwin-specific; other native targets must
 supply their platform `dirent` layout without changing this IR contract.
 `IsDirectory` verifies as `Named(Path) -> Bool` with `Directory.Read` and
 `DirectoryError`. It has its own exhaustive dispatch arm and uses the same isolated
-directory bridge that recursive glob traversal builds upon.
+directory bridge that recursive glob traversal builds upon. The `is_dir` scripting
+alias lowers to this opcode without changing its effects or error contract.
 `ExpandGlob` verifies as `Named(Glob) -> Array[Text]` with `Directory.Read` and
 `DirectoryError`. The interpreter performs component matching and recursive `**`
 traversal in Elisa, filters symlink recursion, sorts and deduplicates owned matches,
@@ -558,8 +560,9 @@ by a checked `Index` at `0` or `-1`, preserving exact scalar element types and
 the normal empty-array failure path. Two or more scalar arguments are first
 packed into a typed temporary array, so variadic calls share the same operation
 and never evaluate an argument more than once.
-The Python-shaped `sum(values, start)`/`product(values)` calls reuse the
-integer-fold state machine with identities `start`/`1` (`sum` defaults to `0`),
+The Python-shaped `sum(values, start)`/`product(values, start)` calls reuse the
+integer-fold state machine with identities `start`/`1` (`sum` defaults to `0`,
+`product` defaults to `1`),
 while `any(values)`/`all(values)` reuse
 the early-exit boolean-fold CFG. All four preserve exact element types and
 short-circuit or fold without materializing a second collection. Their iterable

@@ -644,7 +644,10 @@ counterpart to shell `>>` redirection and Python append-mode writes.
 lines with LF and delegates to the same append primitive, preserving the exact
 line bytes and `File.Write`/`FileIoError` contract.
 
-For direct shell-script ports, the same typed operations have short aliases:
+For direct shell-script and Python `pathlib` ports, the same typed operations
+have short aliases: `dirname(path)`/`basename(path)`/`suffix(path)`/`stem(path)`
+map to the corresponding path decomposition helpers, and `is_dir(path)` is an
+alias for the directory predicate. For direct shell scripts, the mutation aliases are:
 `pwd()` is `current_directory()`, `cd(path)` is `change_directory(path)`,
 `mkdir(path)`/`rmdir(path)` are directory creation/removal, and
 `rm(path)`, `cp(source, destination)`, and `mv(source, destination)` map to
