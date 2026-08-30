@@ -353,6 +353,10 @@ payload. The scripting-profile aliases `dirname`, `basename`, `suffix`, and
 `stem` lower to these same opcodes and retain source-level shadowing rules. The
 `Path` members `parent`, `name`, `suffix`, and `stem`, together with
 `joinpath`, `exists`, `is_file`, `is_symlink`, `readlink`, `read_link`, `symlink_to`, and `is_dir` methods, are lowered to the same operations.
+`PathIsAbsolute` is likewise pure and verifies `Named(Path) -> Bool`; it checks
+only the first byte of the length-delimited path for `/`, adds no effect or error,
+and is eligible for direct bytecode execution. The global aliases `is_absolute`
+and `isabs`, plus `Path.is_absolute()`, lower to this opcode.
 `ReadText` extends that contract to whole-file input with verified signature
 `Named(Path) -> Text`. Its function must carry both `File.Read` and `FileIoError`;
 lowering supplies both and the verifier rejects either omission. The interpreter

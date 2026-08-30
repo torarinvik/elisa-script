@@ -697,6 +697,13 @@ returns the final component without that suffix. Their results are views over
 permanent or input-owned bytes and are identical in the interpreter and packed
 bytecode.
 
+`path_is_absolute(path: Path) -> bool` is the pure lexical counterpart to shell
+absolute-path tests and Python `os.path.isabs`/`Path.is_absolute()`. It returns
+`true` only when the path is non-empty and begins with `/`; it does not consult
+the filesystem, resolve symlinks, or depend on the process working directory.
+`is_absolute` and `isabs` are equivalent aliases, and `path.is_absolute()` lowers
+to the same typed operation.
+
 `copy_path(source: Path, destination: Path) -> bool error[FileIoError]
 can[File.Read, File.Write]` copies one regular file by length-delimited bytes and
 replaces the destination. `move_path(source: Path, destination: Path) -> bool
@@ -719,6 +726,7 @@ map to the corresponding path decomposition helpers, and `is_dir(path)` is an
 alias for the directory predicate. A `Path` also exposes the common `pathlib`
 shape members `path.parent`, `path.name`, `path.suffix`, and `path.stem`, plus
 `path.joinpath(leaf)`, `path.exists()`, `path.is_file()`, `path.is_symlink()`,
+`path.is_absolute()`,
 `path.readlink()`, `path.read_link()`, `path.symlink_to(target)`, and
 `path.is_dir()`; each lowers to the
 same typed opcode as its free-function counterpart. For direct shell scripts, the mutation aliases are:
