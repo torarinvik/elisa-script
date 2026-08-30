@@ -642,6 +642,9 @@ the receiver to a shortened view. Both operations reject an empty array with
 these calls as assignments, so updates inside `if`, `while`, and `for` flow through
 the same typed merge, header, latch, and exit parameters as explicit `<-` rebinding.
 Named arguments, mismatched element types, and non-array receivers are rejected.
+Dictionary values also expose Python's `mapping.get(key, default)` spelling. It
+lowers to the same `IndexValid`-guarded CFG as `get mapping[key] else default`,
+so the default expression is lazy and both branches merge one exact value type.
 Lowering retains one mutability fact alongside every lexical binding. Plain locals,
 parameters, loop variables, and match binders are immutable; `mutable` local type
 markers and mutable parameters opt into SSA rebinding. `<-`, compound assignment,
