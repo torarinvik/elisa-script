@@ -628,6 +628,13 @@ length reported by POSIX `stat`, including regular files and directory entries.
 Missing paths and invalid names raise `FileIoError`; the result is an unsigned,
 64-bit byte count suitable for direct comparisons and differential tests.
 
+`is_nonempty(path: Path) -> bool error[FileIoError] can[File.Read]` is the typed
+counterpart to shell `test -s` and the common Python `Path.stat().st_size > 0`
+check. It returns `false` for an existing empty file, `true` for any entry with a
+positive `st_size`, and preserves `FileIoError` for missing or invalid paths.
+`file_nonempty` is an equivalent alias; lowering expands either spelling to the
+verified `FileSize` plus typed unsigned `Greater` operations.
+
 `file_mode(path: Path) -> u64 error[FileIoError] can[File.Read]` returns the
 POSIX `st_mode` bits reported by `stat`, including the file-kind and permission
 bits. It is the typed counterpart to shell `stat` mode queries and Python

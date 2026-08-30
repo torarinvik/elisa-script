@@ -357,6 +357,10 @@ payload. The scripting-profile aliases `dirname`, `basename`, `suffix`, and
 only the first byte of the length-delimited path for `/`, adds no effect or error,
 and is eligible for direct bytecode execution. The global aliases `is_absolute`
 and `isabs`, plus `Path.is_absolute()`, lower to this opcode.
+The shell-size predicate has no dedicated opcode: `is_nonempty`/`file_nonempty`
+lower to `FileSize` followed by a typed `Greater` comparison against zero. This
+keeps the existing `Named(Path) -> Int(unsigned, 64)` file-size contract while
+retaining `File.Read` and `FileIoError` on the enclosing function.
 `ReadText` extends that contract to whole-file input with verified signature
 `Named(Path) -> Text`. Its function must carry both `File.Read` and `FileIoError`;
 lowering supplies both and the verifier rejects either omission. The interpreter
