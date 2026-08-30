@@ -521,7 +521,10 @@ It also lowers homogeneous immutable array literals, scalar `darray[T]`/`array[T
 type annotations, integer indexing, the `.count` field, and the Python-compatible
 `len(value)` builtin. `len` is a compiler-known alias for the verified `Length`
 opcode over arrays, dictionaries, and byte-oriented text, and remains shadowable
-by an ordinary source function. Empty literals use
+by an ordinary source function. The compiler-known `abs(value)` builtin lowers
+to a typed comparison, branch, and merge using the existing `Less` and `Negate`
+operations, so it preserves single evaluation and exact integer/float types.
+Empty literals use
 their expected array type in bindings, assignments, returns, and call arguments,
 so `[]` never introduces an untyped dynamic collection. Arrays may nest five levels
 (`darray[darray[darray[darray[darray[T]]]]]`) using the compatibility fields; a sixth array

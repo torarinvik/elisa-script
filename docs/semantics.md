@@ -84,6 +84,13 @@ Elisa's byte-oriented `sview` contract. A source function named `len` shadows
 the builtin like any other direct call, so ports can introduce a local helper
 without changing resolution rules.
 
+The compiler-known `abs(value)` builtin accepts a signed integer or `f64` and
+returns the same exact static type. It evaluates its argument once, then uses a
+typed comparison and branch to negate only negative values. The signed minimum
+integer still raises the ordinary `IntegerOverflow` runtime error because its
+positive magnitude is not representable; floating-point values follow the host
+IEEE sign rule.
+
 ## Text boundary predicates
 
 The compiler-known `starts_with(text, prefix) -> bool` and
