@@ -583,6 +583,12 @@ The inverse compiler-known `join(fields, separator)` operation has type
 arrays before execution; the interpreter also validates each runtime element and
 constructs one owned output buffer. Empty arrays join to empty text, separators
 appear only between fields, and empty fields remain observable.
+The compiler-known `starts_with(text, prefix)` and `ends_with(text, suffix)`
+predicates have type `Text × Text -> Bool` and lower to dedicated semantic
+opcodes. They compare bytes under the same `sview` contract as indexing and
+regex helpers; an empty prefix or suffix succeeds, while a boundary longer than
+the input fails. Both are pure operations, remain shadowable by a user-defined
+function of the same name, and share the packed bytecode text dispatch family.
 `ParseInt` has type `Text -> Int(signed, 64)` and requires `ParseError` in the
 function error row. Its state-machine parser accepts only an optional sign and
 ASCII decimal digits, checks signed 64-bit overflow before each accumulation, and

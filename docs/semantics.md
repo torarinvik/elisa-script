@@ -84,6 +84,16 @@ Elisa's byte-oriented `sview` contract. A source function named `len` shadows
 the builtin like any other direct call, so ports can introduce a local helper
 without changing resolution rules.
 
+## Text boundary predicates
+
+The compiler-known `starts_with(text, prefix) -> bool` and
+`ends_with(text, suffix) -> bool` operations provide the exact byte-oriented
+prefix/suffix checks commonly used by shell and Python ports. Both arguments are
+`sview`; an empty boundary succeeds, and a boundary longer than the input fails.
+They are pure, deterministic, and shadowable by a source function with the same
+name. Their dedicated IR operations are shared by the reference interpreter and
+the direct bytecode backend.
+
 The first executable regex operation is the compiler-known, strongly typed search
 `matches(text, pattern) -> bool`, where `text` is `sview` and `pattern` is `Regex`:
 
