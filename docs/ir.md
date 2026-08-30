@@ -599,6 +599,11 @@ The compiler-known `strip(text)` and `trim(text)` aliases have type `Text -> Tex
 and lower to `TrimText`. They remove ASCII whitespace (`space`, tab, line feed,
 vertical tab, form feed, and carriage return) only at the two boundaries and
 return an `sview` into the existing text storage; interior whitespace is retained.
+The compiler-known `lower(text)` and `upper(text)` operations, together with the
+`text.lower()` and `text.upper()` method spellings, have type `Text -> Text` and
+lower to `LowerText` and `UpperText`. They fold ASCII letters while preserving
+all other bytes, and allocate owned output so the result remains valid across
+both execution backends.
 `ParseInt` has type `Text -> Int(signed, 64)` and requires `ParseError` in the
 function error row. Its state-machine parser accepts only an optional sign and
 ASCII decimal digits, checks signed 64-bit overflow before each accumulation, and

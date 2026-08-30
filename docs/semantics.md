@@ -106,6 +106,13 @@ feed, vertical tab, form feed, and carriage return from the beginning and end,
 preserve interior bytes, and return a view into the existing text value. Both are
 pure, deterministic, and shadowable by source functions.
 
+The compiler-known `lower(text) -> sview` and `upper(text) -> sview` operations,
+as well as the Python-shaped `text.lower()` and `text.upper()` method spellings,
+perform deterministic ASCII case conversion. ASCII letters are folded and all
+other UTF-8 bytes pass through unchanged; this byte-oriented rule avoids locale
+dependence or malformed Unicode transformations. The operations are pure,
+shadowable (for the global spellings), and return owned text.
+
 The first executable regex operation is the compiler-known, strongly typed search
 `matches(text, pattern) -> bool`, where `text` is `sview` and `pattern` is `Regex`:
 
