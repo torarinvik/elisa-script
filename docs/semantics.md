@@ -352,6 +352,10 @@ rebinds the receiver through SSA.
 `values.copy() -> darray[T]` creates an owned shallow copy of any typed array.
 It takes no arguments and does not require a mutable receiver, so subsequent
 updates to either array do not alter the other's storage.
+The Python-compatible `values.count(element) -> usize` method counts exact
+element matches in an array, including nested arrays under the supported
+structural descriptor. It is pure, deterministic, and requires the argument to
+match the array element type exactly.
 
 ## Text field processing
 

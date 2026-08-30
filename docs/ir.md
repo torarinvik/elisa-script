@@ -700,6 +700,9 @@ The expression-form `array.copy()` lowers to `CopyArray`, preserves the complete
 array element descriptor, and copies the flat payload into fresh runtime storage.
 It is available for immutable and mutable arrays alike and has no mutation-name
 side effect.
+The expression-form `array.count(element)` lowers to `ArrayCount`, returns a
+`usize`, and compares elements with the same structural equality used by `==`.
+The verifier requires an exact array element type and a valid `usize` result.
 Dictionary values also expose Python's `mapping.get(key, default)` spelling. It
 lowers to the same `IndexValid`-guarded CFG as `get mapping[key] else default`,
 so the default expression is lazy and both branches merge one exact value type.
