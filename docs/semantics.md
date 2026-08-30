@@ -350,6 +350,11 @@ rebinding removes the key through an owned SSA map update. A missing key raises
 `IndexOutOfBounds` without a default; with a default, it returns that exact typed
 fallback and leaves the dictionary unchanged. Set values and immutable
 dictionaries are rejected during lowering.
+`mapping.update(other)` merges another dictionary of the exact same type into a
+mutable receiver. Existing keys keep their insertion position while receiving the
+new value; new keys append in the source dictionary's insertion order. The update
+is an owned SSA map replacement, and the method returns `void` like Python's
+`dict.update`.
 
 Mutable arrays accept both Elisa's `values.push(element)` spelling and the
 Python-compatible `values.append(element)` alias. Both require one positional

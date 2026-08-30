@@ -669,7 +669,10 @@ operation rather than numeric `Add`. Array concatenation copies both inputs into
 fresh value storage. Text concatenation copies both byte views into permanent,
 length-aware Elisa runtime storage, so chained results and results involving
 empty text do not borrow temporary buffers. Mixed element or collection types are
-rejected statically.
+rejected statically. The same verified `Concat` operation is used internally for
+`mapping.update(other)`: it copies the receiver map, replaces duplicate keys in
+place, and appends new keys in source insertion order before rebinding the mutable
+receiver.
 Exact-type scalar arrays also support structural `==` and `!=`. The interpreter
 compares lengths first and then elements deterministically from left to right;
 empty arrays, slices, concatenated arrays, separate equal allocations, and shared
