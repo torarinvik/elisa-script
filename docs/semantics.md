@@ -451,6 +451,10 @@ rebinds the receiver through SSA.
 `values.copy() -> darray[T]` creates an owned shallow copy of any typed array.
 It takes no arguments and does not require a mutable receiver, so subsequent
 updates to either array do not alter the other's storage.
+`mapping.copy() -> dict[K, V]` is the corresponding Python-compatible operation
+for typed maps. It takes no arguments, preserves the complete key/value
+descriptor, and copies the interleaved pair storage so top-level updates to
+either map do not alter the other map.
 The Python-compatible `values.count(element) -> usize` method counts exact
 element matches in an array, including nested arrays under the supported
 structural descriptor. It is pure, deterministic, and requires the argument to
