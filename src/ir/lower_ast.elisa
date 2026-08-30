@@ -2098,6 +2098,7 @@ extend EsIr:
             operator: mutable TokenKind = TokenKind.Range
             recognized: mutable bool = false
             stepped: mutable bool = false
+            dynamic_stride: mutable bool = false
             match range_expression:
                 Expr.Binary(low, range_operator, high, range_pos):
                     if range_operator in {TokenKind.RangeLt, TokenKind.RangeLe, TokenKind.RangeGt}:
@@ -2128,18 +2129,25 @@ extend EsIr:
             step: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: needle.type}
             if stepped:
                 positive_literal: mutable bool = false
+                step_literal: mutable bool = false
                 match step_expression:
                     Expr.IntLit(value) | Expr.IntLitTyped(value, _):
+                        step_literal <- true
                         positive_literal <- value > 0
                     _:
                         pass
-                if needle.type.kind != TypeKind.Int or not positive_literal:
-                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "range membership stride must be a positive integer constant")
+                if needle.type.kind != TypeKind.Int:
+                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "range membership stride requires an integer needle and bounds")
                     return RangeMembership{recognized: true, value: LoweredValue{valid: false, value: 0, type: type_from_name("bool")}}
+                if step_literal and not positive_literal:
+                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "range membership stride must be a positive integer constant or a typed integer expression")
+                    return RangeMembership{recognized: true, value: LoweredValue{valid: false, value: 0, type: type_from_name("bool")}}
+                dynamic_stride <- not positive_literal
                 step <- lower_expression_expected(step_expression, needle.type, state)
                 if not step.valid or not same_type(step.type, needle.type):
                     add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "range membership stride must match the needle type")
                     return RangeMembership{recognized: true, value: LoweredValue{valid: false, value: 0, type: type_from_name("bool")}}
+                state.required_errors.push("RangeStepZero") if dynamic_stride and not has_text(state.required_errors, "RangeStepZero")
 
             upper_test_block: u32 = fresh_block(state)
             false_block: u32 = fresh_block(state)
@@ -2150,15 +2158,37 @@ extend EsIr:
             if stepped:
                 alignment_block <- fresh_block(state)
                 success_block <- alignment_block
-            first_opcode: Opcode = Opcode.LessEqual if operator == TokenKind.RangeGt else Opcode.GreaterEqual
-            first: LoweredValue = emit_comparison(state, first_opcode, needle.value, low.value, pos)
+            first: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: type_from_name("bool")}
+            if dynamic_stride:
+                first_start: u32 = state.operand_pool.count.u32()
+                state.operand_pool.push(low.value) if operator != TokenKind.RangeGt else state.operand_pool.push(needle.value)
+                state.operand_pool.push(needle.value) if operator != TokenKind.RangeGt else state.operand_pool.push(low.value)
+                state.operand_pool.push(step.value)
+                first_result: u32 = fresh_value(state)
+                first_mode: i64 = 1
+                state.instructions.push(Instruction{opcode: Opcode.RangeCondition, result: first_result, result_type: type_from_name("bool"), operand_start: first_start, operand_count: 3, integer: first_mode, span: ir_span(pos)})
+                first <- LoweredValue{valid: true, value: first_result, type: type_from_name("bool")}
+            else:
+                first_opcode: Opcode = Opcode.LessEqual if operator == TokenKind.RangeGt else Opcode.GreaterEqual
+                first <- emit_comparison(state, first_opcode, needle.value, low.value, pos)
             state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: first.value, operand_count: 1, target0: upper_test_block, target1: false_block, target_count: 2, span: ir_span(pos)}
             finish_block(state)
 
             state.current_block <- upper_test_block
             state.terminated <- false
-            second_opcode: Opcode = Opcode.Greater if operator == TokenKind.RangeGt else (Opcode.LessEqual if operator == TokenKind.RangeLe else Opcode.Less)
-            second: LoweredValue = emit_comparison(state, second_opcode, needle.value, high.value, pos)
+            second: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: type_from_name("bool")}
+            if dynamic_stride:
+                second_start: u32 = state.operand_pool.count.u32()
+                state.operand_pool.push(needle.value)
+                state.operand_pool.push(high.value)
+                state.operand_pool.push(step.value)
+                second_result: u32 = fresh_value(state)
+                second_mode: i64 = 2 if operator == TokenKind.RangeGt else (1 if operator == TokenKind.RangeLe else 0)
+                state.instructions.push(Instruction{opcode: Opcode.RangeCondition, result: second_result, result_type: type_from_name("bool"), operand_start: second_start, operand_count: 3, integer: second_mode, span: ir_span(pos)})
+                second <- LoweredValue{valid: true, value: second_result, type: type_from_name("bool")}
+            else:
+                second_opcode: Opcode = Opcode.Greater if operator == TokenKind.RangeGt else (Opcode.LessEqual if operator == TokenKind.RangeLe else Opcode.Less)
+                second <- emit_comparison(state, second_opcode, needle.value, high.value, pos)
             state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: second.value, operand_count: 1, target0: success_block, target1: false_block, target_count: 2, span: ir_span(pos)}
             finish_block(state)
 
