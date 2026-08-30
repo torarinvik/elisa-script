@@ -783,6 +783,10 @@ Python `pathlib` file methods are also available on nominal `Path` values:
 `path.write_bytes(bytes)`, `path.unlink()`, and `path.rename(destination)`.
 They lower to the existing typed read, write, remove, and move operations, so
 their effects, errors, and exact result types remain visible to every backend.
+The corresponding metadata and directory mutations are available as
+`path.touch()`, `path.chmod(mode)`, `path.mkdir()`, and `path.rmdir()`;
+these retain the same `File.Write` or `Directory.Write` effects and typed error
+contracts as `touch`, `chmod`, `create_directory`, and `remove_directory`.
 
 ## Process execution
 
