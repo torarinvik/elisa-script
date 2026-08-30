@@ -633,6 +633,13 @@ Missing paths and invalid names raise `FileIoError`; the result is an unsigned,
 POSIX modification timestamp from `stat`; Python's `os.path.getmtime` spelling
 is a typed alias with the same error contract.
 
+`file_atime(path: Path) -> i64 error[FileIoError] can[File.Read]` returns the
+POSIX access timestamp from `stat`; Python's `os.path.getatime` spelling is a
+typed alias. `file_ctime(path: Path) -> i64 error[FileIoError] can[File.Read]`
+returns the POSIX inode-change timestamp (`st_ctime` on POSIX), and
+`os.path.getctime` is its typed alias. Both remain distinct from modification
+time while preserving the signed `i64`/`File.Read`/`FileIoError` contract.
+
 `is_nonempty(path: Path) -> bool error[FileIoError] can[File.Read]` is the typed
 counterpart to shell `test -s` and the common Python `Path.stat().st_size > 0`
 check. It returns `false` for an existing empty file, `true` for any entry with a
