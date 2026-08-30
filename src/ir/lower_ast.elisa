@@ -2456,6 +2456,8 @@ extend EsIr:
                         Expr.Field(Expr.Ident(receiver_name, receiver_pos), method_name, field_pos):
                             if method_name == "pop":
                                 return lower_collection_pop(receiver_name, arguments, argument_names, pos, state)
+                            if method_name == "setdefault":
+                                return lower_collection_setdefault(receiver_name, arguments, argument_names, pos, state)
                             if method_name == "get":
                                 return lower_collection_get(receiver_name, arguments, argument_names, pos, state)
                             if method_name == "copy":
@@ -4212,6 +4214,61 @@ extend EsIr:
             return LoweredValue{valid: true, value: element, type: element_type}
 
 
+        # Lower Python's typed dictionary `setdefault(key, default)` as a pair
+        # of semantic operations.  The value operation returns the existing
+        # value (or the default when the key is absent), while the map operation
+        # rebinds the mutable SSA name only when insertion is needed.  Keeping
+        # these results separate avoids introducing a tuple type into the IR and
+        # makes expression and statement forms share one exact evaluation.
+        def lower_collection_setdefault(receiver_name: sview, arguments: darray[Ast::Expr]&, argument_names: darray[sview]&, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+            invalid: LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+            binding: usize = binding_index(state, receiver_name)
+            if binding == state.names.count:
+                add_issue(state, LowerIssueKind.UnknownBinding, pos.line, "collection mutation receiver has no local binding")
+                return invalid
+            if state.types[binding].kind != TypeKind.Map or state.types[binding].name == "__elisascript_set":
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "setdefault requires a dictionary receiver")
+                return invalid
+            if not state.mutables[binding]:
+                add_issue(state, LowerIssueKind.ImmutableBinding, pos.line, "setdefault requires a mutable dictionary binding")
+                return invalid
+            named_argument: mutable bool = false
+            for argument_name in argument_names |named_argument|:
+                named_argument <- true if argument_name != ""
+            if arguments.count != 2 or named_argument:
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "setdefault requires a key and one positional default value")
+                return invalid
+            key_type: Type = map_key_type(state.types[binding])
+            key: LoweredValue = lower_expression_expected(arguments[0], key_type, state)
+            if not key.valid:
+                return invalid
+            if not same_type(key.type, key_type):
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "setdefault key must match the dictionary key type")
+                return invalid
+            value_type: Type = map_value_type(state.types[binding])
+            default_value: LoweredValue = lower_expression_expected(arguments[1], value_type, state)
+            if not default_value.valid:
+                return invalid
+            if not same_type(default_value.type, value_type):
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "setdefault default must match the dictionary value type")
+                return invalid
+            collection: u32 = state.values[binding]
+            value_result: u32 = fresh_value(state)
+            value_start: u32 = state.operand_pool.count.u32()
+            state.operand_pool.push(collection)
+            state.operand_pool.push(key.value)
+            state.operand_pool.push(default_value.value)
+            state.instructions.push(Instruction{opcode: Opcode.SetDefaultMapValue, result: value_result, result_type: value_type, operand_start: value_start, operand_count: 3, span: ir_span(pos)})
+            map_result: u32 = fresh_value(state)
+            map_start: u32 = state.operand_pool.count.u32()
+            state.operand_pool.push(collection)
+            state.operand_pool.push(key.value)
+            state.operand_pool.push(default_value.value)
+            state.instructions.push(Instruction{opcode: Opcode.SetDefaultMap, result: map_result, result_type: state.types[binding], operand_start: map_start, operand_count: 3, span: ir_span(pos)})
+            state.values[binding] <- map_result
+            return LoweredValue{valid: true, value: value_result, type: value_type}
+
+
         def lower_collection_sort(receiver_name: sview, arguments: darray[Ast::Expr]&, argument_names: darray[sview]&, pos: Ast::Pos&, state: mutable LowerState&) -> bool can[Memory.Allocate, Abort.Panic]:
             binding: usize = binding_index(state, receiver_name)
             if binding == state.names.count:
@@ -4248,7 +4305,7 @@ extend EsIr:
             argument_names: mutable darray[sview] = []
             match expression:
                 Expr.Call(Expr.Field(Expr.Ident(name, ident_pos), method, field_pos), call_arguments, call_argument_names, call_pos):
-                    if method == "push" or method == "append" or method == "pop" or method == "extend" or method == "add" or method == "clear" or method == "remove" or method == "reverse" or method == "insert" or method == "sort" or method == "update":
+                    if method == "push" or method == "append" or method == "pop" or method == "setdefault" or method == "extend" or method == "add" or method == "clear" or method == "remove" or method == "reverse" or method == "insert" or method == "sort" or method == "update":
                         receiver_name <- name
                         method_name <- method
                         arguments.extend(call_arguments)
@@ -4262,6 +4319,9 @@ extend EsIr:
                 return true
             if method_name == "pop":
                 _ = lower_collection_pop(receiver_name, arguments, argument_names, pos, state)
+                return true
+            if method_name == "setdefault":
+                _ = lower_collection_setdefault(receiver_name, arguments, argument_names, pos, state)
                 return true
             if method_name == "reverse":
                 _ = lower_collection_reverse(receiver_name, arguments, argument_names, pos, state)
@@ -4399,7 +4459,7 @@ extend EsIr:
                     state.values[binding] <- result
                 return true
             if state.types[binding].kind != TypeKind.Array:
-                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "push, append, pop, extend, remove, reverse, insert, sort, and update require an array or dictionary receiver")
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "push, append, pop, setdefault, extend, remove, reverse, insert, sort, and update require an array or dictionary receiver")
                 return true
             if not state.mutables[binding]:
                 add_issue(state, LowerIssueKind.ImmutableBinding, pos.line, "push, append, pop, extend, remove, reverse, and sort require a mutable array binding")

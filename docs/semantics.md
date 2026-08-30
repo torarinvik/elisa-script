@@ -355,6 +355,11 @@ mutable receiver. Existing keys keep their insertion position while receiving th
 new value; new keys append in the source dictionary's insertion order. The update
 is an owned SSA map replacement, and the method returns `void` like Python's
 `dict.update`.
+`mapping.setdefault(key, default)` returns the existing value for `key`, or the
+typed default when the key is absent, and inserts that default into a mutable
+dictionary only on a miss. The key and default must match the dictionary's exact
+key/value types; the operation preserves insertion order and returns the value
+type directly without a result wrapper.
 
 Mutable arrays accept both Elisa's `values.push(element)` spelling and the
 Python-compatible `values.append(element)` alias. Both require one positional

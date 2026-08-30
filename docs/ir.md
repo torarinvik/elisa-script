@@ -731,6 +731,12 @@ the key is absent), while `PopMap` removes the key into fresh map storage. A
 missing key without a default raises `IndexOutOfBounds`; the verifier rejects
 set descriptors, mismatched key/default types, and immutable receivers before
 execution.
+`mapping.setdefault(key, default)` lowers to the paired
+`SetDefaultMapValue`/`SetDefaultMap` operations. The value operation returns the
+existing value or the typed default, while the map operation rebinds the mutable
+dictionary only when insertion is needed. Both operations require an exact map,
+key, and default descriptor; set descriptors and mismatched types are rejected
+by the verifier.
 Lowering retains one mutability fact alongside every lexical binding. Plain locals,
 parameters, loop variables, and match binders are immutable; `mutable` local type
 markers and mutable parameters opt into SSA rebinding. `<-`, compound assignment,
