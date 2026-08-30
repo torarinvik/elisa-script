@@ -111,12 +111,11 @@ arrays remain unchanged. Empty arrays raise the ordinary checked-index
 `IndexOutOfBounds` failure through `error[...]`; aggregate elements and
 heterogeneous variadic arguments are rejected statically.
 
-The Python-compatible `sum(values, start)` and `product(values)` forms fold a
-typed integer array with identities `start` (or `0`) and `1`, preserving the
-array's exact integer type and evaluating the iterable once. `sum` accepts an
-optional second positional `start` value, which must match the exact element
-type; `product` remains one-argument in this initial profile. They expose no
-implicit widening. `any(values)` and `all(values)`
+The Python-compatible `sum(values, start)` and `product(values, start)` forms
+fold a typed integer array with identities `start` (or `0`/`1` when omitted),
+preserving the array's exact integer type and evaluating the iterable once.
+Both accept an optional second positional or `start:` value, which must match
+the exact element type. They expose no implicit widening. `any(values)` and `all(values)`
 fold a typed boolean array with the usual empty identities (`false` and `true`)
 and short-circuit through the same explicit loop state machine; non-boolean
 elements are rejected rather than coerced by truthiness.
