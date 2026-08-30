@@ -596,7 +596,9 @@ empty `old` value follows Python's boundary rule (the replacement is emitted
 before, between, and after input bytes); all output is copied into permanent
 runtime storage for parity across interpreter and bytecode execution.
 The compiler-known `strip(text)` and `trim(text)` aliases have type `Text -> Text`
-and lower to `TrimText`. They remove ASCII whitespace (`space`, tab, line feed,
+and lower to `TrimText` with mode 0. The Python-shaped `text.lstrip()` and
+`text.rstrip()` methods use the same opcode with modes 1 and 2 respectively.
+They remove ASCII whitespace (`space`, tab, line feed,
 vertical tab, form feed, and carriage return) only at the two boundaries and
 return an `sview` into the existing text storage; interior whitespace is retained.
 The compiler-known `lower(text)` and `upper(text)` operations, together with the
@@ -611,7 +613,8 @@ delimiter does not create an extra field, and empty input yields an empty array.
 Python-shaped text method aliases lower to these existing typed operations as
 well: `startswith`/`starts_with` and `endswith`/`ends_with` lower to
 `StartsWith`/`EndsWith`, `replace(old, replacement)` lowers to `TextReplace`,
-`strip()`/`trim()` lower to `TrimText`, and `split(separator)` lowers to `Split`.
+`strip()`/`trim()`/`lstrip()`/`rstrip()` lower to `TrimText` (modes 0/0/1/2),
+and `split(separator)` lowers to `Split`.
 The method forms require text receivers, exact positional arity, and an explicit
 separator for `split`; no dynamic dispatch or implicit-whitespace mode is added.
 The Python-compatible `separator.join(fields)` method lowers to the existing

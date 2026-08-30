@@ -122,10 +122,14 @@ input returns an empty array; the operation is deterministic and byte-oriented.
 Python-shaped text methods are available as statically typed aliases for the same
 operations: `text.startswith(prefix)`/`text.starts_with(prefix)` and
 `text.endswith(suffix)`/`text.ends_with(suffix)` return `bool`; `text.replace(old,
-replacement)` returns `sview`; `text.strip()`/`text.trim()` return `sview`; and
+replacement)` returns `sview`; `text.strip()`/`text.trim()` return `sview`;
+`text.lstrip()`/`text.rstrip()` return `sview` views trimmed only on the left or
+right boundary respectively; and
 `text.split(separator)` returns `darray[sview]`. Receivers and arguments must be
 text values, method arity is checked during lowering, and `split` intentionally
 requires an explicit separator rather than Python's implicit-whitespace mode.
+All trim spellings remove the same ASCII whitespace set, take no arguments, and
+preserve interior whitespace.
 The Python-compatible `separator.join(fields)` method is also available for a
 text separator and `darray[sview]` fields; it follows the same insertion and
 empty-field rules as the global `join(fields, separator)` operation.
