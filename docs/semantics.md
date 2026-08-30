@@ -97,6 +97,11 @@ with the same exact element type. The input is never mutated; sorting is stable,
 ascending, and byte-oriented for text. It is the expression-form counterpart to
 the in-place `values.sort()` method and is shadowable by a source declaration.
 
+The compiler-known `reversed(values)` builtin accepts any typed array and
+returns a fresh array with the same exact element type in reverse order. The
+input is never mutated, including for nested aggregate elements; the operation
+is deterministic and is shadowable by a source declaration.
+
 ## Text boundary predicates
 
 The compiler-known `starts_with(text, prefix) -> bool` and

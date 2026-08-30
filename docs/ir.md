@@ -527,6 +527,9 @@ operations, so it preserves single evaluation and exact integer/float types.
 The compiler-known `sorted(values)` builtin lowers to the existing `SortArray`
 operation and returns its fresh owned array without mutating the source value.
 It accepts only arrays whose scalar elements have a deterministic total order.
+The compiler-known `reversed(values)` builtin lowers to `ReverseArray` and
+returns a fresh owned array with the original element descriptor in reverse
+order, without requiring a mutable binding.
 Empty literals use
 their expected array type in bindings, assignments, returns, and call arguments,
 so `[]` never introduces an untyped dynamic collection. Arrays may nest five levels
