@@ -332,10 +332,11 @@ target file deterministically.
 opens in append mode so each byte is written after the existing file contents.
 It is the typed IR counterpart to shell `>>` and Python append-mode writes.
 The line-oriented helpers `read_lines(path) -> Array[Text]` and
-`write_lines(path, lines) -> usize` are deliberately not new opcodes: lowering
-expands them to `ReadText` + `Split` and `Join` + `WriteText`, respectively. This
-keeps their effect/error rows and runtime behavior identical to the primitive
-operations while making empty lines and final-newline handling explicit.
+`write_lines(path, lines) -> usize` and `append_lines(path, lines) -> usize` are
+deliberately not new opcodes: lowering expands them to `ReadText` + `Split`,
+`Join` + `WriteText`, and `Join` + `AppendText`, respectively. This keeps their
+effect/error rows and runtime behavior identical to the primitive operations while
+making empty lines and final-newline handling explicit.
 `RemovePath` verifies as `Named(Path) -> Bool` with `File.Write`. It calls Elisa's
 core unlink wrapper using the same owned NUL-terminated path conversion as the other
 filesystem operations. Missing paths produce `false`; they are not conflated with

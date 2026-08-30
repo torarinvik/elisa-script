@@ -635,6 +635,9 @@ can[File.Write]` opens or creates the file in append mode and writes every suppl
 byte after its existing contents. It returns the exact byte count and keeps the
 same typed path, effect, and error contract as `write_text`; it is the explicit
 counterpart to shell `>>` redirection and Python append-mode writes.
+`append_lines(path: Path, lines: darray[sview]) -> usize` joins the supplied
+lines with LF and delegates to the same append primitive, preserving the exact
+line bytes and `File.Write`/`FileIoError` contract.
 
 For direct shell-script ports, the same typed operations have short aliases:
 `pwd()` is `current_directory()`, `cd(path)` is `change_directory(path)`,
