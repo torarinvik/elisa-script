@@ -103,10 +103,12 @@ input is never mutated, including for nested aggregate elements; the operation
 is deterministic and is shadowable by a source declaration.
 
 The compiler-known `min(values)` and `max(values)` builtins accept a typed array
-of orderable scalar values and return its exact element type. They produce the
-ascending minimum or maximum through a fresh sorted copy, so the input remains
-unchanged. Empty arrays raise the ordinary checked-index `IndexOutOfBounds`
-failure through `error[...]`; aggregate elements are rejected statically.
+of orderable scalar values and return its exact element type. They also accept
+two or more positional scalar values of one exact orderable type. Both forms
+produce the ascending minimum or maximum through a fresh sorted copy, so input
+arrays remain unchanged. Empty arrays raise the ordinary checked-index
+`IndexOutOfBounds` failure through `error[...]`; aggregate elements and
+heterogeneous variadic arguments are rejected statically.
 
 The Python-compatible `sum(values, start)` and `product(values)` forms fold a
 typed integer array with identities `start` (or `0`) and `1`, preserving the

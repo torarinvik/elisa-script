@@ -532,7 +532,9 @@ returns a fresh owned array with the original element descriptor in reverse
 order, without requiring a mutable binding.
 The compiler-known `min(values)`/`max(values)` calls lower to `SortArray` followed
 by a checked `Index` at `0` or `-1`, preserving exact scalar element types and
-the normal empty-array failure path.
+the normal empty-array failure path. Two or more scalar arguments are first
+packed into a typed temporary array, so variadic calls share the same operation
+and never evaluate an argument more than once.
 The Python-shaped `sum(values, start)`/`product(values)` calls reuse the
 integer-fold state machine with identities `start`/`1` (`sum` defaults to `0`),
 while `any(values)`/`all(values)` reuse
