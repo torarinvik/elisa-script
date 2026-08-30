@@ -536,6 +536,11 @@ array or text source. The global form is shadowable by a source declaration and
 retains the same exact `usize` index typing. Python's `for key, value in mapping.items()` spelling is accepted as
 equivalent dictionary-entry sugar; it also evaluates the mapping once and does
 not materialize pair objects. All forms remain explicit state-machine CFGs.
+Python's `for left, right in zip(left_values, right_values)` spelling is also
+accepted for exactly two positional array or text sources. Each source is
+evaluated once, the element types remain exact (`char` for text), and iteration
+stops at the shorter source without allocating pair objects. The builtin name
+is shadowable by a source declaration, just like `enumerate`.
 Mutable iteration remains restricted to arrays. Map equality is order-insensitive
 but matches pairs one-to-one, so malformed duplicate entries cannot be reused to
 hide a mismatch.

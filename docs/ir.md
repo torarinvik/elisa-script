@@ -570,6 +570,12 @@ cursor. The Python-compatible
 `mapping.items()` suffix is likewise sugar for the existing map-pair loop: it
 snapshots keys once, performs typed value indexes in the body, and never creates
 pair objects.
+The Python-compatible `zip(left, right)` loop form accepts exactly two positional
+array or text sources. Lowering evaluates both once, emits one typed `Length` for
+each, selects the smaller `usize` through a three-block merge CFG, and reuses that
+limit for the indexed loop. The body emits one typed `Index` per source and binds
+the two element values directly; no tuple or pair array is materialized. A source
+function named `zip` shadows this loop sugar and is lowered as an ordinary call.
 `for mutable value in values` additionally requires `values` to be a named mutable
 array binding. Python's `range(stop)`, `range(start, stop)`, and
 `range(start, stop, step)` loop calls are normalized to the same counter-driven
