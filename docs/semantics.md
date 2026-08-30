@@ -618,6 +618,11 @@ numeric POSIX mode such as `0x180u64` (octal `0600`). It is the typed counterpar
 shell `chmod` and Python `Path.chmod`; invalid paths or modes remain typed file-I/O
 errors and no shell command is assembled.
 
+`file_size(path: Path) -> usize error[FileIoError] can[File.Read]` returns the
+length reported by POSIX `stat`, including regular files and directory entries.
+Missing paths and invalid names raise `FileIoError`; the result is an unsigned,
+64-bit byte count suitable for direct comparisons and differential tests.
+
 `read_text(path: Path) -> sview error[FileIoError]` reads a whole file without
 discarding embedded bytes. It contributes the same `File.Read` effect and adds
 `FileIoError` to the enclosing error row. Open, seek, read, and close failures
