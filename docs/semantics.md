@@ -743,6 +743,8 @@ replaces the destination. `move_path(source: Path, destination: Path) -> bool
 error[FileIoError] can[File.Write]` performs an atomic POSIX rename within the
 filesystem. Both operations reject arbitrary text at compile time and report
 operating-system failures through `error[...]`; neither constructs a shell command.
+Python's `shutil.copyfile` and `os.rename` spellings are typed aliases for
+`copy_path` and `move_path`.
 
 `append_text(path: Path, text: sview) -> usize error[FileIoError]
 can[File.Write]` opens or creates the file in append mode and writes every supplied
