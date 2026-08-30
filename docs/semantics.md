@@ -647,7 +647,10 @@ line bytes and `File.Write`/`FileIoError` contract.
 For direct shell-script and Python `pathlib` ports, the same typed operations
 have short aliases: `dirname(path)`/`basename(path)`/`suffix(path)`/`stem(path)`
 map to the corresponding path decomposition helpers, and `is_dir(path)` is an
-alias for the directory predicate. For direct shell scripts, the mutation aliases are:
+alias for the directory predicate. A `Path` also exposes the common `pathlib`
+shape members `path.parent`, `path.name`, `path.suffix`, and `path.stem`, plus
+`path.joinpath(leaf)`, `path.exists()`, and `path.is_dir()`; each lowers to the
+same typed opcode as its free-function counterpart. For direct shell scripts, the mutation aliases are:
 `pwd()` is `current_directory()`, `cd(path)` is `change_directory(path)`,
 `mkdir(path)`/`rmdir(path)` are directory creation/removal, and
 `rm(path)`, `cp(source, destination)`, and `mv(source, destination)` map to

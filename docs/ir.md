@@ -317,7 +317,9 @@ separator/absolute-leaf rules; `PathParent` verifies `Named(Path) -> Named(Path)
 are eligible for the direct bytecode path. Composition allocates permanent storage
 for joined paths, while parent/name preserve safe views into the existing path
 payload. The scripting-profile aliases `dirname`, `basename`, `suffix`, and
-`stem` lower to these same opcodes and retain source-level shadowing rules.
+`stem` lower to these same opcodes and retain source-level shadowing rules. The
+`Path` members `parent`, `name`, `suffix`, and `stem`, together with
+`joinpath`, `exists`, and `is_dir` methods, are lowered to the same operations.
 `ReadText` extends that contract to whole-file input with verified signature
 `Named(Path) -> Text`. Its function must carry both `File.Read` and `FileIoError`;
 lowering supplies both and the verifier rejects either omission. The interpreter
@@ -415,7 +417,8 @@ supply their platform `dirent` layout without changing this IR contract.
 `IsDirectory` verifies as `Named(Path) -> Bool` with `Directory.Read` and
 `DirectoryError`. It has its own exhaustive dispatch arm and uses the same isolated
 directory bridge that recursive glob traversal builds upon. The `is_dir` scripting
-alias lowers to this opcode without changing its effects or error contract.
+alias and `Path.is_dir()` method lower to this opcode without changing its effects
+or error contract.
 `ExpandGlob` verifies as `Named(Glob) -> Array[Text]` with `Directory.Read` and
 `DirectoryError`. The interpreter performs component matching and recursive `**`
 traversal in Elisa, filters symlink recursion, sorts and deduplicates owned matches,
