@@ -604,6 +604,10 @@ The compiler-known `lower(text)` and `upper(text)` operations, together with the
 lower to `LowerText` and `UpperText`. They fold ASCII letters while preserving
 all other bytes, and allocate owned output so the result remains valid across
 both execution backends.
+The compiler-known `split_lines(text)`/`splitlines(text)` aliases and the
+`text.splitlines()`/`text.split_lines()` methods have type `Text -> Array[Text]`
+and lower to `SplitLines`. LF, CR, and CRLF delimiters are recognized; a trailing
+delimiter does not create an extra field, and empty input yields an empty array.
 `ParseInt` has type `Text -> Int(signed, 64)` and requires `ParseError` in the
 function error row. Its state-machine parser accepts only an optional sign and
 ASCII decimal digits, checks signed 64-bit overflow before each accumulation, and

@@ -113,6 +113,12 @@ other UTF-8 bytes pass through unchanged; this byte-oriented rule avoids locale
 dependence or malformed Unicode transformations. The operations are pure,
 shadowable (for the global spellings), and return owned text.
 
+The compiler-known `split_lines(text) -> darray[sview]` (also accepted as
+`splitlines(text)`) and the Python-shaped `text.splitlines()`/`text.split_lines()`
+methods split on LF, CR, and CRLF boundaries. Trailing line breaks do not add an
+extra empty field, while empty and consecutive lines remain observable. Empty
+input returns an empty array; the operation is deterministic and byte-oriented.
+
 The first executable regex operation is the compiler-known, strongly typed search
 `matches(text, pattern) -> bool`, where `text` is `sview` and `pattern` is `Regex`:
 
