@@ -320,6 +320,13 @@ deterministic and allocation ownership is explicit. A read-only `for key in map`
 loop walks a materialized key array in insertion order. `for key, value in map`
 uses that same key array and performs a typed lookup for each value; both bindings
 are immutable, and map mutation remains explicit through indexed assignment.
+Arrays and byte-oriented text also support a two-binding indexed form:
+`for index, value in values` binds `index: usize` and the element (or `char` for
+text) without allocating an intermediate pair array. This is the typed
+enumeration shape intended for Python-style index/value scripts; Elisa's
+`for index, value in values.enumerate()` spelling is accepted as equivalent
+sugar. The collection is still evaluated once and the loop remains an explicit
+state-machine CFG.
 Mutable iteration remains restricted to arrays. Map equality is order-insensitive
 but matches pairs one-to-one, so malformed duplicate entries cannot be reused to
 hide a mismatch.

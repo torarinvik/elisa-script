@@ -4310,14 +4310,26 @@ extend EsIr:
                 Stmt.For(bind, variables, iterable, body, pos):
                     mutable_iteration: bool = bind == "mutable"
                     iterable_name: mutable sview = ""
+                    enumerate_sugar: mutable bool = false
+                    enumerate_source: mutable Ast::Expr = Expr.Absent
                     match iterable:
                         Expr.Ident(name, iterable_pos):
                             iterable_name <- name
+                        Expr.Call(callee, arguments, argument_names, call_pos):
+                            match callee:
+                                Expr.Field(object, field, field_pos):
+                                    if field == "enumerate" and arguments.count == 0 and argument_names.count == 0:
+                                        enumerate_sugar <- true
+                                        enumerate_source <- object
+                                _:
+                                    pass
                         _:
                             pass
                     collection_owner: usize = binding_index(state, iterable_name)
                     if variables.count == 0 or variables.count > 2 or bind not in {"", "mutable"}:
-                        add_issue(state, LowerIssueKind.UnsupportedStatement, pos.line, "for lowering supports one read binding, or two bindings for a dictionary entry")
+                        add_issue(state, LowerIssueKind.UnsupportedStatement, pos.line, "for lowering supports one read binding, or two bindings for a dictionary, array, or text iterable")
+                    elif enumerate_sugar and variables.count != 2:
+                        add_issue(state, LowerIssueKind.UnsupportedStatement, pos.line, "enumerate iteration requires index and value bindings")
                     elif mutable_iteration and variables.count != 1:
                         add_issue(state, LowerIssueKind.UnsupportedStatement, pos.line, "mutable iteration supports exactly one element binding")
                     elif mutable_iteration and iterable_name == "":
@@ -4328,20 +4340,26 @@ extend EsIr:
                         add_issue(state, LowerIssueKind.ImmutableBinding, pos.line, "mutable iteration requires a mutable array binding")
                     elif mutable_iteration and state.types[collection_owner].kind != TypeKind.Array:
                         add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "mutable iteration requires an array binding")
-                    elif not mutable_iteration and lower_range_for(variables, iterable, body, return_type, pos, state):
+                    elif not enumerate_sugar and not mutable_iteration and lower_range_for(variables, iterable, body, return_type, pos, state):
                         pass
                     else:
-                        collection: mutable LoweredValue = lower_expression(iterable, state)
+                        collection_expression: mutable Ast::Expr = iterable
+                        collection_expression <- enumerate_source if enumerate_sugar
+                        collection: mutable LoweredValue = lower_expression(collection_expression, state)
                         if not collection.valid:
                             pass
                         elif collection.type.kind == TypeKind.Map and mutable_iteration:
                             add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "mutable iteration requires an array binding")
-                        elif variables.count == 2 and collection.type.kind != TypeKind.Map:
-                            add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "two for-bindings require a dictionary iterable")
+                        elif enumerate_sugar and collection.type.kind not in {TypeKind.Array, TypeKind.Text}:
+                            add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "enumerate iteration requires an array or text source")
+                        elif variables.count == 2 and collection.type.kind not in {TypeKind.Map, TypeKind.Array, TypeKind.Text}:
+                            add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "two for-bindings require a dictionary, array, or text iterable")
                         elif collection.type.kind not in {TypeKind.Array, TypeKind.Map, TypeKind.Text}:
                             add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "for iterable must have an array, dictionary, or text type")
                         else:
                             pair_iteration: bool = variables.count == 2
+                            map_pair: bool = pair_iteration and not enumerate_sugar and collection.type.kind == TypeKind.Map
+                            indexed_pair: bool = enumerate_sugar or (pair_iteration and collection.type.kind in {TypeKind.Array, TypeKind.Text})
                             map_collection: u32 = collection.value
                             map_element_type: Type = map_value_type(collection.type) if collection.type.kind == TypeKind.Map else void_ir_type()
                             if collection.type.kind == TypeKind.Map:
@@ -4430,11 +4448,11 @@ extend EsIr:
                             state.operand_pool.push(index_value)
                             element_type: Type = type_from_name("char") if collection.type.kind == TypeKind.Text else array_element_type(collection.type)
                             state.instructions.push(Instruction{opcode: Opcode.Index, result: element_result, result_type: element_type, operand_start: element_operand_start, operand_count: 2, span: ir_span(pos)})
-                            state.names.push(variables[0])
-                            state.values.push(element_result)
-                            state.types.push(element_type)
-                            state.mutables.push(mutable_iteration)
-                            if pair_iteration:
+                            if map_pair:
+                                state.names.push(variables[0])
+                                state.values.push(element_result)
+                                state.types.push(element_type)
+                                state.mutables.push(false)
                                 value_result: u32 = fresh_value(state)
                                 value_operand_start: u32 = state.operand_pool.count.u32()
                                 state.operand_pool.push(map_collection)
@@ -4444,6 +4462,23 @@ extend EsIr:
                                 state.values.push(value_result)
                                 state.types.push(map_element_type)
                                 state.mutables.push(false)
+                            elif indexed_pair:
+                                # Arrays and text expose the loop cursor as the
+                                # first binding, matching Python's enumerate
+                                # shape while retaining exact usize typing.
+                                state.names.push(variables[0])
+                                state.values.push(index_value)
+                                state.types.push(index_type)
+                                state.mutables.push(false)
+                                state.names.push(variables[1])
+                                state.values.push(element_result)
+                                state.types.push(element_type)
+                                state.mutables.push(false)
+                            else:
+                                state.names.push(variables[0])
+                                state.values.push(element_result)
+                                state.types.push(element_type)
+                                state.mutables.push(mutable_iteration)
                             if mutable_iteration:
                                 state.element_binding_indices.push(outer_scope.u32())
                                 state.element_owner_indices.push(collection_owner.u32())

@@ -540,7 +540,11 @@ typed IR operations. `continue` targets the incrementing latch, `break` targets 
 exit, and mutations of outer bindings travel through typed loop parameters.
 Read-only dictionary loops additionally accept `for key, value in map`; the key
 binding comes from `MapKeys` and the value binding from a typed map `Index` in the
-body block.
+body block. Arrays and text additionally accept `for index, value in collection`:
+the first binding is the loop's typed `usize` cursor and the second is the
+ordinary `Index` result (`char` for text), so no pair materialization is needed.
+The Elisa-compatible `collection.enumerate()` suffix is sugar for the same
+lowering and is only valid with the two bindings.
 `for mutable value in values` additionally requires `values` to be a named mutable
 array binding. Lowering records a scoped element-owner relation; every successful
 `value <- replacement` or compound update immediately transitions the owner through
