@@ -895,10 +895,14 @@ Environment access is explicit and typed rather than implicit global string magi
   lookup but recovers a missing or invalid name with `fallback`. The fallback is
   evaluated lazily on the `EnvironmentError` edge, and the operation still records
   `Environment.Read`/`EnvironmentError` in the enclosing function's contract.
+- Python `os.getenv` ports may use `getenv(name)` for the fallible lookup or
+  `getenv(name, fallback)`/`getenv_or(name, fallback)` for lazy fallback behavior;
+  these aliases preserve the same typed `sview` contract.
 - `set_environment(name: sview, value: sview) -> bool error[EnvironmentError]
   can[Environment.Write]` replaces the process-global value and returns `true`.
 - `unset_environment(name: sview) -> bool error[EnvironmentError]
   can[Environment.Write]` removes the key and returns `true`, including when absent.
+  Python-style `setenv` and `unsetenv` are typed aliases for these mutations.
 
 Names must be non-empty and neither names nor values may contain embedded NUL bytes.
 These mutations intentionally affect later child processes and therefore make the
