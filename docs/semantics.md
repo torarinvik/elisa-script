@@ -778,6 +778,12 @@ shell flags or recursive/stringly behavior.
 Python `os.getcwd()` and `os.chdir(path)` are typed aliases for the working-directory
 operations, and `os.listdir(path)` is spelled `listdir(path)`.
 
+Python `pathlib` file methods are also available on nominal `Path` values:
+`path.read_text()`, `path.read_bytes()`, `path.write_text(text)`,
+`path.write_bytes(bytes)`, `path.unlink()`, and `path.rename(destination)`.
+They lower to the existing typed read, write, remove, and move operations, so
+their effects, errors, and exact result types remain visible to every backend.
+
 ## Process execution
 
 `executable(text) -> Executable error[ProcessError]` is the dynamic counterpart
