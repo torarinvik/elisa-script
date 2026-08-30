@@ -452,6 +452,10 @@ keeps byte ownership, wait behavior, and shell-free argument handling identical.
 stages the input in a temporary file, redirects descriptors 0 and 1 in the child,
 and drives input writing and process waiting through explicit state machines before
 returning the complete owned stdout snapshot.
+`CaptureProcessStderrWithStdin` has the same verified signature and contract, but
+redirects descriptor 2 and returns the complete owned stderr snapshot while stdout
+remains inherited. It shares the same state-machine input staging and shell-free argv
+execution path as the stdout variant.
 `CaptureProcessResult` is the differential-testing primitive: it has the same typed
  executable, argument-vector, and stdin operands but returns nominal `ProcessCapture`
  data containing the exit status, stdout, and stderr from one child execution. The

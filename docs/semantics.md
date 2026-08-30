@@ -848,6 +848,11 @@ Input is staged in a temporary file before the child starts, so the operation ha
 pipe-size deadlock or truncation behavior. The child sees exactly the supplied bytes;
 wildcards, spaces, and quotes in both arguments and input remain ordinary bytes.
 
+`capture_process_stderr_with_stdin(executable: Executable, arguments: darray[sview],
+input: sview) -> sview error[ProcessError] can[Process.Run]` is the descriptor-2
+counterpart. It uses the same typed argv and temporary-file input staging, but returns
+the child's complete stderr snapshot while stdout remains inherited.
+
 `capture_process_result_in_directory(executable: Executable, arguments: darray[sview],
 input: sview, directory: Path) -> ProcessCapture error[ProcessError] can[Process.Run]`
 is the differential-testing variant with an explicit child working directory. The
