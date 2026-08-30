@@ -328,6 +328,9 @@ I/O failure becomes `InterpretError.FileIo` at the reference-interpreter boundar
 complete byte count, checks close status, and returns that count. A partial write
 never produces a successful result, and empty text still creates or truncates the
 target file deterministically.
+`AppendText` has the same verified signature and effect/error requirements, but
+opens in append mode so each byte is written after the existing file contents.
+It is the typed IR counterpart to shell `>>` and Python append-mode writes.
 The line-oriented helpers `read_lines(path) -> Array[Text]` and
 `write_lines(path, lines) -> usize` are deliberately not new opcodes: lowering
 expands them to `ReadText` + `Split` and `Join` + `WriteText`, respectively. This

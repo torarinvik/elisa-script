@@ -630,6 +630,12 @@ error[FileIoError] can[File.Write]` performs an atomic POSIX rename within the
 filesystem. Both operations reject arbitrary text at compile time and report
 operating-system failures through `error[...]`; neither constructs a shell command.
 
+`append_text(path: Path, text: sview) -> usize error[FileIoError]
+can[File.Write]` opens or creates the file in append mode and writes every supplied
+byte after its existing contents. It returns the exact byte count and keeps the
+same typed path, effect, and error contract as `write_text`; it is the explicit
+counterpart to shell `>>` redirection and Python append-mode writes.
+
 For direct shell-script ports, the same typed operations have short aliases:
 `pwd()` is `current_directory()`, `cd(path)` is `change_directory(path)`,
 `mkdir(path)`/`rmdir(path)` are directory creation/removal, and
