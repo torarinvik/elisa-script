@@ -529,7 +529,9 @@ Arrays and byte-oriented text also support a two-binding indexed form:
 text) without allocating an intermediate pair array. This is the typed
 enumeration shape intended for Python-style index/value scripts; Elisa's
 `for index, value in values.enumerate()` spelling is accepted as equivalent
-sugar. Python's `for key, value in mapping.items()` spelling is accepted as
+sugar, and Python's `enumerate(values)` spelling is accepted with one positional
+array or text source. The global form is shadowable by a source declaration and
+retains the same exact `usize` index typing. Python's `for key, value in mapping.items()` spelling is accepted as
 equivalent dictionary-entry sugar; it also evaluates the mapping once and does
 not materialize pair objects. All forms remain explicit state-machine CFGs.
 Mutable iteration remains restricted to arrays. Map equality is order-insensitive
