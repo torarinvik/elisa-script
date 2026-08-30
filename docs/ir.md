@@ -429,8 +429,11 @@ The scripting-profile `get_environment_or(name, fallback)` lowers to the same
 `GetEnvironment` operation wrapped by `ErrorGuardPush`/`ErrorGuardPop` and a typed
 merge block, so a missing variable follows the fallback edge without evaluating the
 fallback on successful reads.
-`CreateDirectory`, `RemoveDirectory`, and `ChangeDirectory` verify as
+`CreateDirectory`, `CreateDirectories`, `RemoveDirectory`, and `ChangeDirectory` verify as
 `Named(Path) -> Bool` with `Directory.Write` and `DirectoryError`.
+`CreateDirectories` recursively creates missing parent components and accepts
+already-existing directory components, matching `mkdir -p`/`os.makedirs` while
+keeping the same typed contract.
 `CurrentDirectory` takes no operands, returns `Named(Path)`, and requires
 `Directory.Read` plus the same error. All four have explicit opcode-machine arms;
 the cwd result is copied before the POSIX allocation is released.

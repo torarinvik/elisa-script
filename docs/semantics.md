@@ -705,7 +705,8 @@ shape members `path.parent`, `path.name`, `path.suffix`, and `path.stem`, plus
 `path.is_dir()`; each lowers to the
 same typed opcode as its free-function counterpart. For direct shell scripts, the mutation aliases are:
 `pwd()` is `current_directory()`, `cd(path)` is `change_directory(path)`,
-`mkdir(path)`/`rmdir(path)` are directory creation/removal, and
+`mkdir(path)`/`rmdir(path)` are single-level directory creation/removal;
+`makedirs(path)`/`mkdir_p(path)` create missing parents, and
 `rm(path)`, `cp(source, destination)`, and `mv(source, destination)` map to
 `remove_path`, `copy_path`, and `move_path`. The aliases retain nominal `Path`
 arguments, exact return types, effect rows, and error contracts; they do not add
@@ -854,6 +855,7 @@ environment dependency visible in the inferred effect row.
 Directory operations use nominal `Path` values and structured `DirectoryError`:
 
 - `create_directory(path: Path) -> bool can[Directory.Write]`
+- `create_directories(path: Path) -> bool can[Directory.Write]`
 - `remove_directory(path: Path) -> bool can[Directory.Write]`
 - `change_directory(path: Path) -> bool can[Directory.Write]`
 - `current_directory() -> Path can[Directory.Read]`
@@ -863,6 +865,9 @@ operating-system failures are errors rather than ambiguous `false` values. Creat
 uses mode `0755` before the process umask is applied. `current_directory` returns an
 owned nominal snapshot, so a later directory change cannot mutate the saved path.
 Empty paths and embedded NUL bytes are rejected before entering the POSIX boundary.
+`create_directories` (also `makedirs` and `mkdir_p`) creates missing parents like
+shell `mkdir -p` or Python `os.makedirs`, succeeds when each existing component is
+a directory, and reports a typed error when a component is not one.
 
 `list_directory(path: Path) -> darray[sview] error[DirectoryError]
 can[Directory.Read]` returns owned entry basenames. It omits the synthetic `.` and
