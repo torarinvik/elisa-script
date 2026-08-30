@@ -608,6 +608,11 @@ that are not regular files return `false`. The `path.is_file()` method lowers to
 same typed operation, and a source-defined `is_file` shadows the compiler-known
 operation.
 
+`touch(path: Path) -> bool error[FileIoError] can[File.Write]` creates an empty file
+when it is missing and updates its timestamps without truncating an existing file.
+It is the typed counterpart to shell `touch`; failures remain `FileIoError` values
+rather than being hidden behind a process invocation.
+
 `read_text(path: Path) -> sview error[FileIoError]` reads a whole file without
 discarding embedded bytes. It contributes the same `File.Read` effect and adds
 `FileIoError` to the enclosing error row. Open, seek, read, and close failures

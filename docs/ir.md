@@ -313,6 +313,9 @@ libc as though it were a C string.
 `IsFile` has the same verified `Named(Path) -> Bool` shape and `File.Read` effect,
 but tests the POSIX mode bits and returns `false` for missing or non-regular entries.
 The scripting `is_file(path)` alias and `Path.is_file()` method lower to this opcode.
+`TouchPath` verifies as `Named(Path) -> Bool` with `File.Write` and `FileIoError`.
+Its interpreter bridge opens-or-creates without truncation, then refreshes the
+timestamps through POSIX `utimes`; packed bytecode uses the same helper.
 `PathJoin`, `PathParent`, `PathName`, `PathExtension`, and `PathStem` are pure typed path-shape operations.
 `PathJoin` verifies `Named(Path) × Text -> Named(Path)` and uses the core `Fs.join`
 separator/absolute-leaf rules; `PathParent` verifies `Named(Path) -> Named(Path)`;
