@@ -372,6 +372,13 @@ the first matching element offset as a signed `i64`, or `-1` when no element
 matches. They share structural equality with `count` and require an exact
 element type; `index` is an array-only spelling while `find` also remains valid
 for text values.
+`values.remove(element)` is the Python-compatible in-place removal operation. It
+requires a mutable array and an element of the exact array element type, removes
+only the first matching element, and rebinds the receiver through the same
+ownership-safe SSA update. If no element matches, execution raises
+`InterpretError.IndexOutOfBounds` through the ordinary `error[...]` channel and
+the binding remains unchanged. Structural equality is identical to `count`,
+`find`, and `index`.
 
 ## Text field processing
 
