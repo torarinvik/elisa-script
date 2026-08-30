@@ -328,6 +328,11 @@ and `FileIoError`; both execution engines call the POSIX `chmod` boundary direct
 `FileIoError`, returning the `st_mode` bits from that bridge. It preserves the
 file-kind and permission bits so scripts can inspect a mode before or after a
 typed `ChmodPath` operation.
+`FileMTime`, `FileATime`, and `FileCTime` each verify as `Named(Path) ->
+Int(signed, 64)` with `File.Read` and `FileIoError`. They return the POSIX
+`st_mtime`, `st_atime`, and inode-change `st_ctime` seconds from the same
+length-safe `stat` bridge; Python `getmtime`, `getatime`, and `getctime` aliases
+lower to the corresponding distinct opcode.
 `IsSymlink` verifies as `Named(Path) -> Bool` with `File.Read`; it uses POSIX
 `lstat` mode bits so the predicate observes the link itself rather than its target.
 `ReadLink` verifies as `Named(Path) -> Named(Path)` with `File.Read` and
