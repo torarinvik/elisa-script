@@ -687,13 +687,15 @@ ownership-safe SSA updates rather than hidden aliasing mutations. `push` constru
 a typed singleton and `append` has exactly the same contract; `extend` accepts the
 receiver's exact array type; all three concatenate
 into a fresh array value and rebind the receiver. Python's zero-argument
-`array.pop()` is also available in both expression and statement position: its
-typed `PopArrayValue` result yields the removed element while `PopArray` rebinds
-the receiver to a shortened view. Both operations reject an empty array with
-`IndexOutOfBounds`, and no rebinding occurs on failure. Mutation discovery treats
-these calls as assignments, so updates inside `if`, `while`, and `for` flow through
-the same typed merge, header, latch, and exit parameters as explicit `<-` rebinding.
-Named arguments, mismatched element types, and non-array receivers are rejected.
+`array.pop()` and `array.pop(index)` are available in both expression and statement
+position: their typed `PopArrayValue` result yields the removed element while
+`PopArray` rebinds the receiver to a shortened view. The optional index is an
+integer and supports Python's negative-from-the-end normalization. Both
+operations reject an empty array or an out-of-range index with `IndexOutOfBounds`,
+and no rebinding occurs on failure. Mutation discovery treats these calls as
+assignments, so updates inside `if`, `while`, and `for` flow through the same typed
+merge, header, latch, and exit parameters as explicit `<-` rebinding. Named
+arguments, mismatched index types, and non-array receivers are rejected.
 The statement-form `array.reverse()` method lowers to `ReverseArray`. It requires
 a mutable array binding and zero arguments, emits an owned reversed array value,
 and rebinds the receiver through the ordinary SSA state-machine path. The
