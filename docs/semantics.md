@@ -119,6 +119,14 @@ methods split on LF, CR, and CRLF boundaries. Trailing line breaks do not add an
 extra empty field, while empty and consecutive lines remain observable. Empty
 input returns an empty array; the operation is deterministic and byte-oriented.
 
+Python-shaped text methods are available as statically typed aliases for the same
+operations: `text.startswith(prefix)`/`text.starts_with(prefix)` and
+`text.endswith(suffix)`/`text.ends_with(suffix)` return `bool`; `text.replace(old,
+replacement)` returns `sview`; `text.strip()`/`text.trim()` return `sview`; and
+`text.split(separator)` returns `darray[sview]`. Receivers and arguments must be
+text values, method arity is checked during lowering, and `split` intentionally
+requires an explicit separator rather than Python's implicit-whitespace mode.
+
 The first executable regex operation is the compiler-known, strongly typed search
 `matches(text, pattern) -> bool`, where `text` is `sview` and `pattern` is `Regex`:
 

@@ -608,6 +608,12 @@ The compiler-known `split_lines(text)`/`splitlines(text)` aliases and the
 `text.splitlines()`/`text.split_lines()` methods have type `Text -> Array[Text]`
 and lower to `SplitLines`. LF, CR, and CRLF delimiters are recognized; a trailing
 delimiter does not create an extra field, and empty input yields an empty array.
+Python-shaped text method aliases lower to these existing typed operations as
+well: `startswith`/`starts_with` and `endswith`/`ends_with` lower to
+`StartsWith`/`EndsWith`, `replace(old, replacement)` lowers to `TextReplace`,
+`strip()`/`trim()` lower to `TrimText`, and `split(separator)` lowers to `Split`.
+The method forms require text receivers, exact positional arity, and an explicit
+separator for `split`; no dynamic dispatch or implicit-whitespace mode is added.
 `ParseInt` has type `Text -> Int(signed, 64)` and requires `ParseError` in the
 function error row. Its state-machine parser accepts only an optional sign and
 ASCII decimal digits, checks signed 64-bit overflow before each accumulation, and
