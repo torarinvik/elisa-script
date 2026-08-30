@@ -613,6 +613,11 @@ when it is missing and updates its timestamps without truncating an existing fil
 It is the typed counterpart to shell `touch`; failures remain `FileIoError` values
 rather than being hidden behind a process invocation.
 
+`chmod(path: Path, mode: u64) -> bool error[FileIoError] can[File.Write]` applies a
+numeric POSIX mode such as `0x180u64` (octal `0600`). It is the typed counterpart to
+shell `chmod` and Python `Path.chmod`; invalid paths or modes remain typed file-I/O
+errors and no shell command is assembled.
+
 `read_text(path: Path) -> sview error[FileIoError]` reads a whole file without
 discarding embedded bytes. It contributes the same `File.Read` effect and adds
 `FileIoError` to the enclosing error row. Open, seek, read, and close failures

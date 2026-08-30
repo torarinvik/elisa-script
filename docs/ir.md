@@ -316,6 +316,8 @@ The scripting `is_file(path)` alias and `Path.is_file()` method lower to this op
 `TouchPath` verifies as `Named(Path) -> Bool` with `File.Write` and `FileIoError`.
 Its interpreter bridge opens-or-creates without truncation, then refreshes the
 timestamps through POSIX `utimes`; packed bytecode uses the same helper.
+`ChmodPath` verifies as `Named(Path) × Int(unsigned, 64) -> Bool` with `File.Write`
+and `FileIoError`; both execution engines call the POSIX `chmod` boundary directly.
 `PathJoin`, `PathParent`, `PathName`, `PathExtension`, and `PathStem` are pure typed path-shape operations.
 `PathJoin` verifies `Named(Path) × Text -> Named(Path)` and uses the core `Fs.join`
 separator/absolute-leaf rules; `PathParent` verifies `Named(Path) -> Named(Path)`;
