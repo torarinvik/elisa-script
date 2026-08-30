@@ -171,8 +171,11 @@ operations: `text.startswith(prefix)`/`text.starts_with(prefix)` and
 replacement)` returns `sview`; `text.strip()`/`text.trim()` return `sview`;
 `text.lstrip()`/`text.rstrip()` return `sview` views trimmed only on the left or
 right boundary respectively; and
-`text.split(separator)` and `text.split()` return `darray[sview]`. Receivers and
-arguments must be text values, and method arity is checked during lowering.
+`text.split(separator)` and `text.split(separator, maxsplit)` and `text.split()`
+return `darray[sview]`. The bounded form requires a signed `i64` `maxsplit`;
+negative values mean unlimited splitting and zero returns the unsplit text.
+Receivers and arguments must be text values, and method arity is checked during
+lowering.
 The zero-argument form splits on runs of ASCII whitespace, drops leading and
 trailing whitespace, and returns an empty array for whitespace-only input.
 All trim spellings remove the same ASCII whitespace set, take no arguments, and
@@ -476,8 +479,10 @@ fields: darray[sview] = split("name::value", ":")
 ```
 
 `split` preserves empty fields at every position. An empty separator splits a
-nonempty string into byte-sized `sview` values and maps empty input to `[]`. These
-rules are total, deterministic, and identical across the interpreter and future
+nonempty string into byte-sized `sview` values and maps empty input to `[]`.
+An explicit signed `i64` `maxsplit` bounds the number of separator matches;
+negative values are unlimited and zero returns one unsplit field. These rules are
+total, deterministic, and identical across the interpreter and future
 bytecode, JIT, and native backends. A source function named `split` shadows the
 compiler-known operation normally.
 

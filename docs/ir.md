@@ -640,12 +640,15 @@ preserve the exact array or text type, and require `0 <= low <= high <= count`;
 violations raise typed `IndexOutOfBounds`. Immutable array slices share their
 backing value storage, while text slices are byte views under the `sview` contract.
 The compiler-known `split(text, separator)` operation has the exact static type
-`Text × Text -> Array[Text]` and lowers to the semantic `Split` opcode. It preserves
-leading, trailing, and consecutive empty fields. An empty separator splits a
-nonempty input into one-byte text views, while empty input produces an empty array;
-this follows the same explicit byte model as indexing and iteration. The interpreter
-stores fields in caller-owned value storage, so split results can be indexed,
-compared structurally, iterated, and returned without hidden host allocations.
+`Text × Text -> Array[Text]` and lowers to the semantic `Split` opcode. Its optional
+third argument is a signed `i64` `maxsplit`, producing a three-operand bounded
+split; negative values mean unlimited splitting and zero returns one unsplit field.
+It preserves leading, trailing, and consecutive empty fields. An empty separator
+splits a nonempty input into one-byte text views, while empty input produces an
+empty array; this follows the same explicit byte model as indexing and iteration.
+The interpreter stores fields in caller-owned value storage, so split results can be
+indexed, compared structurally, iterated, and returned without hidden host
+allocations.
 The inverse compiler-known `join(fields, separator)` operation has type
 `Array[Text] × Text -> Text` and lowers to `Join`. Verification rejects non-text
 arrays before execution; the interpreter also validates each runtime element and
@@ -682,9 +685,10 @@ Python-shaped text method aliases lower to these existing typed operations as
 well: `startswith`/`starts_with` and `endswith`/`ends_with` lower to
 `StartsWith`/`EndsWith`, `replace(old, replacement)` lowers to `TextReplace`,
 `strip()`/`trim()`/`lstrip()`/`rstrip()` lower to `TrimText` (modes 0/0/1/2),
-and `split(separator)`/`split()` lower to `Split` (modes 0/1). The method forms
-require text receivers and exact positional arity; zero-argument `split()` uses
-ASCII-whitespace runs and produces no empty fields.
+and `split(separator)`/`split(separator, maxsplit)`/`split()` lower to `Split`
+(modes 0/1). The method forms require text receivers and exact positional arity;
+the bounded method form requires a signed `i64` limit, while zero-argument
+`split()` uses ASCII-whitespace runs and produces no empty fields.
 The Python-compatible `separator.join(fields)` method lowers to the existing
 `Join` opcode with the fields operand first and the text receiver as separator.
 The Python-compatible `mapping.keys()` method is also compiler-known: it requires
