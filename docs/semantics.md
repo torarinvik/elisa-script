@@ -626,7 +626,12 @@ errors and no shell command is assembled.
 `file_size(path: Path) -> usize error[FileIoError] can[File.Read]` returns the
 length reported by POSIX `stat`, including regular files and directory entries.
 Missing paths and invalid names raise `FileIoError`; the result is an unsigned,
-64-bit byte count suitable for direct comparisons and differential tests.
+64-bit byte count suitable for direct comparisons and differential tests. Python's
+`os.path.getsize` spelling is a typed alias for this operation.
+
+`file_mtime(path: Path) -> i64 error[FileIoError] can[File.Read]` returns the
+POSIX modification timestamp from `stat`; Python's `os.path.getmtime` spelling
+is a typed alias with the same error contract.
 
 `is_nonempty(path: Path) -> bool error[FileIoError] can[File.Read]` is the typed
 counterpart to shell `test -s` and the common Python `Path.stat().st_size > 0`
@@ -644,6 +649,7 @@ metadata parser.
 `is_symlink(path: Path) -> bool` is the shell `test -L` and Python
 `Path.is_symlink()` predicate. It uses `lstat` rather than following the target,
 contributes `File.Read`, and returns `false` for missing or non-symlink entries.
+Python's `os.path.islink` spelling is a typed alias.
 
 `readlink(path: Path) -> Path error[FileIoError] can[File.Read]` returns the link
 target without following it, matching shell `readlink` and Python
