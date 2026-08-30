@@ -682,6 +682,7 @@ destination root must not already exist, and traversal is bounded to 128 levels.
 discarding embedded bytes. It contributes the same `File.Read` effect and adds
 `FileIoError` to the enclosing error row. Open, seek, read, and close failures
 remain errors; a failed read is never confused with a successfully read empty file.
+The shell-oriented `cat(path)` spelling is a typed alias for the same operation.
 
 `write_text(path: Path, contents: sview) -> usize error[FileIoError]` replaces or
 creates a file and returns the exact byte count written. It contributes `File.Write`

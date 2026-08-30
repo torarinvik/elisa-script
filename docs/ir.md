@@ -388,6 +388,8 @@ lowering supplies both and the verifier rejects either omission. The interpreter
 uses Elisa's stdio bindings, checks every open/seek/read/close transition, and
 returns one owned length-delimited buffer. Empty files return empty text, while any
 I/O failure becomes `InterpretError.FileIo` at the reference-interpreter boundary.
+The shell-shaped `cat(path)` spelling lowers to this same typed opcode and retains
+the nominal `Path`, effect, and error contract.
 `WriteText` has verified signature `Named(Path) × Text -> usize` and requires
 `File.Write` plus `FileIoError`. Execution opens in replacement mode, verifies the
 complete byte count, checks close status, and returns that count. A partial write
