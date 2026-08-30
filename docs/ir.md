@@ -589,6 +589,12 @@ opcodes. They compare bytes under the same `sview` contract as indexing and
 regex helpers; an empty prefix or suffix succeeds, while a boundary longer than
 the input fails. Both are pure operations, remain shadowable by a user-defined
 function of the same name, and share the packed bytecode text dispatch family.
+The compiler-known `replace(text, old, replacement)` operation has type
+`Text × Text × Text -> Text` and lowers to `TextReplace`. It performs left-to-right,
+non-overlapping literal replacement without interpreting `old` as a regex. An
+empty `old` value follows Python's boundary rule (the replacement is emitted
+before, between, and after input bytes); all output is copied into permanent
+runtime storage for parity across interpreter and bytecode execution.
 `ParseInt` has type `Text -> Int(signed, 64)` and requires `ParseError` in the
 function error row. Its state-machine parser accepts only an optional sign and
 ASCII decimal digits, checks signed 64-bit overflow before each accumulation, and

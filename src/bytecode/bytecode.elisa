@@ -201,7 +201,7 @@ module EsBytecode:
                 Classify, BytecodeOpcodeClassState.Classify if cursor.opcode == Opcode.MakePath or cursor.opcode == Opcode.MakeGlob or cursor.opcode == Opcode.MakeRegex or cursor.opcode == Opcode.MakeUrl:
                     cursor.result <- BytecodeDispatchClass.Literal
                     break
-                Classify, BytecodeOpcodeClassState.Classify if cursor.opcode == Opcode.Concat or cursor.opcode == Opcode.Split or cursor.opcode == Opcode.Join or cursor.opcode == Opcode.ParseInt or cursor.opcode == Opcode.FormatInt or cursor.opcode == Opcode.ParseFloat or cursor.opcode == Opcode.FormatFloat or cursor.opcode == Opcode.FormatBool or cursor.opcode == Opcode.StartsWith or cursor.opcode == Opcode.EndsWith:
+                Classify, BytecodeOpcodeClassState.Classify if cursor.opcode == Opcode.Concat or cursor.opcode == Opcode.Split or cursor.opcode == Opcode.Join or cursor.opcode == Opcode.ParseInt or cursor.opcode == Opcode.FormatInt or cursor.opcode == Opcode.ParseFloat or cursor.opcode == Opcode.FormatFloat or cursor.opcode == Opcode.FormatBool or cursor.opcode == Opcode.StartsWith or cursor.opcode == Opcode.EndsWith or cursor.opcode == Opcode.TextReplace:
                     cursor.result <- BytecodeDispatchClass.Text
                     break
                 Classify, BytecodeOpcodeClassState.Classify if cursor.opcode == Opcode.RegexSearch or cursor.opcode == Opcode.RegexReplace or cursor.opcode == Opcode.RegexSplit or cursor.opcode == Opcode.RegexFind:
@@ -705,6 +705,33 @@ module EsBytecode:
             return true
 
 
+        def bytecode_direct_text_replace(text: sview, old: sview, replacement: sview) -> RuntimeValue error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+            output: mutable dstr = []
+            text_length: usize = sview_len(text)
+            old_length: usize = sview_len(old)
+            if old_length == 0:
+                for index in 0..<sview_len(replacement) |output, replacement|:
+                    output.push(sview_at(replacement, index))
+                for index in 0..<text_length |output, text, replacement|:
+                    output.push(sview_at(text, index))
+                    for replacement_index in 0..<sview_len(replacement) |output, replacement|:
+                        output.push(sview_at(replacement, replacement_index))
+            else:
+                cursor: mutable usize = 0
+                while cursor < text_length:
+                    if cursor + old_length <= text_length and bytecode_direct_text_matches_at(text, old, cursor):
+                        for replacement_index in 0..<sview_len(replacement) |output, replacement|:
+                            output.push(sview_at(replacement, replacement_index))
+                        cursor <- cursor + old_length
+                    else:
+                        output.push(sview_at(text, cursor))
+                        cursor <- cursor + 1
+            return runtime_text("") if output.count == 0
+            owned: mutable dstr = ctx_fstr_alloc(output.count)
+            ctx_fstr_append(owned, output.items, output.count)
+            return runtime_text(bytes_view(owned))
+
+
         def bytecode_direct_text_concat(left: RuntimeValue, right: RuntimeValue) -> RuntimeValue error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             raise InterpretError.TypeMismatch if left.kind != RuntimeValueKind.Text or right.kind != RuntimeValueKind.Text
             total: usize = sview_len(left.text) + sview_len(right.text)
@@ -891,10 +918,10 @@ module EsBytecode:
             regex_text: mutable RuntimeValue = runtime_void()
             regex_pattern: mutable RuntimeValue = runtime_void()
             regex_replacement: mutable RuntimeValue = runtime_void()
-            if instruction.opcode == Opcode.RegexSearch or instruction.opcode == Opcode.RegexReplace or instruction.opcode == Opcode.RegexSplit or instruction.opcode == Opcode.RegexFind:
+            if instruction.opcode == Opcode.RegexSearch or instruction.opcode == Opcode.RegexReplace or instruction.opcode == Opcode.RegexSplit or instruction.opcode == Opcode.RegexFind or instruction.opcode == Opcode.TextReplace:
                 regex_text <- bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()])
                 regex_pattern <- bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1])
-            if instruction.opcode == Opcode.RegexReplace:
+            if instruction.opcode == Opcode.RegexReplace or instruction.opcode == Opcode.TextReplace:
                 regex_replacement <- bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 2])
             integer_text: mutable RuntimeValue = runtime_void()
             if instruction.opcode == Opcode.ParseInt or instruction.opcode == Opcode.FormatInt or instruction.opcode == Opcode.ParseFloat or instruction.opcode == Opcode.FormatFloat or instruction.opcode == Opcode.FormatBool:
@@ -1007,6 +1034,10 @@ module EsBytecode:
             if instruction.opcode == Opcode.RegexFind:
                 raise InterpretError.TypeMismatch if regex_text.kind != RuntimeValueKind.Text or regex_pattern.kind != RuntimeValueKind.Text
                 regex_find_value <- try EsIr::regex_find_value(storage, regex_text.text, regex_pattern.text)
+            text_replace_value: mutable RuntimeValue = runtime_void()
+            if instruction.opcode == Opcode.TextReplace:
+                raise InterpretError.TypeMismatch if regex_text.kind != RuntimeValueKind.Text or regex_pattern.kind != RuntimeValueKind.Text or regex_replacement.kind != RuntimeValueKind.Text
+                text_replace_value <- try bytecode_direct_text_replace(regex_text.text, regex_pattern.text, regex_replacement.text)
             numeric_value: mutable RuntimeValue = runtime_void()
             if instruction.opcode == Opcode.ParseInt:
                 raise InterpretError.TypeMismatch if integer_text.kind != RuntimeValueKind.Text
@@ -1293,6 +1324,10 @@ module EsBytecode:
                     cursor.value <- regex_replace_value
                     cursor.state <- BytecodeValueState.Done
                     -> Execute
+                Execute, BytecodeValueState.Execute if instruction.opcode == Opcode.TextReplace:
+                    cursor.value <- text_replace_value
+                    cursor.state <- BytecodeValueState.Done
+                    -> Execute
                 Execute, BytecodeValueState.Execute if instruction.opcode == Opcode.RegexSplit:
                     cursor.value <- regex_split_value
                     cursor.state <- BytecodeValueState.Done
@@ -1377,7 +1412,7 @@ module EsBytecode:
                         return false
                 for instruction in function.instructions:
                     continue if instruction.opcode == Opcode.ErrorGuardPush or instruction.opcode == Opcode.ErrorGuardPop
-                    if instruction.opcode not in {Opcode.Constant, Opcode.Copy, Opcode.Negate, Opcode.Not, Opcode.BitNot, Opcode.Add, Opcode.Subtract, Opcode.Multiply, Opcode.Divide, Opcode.Equal, Opcode.Less, Opcode.Remainder, Opcode.NotEqual, Opcode.LessEqual, Opcode.Greater, Opcode.GreaterEqual, Opcode.BitAnd, Opcode.BitOr, Opcode.BitXor, Opcode.ShiftLeft, Opcode.ShiftRight, Opcode.Observe, Opcode.MakeArray, Opcode.MakeMap, Opcode.MapKeys, Opcode.MakePath, Opcode.MakeGlob, Opcode.MakeRegex, Opcode.MakeUrl, Opcode.Index, Opcode.IndexValid, Opcode.Length, Opcode.Slice, Opcode.Contains, Opcode.StartsWith, Opcode.EndsWith, Opcode.SetIndex, Opcode.DeleteIndex, Opcode.Concat, Opcode.Split, Opcode.Join, Opcode.ParseInt, Opcode.FormatInt, Opcode.ParseFloat, Opcode.FormatFloat, Opcode.FormatBool, Opcode.RegexSearch, Opcode.RegexReplace, Opcode.RegexSplit, Opcode.RegexFind, Opcode.PathJoin, Opcode.PathParent, Opcode.PathName, Opcode.PathExtension, Opcode.PathStem, Opcode.PathExists, Opcode.ReadText, Opcode.WriteText, Opcode.RemovePath, Opcode.CopyPath, Opcode.MovePath, Opcode.MakeExecutable, Opcode.RunProcess, Opcode.CaptureProcessStdout, Opcode.CaptureProcessStderr, Opcode.CaptureProcessStdoutWithStdin, Opcode.CaptureProcessResult, Opcode.CaptureProcessResultInDirectory, Opcode.CaptureProcessResultWithEnvironment, Opcode.CaptureProcessResultInDirectoryWithEnvironment, Opcode.ProcessResultExitStatus, Opcode.ProcessResultStdout, Opcode.ProcessResultStderr, Opcode.GetEnvironment, Opcode.SetEnvironment, Opcode.UnsetEnvironment, Opcode.CreateDirectory, Opcode.RemoveDirectory, Opcode.CurrentDirectory, Opcode.ChangeDirectory, Opcode.ListDirectory, Opcode.IsDirectory, Opcode.ExpandGlob, Opcode.ReadStdin, Opcode.WriteStdout, Opcode.WriteStderr, Opcode.Call}:
+                    if instruction.opcode not in {Opcode.Constant, Opcode.Copy, Opcode.Negate, Opcode.Not, Opcode.BitNot, Opcode.Add, Opcode.Subtract, Opcode.Multiply, Opcode.Divide, Opcode.Equal, Opcode.Less, Opcode.Remainder, Opcode.NotEqual, Opcode.LessEqual, Opcode.Greater, Opcode.GreaterEqual, Opcode.BitAnd, Opcode.BitOr, Opcode.BitXor, Opcode.ShiftLeft, Opcode.ShiftRight, Opcode.Observe, Opcode.MakeArray, Opcode.MakeMap, Opcode.MapKeys, Opcode.MakePath, Opcode.MakeGlob, Opcode.MakeRegex, Opcode.MakeUrl, Opcode.Index, Opcode.IndexValid, Opcode.Length, Opcode.Slice, Opcode.Contains, Opcode.StartsWith, Opcode.EndsWith, Opcode.TextReplace, Opcode.SetIndex, Opcode.DeleteIndex, Opcode.Concat, Opcode.Split, Opcode.Join, Opcode.ParseInt, Opcode.FormatInt, Opcode.ParseFloat, Opcode.FormatFloat, Opcode.FormatBool, Opcode.RegexSearch, Opcode.RegexReplace, Opcode.RegexSplit, Opcode.RegexFind, Opcode.PathJoin, Opcode.PathParent, Opcode.PathName, Opcode.PathExtension, Opcode.PathStem, Opcode.PathExists, Opcode.ReadText, Opcode.WriteText, Opcode.RemovePath, Opcode.CopyPath, Opcode.MovePath, Opcode.MakeExecutable, Opcode.RunProcess, Opcode.CaptureProcessStdout, Opcode.CaptureProcessStderr, Opcode.CaptureProcessStdoutWithStdin, Opcode.CaptureProcessResult, Opcode.CaptureProcessResultInDirectory, Opcode.CaptureProcessResultWithEnvironment, Opcode.CaptureProcessResultInDirectoryWithEnvironment, Opcode.ProcessResultExitStatus, Opcode.ProcessResultStdout, Opcode.ProcessResultStderr, Opcode.GetEnvironment, Opcode.SetEnvironment, Opcode.UnsetEnvironment, Opcode.CreateDirectory, Opcode.RemoveDirectory, Opcode.CurrentDirectory, Opcode.ChangeDirectory, Opcode.ListDirectory, Opcode.IsDirectory, Opcode.ExpandGlob, Opcode.ReadStdin, Opcode.WriteStdout, Opcode.WriteStderr, Opcode.Call}:
                         return false
                     if instruction.opcode == Opcode.Constant and not bytecode_direct_scalar_type(instruction.result_type):
                         return false

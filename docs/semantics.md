@@ -94,6 +94,12 @@ They are pure, deterministic, and shadowable by a source function with the same
 name. Their dedicated IR operations are shared by the reference interpreter and
 the direct bytecode backend.
 
+The compiler-known `replace(text, old, replacement) -> sview` operation performs
+literal, left-to-right, non-overlapping substitution. The `old` argument is not
+parsed as a regular expression, so regex metacharacters remain ordinary bytes;
+an empty `old` inserts the replacement at every input boundary, matching Python's
+string behavior. It is pure, deterministic, shadowable, and returns owned text.
+
 The first executable regex operation is the compiler-known, strongly typed search
 `matches(text, pattern) -> bool`, where `text` is `sview` and `pattern` is `Regex`:
 
