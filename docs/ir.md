@@ -713,7 +713,8 @@ Mutable set `.add` lowers to a typed `SetIndex` rebind and is duplicate-stable;
 `.clear()` lowers to a typed empty `MakeMap` rebind, and `.remove(element)` lowers
 to a typed `DeleteIndex` rebind with no-op missing-key behavior. Indexed access
 remains outside this initial IR subset. Ordinary mutable dictionaries use the same
-`.clear()` and `.remove(key)` operations with their declared key/value types. Query
+`.clear()` and `.remove(key)` operations with their declared key/value types, while
+mutable arrays use `.clear()` to emit a typed empty `MakeArray` rebind. Query
 forms with more than two binders and non-straight-line query predicates remain
 explicitly rejected rather than lowered with guessed semantics.
 
