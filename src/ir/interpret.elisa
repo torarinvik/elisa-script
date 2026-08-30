@@ -2738,6 +2738,105 @@ extend EsIr:
                 return runtime_int(written.i64())
 
 
+        def evaluate_read_bytes(machine: mutable Machine&, storage: mutable darray[RuntimeValue]&, path: RuntimeValue) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+            if path.kind != RuntimeValueKind.Text:
+                machine.failure <- InterpretFailure.TypeMismatch
+                return runtime_void()
+            c_path: dstr = nul_terminated_text(path.text)
+            if c_path.items == null:
+                machine.failure <- InterpretFailure.FileIo
+                return runtime_void()
+            path_items: u8& = c_path.items
+            can Blocking.IO, Memory.Allocate, Memory.Release:
+                handle: mutable heap void&? = fopen(path_items, "rb")
+                if handle == null:
+                    machine.failure <- InterpretFailure.FileIo
+                    return runtime_void()
+                stream: mutable heap void& = handle
+                if fseek(stream, 0, FILEIO_SEEK_END) != 0:
+                    _ = fclose(stream)
+                    machine.failure <- InterpretFailure.FileIo
+                    return runtime_void()
+                size: i64 = ftell(stream)
+                if size < 0 or fseek(stream, 0, FILEIO_SEEK_SET) != 0:
+                    _ = fclose(stream)
+                    machine.failure <- InterpretFailure.FileIo
+                    return runtime_void()
+                start: u32 = storage.count.u32()
+                if size == 0:
+                    close_status: int = fclose(stream)
+                    if close_status != 0:
+                        machine.failure <- InterpretFailure.FileIo
+                        return runtime_void()
+                    return runtime_array(start, 0)
+                bytes: mutable dstr = ctx_fstr_alloc(size.usize())
+                if bytes.items == null:
+                    _ = fclose(stream)
+                    machine.failure <- InterpretFailure.FileIo
+                    return runtime_void()
+                byte_items: mutable u8& = bytes.items
+                read_count: usize = fread(byte_items.cast[mutable void&], 1, size.usize(), stream)
+                close_status: int = fclose(stream)
+                if read_count != size.usize() or close_status != 0:
+                    machine.failure <- InterpretFailure.FileIo
+                    return runtime_void()
+                for offset in 0..<size.usize() |storage, byte_items|:
+                    storage.push(runtime_int(byte_items[offset].i64()))
+                return runtime_array(start, size.u32())
+
+
+        def evaluate_write_bytes(machine: mutable Machine&, storage: mutable darray[RuntimeValue]&, path: RuntimeValue, values: RuntimeValue, append: bool) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+            if path.kind != RuntimeValueKind.Text or values.kind != RuntimeValueKind.Array:
+                machine.failure <- InterpretFailure.TypeMismatch
+                return runtime_void()
+            if not runtime_array_range_valid(storage, values):
+                machine.failure <- InterpretFailure.IndexOutOfBounds
+                return runtime_void()
+            c_path: dstr = nul_terminated_text(path.text)
+            if c_path.items == null:
+                machine.failure <- InterpretFailure.FileIo
+                return runtime_void()
+            count: usize = values.array_count.usize()
+            bytes: mutable dstr = ctx_fstr_alloc(count)
+            if count > 0:
+                if bytes.items == null:
+                    machine.failure <- InterpretFailure.FileIo
+                    return runtime_void()
+                byte_items: mutable u8& = bytes.items
+                for offset in 0..<count |machine, storage, values, byte_items|:
+                    value: RuntimeValue = storage[values.array_start.usize() + offset]
+                    if value.kind != RuntimeValueKind.Int or value.integer < 0 or value.integer > 255:
+                        machine.failure <- InterpretFailure.TypeMismatch
+                        return runtime_void()
+                    byte_items[offset] <- value.integer.u8()
+                path_items: u8& = c_path.items
+                can Blocking.IO, Memory.Allocate, Memory.Release:
+                    handle: mutable heap void&? = fopen(path_items, "ab" if append else "wb")
+                    if handle == null:
+                        machine.failure <- InterpretFailure.FileIo
+                        return runtime_void()
+                    stream: mutable heap void& = handle
+                    written: usize = fwrite(byte_items.cast[void&], 1, count, stream)
+                    close_status: int = fclose(stream)
+                    if written != count or close_status != 0:
+                        machine.failure <- InterpretFailure.FileIo
+                        return runtime_void()
+                    return runtime_int(written.i64())
+            path_items: u8& = c_path.items
+            can Blocking.IO, Memory.Allocate, Memory.Release:
+                handle: mutable heap void&? = fopen(path_items, "ab" if append else "wb")
+                if handle == null:
+                    machine.failure <- InterpretFailure.FileIo
+                    return runtime_void()
+                stream: mutable heap void& = handle
+                written: usize = 0
+                close_status: int = fclose(stream)
+                if written != count or close_status != 0:
+                    machine.failure <- InterpretFailure.FileIo
+                    return runtime_void()
+                return runtime_int(written.i64())
+
+
         def evaluate_remove_path(machine: mutable Machine&, path: RuntimeValue) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
             if path.kind != RuntimeValueKind.Text:
                 machine.failure <- InterpretFailure.TypeMismatch
@@ -4766,16 +4865,33 @@ extend EsIr:
                             dispatch.value <- evaluate_read_text(machine, path_value)
                             break
 
+                        Dispatch, Opcode.ReadBytes:
+                            path_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
+                            dispatch.value <- evaluate_read_bytes(machine, storage, path_value)
+                            break
+
                         Dispatch, Opcode.WriteText:
                             path_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
                             text_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1], machine)
                             dispatch.value <- evaluate_write_text(machine, path_value, text_value)
                             break
 
+                        Dispatch, Opcode.WriteBytes:
+                            path_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
+                            bytes_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1], machine)
+                            dispatch.value <- evaluate_write_bytes(machine, storage, path_value, bytes_value, false)
+                            break
+
                         Dispatch, Opcode.AppendText:
                             path_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
                             text_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1], machine)
                             dispatch.value <- evaluate_append_text(machine, path_value, text_value)
+                            break
+
+                        Dispatch, Opcode.AppendBytes:
+                            path_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
+                            bytes_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1], machine)
+                            dispatch.value <- evaluate_write_bytes(machine, storage, path_value, bytes_value, true)
                             break
 
                         Dispatch, Opcode.RemovePath:
@@ -5245,6 +5361,13 @@ extend EsIr:
             return value.text
 
 
+        def read_bytes_value(storage: mutable darray[RuntimeValue]&, path: sview) -> RuntimeValue error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+            machine: mutable Machine = Machine{steps: 0, step_limit: 1, failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void()}
+            value: RuntimeValue = evaluate_read_bytes(machine, storage, runtime_text(path))
+            try raise_interpret_failure(machine.failure) if machine.failure != InterpretFailure.None
+            return value
+
+
         def write_text_path(path: sview, text: sview) -> i64 error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             machine: mutable Machine = Machine{steps: 0, step_limit: 1, failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void()}
             value: RuntimeValue = evaluate_write_text(machine, runtime_text(path), runtime_text(text))
@@ -5252,9 +5375,23 @@ extend EsIr:
             return value.integer
 
 
+        def write_bytes_value(storage: mutable darray[RuntimeValue]&, path: sview, values: RuntimeValue) -> i64 error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+            machine: mutable Machine = Machine{steps: 0, step_limit: 1, failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void()}
+            value: RuntimeValue = evaluate_write_bytes(machine, storage, runtime_text(path), values, false)
+            try raise_interpret_failure(machine.failure) if machine.failure != InterpretFailure.None
+            return value.integer
+
+
         def append_text_path(path: sview, text: sview) -> i64 error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             machine: mutable Machine = Machine{steps: 0, step_limit: 1, failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void()}
             value: RuntimeValue = evaluate_append_text(machine, runtime_text(path), runtime_text(text))
+            try raise_interpret_failure(machine.failure) if machine.failure != InterpretFailure.None
+            return value.integer
+
+
+        def append_bytes_value(storage: mutable darray[RuntimeValue]&, path: sview, values: RuntimeValue) -> i64 error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+            machine: mutable Machine = Machine{steps: 0, step_limit: 1, failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void()}
+            value: RuntimeValue = evaluate_write_bytes(machine, storage, runtime_text(path), values, true)
             try raise_interpret_failure(machine.failure) if machine.failure != InterpretFailure.None
             return value.integer
 

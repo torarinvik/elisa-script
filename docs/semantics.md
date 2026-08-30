@@ -669,6 +669,19 @@ and `FileIoError`; partial writes and close failures are errors rather than appa
 success. Together, `path_exists`, `read_text`, and `write_text` form the first
 complete filesystem round trip without shell or Python.
 
+`read_bytes(path: Path) -> darray[u8] error[FileIoError] can[File.Read]` reads a
+whole file as its exact bytes, including embedded NULs, and returns an empty array
+for an empty file. `read_binary` is an equivalent alias. The byte array is
+strongly typed: arbitrary integer arrays are not accepted by the write operations.
+
+`write_bytes(path: Path, bytes: darray[u8]) -> usize error[FileIoError]
+can[File.Write]` replaces or creates a file and returns the exact number of bytes
+written. `append_bytes` opens in append mode with the same typed contract, and
+`write_binary`/`append_binary` are equivalent aliases. Invalid byte values cannot
+be constructed through a well-typed `u8` array; runtime values are still checked
+at the filesystem boundary, and partial writes or close failures remain
+`FileIoError` errors.
+
 `remove_path(path: Path) -> bool` removes a filesystem entry and contributes
 `File.Write`. It returns `true` only when removal succeeded; a missing or otherwise
 unremovable path returns `false`, following the core Elisa `remove_file` contract.
