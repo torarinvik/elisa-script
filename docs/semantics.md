@@ -332,7 +332,12 @@ Integer ranges stay counter-driven and do not materialize a temporary array:
 `high..>low` is strict descending. The range-owned stride spelling
 `low..<high..step` (and its inclusive/descending variants) requires a positive
 integer constant and is applied in the latch state. Bounds and stride are
-evaluated once. The result element type is inferred from the projection and
+evaluated once. Python's `range(stop)`, `range(start, stop)`, and
+`range(start, stop, step)` spellings are accepted in `for` loops as equivalent
+counter-driven ranges. The step must be an integer constant: positive steps are
+ascending, while a negative literal selects the existing descending range state
+machine (zero and dynamic steps are rejected). The result element type is inferred
+from the projection and
 must be storable, so heterogeneous results, effectful/non-straight-line
 projections, and void projections are rejected statically. An empty result is a
 typed empty array or map, never a sentinel. Dict comprehensions use a two-element

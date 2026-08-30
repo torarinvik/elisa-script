@@ -568,7 +568,10 @@ lowering and is only valid with the two bindings. The Python-compatible
 snapshots keys once, performs typed value indexes in the body, and never creates
 pair objects.
 `for mutable value in values` additionally requires `values` to be a named mutable
-array binding. Lowering records a scoped element-owner relation; every successful
+array binding. Python's `range(stop)`, `range(start, stop)`, and
+`range(start, stop, step)` loop calls are normalized to the same counter-driven
+range CFG, with positive constant steps and no temporary collection. Lowering
+records a scoped element-owner relation; every successful
 `value <- replacement` or compound update immediately transitions the owner through
 `SetIndex`. The updated array is loop-carried state, so writes survive conditional
 and match merges, nested loops, `continue`, and `break` without hidden aliasing or
@@ -794,6 +797,10 @@ Integer ranges use the same CFG shape. `low..<high` is exclusive ascending,
 `low..=high` is inclusive ascending, and `high..>low` is strict descending.
 The range-owned stride spelling (`low..<high..step`) requires a positive constant;
 the latch adds or subtracts it according to direction, including after `continue`.
+Python `range(stop)`, `range(start, stop)`, and `range(start, stop, step)` loop
+forms are normalized to these same counter states; a negative literal step selects
+the descending state machine. Zero or dynamic steps are rejected, and no
+temporary array or pair object is created.
 Scalar statement `match` lowers to an ordered comparison-and-branch state machine.
 Integer, float, boolean, character, and text literal arms are typed against the
 scrutinee; pin patterns compare an existing binding, and binding/wildcard arms
