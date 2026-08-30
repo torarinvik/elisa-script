@@ -713,7 +713,22 @@ extend EsIr:
             range_spec: ComprehensionRange = comprehension_range_parts(iterable)
             range_mode: bool = range_spec.recognized
             extra_variable: sview = comprehension_extra_binder(state, pos)
-            map_mode: bool = extra_variable != ""
+            zip_mode: mutable bool = false
+            zip_left_source: mutable Ast::Expr = Expr.Absent
+            zip_right_source: mutable Ast::Expr = Expr.Absent
+            match iterable:
+                Expr.Call(Expr.Ident(name, name_pos), arguments, argument_names, call_pos):
+                    valid_zip_names: mutable bool = arguments.count == 2 and (argument_names.count == 0 or argument_names.count == arguments.count)
+                    if valid_zip_names:
+                        for argument_name in argument_names |valid_zip_names|:
+                            valid_zip_names <- false if argument_name != ""
+                    if name == "zip" and valid_zip_names and lowered_function_index(state, name) == state.function_names.count:
+                        zip_mode <- true
+                        zip_left_source <- arguments[0]
+                        zip_right_source <- arguments[1]
+                _:
+                    pass
+            map_mode: bool = extra_variable != "" and not zip_mode
             extra_binder_count: usize = comprehension_extra_binder_count(state, pos)
             collection: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
             iteration_collection: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
@@ -722,8 +737,13 @@ extend EsIr:
             range_high: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
             range_step: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
             extra_type: mutable Type = unknown_ir_type()
+            zip_right_collection: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+            zip_limit: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
             if extra_binder_count > 1:
                 add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "array comprehensions support at most key and value binders")
+                return LoweredValue{valid: false, value: 0, type: result_type}
+            if zip_mode and extra_variable == "":
+                add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "zip comprehensions require two element binders")
                 return LoweredValue{valid: false, value: 0, type: result_type}
             if range_mode and map_mode:
                 add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "array comprehensions cannot combine range iteration with multiple binders")
@@ -751,6 +771,16 @@ extend EsIr:
                     if not range_step.valid or not same_type(range_step.type, range_low.type):
                         add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "range comprehension stride must match the bound type")
                         return LoweredValue{valid: false, value: 0, type: result_type}
+            elif zip_mode:
+                collection <- lower_expression(zip_left_source, state)
+                zip_right_collection <- lower_expression(zip_right_source, state)
+                if not collection.valid or not zip_right_collection.valid:
+                    return LoweredValue{valid: false, value: 0, type: result_type}
+                if collection.type.kind not in {TypeKind.Array, TypeKind.Text} or zip_right_collection.type.kind not in {TypeKind.Array, TypeKind.Text}:
+                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "zip comprehensions require array or text sources")
+                    return LoweredValue{valid: false, value: 0, type: result_type}
+                iteration_collection <- collection
+                extra_type <- type_from_name("char") if zip_right_collection.type.kind == TypeKind.Text else array_element_type(zip_right_collection.type)
             elif map_mode:
                 collection <- lower_expression(iterable, state)
                 if not collection.valid:
@@ -847,10 +877,15 @@ extend EsIr:
                 comparison: Opcode = Opcode.Greater if range_spec.operator == TokenKind.RangeGt else (Opcode.LessEqual if range_spec.operator == TokenKind.RangeLe else Opcode.Less)
                 state.instructions.push(Instruction{opcode: comparison, result: condition_result, result_type: type_from_name("bool"), operand_start: condition_start, operand_count: 2, span: ir_span(pos)})
             else:
-                length_result: u32 = fresh_value(state)
-                length_start: u32 = state.operand_pool.count.u32()
-                state.operand_pool.push(iteration_collection.value)
-                state.instructions.push(Instruction{opcode: Opcode.Length, result: length_result, result_type: index_type, operand_start: length_start, operand_count: 1, span: ir_span(pos)})
+                length_result: mutable u32 = 0
+                if zip_mode:
+                    zip_limit <- lower_zip_limit(collection, zip_right_collection, pos, state)
+                    length_result <- zip_limit.value
+                else:
+                    length_result <- fresh_value(state)
+                    length_start: u32 = state.operand_pool.count.u32()
+                    state.operand_pool.push(iteration_collection.value)
+                    state.instructions.push(Instruction{opcode: Opcode.Length, result: length_result, result_type: index_type, operand_start: length_start, operand_count: 1, span: ir_span(pos)})
                 condition_start: u32 = state.operand_pool.count.u32()
                 state.operand_pool.push(header_index)
                 state.operand_pool.push(length_result)
@@ -883,6 +918,16 @@ extend EsIr:
                 state.instructions.push(Instruction{opcode: Opcode.Index, result: value_result, result_type: extra_type, operand_start: value_start, operand_count: 2, span: ir_span(pos)})
                 state.names.push(extra_variable)
                 state.values.push(value_result)
+                state.types.push(extra_type)
+                state.mutables.push(false)
+            elif zip_mode:
+                zip_element_result: u32 = fresh_value(state)
+                zip_element_start: u32 = state.operand_pool.count.u32()
+                state.operand_pool.push(zip_right_collection.value)
+                state.operand_pool.push(header_index)
+                state.instructions.push(Instruction{opcode: Opcode.Index, result: zip_element_result, result_type: extra_type, operand_start: zip_element_start, operand_count: 2, span: ir_span(pos)})
+                state.names.push(extra_variable)
+                state.values.push(zip_element_result)
                 state.types.push(extra_type)
                 state.mutables.push(false)
             filter_value: mutable LoweredValue = LoweredValue{valid: true, value: 0, type: type_from_name("bool")}

@@ -326,7 +326,9 @@ array form projects a value sequence while the dictionary form can use either
 binder in its `key: value` projection. Array/text iteration uses checked
 `Length`/`Index` operations; map iteration snapshots keys once and performs a
 checked value lookup for the second binder. Text iteration produces one-character
-values.
+values. The Python-compatible `[left + right for left, right in zip(lefts, rights)]`
+form projects two array/text sources in lockstep, evaluates both once, and stops
+at the shorter source while preserving each exact element type.
 Integer ranges stay counter-driven and do not materialize a temporary array:
 `low..<high` is exclusive ascending, `low..=high` is inclusive ascending, and
 `high..>low` is strict descending. The range-owned stride spelling

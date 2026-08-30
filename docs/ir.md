@@ -868,6 +868,10 @@ and use immutable `SetIndex` copies, retaining duplicate-key replacement
 semantics; range-backed dictionary projections use the same counter directly as
 the key/value source. A two-binder dictionary iterable snapshots `MapKeys` once,
 then performs a checked value lookup for the second binder on each iteration.
+Array comprehensions may also use the Python-compatible two-binder
+`zip(left, right)` iterable. The lowerer emits both source `Length` operations,
+selects the shorter `usize` through a merge CFG, and performs one typed `Index`
+per source in the body before projecting and concatenating the result.
 Header, latch, and exit block parameters carry both the accumulator and iteration
 state through the flat edge-argument pool. Consequently the
 interpreter, bytecode VM, and future native backends observe identical evaluation
