@@ -91,11 +91,12 @@ integer still raises the ordinary `IntegerOverflow` runtime error because its
 positive magnitude is not representable; floating-point values follow the host
 IEEE sign rule.
 
-The compiler-known `sorted(values)` builtin accepts a typed array of orderable
-scalar values (`bool`, integer, float, `char`, or text) and returns a fresh array
-with the same exact element type. The input is never mutated; sorting is stable,
-ascending, and byte-oriented for text. It is the expression-form counterpart to
-the in-place `values.sort()` method and is shadowable by a source declaration.
+The compiler-known `sorted(values, reverse: flag)` builtin accepts a typed array of
+orderable scalar values (`bool`, integer, float, `char`, or text) and returns a
+fresh array with the same exact element type. The optional `reverse` bool may be a
+literal or a runtime value; the input is never mutated, and sorting is stable and
+byte-oriented for text. It is the expression-form counterpart to the in-place
+`values.sort()` method and is shadowable by a source declaration.
 
 The compiler-known `reversed(values)` builtin accepts any typed array and
 returns a fresh array with the same exact element type in reverse order. The
@@ -444,12 +445,14 @@ ownership-safe SSA update. If no element matches, execution raises
 `InterpretError.IndexOutOfBounds` through the ordinary `error[...]` channel and
 the binding remains unchanged. Structural equality is identical to `count`,
 `find`, and `index`.
-`values.sort()` is the Python-compatible in-place ascending sort operation. It
+`values.sort(reverse: flag)` is the Python-compatible in-place sort operation. It
 requires a mutable array of statically orderable scalar values (`bool`, integer,
 float, `char`, or text), produces a fresh owned array, and rebinds the receiver
 through SSA. Sorting is stable and deterministic; text ordering is unsigned
-byte-lexicographic under the `sview` contract. Other aggregate element types,
-immutable arrays, and calls with arguments are rejected during lowering.
+byte-lexicographic under the `sview` contract. The optional `reverse` bool may be
+literal or dynamic and is handled through the same typed state-machine merge as
+the expression form. Other aggregate element types and immutable arrays are
+rejected during lowering.
 
 ## Text field processing
 

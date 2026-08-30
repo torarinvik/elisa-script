@@ -576,6 +576,9 @@ each, selects the smaller `usize` through a three-block merge CFG, and reuses th
 limit for the indexed loop. The body emits one typed `Index` per source and binds
 the two element values directly; no tuple or pair array is materialized. A source
 function named `zip` shadows this loop sugar and is lowered as an ordinary call.
+`sorted(values, reverse: flag)` accepts an optional statically typed boolean. A
+literal `true` lowers to `SortArray` followed by `ReverseArray`; a runtime flag
+branches through a typed merge CFG so only the selected ordering path executes.
 `for mutable value in values` additionally requires `values` to be a named mutable
 array binding. Python's `range(stop)`, `range(start, stop)`, and
 `range(start, stop, step)` loop calls are normalized to the same counter-driven
@@ -762,13 +765,14 @@ The verifier requires an exact array element type and a valid `usize` result.
 `array.find(element)` and `array.index(element)` lower to `ArrayFind` and return
 the first matching zero-based offset as signed `i64`, or `-1` when absent; the
 verifier preserves the complete element descriptor for structural comparison.
-The statement-form `array.sort()` lowers to `SortArray`. It requires a mutable
-array whose element type is a scalar with a deterministic total order (`bool`,
-integer, float, `char`, or text), copies the input into owned storage, and
-performs a stable ascending insertion sort. Text values compare by unsigned
-`sview` bytes. Unsupported aggregate element types and malformed instructions
-are rejected before execution, while the interpreter and bytecode backend share
-the same result and failure behavior.
+The statement-form `array.sort(reverse: flag)` lowers to `SortArray` and, when
+selected, `ReverseArray`. It requires a mutable array whose element type is a
+scalar with a deterministic total order (`bool`, integer, float, `char`, or text),
+copies the input into owned storage, and performs a stable insertion sort. Text
+values compare by unsigned `sview` bytes. A dynamic reverse flag branches through
+a typed merge before rebinding the owner; unsupported aggregate element types and
+malformed instructions are rejected before execution, while the interpreter and
+bytecode backend share the same result and failure behavior.
 Dictionary values also expose Python's `mapping.get(key, default)` spelling. It
 lowers to the same `IndexValid`-guarded CFG as `get mapping[key] else default`,
 so the default expression is lazy and both branches merge one exact value type.

@@ -2754,9 +2754,11 @@ extend EsIr:
                         return LoweredValue{valid: true, value: result, type: operand.type}
                     if callee_name == "sorted" and callee_index == state.function_names.count:
                         result_type: mutable Type = unknown_ir_type()
-                        valid_shape: bool = arguments.count == 1 and (argument_names.count == 0 or (argument_names.count == 1 and argument_names[0] == ""))
+                        valid_shape: mutable bool = arguments.count == 1 and (argument_names.count == 0 or (argument_names.count == 1 and argument_names[0] == ""))
+                        if arguments.count == 2:
+                            valid_shape <- argument_names.count == 2 and argument_names[0] == "" and (argument_names[1] == "" or argument_names[1] == "reverse")
                         if not valid_shape:
-                            add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "sorted requires exactly one positional array value")
+                            add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "sorted requires an array and an optional reverse bool")
                             return LoweredValue{valid: false, value: 0, type: result_type}
                         collection: LoweredValue = lower_expression(arguments[0], state)
                         if not collection.valid or collection.type.kind != TypeKind.Array:
@@ -2767,10 +2769,59 @@ extend EsIr:
                         if element_type.kind not in {TypeKind.Bool, TypeKind.Int, TypeKind.Float, TypeKind.Char, TypeKind.Text}:
                             add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "sorted requires an array of bool, integer, float, char, or text values")
                             return LoweredValue{valid: false, value: 0, type: result_type}
+                        reverse_value: mutable LoweredValue = LoweredValue{valid: true, value: 0, type: type_from_name("bool")}
+                        if arguments.count == 2:
+                            bool_type: Type = type_from_name("bool")
+                            reverse_value <- lower_expression_expected(arguments[1], bool_type, state)
+                            if not reverse_value.valid or reverse_value.type.kind != TypeKind.Bool:
+                                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "sorted reverse argument must be bool")
+                                return LoweredValue{valid: false, value: 0, type: result_type}
                         result: u32 = fresh_value(state)
                         operand_start: u32 = state.operand_pool.count.u32()
                         state.operand_pool.push(collection.value)
                         state.instructions.push(Instruction{opcode: Opcode.SortArray, result: result, result_type: result_type, operand_start: operand_start, operand_count: 1, span: ir_span(pos)})
+                        if arguments.count == 2:
+                            match arguments[1]:
+                                Expr.BoolLit(value):
+                                    if value:
+                                        reversed_result: u32 = fresh_value(state)
+                                        reversed_start: u32 = state.operand_pool.count.u32()
+                                        state.operand_pool.push(result)
+                                        state.instructions.push(Instruction{opcode: Opcode.ReverseArray, result: reversed_result, result_type: result_type, operand_start: reversed_start, operand_count: 1, span: ir_span(pos)})
+                                        return LoweredValue{valid: true, value: reversed_result, type: result_type}
+                                _:
+                                    pass
+                            if arguments[1] is not Expr.BoolLit:
+                                selected_block: u32 = fresh_block(state)
+                                alternative_block: u32 = fresh_block(state)
+                                merge_block: u32 = fresh_block(state)
+                                state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: reverse_value.value, operand_count: 1, target0: selected_block, target1: alternative_block, target_count: 2, span: ir_span(pos)}
+                                finish_block(state)
+
+                                state.current_block <- selected_block
+                                state.terminated <- false
+                                reversed_result: u32 = fresh_value(state)
+                                reversed_start: u32 = state.operand_pool.count.u32()
+                                state.operand_pool.push(result)
+                                state.instructions.push(Instruction{opcode: Opcode.ReverseArray, result: reversed_result, result_type: result_type, operand_start: reversed_start, operand_count: 1, span: ir_span(pos)})
+                                selected_edge_start: u32 = state.edge_arg_pool.count.u32()
+                                state.edge_arg_pool.push(reversed_result)
+                                state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: merge_block, target_count: 1, edge0_arg_start: selected_edge_start, edge0_arg_count: 1, span: ir_span(pos)}
+                                finish_block(state)
+
+                                state.current_block <- alternative_block
+                                state.terminated <- false
+                                alternative_edge_start: u32 = state.edge_arg_pool.count.u32()
+                                state.edge_arg_pool.push(result)
+                                state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: merge_block, target_count: 1, edge0_arg_start: alternative_edge_start, edge0_arg_count: 1, span: ir_span(pos)}
+                                finish_block(state)
+
+                                merged_result: u32 = fresh_value(state)
+                                state.pending_parameter_blocks.push(merge_block)
+                                state.pending_parameters.push(Parameter{value: merged_result, type: result_type, name: "sorted"})
+                                state.current_block <- merge_block
+                                state.terminated <- false
+                                return LoweredValue{valid: true, value: merged_result, type: result_type}
                         return LoweredValue{valid: true, value: result, type: result_type}
                     if callee_name == "reversed" and callee_index == state.function_names.count:
                         result_type: mutable Type = unknown_ir_type()
@@ -4581,17 +4632,71 @@ extend EsIr:
             named_argument: mutable bool = false
             for argument_name in argument_names |named_argument|:
                 named_argument <- true if argument_name != ""
-            if arguments.count != 0 or named_argument:
-                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "sort requires no arguments")
+            valid_shape: mutable bool = arguments.count == 0 and not named_argument
+            if arguments.count == 1:
+                valid_shape <- argument_names.count == 0 or (argument_names.count == 1 and (argument_names[0] == "" or argument_names[0] == "reverse"))
+            if not valid_shape:
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "sort accepts an optional reverse bool")
                 return true
             element_type: Type = array_element_type(state.types[binding])
             if element_type.kind not in {TypeKind.Bool, TypeKind.Int, TypeKind.Float, TypeKind.Char, TypeKind.Text}:
                 add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "sort requires an array of bool, integer, float, char, or text values")
                 return true
+            reverse_value: mutable LoweredValue = LoweredValue{valid: true, value: 0, type: type_from_name("bool")}
+            if arguments.count == 1:
+                bool_type: Type = type_from_name("bool")
+                reverse_value <- lower_expression_expected(arguments[0], bool_type, state)
+                if not reverse_value.valid or reverse_value.type.kind != TypeKind.Bool:
+                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "sort reverse argument must be bool")
+                    return true
             result: u32 = fresh_value(state)
             operand_start: u32 = state.operand_pool.count.u32()
             state.operand_pool.push(state.values[binding])
             state.instructions.push(Instruction{opcode: Opcode.SortArray, result: result, result_type: state.types[binding], operand_start: operand_start, operand_count: 1, span: ir_span(pos)})
+            if arguments.count == 1:
+                match arguments[0]:
+                    Expr.BoolLit(value):
+                        if value:
+                            reversed_result: u32 = fresh_value(state)
+                            reversed_start: u32 = state.operand_pool.count.u32()
+                            state.operand_pool.push(result)
+                            state.instructions.push(Instruction{opcode: Opcode.ReverseArray, result: reversed_result, result_type: state.types[binding], operand_start: reversed_start, operand_count: 1, span: ir_span(pos)})
+                            state.values[binding] <- reversed_result
+                            return true
+                    _:
+                        pass
+                if arguments[0] is not Expr.BoolLit:
+                    selected_block: u32 = fresh_block(state)
+                    alternative_block: u32 = fresh_block(state)
+                    merge_block: u32 = fresh_block(state)
+                    state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: reverse_value.value, operand_count: 1, target0: selected_block, target1: alternative_block, target_count: 2, span: ir_span(pos)}
+                    finish_block(state)
+
+                    state.current_block <- selected_block
+                    state.terminated <- false
+                    reversed_result: u32 = fresh_value(state)
+                    reversed_start: u32 = state.operand_pool.count.u32()
+                    state.operand_pool.push(result)
+                    state.instructions.push(Instruction{opcode: Opcode.ReverseArray, result: reversed_result, result_type: state.types[binding], operand_start: reversed_start, operand_count: 1, span: ir_span(pos)})
+                    selected_edge_start: u32 = state.edge_arg_pool.count.u32()
+                    state.edge_arg_pool.push(reversed_result)
+                    state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: merge_block, target_count: 1, edge0_arg_start: selected_edge_start, edge0_arg_count: 1, span: ir_span(pos)}
+                    finish_block(state)
+
+                    state.current_block <- alternative_block
+                    state.terminated <- false
+                    alternative_edge_start: u32 = state.edge_arg_pool.count.u32()
+                    state.edge_arg_pool.push(result)
+                    state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: merge_block, target_count: 1, edge0_arg_start: alternative_edge_start, edge0_arg_count: 1, span: ir_span(pos)}
+                    finish_block(state)
+
+                    merged_result: u32 = fresh_value(state)
+                    state.pending_parameter_blocks.push(merge_block)
+                    state.pending_parameters.push(Parameter{value: merged_result, type: state.types[binding], name: "sort"})
+                    state.current_block <- merge_block
+                    state.terminated <- false
+                    state.values[binding] <- merged_result
+                    return true
             state.values[binding] <- result
             return true
 
