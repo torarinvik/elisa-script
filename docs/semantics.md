@@ -914,7 +914,7 @@ one `sep: sview` and one `end: sview`; unsupported Python controls (`file` and
 - The shell-oriented `printf(text)` spelling is a typed no-newline alias for
   `write_stdout(text)`; it treats the argument as literal bytes and does not add
   an untyped format-string or shell-expansion layer.
-- `write_stderr(text: sview) -> usize error[ConsoleError]` has the
+- `write_stderr(text: sview) -> usize error[ConsoleError] can[Console.Write]` has the
   same contract for file descriptor 2.
 
 Writes retry partial progress through the explicit stream state machine, so a short
