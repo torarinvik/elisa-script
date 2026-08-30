@@ -148,10 +148,12 @@ an empty substring, and `-1` for a miss. Both search methods require one
 positional text substring and expose no implicit Unicode or locale behavior.
 
 Text classification methods `text.isdigit()`, `text.isalpha()`, `text.isalnum()`,
-and `text.isspace()` take no arguments and return `bool`. They use non-empty,
-ASCII byte-oriented rules: digits are `0`-`9`, alphabetic bytes are ASCII
-letters, alphanumeric accepts either class, and whitespace is space, tab, LF,
-VT, FF, or CR. Empty text returns `false` for every predicate.
+`text.isspace()`, `text.islower()`, and `text.isupper()` take no arguments and
+return `bool`. They use non-empty, ASCII byte-oriented rules: digits are `0`-`9`,
+alphabetic bytes are ASCII letters, alphanumeric accepts either class, and
+whitespace is space, tab, LF, VT, FF, or CR. `islower` and `isupper` ignore
+uncased bytes but require at least one cased byte, then require every cased byte
+to have the requested case. Empty text returns `false` for every predicate.
 
 The first executable regex operation is the compiler-known, strongly typed search
 `matches(text, pattern) -> bool`, where `text` is `sview` and `pattern` is `Regex`:
