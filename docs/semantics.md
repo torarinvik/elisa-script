@@ -630,6 +630,14 @@ error[FileIoError] can[File.Write]` performs an atomic POSIX rename within the
 filesystem. Both operations reject arbitrary text at compile time and report
 operating-system failures through `error[...]`; neither constructs a shell command.
 
+For direct shell-script ports, the same typed operations have short aliases:
+`pwd()` is `current_directory()`, `cd(path)` is `change_directory(path)`,
+`mkdir(path)`/`rmdir(path)` are directory creation/removal, and
+`rm(path)`, `cp(source, destination)`, and `mv(source, destination)` map to
+`remove_path`, `copy_path`, and `move_path`. The aliases retain nominal `Path`
+arguments, exact return types, effect rows, and error contracts; they do not add
+shell flags or recursive/stringly behavior.
+
 ## Process execution
 
 `executable(text) -> Executable error[ProcessError]` is the dynamic counterpart

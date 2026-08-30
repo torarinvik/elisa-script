@@ -398,6 +398,9 @@ fallback on successful reads.
 `CurrentDirectory` takes no operands, returns `Named(Path)`, and requires
 `Directory.Read` plus the same error. All four have explicit opcode-machine arms;
 the cwd result is copied before the POSIX allocation is released.
+The shell-shaped source aliases `pwd`, `cd`, `mkdir`, `rmdir`, `rm`, `cp`, and
+`mv` lower to these same verified directory and filesystem opcodes; no alias has a
+separate runtime or weaker type contract.
 `ListDirectory` verifies as `Named(Path) -> Array[Text]` with `Directory.Read` and
 `DirectoryError`. The reference interpreter drives `readdir` through an explicit
 scan machine, copies each entry before the next transition, removes dot entries,
