@@ -136,6 +136,11 @@ The matching `mapping.values()` method takes no arguments and returns an
 insertion-ordered `darray[V]`, preserving the complete static value descriptor
 through a dedicated `MapValues` operation. It is likewise unavailable on sets.
 
+Text values also provide `text.count(substring) -> usize`. The operation counts
+left-to-right non-overlapping byte matches; an empty substring counts the input
+boundaries (`length + 1`). It is pure, deterministic, and rejects non-text
+receivers or arguments during lowering.
+
 The first executable regex operation is the compiler-known, strongly typed search
 `matches(text, pattern) -> bool`, where `text` is `sview` and `pattern` is `Regex`:
 

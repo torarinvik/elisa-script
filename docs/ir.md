@@ -621,6 +621,10 @@ so set membership remains the only supported key-like operation for sets.
 `mapping.values()` has the same zero-argument contract, returns `Array[V]`, and
 lowers to `MapValues`; nested value descriptors are retained for verifier and
 backend checks, and set descriptors are rejected.
+The `text.count(substring)` method has type `Text × Text -> usize` and lowers to
+`TextCount`. Matching is byte-oriented and non-overlapping; an empty substring
+returns one more than the input length, and both reference and direct bytecode
+paths use the same deterministic scan.
 `ParseInt` has type `Text -> Int(signed, 64)` and requires `ParseError` in the
 function error row. Its state-machine parser accepts only an optional sign and
 ASCII decimal digits, checks signed 64-bit overflow before each accumulation, and
