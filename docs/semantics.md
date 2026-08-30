@@ -100,6 +100,12 @@ parsed as a regular expression, so regex metacharacters remain ordinary bytes;
 an empty `old` inserts the replacement at every input boundary, matching Python's
 string behavior. It is pure, deterministic, shadowable, and returns owned text.
 
+The binary `+` operator concatenates two text values when both operands are
+exactly text-typed. The result is an owned text value, so chained expressions and
+concatenation with a computed method result remain valid across the interpreter and
+bytecode backends. Other `+` operand pairs retain Elisa's numeric typing rules and
+are rejected when either operand is firmly non-numeric.
+
 The compiler-known `strip(text) -> sview` and `trim(text) -> sview` names are
 equivalent byte-oriented boundary operations. They remove ASCII space, tab, line
 feed, vertical tab, form feed, and carriage return from the beginning and end,
