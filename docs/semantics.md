@@ -158,6 +158,11 @@ to have the requested case. Empty text returns `false` for every predicate
 except `isascii()`, which returns `true` because the empty string contains no
 non-ASCII bytes.
 
+Text boundary-removal methods `text.removeprefix(prefix)` and
+`text.removesuffix(suffix)` take one positional text boundary and return the
+original text unchanged when it does not match. A matching boundary is removed
+by byte offset; an empty boundary is a no-op. They are pure and deterministic.
+
 The first executable regex operation is the compiler-known, strongly typed search
 `matches(text, pattern) -> bool`, where `text` is `sview` and `pattern` is `Regex`:
 

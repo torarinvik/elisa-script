@@ -637,6 +637,10 @@ direct bytecode backend share the same non-empty ASCII rules: decimal digits,
 ASCII letters, their per-byte union, the scripting profile's
 space/tab/LF/VT/FF/CR whitespace set, and case predicates that ignore uncased
 bytes but require at least one cased byte; `isascii` accepts the empty string.
+`text.removeprefix(prefix)` and `text.removesuffix(suffix)` lower to
+`TextRemoveBoundary` with mode 0/1 and return `Text`; matching uses the same
+byte-oriented boundary predicates and nonmatching/empty boundaries return the
+original view.
 `ParseInt` has type `Text -> Int(signed, 64)` and requires `ParseError` in the
 function error row. Its state-machine parser accepts only an optional sign and
 ASCII decimal digits, checks signed 64-bit overflow before each accumulation, and
