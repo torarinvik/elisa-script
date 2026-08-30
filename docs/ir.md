@@ -719,6 +719,13 @@ the same result and failure behavior.
 Dictionary values also expose Python's `mapping.get(key, default)` spelling. It
 lowers to the same `IndexValid`-guarded CFG as `get mapping[key] else default`,
 so the default expression is lazy and both branches merge one exact value type.
+Mutable dictionaries additionally lower `mapping.pop(key)` and
+`mapping.pop(key, default)` to the paired `PopMapValue`/`PopMap` operations.
+`PopMapValue` returns the exact dictionary value type (or the typed default when
+the key is absent), while `PopMap` removes the key into fresh map storage. A
+missing key without a default raises `IndexOutOfBounds`; the verifier rejects
+set descriptors, mismatched key/default types, and immutable receivers before
+execution.
 Lowering retains one mutability fact alongside every lexical binding. Plain locals,
 parameters, loop variables, and match binders are immutable; `mutable` local type
 markers and mutable parameters opt into SSA rebinding. `<-`, compound assignment,

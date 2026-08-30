@@ -340,6 +340,12 @@ Python-compatible dictionary defaults use `mapping.get(key, default)`. The key
 must match the dictionary key type and the fallback must match its value type.
 Lookup is lowered through `IndexValid`, keeping the fallback lazy while preserving
 the ordinary typed merge and avoiding a result wrapper.
+Mutable dictionaries also support Python's `mapping.pop(key)` and
+`mapping.pop(key, default)` forms. The operation returns the exact value type and
+rebinding removes the key through an owned SSA map update. A missing key raises
+`IndexOutOfBounds` without a default; with a default, it returns that exact typed
+fallback and leaves the dictionary unchanged. Set values and immutable
+dictionaries are rejected during lowering.
 
 Mutable arrays accept both Elisa's `values.push(element)` spelling and the
 Python-compatible `values.append(element)` alias. Both require one positional
