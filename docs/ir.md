@@ -334,6 +334,11 @@ this opcode.
 and `FileIoError`; its operands are target then link, and execution calls POSIX
 `symlink` directly. The `symlink`, `create_symlink`, and `Path.symlink_to`
 surfaces lower to this opcode.
+`RemoveTree` verifies as `Named(Path) -> Bool` with `File.Write` and
+`FileIoError`; `CopyTree` verifies as `Named(Path) × Named(Path) -> Bool` with
+`File.Read`, `File.Write`, and `FileIoError`. Both execute bounded recursive
+walks in the reference helper, use `lstat` to avoid following symlink entries,
+and are eligible for direct bytecode dispatch.
 `PathJoin`, `PathParent`, `PathName`, `PathExtension`, and `PathStem` are pure typed path-shape operations.
 `PathJoin` verifies `Named(Path) × Text -> Named(Path)` and uses the core `Fs.join`
 separator/absolute-leaf rules; `PathParent` verifies `Named(Path) -> Named(Path)`;

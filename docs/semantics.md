@@ -643,6 +643,16 @@ creates a symbolic link, matching shell `ln -s` and Python
 `Path.symlink_to(target)`. `create_symlink` is an equivalent explicit alias;
 the `link.symlink_to(target)` method uses the same typed operation.
 
+`remove_tree(path: Path) -> bool error[FileIoError] can[File.Write]` recursively
+removes a file, symbolic link, or directory tree without following symlink
+directories. `rmtree` is an equivalent shell/Python-oriented alias. Traversal is
+bounded to 128 levels and failures remain typed `FileIoError` values.
+
+`copy_tree(source: Path, destination: Path) -> bool error[FileIoError]
+can[File.Read, File.Write]` recursively copies files, directories, and symbolic
+links while preserving link identity. `copytree` is an equivalent alias; the
+destination root must not already exist, and traversal is bounded to 128 levels.
+
 `read_text(path: Path) -> sview error[FileIoError]` reads a whole file without
 discarding embedded bytes. It contributes the same `File.Read` effect and adds
 `FileIoError` to the enclosing error row. Open, seek, read, and close failures

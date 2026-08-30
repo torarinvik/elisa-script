@@ -2814,6 +2814,104 @@ extend EsIr:
                 return runtime_bool(true)
 
 
+        def remove_tree_entry(machine: mutable Machine&, path: sview, depth: usize) -> bool can[Memory.Allocate, Abort.Panic]:
+            if depth > 128:
+                machine.failure <- InterpretFailure.FileIo
+                return false
+            if sview_len(path) == 0 or text_has_nul(path):
+                machine.failure <- InterpretFailure.FileIo
+                return false
+            c_path: dstr = nul_terminated_text(path)
+            if c_path.items == null:
+                machine.failure <- InterpretFailure.FileIo
+                return false
+            info: mutable ElisascriptStat = zeroed
+            path_items: u8& = c_path.items
+            can Blocking.IO:
+                if elisascript_posix_lstat(path_items.cast[cstr], info) != 0:
+                    machine.failure <- InterpretFailure.FileIo
+                    return false
+            if (info.mode & ELISASCRIPT_STAT_MODE_MASK) != ELISASCRIPT_STAT_MODE_DIRECTORY:
+                can Blocking.IO:
+                    if not remove_file(path_items.cast[cstr]):
+                        machine.failure <- InterpretFailure.FileIo
+                        return false
+                return true
+            scanner: mutable DirectoryScanner = DirectoryScanner{names: [], kinds: [], directory: null, opened: false, failed: false}
+            read_owned_directory(path, scanner)
+            if not scanner.opened or scanner.failed:
+                machine.failure <- InterpretFailure.FileIo
+                return false
+            for name in scanner.names |machine, path, depth|:
+                child: sview = path_join_value(path, bytes_view(name))
+                return false if not remove_tree_entry(machine, child, depth + 1)
+            can Blocking.IO:
+                if elisascript_posix_rmdir(path_items.cast[cstr]) != 0:
+                    machine.failure <- InterpretFailure.FileIo
+                    return false
+            return true
+
+
+        def evaluate_remove_tree(machine: mutable Machine&, path: RuntimeValue) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+            if path.kind != RuntimeValueKind.Text:
+                machine.failure <- InterpretFailure.TypeMismatch
+                return runtime_void()
+            return runtime_bool(remove_tree_entry(machine, path.text, 0))
+
+
+        def copy_tree_entry(machine: mutable Machine&, source: sview, destination: sview, depth: usize) -> bool can[Memory.Allocate, Abort.Panic]:
+            if depth > 128:
+                machine.failure <- InterpretFailure.FileIo
+                return false
+            if sview_len(source) == 0 or sview_len(destination) == 0 or text_has_nul(source) or text_has_nul(destination):
+                machine.failure <- InterpretFailure.FileIo
+                return false
+            c_source: dstr = nul_terminated_text(source)
+            c_destination: dstr = nul_terminated_text(destination)
+            if c_source.items == null or c_destination.items == null:
+                machine.failure <- InterpretFailure.FileIo
+                return false
+            info: mutable ElisascriptStat = zeroed
+            source_items: u8& = c_source.items
+            destination_items: u8& = c_destination.items
+            can Blocking.IO:
+                if elisascript_posix_lstat(source_items.cast[cstr], info) != 0:
+                    machine.failure <- InterpretFailure.FileIo
+                    return false
+            mode: u16 = info.mode & ELISASCRIPT_STAT_MODE_MASK
+            if mode == ELISASCRIPT_STAT_MODE_SYMLINK:
+                target: RuntimeValue = evaluate_read_link(machine, runtime_text(source))
+                return false if machine.failure != InterpretFailure.None
+                created: RuntimeValue = evaluate_symlink_path(machine, target, runtime_text(destination))
+                return false if machine.failure != InterpretFailure.None
+                return created.boolean
+            if mode == ELISASCRIPT_STAT_MODE_DIRECTORY:
+                can Blocking.IO:
+                    if elisascript_posix_mkdir(destination_items.cast[cstr], 493) != 0:
+                        machine.failure <- InterpretFailure.FileIo
+                        return false
+                scanner: mutable DirectoryScanner = DirectoryScanner{names: [], kinds: [], directory: null, opened: false, failed: false}
+                read_owned_directory(source, scanner)
+                if not scanner.opened or scanner.failed:
+                    machine.failure <- InterpretFailure.FileIo
+                    return false
+                for name in scanner.names |machine, source, destination, depth|:
+                    child_source: sview = path_join_value(source, bytes_view(name))
+                    child_destination: sview = path_join_value(destination, bytes_view(name))
+                    return false if not copy_tree_entry(machine, child_source, child_destination, depth + 1)
+                return true
+            copied: RuntimeValue = evaluate_copy_path(machine, runtime_text(source), runtime_text(destination))
+            return false if machine.failure != InterpretFailure.None
+            return copied.boolean
+
+
+        def evaluate_copy_tree(machine: mutable Machine&, source: RuntimeValue, destination: RuntimeValue) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+            if source.kind != RuntimeValueKind.Text or destination.kind != RuntimeValueKind.Text:
+                machine.failure <- InterpretFailure.TypeMismatch
+                return runtime_void()
+            return runtime_bool(copy_tree_entry(machine, source.text, destination.text, 0))
+
+
         def evaluate_make_executable(machine: mutable Machine&, value: RuntimeValue) -> RuntimeValue:
             if value.kind != RuntimeValueKind.Text or sview_len(value.text) == 0 or text_has_nul(value.text):
                 machine.failure <- InterpretFailure.Process
@@ -4594,6 +4692,17 @@ extend EsIr:
                             dispatch.value <- evaluate_symlink_path(machine, target_value, link_value)
                             break
 
+                        Dispatch, Opcode.RemoveTree:
+                            path_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
+                            dispatch.value <- evaluate_remove_tree(machine, path_value)
+                            break
+
+                        Dispatch, Opcode.CopyTree:
+                            source_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
+                            destination_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1], machine)
+                            dispatch.value <- evaluate_copy_tree(machine, source_value, destination_value)
+                            break
+
                         Dispatch, Opcode.ReadText:
                             path_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
                             dispatch.value <- evaluate_read_text(machine, path_value)
@@ -5090,6 +5199,20 @@ extend EsIr:
         def move_path_value(source: sview, destination: sview) -> bool error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             machine: mutable Machine = Machine{steps: 0, step_limit: 1, failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void()}
             value: RuntimeValue = evaluate_move_path(machine, runtime_text(source), runtime_text(destination))
+            try raise_interpret_failure(machine.failure) if machine.failure != InterpretFailure.None
+            return value.boolean
+
+
+        def remove_tree_path(path: sview) -> bool error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+            machine: mutable Machine = Machine{steps: 0, step_limit: 1, failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void()}
+            value: RuntimeValue = evaluate_remove_tree(machine, runtime_text(path))
+            try raise_interpret_failure(machine.failure) if machine.failure != InterpretFailure.None
+            return value.boolean
+
+
+        def copy_tree_path(source: sview, destination: sview) -> bool error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+            machine: mutable Machine = Machine{steps: 0, step_limit: 1, failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void()}
+            value: RuntimeValue = evaluate_copy_tree(machine, runtime_text(source), runtime_text(destination))
             try raise_interpret_failure(machine.failure) if machine.failure != InterpretFailure.None
             return value.boolean
 
