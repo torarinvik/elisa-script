@@ -632,6 +632,11 @@ target without following it, matching shell `readlink` and Python
 `Path.readlink()`. `read_link` is an equivalent snake-case alias, and both
 `path.readlink()` and `path.read_link()` lower to the same typed operation.
 
+`symlink(target: Path, link: Path) -> bool error[FileIoError] can[File.Write]`
+creates a symbolic link, matching shell `ln -s` and Python
+`Path.symlink_to(target)`. `create_symlink` is an equivalent explicit alias;
+the `link.symlink_to(target)` method uses the same typed operation.
+
 `read_text(path: Path) -> sview error[FileIoError]` reads a whole file without
 discarding embedded bytes. It contributes the same `File.Read` effect and adds
 `FileIoError` to the enclosing error row. Open, seek, read, and close failures
