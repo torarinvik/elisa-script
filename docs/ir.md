@@ -883,6 +883,8 @@ They also accept the two-binder `enumerate(collection, start)` iterable. Its
 header carries a zero-based source cursor for `Length`/`Index`; the body adds
 the one-time, exact-`usize` start value only for the public index binder, so
 non-zero starts do not alter collection bounds.
+Dictionary comprehensions accept the same iterable and use the offset index as
+the projected key while retaining the source element as the second binder.
 Header, latch, and exit block parameters carry both the accumulator and iteration
 state through the flat edge-argument pool. Consequently the
 interpreter, bytecode VM, and future native backends observe identical evaluation
