@@ -118,10 +118,10 @@ text or source formatting.
 checkpoint for differential tests without depending on stdout or debug logging.
 
 F-strings are parser sugar for the compiler-owned `__fstr` call. Lowering accepts
-text, signed `i64`, and `f64` expressions, converting numeric pieces with the
-existing `FormatInt`/`FormatFloat` operations before emitting a left-to-right
-chain of ordinary `Concat` instructions; literal chunks remain `Constant`
-values. Booleans and aggregates require an explicit formatting operation. This
+text, signed `i64`, `f64`, and `bool` expressions, converting non-text pieces with
+the existing `FormatInt`/`FormatFloat`/`FormatBool` operations before emitting a
+left-to-right chain of ordinary `Concat` instructions; literal chunks remain
+`Constant` values. Aggregates require an explicit formatting operation. This
 keeps interpolation visible in the verified IR and gives the interpreter,
 bytecode, JIT, and native backends one ownership and evaluation-order contract.
 

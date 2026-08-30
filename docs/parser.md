@@ -123,12 +123,12 @@ message: sview = f"hello {name}!"
 ```
 
 The result is an ordered sequence of literal and expression pieces. Elisascript's
-IR accepts text (`sview`/`dstr`), signed `i64`, and `f64` interpolated expressions.
-Numeric pieces are converted through the existing `FormatInt`/`FormatFloat`
-operations, then lowered to ordinary typed `Concat` operations, so conversion,
-evaluation order, and allocation behavior remain visible to every backend.
-Booleans and aggregates are rejected until an explicit formatting operation is
-used.
+IR accepts text (`sview`/`dstr`), signed `i64`, `f64`, and `bool` interpolated
+expressions. Numeric and boolean pieces are converted through the existing
+`FormatInt`/`FormatFloat`/`FormatBool` operations, then lowered to ordinary typed
+`Concat` operations, so conversion, evaluation order, and allocation behavior
+remain visible to every backend. Aggregates are rejected until an explicit
+formatting operation is used.
 
 ## Effect payloads
 
