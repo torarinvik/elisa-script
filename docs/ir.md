@@ -530,6 +530,9 @@ It accepts only arrays whose scalar elements have a deterministic total order.
 The compiler-known `reversed(values)` builtin lowers to `ReverseArray` and
 returns a fresh owned array with the original element descriptor in reverse
 order, without requiring a mutable binding.
+The compiler-known `min(values)`/`max(values)` calls lower to `SortArray` followed
+by a checked `Index` at `0` or `-1`, preserving exact scalar element types and
+the normal empty-array failure path.
 Empty literals use
 their expected array type in bindings, assignments, returns, and call arguments,
 so `[]` never introduces an untyped dynamic collection. Arrays may nest five levels

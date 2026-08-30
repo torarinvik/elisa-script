@@ -102,6 +102,12 @@ returns a fresh array with the same exact element type in reverse order. The
 input is never mutated, including for nested aggregate elements; the operation
 is deterministic and is shadowable by a source declaration.
 
+The compiler-known `min(values)` and `max(values)` builtins accept a typed array
+of orderable scalar values and return its exact element type. They produce the
+ascending minimum or maximum through a fresh sorted copy, so the input remains
+unchanged. Empty arrays raise the ordinary checked-index `IndexOutOfBounds`
+failure through `error[...]`; aggregate elements are rejected statically.
+
 ## Text boundary predicates
 
 The compiler-known `starts_with(text, prefix) -> bool` and
