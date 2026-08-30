@@ -630,6 +630,11 @@ lowers to `TextFind`; it returns the first byte offset, zero for an empty needle
 and `-1` for a miss.
 The matching `text.rfind(substring)` method lowers to `TextRFind` and returns the
 last byte offset, the input length for an empty needle, or `-1` for a miss.
+The no-argument `text.isdigit()`, `text.isalpha()`, `text.isalnum()`, and
+`text.isspace()` methods lower to `TextPredicate` with a compile-time mode and
+return `Bool`. The interpreter and direct bytecode backend share the same
+non-empty ASCII rules: decimal digits, ASCII letters, their per-byte union, and
+the scripting profile's space/tab/LF/VT/FF/CR whitespace set respectively.
 `ParseInt` has type `Text -> Int(signed, 64)` and requires `ParseError` in the
 function error row. Its state-machine parser accepts only an optional sign and
 ASCII decimal digits, checks signed 64-bit overflow before each accumulation, and
