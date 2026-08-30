@@ -703,6 +703,9 @@ side effect.
 The expression-form `array.count(element)` lowers to `ArrayCount`, returns a
 `usize`, and compares elements with the same structural equality used by `==`.
 The verifier requires an exact array element type and a valid `usize` result.
+`array.find(element)` and `array.index(element)` lower to `ArrayFind` and return
+the first matching zero-based offset as signed `i64`, or `-1` when absent; the
+verifier preserves the complete element descriptor for structural comparison.
 Dictionary values also expose Python's `mapping.get(key, default)` spelling. It
 lowers to the same `IndexValid`-guarded CFG as `get mapping[key] else default`,
 so the default expression is lazy and both branches merge one exact value type.

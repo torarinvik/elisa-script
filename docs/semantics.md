@@ -356,6 +356,11 @@ The Python-compatible `values.count(element) -> usize` method counts exact
 element matches in an array, including nested arrays under the supported
 structural descriptor. It is pure, deterministic, and requires the argument to
 match the array element type exactly.
+The companion `values.find(element)` and `values.index(element)` methods return
+the first matching element offset as a signed `i64`, or `-1` when no element
+matches. They share structural equality with `count` and require an exact
+element type; `index` is an array-only spelling while `find` also remains valid
+for text values.
 
 ## Text field processing
 
