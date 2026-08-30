@@ -754,7 +754,10 @@ shape members `path.parent`, `path.name`, `path.suffix`, and `path.stem`, plus
 `path.is_absolute()`,
 `path.readlink()`, `path.read_link()`, `path.symlink_to(target)`, and
 `path.is_dir()`; each lowers to the
-same typed opcode as its free-function counterpart. For direct shell scripts, the mutation aliases are:
+same typed opcode as its free-function counterpart. For direct shell scripts and
+Python `os.path` ports, `exists(path)`, `isfile(path)`, and `isdir(path)` are
+typed aliases for `path_exists`, `is_file`, and `is_directory`; they retain the
+nominal `Path` argument and the same effect/error contract. For direct shell scripts, the mutation aliases are:
 `pwd()` is `current_directory()`, `cd(path)` is `change_directory(path)`,
 `mkdir(path)`/`rmdir(path)` are single-level directory creation/removal;
 `makedirs(path)`/`mkdir_p(path)` create missing parents, and
