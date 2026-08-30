@@ -709,6 +709,13 @@ The verifier requires an exact array element type and a valid `usize` result.
 `array.find(element)` and `array.index(element)` lower to `ArrayFind` and return
 the first matching zero-based offset as signed `i64`, or `-1` when absent; the
 verifier preserves the complete element descriptor for structural comparison.
+The statement-form `array.sort()` lowers to `SortArray`. It requires a mutable
+array whose element type is a scalar with a deterministic total order (`bool`,
+integer, float, `char`, or text), copies the input into owned storage, and
+performs a stable ascending insertion sort. Text values compare by unsigned
+`sview` bytes. Unsupported aggregate element types and malformed instructions
+are rejected before execution, while the interpreter and bytecode backend share
+the same result and failure behavior.
 Dictionary values also expose Python's `mapping.get(key, default)` spelling. It
 lowers to the same `IndexValid`-guarded CFG as `get mapping[key] else default`,
 so the default expression is lazy and both branches merge one exact value type.

@@ -379,6 +379,12 @@ ownership-safe SSA update. If no element matches, execution raises
 `InterpretError.IndexOutOfBounds` through the ordinary `error[...]` channel and
 the binding remains unchanged. Structural equality is identical to `count`,
 `find`, and `index`.
+`values.sort()` is the Python-compatible in-place ascending sort operation. It
+requires a mutable array of statically orderable scalar values (`bool`, integer,
+float, `char`, or text), produces a fresh owned array, and rebinds the receiver
+through SSA. Sorting is stable and deterministic; text ordering is unsigned
+byte-lexicographic under the `sview` contract. Other aggregate element types,
+immutable arrays, and calls with arguments are rejected during lowering.
 
 ## Text field processing
 
