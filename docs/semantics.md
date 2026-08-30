@@ -226,6 +226,10 @@ the same deterministic ASCII matcher as search, replacement, and splitting.
 
 The scripting profile keeps ordinary indexing strict: `values[index]` raises a
 typed `IndexOutOfBounds` error for a missing array/text element or dictionary key.
+Array and text indices follow Python's negative-index rule: a negative integer is
+offset from the end (`-1` denotes the final element), while dictionary integer
+keys remain ordinary exact keys. The same normalization is used by indexed
+assignment and the lazy validity check.
 Use `get` when a local fallback is preferable:
 
 ```elisa

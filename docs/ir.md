@@ -554,9 +554,11 @@ deferred writeback. Temporary collections, immutable owners, and mutable text
 iteration are rejected statically.
 Text uses the same verified collection operations and loop CFG. In the current
 Elisa-compatible `sview` model, `.count` is a byte count and `text[index]` or
-`for character in text` yields one 8-bit `char`; invalid indices raise the same
-typed `IndexOutOfBounds` interpreter error as arrays. This byte contract is
-explicit rather than silently pretending to provide Unicode grapheme indexing.
+`for character in text` yields one 8-bit `char`; negative array/text indices are
+normalized from the end before bounds checking, while dictionary indices remain
+exact keys. Invalid indices raise the same typed `IndexOutOfBounds` interpreter
+error as arrays. This byte contract is explicit rather than silently pretending
+to provide Unicode grapheme indexing.
 Value recovery with `get collection[index] else fallback` is lowered as a lazy
 state-machine branch. `IndexValid` checks array/text bounds or dictionary key
 membership without raising for an ordinary miss; the success edge then performs
