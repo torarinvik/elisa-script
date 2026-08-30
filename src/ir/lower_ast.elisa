@@ -2292,6 +2292,63 @@ extend EsIr:
             return LoweredValue{valid: true, value: result, type: guarded.type}
 
 
+        # Python's `print` is a small typed convenience over the existing
+        # stdout effect. Each argument is converted using the same scalar
+        # formatting rules as `str`, joined with one ASCII space, and followed
+        # by one newline. Keeping the lowering on `WriteStdout` means the
+        # interpreter, bytecode VM, and future native backends share one stream
+        # contract and one error/effect row.
+        def lower_print(arguments: darray[Ast::Expr]&, argument_names: darray[sview]&, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+            result_type: Type = type_from_name("usize")
+            positional: mutable bool = argument_names.count == 0
+            if argument_names.count != 0:
+                positional <- true
+                for argument_name in argument_names |positional|:
+                    positional <- false if argument_name != ""
+            if not positional:
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "print accepts only positional text, integer, float, or bool values")
+                return LoweredValue{valid: false, value: 0, type: result_type}
+
+            text_type: Type = type_from_name("sview")
+            rendered: mutable LoweredValue = emit_constant(state, text_type, 0, "", "", false, ir_span(pos))
+            for argument_index in 0..<arguments.count |arguments, argument_index, state, rendered, text_type, pos|:
+                if argument_index != 0:
+                    separator: LoweredValue = emit_constant(state, text_type, 0, "", " ", false, ir_span(pos))
+                    rendered <- emit_binary(state, Opcode.Concat, rendered.value, separator.value, text_type, pos)
+                value: mutable LoweredValue = lower_expression(arguments[argument_index], state)
+                if not value.valid:
+                    return LoweredValue{valid: false, value: 0, type: result_type}
+                if value.type.kind == TypeKind.Text:
+                    pass
+                else:
+                    opcode: mutable Opcode = Opcode.FormatBool
+                    supported: mutable bool = true
+                    if value.type.kind == TypeKind.Int and value.type.bits == 64 and value.type.signed:
+                        opcode <- Opcode.FormatInt
+                    elif value.type.kind == TypeKind.Float and value.type.bits == 64:
+                        opcode <- Opcode.FormatFloat
+                    elif value.type.kind != TypeKind.Bool:
+                        supported <- false
+                    if not supported:
+                        add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "print values must be text, signed i64, f64, or bool")
+                        return LoweredValue{valid: false, value: 0, type: result_type}
+                    formatted: u32 = fresh_value(state)
+                    formatted_start: u32 = state.operand_pool.count.u32()
+                    state.operand_pool.push(value.value)
+                    state.instructions.push(Instruction{opcode: opcode, result: formatted, result_type: text_type, operand_start: formatted_start, operand_count: 1, span: ir_span(pos)})
+                    value <- LoweredValue{valid: true, value: formatted, type: text_type}
+                rendered <- emit_binary(state, Opcode.Concat, rendered.value, value.value, text_type, pos)
+            newline: LoweredValue = emit_constant(state, text_type, 0, "", "\n", false, ir_span(pos))
+            rendered <- emit_binary(state, Opcode.Concat, rendered.value, newline.value, text_type, pos)
+            state.required_effects.push("Console.Write") if not has_text(state.required_effects, "Console.Write")
+            state.required_errors.push("ConsoleError") if not has_text(state.required_errors, "ConsoleError")
+            operand_start: u32 = state.operand_pool.count.u32()
+            state.operand_pool.push(rendered.value)
+            result: u32 = fresh_value(state)
+            state.instructions.push(Instruction{opcode: Opcode.WriteStdout, result: result, result_type: result_type, operand_start: operand_start, operand_count: 1, span: ir_span(pos)})
+            return LoweredValue{valid: true, value: result, type: result_type}
+
+
         def lower_expression(expression: Ast::Expr, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
             match expression:
                 Expr.IntLit(value):
@@ -2824,6 +2881,8 @@ extend EsIr:
                             state.instructions.push(Instruction{opcode: Opcode.Observe, result: 0, result_type: void_ir_type(), operand_start: operand_start, operand_count: 1, trace: trace_site(state, "observe", pos), span: ir_span(pos)})
                         return LoweredValue{valid: observed.valid, value: 0, type: void_ir_type()}
                     callee_index: usize = lowered_function_index(state, callee_name)
+                    if callee_name == "print" and callee_index == state.function_names.count:
+                        return lower_print(arguments, argument_names, pos, state)
                     # `len(value)` is the scripting-profile spelling of the
                     # existing collection/text length operation.  Keep it a
                     # compiler-known call so Python-shaped ports do not need

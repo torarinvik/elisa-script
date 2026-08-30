@@ -530,6 +530,10 @@ It accepts only arrays whose scalar elements have a deterministic total order.
 The compiler-known `reversed(values)` builtin lowers to `ReverseArray` and
 returns a fresh owned array with the original element descriptor in reverse
 order, without requiring a mutable binding.
+The compiler-known `print(value, ...)` convenience formats each supported scalar,
+joins arguments with one space, appends a newline, and lowers directly to the
+existing `Concat` plus `WriteStdout` operations; no command string or separate
+stdout runtime is introduced.
 The compiler-known `min(values)`/`max(values)` calls lower to `SortArray` followed
 by a checked `Index` at `0` or `-1`, preserving exact scalar element types and
 the normal empty-array failure path. Two or more scalar arguments are first
