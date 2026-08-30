@@ -80,6 +80,7 @@ existing comments source-compatible.
 Run both with the current Elisa compiler:
 
 ```text
-elisac -emit test test/lexer/elisascript_lexer_test.elisa
-elisac -emit test test/lexer/elisa_compat/lexer_machine_state_test.elisa
+ELISA_LOCAL_COMPILER="../../Go projects/Elisa-core/compiler/bin/elisac"
+"$ELISA_LOCAL_COMPILER" -emit test test/lexer/elisascript_lexer_test.elisa
+"$ELISA_LOCAL_COMPILER" -emit test test/lexer/elisa_compat/lexer_machine_state_test.elisa
 ```

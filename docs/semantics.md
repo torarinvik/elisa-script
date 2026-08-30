@@ -711,6 +711,15 @@ the filesystem, resolve symlinks, or depend on the process working directory.
 `is_absolute` and `isabs` are equivalent aliases, and `path.is_absolute()` lowers
 to the same typed operation.
 
+`path_normalize(path: Path) -> Path` performs lexical POSIX path cleanup without
+consulting the filesystem. It collapses repeated `/` separators and `.`
+components, removes a preceding component for `..` when possible, preserves
+leading `..` components on relative paths, and keeps an absolute path rooted at
+`/`. An empty relative path becomes `.`. The operation never resolves symlinks,
+consults the current directory, or changes the filesystem. `normalize_path` and
+`normpath` are equivalent aliases, and `path.normalize()` lowers to the same
+pure typed operation.
+
 `copy_path(source: Path, destination: Path) -> bool error[FileIoError]
 can[File.Read, File.Write]` copies one regular file by length-delimited bytes and
 replaces the destination. `move_path(source: Path, destination: Path) -> bool

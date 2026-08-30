@@ -357,6 +357,11 @@ payload. The scripting-profile aliases `dirname`, `basename`, `suffix`, and
 only the first byte of the length-delimited path for `/`, adds no effect or error,
 and is eligible for direct bytecode execution. The global aliases `is_absolute`
 and `isabs`, plus `Path.is_absolute()`, lower to this opcode.
+`PathNormalize` is pure and verifies `Named(Path) -> Named(Path)`. It performs
+lexical separator, dot, and dot-dot cleanup in the core `Fs.normalize` helper,
+without filesystem or working-directory access, and is eligible for direct
+bytecode execution. The `path_normalize`, `normalize_path`, and `normpath`
+builtins plus `Path.normalize()` lower to this opcode.
 The shell-size predicate has no dedicated opcode: `is_nonempty`/`file_nonempty`
 lower to `FileSize` followed by a typed `Greater` comparison against zero. This
 keeps the existing `Named(Path) -> Int(unsigned, 64)` file-size contract while
