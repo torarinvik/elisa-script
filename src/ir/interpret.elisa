@@ -2536,6 +2536,43 @@ extend EsIr:
                 return runtime_bool((info.mode & ELISASCRIPT_STAT_MODE_MASK) == ELISASCRIPT_STAT_MODE_SYMLINK)
 
 
+        def evaluate_read_link(machine: mutable Machine&, path: RuntimeValue) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+            if path.kind != RuntimeValueKind.Text:
+                machine.failure <- InterpretFailure.TypeMismatch
+                return runtime_void()
+            if sview_len(path.text) == 0 or text_has_nul(path.text):
+                machine.failure <- InterpretFailure.FileIo
+                return runtime_void()
+            c_path: dstr = nul_terminated_text(path.text)
+            if c_path.items == null:
+                machine.failure <- InterpretFailure.FileIo
+                return runtime_void()
+            path_items: u8& = c_path.items
+            capacity: mutable usize = 256
+            # POSIX readlink does not append a NUL byte. Retry when the result
+            # exactly fills the buffer, up to a bounded size suitable for
+            # platform symlink targets, then report the same FileIo failure as
+            # other typed file metadata operations.
+            while capacity <= 1048576:
+                target: mutable dstr = ctx_fstr_alloc(capacity)
+                if target.items == null:
+                    machine.failure <- InterpretFailure.FileIo
+                    return runtime_void()
+                target_items: mutable u8& = target.items
+                count: mutable isize = 0
+                can Blocking.IO:
+                    count <- elisascript_posix_readlink(path_items.cast[cstr], target_items, capacity)
+                if count < 0:
+                    machine.failure <- InterpretFailure.FileIo
+                    return runtime_void()
+                if count < capacity:
+                    target.count <- count.usize()
+                    return runtime_text(bytes_view(target))
+                capacity <- capacity * 2
+            machine.failure <- InterpretFailure.FileIo
+            return runtime_void()
+
+
         def evaluate_read_text(machine: mutable Machine&, path: RuntimeValue) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
             if path.kind != RuntimeValueKind.Text:
                 machine.failure <- InterpretFailure.TypeMismatch
@@ -4475,6 +4512,11 @@ extend EsIr:
                             dispatch.value <- evaluate_is_symlink(machine, path_value)
                             break
 
+                        Dispatch, Opcode.ReadLink:
+                            path_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
+                            dispatch.value <- evaluate_read_link(machine, path_value)
+                            break
+
                         Dispatch, Opcode.ReadText:
                             path_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
                             dispatch.value <- evaluate_read_text(machine, path_value)
@@ -4910,6 +4952,13 @@ extend EsIr:
             value: RuntimeValue = evaluate_is_symlink(machine, runtime_text(path))
             try raise_interpret_failure(machine.failure) if machine.failure != InterpretFailure.None
             return value.boolean
+
+
+        def read_link_path(path: sview) -> sview error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+            machine: mutable Machine = Machine{steps: 0, step_limit: 1, failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void()}
+            value: RuntimeValue = evaluate_read_link(machine, runtime_text(path))
+            try raise_interpret_failure(machine.failure) if machine.failure != InterpretFailure.None
+            return value.text
 
 
         def read_text_path(path: sview) -> sview error[InterpretError] can[Memory.Allocate, Abort.Panic]:

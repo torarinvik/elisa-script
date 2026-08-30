@@ -627,6 +627,11 @@ Missing paths and invalid names raise `FileIoError`; the result is an unsigned,
 `Path.is_symlink()` predicate. It uses `lstat` rather than following the target,
 contributes `File.Read`, and returns `false` for missing or non-symlink entries.
 
+`readlink(path: Path) -> Path error[FileIoError] can[File.Read]` returns the link
+target without following it, matching shell `readlink` and Python
+`Path.readlink()`. `read_link` is an equivalent snake-case alias, and both
+`path.readlink()` and `path.read_link()` lower to the same typed operation.
+
 `read_text(path: Path) -> sview error[FileIoError]` reads a whole file without
 discarding embedded bytes. It contributes the same `File.Read` effect and adds
 `FileIoError` to the enclosing error row. Open, seek, read, and close failures
