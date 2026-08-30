@@ -524,6 +524,9 @@ opcode over arrays, dictionaries, and byte-oriented text, and remains shadowable
 by an ordinary source function. The compiler-known `abs(value)` builtin lowers
 to a typed comparison, branch, and merge using the existing `Less` and `Negate`
 operations, so it preserves single evaluation and exact integer/float types.
+The compiler-known `sorted(values)` builtin lowers to the existing `SortArray`
+operation and returns its fresh owned array without mutating the source value.
+It accepts only arrays whose scalar elements have a deterministic total order.
 Empty literals use
 their expected array type in bindings, assignments, returns, and call arguments,
 so `[]` never introduces an untyped dynamic collection. Arrays may nest five levels

@@ -91,6 +91,12 @@ integer still raises the ordinary `IntegerOverflow` runtime error because its
 positive magnitude is not representable; floating-point values follow the host
 IEEE sign rule.
 
+The compiler-known `sorted(values)` builtin accepts a typed array of orderable
+scalar values (`bool`, integer, float, `char`, or text) and returns a fresh array
+with the same exact element type. The input is never mutated; sorting is stable,
+ascending, and byte-oriented for text. It is the expression-form counterpart to
+the in-place `values.sort()` method and is shadowable by a source declaration.
+
 ## Text boundary predicates
 
 The compiler-known `starts_with(text, prefix) -> bool` and
