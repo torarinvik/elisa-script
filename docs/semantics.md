@@ -108,6 +108,14 @@ ascending minimum or maximum through a fresh sorted copy, so the input remains
 unchanged. Empty arrays raise the ordinary checked-index `IndexOutOfBounds`
 failure through `error[...]`; aggregate elements are rejected statically.
 
+The Python-compatible `sum(values)` and `product(values)` forms fold a typed
+integer array with identities `0` and `1`, preserving the array's exact integer
+type and evaluating the iterable once. They intentionally expose no implicit
+widening and no optional start argument yet. `any(values)` and `all(values)`
+fold a typed boolean array with the usual empty identities (`false` and `true`)
+and short-circuit through the same explicit loop state machine; non-boolean
+elements are rejected rather than coerced by truthiness.
+
 ## Text boundary predicates
 
 The compiler-known `starts_with(text, prefix) -> bool` and
