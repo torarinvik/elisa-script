@@ -143,6 +143,9 @@ receivers or arguments during lowering.
 The companion `text.find(substring) -> i64` method returns the first byte offset,
 `0` for an empty substring, and `-1` when no match exists. It uses the same
 byte-oriented comparison rules and is pure and deterministic.
+`text.rfind(substring) -> i64` returns the last byte offset, the input length for
+an empty substring, and `-1` for a miss. Both search methods require one
+positional text substring and expose no implicit Unicode or locale behavior.
 
 The first executable regex operation is the compiler-known, strongly typed search
 `matches(text, pattern) -> bool`, where `text` is `sview` and `pattern` is `Regex`:
