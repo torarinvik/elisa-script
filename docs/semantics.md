@@ -100,6 +100,12 @@ parsed as a regular expression, so regex metacharacters remain ordinary bytes;
 an empty `old` inserts the replacement at every input boundary, matching Python's
 string behavior. It is pure, deterministic, shadowable, and returns owned text.
 
+The compiler-known `strip(text) -> sview` and `trim(text) -> sview` names are
+equivalent byte-oriented boundary operations. They remove ASCII space, tab, line
+feed, vertical tab, form feed, and carriage return from the beginning and end,
+preserve interior bytes, and return a view into the existing text value. Both are
+pure, deterministic, and shadowable by source functions.
+
 The first executable regex operation is the compiler-known, strongly typed search
 `matches(text, pattern) -> bool`, where `text` is `sview` and `pattern` is `Regex`:
 

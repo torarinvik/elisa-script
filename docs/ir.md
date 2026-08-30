@@ -595,6 +595,10 @@ non-overlapping literal replacement without interpreting `old` as a regex. An
 empty `old` value follows Python's boundary rule (the replacement is emitted
 before, between, and after input bytes); all output is copied into permanent
 runtime storage for parity across interpreter and bytecode execution.
+The compiler-known `strip(text)` and `trim(text)` aliases have type `Text -> Text`
+and lower to `TrimText`. They remove ASCII whitespace (`space`, tab, line feed,
+vertical tab, form feed, and carriage return) only at the two boundaries and
+return an `sview` into the existing text storage; interior whitespace is retained.
 `ParseInt` has type `Text -> Int(signed, 64)` and requires `ParseError` in the
 function error row. Its state-machine parser accepts only an optional sign and
 ASCII decimal digits, checks signed 64-bit overflow before each accumulation, and
