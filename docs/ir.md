@@ -320,6 +320,8 @@ timestamps through POSIX `utimes`; packed bytecode uses the same helper.
 and `FileIoError`; both execution engines call the POSIX `chmod` boundary directly.
 `FileSize` verifies as `Named(Path) -> Int(unsigned, 64)` with `File.Read` and
 `FileIoError`, returning the `st_size` field from the same POSIX `stat` bridge.
+`IsSymlink` verifies as `Named(Path) -> Bool` with `File.Read`; it uses POSIX
+`lstat` mode bits so the predicate observes the link itself rather than its target.
 `PathJoin`, `PathParent`, `PathName`, `PathExtension`, and `PathStem` are pure typed path-shape operations.
 `PathJoin` verifies `Named(Path) × Text -> Named(Path)` and uses the core `Fs.join`
 separator/absolute-leaf rules; `PathParent` verifies `Named(Path) -> Named(Path)`;
@@ -329,7 +331,7 @@ for joined paths, while parent/name preserve safe views into the existing path
 payload. The scripting-profile aliases `dirname`, `basename`, `suffix`, and
 `stem` lower to these same opcodes and retain source-level shadowing rules. The
 `Path` members `parent`, `name`, `suffix`, and `stem`, together with
-`joinpath`, `exists`, `is_file`, and `is_dir` methods, are lowered to the same operations.
+`joinpath`, `exists`, `is_file`, `is_symlink`, and `is_dir` methods, are lowered to the same operations.
 `ReadText` extends that contract to whole-file input with verified signature
 `Named(Path) -> Text`. Its function must carry both `File.Read` and `FileIoError`;
 lowering supplies both and the verifier rejects either omission. The interpreter

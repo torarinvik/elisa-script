@@ -623,6 +623,10 @@ length reported by POSIX `stat`, including regular files and directory entries.
 Missing paths and invalid names raise `FileIoError`; the result is an unsigned,
 64-bit byte count suitable for direct comparisons and differential tests.
 
+`is_symlink(path: Path) -> bool` is the shell `test -L` and Python
+`Path.is_symlink()` predicate. It uses `lstat` rather than following the target,
+contributes `File.Read`, and returns `false` for missing or non-symlink entries.
+
 `read_text(path: Path) -> sview error[FileIoError]` reads a whole file without
 discarding embedded bytes. It contributes the same `File.Read` effect and adds
 `FileIoError` to the enclosing error row. Open, seek, read, and close failures
@@ -670,7 +674,7 @@ have short aliases: `dirname(path)`/`basename(path)`/`suffix(path)`/`stem(path)`
 map to the corresponding path decomposition helpers, and `is_dir(path)` is an
 alias for the directory predicate. A `Path` also exposes the common `pathlib`
 shape members `path.parent`, `path.name`, `path.suffix`, and `path.stem`, plus
-`path.joinpath(leaf)`, `path.exists()`, `path.is_file()`, and `path.is_dir()`; each lowers to the
+`path.joinpath(leaf)`, `path.exists()`, `path.is_file()`, `path.is_symlink()`, and `path.is_dir()`; each lowers to the
 same typed opcode as its free-function counterpart. For direct shell scripts, the mutation aliases are:
 `pwd()` is `current_directory()`, `cd(path)` is `change_directory(path)`,
 `mkdir(path)`/`rmdir(path)` are directory creation/removal, and
