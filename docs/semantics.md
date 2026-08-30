@@ -720,9 +720,10 @@ execution failures use status `1`.
 Standard streams are explicit typed operations rather than shell behavior. The
 Python-shaped `print(value, ...) -> usize` convenience is compiler-known: it
 formats text, signed `i64`, `f64`, and `bool` arguments with one space between
-them, appends a newline, and delegates to the same stdout operation. It accepts
-only positional arguments, so unsupported Python keyword controls (`sep`, `end`,
-`file`, and `flush`) remain statically rejected:
+them, appends a newline, and delegates to the same stdout operation. `println` is
+an equivalent stdout alias, while `eprint` writes the same typed line to stderr.
+All three accept only positional arguments, so unsupported Python keyword controls
+(`sep`, `end`, `file`, and `flush`) remain statically rejected:
 
 - `read_stdin() -> sview error[ConsoleError] can[Console.Read]` reads all bytes from
   file descriptor 0 until EOF and returns an owned text snapshot. Read failures are
