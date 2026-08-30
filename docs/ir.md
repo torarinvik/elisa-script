@@ -467,7 +467,7 @@ The verified bytecode facade uses the same program-counter machine for execution
 Modules containing only the currently closed scalar, text, regex, homogeneous-array,
 and scalar-map subset (boolean, 64-bit integer, or 64-bit float values, text/nominal constants,
 including four nested array levels,
-array/map construction and key extraction, nominal path/glob/regex/URL constructors, typed path composition/decomposition, indexing, length, slicing, membership, concatenation, split,
+array/map construction and key/value extraction, nominal path/glob/regex/URL constructors, typed path composition/decomposition, indexing, length, slicing, membership, concatenation, split,
 join, typed integer/float parsing and formatting, regex search/replacement/splitting/extraction, indexed updates, unary/binary operators,
 observations, pure direct calls, and typed filesystem/process operations) take a
 direct packed-instruction path. Calls use recursive state-machine frames with one
@@ -618,6 +618,9 @@ The Python-compatible `mapping.keys()` method is also compiler-known: it require
 zero arguments, returns `Array[K]` for `Map[K, V]`, and lowers to the existing
 insertion-order `MapKeys` instruction. The set descriptor is rejected at lowering
 so set membership remains the only supported key-like operation for sets.
+`mapping.values()` has the same zero-argument contract, returns `Array[V]`, and
+lowers to `MapValues`; nested value descriptors are retained for verifier and
+backend checks, and set descriptors are rejected.
 `ParseInt` has type `Text -> Int(signed, 64)` and requires `ParseError` in the
 function error row. Its state-machine parser accepts only an optional sign and
 ASCII decimal digits, checks signed 64-bit overflow before each accumulation, and

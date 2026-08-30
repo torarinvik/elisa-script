@@ -132,6 +132,9 @@ no arguments, returns an insertion-ordered `darray[K]` for `dict[K, V]`, and use
 the same typed `MapKeys` operation as dictionary iteration. Set values do not
 expose dictionary key views even though their first runtime representation shares
 the map payload layout.
+The matching `mapping.values()` method takes no arguments and returns an
+insertion-ordered `darray[V]`, preserving the complete static value descriptor
+through a dedicated `MapValues` operation. It is likewise unavailable on sets.
 
 The first executable regex operation is the compiler-known, strongly typed search
 `matches(text, pattern) -> bool`, where `text` is `sview` and `pattern` is `Regex`:
