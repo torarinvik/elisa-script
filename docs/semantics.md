@@ -126,6 +126,9 @@ replacement)` returns `sview`; `text.strip()`/`text.trim()` return `sview`; and
 `text.split(separator)` returns `darray[sview]`. Receivers and arguments must be
 text values, method arity is checked during lowering, and `split` intentionally
 requires an explicit separator rather than Python's implicit-whitespace mode.
+The Python-compatible `separator.join(fields)` method is also available for a
+text separator and `darray[sview]` fields; it follows the same insertion and
+empty-field rules as the global `join(fields, separator)` operation.
 
 Dictionary values expose the Python-compatible `mapping.keys()` method. It takes
 no arguments, returns an insertion-ordered `darray[K]` for `dict[K, V]`, and uses

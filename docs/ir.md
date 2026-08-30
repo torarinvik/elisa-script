@@ -614,6 +614,8 @@ well: `startswith`/`starts_with` and `endswith`/`ends_with` lower to
 `strip()`/`trim()` lower to `TrimText`, and `split(separator)` lowers to `Split`.
 The method forms require text receivers, exact positional arity, and an explicit
 separator for `split`; no dynamic dispatch or implicit-whitespace mode is added.
+The Python-compatible `separator.join(fields)` method lowers to the existing
+`Join` opcode with the fields operand first and the text receiver as separator.
 The Python-compatible `mapping.keys()` method is also compiler-known: it requires
 zero arguments, returns `Array[K]` for `Map[K, V]`, and lowers to the existing
 insertion-order `MapKeys` instruction. The set descriptor is rejected at lowering
