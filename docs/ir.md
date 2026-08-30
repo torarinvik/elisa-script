@@ -629,9 +629,11 @@ element types remain static errors; nested arrays use the same recursive runtime
 comparison within the supported five-level descriptor. The compact structural type
 descriptor currently carries five array layers; a sixth layer is reserved for the
 next migration step, where source typing will emit recursive table ids directly.
-Statement-form `array.push(value)` and `array.extend(values)` are ownership-safe
-SSA updates rather than hidden aliasing mutations. `push` constructs a typed
-singleton and `extend` accepts the receiver's exact array type; both concatenate
+Statement-form `array.push(value)` and the Python-compatible
+`array.append(value)` alias, together with `array.extend(values)`, are
+ownership-safe SSA updates rather than hidden aliasing mutations. `push` constructs
+a typed singleton and `append` has exactly the same contract; `extend` accepts the
+receiver's exact array type; all three concatenate
 into a fresh array value and rebind the receiver. Mutation discovery treats these
 calls as assignments, so updates inside `if`, `while`, and `for` flow through the
 same typed merge, header, latch, and exit parameters as explicit `<-` rebinding.
@@ -639,7 +641,7 @@ Named arguments, mismatched element types, and non-array receivers are rejected.
 Lowering retains one mutability fact alongside every lexical binding. Plain locals,
 parameters, loop variables, and match binders are immutable; `mutable` local type
 markers and mutable parameters opt into SSA rebinding. `<-`, compound assignment,
-`push`, and `extend` all check the same fact and produce the structured
+`push`, `append`, and `extend` all check the same fact and produce the structured
 `ImmutableBinding` issue before emitting an update. Scope truncation keeps names,
 types, values, and mutability facts aligned across value blocks, match arms,
 handlers, branches, and loops.

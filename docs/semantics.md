@@ -265,6 +265,12 @@ The lowered map descriptor retains
 an internal set marker, so set-only `.add()` cannot be applied to an ordinary
 `dict[T, bool]` despite the shared physical representation.
 
+Mutable arrays accept both Elisa's `values.push(element)` spelling and the
+Python-compatible `values.append(element)` alias. Both require one positional
+element of the exact array element type and rebind the mutable array through the
+same ownership-safe SSA update; immutable arrays and mismatched elements are
+rejected before execution.
+
 ## Text field processing
 
 Elisascript provides a strongly typed compiler-known split operation for the core
