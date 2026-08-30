@@ -551,6 +551,10 @@ It rejects missing digits, trailing characters, and incomplete exponents. The
 matching `format_float(value: f64) -> sview` uses Elisa's `%g`-style canonical
 runtime spelling and keeps the returned text in permanent storage.
 `format_bool(value: bool) -> sview` returns canonical lowercase `true` or `false`.
+The Python-compatible `str(value) -> sview` facade accepts text (identity),
+signed `i64`, `f64`, and `bool`, selecting the corresponding typed formatter
+without implicit aggregate or width conversions. A source function named `str`
+shadows this compiler-known operation.
 
 ## Filesystem capability
 

@@ -689,6 +689,10 @@ the core `%g` spelling into permanent storage before returning its view. These
 opcodes are classified into the packed text dispatch family. `FormatBool` has
 type `Bool -> Text` and emits canonical lowercase `true` or `false`; it is
 classified in the same family and is eligible for the direct bytecode path.
+The Python-compatible `str(value)` facade selects `FormatInt`, `FormatFloat`,
+or `FormatBool` for the corresponding exact scalar type and returns text
+unchanged for text values; aggregates and other integer widths are rejected
+before emission.
 Exact-type `array + array` and `text + text` lower to the semantic `Concat`
 operation rather than numeric `Add`. Array concatenation copies both inputs into
 fresh value storage. Text concatenation copies both byte views into permanent,
