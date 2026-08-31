@@ -476,6 +476,10 @@ nominal `Executable` type for validated runner configurations. It contributes
 `ProcessError` to the enclosing function's error row and rejects empty or
 embedded-NUL names at execution time; every process opcode applies the same NUL
 check to its executable and argument values before constructing C strings.
+The scripting-profile `run_process_with_stdin` facade lowers to a
+`CaptureProcessResult` followed by `ProcessResultExitStatus`, preserving the
+same typed stdin staging and one-shot child execution while exposing only the
+status result.
 `CaptureProcessStdout` has the same operands, effect, and error row, with `Text` as
 its result. Its opcode is handled by the interpreter's exhaustive Elisa dispatch
 machine. Execution redirects only stdout into an anonymous temporary file, reaps

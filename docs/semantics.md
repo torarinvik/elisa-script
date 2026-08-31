@@ -891,6 +891,15 @@ error[ProcessError] can[Process.Run]` starts a process from an explicitly typed
 executable and argument vector. It never inserts a shell: spaces, wildcard characters,
 quotes, and other shell syntax in an argument remain ordinary argument bytes.
 
+`run_process_with_stdin(executable: Executable, arguments: darray[sview],
+input: sview) -> i64 error[ProcessError] can[Process.Run]` is the status-only
+counterpart for commands that consume standard input. It stages the exact
+length-delimited input in a temporary file, executes the same shell-free argv,
+and returns the child's exit status while discarding the captured output. It
+shares the one-shot `ProcessCapture` implementation used by the explicit result
+API, so stdin transport and status behavior remain identical across the
+interpreter and bytecode backend.
+
 The return value is the process exit status. Normal exits produce `0` through `255`;
 signal termination produces `128 + signal`. Failure to create or wait for the process
 raises `ProcessError`. If the executable cannot be resolved, the child exits with
