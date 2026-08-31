@@ -546,6 +546,9 @@ alternatives) are typed against one SSA merge value. Arm bindings are lexical
 and are available to both the guard and the value expression. Expression-form
 structural array matches remain rejected until aggregate result merging is
 available; statement-form structural arrays keep their existing lowering.
+Integer match and range literals accept decimal or hexadecimal spelling, with an
+optional explicit integer suffix; a suffix must exactly match the scrutinee's
+integer type.
 
 ## Structural array matching
 

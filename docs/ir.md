@@ -1231,7 +1231,9 @@ exhaustive arm set and lowers each arm's value expression through a typed
 ordered `|` alternatives are supported; arm bindings remain lexical. Structural
 array expression matches are rejected until aggregate result merging is added,
 while statement-form structural arrays use the `Length`/`Index`/`Slice` path
-described above.
+described above. Integer literal patterns are parsed in decimal or hexadecimal
+form (including a sign), and an explicit `i8`/`u64`/other integer suffix is
+accepted only when it matches the scrutinee type.
 Unlabeled `break` and `continue` resolve through nested loop-target stacks. It produces structured
 lowering issues for every unsupported construct; it never drops a statement or
 expression silently.
