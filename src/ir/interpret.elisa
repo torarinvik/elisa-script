@@ -3181,6 +3181,52 @@ extend EsIr:
                 return runtime_text(bytes_view(bytes))
 
 
+        # Secure temporary paths are created directly through POSIX mkstemp/mkdtemp.
+        # The returned Path is permanent, while the file descriptor from mkstemp is
+        # closed before the operation succeeds; callers own cleanup through the
+        # ordinary typed remove_path/remove_tree operations.
+        def evaluate_create_temporary(machine: mutable Machine&, prefix: RuntimeValue, directory: bool) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+            if prefix.kind != RuntimeValueKind.Text:
+                machine.failure <- InterpretFailure.TypeMismatch
+                return runtime_void()
+            if text_has_nul(prefix.text) or sview_contains_byte(prefix.text, 47) or sview_len(prefix.text) > 4096:
+                machine.failure <- InterpretFailure.FileIo
+                return runtime_void()
+            template_length: usize = 17 + sview_len(prefix.text) + 6
+            template: mutable dstr = ctx_fstr_alloc(template_length + 1)
+            if template.items == null:
+                machine.failure <- InterpretFailure.FileIo
+                return runtime_void()
+            ctx_fstr_append(template, "/tmp/elisascript-", 17)
+            ctx_fstr_append(template, prefix.text.data, sview_len(prefix.text))
+            ctx_fstr_append(template, "XXXXXX", 6)
+            ctx_fstr_append(template, "\0", 1)
+            template.count <- template_length
+            template_items: mutable u8& = template.items
+            if directory:
+                can Blocking.IO, Memory.Allocate:
+                    created: mutable u8&? = elisascript_posix_mkdtemp(template_items)
+                    if created == null:
+                        machine.failure <- InterpretFailure.FileIo
+                        return runtime_void()
+                return runtime_text(bytes_view(template))
+            descriptor: mutable int = 0
+            can Blocking.IO:
+                descriptor <- elisascript_posix_mkstemp(template_items)
+            if descriptor < 0:
+                machine.failure <- InterpretFailure.FileIo
+                return runtime_void()
+            close_status: mutable int = 0
+            can Blocking.IO:
+                close_status <- elisascript_posix_close(descriptor)
+            if close_status != 0:
+                can Blocking.IO:
+                    _ = unlink(template_items)
+                machine.failure <- InterpretFailure.FileIo
+                return runtime_void()
+            return runtime_text(bytes_view(template))
+
+
         def evaluate_path_relative(machine: mutable Machine&, target: RuntimeValue, base: RuntimeValue) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
             if target.kind != RuntimeValueKind.Text or base.kind != RuntimeValueKind.Text:
                 machine.failure <- InterpretFailure.TypeMismatch
@@ -5003,6 +5049,11 @@ extend EsIr:
                             dispatch.value <- evaluate_path_real(machine, path_value)
                             break
 
+                        Dispatch, Opcode.CreateTemporary:
+                            prefix_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
+                            dispatch.value <- evaluate_create_temporary(machine, prefix_value, instruction.integer == 1)
+                            break
+
                         Dispatch, Opcode.PathRelative:
                             target_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
                             base_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1], machine)
@@ -5550,6 +5601,13 @@ extend EsIr:
         def path_real_value(path: sview) -> sview error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             machine: mutable Machine = Machine{steps: 0, step_limit: 1, failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void()}
             value: RuntimeValue = evaluate_path_real(machine, runtime_text(path))
+            try raise_interpret_failure(machine.failure) if machine.failure != InterpretFailure.None
+            return value.text
+
+
+        def create_temporary_value(prefix: sview, directory: bool) -> sview error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+            machine: mutable Machine = Machine{steps: 0, step_limit: 1, failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void()}
+            value: RuntimeValue = evaluate_create_temporary(machine, runtime_text(prefix), directory)
             try raise_interpret_failure(machine.failure) if machine.failure != InterpretFailure.None
             return value.text
 

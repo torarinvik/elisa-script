@@ -632,6 +632,17 @@ when it is missing and updates its timestamps without truncating an existing fil
 It is the typed counterpart to shell `touch`; failures remain `FileIoError` values
 rather than being hidden behind a process invocation.
 
+`temp_file(prefix: sview) -> Path error[FileIoError] can[File.Write]` and
+`temp_directory(prefix: sview) -> Path error[FileIoError] can[File.Write]` create
+secure unique entries under `/tmp` through POSIX `mkstemp` and `mkdtemp`. The
+prefix is optional (`temp_file()`/`temp_directory()`), must not contain `/` or an
+embedded NUL, and is included only in the generated name. `mktemp`, `mkdtemp`, and
+`temp_dir` are equivalent shell/Python-oriented aliases. A temporary file is
+closed before the `Path` is returned; scripts explicitly remove it with
+`remove_path` (or remove the directory with `remove_directory`/`remove_tree`).
+Creation failures remain typed `FileIoError` values and never fall back to a
+stringly shell command.
+
 `chmod(path: Path, mode: u64) -> bool error[FileIoError] can[File.Write]` applies a
 numeric POSIX mode such as `0x180u64` (octal `0600`). It is the typed counterpart to
 shell `chmod` and Python `Path.chmod`; invalid paths or modes remain typed file-I/O
