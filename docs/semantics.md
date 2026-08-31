@@ -1143,6 +1143,15 @@ arguments, exact return types, effect rows, and error contracts; they do not add
 shell flags or recursive/stringly behavior.
 Python `os.getcwd()` and `os.chdir(path)` are typed aliases for the working-directory
 operations, and `os.listdir(path)` is spelled `listdir(path)`.
+Qualified Python namespace spellings are accepted directly in source: the
+`os.path` members above lower to the same canonical path and metadata opcodes,
+while `os.remove`/`os.unlink`, `os.rename`, `os.mkdir`/`os.makedirs`,
+`os.readlink`, and `os.symlink` map to the corresponding typed filesystem
+operations. `shutil.copyfile`/`copy`, `shutil.copytree`, `shutil.rmtree`, and
+`shutil.move` are likewise normalized to `copy_path`, `copy_tree`,
+`remove_tree`, and `move_path`. The namespace roots are compiler-known names,
+but arbitrary dotted calls remain ordinary field expressions and are not
+silently treated as shell commands.
 
 Python `pathlib` file methods are also available on nominal `Path` values:
 `path.read_text()`, `path.read_bytes()`, `path.write_text(text)`,
