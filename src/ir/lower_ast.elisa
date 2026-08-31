@@ -3441,6 +3441,8 @@ extend EsIr:
                                     add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "is_nonempty method takes no arguments")
                                     return LoweredValue{valid: false, value: 0, type: type_from_name("bool")}
                                 return lower_collection_nonempty_expression(Expr.Ident(receiver_name, receiver_pos), pos, state)
+                            if method_name == "contains":
+                                return lower_collection_contains_method(Expr.Ident(receiver_name, receiver_pos), arguments, argument_names, pos, state)
                             if method_name == "count":
                                 return lower_collection_count_expression(Expr.Ident(receiver_name, receiver_pos), arguments, argument_names, pos, state)
                             if method_name == "find":
@@ -3503,6 +3505,8 @@ extend EsIr:
                                     add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "is_nonempty method takes no arguments")
                                     return LoweredValue{valid: false, value: 0, type: type_from_name("bool")}
                                 return lower_collection_nonempty_expression(receiver_expression, pos, state)
+                            if method_name == "contains":
+                                return lower_collection_contains_method(receiver_expression, arguments, argument_names, pos, state)
                             if method_name == "count":
                                 return lower_collection_count_expression(receiver_expression, arguments, argument_names, pos, state)
                             if method_name == "find":
@@ -3575,6 +3579,18 @@ extend EsIr:
                         result: u32 = fresh_value(state)
                         state.instructions.push(Instruction{opcode: Opcode.Length, result: result, result_type: result_type, operand_start: operand_start, operand_count: 1, span: ir_span(pos)})
                         return LoweredValue{valid: true, value: result, type: result_type}
+                    # Shell/Python ports often spell membership as an ordinary
+                    # helper. Keep the collection first in the public API while
+                    # reusing the same typed Contains operation as `needle in
+                    # collection`; the helper remains shadowable by a source
+                    # declaration exactly like the other compiler-known calls.
+                    if callee_name == "contains" and callee_index == state.function_names.count:
+                        result_type: Type = type_from_name("bool")
+                        valid_shape: bool = arguments.count == 2 and (argument_names.count == 0 or (argument_names.count == 2 and argument_names[0] == "" and argument_names[1] == ""))
+                        if not valid_shape:
+                            add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "contains requires a collection and one positional needle")
+                            return LoweredValue{valid: false, value: 0, type: result_type}
+                        return lower_collection_contains_expression(arguments[0], arguments[1], pos, state)
                     # `is_empty(value)` is the shell/Python-friendly zero-length
                     # predicate.  It lowers to the existing typed Length + Equal
                     # pair, preserving exact array/map/text descriptors and the
@@ -5684,6 +5700,41 @@ extend EsIr:
         def lower_text_boundary_method(receiver_name: sview, starts: bool, arguments: darray[Ast::Expr]&, argument_names: darray[sview]&, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
             receiver_pos: Ast::Pos = Ast::Pos{line: pos.line, column: pos.column, offset: pos.offset, end_line: pos.end_line, end_column: pos.end_column, end_offset: pos.end_offset}
             return lower_text_boundary_expression(Expr.Ident(receiver_name, receiver_pos), starts, arguments, argument_names, pos, state)
+
+
+        # Lower membership in the collection-first spelling used by shell and
+        # Python adapters. Arrays compare exact element values, dictionaries
+        # inspect keys, and text accepts either text or a char literal (char
+        # literals are text-backed in the runtime model). The operand order is
+        # normalized to Contains(needle, collection) for the shared verifier
+        # and both execution backends.
+        def lower_collection_contains_expression(collection_expression: Ast::Expr, needle_expression: Ast::Expr, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+            result_type: Type = type_from_name("bool")
+            collection: LoweredValue = lower_expression(collection_expression, state)
+            if not collection.valid or collection.type.kind not in {TypeKind.Array, TypeKind.Map, TypeKind.Text}:
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "contains requires an array, dictionary, or text collection")
+                return LoweredValue{valid: false, value: 0, type: result_type}
+            element_type: Type = map_key_type(collection.type) if collection.type.kind == TypeKind.Map else array_element_type(collection.type)
+            needle: LoweredValue = lower_expression(needle_expression, state)
+            valid_needle: bool = needle.valid and (same_type(needle.type, element_type) if collection.type.kind in {TypeKind.Array, TypeKind.Map} else needle.type.kind in {TypeKind.Char, TypeKind.Text})
+            if not valid_needle:
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "contains needle must match the collection element or dictionary key type")
+                return LoweredValue{valid: false, value: 0, type: result_type}
+            operand_start: u32 = state.operand_pool.count.u32()
+            state.operand_pool.push(needle.value)
+            state.operand_pool.push(collection.value)
+            result: u32 = fresh_value(state)
+            state.instructions.push(Instruction{opcode: Opcode.Contains, result: result, result_type: result_type, operand_start: operand_start, operand_count: 2, span: ir_span(pos)})
+            return LoweredValue{valid: true, value: result, type: result_type}
+
+
+        def lower_collection_contains_method(receiver_expression: Ast::Expr, arguments: darray[Ast::Expr]&, argument_names: darray[sview]&, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+            result_type: Type = type_from_name("bool")
+            valid_shape: bool = arguments.count == 1 and (argument_names.count == 0 or (argument_names.count == 1 and argument_names[0] == ""))
+            if not valid_shape:
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "contains method requires one positional needle")
+                return LoweredValue{valid: false, value: 0, type: result_type}
+            return lower_collection_contains_expression(receiver_expression, arguments[0], pos, state)
 
 
         def lower_text_remove_boundary_expression(receiver_expression: Ast::Expr, starts: bool, arguments: darray[Ast::Expr]&, argument_names: darray[sview]&, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:

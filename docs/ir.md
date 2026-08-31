@@ -876,6 +876,12 @@ opcodes. They compare bytes under the same `sview` contract as indexing and
 regex helpers; an empty prefix or suffix succeeds, while a boundary longer than
 the input fails. Both are pure operations, remain shadowable by a user-defined
 function of the same name, and share the packed bytecode text dispatch family.
+The compiler-known `contains(collection, needle)` helper and
+`collection.contains(needle)` method have type `Array[T] × T -> Bool`,
+`Map[K, V] × K -> Bool`, or `Text × (Text | Char) -> Bool`. They normalize to
+the same `Contains(needle, collection)` instruction used by the binary `in`
+operator, preserving exact element/key typing and single evaluation of both
+operands.
 The compiler-known `replace(text, old, replacement)` operation has type
 `Text × Text × Text -> Text` and lowers to `TextReplace`. It performs left-to-right,
 non-overlapping literal replacement without interpreting `old` as a regex. An

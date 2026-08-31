@@ -182,6 +182,14 @@ The same forms accept Python's `range(stop)`, `range(start, stop)`, and
 `range(start, stop, step)` spellings wherever an integer range query is allowed,
 using the counter directly without constructing an intermediate array.
 
+The compiler-known `contains(collection, needle) -> bool` helper and the
+`collection.contains(needle)` method are typed membership spellings for ports
+that prefer a call over Elisa's `needle in collection` operator. Arrays compare
+exact elements, dictionaries inspect keys, and text accepts `sview` or `char`
+needles. The collection is evaluated before the needle, each operand is
+evaluated once, and both forms lower to the shared `Contains` operation; a
+source declaration named `contains` still shadows the global helper.
+
 ## Text boundary predicates
 
 The compiler-known `starts_with(text, prefix) -> bool` and
