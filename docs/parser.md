@@ -204,4 +204,9 @@ the typed `parse_elisascript_cli` boundary described in the semantics guide.
 - `test/parser/elisa_compat/parser_ast_test.elisa`: copied Elisa AST regression suite
 - `test/parser/elisa_compat/parser_smoke.elisa`: copied parser embedding/codegen surface
 
-Current result: 103 parser tests pass—100 inherited and 3 Elisascript-specific.
+The parser suites remain the authoritative regression checks, but compiler
+execution and the resulting test-count claim are intentionally deferred while
+the host safety guard keeps validation loops disabled. When validation is
+explicitly reauthorized, use the pinned local compiler and bounded wrappers
+described in `docs/development.md` rather than an installed or main-worktree
+binary.

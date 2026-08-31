@@ -85,10 +85,8 @@ existing comments source-compatible.
 - `test/lexer/elisa_compat/lexer_machine_state_test.elisa` retains the copied Elisa
   machine-state regression tests and their lexer fixtures.
 
-Run both with the current Elisa compiler:
-
-```text
-ELISA_LOCAL_COMPILER="../../Go projects/structpy-tree/compiler/bin/elisac"
-"$ELISA_LOCAL_COMPILER" -emit test test/lexer/elisascript_lexer_test.elisa
-"$ELISA_LOCAL_COMPILER" -emit test test/lexer/elisa_compat/lexer_machine_state_test.elisa
-```
+Compiler execution for these suites is intentionally deferred while the host
+safety guard keeps validation loops disabled. When validation is explicitly
+reauthorized, use the pinned local compiler and bounded wrappers described in
+`docs/development.md`; do not run an unguarded installed or main-worktree
+compiler binary.
