@@ -242,7 +242,9 @@ comments.
 explicit search machine with greedy backtracking; future bytecode, JIT, and native
 lowerings therefore share the operation contract without inheriting a host
 language's regex behavior. Character ranges and Perl-style shorthand classes have
-fixed ASCII definitions rather than platform locale semantics. Top-level
+fixed ASCII definitions rather than platform locale semantics. Zero-width word
+boundaries (`\b`/`\B`) detect ASCII word/non-word transitions, and bounded
+repetitions (`{m}`, `{m,n}`, `{m,}`) use decimal, non-decreasing limits. Top-level
 alternation is split only at unescaped pipes outside character classes, and each
 branch runs through the same bounded matcher states. Parenthesized groups are
 matched recursively, including nested alternation and quantifiers. Perl-style

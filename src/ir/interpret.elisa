@@ -499,6 +499,14 @@ extend EsIr:
             found: bool
 
 
+        struct RegexQuantifier:
+            end: usize
+            minimum: usize
+            maximum: usize
+            found: bool
+            unbounded: bool
+
+
         def decimal_class(parser: DecimalParser&) -> DecimalClass:
             return DecimalClass.Other if parser.index >= sview_len(parser.text)
             byte: u8 = sview_at(parser.text, parser.index)
@@ -1952,6 +1960,39 @@ extend EsIr:
             return regex_atom_width_until(pattern, pattern_index, sview_len(pattern))
 
 
+        # Parse a bounded repetition suffix beginning at `{`.  Invalid, reversed,
+        # or unterminated bounds are left as literal pattern text so malformed
+        # patterns cannot silently acquire a different meaning.  Large decimal
+        # bounds saturate at pattern length + 1; no input can require more repeats
+        # than that sentinel in the matcher.
+        def regex_braced_quantifier(pattern: sview, pattern_index: usize, pattern_end: usize) -> RegexQuantifier:
+            invalid: RegexQuantifier = RegexQuantifier{end: pattern_index, minimum: 0, maximum: 0, found: false, unbounded: false}
+            return invalid if pattern_index >= pattern_end or sview_at(pattern, pattern_index) != 123
+            cursor: mutable usize = pattern_index + 1
+            return invalid if cursor >= pattern_end or sview_at(pattern, cursor) < 48 or sview_at(pattern, cursor) > 57
+            minimum: mutable usize = 0
+            while cursor < pattern_end and sview_at(pattern, cursor) >= 48 and sview_at(pattern, cursor) <= 57:
+                digit: usize = (sview_at(pattern, cursor) - 48).usize()
+                minimum <- minimum * 10 + digit if minimum <= pattern_end
+                minimum <- pattern_end + 1 if minimum > pattern_end
+                cursor <- cursor + 1
+            if cursor < pattern_end and sview_at(pattern, cursor) == 125:
+                return RegexQuantifier{end: cursor + 1, minimum: minimum, maximum: minimum, found: true, unbounded: false}
+            return invalid if cursor >= pattern_end or sview_at(pattern, cursor) != 44
+            cursor <- cursor + 1
+            if cursor < pattern_end and sview_at(pattern, cursor) == 125:
+                return RegexQuantifier{end: cursor + 1, minimum: minimum, maximum: pattern_end + 1, found: true, unbounded: true}
+            return invalid if cursor >= pattern_end or sview_at(pattern, cursor) < 48 or sview_at(pattern, cursor) > 57
+            maximum: mutable usize = 0
+            while cursor < pattern_end and sview_at(pattern, cursor) >= 48 and sview_at(pattern, cursor) <= 57:
+                digit: usize = (sview_at(pattern, cursor) - 48).usize()
+                maximum <- maximum * 10 + digit if maximum <= pattern_end
+                maximum <- pattern_end + 1 if maximum > pattern_end
+                cursor <- cursor + 1
+            return invalid if cursor >= pattern_end or sview_at(pattern, cursor) != 125 or maximum < minimum
+            return RegexQuantifier{end: cursor + 1, minimum: minimum, maximum: maximum, found: true, unbounded: false}
+
+
         def regex_branch_end_until(pattern: sview, branch_start: usize, pattern_end: usize) -> usize:
             cursor: mutable usize = branch_start
             class_depth: mutable usize = 0
@@ -2021,11 +2062,13 @@ extend EsIr:
             return -1 if width == 0
             next: mutable usize = pattern_index + width
             quantifier: u8 = sview_at(pattern, next) if next < pattern_end else 0
+            bounded: RegexQuantifier = regex_braced_quantifier(pattern, next, pattern_end) if quantifier == 123 else RegexQuantifier{end: next, minimum: 0, maximum: 0, found: false, unbounded: false}
+            has_quantifier: bool = quantifier in {42, 43, 63} or bounded.found
             # A group can have several valid endpoints at the same input
             # position (for example `(a|ab)`). Match each branch together with
             # the surrounding suffix so a failed suffix re-enters the next
             # branch instead of committing to the first endpoint too early.
-            if sview_at(pattern, pattern_index) == 40 and quantifier not in {42, 43, 63}:
+            if sview_at(pattern, pattern_index) == 40 and not has_quantifier:
                 group_end: usize = pattern_index + width - 1
                 branch_start: mutable usize = regex_group_content_start(pattern, pattern_index, group_end)
                 while branch_start < group_end:
@@ -2043,6 +2086,9 @@ extend EsIr:
                 minimum: usize = 0 if quantifier == 42 or quantifier == 63 else 1
                 maximum: usize = 1 if quantifier == 63 else sview_len(text) - text_index + 1
                 return regex_repeat_segment_end(pattern, pattern_index, next, next + 1, pattern_end, text, text_index, minimum, maximum, 0)
+            if bounded.found:
+                maximum: usize = sview_len(text) - text_index + 1 if bounded.unbounded else bounded.maximum
+                return regex_repeat_segment_end(pattern, pattern_index, next, bounded.end, pattern_end, text, text_index, bounded.minimum, maximum, 0)
             endpoint: i64 = regex_atom_match_end(pattern, pattern_index, next, text, text_index)
             return -1 if endpoint < 0
             return regex_match_segment_end(pattern, next, pattern_end, text, endpoint.usize())
@@ -2124,7 +2170,7 @@ extend EsIr:
                     ends.push(cursor)
                     group_depth <- group_depth - 1
                     quantifier_index: usize = cursor + 1
-                    return false if quantifier_index < sview_len(pattern) and sview_at(pattern, quantifier_index) in {42, 43, 63}
+                    return false if quantifier_index < sview_len(pattern) and (sview_at(pattern, quantifier_index) in {42, 43, 63} or regex_braced_quantifier(pattern, quantifier_index, sview_len(pattern)).found)
                 cursor <- cursor + 1
             return group_depth == 0 and not top_level_alternation and opens.count == starts.count and starts.count == ends.count and ends.count == names.count
 
