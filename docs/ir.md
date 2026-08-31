@@ -658,8 +658,9 @@ fallback on successful reads.
 `Named(Path) -> Bool` with `Directory.Write` and `DirectoryError`.
 The legacy `CreateDirectory` form takes one path operand. `Path.mkdir` may use
 the extended three-operand form `Named(Path) × Bool × Bool -> Bool`, where the
-second operand is `parents` and the third is `exist_ok`; both controls remain
-runtime-typed and preserve the same effect/error row.
+second operand is `parents` and the third is `exist_ok`, or the four-operand
+form `Named(Path) × u64 × Bool × Bool -> Bool`, which adds the permission mode.
+All controls remain runtime-typed and preserve the same effect/error row.
 `CreateDirectories` recursively creates missing parent components and accepts
 already-existing directory components, matching `mkdir -p`/`os.makedirs` while
 keeping the same typed contract.

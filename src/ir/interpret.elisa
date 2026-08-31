@@ -4334,7 +4334,7 @@ extend EsIr:
             return runtime_bool(true)
 
 
-        def create_directories_entry(machine: mutable Machine&, path: sview, depth: usize) -> bool can[Memory.Allocate, Abort.Panic]:
+        def create_directories_entry(machine: mutable Machine&, path: sview, depth: usize, mode: int) -> bool can[Memory.Allocate, Abort.Panic]:
             if depth > 128:
                 machine.failure <- InterpretFailure.Directory
                 return false
@@ -4354,9 +4354,9 @@ extend EsIr:
                     return false
             parent: sview = path_parent_value(path)
             if sview_len(parent) > 0 and parent != path:
-                return false if not create_directories_entry(machine, parent, depth + 1)
+                return false if not create_directories_entry(machine, parent, depth + 1, mode)
             can Blocking.IO:
-                if elisascript_posix_mkdir(path_items.cast[cstr], 493) == 0:
+                if elisascript_posix_mkdir(path_items.cast[cstr], mode) == 0:
                     return true
                 # A concurrent creator may have installed the directory after
                 # the initial stat; accept that race only when it is truly a dir.
@@ -4370,16 +4370,18 @@ extend EsIr:
             if path.kind != RuntimeValueKind.Text:
                 machine.failure <- InterpretFailure.TypeMismatch
                 return runtime_void()
-            return runtime_bool(create_directories_entry(machine, path.text, 0))
+            return runtime_bool(create_directories_entry(machine, path.text, 0, 493))
 
 
-        # Path.mkdir exposes Python's two useful directory controls without
-        # introducing a stringly mode argument. `parents` selects recursive
-        # creation; `exist_ok` accepts an already-existing directory. The
-        # legacy one-operand CreateDirectory form passes both controls false.
-        def evaluate_path_mkdir(machine: mutable Machine&, path: RuntimeValue, parents: RuntimeValue, exist_ok: RuntimeValue) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
-            if path.kind != RuntimeValueKind.Text or parents.kind != RuntimeValueKind.Bool or exist_ok.kind != RuntimeValueKind.Bool:
+        # Path.mkdir mirrors Python's typed mode, parents, and exist_ok controls.
+        # The legacy one-operand CreateDirectory form supplies mode 493 and both
+        # boolean controls false.
+        def evaluate_path_mkdir(machine: mutable Machine&, path: RuntimeValue, mode: RuntimeValue, parents: RuntimeValue, exist_ok: RuntimeValue) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+            if path.kind != RuntimeValueKind.Text or mode.kind != RuntimeValueKind.Int or parents.kind != RuntimeValueKind.Bool or exist_ok.kind != RuntimeValueKind.Bool:
                 machine.failure <- InterpretFailure.TypeMismatch
+                return runtime_void()
+            if mode.integer < 0 or mode.integer > 4095:
+                machine.failure <- InterpretFailure.Directory
                 return runtime_void()
             if sview_len(path.text) == 0 or text_has_nul(path.text):
                 machine.failure <- InterpretFailure.Directory
@@ -4397,7 +4399,7 @@ extend EsIr:
                 if final_exists and not exist_ok.boolean:
                     machine.failure <- InterpretFailure.Directory
                     return runtime_void()
-                return runtime_bool(create_directories_entry(machine, path.text, 0))
+                return runtime_bool(create_directories_entry(machine, path.text, 0, mode.integer.i32()))
             c_path: dstr = nul_terminated_text(path.text)
             if c_path.items == null:
                 machine.failure <- InterpretFailure.Directory
@@ -4406,7 +4408,7 @@ extend EsIr:
             status: mutable int = -1
             info: mutable ElisascriptStat = zeroed
             can Blocking.IO:
-                status <- elisascript_posix_mkdir(path_items.cast[cstr], 493)
+                status <- elisascript_posix_mkdir(path_items.cast[cstr], mode.integer.i32())
                 if status != 0 and exist_ok.boolean and elisascript_posix_stat(path_items.cast[cstr], info) == 0:
                     status <- 0 if (info.mode & ELISASCRIPT_STAT_MODE_MASK) == ELISASCRIPT_STAT_MODE_DIRECTORY else status
             if status != 0:
@@ -5897,12 +5899,17 @@ extend EsIr:
 
                         Dispatch, Opcode.CreateDirectory:
                             path_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
+                            mode_value: RuntimeValue = runtime_int(493)
                             parents_value: RuntimeValue = runtime_bool(false)
                             exist_ok_value: RuntimeValue = runtime_bool(false)
                             if instruction.operand_count == 3:
                                 parents_value <- frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1], machine)
                                 exist_ok_value <- frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 2], machine)
-                            dispatch.value <- evaluate_path_mkdir(machine, path_value, parents_value, exist_ok_value)
+                            if instruction.operand_count == 4:
+                                mode_value <- frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1], machine)
+                                parents_value <- frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 2], machine)
+                                exist_ok_value <- frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 3], machine)
+                            dispatch.value <- evaluate_path_mkdir(machine, path_value, mode_value, parents_value, exist_ok_value)
                             break
 
                         Dispatch, Opcode.RemoveDirectory | Opcode.ChangeDirectory:
@@ -6674,14 +6681,14 @@ extend EsIr:
 
         def create_directory_value(path: sview) -> bool error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             machine: mutable Machine = Machine{steps: 0, step_limit: 1, failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void()}
-            value: RuntimeValue = evaluate_path_mkdir(machine, runtime_text(path), runtime_bool(false), runtime_bool(false))
+            value: RuntimeValue = evaluate_path_mkdir(machine, runtime_text(path), runtime_int(493), runtime_bool(false), runtime_bool(false))
             try raise_interpret_failure(machine.failure) if machine.failure != InterpretFailure.None
             return value.boolean
 
 
-        def path_mkdir_value(path: sview, parents: bool, exist_ok: bool) -> bool error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+        def path_mkdir_value(path: sview, mode: i64, parents: bool, exist_ok: bool) -> bool error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             machine: mutable Machine = Machine{steps: 0, step_limit: 1, failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void()}
-            value: RuntimeValue = evaluate_path_mkdir(machine, runtime_text(path), runtime_bool(parents), runtime_bool(exist_ok))
+            value: RuntimeValue = evaluate_path_mkdir(machine, runtime_text(path), runtime_int(mode), runtime_bool(parents), runtime_bool(exist_ok))
             try raise_interpret_failure(machine.failure) if machine.failure != InterpretFailure.None
             return value.boolean
 
