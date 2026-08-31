@@ -12,13 +12,18 @@ All eight files under `vendor/elisa-compiler/src/lexer` are required:
 - `tokens.elisa`: token and lexer state model
 - `lexer_core.elisa`: indentation, identifiers, Unicode, and suffix primitives
 - `lexer_identifiers.elisa`: keyword classification
-- `lexer_numbers.elisa`: integer, float, hexadecimal, and numeric suffix scanning
+- `lexer_numbers.elisa`: integer, binary/octal/hexadecimal, float, separator, and numeric suffix scanning
 - `lexer_strings.elisa`: strings, characters, and interpolated strings
 - `lexer_comments.elisa`: comments, line directives, and Elisascript shebangs
 - `lexer_tokens.elisa`: token dispatch, operators, and public tokenization entry points
 
 No lexer source was removed during the initial reduction because every file is in
 the `lexer.elisa` include closure and each owns language behavior Elisascript keeps.
+
+Integer scanning accepts decimal, binary (`0b`/`0B`), octal (`0o`/`0O`), and
+hexadecimal (`0x`/`0X`) prefixes. Underscores are retained inside the numeric
+token for the parser's base-aware decoder; binary and octal out-of-base digits
+produce one bounded error token instead of being split into unrelated tokens.
 
 ## Elisascript adaptation
 
