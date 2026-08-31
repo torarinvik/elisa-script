@@ -359,6 +359,10 @@ retain identical deterministic matching behavior.
 `capture_regex(text, pattern)`, returning the complete first match followed by
 the same conservatively proven capture fields.
 
+`pattern.split(text)` is the receiver spelling of
+`split_regex(text, pattern)`, preserving empty fields and the explicit
+zero-width progress rule.
+
 `pattern.sub(replacement, text)` is the Python-shaped receiver spelling of
 `replace_regex(text, pattern, replacement)`. Its replacement and haystack are
 both `sview`, and capture-expansion tokens follow the same deterministic
