@@ -1,10 +1,14 @@
 # Elisascript development builds
 
 Use the compiler built from the local Elisa-core checkout when changing stage0 or
-stage1 compiler code. Validation must go through the checked-in process-tree
-watchdog, which pins the compiler path and accounts for child processes:
+stage1 compiler code. Validation is currently fail-closed after an RSS incident:
+the checked-in process-tree watchdog refuses to launch unless the user explicitly
+sets `ELISASCRIPT_VALIDATION_REAUTHORIZED=1`. Do not set that override without a
+small, bounded repro and an explicit decision to resume validation. When validation
+is authorized, use the local compiler path and watchdog:
 
 ```sh
+ELISASCRIPT_VALIDATION_REAUTHORIZED=1 \
 ELISA_LOCAL_COMPILER="/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac" \
 scripts/run_bounded_lowering.sh test/ir/elisascript_lowering_test.elisa
 ```
@@ -24,14 +28,16 @@ sources change, then rerun the Elisascript suites from this checkout.
 
 For a reusable guard instead of an inline shell function, run
 `scripts/run_bounded_lowering.sh test/ir/elisascript_lowering_test.elisa` from
-this repository. It accepts one or more small fixtures, refuses any compiler
-path outside the pinned StructPy checkout, and uses the same 1,800,000 KB RSS and
-120-second defaults. The limits can only be changed explicitly with
+this repository after explicit reauthorization. It accepts one or more small
+fixtures, refuses any compiler path outside the pinned StructPy checkout, and
+uses a 524,288 KB RSS ceiling with a 120-second timeout by default. The limits
+can only be changed explicitly with
 `ELISASCRIPT_RSS_LIMIT_KB` and `ELISASCRIPT_TIME_LIMIT_SECONDS`.
 
 Executable fixtures use the matching process-tree guard:
 
 ```sh
+ELISASCRIPT_VALIDATION_REAUTHORIZED=1 \
 ELISA_LOCAL_COMPILER="/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac" \
 scripts/run_bounded_test.sh test/driver/elisascript_bounded_test_smoke.elisascript
 ```
