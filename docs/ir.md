@@ -932,9 +932,12 @@ function error row. Its state-machine parser accepts only an optional sign and
 ASCII decimal digits, checks signed 64-bit overflow before each accumulation, and
 raises `InterpretError.InvalidNumber` for malformed or out-of-range input. The
 compiler-known `parse_int` call lowers to this opcode. `FormatInt` has type
-`Int(signed, 64) -> Text`; it uses Elisa's permanent string runtime so the returned
-view remains valid after the instruction and is eligible for the direct bytecode
-path without introducing a shell or host-language conversion.
+`Int(any width/sign) -> Text`; it uses Elisa's permanent string runtime so the
+returned view remains valid after the instruction and is eligible for the direct
+bytecode path without introducing a shell or host-language conversion. The
+explicit `format_int` builtin remains the checked signed-`i64` spelling; broader
+integer output is selected by `str`, f-strings, and `print` without changing the
+value's static type.
 `ParseFloat` has type `Text -> Float(64)` and shares the `ParseError` row. Its
 validation machine requires a decimal mantissa and, when present, a complete
 exponent before invoking the shared decimal evaluator; malformed input therefore
@@ -955,7 +958,8 @@ and are copied into the text result without implicit widening elsewhere.
 corresponding `Format*` operations. The Python-compatible `str(value)` facade
 selects `FormatInt`, `FormatFloat`, `FormatBool`, `FormatNominal`, or
 `FormatAggregate` for the corresponding exact type and returns text unchanged
-for text values; other integer widths are rejected before emission. Nominal and
+for text values; all integer widths use `FormatInt` without implicit numeric
+coercion. Nominal and
 aggregate conversion is explicit at this boundary rather than an implicit
 coercion elsewhere. Binary ordering (`Less`, `LessEqual`, `Greater`,
 `GreaterEqual`) accepts exact numeric types as before and also exact `Text`/`Char`
