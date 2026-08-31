@@ -138,8 +138,10 @@ text families. They compare the exact typed `Length` result with zero, making th
 shell `test -z` and Python emptiness check explicit without introducing general
 truthiness coercions.
 The complementary `is_nonempty(value)`/`nonempty(value)` spellings and receiver
-methods lower to the same check followed by typed boolean negation, corresponding
-to shell `test -n`.
+methods lower to the same check followed by typed boolean negation for arrays,
+dictionaries, and text, corresponding to shell `test -n`. A nominal `Path`
+argument selects the filesystem form described below (`FileSize > 0`) while
+retaining the exact `File.Read`/`FileIoError` contract.
 
 The compiler-known `abs(value)` builtin accepts a signed integer or `f64` and
 returns the same exact static type. It evaluates its argument once, then uses a
@@ -770,7 +772,8 @@ returns the POSIX inode-change timestamp (`st_ctime` on POSIX), and
 `os.path.getctime` is its typed alias. Both remain distinct from modification
 time while preserving the signed `i64`/`File.Read`/`FileIoError` contract.
 
-`is_nonempty(path: Path) -> bool error[FileIoError] can[File.Read]` is the typed
+`is_nonempty(path: Path) -> bool error[FileIoError] can[File.Read]` (also available
+as `path.is_nonempty()`) is the typed
 counterpart to shell `test -s` and the common Python `Path.stat().st_size > 0`
 check. It returns `false` for an existing empty file, `true` for any entry with a
 positive `st_size`, and preserves `FileIoError` for missing or invalid paths.
