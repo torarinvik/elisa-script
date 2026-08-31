@@ -491,9 +491,9 @@ raised variants continue through the enclosing `error[...]` contract. Payload
 construction is supported with the same enum-constructor arity and type checks as
 ordinary error values: `raise Family.Tag(value, ...)` evaluates each payload once
 in source order and carries it through the interpreter's failure channel. A
-catch-all arm may still terminate with `return` after the ordinary function
-return-type check; terminating explicit-variant arms remain deferred. The guarded
-expression is evaluated once, with a lazy fallback and a typed state-machine merge.
+catch-all and explicit-variant arms may terminate with `return` after the ordinary
+function return-type check. The guarded expression is evaluated once, with a lazy
+fallback and a typed state-machine merge.
 
 For early propagation, the fallback may be a terminating clause:
 
@@ -1117,8 +1117,8 @@ and an uncaught raise exits through the ordinary checked error channel as
 `InterpretError.Raised`. An explicit `Family.Tag` catch arm selects the matching
 raised identity; wildcard and `error` arms remain catch-all. Constructor payloads
 are evaluated once in source order and preserved during interpreter unwinding.
-Positional variant bindings extract those values with their declared static types;
-terminating explicit-variant arms remain deferred.
+Positional variant bindings extract those values with their declared static types,
+including when the variant arm terminates with `return`.
 
 `run_process(executable: Executable, arguments: darray[sview]) -> i64
 error[ProcessError] can[Process.Run]` starts a process from an explicitly typed

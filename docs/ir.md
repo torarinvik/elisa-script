@@ -183,8 +183,8 @@ must match the declared payload arity and lower to typed `ErrorPayload` instruct
 for bindings (wildcards discard the corresponding value). Wildcard and `error`
 arms remain catch-all for built-in failures and any raised variant. A raised
 constructor may carry zero or more ordered SSA operands; the reference interpreter
-snapshots those runtime values in its failure channel while unwinding. Terminating
-explicit-variant arms remain deferred.
+snapshots those runtime values in its failure channel while unwinding. Variant
+arms may terminate their fallback block after normal return-type checking.
 
 `panic([message])` lowers to a void `Panic` instruction with `Abort.Panic` effect
 metadata and zero or one evaluated operand. Unlike `Raise`, `Panic` is not an
@@ -426,7 +426,7 @@ arity and lower to typed `ErrorPayload` instructions. Both arm expressions must
 have the guarded call's exact type. `Raise` itself carries ordered payload
 operands, and the interpreter preserves those values while unwinding. A single
 error arm may instead use `return` and terminate its fallback block after normal
-return-type checking; terminating explicit-variant arms remain deferred.
+return-type checking, including an explicit variant arm that binds payloads.
 `PathExists` is the first concrete filesystem opcode. Its verified signature is
 `Named(Path) -> Bool`, and verification also requires `File.Read` in the containing
 function's effect row. Lowering adds that effect automatically. The interpreter
