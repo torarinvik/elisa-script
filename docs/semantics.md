@@ -221,8 +221,10 @@ The compiler-known `lower(text) -> sview` and `upper(text) -> sview` operations,
 as well as the Python-shaped `text.lower()` and `text.upper()` method spellings,
 perform deterministic ASCII case conversion. ASCII letters are folded and all
 other UTF-8 bytes pass through unchanged; this byte-oriented rule avoids locale
-dependence or malformed Unicode transformations. The operations are pure,
-shadowable (for the global spellings), and return owned text.
+dependence or malformed Unicode transformations. `casefold(text)` and
+`text.casefold()` are explicit aliases for the same ASCII lowercasing operation;
+they do not claim full Unicode case-folding. The operations are pure, shadowable
+(for the global spellings), and return owned text.
 
 The compiler-known `split_lines(text) -> darray[sview]` (also accepted as
 `splitlines(text)`) and the Python-shaped `text.splitlines()`/`text.split_lines()`
