@@ -128,6 +128,15 @@ source order and become its typed operand slice.
 The function effect row may grant the complete operation or its family. Every
 perform receives a stable source-derived trace identity.
 
+Value-producing effect requests use the compiler-known
+`perform("Family.Operation", payload)` intrinsic in an expected-type position,
+for example `return perform("Process.Run", command)`. The lowerer requires a
+string-literal `Family.Operation` reference, uses the surrounding destination
+type as the resumed result type, and emits a result-bearing `Perform` with the
+optional typed payload. The referenced operation is added to the function's
+effect row unless an active dynamic handler covers its family; malformed or
+untyped uses are lowering diagnostics rather than implicit dynamic values.
+
 ## Differential testing
 
 `Perform` and `Observe` require stable, nonzero trace-site ids. These ids are

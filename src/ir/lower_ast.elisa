@@ -5851,7 +5851,55 @@ extend EsIr:
                     return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
 
 
+        # `perform("Family.Operation", payload)` is the value-producing sibling
+        # of the Elisa `signal` statement.  The expected destination type supplies
+        # the operation result type, while the effect reference and payload remain
+        # explicit and statically checked.  Keeping this intrinsic in the
+        # expected-type path prevents an untyped result from leaking into ordinary
+        # expression lowering.
+        def lower_perform_expression(arguments: darray[Ast::Expr]&, argument_names: darray[sview]&, expected: Type&, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+            if expected.kind == TypeKind.Void:
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "perform requires a non-void destination type")
+                return LoweredValue{valid: false, value: 0, type: expected}
+            valid_shape: bool = (arguments.count == 1 or arguments.count == 2) and (argument_names.count == 0 or all name in argument_names where name == "")
+            if not valid_shape:
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "perform requires an effect reference and at most one positional payload")
+                return LoweredValue{valid: false, value: 0, type: expected}
+            reference: mutable sview = ""
+            match arguments[0]:
+                Expr.StringLit(value):
+                    reference <- value
+                _:
+                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "perform effect reference must be a string literal")
+                    return LoweredValue{valid: false, value: 0, type: expected}
+            family: sview = effect_family(reference)
+            operation: sview = effect_operation(reference)
+            if family == reference or operation == "signal" or family == "":
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "perform effect reference must use `Family.Operation` form")
+                return LoweredValue{valid: false, value: 0, type: expected}
+            payload: mutable LoweredValue = LoweredValue{valid: true, value: 0, type: void_ir_type()}
+            if arguments.count == 2:
+                payload <- lower_expression(arguments[1], state)
+                if not payload.valid:
+                    return LoweredValue{valid: false, value: 0, type: expected}
+            if not active_handler_covers(state.active_handlers, state.handlers, family) and not effect_granted(state.required_effects, reference):
+                state.required_effects.push(reference)
+            operand_start: u32 = state.operand_pool.count.u32()
+            operand_count: u16 = 0
+            if arguments.count == 2:
+                state.operand_pool.push(payload.value)
+                operand_count <- 1
+            result: u32 = fresh_value(state)
+            state.instructions.push(Instruction{opcode: Opcode.Perform, result: result, result_type: expected, operand_start: operand_start, operand_count: operand_count, effect_family: family, effect_operation: operation, trace: trace_site(state, reference, pos), span: ir_span(pos)})
+            return LoweredValue{valid: true, value: result, type: expected}
+
+
         def lower_expression_expected(expression: Ast::Expr, expected: Type&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+            match expression:
+                Expr.Call(Expr.Ident(name, _), arguments, argument_names, pos) if name == "perform" and lowered_function_index(state, name) == state.function_names.count:
+                    return lower_perform_expression(arguments, argument_names, expected, pos, state)
+                _:
+                    pass
             match expression:
                 Expr.Array(elements, pos):
                     if expected.kind == TypeKind.Array:

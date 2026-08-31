@@ -145,6 +145,11 @@ ABI gains a dedicated signal node, the arguments are stored as ordered expressio
 statements in `Stmt.Block("signal", ...)`; existing semantic block visitors therefore
 resolve and type-check them without a parallel traversal.
 
+Value-producing effects remain ordinary call-shaped parser nodes. The IR lowerer
+recognizes `perform("Family.Operation", payload)` only where an expected result
+type is available, preserving Elisa's expression grammar while keeping the
+effect reference and result type statically visible.
+
 ## Deferred parser work
 
 The following features belong to later, explicitly designed changes:
