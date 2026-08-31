@@ -29,6 +29,17 @@ path outside the pinned StructPy checkout, and uses the same 1,800,000 KB RSS an
 120-second defaults. The limits can only be changed explicitly with
 `ELISASCRIPT_RSS_LIMIT_KB` and `ELISASCRIPT_TIME_LIMIT_SECONDS`.
 
+Executable fixtures use the matching process-tree guard:
+
+```sh
+ELISA_LOCAL_COMPILER="/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac" \
+scripts/run_bounded_test.sh test/driver/elisascript_bounded_test_smoke.elisascript
+```
+
+This wrapper invokes `-emit test` and applies the same RSS and timeout limits.
+Keep executable repros small and bounded; do not send a large interpreter fixture
+through the test emitter after an RSS incident.
+
 Elisascript source files use the `.elisascript` extension. The canonical source
 loader and runner tests should be the first checks after a compiler rebuild because
 they exercise parsing, semantic checking, lowering, verification, and execution

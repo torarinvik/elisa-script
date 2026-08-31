@@ -1,0 +1,91 @@
+#!/bin/sh
+
+# Run one or more small Elisascript test fixtures with the local StructPy
+# compiler. This wrapper is deliberately separate from run_bounded_lowering.sh:
+# executable test fixtures may run user code, so they need the same process-tree
+# RSS guard before they are allowed on a development host.
+
+set -u
+
+default_compiler="$(CDPATH= cd -- "$(dirname -- "$0")/../../../Go projects/structpy-tree/compiler/bin" && pwd)/elisac"
+compiler="${ELISA_LOCAL_COMPILER:-${ELISACORE_BIN:-$default_compiler}}"
+case "$compiler" in
+    *"/Go projects/structpy-tree/compiler/bin/elisac") ;;
+    *)
+        echo "run_bounded_test: refusing compiler outside Go projects/structpy-tree/compiler/bin/elisac" >&2
+        exit 2
+        ;;
+esac
+
+if [ "$#" -eq 0 ]; then
+    echo "usage: run_bounded_test.sh SOURCE_TEST.elisascript [...]" >&2
+    exit 2
+fi
+
+process_tree_pids() {
+    process_tree_root="$1"
+    echo "$process_tree_root"
+    for process_tree_child in $(pgrep -P "$process_tree_root" 2>/dev/null); do
+        (process_tree_pids "$process_tree_child")
+    done
+}
+
+process_tree_rss_kb() {
+    process_tree_total=0
+    for process_tree_pid in $(process_tree_pids "$1"); do
+        process_tree_rss="$(ps -o rss= -p "$process_tree_pid" 2>/dev/null | awk '{print $1}')"
+        if [ -n "$process_tree_rss" ]; then
+            process_tree_total=$((process_tree_total + process_tree_rss))
+        fi
+    done
+    echo "$process_tree_total"
+}
+
+kill_process_tree() {
+    for process_tree_pid in $(process_tree_pids "$1"); do
+        kill -TERM "$process_tree_pid" 2>/dev/null || true
+    done
+    sleep 1
+    for process_tree_pid in $(process_tree_pids "$1"); do
+        kill -KILL "$process_tree_pid" 2>/dev/null || true
+    done
+}
+
+rss_limit_kb="${ELISASCRIPT_RSS_LIMIT_KB:-1800000}"
+time_limit_seconds="${ELISASCRIPT_TIME_LIMIT_SECONDS:-120}"
+
+for source_file in "$@"; do
+    log_file="$(mktemp "${TMPDIR:-/tmp}/elisascript-test.XXXXXX")"
+    "$compiler" -O0 -emit test "$source_file" >"$log_file" 2>&1 &
+    compiler_pid=$!
+    started_at="$(date +%s)"
+    rss_guard=0
+    timeout_guard=0
+    compiler_exit=0
+
+    while kill -0 "$compiler_pid" 2>/dev/null; do
+        rss_kb="$(process_tree_rss_kb "$compiler_pid")"
+        if [ "$rss_kb" -gt "$rss_limit_kb" ]; then
+            rss_guard=1
+            kill_process_tree "$compiler_pid"
+            break
+        fi
+
+        now="$(date +%s)"
+        if [ "$((now - started_at))" -gt "$time_limit_seconds" ]; then
+            timeout_guard=1
+            kill_process_tree "$compiler_pid"
+            break
+        fi
+        sleep 1
+    done
+
+    wait "$compiler_pid" 2>/dev/null || compiler_exit=$?
+    echo "$source_file exit=$compiler_exit rss_guard=$rss_guard timeout_guard=$timeout_guard"
+    if [ "$compiler_exit" -ne 0 ] || [ "$rss_guard" -ne 0 ] || [ "$timeout_guard" -ne 0 ]; then
+        tail -80 "$log_file"
+        rm -f "$log_file"
+        exit 1
+    fi
+    rm -f "$log_file"
+done
