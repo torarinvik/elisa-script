@@ -761,7 +761,8 @@ hide a mismatch.
 ## Numeric text conversion
 
 `parse_int(text) -> i64 error[ParseError]` accepts an optional leading `+` or `-`
-followed by one or more ASCII decimal digits. It rejects whitespace, empty input,
+followed by one or more ASCII decimal digits; underscores may separate adjacent
+decimal digits. It rejects whitespace, empty input,
 trailing characters, and values outside signed 64-bit range through `ParseError`;
 the failure is never represented as a sentinel integer. `format_int(value: i64) ->
 sview` produces the canonical base-10 spelling, including `-0` normalization to

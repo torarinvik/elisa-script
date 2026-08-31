@@ -1021,7 +1021,8 @@ byte-oriented boundary predicates and nonmatching/empty boundaries return the
 original view.
 `ParseInt` has type `Text -> Int(signed, 64)` and requires `ParseError` in the
 function error row. Its state-machine parser accepts only an optional sign and
-ASCII decimal digits, checks signed 64-bit overflow before each accumulation, and
+ASCII decimal digits (with underscores only between adjacent digits), checks
+signed 64-bit overflow before each accumulation, and
 raises `InterpretError.InvalidNumber` for malformed or out-of-range input. The
 compiler-known `parse_int` call lowers to this opcode. `FormatInt` has type
 `Int(any width/sign) -> Text`; it uses Elisa's permanent string runtime so the
