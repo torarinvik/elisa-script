@@ -1210,8 +1210,10 @@ text control `end` (default `"\n"`), and delegates to the same stdout operation.
 `echo` and
 `println` are equivalent stdout aliases, while `eprint` writes the same typed
 line to stderr. All four accept positional value arguments followed by at most
-one `sep: sview` and one `end: sview`; unsupported Python controls (`file` and
-`flush`) remain statically rejected:
+one `sep: sview`, one `end: sview`, and one `flush: bool` control. `flush` is a
+typed compatibility spelling: stream writes use POSIX `write` directly, so
+bytes are visible immediately and no additional user-space flush operation is
+needed. The unsupported Python `file` control remains statically rejected:
 
 - `read_stdin() -> sview error[ConsoleError] can[Console.Read]` reads bytes from file
   descriptor 0 until EOF, up to the interpreter's 64 MiB stdin safety ceiling, and
