@@ -458,6 +458,19 @@ indices must match the exact key type; fallback and indexed values must have the
 same type. Malformed runtime storage remains an `error[...]` failure rather than
 being converted into a sentinel.
 
+Comma-separated checked access follows the same rule at every level:
+
+```elisa
+value: i64 = get matrix[row, column] else -1i64
+```
+
+The indexes are evaluated left-to-right exactly once as a nested `Index` chain.
+Each level checks membership or bounds with `IndexValid`; all ordinary misses
+transfer to one shared lazy fallback while successful intermediate values remain
+subject to their ordinary static collection and key checks. Malformed runtime
+storage still raises through `error[...]`. The final value and fallback must have
+the same exact type.
+
 The same recovery syntax handles fallible calls declared with `error[...]`:
 
 ```elisa

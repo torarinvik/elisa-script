@@ -2849,6 +2849,74 @@ extend EsIr:
             return lower_checked_index_values(collection, index, fallback_expression, pos, state)
 
 
+        def lower_checked_index_chain(collection_expression: Ast::Expr, index_expressions: darray[Ast::Expr]&, fallback_expression: Ast::Expr, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+            if index_expressions.count == 0:
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "checked multi-index access requires at least one index")
+                return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+            collection: LoweredValue = lower_expression(collection_expression, state)
+            return LoweredValue{valid: false, value: 0, type: unknown_ir_type()} if not collection.valid
+            fallback_block: u32 = fresh_block(state)
+            merge_block: u32 = fresh_block(state)
+            current: mutable LoweredValue = collection
+            result_type: mutable Type = unknown_ir_type()
+            for index_expression in index_expressions |index_expressions, state, current, result_type, pos|:
+                index: LoweredValue = lower_expression(index_expression, state)
+                return LoweredValue{valid: false, value: 0, type: unknown_ir_type()} if not index.valid
+                valid_index: mutable bool = false
+                if current.type.kind == TypeKind.Map:
+                    result_type <- map_value_type(current.type)
+                    valid_index <- same_type(index.type, map_key_type(current.type))
+                elif current.type.kind == TypeKind.Array:
+                    result_type <- array_element_type(current.type)
+                    valid_index <- index.type.kind == TypeKind.Int
+                elif current.type.kind == TypeKind.Text:
+                    result_type <- type_from_name("char")
+                    valid_index <- index.type.kind == TypeKind.Int
+                if not valid_index:
+                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "checked indexing requires an array, dictionary, or text with a matching index type")
+                    return LoweredValue{valid: false, value: 0, type: result_type}
+
+                predicate: u32 = fresh_value(state)
+                predicate_start: u32 = state.operand_pool.count.u32()
+                state.operand_pool.push(current.value)
+                state.operand_pool.push(index.value)
+                state.instructions.push(Instruction{opcode: Opcode.IndexValid, result: predicate, result_type: type_from_name("bool"), operand_start: predicate_start, operand_count: 2, span: ir_span(pos)})
+                success_block: u32 = fresh_block(state)
+                state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: predicate, operand_count: 1, target0: success_block, target1: fallback_block, target_count: 2, span: ir_span(pos)}
+                finish_block(state)
+
+                state.current_block <- success_block
+                state.terminated <- false
+                indexed: u32 = fresh_value(state)
+                index_start: u32 = state.operand_pool.count.u32()
+                state.operand_pool.push(current.value)
+                state.operand_pool.push(index.value)
+                state.instructions.push(Instruction{opcode: Opcode.Index, result: indexed, result_type: result_type, operand_start: index_start, operand_count: 2, span: ir_span(pos)})
+                current <- LoweredValue{valid: true, value: indexed, type: result_type}
+
+            success_edge: u32 = state.edge_arg_pool.count.u32()
+            state.edge_arg_pool.push(current.value)
+            state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: merge_block, target_count: 1, edge0_arg_start: success_edge, edge0_arg_count: 1, span: ir_span(pos)}
+            finish_block(state)
+
+            state.current_block <- fallback_block
+            state.terminated <- false
+            fallback: LoweredValue = lower_expression_expected(fallback_expression, result_type, state)
+            fallback_edge: mutable u32 = 0
+            if fallback.valid:
+                fallback_edge <- state.edge_arg_pool.count.u32()
+                state.edge_arg_pool.push(fallback.value)
+                state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: merge_block, target_count: 1, edge0_arg_start: fallback_edge, edge0_arg_count: 1, span: ir_span(pos)}
+            finish_block(state)
+
+            result: u32 = fresh_value(state)
+            state.pending_parameter_blocks.push(merge_block)
+            state.pending_parameters.push(Parameter{value: result, type: result_type, name: "checked-index-chain"})
+            state.current_block <- merge_block
+            state.terminated <- false
+            return LoweredValue{valid: fallback.valid, value: result, type: result_type}
+
+
         # Lower value recovery for an error-producing expression, e.g.
         # `try parse_int(text) else 0`.  The guard is lexical in the IR: any
         # interpreter failure raised while evaluating the guarded expression
@@ -4021,6 +4089,8 @@ extend EsIr:
                     match predicate:
                         Expr.Index(collection_expression, index_expression, index_pos):
                             return lower_checked_index(collection_expression, index_expression, base, pos, state)
+                        Expr.IndexN(collection_expression, index_expressions, index_pos):
+                            return lower_checked_index_chain(collection_expression, index_expressions, base, pos, state)
                         Expr.Call(callee, arguments, argument_names, call_pos):
                             return lower_error_recovery(predicate, base, pos, state)
                         _:

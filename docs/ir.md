@@ -945,6 +945,14 @@ only when needed. Both edges merge through one typed block parameter, so the
 fallback cannot be eagerly evaluated and the semantics remain identical in the
 reference interpreter and bytecode facade. Index and fallback types must match
 exactly, and malformed runtime storage still raises the usual typed error.
+For `get collection[index0, index1, …] else fallback`, lowering builds a
+left-to-right chain of `IndexValid` predicates and ordinary `Index` operations.
+Every predicate's miss edge targets one shared lazy fallback block, while each
+success edge performs its checked index before evaluating the next index. Thus
+each intermediate access keeps its exact array/map/text typing, a bounds or key
+miss at any depth selects the same fallback, and malformed storage failures are
+still propagated rather than recovered. The final value and fallback merge through
+one typed block parameter.
 Dynamic destructuring uses `UnpackArray(array, index)` with the required target
 arity stored in the instruction integer payload. The verifier checks the array
 element result type and requires `IndexOutOfBounds` in the function error row;
