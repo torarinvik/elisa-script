@@ -67,8 +67,11 @@ const PREFIX: sview = "build: "
 
 The IR materializes these values at function entry as typed SSA bindings. Normal
 lexical shadowing still applies, so a parameter or local with the same name wins.
-`global`/mutable and uninitialized declarations remain rejected by the initial
-scripting IR until explicit global storage semantics are added.
+Scalar `global` declarations use shared module storage: reads lower to `LoadGlobal`
+and writes to `StoreGlobal`, so nested calls observe the same value. Uninitialized
+scalar globals start at the type's zero value. Aggregate globals and non-literal
+initializers remain a deliberate lowering diagnostic until their storage model is
+defined.
 
 Tuple literals also have a contextual homogeneous-sequence form for Python-style
 ports: when the destination type is an explicit `darray[T]`, `(a, b, c)` is

@@ -152,6 +152,7 @@ extend EsIr:
             process_output_limit: u64 = INTERPRET_DEFAULT_MAX_PROCESS_OUTPUT_BYTES
             file_input_limit: u64 = INTERPRET_DEFAULT_MAX_FILE_INPUT_BYTES
             stdin_input_limit: u64 = INTERPRET_DEFAULT_MAX_STDIN_BYTES
+            globals: mutable darray[RuntimeValue] = []
 
 
         struct DirectoryScanner:
@@ -767,6 +768,43 @@ extend EsIr:
                 _:
                     machine.failure <- InterpretFailure.UnsupportedInstruction
                     return runtime_void()
+
+
+        def global_value(binding: Global, machine: mutable Machine&) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+            return runtime_bool(binding.boolean) if binding.type.kind == TypeKind.Bool
+            return runtime_int(binding.integer) if binding.type.kind == TypeKind.Int
+            if binding.type.kind == TypeKind.Float:
+                if binding.initialized and not decimal_text_valid(binding.decimal):
+                    machine.failure <- InterpretFailure.InvalidNumber
+                    return runtime_void()
+                return runtime_float(parse_decimal(binding.decimal)) if binding.initialized else runtime_float(0.0)
+            return runtime_text(decode_literal_text(binding.text)) if binding.initialized else runtime_text("") if binding.type.kind in {TypeKind.Char, TypeKind.Text} or text_backed_named_type(binding.type) else runtime_void()
+
+
+        def evaluate_global_load(instruction: Instruction, machine: mutable Machine&) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+            if instruction.integer < 0 or instruction.integer.usize() >= machine.globals.count:
+                machine.failure <- InterpretFailure.InvalidControlFlow
+                return runtime_void()
+            value: RuntimeValue = machine.globals[instruction.integer.usize()]
+            machine.failure <- InterpretFailure.TypeMismatch if not runtime_global_matches(value, instruction.result_type)
+            return value
+
+
+        def evaluate_global_store(instruction: Instruction, fn: Function&, ids: darray[u32]&, values: darray[RuntimeValue]&, module: Module&, machine: mutable Machine&) -> void:
+            if instruction.integer < 0 or instruction.integer.usize() >= machine.globals.count or instruction.operand_count != 1:
+                machine.failure <- InterpretFailure.InvalidControlFlow
+                return
+            stored: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
+            machine.failure <- InterpretFailure.TypeMismatch if not runtime_global_matches(stored, module.globals[instruction.integer.usize()].type)
+            machine.globals[instruction.integer.usize()] <- stored if machine.failure == InterpretFailure.None
+
+
+        def runtime_global_matches(value: RuntimeValue, type: Type&) -> bool:
+            return value.kind == RuntimeValueKind.Bool if type.kind == TypeKind.Bool
+            return value.kind == RuntimeValueKind.Int if type.kind == TypeKind.Int
+            return value.kind == RuntimeValueKind.Float if type.kind == TypeKind.Float
+            return value.kind == RuntimeValueKind.Text if type.kind in {TypeKind.Char, TypeKind.Text} or text_backed_named_type(type)
+            return false
 
 
         def evaluate_parse_int(operand: RuntimeValue, machine: mutable Machine&) -> RuntimeValue:
@@ -5058,6 +5096,15 @@ extend EsIr:
                             dispatch.value <- evaluate_constant(instruction, machine)
                             break
 
+                        Dispatch, Opcode.LoadGlobal:
+                            dispatch.value <- evaluate_global_load(instruction, machine)
+                            break
+
+                        Dispatch, Opcode.StoreGlobal:
+                            evaluate_global_store(instruction, fn, ids, values, module, machine)
+                            dispatch.produces_value <- false
+                            break
+
                         Dispatch, Opcode.Copy:
                             dispatch.value <- frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
                             break
@@ -6577,7 +6624,10 @@ extend EsIr:
             raise InterpretError.VerificationFailed if verify(module).count != 0
             function_index: usize = find_function(module, entry)
             raise InterpretError.UnknownFunction if function_index == module.functions.count
-            machine: mutable Machine = Machine{steps: 0, step_limit: step_limit, failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void()}
+            machine: mutable Machine = Machine{steps: 0, step_limit: step_limit, failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void(), globals: []}
+            for binding in module.globals |machine|:
+                machine.globals.push(global_value(binding, machine))
+            try raise_interpret_failure(machine.failure) if machine.failure != InterpretFailure.None
             handler_stack: mutable darray[sview] = []
             value: RuntimeValue = execute_function(machine, observations, storage, handler_stack, module, function_index, arguments)
             try raise_interpret_failure(machine.failure) if machine.failure != InterpretFailure.None

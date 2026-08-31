@@ -97,6 +97,8 @@ extend EsIr:
 
 
         def validate_module_type_ids(module: Module&, issues: mutable darray[Issue]&) -> void can[Memory.Allocate, Abort.Panic]:
+            for binding in module.globals |module, issues|:
+                validate_type_id(binding.type, binding.name, module, issues)
             for fn in module.functions |module, issues|:
                 validate_type_id(fn.return_type, fn.name, module, issues)
                 for parameter in fn.parameters |fn, module, issues|:
@@ -132,6 +134,16 @@ extend EsIr:
 
         def text_backed_named_type(value: Type&) -> bool:
             return value.kind == TypeKind.Named and value.name in {"Path", "Glob", "Regex", "Executable", "Url"}
+
+
+        def global_type_supported(value: Type&) -> bool:
+            return value.kind in {TypeKind.Bool, TypeKind.Int, TypeKind.Float, TypeKind.Char, TypeKind.Text} or text_backed_named_type(value)
+
+
+        def global_index(globals: darray[Global]&, name: sview) -> usize:
+            for index in 0..<globals.count |globals, name|:
+                return index if globals[index].name == name
+            return globals.count
 
 
         def equality_type(value: Type&) -> bool:
@@ -249,6 +261,23 @@ extend EsIr:
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "constant must not have operands")) if instruction.opcode == Opcode.Constant and instruction.operand_count != 0
                     supported_constant: bool = instruction.result_type.kind in {TypeKind.Bool, TypeKind.Int, TypeKind.Float, TypeKind.Char, TypeKind.Text} or text_backed_named_type(instruction.result_type)
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "constant result type has no canonical runtime representation")) if instruction.opcode == Opcode.Constant and not supported_constant
+                    issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "global load must not have operands and must produce a value")) if instruction.opcode == Opcode.LoadGlobal and (instruction.operand_count != 0 or instruction.result == 0)
+                    if instruction.opcode == Opcode.LoadGlobal and instruction.operand_count == 0 and instruction.result != 0:
+                        valid_global: bool = instruction.integer >= 0 and instruction.integer.usize() < module.globals.count
+                        issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "global load names an unknown module global")) if not valid_global
+                        if valid_global:
+                            load_global_type: Type = module.globals[instruction.integer.usize()].type
+                            issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "global load result type does not match the module global")) if not same_type(instruction.result_type, load_global_type)
+                    issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "global store requires one operand, a void result, and no SSA result")) if instruction.opcode == Opcode.StoreGlobal and (instruction.operand_count != 1 or instruction.result != 0 or instruction.result_type.kind != TypeKind.Void)
+                    if instruction.opcode == Opcode.StoreGlobal and instruction.operand_count == 1 and operand_end <= fn.operand_pool.count:
+                        valid_global: bool = instruction.integer >= 0 and instruction.integer.usize() < module.globals.count
+                        issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "global store names an unknown module global")) if not valid_global
+                        if valid_global:
+                            operand: u32 = fn.operand_pool[instruction.operand_start.usize()]
+                            if has_u32(defined, operand):
+                                stored_type: Type = definition_type(defined, definition_types, operand)
+                                global_store_type: Type = module.globals[instruction.integer.usize()].type
+                                issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "global store value type does not match the module global")) if not same_type(stored_type, global_store_type)
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "copy must have exactly one operand")) if instruction.opcode == Opcode.Copy and instruction.operand_count != 1
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "nominal formatting must have exactly one operand")) if instruction.opcode == Opcode.FormatNominal and instruction.operand_count != 1
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "aggregate formatting must have exactly one operand")) if instruction.opcode == Opcode.FormatAggregate and instruction.operand_count != 1
@@ -1186,6 +1215,11 @@ extend EsIr:
             issues: mutable darray[Issue] = []
             issues.push(issue(IssueKind.InvalidTypeTable, "", 0, 0, 0, "module type table has an invalid child range or duplicate row")) if not type_table_valid(module.type_table)
             validate_module_type_ids(module, issues) if module.type_table.rows.count != 0
+            for global_index in 0..<module.globals.count |module, issues|:
+                binding: Global = module.globals[global_index]
+                issues.push(issue(IssueKind.InvalidInstruction, "", 0, 0, 0, "module global has no canonical scalar runtime representation")) if not global_type_supported(binding.type)
+                for earlier in 0..<global_index |module, issues, global_index|:
+                    issues.push(issue(IssueKind.InvalidInstruction, "", 0, 0, 0, "module global name is declared more than once")) if binding.name == module.globals[earlier].name
             for index in 0..<module.handlers.count |module, issues|:
                 validate_handler(module.handlers[index], module, issues)
                 for earlier in 0..<index |module, issues, index|:

@@ -20,9 +20,10 @@ serialization:
 
 Immutable, initialized module-level `const` declarations are lowered into typed
 SSA constants at each function entry. They are ordinary lexical bindings, so a
-parameter or local with the same name shadows the module constant. Mutable or
-uninitialized globals remain outside this initial IR until explicit global storage
-and synchronization operations are defined.
+parameter or local with the same name shadows the module constant. Scalar
+`global` declarations live in `Module.globals`; `LoadGlobal` and `StoreGlobal`
+provide shared storage across calls, with zero values for uninitialized bindings.
+Aggregate globals and non-literal initializers remain outside this lowering subset.
 
 In an explicit `darray[T]` context, tuple syntax `(a, b, ...)` is lowered through
 the same `MakeArray` operation after each element is checked against `T`; `()`
@@ -105,7 +106,9 @@ families are migrated.
 `EsBytecode.execute_bytecode` selects the packed loop whenever all instructions
 belong to the direct subset, including guarded error recovery. It rebuilds the
 verified IR shape and delegates to `EsIr.interpret` only for modules that still
-contain dynamic effects, handlers, continuations, or another unsupported family.
+contain dynamic effects, handlers, continuations, shared module globals, or
+another unsupported family. Global-bearing bytecode modules retain their global
+table and use the interpreter fallback until the packed frame owns a global arena.
 Both paths are checked against the same result, step count, and observation
 trace/value contract in the bytecode tests.
 

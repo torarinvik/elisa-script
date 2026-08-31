@@ -46,6 +46,11 @@ extend EsIr:
             recognized: bool
 
 
+        struct GlobalProbe:
+            valid: bool
+            binding: Global
+
+
         # A comprehension may iterate a materialized array/text value or an
         # integer range directly.  Ranges stay syntax-level here: the lowering
         # carries the current counter through the same explicit CFG used by
@@ -115,6 +120,10 @@ extend EsIr:
             constant_names: darray[sview]&
             constant_types: darray[Type]&
             constant_values: darray[Ast::Expr]&
+            # Mutable module bindings are shared storage. Locals still win lexical
+            # lookup; these parallel arrays keep the lowering state pointer-free.
+            global_names: darray[sview]&
+            global_types: darray[Type]&
             next_value: mutable u32
             current_block: mutable u32
             next_block: mutable u32
@@ -394,6 +403,63 @@ extend EsIr:
                 index <- index - 1
                 index return if state.names[index] == name
             return state.names.count
+
+
+        def global_binding_index(state: LowerState&, name: sview) -> usize:
+            for index in 0..<state.global_names.count |state, name|:
+                return index if state.global_names[index] == name
+            return state.global_names.count
+
+
+        def emit_global_load(state: mutable LowerState&, index: usize, pos: Ast::Pos&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+            return LoweredValue{valid: false, value: 0, type: unknown_ir_type()} if index >= state.global_names.count
+            result: u32 = fresh_value(state)
+            state.instructions.push(Instruction{opcode: Opcode.LoadGlobal, result: result, result_type: state.global_types[index], integer: index.i64(), span: ir_span(pos)})
+            return LoweredValue{valid: true, value: result, type: state.global_types[index]}
+
+
+        def lower_global_probe(name: sview, declared: Type, initializer: Ast::Expr) -> GlobalProbe:
+            result: mutable Global = Global{name: name, type: declared}
+            return GlobalProbe{valid: true, binding: result} if initializer is Expr.Invalid
+            match initializer:
+                Expr.IntLit(value):
+                    return GlobalProbe{valid: false, binding: result} if declared.kind != TypeKind.Int or declared.bits != 64 or not declared.signed
+                    result.integer <- value
+                    result.initialized <- true
+                Expr.IntLitTyped(value, suffix):
+                    suffix_type: Type = type_from_name(suffix)
+                    return GlobalProbe{valid: false, binding: result} if declared.kind != TypeKind.Int or not same_type(declared, suffix_type)
+                    result.integer <- value
+                    result.initialized <- true
+                Expr.FloatLit(text):
+                    return GlobalProbe{valid: false, binding: result} if declared.kind != TypeKind.Float
+                    result.decimal <- text
+                    result.initialized <- true
+                Expr.StringLit(text):
+                    return GlobalProbe{valid: false, binding: result} if declared.kind != TypeKind.Text
+                    result.text <- text
+                    result.initialized <- true
+                Expr.CharLit(text):
+                    return GlobalProbe{valid: false, binding: result} if declared.kind != TypeKind.Char
+                    result.text <- text
+                    result.initialized <- true
+                Expr.BoolLit(value):
+                    return GlobalProbe{valid: false, binding: result} if declared.kind != TypeKind.Bool
+                    result.boolean <- value
+                    result.initialized <- true
+                Expr.Call(Expr.Ident(prefix, _), arguments, argument_names, _):
+                    return GlobalProbe{valid: false, binding: result} if declared.kind != TypeKind.Named or arguments.count != 1 or (argument_names.count != 0 and argument_names[0] != "")
+                    expected_prefix: sview = "path" if declared.name == "Path" else "glob" if declared.name == "Glob" else "regex" if declared.name == "Regex" else "exe" if declared.name == "Executable" else "url" if declared.name == "Url" else ""
+                    return GlobalProbe{valid: false, binding: result} if expected_prefix == "" or prefix != expected_prefix
+                    match arguments[0]:
+                        Expr.StringLit(text):
+                            result.text <- text
+                            result.initialized <- true
+                        _:
+                            return GlobalProbe{valid: false, binding: result}
+                _:
+                    return GlobalProbe{valid: false, binding: result}
+            return GlobalProbe{valid: true, binding: result}
 
 
         def add_unique_name(names: mutable darray[sview]&, name: sview) -> void can[Memory.Allocate, Abort.Panic]:
@@ -2935,7 +3001,10 @@ extend EsIr:
                 Expr.BoolLit(value):
                     return emit_constant(state, type_from_name("bool"), 0, "", "", value, zero_span())
                 Expr.Ident(name, pos):
-                    binding: LoweredValue = lookup_binding(state, name)
+                    binding: mutable LoweredValue = lookup_binding(state, name)
+                    if not binding.valid:
+                        global_index: usize = global_binding_index(state, name)
+                        binding <- emit_global_load(state, global_index, pos) if global_index < state.global_names.count
                     add_issue(state, LowerIssueKind.UnknownBinding, pos.line, "identifier has no lowered local binding") if not binding.valid
                     return binding
                 Expr.Paren(inner, pos):
@@ -7640,9 +7709,13 @@ extend EsIr:
                         _:
                             pass
                     index: usize = binding_index(state, target_name)
-                    if target_name == "" or index == state.names.count:
-                        add_issue(state, LowerIssueKind.UnsupportedAssignmentTarget, pos.line, "initial SSA lowering supports assignment to a known local name")
+                    global_index: usize = global_binding_index(state, target_name)
+                    if target_name == "" or (index == state.names.count and global_index == state.global_names.count):
+                        add_issue(state, LowerIssueKind.UnsupportedAssignmentTarget, pos.line, "assignment target must name a known local or module global")
                     elif indexed:
+                        if index == state.names.count:
+                            add_issue(state, LowerIssueKind.UnsupportedAssignmentTarget, pos.line, "indexed assignment to module globals is not implemented")
+                            return
                         if not state.mutables[index]:
                             add_issue(state, LowerIssueKind.ImmutableBinding, pos.line, "indexed assignment requires a mutable array binding")
                         elif not supported_assignment_operator(operator):
@@ -7694,6 +7767,36 @@ extend EsIr:
                                     state.operand_pool.push(replacement.value)
                                     state.instructions.push(Instruction{opcode: Opcode.SetIndex, result: result, result_type: state.types[index], operand_start: operand_start, operand_count: 3, span: ir_span(pos)})
                                     state.values[index] <- result
+                    elif index == state.names.count:
+                        global_type: Type = state.global_types[global_index]
+                        if not supported_assignment_operator(operator):
+                            add_issue(state, LowerIssueKind.UnsupportedAssignmentTarget, pos.line, "global assignment supports <- and typed arithmetic or bitwise compound assignment")
+                        else:
+                            current_global: LoweredValue = emit_global_load(state, global_index, pos)
+                            replacement: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: global_type}
+                            if operator == TokenKind.LArrow:
+                                replacement <- lower_expression_expected(value, global_type, state)
+                            else:
+                                lowered: LoweredValue = lower_expression_expected(value, global_type, state)
+                                if lowered.valid:
+                                    opcode: Opcode = compound_opcode(operator)
+                                    arithmetic: bool = opcode in {Opcode.Add, Opcode.Subtract, Opcode.Multiply, Opcode.Divide, Opcode.Remainder}
+                                    bitwise: bool = opcode in {Opcode.BitAnd, Opcode.BitOr, Opcode.BitXor, Opcode.ShiftLeft, Opcode.ShiftRight}
+                                    valid_arithmetic: bool = arithmetic and same_type(global_type, lowered.type) and numeric_type(global_type) and (opcode != Opcode.Remainder or global_type.kind == TypeKind.Int)
+                                    valid_bitwise: bool = bitwise and same_type(global_type, lowered.type) and global_type.kind == TypeKind.Int
+                                    if not valid_arithmetic and not valid_bitwise:
+                                        add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "global compound assignment operands do not have compatible static types")
+                                    else:
+                                        result: u32 = fresh_value(state)
+                                        operand_start: u32 = state.operand_pool.count.u32()
+                                        state.operand_pool.push(current_global.value)
+                                        state.operand_pool.push(lowered.value)
+                                        state.instructions.push(Instruction{opcode: opcode, result: result, result_type: global_type, operand_start: operand_start, operand_count: 2, span: ir_span(pos)})
+                                        replacement <- LoweredValue{valid: true, value: result, type: global_type}
+                            if replacement.valid:
+                                store_start: u32 = state.operand_pool.count.u32()
+                                state.operand_pool.push(replacement.value)
+                                state.instructions.push(Instruction{opcode: Opcode.StoreGlobal, result: 0, result_type: void_ir_type(), integer: global_index.i64(), operand_start: store_start, operand_count: 1, span: ir_span(pos)})
                     else:
                         rebound: mutable bool = false
                         if not state.mutables[index]:
@@ -8304,10 +8407,10 @@ extend EsIr:
                     add_issue(state, LowerIssueKind.UnsupportedStatement, 0, "statement is not in the initial IR lowering subset")
 
 
-        def lower_function(name: sview, params: darray[Ast::ParamDecl]&, return_type_opt: Ast::Expr?, body: darray[Ast::Stmt]&, effects: darray[sview]&, declared_error_start: u32, declared_error_count: u16, pos: Ast::Pos&, function_names: darray[sview]&, function_returns: darray[Type]&, function_parameter_starts: darray[u32]&, function_parameter_counts: darray[u16]&, function_parameter_types: darray[Type]&, function_parameter_names: darray[sview]&, function_parameter_has_defaults: darray[bool]&, function_parameter_defaults: darray[Ast::Expr]&, function_effect_starts: darray[u32]&, function_effect_counts: darray[u16]&, function_effects: darray[sview]&, function_error_starts: darray[u32]&, function_error_counts: darray[u16]&, function_errors: darray[sview]&, handlers: darray[Handler]&, comprehension_kinds: darray[Ast::EnumAnnotation]&, constant_names: darray[sview]&, constant_types: darray[Type]&, constant_values: darray[Ast::Expr]&, type_table: mutable TypeTable&, outer_issues: mutable darray[LowerIssue]&) -> Function can[Memory.Allocate, Abort.Panic]:
+        def lower_function(name: sview, params: darray[Ast::ParamDecl]&, return_type_opt: Ast::Expr?, body: darray[Ast::Stmt]&, effects: darray[sview]&, declared_error_start: u32, declared_error_count: u16, pos: Ast::Pos&, function_names: darray[sview]&, function_returns: darray[Type]&, function_parameter_starts: darray[u32]&, function_parameter_counts: darray[u16]&, function_parameter_types: darray[Type]&, function_parameter_names: darray[sview]&, function_parameter_has_defaults: darray[bool]&, function_parameter_defaults: darray[Ast::Expr]&, function_effect_starts: darray[u32]&, function_effect_counts: darray[u16]&, function_effects: darray[sview]&, function_error_starts: darray[u32]&, function_error_counts: darray[u16]&, function_errors: darray[sview]&, handlers: darray[Handler]&, comprehension_kinds: darray[Ast::EnumAnnotation]&, constant_names: darray[sview]&, constant_types: darray[Type]&, constant_values: darray[Ast::Expr]&, global_names: darray[sview]&, global_types: darray[Type]&, type_table: mutable TypeTable&, outer_issues: mutable darray[LowerIssue]&) -> Function can[Memory.Allocate, Abort.Panic]:
             return_type: mutable Type = void_ir_type()
             return_type <- interned_type_from_expression(return_expression, type_table) if return_type_opt is return_expression
-            state: mutable LowerState = LowerState{function: name, next_value: 1, current_block: 1, next_block: 2, instruction_start: 0, structured_depth: 0, blocks: [], names: [], values: [], types: [], mutables: [], instructions: [], operand_pool: [], edge_arg_pool: [], issues: [], break_targets: [], continue_targets: [], pending_parameter_blocks: [], pending_parameters: [], block_parameter_pool: [], loop_context_starts: [], loop_context_counts: [], loop_carried_indices: [], loop_handler_depths: [], element_binding_indices: [], element_owner_indices: [], element_index_values: [], active_handlers: [], terminated: false, terminator: Terminator{kind: TerminatorKind.Unreachable, span: ir_span(pos)}, function_names: function_names, function_returns: function_returns, function_parameter_starts: function_parameter_starts, function_parameter_counts: function_parameter_counts, function_parameter_types: function_parameter_types, function_parameter_names: function_parameter_names, function_parameter_has_defaults: function_parameter_has_defaults, function_parameter_defaults: function_parameter_defaults, function_effect_starts: function_effect_starts, function_effect_counts: function_effect_counts, function_effects: function_effects, function_error_starts: function_error_starts, function_error_counts: function_error_counts, function_errors: function_errors, handlers: handlers, comprehension_kinds: comprehension_kinds, function_return_type: return_type, required_effects: [], required_errors: [], constant_names: constant_names, constant_types: constant_types, constant_values: constant_values}
+            state: mutable LowerState = LowerState{function: name, next_value: 1, current_block: 1, next_block: 2, instruction_start: 0, structured_depth: 0, blocks: [], names: [], values: [], types: [], mutables: [], instructions: [], operand_pool: [], edge_arg_pool: [], issues: [], break_targets: [], continue_targets: [], pending_parameter_blocks: [], pending_parameters: [], block_parameter_pool: [], loop_context_starts: [], loop_context_counts: [], loop_carried_indices: [], loop_handler_depths: [], element_binding_indices: [], element_owner_indices: [], element_index_values: [], active_handlers: [], terminated: false, terminator: Terminator{kind: TerminatorKind.Unreachable, span: ir_span(pos)}, function_names: function_names, function_returns: function_returns, function_parameter_starts: function_parameter_starts, function_parameter_counts: function_parameter_counts, function_parameter_types: function_parameter_types, function_parameter_names: function_parameter_names, function_parameter_has_defaults: function_parameter_has_defaults, function_parameter_defaults: function_parameter_defaults, function_effect_starts: function_effect_starts, function_effect_counts: function_effect_counts, function_effects: function_effects, function_error_starts: function_error_starts, function_error_counts: function_error_counts, function_errors: function_errors, handlers: handlers, comprehension_kinds: comprehension_kinds, function_return_type: return_type, required_effects: [], required_errors: [], constant_names: constant_names, constant_types: constant_types, constant_values: constant_values, global_names: global_names, global_types: global_types}
             state.required_effects.extend(effects)
             for error_offset in 0..<declared_error_count.usize() |state, declared_error_start|:
                 declared_error: sview = function_errors[declared_error_start.usize() + error_offset]
@@ -8373,6 +8476,9 @@ extend EsIr:
             constant_names: mutable darray[sview] = []
             constant_types: mutable darray[Type] = []
             constant_values: mutable darray[Ast::Expr] = []
+            global_names: mutable darray[sview] = []
+            global_types: mutable darray[Type] = []
+            globals: mutable darray[Global] = []
             type_table: mutable TypeTable = TypeTable{rows: [], children: []}
             for declaration in file.top_decls |names, returns, parameter_starts, parameter_counts, parameter_types, parameter_names, parameter_has_defaults, parameter_defaults, effect_starts, effect_counts, signature_effects, error_starts, error_counts, signature_errors, file|:
                 match declaration:
@@ -8400,11 +8506,13 @@ extend EsIr:
                         error_starts.push(error_start)
                         error_counts.push((signature_errors.count.u32() - error_start).u16())
                     Decl.Const(name, type_expression, value, is_mutable, pos):
-                        # Mutable globals are intentionally not copied into every
-                        # function: they require storage and synchronization that
-                        # belongs to the future global-state IR.  Immutable consts
-                        # are safe to materialize as entry SSA values.
-                        if not is_mutable and value is not Ast::Expr.Invalid:
+                        if is_mutable:
+                            declared: Type = interned_type_from_expression(type_expression, type_table) if type_expression is not Ast::Expr.Absent else unknown_ir_type()
+                            probe: GlobalProbe = lower_global_probe(name, declared, value)
+                            global_names.push(name)
+                            global_types.push(declared)
+                            globals.push(probe.binding)
+                        elif value is not Ast::Expr.Invalid:
                             constant_names.push(name)
                             constant_types.push(interned_type_from_expression(type_expression, type_table) if type_expression is not Ast::Expr.Absent else unknown_ir_type())
                             constant_values.push(value)
@@ -8412,22 +8520,21 @@ extend EsIr:
                         pass
             functions: mutable darray[Function] = []
             issues: mutable darray[LowerIssue] = []
-            for declaration in file.top_decls |functions, issues, names, returns, parameter_starts, parameter_counts, parameter_types, parameter_names, parameter_has_defaults, parameter_defaults, effect_starts, effect_counts, signature_effects, error_starts, error_counts, signature_errors, constant_names, constant_types, constant_values|:
+            for declaration in file.top_decls |functions, issues, names, returns, parameter_starts, parameter_counts, parameter_types, parameter_names, parameter_has_defaults, parameter_defaults, effect_starts, effect_counts, signature_effects, error_starts, error_counts, signature_errors, constant_names, constant_types, constant_values, global_names, global_types, globals|:
                 match declaration:
                     Decl.Func(name, params, return_type_opt, body, effects, decorators, pos):
                         function_index: usize = functions.count
-                        functions.push(lower_function(name, params, return_type_opt, body, effects, error_starts[function_index], error_counts[function_index], pos, names, returns, parameter_starts, parameter_counts, parameter_types, parameter_names, parameter_has_defaults, parameter_defaults, effect_starts, effect_counts, signature_effects, error_starts, error_counts, signature_errors, handlers, file.enum_annotations, constant_names, constant_types, constant_values, type_table, issues))
+                        functions.push(lower_function(name, params, return_type_opt, body, effects, error_starts[function_index], error_counts[function_index], pos, names, returns, parameter_starts, parameter_counts, parameter_types, parameter_names, parameter_has_defaults, parameter_defaults, effect_starts, effect_counts, signature_effects, error_starts, error_counts, signature_errors, handlers, file.enum_annotations, constant_names, constant_types, constant_values, global_names, global_types, type_table, issues))
                     Decl.Const(name, type_expression, value, is_mutable, pos):
-                        # The immutable, initialized cases were collected above;
-                        # all other global declarations remain an explicit lowering
-                        # issue instead of silently changing their semantics.
-                        if is_mutable or value is Ast::Expr.Invalid:
-                            issues.push(LowerIssue{kind: LowerIssueKind.UnsupportedDeclaration, function: "", line: pos.line, message: "mutable or uninitialized module globals are not in the initial IR lowering subset"})
+                        if is_mutable:
+                            declared: Type = interned_type_from_expression(type_expression, type_table) if type_expression is not Ast::Expr.Absent else unknown_ir_type()
+                            probe: GlobalProbe = lower_global_probe(name, declared, value)
+                            issues.push(LowerIssue{kind: LowerIssueKind.UnsupportedDeclaration, function: "", line: pos.line, message: "module globals require a supported scalar type and literal initializer"}) if not global_type_supported(declared) or not probe.valid
                     _:
                         issues.push(LowerIssue{kind: LowerIssueKind.UnsupportedDeclaration, function: "", line: 0, message: "declaration is not in the initial IR lowering subset"})
             lowered_handlers: mutable darray[Handler] = []
             lowered_handlers.extend(handlers)
-            lowered_module: mutable Module = Module{name: module_name, functions: functions, handlers: lowered_handlers}
+            lowered_module: mutable Module = Module{name: module_name, functions: functions, globals: globals, handlers: lowered_handlers}
             intern_module_types(lowered_module)
             return LowerResult{module: lowered_module, issues: issues}
 
