@@ -944,6 +944,8 @@ the underlying text representation of a text-backed nominal value for the
 explicit `str(value)` facade. It is verified separately from `Copy`, so no
 other implicit nominal-to-text conversion is introduced, and it is eligible
 for the same interpreter and direct bytecode paths.
+`FormatChar` has type `Char -> Text`; char constants use the shared text payload
+and are copied into the text result without implicit widening elsewhere.
 `FormatAggregate` has type `Array[T] | Map[K, V] -> Text`; it emits `[a, b]` or
 `{key: value}` using insertion order and the same scalar spellings as the
 corresponding `Format*` operations. The Python-compatible `str(value)` facade

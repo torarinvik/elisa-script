@@ -603,10 +603,10 @@ verified read/split/join/write instructions, keeping interpreter and bytecode
 behavior identical.
 
 Interpolated strings use Elisa's `f"...{expr}..."` syntax. The parser represents
-them as ordered `__fstr` pieces. Elisascript accepts text, signed `i64`, `f64`,
+them as ordered `__fstr` pieces. Elisascript accepts text, `char`, signed `i64`, `f64`,
 `bool`, text-backed nominal, array, and dictionary dynamic pieces and lowers the
 sequence to `Concat` instructions, inserting the existing
-`FormatInt`/`FormatFloat`/`FormatBool`/`FormatNominal`/`FormatAggregate`
+`FormatChar`/`FormatInt`/`FormatFloat`/`FormatBool`/`FormatNominal`/`FormatAggregate`
 conversion for non-text values. Integers use canonical decimal formatting,
 floats use the core `%g` spelling, booleans use lowercase `true`/`false`, and
 nominals expose their underlying text payload. Aggregate values use stable
