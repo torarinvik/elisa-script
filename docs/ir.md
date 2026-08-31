@@ -261,8 +261,9 @@ whose spans can be proven against the complete match (for example,
 remain literal rather than guessing a branch; this conservative fallback keeps
 replacement behavior deterministic until recursive regex match values are defined.
 The replacement language also accepts AWK/sed's `&` whole-match token, Perl/Python
-whole-match spellings `\0` and `\g<0>`, positional `\1` through `\9` aliases for
-`$1` through `$9`, and named `\g<name>` aliases for `${name}`/`$<name>`. Perl's
+whole-match spellings `\0` and `\g<0>`, positional `\1` through `\9` and
+numeric `\g<1>` through `\g<9>` aliases for `$1` through `$9`, and named
+`\g<name>` aliases for `${name}`/`$<name>`. Perl's
 `$$` literal-dollar token and `\&` literal-ampersand token remain available; each
 token is consumed atomically and unknown forms remain literal. Named references
 with unknown or duplicate names are also kept literal rather than selecting an
