@@ -434,6 +434,11 @@ The corresponding `Path.is_readable()`, `Path.is_writable()`, and
 pattern (`PathRGlob` prefixes `**/`) and delegate to the same bounded,
 symlink-safe glob walker as `ExpandGlob`, keeping Python `Path.glob` and
 `Path.rglob` deterministic across interpreter and bytecode execution.
+`PathIterDir` verifies as `Named(Path) -> Array[Text]` with
+`Directory.Read` and `DirectoryError`. It performs one unfiltered direct scan,
+includes hidden entries, skips only `.` and `..`, sorts by unsigned byte order,
+and returns rooted child paths. It is lowered and executed directly by both the
+interpreter and packed bytecode backends without a glob-pattern round trip.
 `TouchPath` verifies as `Named(Path) -> Bool` with `File.Write` and `FileIoError`.
 Its interpreter bridge opens-or-creates without truncation, then refreshes the
 timestamps through POSIX `utimes`; packed bytecode uses the same helper.
