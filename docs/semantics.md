@@ -900,6 +900,12 @@ shares the one-shot `ProcessCapture` implementation used by the explicit result
 API, so stdin transport and status behavior remain identical across the
 interpreter and bytecode backend.
 
+`run_process_in_directory(executable: Executable, arguments: darray[sview],
+directory: Path) -> i64 error[ProcessError] can[Process.Run]` is the status-only
+working-directory counterpart. The child changes directory after `fork`, while
+the parent interpreter's current directory is unchanged; an invalid child
+directory produces the same setup status (`126`) as the explicit capture API.
+
 The return value is the process exit status. Normal exits produce `0` through `255`;
 signal termination produces `128 + signal`. Failure to create or wait for the process
 raises `ProcessError`. If the executable cannot be resolved, the child exits with
