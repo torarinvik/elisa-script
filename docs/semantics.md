@@ -88,8 +88,20 @@ left, right <- right, left
 All right-hand elements are evaluated before any target is rebound, so swaps are
 simultaneous. Fresh `=` targets infer their individual element types; mutation
 uses `<-` (or a typed compound operator) and requires mutable bindings. Dynamic
-array unpacking and repeated targets are rejected until a checked arity operation
-is part of the IR.
+array unpacking is also supported for homogeneous `darray[T]` values:
+
+```elisa
+def split_pair(values: darray[i64]) -> i64:
+    left: mutable i64 = 0
+    right: mutable i64 = 0
+    left, right <- values
+    return left * 10 + right
+```
+
+The lowering emits checked `UnpackArray` operations. The source array must have
+exactly as many elements as targets at runtime; a short or long array raises the
+typed `IndexOutOfBounds` error before any target is rebound. Repeated targets
+remain rejected.
 
 String payloads are decoded once at the IR constant boundary. Ordinary and
 adjacent triple-quoted literals recognize Elisa's standard escapes (`\\n`, `\\t`,

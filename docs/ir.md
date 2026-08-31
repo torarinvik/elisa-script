@@ -33,7 +33,8 @@ remain a lowering diagnostic.
 Destructuring assignment over literal tuple/array values evaluates all source
 elements first and then performs typed SSA rebinds. Fresh `=` targets infer their
 individual types, while `<-` and compound forms require mutable existing bindings;
-dynamic unpacking is rejected until a checked arity operation is added.
+dynamic homogeneous-array unpacking uses checked `UnpackArray` operations and
+requires the runtime array length to equal the target count.
 
 Aggregate `Type` fields remain bounded for compatibility with the first lowering,
 but every lowered module also carries a pointer-free `TypeTable`. Its one-based
@@ -820,6 +821,12 @@ only when needed. Both edges merge through one typed block parameter, so the
 fallback cannot be eagerly evaluated and the semantics remain identical in the
 reference interpreter and bytecode facade. Index and fallback types must match
 exactly, and malformed runtime storage still raises the usual typed error.
+Dynamic destructuring uses `UnpackArray(array, index)` with the required target
+arity stored in the instruction integer payload. The verifier checks the array
+element result type and requires `IndexOutOfBounds` in the function error row;
+the interpreter and direct bytecode path reject any runtime length mismatch
+before exposing an element. Lowering emits all unpack operations before applying
+target updates, preserving simultaneous assignment semantics.
 `collection[low:high]` lowers to the dedicated typed `Slice` operation. Either
 bound may be absent: the lower default is zero and the upper default is one
 `Length` evaluation of the already-evaluated collection. Slices are half-open,

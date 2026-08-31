@@ -521,13 +521,13 @@ extend EsIr:
                         add_unique_name(names, state.names[owner])
 
 
-        # Lower a tuple-destructuring assignment whose right-hand side is a
-        # literal tuple/array.  The parser stores comma-separated targets as an
-        # Expr.Array, while the RHS may be Expr.Array (parenless commas) or
-        # Expr.Tuple (parenthesized commas).  Evaluate every RHS element before
-        # mutating or introducing any target so swaps and other simultaneous
-        # assignments retain source semantics.  Dynamic array unpacking is kept
-        # out of this helper until the IR has a checked arity/unpack operation.
+        # Lower a tuple-destructuring assignment. The parser stores
+        # comma-separated targets as an Expr.Array, while a literal RHS may be
+        # Expr.Array (parenless commas) or Expr.Tuple (parenthesized commas).
+        # Evaluate every RHS element before mutating or introducing any target
+        # so swaps and other simultaneous assignments retain source semantics.
+        # A non-literal RHS uses checked UnpackArray instructions; its static
+        # array element type still keeps every target strongly typed.
         def lower_destructuring_assignment(target: Ast::Expr, operator: TokenKind, value: Ast::Expr, pos: Ast::Pos&, state: mutable LowerState&) -> bool can[Memory.Allocate, Abort.Panic]:
             targets: darray[Ast::Expr] = []
             match target:
@@ -538,22 +538,40 @@ extend EsIr:
             return false if targets.count == 0
 
             values: darray[Ast::Expr] = []
+            dynamic_value: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+            dynamic_unpack: mutable bool = false
+            binding_count_before_targets: usize = state.names.count
             match value:
                 Expr.Array(value_elements, value_pos) | Expr.Tuple(value_elements, value_pos):
                     values.extend(value_elements)
                 _:
-                    add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "dynamic tuple unpacking is not in the initial IR lowering subset")
-                    return true
-            if targets.count != values.count:
+                    dynamic_unpack <- true
+                    dynamic_value <- lower_expression(value, state)
+            if dynamic_unpack and (not dynamic_value.valid or dynamic_value.type.kind != TypeKind.Array):
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "dynamic destructuring requires an array value")
+                return true
+            if not dynamic_unpack and targets.count != values.count:
                 add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "destructuring assignment target and value counts must match")
                 return true
 
             lowered_values: mutable darray[LoweredValue] = []
             valid: mutable bool = true
-            for value_expression in values |state, lowered_values, valid|:
-                lowered: LoweredValue = lower_expression(value_expression, state)
-                lowered_values.push(lowered)
-                valid <- false if not lowered.valid
+            if dynamic_unpack:
+                state.required_errors.push("IndexOutOfBounds") if not has_text(state.required_errors, "IndexOutOfBounds")
+                element_type: Type = array_element_type(dynamic_value.type)
+                for index in 0..<targets.count |state, dynamic_value, lowered_values, element_type, pos|:
+                    index_value: LoweredValue = emit_constant(state, type_from_name("i64"), index.i64(), "", "", false, ir_span(pos))
+                    result: u32 = fresh_value(state)
+                    operand_start: u32 = state.operand_pool.count.u32()
+                    state.operand_pool.push(dynamic_value.value)
+                    state.operand_pool.push(index_value.value)
+                    state.instructions.push(Instruction{opcode: Opcode.UnpackArray, result: result, result_type: element_type, integer: targets.count.i64(), operand_start: operand_start, operand_count: 2, span: ir_span(pos)})
+                    lowered_values.push(LoweredValue{valid: true, value: result, type: element_type})
+            else:
+                for value_expression in values |state, lowered_values, valid|:
+                    lowered: LoweredValue = lower_expression(value_expression, state)
+                    lowered_values.push(lowered)
+                    valid <- false if not lowered.valid
             return true if not valid
 
             target_names: mutable darray[sview] = []
@@ -580,7 +598,7 @@ extend EsIr:
             if operator == TokenKind.Assign:
                 for index in 0..<target_names.count |state, target_names, target_indices, lowered_values, index|:
                     continue if target_names[index] == "_"
-                    if target_indices[index] != state.names.count:
+                    if target_indices[index] != binding_count_before_targets:
                         add_issue(state, LowerIssueKind.UnsupportedAssignmentTarget, pos.line, "destructuring `=` targets must introduce fresh bindings")
                     else:
                         state.names.push(target_names[index])
