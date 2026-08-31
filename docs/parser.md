@@ -150,7 +150,8 @@ resolve and type-check them without a parallel traversal.
 The following features belong to later, explicitly designed changes:
 
 - Algebraic `effect` declarations
-- Source handler declarations, operation clauses, and explicit `resume` expressions
+- Source handler declarations and operation clauses (callbacks may use the ordinary
+  `resume("handler", payload)` call lowered by the IR frontend)
 - Script-level dependency declarations if decorators are insufficient
 
 The launcher does not depend on deferred `@command` derivation: the current

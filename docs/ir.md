@@ -188,6 +188,11 @@ this resuming clause form; nonterminal policies select whether the captured fram
 is consumed once (`Linear`/`Affine`) or remains available for repeated callback-local
 resumptions (`MultiReplay`/`MultiClone`).
 
+Source callbacks may spell a typed resumption as `return resume("echo", payload)`.
+The lowerer requires a compile-time string-literal handler name, a non-void callback
+return type, and an exact payload/return type match, then emits `Opcode.Resume`.
+Handler descriptors and operation-clause wiring remain supplied at the source boundary.
+
 Handler failures are stored in explicit error-set rows on handlers and functions.
 They are not represented as `Result` values and are not merged into effect rows.
 Installing a handler subtracts its handled families from the effects required at
