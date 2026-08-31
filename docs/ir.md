@@ -130,10 +130,11 @@ Terminating recovery also accepts a void operation, for example `try assert(x) e
 return`, when the recovery clause ends control flow.
 
 F-strings are parser sugar for the compiler-owned `__fstr` call. Lowering accepts
-text, signed `i64`, `f64`, and `bool` expressions, converting non-text pieces with
-the existing `FormatInt`/`FormatFloat`/`FormatBool` operations before emitting a
-left-to-right chain of ordinary `Concat` instructions; literal chunks remain
-`Constant` values. Aggregates require an explicit formatting operation. This
+text, signed `i64`, `f64`, `bool`, and text-backed nominal expressions, converting
+non-text pieces with the existing `FormatInt`/`FormatFloat`/`FormatBool`/
+`FormatNominal` operations before emitting a left-to-right chain of ordinary
+`Concat` instructions; literal chunks remain `Constant` values. Aggregates
+require an explicit formatting operation. This
 keeps interpolation visible in the verified IR and gives the interpreter,
 bytecode, JIT, and native backends one ownership and evaluation-order contract.
 
