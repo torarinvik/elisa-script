@@ -230,7 +230,9 @@ Its initial runtime grammar supports literal characters, `.`, start/end anchors
 `^` and `$`, escaped literals, character classes and ranges (`[abc]`, `[a-z]`,
 `[^0-9]`), and the greedy quantifiers `*`, `+`, and `?`. The Perl-style shorthand
 classes `\d`, `\D`, `\w`, `\W`, `\s`, and `\S` work both as atoms and inside
-classes. Their meaning is deliberately ASCII and locale-independent so differential
+classes. Word-boundary atoms `\b` and `\B` are zero-width checks at ASCII word/non-word
+transitions (including the beginning and end of text). Their meaning is deliberately
+ASCII and locale-independent so differential
 tests observe identical behavior on every backend. Search is unanchored unless `^`
 is present. Top-level `|` alternation evaluates branches from left to right, with
 `^` and `$` scoped to the branch in which they occur; escaped pipes and pipes inside
