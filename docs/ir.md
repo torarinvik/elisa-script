@@ -148,9 +148,9 @@ Terminating recovery also accepts a void operation, for example `try assert(x) e
 return`, when the recovery clause ends control flow.
 
 F-strings are parser sugar for the compiler-owned `__fstr` call. Lowering accepts
-text, signed `i64`, `f64`, `bool`, text-backed nominal, array, and dictionary
-expressions, converting non-text pieces with the existing
-`FormatInt`/`FormatFloat`/`FormatBool`/`FormatNominal`/`FormatAggregate`
+text, `char`, any integer width, `f64`, `bool`, text-backed nominal, array, and
+dictionary expressions, converting non-text pieces with the existing
+`FormatChar`/`FormatInt`/`FormatFloat`/`FormatBool`/`FormatNominal`/`FormatAggregate`
 operations before emitting a left-to-right chain of ordinary `Concat`
 instructions; literal chunks remain `Constant` values. `FormatAggregate` uses
 an explicit stack to render nested arrays and dictionaries in stable bracketed
@@ -956,7 +956,7 @@ and are copied into the text result without implicit widening elsewhere.
 `FormatAggregate` has type `Array[T] | Map[K, V] -> Text`; it emits `[a, b]` or
 `{key: value}` using insertion order and the same scalar spellings as the
 corresponding `Format*` operations. The Python-compatible `str(value)` facade
-selects `FormatInt`, `FormatFloat`, `FormatBool`, `FormatNominal`, or
+selects `FormatChar`, `FormatInt`, `FormatFloat`, `FormatBool`, `FormatNominal`, or
 `FormatAggregate` for the corresponding exact type and returns text unchanged
 for text values; all integer widths use `FormatInt` without implicit numeric
 coercion. Nominal and
