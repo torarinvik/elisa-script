@@ -158,15 +158,30 @@ Error-family declarations use the same enum-shaped AST metadata as Elisa:
 `raise UserError.Bad` is parsed as a `raise` call with one `Field` operand, which
 lets lowering preserve the family and tag for checked error propagation.
 
-## Deferred parser work
+## Effect declarations
 
-The following features belong to later, explicitly designed changes:
+Elisascript accepts algebraic effect-family declarations using Elisa's declaration
+shape. A family may contain bodiless operation signatures:
 
-- Algebraic `effect` declarations
-- Script-level dependency declarations if decorators are insufficient
+```elisa
+effect Writer:
+    def write(value: sview) -> void
+```
 
-Source operation handlers use the existing decorator syntax while the full `effect`
-declaration grammar remains deferred. A top-level callback can declare one exact
+An effect with no operations may use the compact marker form `effect Marker: pass`.
+
+The parser keeps the existing declaration ABI and records the family plus its
+first-level operation names in file metadata. Semantic analysis uses that registry
+to make `signal Writer.write(...)` statically checkable; operations on builtin or
+permission-only families remain host-defined. Operation parameter/return contracts
+are still checked at handler clauses and performed values by the IR verifier, so a
+source effect declaration never weakens callback typing.
+
+Script-level dependency declarations remain deferred if decorators prove
+insufficient.
+
+Source operation handlers use the existing decorator syntax alongside the
+declaration metadata above. A top-level callback can declare one exact
 operation clause with `@handler("name", "Family.Operation")`; an optional third
 argument selects `Linear`, `Affine`, `MultiReplay`, or `MultiClone`. Multiple callbacks
 may contribute clauses to the same handler, and their ordinary typed parameters and

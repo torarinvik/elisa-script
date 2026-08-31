@@ -61,6 +61,27 @@ but may not appear immediately after a prefix, next to a decimal point, or next
 to a type suffix. Binary and octal literals reject out-of-base digits during
 lexing rather than silently changing value.
 
+## Source-declared effects
+
+Elisascript supports named algebraic effect families with bodiless operation
+signatures:
+
+```elisa
+effect Writer:
+    def write(value: sview) -> void
+
+def emit(value: sview) -> void can[Writer.write]:
+    signal Writer.write(value)
+```
+
+The parser records the family and each first-level operation in file metadata;
+semantic analysis rejects `signal Writer.unknown(...)` while leaving builtin and
+permission-only families open to host-defined operations. Operation payload and
+resumption types remain governed by the ordinary typed handler callback and IR
+verifier, so declaration metadata cannot weaken static checking. Dynamic handlers
+may therefore intercept user-defined operations without introducing a second AST
+or runtime representation.
+
 ## Module constants
 
 Immutable, initialized module-level constants are available from every function

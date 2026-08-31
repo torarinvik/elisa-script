@@ -124,6 +124,7 @@ extend Parser:
             can Abort.Panic:
                 rebind token: Token, parser = parser.advance()              # consume the contextual keyword
                 rebind name_token: Token, parser = parser.expect(TokenKind.Ident)
+                declaration_kind_hint: sview = Lexer::text_or_empty(token, parser.source)
                 # Record protocol declarations + their `is Parent` supertype (captured before the header
                 # skip) so the unknown-interface check can validate impl targets and protocol parents.
                 keyword_text: sview = Lexer::text_or_empty(token, parser.source)
@@ -137,7 +138,10 @@ extend Parser:
                 while parser.peek() != TokenKind.Eof |parser, depth|:
                     header_kind: TokenKind = parser.peek()
                     break if depth == 0 and header_kind == TokenKind.Newline
-                    break if depth == 0 and header_kind == TokenKind.Colon and parser.peek_at(1) == TokenKind.Newline
+                    # `effect Name: pass` is the compact marker form for an effect
+                    # family with no declared operations. Other named blocks retain
+                    # the newline-delimited header shape.
+                    break if depth == 0 and header_kind == TokenKind.Colon and (parser.peek_at(1) == TokenKind.Newline or declaration_kind_hint == "effect")
                     parser <- parser.error_at(Ast::ParseErrorKind.UnexpectedToken, parser.cursor()) if depth == 0 and header_kind == TokenKind.Colon
                     depth <- depth + 1 if header_kind == TokenKind.LParen or header_kind == TokenKind.LBracket
                     depth <- depth - 1 if header_kind == TokenKind.RParen or header_kind == TokenKind.RBracket
@@ -150,12 +154,22 @@ extend Parser:
                 # propagate) so the reserved-name check can see them.
                 parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: "__permission_decl", name: Lexer::text_or_empty(name_token, parser.source), line: token.line}) if declaration_kind == "permission"
                 parser <- parser.capture_permission_includes(Lexer::text_or_empty(name_token, parser.source)) if accepted_colon_2 and declaration_kind == "permission"
+                # Effect families share the permission namespace for grants, but their
+                # operation set is distinct. Record the declaration and first-level
+                # operation names before the body is skipped so `signal Family.Op`
+                # can be checked against a user-defined effect just like a builtin one.
+                parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: "__effect_decl", name: Lexer::text_or_empty(name_token, parser.source), line: token.line}) if declaration_kind == "effect"
+                parser <- parser.capture_effect_operations(Lexer::text_or_empty(name_token, parser.source)) if accepted_colon_2 and declaration_kind == "effect" and parser.peek() == TokenKind.Newline and parser.peek_at(1) == TokenKind.Indent
                 # A protocol's DEFAULT methods (a `def` with an indented body) carry real code +
                 # contracts stage0 checks; materialize each as a Decl.Func on the obligation-only
                 # side-list (NOT top_decls, so the full check suite does not over-fire on protocol-
                 # scoped methods). `Self` already resolves as a type name.
                 if accepted_colon_2 and declaration_kind == "protocol":
                     parser <- parser.parse_protocol_default_methods()
+                elif accepted_colon_2 and declaration_kind == "effect" and parser.peek() != TokenKind.Newline:
+                    inline_word: sview = Lexer::text_or_empty(parser.cursor(), parser.source)
+                    parser <- parser.error_at(Ast::ParseErrorKind.UnexpectedToken, parser.cursor()) if inline_word != "pass"
+                    parser <- parser.skip_to_line_end()
                 else:
                     parser <- parser.skip_indented_block() if accepted_colon_2
                 return (Ast::Decl.Alias(Lexer::text_or_empty(name_token, parser.source), (Ast::Expr.Invalid), Ast::pos_of_token(token)))
@@ -213,6 +227,28 @@ extend Parser:
                         word: sview = Lexer::text_or_empty(parser.tokens[parser.position + scan], parser.source)
                         parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: permission_name, name: word, line: 3900000007}) if in_includes and word != "includes"
                         in_includes <- true if word == "includes"
+                    scan <- scan + 1
+
+        # Peek-scan an `effect FAMILY:` body and retain the names of its operation
+        # declarations. Effect declarations intentionally remain a side-table: the
+        # stable Decl ABI still represents named blocks as Alias nodes, while semantic
+        # effect checks need a precise family/operation registry. Only first-level `def`
+        # entries belong to the effect; nested defs in an operation body are ignored.
+        # The sentinel line keeps these rows distinct from ordinary enum annotations.
+        def capture_effect_operations(parser: lmut Parser, effect_name: sview) -> void:
+            can Memory.Allocate, Abort.Panic:
+                scan: mutable usize = 0
+                depth: mutable int = 0
+                seen_indent: mutable bool = false
+                while parser.peek_at(scan) != TokenKind.Eof |parser, scan, depth, seen_indent|:
+                    kind: TokenKind = parser.peek_at(scan)
+                    seen_indent <- true if kind == TokenKind.Indent
+                    depth <- depth + 1 if kind == TokenKind.Indent
+                    depth <- depth - 1 if kind == TokenKind.Dedent
+                    break if seen_indent and depth == 0 and kind == TokenKind.Dedent
+                    if depth == 1 and kind == TokenKind.Def and parser.peek_at(scan + 1) == TokenKind.Ident:
+                        operation_token: Token = parser.tokens[parser.position + scan + 1]
+                        parser.enum_annotations <- parser.enum_annotations.push(Ast::EnumAnnotation{owner: effect_name, name: Lexer::text_or_empty(operation_token, parser.source), line: 3900000080})
                     scan <- scan + 1
 
         # Scan a method signature's leading tokens (up to the block colon / end of line) for a
