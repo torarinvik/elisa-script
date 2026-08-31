@@ -240,6 +240,26 @@ extend EsIr:
             produces_value: mutable bool
 
 
+        # Aggregate formatting uses an explicit stack instead of host recursion.
+        # This keeps nested values bounded by caller-owned storage and makes the
+        # traversal compatible with the interpreter's state-machine discipline.
+        const enum RuntimeFormatFrameState of u8:
+            Enter
+            ArrayItem
+            MapItem
+            MapValue
+
+
+        struct RuntimeFormatFrame:
+            value: RuntimeValue
+            state: mutable RuntimeFormatFrameState
+            index: mutable u32 = 0
+
+
+        const INTERPRET_MAX_FORMAT_BYTES: usize = 67108864
+        const INTERPRET_MAX_FORMAT_FRAMES: usize = 1000000
+
+
         struct ErrorGuard:
             target: u32
             handler_depth: usize
@@ -802,6 +822,20 @@ extend EsIr:
                 machine.failure <- InterpretFailure.TypeMismatch
                 return runtime_void()
             return runtime_text(operand.text)
+
+
+        def evaluate_format_aggregate(storage: darray[RuntimeValue]&, operand: RuntimeValue, machine: mutable Machine&) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+            if operand.kind != RuntimeValueKind.Array and operand.kind != RuntimeValueKind.Map:
+                machine.failure <- InterpretFailure.TypeMismatch
+                return runtime_void()
+            if operand.kind == RuntimeValueKind.Array and not runtime_array_range_valid(storage, operand) or operand.kind == RuntimeValueKind.Map and not runtime_map_range_valid(storage, operand):
+                machine.failure <- InterpretFailure.IndexOutOfBounds
+                return runtime_void()
+            formatted: sview = format_runtime_value_text(storage, operand)
+            if formatted == "":
+                machine.failure <- InterpretFailure.Console
+                return runtime_void()
+            return runtime_text(formatted)
 
 
         def integer_min(type: Type&) -> i64:
@@ -4974,6 +5008,11 @@ extend EsIr:
                             dispatch.value <- evaluate_format_nominal(operand, machine)
                             break
 
+                        Dispatch, Opcode.FormatAggregate:
+                            operand: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
+                            dispatch.value <- evaluate_format_aggregate(storage, operand, machine)
+                            break
+
                         Dispatch, Opcode.Negate:
                             operand: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
                             dispatch.value <- evaluate_negate(operand, instruction.result_type, machine)
@@ -5867,6 +5906,116 @@ extend EsIr:
 
         def format_bool_value(value: bool) -> sview:
             return "true" if value else "false"
+
+
+        # Render arrays and dictionaries with a stable, Python-shaped spelling.
+        # Text members remain unquoted because Elisascript text is already a
+        # concrete byte view; callers that need escaping can apply an explicit
+        # text operation before formatting.  Malformed values return an empty
+        # view, while valid aggregates are always bracketed and therefore never
+        # ambiguous with that sentinel.
+        def format_runtime_value_text(storage: darray[RuntimeValue]&, value: RuntimeValue) -> sview can[Memory.Allocate, Abort.Panic]:
+            output: mutable dstr = []
+            frames: mutable darray[RuntimeFormatFrame] = [RuntimeFormatFrame{value: value, state: RuntimeFormatFrameState.Enter}]
+            valid: mutable bool = true
+            while frames.count > 0 and valid:
+                return "" if frames.count > INTERPRET_MAX_FORMAT_FRAMES
+                frame_index: usize = frames.count - 1
+                frame: mutable RuntimeFormatFrame = frames[frame_index]
+                if frame.state == RuntimeFormatFrameState.Enter:
+                    match frame.value.kind:
+                        RuntimeValueKind.Void:
+                            return "" if output.count > INTERPRET_MAX_FORMAT_BYTES - 4
+                            output.push(118)
+                            output.push(111)
+                            output.push(105)
+                            output.push(100)
+                            _ = frames.pop()
+                        RuntimeValueKind.Bool:
+                            text: sview = "true" if frame.value.boolean else "false"
+                            for offset in 0..<sview_len(text) |output, text|:
+                                return "" if output.count >= INTERPRET_MAX_FORMAT_BYTES
+                                output.push(sview_at(text, offset))
+                            _ = frames.pop()
+                        RuntimeValueKind.Int:
+                            number: heap u8& = int_to_string(frame.value.integer)
+                            length: usize = runtime_strlen(number)
+                            for offset in 0..<length |output, number|:
+                                return "" if output.count >= INTERPRET_MAX_FORMAT_BYTES
+                                output.push(number[offset])
+                            _ = frames.pop()
+                        RuntimeValueKind.Float:
+                            number: heap u8& = float_to_string_scratch(frame.value.decimal)
+                            length: usize = runtime_strlen(number)
+                            for offset in 0..<length |output, number|:
+                                return "" if output.count >= INTERPRET_MAX_FORMAT_BYTES
+                                output.push(number[offset])
+                            _ = frames.pop()
+                        RuntimeValueKind.Text:
+                            for offset in 0..<sview_len(frame.value.text) |output, frame|:
+                                return "" if output.count >= INTERPRET_MAX_FORMAT_BYTES
+                                output.push(sview_at(frame.value.text, offset))
+                            _ = frames.pop()
+                        RuntimeValueKind.Array:
+                            valid <- runtime_array_range_valid(storage, frame.value)
+                            if valid:
+                                return "" if output.count >= INTERPRET_MAX_FORMAT_BYTES
+                                output.push(91)
+                                frame.state <- RuntimeFormatFrameState.ArrayItem
+                                frames[frame_index] <- frame
+                            else:
+                                return ""
+                        RuntimeValueKind.Map:
+                            valid <- runtime_map_range_valid(storage, frame.value)
+                            if valid:
+                                return "" if output.count >= INTERPRET_MAX_FORMAT_BYTES
+                                output.push(123)
+                                frame.state <- RuntimeFormatFrameState.MapItem
+                                frames[frame_index] <- frame
+                            else:
+                                return ""
+                        RuntimeValueKind.ProcessCapture:
+                            return ""
+                elif frame.state == RuntimeFormatFrameState.ArrayItem:
+                    if frame.index >= frame.value.array_count:
+                        return "" if output.count >= INTERPRET_MAX_FORMAT_BYTES
+                        output.push(93)
+                        _ = frames.pop()
+                    else:
+                        return "" if output.count > INTERPRET_MAX_FORMAT_BYTES - 2
+                        output.push(44) if frame.index > 0
+                        output.push(32) if frame.index > 0
+                        child: RuntimeValue = storage[frame.value.array_start.usize() + frame.index.usize()]
+                        frame.index <- frame.index + 1
+                        frames[frame_index] <- frame
+                        frames.push(RuntimeFormatFrame{value: child, state: RuntimeFormatFrameState.Enter})
+                elif frame.state == RuntimeFormatFrameState.MapItem:
+                    if frame.index >= frame.value.map_count:
+                        return "" if output.count >= INTERPRET_MAX_FORMAT_BYTES
+                        output.push(125)
+                        _ = frames.pop()
+                    else:
+                        return "" if output.count > INTERPRET_MAX_FORMAT_BYTES - 2
+                        output.push(44) if frame.index > 0
+                        output.push(32) if frame.index > 0
+                        key: RuntimeValue = storage[frame.value.map_start.usize() + frame.index.usize() * 2]
+                        frame.state <- RuntimeFormatFrameState.MapValue
+                        frames[frame_index] <- frame
+                        frames.push(RuntimeFormatFrame{value: key, state: RuntimeFormatFrameState.Enter})
+                else:
+                    return "" if output.count > INTERPRET_MAX_FORMAT_BYTES - 2
+                    output.push(58)
+                    output.push(32)
+                    value_offset: usize = frame.value.map_start.usize() + frame.index.usize() * 2 + 1
+                    child: RuntimeValue = storage[value_offset]
+                    frame.index <- frame.index + 1
+                    frame.state <- RuntimeFormatFrameState.MapItem
+                    frames[frame_index] <- frame
+                    frames.push(RuntimeFormatFrame{value: child, state: RuntimeFormatFrameState.Enter})
+            return "" if not valid or output.count == 0 or output.count > INTERPRET_MAX_FORMAT_BYTES
+            owned: mutable dstr = ctx_fstr_alloc(output.count)
+            ctx_fstr_append(owned, output.items, output.count)
+            return bytes_view(owned)
 
 
         def path_join_value(base: sview, leaf: sview) -> sview can[Memory.Allocate, Abort.Panic]:

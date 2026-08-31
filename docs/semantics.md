@@ -598,14 +598,16 @@ behavior identical.
 
 Interpolated strings use Elisa's `f"...{expr}..."` syntax. The parser represents
 them as ordered `__fstr` pieces. Elisascript accepts text, signed `i64`, `f64`,
-`bool`, and text-backed nominal dynamic pieces and lowers the sequence to
-`Concat` instructions, inserting the existing
-`FormatInt`/`FormatFloat`/`FormatBool`/`FormatNominal` conversion for non-text
-values. Integers use canonical decimal formatting, floats use the core `%g`
-spelling, booleans use lowercase `true`/`false`, and nominals expose their
-underlying text payload. Literal pieces use the same escape decoder as ordinary
-strings, and expressions are evaluated exactly once from left to right.
-Aggregates are rejected until an explicit formatting operation is used.
+`bool`, text-backed nominal, array, and dictionary dynamic pieces and lowers the
+sequence to `Concat` instructions, inserting the existing
+`FormatInt`/`FormatFloat`/`FormatBool`/`FormatNominal`/`FormatAggregate`
+conversion for non-text values. Integers use canonical decimal formatting,
+floats use the core `%g` spelling, booleans use lowercase `true`/`false`, and
+nominals expose their underlying text payload. Aggregate values use stable
+bracketed forms (`[a, b]` and `{key: value}`), preserving insertion order for
+dictionaries and formatting nested arrays/maps iteratively with a 64 MiB output
+bound. Literal pieces use the same escape decoder as ordinary strings, and
+expressions are evaluated exactly once from left to right.
 `format_bool(value: bool) -> sview` remains available when a standalone boolean
 conversion is clearer.
 Consequently the reference
@@ -1076,7 +1078,8 @@ programs should be split into multiple modules rather than bypassing the limit.
 
 Standard streams are explicit typed operations rather than shell behavior. The
 Python-shaped `print(value, ...) -> usize` convenience is compiler-known: it
-formats text, signed `i64`, `f64`, `bool`, and text-backed nominal arguments,
+formats text, signed `i64`, `f64`, `bool`, text-backed nominal, array, and
+dictionary arguments,
 joins them with the typed text control `sep` (default `" "`), appends the typed
 text control `end` (default `"\n"`), and delegates to the same stdout operation.
 `echo` and

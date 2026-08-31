@@ -148,11 +148,13 @@ Terminating recovery also accepts a void operation, for example `try assert(x) e
 return`, when the recovery clause ends control flow.
 
 F-strings are parser sugar for the compiler-owned `__fstr` call. Lowering accepts
-text, signed `i64`, `f64`, `bool`, and text-backed nominal expressions, converting
-non-text pieces with the existing `FormatInt`/`FormatFloat`/`FormatBool`/
-`FormatNominal` operations before emitting a left-to-right chain of ordinary
-`Concat` instructions; literal chunks remain `Constant` values. Aggregates
-require an explicit formatting operation. This
+text, signed `i64`, `f64`, `bool`, text-backed nominal, array, and dictionary
+expressions, converting non-text pieces with the existing
+`FormatInt`/`FormatFloat`/`FormatBool`/`FormatNominal`/`FormatAggregate`
+operations before emitting a left-to-right chain of ordinary `Concat`
+instructions; literal chunks remain `Constant` values. `FormatAggregate` uses
+an explicit stack to render nested arrays and dictionaries in stable bracketed
+form with a 64 MiB output bound. This
 keeps interpolation visible in the verified IR and gives the interpreter,
 bytecode, JIT, and native backends one ownership and evaluation-order contract.
 
@@ -940,11 +942,14 @@ the underlying text representation of a text-backed nominal value for the
 explicit `str(value)` facade. It is verified separately from `Copy`, so no
 other implicit nominal-to-text conversion is introduced, and it is eligible
 for the same interpreter and direct bytecode paths.
-The Python-compatible `str(value)` facade selects `FormatInt`, `FormatFloat`,
-`FormatBool`, or `FormatNominal` for the corresponding exact scalar or
-text-backed nominal type and returns text unchanged for text values; aggregates
-and other integer widths are rejected before emission. Nominal conversion is
-explicit at this boundary rather than an implicit coercion elsewhere.
+`FormatAggregate` has type `Array[T] | Map[K, V] -> Text`; it emits `[a, b]` or
+`{key: value}` using insertion order and the same scalar spellings as the
+corresponding `Format*` operations. The Python-compatible `str(value)` facade
+selects `FormatInt`, `FormatFloat`, `FormatBool`, `FormatNominal`, or
+`FormatAggregate` for the corresponding exact type and returns text unchanged
+for text values; other integer widths are rejected before emission. Nominal and
+aggregate conversion is explicit at this boundary rather than an implicit
+coercion elsewhere.
 The `int(value)` and `float(value)` facades reuse `ParseInt`/`ParseFloat` for
 text and return exact `i64`/`f64` operands unchanged; `bool(value)` is an exact
 boolean identity. Lossy numeric and truthiness conversions are rejected before
