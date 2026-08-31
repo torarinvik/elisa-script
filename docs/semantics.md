@@ -189,8 +189,9 @@ The compiler-known `starts_with(text, prefix) -> bool` and
 prefix/suffix checks commonly used by shell and Python ports. Both arguments are
 `sview`; an empty boundary succeeds, and a boundary longer than the input fails.
 They are pure, deterministic, and shadowable by a source function with the same
-name. Their dedicated IR operations are shared by the reference interpreter and
-the direct bytecode backend.
+name. The compact global aliases `startswith` and `endswith` are equivalent typed
+spellings. Their dedicated IR operations are shared by the reference interpreter
+and the direct bytecode backend.
 
 The compiler-known `replace(text, old, replacement) -> sview` operation performs
 literal, left-to-right, non-overlapping substitution. The `old` argument is not
