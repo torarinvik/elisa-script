@@ -24,6 +24,12 @@ parameter or local with the same name shadows the module constant. Mutable or
 uninitialized globals remain outside this initial IR until explicit global storage
 and synchronization operations are defined.
 
+In an explicit `darray[T]` context, tuple syntax `(a, b, ...)` is lowered through
+the same `MakeArray` operation after each element is checked against `T`; `()`
+therefore provides a typed empty array initializer. The IR does not yet claim a
+first-class heterogeneous tuple representation, so unconstrained tuple values
+remain a lowering diagnostic.
+
 Aggregate `Type` fields remain bounded for compatibility with the first lowering,
 but every lowered module also carries a pointer-free `TypeTable`. Its one-based
 `TypeDescriptor` rows refer to child rows through a flat `u32` pool; interning

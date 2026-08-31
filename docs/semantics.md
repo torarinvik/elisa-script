@@ -70,6 +70,13 @@ lexical shadowing still applies, so a parameter or local with the same name wins
 `global`/mutable and uninitialized declarations remain rejected by the initial
 scripting IR until explicit global storage semantics are added.
 
+Tuple literals also have a contextual homogeneous-sequence form for Python-style
+ports: when the destination type is an explicit `darray[T]`, `(a, b, c)` is
+checked element-by-element against `T` and lowered as an ordinary array value.
+An empty `()` is accepted in the same context. Heterogeneous tuples and
+unconstrained tuple-typed values remain rejected until first-class recursive tuple
+values are added.
+
 String payloads are decoded once at the IR constant boundary. Ordinary and
 adjacent triple-quoted literals recognize Elisa's standard escapes (`\\n`, `\\t`,
 `\\r`, `\\0`, `\\\\`, `\\"`, `\\'`, `\\xNN`, and `\\uNNNN`); unknown or malformed
