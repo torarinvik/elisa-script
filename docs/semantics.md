@@ -691,6 +691,9 @@ It rejects missing digits, trailing characters, and incomplete exponents. The
 matching `format_float(value: f64) -> sview` uses Elisa's `%g`-style canonical
 runtime spelling and keeps the returned text in permanent storage.
 `format_bool(value: bool) -> sview` returns canonical lowercase `true` or `false`.
+`format_char(value: char) -> sview` returns the character's byte-oriented text
+payload. Both formatting helpers are compiler-known and shadowable by source
+declarations.
 The Python-compatible `str(value) -> sview` facade accepts text (identity),
 `char`, signed `i64`, `f64`, `bool`, and the text-backed nominals `Path`, `Glob`,
 `Regex`, `Executable`, and `Url`, selecting the corresponding typed formatter
