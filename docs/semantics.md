@@ -279,15 +279,17 @@ byte offsets as `find`/`rfind`, but raise `IndexOutOfBounds` through the ordinar
 the start or end boundary respectively. Array `.index(element)` follows the
 same checked error behavior, while `.find(element)` remains the `-1` search form.
 
-Text classification methods `text.isdigit()`, `text.isalpha()`, `text.isalnum()`,
-`text.isspace()`, `text.islower()`, `text.isupper()`, and `text.isascii()` take no
-arguments and return `bool`. They use non-empty, ASCII byte-oriented rules:
-digits are `0`-`9`,
+Text classification methods `text.isdigit()`, `text.isdecimal()`,
+`text.isnumeric()`, `text.isalpha()`, `text.isalnum()`, `text.isspace()`,
+`text.islower()`, `text.isupper()`, `text.isascii()`, and `text.isprintable()`
+take no arguments and return `bool`. They use non-empty, ASCII byte-oriented
+rules: digits, decimals, and numerics are `0`-`9`,
 alphabetic bytes are ASCII letters, alphanumeric accepts either class, and
 whitespace is space, tab, LF, VT, FF, or CR. `islower` and `isupper` ignore
 uncased bytes but require at least one cased byte, then require every cased byte
-to have the requested case. Empty text returns `false` for every predicate
-except `isascii()`, which returns `true` because the empty string contains no
+to have the requested case. `isprintable` accepts visible ASCII bytes `0x20`
+through `0x7e` only. Empty text returns `false` for every predicate except
+`isascii()`, which returns `true` because the empty string contains no
 non-ASCII bytes.
 
 Text boundary-removal methods `text.removeprefix(prefix)` and
