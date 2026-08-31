@@ -508,6 +508,24 @@ Void fallible operations use the same guard machinery in statement position:
 `try assert(condition) else return` may terminate on failure. Void recovery never
 produces a sentinel value and is rejected when a non-void value is required.
 
+## Ordered scalar matching
+
+Scalar `match` arms accept an ordered `A | B` pattern for alternatives with the
+same body and guard:
+
+```elisa
+match exit_status:
+    0 | 2:
+        return "acceptable"
+    _:
+        return "failed"
+```
+
+The lowerer expands each alternative into a typed, source-order arm, so each
+literal or pin is tested exactly once and a later arm remains available when an
+earlier guard fails. Alternatives that introduce incompatible bindings or use
+aggregate subpatterns remain rejected by the scalar lowering.
+
 ## Structural array matching
 
 Array values support a bounded, strongly typed prefix/rest pattern form in
