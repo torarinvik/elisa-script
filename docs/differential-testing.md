@@ -95,7 +95,7 @@ and status calls would observe three different runs. The intrinsic remains
 shell-free and keeps process failures in `error[ProcessError]`.
 
 For Python-shaped adapters, the same snapshot can be read with typed fields:
-`capture.returncode`/`capture.exit_status`, `capture.stdout`, and
+`capture.returncode`/`capture.exit_status`/`capture.status`, `capture.stdout`, and
 `capture.stderr` (the explicit `process_*` field spellings are also accepted).
 These are aliases over the same one-shot accessors, so field syntax does not
 change the differential run or introduce a second process invocation.
