@@ -258,6 +258,12 @@ consistent across the reference interpreter and bytecode backends: standard Elis
 escapes decode, while unknown or malformed escapes remain source bytes. Triple-
 quoted payloads can contain newlines; bare triple quotes are still lexed as block
 comments.
+`TextPartition` has signature `Text × Text -> Array[Text]`. Its two text operands
+are the haystack and separator; `Instruction.integer` mode 0 selects the first
+separator and mode 1 the last. The result always contains exactly three fields
+(before, separator, after), using an empty separator field when no occurrence
+exists. Both global and receiver partition spellings lower to this verified
+operation.
 `RegexSearch` is a separate semantic opcode with the exact signature
 `Text × Named(Regex) -> Bool`. The reference interpreter executes it through an
 explicit search machine with greedy backtracking; future bytecode, JIT, and native

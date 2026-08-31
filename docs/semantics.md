@@ -244,6 +244,14 @@ the resulting fields are returned in their original left-to-right order. The
 zero-argument `text.rsplit()` form uses the same ASCII-whitespace rule as
 `text.split()`. The zero-length separator follows the ordinary byte-splitting
 rule used by `split`.
+`text.partition(separator)` and `text.rpartition(separator)` return a fixed
+three-field `darray[sview]`: the text before the selected separator, the
+separator itself, and the remaining text. `partition` selects the first
+occurrence while `rpartition` selects the last; when no occurrence exists they
+return `[text, "", ""]` (or `["", "", text]` for `rpartition`). This ordinary
+array shape can be destructured with Elisa's checked multi-binding assignment.
+The global `partition(text, separator)` and `rpartition(text, separator)`
+spellings are equivalent.
 Receivers and arguments must be text values, and method arity is checked during
 lowering.
 The zero-argument form splits on runs of ASCII whitespace, drops leading and
