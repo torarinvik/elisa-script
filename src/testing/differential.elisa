@@ -48,6 +48,14 @@ module EsDifferential:
             boolean: bool = false
 
 
+        # Floating-point comparisons are exact by default.  A caller that is
+        # comparing numerically equivalent ports may opt into an explicit
+        # absolute/relative tolerance; no normalization is implicit.
+        struct DifferentialFloatTolerance:
+            absolute: f64 = 0.0
+            relative: f64 = 0.0
+
+
         struct DifferentialObservation:
             trace: u64
             value: DifferentialValue
@@ -737,6 +745,7 @@ module EsDifferential:
             state: mutable DifferentialCompareState
             index: mutable usize
             result: mutable DifferentialComparison
+            tolerance: DifferentialFloatTolerance
 
 
         const enum DifferentialValueEqualState of u8:
@@ -759,13 +768,27 @@ module EsDifferential:
             current: mutable DifferentialValueEqualPair
             pending: mutable darray[DifferentialValueEqualPair]
             equal: mutable bool
+            tolerance: DifferentialFloatTolerance
 
 
         # Equality uses an explicit pair stack rather than recursive calls. This
         # keeps arbitrarily nested arrays bounded by caller-owned storage and
         # makes every comparison transition visible to the Elisa machine.
-        def differential_values_equal(left_storage: darray[DifferentialValue]&, left: DifferentialValue, right_storage: darray[DifferentialValue]&, right: DifferentialValue) -> bool can[Memory.Allocate, Abort.Panic]:
-            cursor: mutable DifferentialValueEqualCursor = DifferentialValueEqualCursor{state: DifferentialValueEqualState.Select, index: 0, current: DifferentialValueEqualPair{left: left, right: right}, pending: [DifferentialValueEqualPair{left: left, right: right}], equal: true}
+        def differential_float_equal(left: f64, right: f64, tolerance: DifferentialFloatTolerance) -> bool:
+            return true if left == right
+            return false if tolerance.absolute < 0.0 or tolerance.relative < 0.0
+            difference: mutable f64 = left - right
+            difference <- -difference if difference < 0.0
+            left_scale: mutable f64 = left
+            left_scale <- -left_scale if left_scale < 0.0
+            right_scale: mutable f64 = right
+            right_scale <- -right_scale if right_scale < 0.0
+            scale: f64 = left_scale if left_scale > right_scale else right_scale
+            return difference <= tolerance.absolute + tolerance.relative * scale
+
+
+        def differential_values_equal(left_storage: darray[DifferentialValue]&, left: DifferentialValue, right_storage: darray[DifferentialValue]&, right: DifferentialValue, tolerance: DifferentialFloatTolerance = DifferentialFloatTolerance{}) -> bool can[Memory.Allocate, Abort.Panic]:
+            cursor: mutable DifferentialValueEqualCursor = DifferentialValueEqualCursor{state: DifferentialValueEqualState.Select, index: 0, current: DifferentialValueEqualPair{left: left, right: right}, pending: [DifferentialValueEqualPair{left: left, right: right}], equal: true, tolerance: tolerance}
             machine over cursor.state while cursor.equal:
                 state Compare
                 start Compare
@@ -802,7 +825,7 @@ module EsDifferential:
                     cursor.state <- DifferentialValueEqualState.Select if cursor.equal else DifferentialValueEqualState.Done
                     -> Compare
                 Compare, DifferentialValueEqualState.Scalar if cursor.current.left.kind == DifferentialValueKind.Float:
-                    cursor.equal <- cursor.current.left.decimal == cursor.current.right.decimal
+                    cursor.equal <- differential_float_equal(cursor.current.left.decimal, cursor.current.right.decimal, cursor.tolerance)
                     cursor.state <- DifferentialValueEqualState.Select if cursor.equal else DifferentialValueEqualState.Done
                     -> Compare
                 Compare, DifferentialValueEqualState.Scalar if cursor.current.left.kind == DifferentialValueKind.ProcessCapture:
@@ -844,7 +867,7 @@ module EsDifferential:
                     -> Compare
 
                 Compare, DifferentialValueEqualState.MapValidate:
-                    cursor.equal <- differential_map_values_equal(left_storage, cursor.current.left, right_storage, cursor.current.right)
+                    cursor.equal <- differential_map_values_equal(left_storage, cursor.current.left, right_storage, cursor.current.right, cursor.tolerance)
                     cursor.state <- DifferentialValueEqualState.Select if cursor.equal else DifferentialValueEqualState.Done
                     -> Compare
 
@@ -857,7 +880,7 @@ module EsDifferential:
         # Map snapshots use the same order-insensitive key/value semantics as the
         # interpreter.  A key/value pair is considered present when both members
         # compare equal; duplicate entries therefore remain deterministic data.
-        def differential_map_values_equal(left_storage: darray[DifferentialValue]&, left: DifferentialValue, right_storage: darray[DifferentialValue]&, right: DifferentialValue) -> bool can[Memory.Allocate, Abort.Panic]:
+        def differential_map_values_equal(left_storage: darray[DifferentialValue]&, left: DifferentialValue, right_storage: darray[DifferentialValue]&, right: DifferentialValue, tolerance: DifferentialFloatTolerance = DifferentialFloatTolerance{}) -> bool can[Memory.Allocate, Abort.Panic]:
             false return if left.kind != DifferentialValueKind.Map or right.kind != DifferentialValueKind.Map
             false return if left.map_count != right.map_count
             left_start: usize = left.map_start.usize()
@@ -879,7 +902,7 @@ module EsDifferential:
                     right_pair: usize = right.map_start.usize() + right_offset * 2
                     right_key: DifferentialValue = right_storage[right_pair]
                     right_value: DifferentialValue = right_storage[right_pair + 1]
-                    if not matched[right_offset] and differential_values_equal(left_storage, left_key, right_storage, right_key) and differential_values_equal(left_storage, left_value, right_storage, right_value):
+                    if not matched[right_offset] and differential_values_equal(left_storage, left_key, right_storage, right_key, tolerance) and differential_values_equal(left_storage, left_value, right_storage, right_value, tolerance):
                         found <- true
                         matched[right_offset] <- true
                 false return if not found
@@ -890,8 +913,8 @@ module EsDifferential:
             return DifferentialComparison{equal: false, kind: kind, index: index, reason: reason}
 
 
-        def compare_differential_runs(reference: DifferentialRun&, candidate: DifferentialRun&) -> DifferentialComparison:
-            cursor: mutable DifferentialCompareCursor = DifferentialCompareCursor{state: DifferentialCompareState.ExitStatus, index: 0, result: DifferentialComparison{equal: true, kind: DifferentialDifferenceKind.Equal}}
+        def compare_differential_runs(reference: DifferentialRun&, candidate: DifferentialRun&, tolerance: DifferentialFloatTolerance = DifferentialFloatTolerance{}) -> DifferentialComparison:
+            cursor: mutable DifferentialCompareCursor = DifferentialCompareCursor{state: DifferentialCompareState.ExitStatus, index: 0, result: DifferentialComparison{equal: true, kind: DifferentialDifferenceKind.Equal}, tolerance: tolerance}
             machine over cursor.state while cursor.result.equal:
                 state Compare
                 start Compare
@@ -934,7 +957,7 @@ module EsDifferential:
                     cursor.state <- DifferentialCompareState.Done
                     -> Compare
 
-                Compare, DifferentialCompareState.ReturnValue if differential_values_equal(reference.values, reference.return_value, candidate.values, candidate.return_value):
+                Compare, DifferentialCompareState.ReturnValue if differential_values_equal(reference.values, reference.return_value, candidate.values, candidate.return_value, cursor.tolerance):
                     cursor.state <- DifferentialCompareState.ObservationCount
                     -> Compare
                 Compare, DifferentialCompareState.ReturnValue:
@@ -956,7 +979,7 @@ module EsDifferential:
                 Compare, DifferentialCompareState.Observation if cursor.index >= reference.observations.count:
                     cursor.state <- DifferentialCompareState.Done
                     -> Compare
-                Compare, DifferentialCompareState.Observation if reference.observations[cursor.index].trace == candidate.observations[cursor.index].trace and differential_values_equal(reference.values, reference.observations[cursor.index].value, candidate.values, candidate.observations[cursor.index].value):
+                Compare, DifferentialCompareState.Observation if reference.observations[cursor.index].trace == candidate.observations[cursor.index].trace and differential_values_equal(reference.values, reference.observations[cursor.index].value, candidate.values, candidate.observations[cursor.index].value, cursor.tolerance):
                     cursor.index <- cursor.index + 1
                     -> Compare
                 Compare, DifferentialCompareState.Observation if reference.observations[cursor.index].trace != candidate.observations[cursor.index].trace:

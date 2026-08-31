@@ -48,8 +48,10 @@ performs that conversion and rejects out-of-bounds snapshots through
 `DifferentialRunnerError`. Map comparison is order-insensitive but one-to-one:
 each candidate pair can satisfy at most one reference pair, including when an
 adapter supplies malformed duplicate entries. Float
-observations are compared exactly by default; a future tolerance policy can be
-layered on top without weakening the baseline comparator.
+observations are compared exactly by default. Call
+`compare_differential_runs(reference, candidate, DifferentialFloatTolerance{...})`
+to opt into explicit absolute/relative float tolerance; negative tolerances remain
+non-matching, and all non-float values stay exact.
 
 The executable contract is `EsDifferential.DifferentialRunner`. It is a typed
 specification, not a command-string escape hatch: the target executable, optional entry point,
