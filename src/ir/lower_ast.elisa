@@ -521,6 +521,114 @@ extend EsIr:
                         add_unique_name(names, state.names[owner])
 
 
+        # Lower a tuple-destructuring assignment whose right-hand side is a
+        # literal tuple/array.  The parser stores comma-separated targets as an
+        # Expr.Array, while the RHS may be Expr.Array (parenless commas) or
+        # Expr.Tuple (parenthesized commas).  Evaluate every RHS element before
+        # mutating or introducing any target so swaps and other simultaneous
+        # assignments retain source semantics.  Dynamic array unpacking is kept
+        # out of this helper until the IR has a checked arity/unpack operation.
+        def lower_destructuring_assignment(target: Ast::Expr, operator: TokenKind, value: Ast::Expr, pos: Ast::Pos&, state: mutable LowerState&) -> bool can[Memory.Allocate, Abort.Panic]:
+            targets: darray[Ast::Expr] = []
+            match target:
+                Expr.Array(target_elements, target_pos):
+                    targets.extend(target_elements)
+                _:
+                    return false
+            return false if targets.count == 0
+
+            values: darray[Ast::Expr] = []
+            match value:
+                Expr.Array(value_elements, value_pos) | Expr.Tuple(value_elements, value_pos):
+                    values.extend(value_elements)
+                _:
+                    add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "dynamic tuple unpacking is not in the initial IR lowering subset")
+                    return true
+            if targets.count != values.count:
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "destructuring assignment target and value counts must match")
+                return true
+
+            lowered_values: mutable darray[LoweredValue] = []
+            valid: mutable bool = true
+            for value_expression in values |state, lowered_values, valid|:
+                lowered: LoweredValue = lower_expression(value_expression, state)
+                lowered_values.push(lowered)
+                valid <- false if not lowered.valid
+            return true if not valid
+
+            target_names: mutable darray[sview] = []
+            target_indices: mutable darray[usize] = []
+            for target_expression in targets |state, target_names, target_indices, valid|:
+                match target_expression:
+                    Expr.Ident(target_name, target_pos):
+                        target_names.push(target_name)
+                        target_indices.push(binding_index(state, target_name))
+                    _:
+                        add_issue(state, LowerIssueKind.UnsupportedAssignmentTarget, pos.line, "destructuring assignment targets must be identifiers")
+                        valid <- false
+            return true if not valid
+            for left_index in 0..<target_names.count |state, target_names, left_index, valid|:
+                continue if target_names[left_index] == "_"
+                for right_index in 0..<left_index |state, target_names, left_index, right_index, valid|:
+                    if target_names[right_index] != "_" and target_names[right_index] == target_names[left_index]:
+                        add_issue(state, LowerIssueKind.UnsupportedAssignmentTarget, pos.line, "destructuring assignment cannot repeat a target name")
+                        valid <- false
+            return true if not valid
+
+            # `=` introduces fresh bindings. Existing names must use `<-` (or a
+            # compound operator), matching the ordinary scalar assignment rules.
+            if operator == TokenKind.Assign:
+                for index in 0..<target_names.count |state, target_names, target_indices, lowered_values, index|:
+                    continue if target_names[index] == "_"
+                    if target_indices[index] != state.names.count:
+                        add_issue(state, LowerIssueKind.UnsupportedAssignmentTarget, pos.line, "destructuring `=` targets must introduce fresh bindings")
+                    else:
+                        state.names.push(target_names[index])
+                        state.values.push(lowered_values[index].value)
+                        state.types.push(lowered_values[index].type)
+                        state.mutables.push(false)
+                return true
+
+            if not supported_assignment_operator(operator):
+                add_issue(state, LowerIssueKind.UnsupportedAssignmentTarget, pos.line, "destructuring assignment supports <- and typed arithmetic or bitwise compound operators")
+                return true
+
+            # Mutation targets are applied only after all RHS expressions have
+            # been lowered, preserving simultaneous assignment behavior.
+            for index in 0..<target_names.count |state, target_names, target_indices, lowered_values, index|:
+                continue if target_names[index] == "_"
+                target_index: usize = target_indices[index]
+                if target_index == state.names.count:
+                    add_issue(state, LowerIssueKind.UnknownBinding, pos.line, "destructuring mutation target has no local binding")
+                    continue
+                if not state.mutables[target_index]:
+                    add_issue(state, LowerIssueKind.ImmutableBinding, pos.line, "destructuring mutation requires mutable local bindings")
+                    continue
+                replacement: mutable LoweredValue = lowered_values[index]
+                if operator != TokenKind.LArrow:
+                    current_type: Type = state.types[target_index]
+                    operands_match: bool = same_type(current_type, replacement.type)
+                    opcode: Opcode = compound_opcode(operator)
+                    arithmetic: bool = opcode in {Opcode.Add, Opcode.Subtract, Opcode.Multiply, Opcode.Divide, Opcode.Remainder}
+                    bitwise: bool = opcode in {Opcode.BitAnd, Opcode.BitOr, Opcode.BitXor, Opcode.ShiftLeft, Opcode.ShiftRight}
+                    valid_operation: bool = (arithmetic and operands_match and numeric_type(current_type) and (opcode != Opcode.Remainder or current_type.kind == TypeKind.Int)) or (bitwise and operands_match and current_type.kind == TypeKind.Int)
+                    if not valid_operation:
+                        add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "destructuring compound operands do not have compatible static types")
+                        continue
+                    result: u32 = fresh_value(state)
+                    operand_start: u32 = state.operand_pool.count.u32()
+                    state.operand_pool.push(state.values[target_index])
+                    state.operand_pool.push(replacement.value)
+                    state.instructions.push(Instruction{opcode: opcode, result: result, result_type: current_type, operand_start: operand_start, operand_count: 2, span: ir_span(pos)})
+                    replacement <- LoweredValue{valid: true, value: result, type: current_type}
+                if not same_type(state.types[target_index], replacement.type):
+                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "destructuring assignment cannot change a binding's static type")
+                    continue
+                state.values[target_index] <- replacement.value
+                synchronize_mutable_element(state, target_index, pos)
+            return true
+
+
         def append_context_arguments(state: mutable LowerState&, context: usize) -> (start: u32, count: u16) can[Memory.Allocate, Abort.Panic]:
             start: u32 = state.edge_arg_pool.count.u32()
             carried_start: usize = state.loop_context_starts[context].usize()
@@ -7122,6 +7230,8 @@ extend EsIr:
                             if not lower_collection_mutation(expression, pos, state):
                                 _ = lower_expression(expression, state)
                 Stmt.Assign(target, operator, value, pos):
+                    if lower_destructuring_assignment(target, operator, value, pos, state):
+                        return
                     target_name: mutable sview = ""
                     index_expression: mutable Ast::Expr = Expr.Absent
                     indexed: mutable bool = false

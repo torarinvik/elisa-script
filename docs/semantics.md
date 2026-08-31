@@ -77,6 +77,20 @@ An empty `()` is accepted in the same context. Heterogeneous tuples and
 unconstrained tuple-typed values remain rejected until first-class recursive tuple
 values are added.
 
+Comma-separated assignment targets are supported for literal tuple/array values:
+
+```elisa
+left: mutable i64 = 1
+right: mutable i64 = 2
+left, right <- right, left
+```
+
+All right-hand elements are evaluated before any target is rebound, so swaps are
+simultaneous. Fresh `=` targets infer their individual element types; mutation
+uses `<-` (or a typed compound operator) and requires mutable bindings. Dynamic
+array unpacking and repeated targets are rejected until a checked arity operation
+is part of the IR.
+
 String payloads are decoded once at the IR constant boundary. Ordinary and
 adjacent triple-quoted literals recognize Elisa's standard escapes (`\\n`, `\\t`,
 `\\r`, `\\0`, `\\\\`, `\\"`, `\\'`, `\\xNN`, and `\\uNNNN`); unknown or malformed

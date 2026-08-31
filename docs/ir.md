@@ -30,6 +30,11 @@ therefore provides a typed empty array initializer. The IR does not yet claim a
 first-class heterogeneous tuple representation, so unconstrained tuple values
 remain a lowering diagnostic.
 
+Destructuring assignment over literal tuple/array values evaluates all source
+elements first and then performs typed SSA rebinds. Fresh `=` targets infer their
+individual types, while `<-` and compound forms require mutable existing bindings;
+dynamic unpacking is rejected until a checked arity operation is added.
+
 Aggregate `Type` fields remain bounded for compatibility with the first lowering,
 but every lowered module also carries a pointer-free `TypeTable`. Its one-based
 `TypeDescriptor` rows refer to child rows through a flat `u32` pool; interning
