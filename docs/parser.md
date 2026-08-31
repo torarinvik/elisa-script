@@ -171,11 +171,12 @@ effect Writer:
 An effect with no operations may use the compact marker form `effect Marker: pass`.
 
 The parser keeps the existing declaration ABI and records the family plus its
-first-level operation names in file metadata. Semantic analysis uses that registry
-to make `signal Writer.write(...)` statically checkable; operations on builtin or
-permission-only families remain host-defined. Operation parameter/return contracts
-are still checked at handler clauses and performed values by the IR verifier, so a
-source effect declaration never weakens callback typing.
+first-level operation names and payload arities in file metadata. Semantic analysis
+uses that registry to make `signal Writer.write(...)` statically checkable;
+operations on builtin or permission-only families remain host-defined. Operation
+parameter/return contracts are still checked at handler clauses and performed
+values by the IR verifier, so a source effect declaration never weakens callback
+typing.
 
 Script-level dependency declarations remain deferred if decorators prove
 insufficient.

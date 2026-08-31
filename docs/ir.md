@@ -126,9 +126,9 @@ Elisa's `signal Family.Operation` and `signal Family.Operation(payload, ...)`
 syntax lower directly to `Perform`; payload expressions are evaluated once in
 source order and become its typed operand slice.
 Source `effect Family:` declarations register their first-level operation names
-in parser metadata. Semantic analysis uses that registry to reject unknown
-operations for user-declared families; builtin and permission-only families keep
-their host-defined operation sets.
+and payload arities in parser metadata. Semantic analysis uses that registry to
+reject unknown operations and payload-count mismatches for user-declared families;
+builtin and permission-only families keep their host-defined operation sets.
 The source reference must contain exactly one non-empty `Family.Operation`
 separator. Bare families and multi-dot names are rejected during lowering rather
 than being reinterpreted as a synthetic operation, so handler clause lookup and

@@ -41,25 +41,34 @@ extend Semantic:
                         _:
                             pass
 
-        def sig_family_known(family: sview, user_perms: darray[sview]&, can_families: darray[sview]&) -> bool:
+        def sig_family_known(family: sview, user_perms: darray[sview]&, effect_declarations: darray[sview]&, can_families: darray[sview]&) -> bool:
             can Memory.Allocate, Abort.Panic:
                 true return if sig_is_builtin_family(family)
                 true return if any p in user_perms where p == family
+                true return if any e in effect_declarations where e == family
                 true return if any c in can_families where c == family
                 return false
 
-        # Whether a source-declared effect owns an operation with this name. Builtin and
+        struct SigEffectOperation:
+            known: bool
+            arity: u32
+            enforce_arity: bool
+
+
+        # Whether a source-declared effect owns an operation with this name, and the
+        # number of payload expressions its signature accepts. Builtin and
         # permission-only families intentionally remain open: their operation sets are
         # defined by the runtime/host, not by this source file.
-        def sig_effect_operation_known(family: sview, operation: sview, annotations: darray[Ast::EnumAnnotation]&) -> bool:
+        def sig_effect_operation(family: sview, operation: sview, declared: darray[sview]&, operations: darray[Ast::EffectOperation]&) -> SigEffectOperation:
             can Memory.Allocate, Abort.Panic:
-                return true if operation == ""
-                declared: bool = any annotation in annotations where annotation.owner == "__effect_decl" and annotation.name == family
-                return true if not declared
-                return any annotation in annotations where annotation.owner == family and annotation.name == operation and annotation.line == 3900000080
+                return SigEffectOperation{known: true, arity: 0, enforce_arity: false} if operation == ""
+                return SigEffectOperation{known: true, arity: 0, enforce_arity: false} if not any name in declared where name == family
+                for candidate in operations:
+                    return SigEffectOperation{known: true, arity: candidate.arity, enforce_arity: true} if candidate.family == family and candidate.name == operation
+                return SigEffectOperation{known: false, arity: 0, enforce_arity: true}
 
         # Validate each `signal` clause's family; recurse through blocks (signals nest in grants).
-        def sig_walk_statements(statements: darray[Ast::Stmt], user_perms: darray[sview]&, can_families: darray[sview]&, annotations: darray[Ast::EnumAnnotation]&, table: lmut SymbolTable) -> void:
+        def sig_walk_statements(statements: darray[Ast::Stmt], user_perms: darray[sview]&, can_families: darray[sview]&, effect_declarations: darray[sview]&, effect_operations: darray[Ast::EffectOperation]&, table: lmut SymbolTable) -> void:
             can Memory.Allocate, Abort.Panic:
                 for statement in statements |table| -> table:
                     match statement:
@@ -73,34 +82,35 @@ extend Semantic:
                                         operation <- clause[0][dot + 1:sview_len(clause[0])]
                                         break
                                     dot <- dot + 1
-                                known_family: bool = sig_family_known(family, user_perms, can_families)
-                                known_operation: bool = sig_effect_operation_known(family, operation, annotations)
+                                known_family: bool = sig_family_known(family, user_perms, effect_declarations, can_families)
+                                operation_info: SigEffectOperation = sig_effect_operation(family, operation, effect_declarations, effect_operations)
                                 table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.UnknownPermissionMember, name: family, line: line.line, expected: "", actual: clause[0]}) if not known_family
-                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.UnknownPermissionMember, name: family, line: line.line, expected: "", actual: operation}) if known_family and not known_operation
-                            table <- sig_walk_statements(body, user_perms, can_families, annotations, table)
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.UnknownPermissionMember, name: family, line: line.line, expected: "", actual: operation}) if known_family and not operation_info.known
+                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.UnknownPermissionMember, name: family, line: line.line, expected: "", actual: operation}) if known_family and operation_info.known and operation_info.enforce_arity and body.count.u32() != operation_info.arity
+                            table <- sig_walk_statements(body, user_perms, can_families, effect_declarations, effect_operations, table)
                         Stmt.If(condition, then_body, else_body, line):
-                            table <- sig_walk_statements(then_body, user_perms, can_families, annotations, table)
-                            table <- sig_walk_statements(else_body, user_perms, can_families, annotations, table)
+                            table <- sig_walk_statements(then_body, user_perms, can_families, effect_declarations, effect_operations, table)
+                            table <- sig_walk_statements(else_body, user_perms, can_families, effect_declarations, effect_operations, table)
                         Stmt.While(condition, body, line):
-                            table <- sig_walk_statements(body, user_perms, can_families, annotations, table)
+                            table <- sig_walk_statements(body, user_perms, can_families, effect_declarations, effect_operations, table)
                         Stmt.For(bind, variables, iterable, body, line):
-                            table <- sig_walk_statements(body, user_perms, can_families, annotations, table)
+                            table <- sig_walk_statements(body, user_perms, can_families, effect_declarations, effect_operations, table)
                         Stmt.Match(scrutinee, arms, line):
                             for arm in arms |table| -> table:
-                                table <- sig_walk_statements(arm.body, user_perms, can_families, annotations, table)
+                                table <- sig_walk_statements(arm.body, user_perms, can_families, effect_declarations, effect_operations, table)
                         _:
                             pass
 
-        def sig_walk_declarations(declarations: darray[Ast::Decl], user_perms: darray[sview]&, can_families: darray[sview]&, annotations: darray[Ast::EnumAnnotation]&, table: lmut SymbolTable) -> void:
+        def sig_walk_declarations(declarations: darray[Ast::Decl], user_perms: darray[sview]&, can_families: darray[sview]&, effect_declarations: darray[sview]&, effect_operations: darray[Ast::EffectOperation]&, table: lmut SymbolTable) -> void:
             can Memory.Allocate, Abort.Panic:
                 for declaration in declarations |table| -> table:
                     match declaration:
                         Decl.Func(name, parameters, return_type, body, effects, decorators, line):
-                            table <- sig_walk_statements(body, user_perms, can_families, annotations, table)
+                            table <- sig_walk_statements(body, user_perms, can_families, effect_declarations, effect_operations, table)
                         Decl.Module(name, body, line):
-                            table <- sig_walk_declarations(body, user_perms, can_families, annotations, table)
+                            table <- sig_walk_declarations(body, user_perms, can_families, effect_declarations, effect_operations, table)
                         Decl.Scoped(body, line):
-                            table <- sig_walk_declarations(body, user_perms, can_families, annotations, table)
+                            table <- sig_walk_declarations(body, user_perms, can_families, effect_declarations, effect_operations, table)
                         _:
                             pass
 
@@ -108,8 +118,10 @@ extend Semantic:
         def check_signal_effect(file: Ast::File&, table: lmut SymbolTable) -> void:
             can Memory.Allocate, Abort.Panic:
                 user_perms: mutable darray[sview] = []
+                effect_declarations: mutable darray[sview] = []
                 for annotation in file.enum_annotations |user_perms|:
-                    user_perms.push(annotation.name) if annotation.owner == "__permission_decl" or annotation.owner == "__effect_decl"
+                    user_perms.push(annotation.name) if annotation.owner == "__permission_decl"
+                    effect_declarations.push(annotation.name) if annotation.owner == "__effect_decl"
                 can_families: mutable darray[sview] = []
                 sig_collect_can_families_decls(file.top_decls, can_families)
-                table <- sig_walk_declarations(file.top_decls, user_perms, can_families, file.enum_annotations, table)
+                table <- sig_walk_declarations(file.top_decls, user_perms, can_families, effect_declarations, file.effect_operations, table)
