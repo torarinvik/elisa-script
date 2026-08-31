@@ -6,7 +6,7 @@ extend Lexer:
         # forms so Whole/Fraction can see a valid exponent lead while Hex consumes either
         # spelling as a plain hex digit.
         const enum NumberClass of u8:
-            Digit        # '0'..'9'
+            Digit        # '0'..'7' (the remaining decimal digits use OctalInvalid)
             ExpMarkValid # 'e' | 'E' followed by a valid exponent
             ExpMarkOther # 'e' | 'E' without a valid exponent (still a hex digit)
             HexAlpha     # 'a'..'d', 'f', 'A'..'D', 'F' (hex letters minus e/E)
@@ -14,12 +14,15 @@ extend Lexer:
             OtherDot     # '.' that is not a decimal fraction
             Sign         # '+' | '-'
             HexPrefix    # the leading '0' in a 0x/0X literal
+            OctalPrefix  # the leading '0' in a 0o/0O literal
+            OctalInvalid # '8' or '9' inside an octal literal
             Other
 
         @inline(always)
         def classify_number_char(c: char) -> NumberClass:
             return when c:
-                '0'..='9' -> NumberClass.Digit
+                '0'..='7' -> NumberClass.Digit
+                '8' | '9' -> NumberClass.OctalInvalid
                 'e' | 'E' -> NumberClass.ExpMarkOther
                 'a'..='d' | 'f' | 'A'..='D' | 'F' -> NumberClass.HexAlpha
                 '.' -> NumberClass.OtherDot
@@ -33,6 +36,7 @@ extend Lexer:
         def classify_number_input(lexer: Lexer&) -> NumberClass:
             c: char = lexer.current_char()
             state CheckHex
+            state CheckOctal
             state CheckFraction
             state CheckExponent
             state HexPrefix
@@ -42,6 +46,9 @@ extend Lexer:
             return start CheckHex:
                 CheckHex:
                     -> HexPrefix if c == '0' and (lexer.peek(1) == 'x' or lexer.peek(1) == 'X')
+                    -> CheckOctal
+                CheckOctal:
+                    -> OctalPrefix if c == '0' and (lexer.peek(1) == 'o' or lexer.peek(1) == 'O')
                     -> CheckFraction
                 CheckFraction:
                     -> FractionDot if c == '.' and lexer.should_read_float_fraction()
@@ -51,6 +58,8 @@ extend Lexer:
                     -> Plain
                 HexPrefix:
                     => NumberClass.HexPrefix
+                OctalPrefix:
+                    => NumberClass.OctalPrefix
                 FractionDot:
                     => NumberClass.FractionDot
                 ValidExponent:
@@ -133,6 +142,8 @@ extend Lexer:
                 state Lead
                 state Whole
                 state Hex
+                state Octal
+                state OctalError
                 state Fraction
                 state ExpLead
                 state ExpDigits
@@ -144,13 +155,17 @@ extend Lexer:
                     lexer <- lexer.advance_char()
                     lexer.number_kind <- TokenKind.HexLit
                     -> Hex
-                Lead, NumberClass.Digit | NumberClass.ExpMarkValid | NumberClass.ExpMarkOther | NumberClass.HexAlpha | NumberClass.FractionDot | NumberClass.OtherDot | NumberClass.Sign | NumberClass.Other:
+                Lead, NumberClass.OctalPrefix:
+                    lexer <- lexer.advance_char()
+                    lexer <- lexer.advance_char()
+                    -> Octal
+                Lead, NumberClass.Digit | NumberClass.OctalInvalid | NumberClass.ExpMarkValid | NumberClass.ExpMarkOther | NumberClass.HexAlpha | NumberClass.FractionDot | NumberClass.OtherDot | NumberClass.Sign | NumberClass.Other:
                     -> Whole
 
                 # HexPrefix still represents the current character `0`; only Lead may
                 # consume the following `x` as part of a prefix. In every later state it
                 # must behave like an ordinary digit (`10x`, `0x0x1`).
-                Whole, NumberClass.Digit | NumberClass.HexPrefix:
+                Whole, NumberClass.Digit | NumberClass.OctalInvalid | NumberClass.HexPrefix:
                     lexer <- lexer.advance_char()
                     -> Whole
                 Whole, NumberClass.FractionDot:
@@ -161,16 +176,38 @@ extend Lexer:
                     lexer <- lexer.advance_char()
                     lexer.number_kind <- TokenKind.FloatLit
                     -> ExpLead
-                Whole, NumberClass.ExpMarkOther | NumberClass.HexAlpha | NumberClass.OtherDot | NumberClass.Sign | NumberClass.Other:
+                Whole, NumberClass.ExpMarkOther | NumberClass.HexAlpha | NumberClass.OtherDot | NumberClass.Sign | NumberClass.Other | NumberClass.OctalPrefix:
                     -> Done
 
-                Hex, NumberClass.Digit | NumberClass.ExpMarkValid | NumberClass.ExpMarkOther | NumberClass.HexAlpha | NumberClass.HexPrefix:
+                Hex, NumberClass.Digit | NumberClass.OctalInvalid | NumberClass.ExpMarkValid | NumberClass.ExpMarkOther | NumberClass.HexAlpha | NumberClass.HexPrefix:
                     lexer <- lexer.advance_char()
                     -> Hex
-                Hex, NumberClass.FractionDot | NumberClass.OtherDot | NumberClass.Sign | NumberClass.Other:
+                Hex, NumberClass.FractionDot | NumberClass.OtherDot | NumberClass.Sign | NumberClass.Other | NumberClass.OctalPrefix:
                     -> Done
 
-                Fraction, NumberClass.Digit | NumberClass.HexPrefix:
+                Octal, NumberClass.Digit:
+                    lexer <- lexer.advance_char()
+                    -> Octal
+                Octal, NumberClass.OctalInvalid:
+                    lexer <- lexer.advance_char()
+                    lexer.number_kind <- TokenKind.Error
+                    -> OctalError
+                Octal, NumberClass.FractionDot | NumberClass.OtherDot | NumberClass.Sign | NumberClass.Other | NumberClass.ExpMarkValid | NumberClass.ExpMarkOther | NumberClass.HexAlpha | NumberClass.HexPrefix | NumberClass.OctalPrefix:
+                    -> Done
+                # Keep consuming token-shaped characters after an invalid octal digit so
+                # `0o8foo` is one diagnostic token, but leave whitespace and punctuation
+                # for the outer lexer. `Other` is the catch-all class, so its identifier
+                # guard is the delimiter split for this recovery state.
+                OctalError, NumberClass.Digit | NumberClass.OctalInvalid | NumberClass.ExpMarkValid | NumberClass.ExpMarkOther | NumberClass.HexAlpha | NumberClass.FractionDot | NumberClass.OtherDot | NumberClass.HexPrefix | NumberClass.OctalPrefix:
+                    lexer <- lexer.advance_char()
+                    -> OctalError
+                OctalError, NumberClass.Other if lexer.current_char().is_identifier_char():
+                    lexer <- lexer.advance_char()
+                    -> OctalError
+                OctalError, NumberClass.Other:
+                    -> Done
+
+                Fraction, NumberClass.Digit | NumberClass.OctalInvalid | NumberClass.HexPrefix | NumberClass.OctalPrefix:
                     lexer <- lexer.advance_char()
                     -> Fraction
                 Fraction, NumberClass.ExpMarkValid:
@@ -182,19 +219,19 @@ extend Lexer:
                 ExpLead, NumberClass.Sign:
                     lexer <- lexer.advance_char()
                     -> ExpDigits
-                ExpLead, NumberClass.Digit | NumberClass.HexPrefix:
+                ExpLead, NumberClass.Digit | NumberClass.OctalInvalid | NumberClass.HexPrefix | NumberClass.OctalPrefix:
                     lexer <- lexer.advance_char()
                     -> ExpDigits
                 ExpLead, NumberClass.ExpMarkValid | NumberClass.ExpMarkOther | NumberClass.HexAlpha | NumberClass.FractionDot | NumberClass.OtherDot | NumberClass.Other:
                     -> Done
 
-                ExpDigits, NumberClass.Digit | NumberClass.HexPrefix:
+                ExpDigits, NumberClass.Digit | NumberClass.OctalInvalid | NumberClass.HexPrefix | NumberClass.OctalPrefix:
                     lexer <- lexer.advance_char()
                     -> ExpDigits
                 ExpDigits, NumberClass.ExpMarkValid | NumberClass.ExpMarkOther | NumberClass.HexAlpha | NumberClass.FractionDot | NumberClass.OtherDot | NumberClass.Sign | NumberClass.Other:
                     -> Done
 
-                Done, NumberClass.Digit | NumberClass.ExpMarkValid | NumberClass.ExpMarkOther | NumberClass.HexAlpha | NumberClass.FractionDot | NumberClass.OtherDot | NumberClass.Sign | NumberClass.HexPrefix | NumberClass.Other:
+                Done, NumberClass.Digit | NumberClass.OctalInvalid | NumberClass.ExpMarkValid | NumberClass.ExpMarkOther | NumberClass.HexAlpha | NumberClass.FractionDot | NumberClass.OtherDot | NumberClass.Sign | NumberClass.HexPrefix | NumberClass.OctalPrefix | NumberClass.Other:
                     break
 
             text_end: usize = lexer.position
@@ -205,7 +242,7 @@ extend Lexer:
                     lexer.column <- lexer.column + suffix_text.len
                 _:
                     pass
-            result_kind: TokenKind = TokenKind.HexLit if lexer.number_kind == TokenKind.HexLit else TokenKind.FloatLit if lexer.number_kind == TokenKind.FloatLit or suffix_names_float(suffix) else TokenKind.IntLit
+            result_kind: TokenKind = TokenKind.Error if lexer.number_kind == TokenKind.Error else TokenKind.HexLit if lexer.number_kind == TokenKind.HexLit else TokenKind.FloatLit if lexer.number_kind == TokenKind.FloatLit or suffix_names_float(suffix) else TokenKind.IntLit
             return Token(result_kind, position, start, text_end, lexer.position)
 
 

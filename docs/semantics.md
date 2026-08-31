@@ -55,6 +55,10 @@ Nominal values cannot implicitly initialize primitive scalars:
 bad: i64 = path"src"  # type error: expected i64, got Path
 ```
 
+Integer literals accept decimal, hexadecimal (`0x`/`0X`), and octal
+(`0o`/`0O`) spellings. Underscores may separate digits in any base; octal
+literals reject `8` and `9` during lexing rather than silently changing value.
+
 ## Module constants
 
 Immutable, initialized module-level constants are available from every function
