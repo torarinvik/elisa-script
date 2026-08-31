@@ -1232,6 +1232,17 @@ error[ProcessError] can[Process.Run]` starts a process from an explicitly typed
 executable and argument vector. It never inserts a shell: spaces, wildcard characters,
 quotes, and other shell syntax in an argument remain ordinary argument bytes.
 
+The `subprocess` namespace provides the same operations with Python-shaped
+qualified names while retaining Elisascript's stronger boundary types:
+`subprocess.executable`, `subprocess.run`, `subprocess.run_with_stdin`,
+`subprocess.run_in_directory`, and `subprocess.run_with_environment` are aliases
+for the corresponding typed process calls. Capture forms are exposed as
+`subprocess.capture_stdout`, `capture_stderr`, `capture_result`, and their
+working-directory/environment variants; `subprocess.exit_status`, `.stdout`,
+and `.stderr` are typed accessors for a `ProcessCapture`. The first operand is
+always an `Executable` and the argument vector is always `darray[sview]`, so
+the namespace never falls back to a shell command string or implicit quoting.
+
 `run_process_with_stdin(executable: Executable, arguments: darray[sview],
 input: sview) -> i64 error[ProcessError] can[Process.Run]` is the status-only
 counterpart for commands that consume standard input. It stages the exact
@@ -1516,6 +1527,8 @@ must call the same implementation used at runtime so the two cannot disagree.
   filesystem, process, environment, and stream result types.
 - Numeric polymorphic intrinsics (`abs`, `any`, and `all`) preserve their
   statically known result families, including source-function shadowing.
+- The qualified `subprocess` namespace resolves to the same typed process
+  operations without introducing shell command strings.
 - Shell/Python-compatible `sleep` aliases resolve as known builtins for the
   typed lowering pass.
 
