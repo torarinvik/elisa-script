@@ -1042,6 +1042,14 @@ an enclosing `try ... else` or dynamic handler can recover it just like another
 recoverable runtime error. The compiler-known intrinsic is shadowable by a user
 function named `assert`, preserving normal Elisa name resolution.
 
+`panic([message])` is the non-recoverable `Abort.Panic` effect. Its optional
+message expression is evaluated exactly once, then the computation exits through
+the checked execution boundary as `InterpretError.Panic`; ordinary `try ... else`
+error recovery does not intercept it. This keeps programmer-assertion failures
+distinct from declared `error[...]` variants while retaining a typed effect row
+for callers and future native/JIT backends. The compiler-known intrinsic is
+shadowable by a user function named `panic`.
+
 Declared error families can be raised directly with `raise Family.Tag` inside a
 function whose signature includes that family in `error[...]` (for example,
 `def fail() -> void error[UserError]: raise UserError.Bad`). The operation has no

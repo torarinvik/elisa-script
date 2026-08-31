@@ -174,6 +174,12 @@ uncaught raise is reported as `InterpretError.Raised`. The current catch surface
 remains catch-all; variant-specific payload matching is intentionally deferred
 until error ordinals and payload storage are part of the runtime model.
 
+`panic([message])` lowers to a void `Panic` instruction with `Abort.Panic` effect
+metadata and zero or one evaluated operand. Unlike `Raise`, `Panic` is not an
+error-set variant and is deliberately excluded from error-guard recovery; an
+uncaught panic reports `InterpretError.Panic` on both the reference interpreter
+and direct bytecode path.
+
 F-strings are parser sugar for the compiler-owned `__fstr` call. Lowering accepts
 text, `char`, any integer width, `f32`/`f64`, `bool`, text-backed nominal, array, and
 dictionary expressions, converting non-text pieces with the existing
