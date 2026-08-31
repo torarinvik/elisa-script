@@ -56,9 +56,10 @@ bad: i64 = path"src"  # type error: expected i64, got Path
 ```
 
 Integer literals accept decimal, binary (`0b`/`0B`), hexadecimal (`0x`/`0X`),
-and octal (`0o`/`0O`) spellings. Underscores may separate digits in any base;
-binary and octal literals reject out-of-base digits during lexing rather than
-silently changing value.
+and octal (`0o`/`0O`) spellings. Underscores may separate two digits in any base,
+but may not appear immediately after a prefix, next to a decimal point, or next
+to a type suffix. Binary and octal literals reject out-of-base digits during
+lexing rather than silently changing value.
 
 ## Module constants
 

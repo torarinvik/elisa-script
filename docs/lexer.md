@@ -22,8 +22,11 @@ the `lexer.elisa` include closure and each owns language behavior Elisascript ke
 
 Integer scanning accepts decimal, binary (`0b`/`0B`), octal (`0o`/`0O`), and
 hexadecimal (`0x`/`0X`) prefixes. Underscores are retained inside the numeric
-token for the parser's base-aware decoder; binary and octal out-of-base digits
-produce one bounded error token instead of being split into unrelated tokens.
+token for the parser's base-aware decoder, but are accepted only between two
+digits of the active base. A separator immediately after a prefix, after a
+decimal point, or before a suffix is therefore a bounded error token. Binary and
+octal out-of-base digits produce one bounded error token instead of being split
+into unrelated tokens.
 
 ## Elisascript adaptation
 
