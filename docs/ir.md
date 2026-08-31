@@ -430,8 +430,10 @@ retaining `File.Read` and `FileIoError` on the enclosing function.
 `Named(Path) -> Text`. Its function must carry both `File.Read` and `FileIoError`;
 lowering supplies both and the verifier rejects either omission. The interpreter
 uses Elisa's stdio bindings, checks every open/seek/read/close transition, and
-returns one owned length-delimited buffer. Empty files return empty text, while any
-I/O failure becomes `InterpretError.FileIo` at the reference-interpreter boundary.
+returns one owned length-delimited buffer. It checks the file size against its 64 MiB
+input safety ceiling before allocation; oversized files and other I/O failures become
+`InterpretError.FileIo` at the reference-interpreter boundary. Empty files return
+empty text.
 The shell-shaped `cat(path)` spelling lowers to this same typed opcode and retains
 the nominal `Path`, effect, and error contract.
 `WriteText` has verified signature `Named(Path) × Text -> usize` and requires
@@ -443,9 +445,10 @@ target file deterministically.
 opens in append mode so each byte is written after the existing file contents.
 It is the typed IR counterpart to shell `>>` and Python append-mode writes.
 `ReadBytes` verifies as `Named(Path) -> Array[Int(unsigned, 8)]` and requires
-`File.Read` plus `FileIoError`. The interpreter reads the exact length-delimited
-file bytes, stores them as flat runtime integer values, and preserves embedded
-NULs. Empty files produce an empty array. `WriteBytes` and `AppendBytes` verify as
+`File.Read` plus `FileIoError`. The interpreter reads exact length-delimited file
+bytes, checks the size against its 64 MiB input safety ceiling before allocation,
+stores them as flat runtime integer values, and preserves embedded NULs. Empty files
+produce an empty array. `WriteBytes` and `AppendBytes` verify as
 `Named(Path) × Array[Int(unsigned, 8)] -> Int(unsigned, 64)` and require
 `File.Write` plus `FileIoError`; they replace or append respectively and return the
 exact byte count. Their direct bytecode path calls the same checked runtime

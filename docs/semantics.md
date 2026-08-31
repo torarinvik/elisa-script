@@ -731,9 +731,10 @@ links while preserving link identity. `copytree` is an equivalent alias; the
 destination root must not already exist, and traversal is bounded to 128 levels.
 
 `read_text(path: Path) -> sview error[FileIoError]` reads a whole file without
-discarding embedded bytes. It contributes the same `File.Read` effect and adds
-`FileIoError` to the enclosing error row. Open, seek, read, and close failures
-remain errors; a failed read is never confused with a successfully read empty file.
+discarding embedded bytes, subject to the interpreter's 64 MiB file-input safety
+ceiling. It contributes the same `File.Read` effect and adds `FileIoError` to the
+enclosing error row. Open, seek, read, and close failures, including an oversized
+file, remain errors; a failed read is never confused with a successfully read empty file.
 The shell-oriented `cat(path)` spelling is a typed alias for the same operation.
 
 `write_text(path: Path, contents: sview) -> usize error[FileIoError]` replaces or
@@ -743,8 +744,9 @@ success. Together, `path_exists`, `read_text`, and `write_text` form the first
 complete filesystem round trip without shell or Python.
 
 `read_bytes(path: Path) -> darray[u8] error[FileIoError] can[File.Read]` reads a
-whole file as its exact bytes, including embedded NULs, and returns an empty array
-for an empty file. `read_binary` is an equivalent alias. The byte array is
+whole file as its exact bytes, including embedded NULs, subject to the interpreter's
+64 MiB file-input safety ceiling, and returns an empty array for an empty file.
+`read_binary` is an equivalent alias. The byte array is
 strongly typed: arbitrary integer arrays are not accepted by the write operations.
 
 `write_bytes(path: Path, bytes: darray[u8]) -> usize error[FileIoError]
