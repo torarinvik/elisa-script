@@ -1045,9 +1045,10 @@ contracts as `touch`, `chmod`, `create_directory`, and `remove_directory`.
 the default is `true`, while `false` reports a `FileIoError` when any entry
 already exists. Touch never truncates an existing file.
 `path.mkdir(mode: u64, parents: bool, exist_ok: bool)` accepts Python-compatible
-named controls. `mode` defaults to `0o755` (493) and is restricted to the
-permission bits `0..0o7777`; `parents` creates missing ancestors like `mkdir -p`,
-while `exist_ok` succeeds when the final path is already a directory. All three
+named controls. `mode` defaults to 493 (the conventional `0o755` permission)
+and is restricted to the permission bits `0..4095` (`0o7777`); `parents` creates
+missing ancestors like `mkdir -p`, while `exist_ok` succeeds when the final path
+is already a directory. All three
 controls default to their documented values, and invalid control types or modes
 raise the ordinary `DirectoryError` rather than being silently ignored.
 
