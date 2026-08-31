@@ -708,6 +708,9 @@ operation.
 `is_executable(path: Path)` are typed counterparts to shell `test -r/-w/-x` and
 Python `os.access`. They query the current process access bits through POSIX
 `access`, contribute `File.Read`, and return `false` for missing or invalid paths.
+The equivalent `path.is_readable()`, `path.is_writable()`, and
+`path.is_executable()` methods lower to the same checked `PathAccess` operation
+and preserve the exact effect and error contract.
 
 `touch(path: Path) -> bool error[FileIoError] can[File.Write]` creates an empty file
 when it is missing and updates its timestamps without truncating an existing file.

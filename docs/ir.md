@@ -363,6 +363,8 @@ The scripting `is_file(path)` alias and `Path.is_file()` method lower to this op
 selected mode is one of POSIX `R_OK`, `W_OK`, or `X_OK`, backing the
 `is_readable`, `is_writable`, and `is_executable` predicates without exposing a
 dynamic mode integer to source programs.
+The corresponding `Path.is_readable()`, `Path.is_writable()`, and
+`Path.is_executable()` call spellings lower to the same opcode.
 `PathGlob` and `PathRGlob` verify as `Named(Path) × Text -> Array[Text]` with
 `Directory.Read` and `DirectoryError`. They join the receiver with a runtime
 pattern (`PathRGlob` prefixes `**/`) and delegate to the same bounded,
