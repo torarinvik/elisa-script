@@ -147,6 +147,11 @@ extend EsIr:
             # fields empty and continue to match only catch-all guards.
             failure_family: mutable sview = ""
             failure_operation: mutable sview = ""
+            # Ordered payload values for the currently unwinding raised error.
+            # This remains an interpreter side channel until error-pattern
+            # binders have a stable ABI; carrying the values now keeps raise
+            # construction faithful without exposing an unstable public shape.
+            failure_payloads: mutable darray[RuntimeValue] = []
             continuations: mutable darray[ContinuationFrame]
             continuation_frames: mutable darray[ContinuationCallFrame] = []
             active_calls: mutable darray[ContinuationCallFrame] = []
@@ -1068,11 +1073,16 @@ extend EsIr:
             machine.failure <- InterpretFailure.Assertion if not condition.boolean
 
 
-        def evaluate_raise(machine: mutable Machine&, instruction: Instruction&) -> void:
+        def evaluate_raise(machine: mutable Machine&, instruction: Instruction&, fn: Function&, ids: darray[u32]&, values: darray[RuntimeValue]&) -> void:
             # Error variants are carried in the instruction's static family/tag
-            # metadata. The public execution API still exposes the fact that a
-            # declared error escaped, while variant-filtered catch guards consult
-            # this side channel during the same control-flow transfer.
+            # metadata. Payload values are copied from the current frame in
+            # source order so a future error-pattern binder can consume them
+            # without changing the unwind protocol.
+            machine.failure_payloads.truncate(0)
+            for offset in 0..<instruction.operand_count.usize() |machine, fn, instruction, ids, values|:
+                payload: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + offset], machine)
+                return if machine.failure != InterpretFailure.None
+                machine.failure_payloads.push(payload)
             machine.failure <- InterpretFailure.Raised
             machine.failure_family <- instruction.effect_family
             machine.failure_operation <- instruction.effect_operation
@@ -6079,7 +6089,7 @@ extend EsIr:
                             break
 
                         Dispatch, Opcode.Raise:
-                            evaluate_raise(machine, instruction)
+                            evaluate_raise(machine, instruction, fn, ids, values)
                             dispatch.produces_value <- false
                             break
 
@@ -6117,6 +6127,7 @@ extend EsIr:
                             machine.failure <- InterpretFailure.None
                             machine.failure_family <- ""
                             machine.failure_operation <- ""
+                            machine.failure_payloads.truncate(0)
                             block.terminator <- Terminator{kind: TerminatorKind.Jump, target0: guard.target, target_count: 1, span: block.terminator.span}
                             break
                     set_frame_value(ids, values, instruction.result, dispatch.value) if machine.failure == InterpretFailure.None and dispatch.produces_value

@@ -487,10 +487,13 @@ arm bodies must contain one expression whose type exactly matches the guarded
 value; the error binder is intentionally not a runtime error payload. Variant
 arms recover only an explicitly raised matching tag; built-in failures and other
 raised variants continue through the enclosing `error[...]` contract. Payload
-matching and terminating variant arms remain deferred until the IR carries error
-ordinals and payloads, except that a catch-all arm may terminate with `return`
-after the ordinary function return-type check. The guarded expression is evaluated
-once, with a lazy fallback and a typed state-machine merge.
+construction is supported with the same enum-constructor arity and type checks as
+ordinary error values: `raise Family.Tag(value, ...)` evaluates each payload once
+in source order and carries it through the interpreter's failure channel. Payload
+matching and binding in variant arms, and terminating variant arms, remain deferred
+until those binders have a stable IR ABI; a catch-all arm may still terminate with
+`return` after the ordinary function return-type check. The guarded expression is
+evaluated once, with a lazy fallback and a typed state-machine merge.
 
 For early propagation, the fallback may be a terminating clause:
 
@@ -1105,14 +1108,16 @@ distinct from declared `error[...]` variants while retaining a typed effect row
 for callers and future native/JIT backends. The compiler-known intrinsic is
 shadowable by a user function named `panic`.
 
-Declared error families can be raised directly with `raise Family.Tag` inside a
+Declared error families can be raised directly with `raise Family.Tag` (or the
+positional payload form `raise Family.Tag(value, ...)`) inside a
 function whose signature includes that family in `error[...]` (for example,
 `def fail() -> void error[UserError]: raise UserError.Bad`). The operation has no
 result and does not use a result wrapper: an enclosing `try ... else` recovers it,
 and an uncaught raise exits through the ordinary checked error channel as
 `InterpretError.Raised`. A payload-free `Family.Tag` catch arm selects the matching
-raised identity; wildcard and `error` arms remain catch-all. Payload extraction is
-left for the later error-payload runtime extension.
+raised identity; wildcard and `error` arms remain catch-all. Constructor payloads
+are evaluated once in source order and preserved during interpreter unwinding;
+payload extraction into catch binders is left for the later error-payload ABI.
 
 `run_process(executable: Executable, arguments: darray[sview]) -> i64
 error[ProcessError] can[Process.Run]` starts a process from an explicitly typed

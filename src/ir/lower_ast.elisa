@@ -203,16 +203,25 @@ extend EsIr:
             owner: sview = ""
             tag: sview = ""
             valid: bool = false
+            # Optional payload expressions from `raise Error.Tag(value, …)`. The
+            # first IR increment keeps them ordered in the Raise operand slice;
+            # matching/binding them in catch arms remains a later ABI step.
+            payloads: darray[Ast::Expr] = []
 
 
-        # The parser keeps `raise Error.Tag` as a call-shaped expression. Keep
-        # the extraction strict: payload-bearing constructors and bare `raise`
-        # are not silently converted into an unrelated runtime failure.
+        # The parser keeps `raise Error.Tag` and `raise Error.Tag(payload, …)` as
+        # call-shaped expressions. Keep extraction strict: only a direct field or
+        # a positional call of that field is an error constructor; bare `raise`
+        # and arbitrary call expressions are not silently converted into a failure.
         def raised_error_reference(arguments: darray[Ast::Expr]&, argument_names: darray[sview]&) -> RaiseReference:
             return RaiseReference{} if arguments.count != 1 or (argument_names.count != 0 and (argument_names.count != 1 or argument_names[0] != ""))
             match arguments[0]:
                 Expr.Field(Expr.Ident(owner, _), tag, _):
                     return RaiseReference{owner: owner, tag: tag, valid: owner != "" and tag != ""}
+                Expr.Call(Expr.Field(Expr.Ident(owner, _), tag, _), payloads, payload_names, _):
+                    for payload_name in payload_names:
+                        return RaiseReference{} if payload_name != ""
+                    return RaiseReference{owner: owner, tag: tag, valid: owner != "" and tag != "", payloads: payloads}
                 _:
                     pass
             return RaiseReference{}
@@ -222,11 +231,20 @@ extend EsIr:
             result_type: Type = void_ir_type()
             reference: RaiseReference = raised_error_reference(arguments, argument_names)
             if not reference.valid:
-                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "raise requires one positional Error.Tag reference")
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "raise requires one positional Error.Tag reference or constructor")
                 return LoweredValue{valid: false, value: 0, type: result_type}
             if not has_text(state.required_errors, reference.owner) and not has_text(state.required_errors, reference.tag):
                 add_issue(state, LowerIssueKind.MissingError, pos.line, "raised error family is absent from the function error row")
-            state.instructions.push(Instruction{opcode: Opcode.Raise, result: 0, result_type: result_type, effect_family: reference.owner, effect_operation: reference.tag, trace: trace_site(state, reference.tag, pos), span: ir_span(pos)})
+            payload_values: mutable darray[u32] = []
+            valid_payloads: mutable bool = true
+            for payload in reference.payloads |state, valid_payloads|:
+                lowered_payload: LoweredValue = lower_expression(payload, state)
+                valid_payloads <- false if not lowered_payload.valid
+                payload_values.push(lowered_payload.value) if lowered_payload.valid
+            return LoweredValue{valid: false, value: 0, type: result_type} if not valid_payloads
+            operand_start: u32 = state.operand_pool.count.u32()
+            state.operand_pool.extend(payload_values)
+            state.instructions.push(Instruction{opcode: Opcode.Raise, result: 0, result_type: result_type, operand_start: operand_start, operand_count: reference.payloads.count.u16(), effect_family: reference.owner, effect_operation: reference.tag, trace: trace_site(state, reference.tag, pos), span: ir_span(pos)})
             return LoweredValue{valid: true, value: 0, type: result_type}
 
 
@@ -243,11 +261,13 @@ extend EsIr:
             if not valid_shape:
                 add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "panic accepts at most one positional message value")
                 return LoweredValue{valid: false, value: 0, type: result_type}
-            operand_start: u32 = state.operand_pool.count.u32()
+            message_value: mutable u32 = 0
             if arguments.count == 1:
                 message: LoweredValue = lower_expression(arguments[0], state)
                 return LoweredValue{valid: false, value: 0, type: result_type} if not message.valid
-                state.operand_pool.push(message.value)
+                message_value <- message.value
+            operand_start: u32 = state.operand_pool.count.u32()
+            state.operand_pool.push(message_value) if arguments.count == 1
             state.required_effects.push("Abort.Panic") if not has_text(state.required_effects, "Abort.Panic")
             state.instructions.push(Instruction{opcode: Opcode.Panic, result: 0, result_type: result_type, effect_family: "Abort", effect_operation: "Panic", operand_start: operand_start, operand_count: arguments.count.u16(), trace: trace_site(state, "panic", pos), span: ir_span(pos)})
             return LoweredValue{valid: true, value: 0, type: result_type}

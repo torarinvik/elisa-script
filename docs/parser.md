@@ -155,8 +155,10 @@ effect reference and result type statically visible.
 
 Error-family declarations use the same enum-shaped AST metadata as Elisa:
 `error UserError:` records its variants without requiring a runtime declaration.
-`raise UserError.Bad` is parsed as a `raise` call with one `Field` operand, which
-lets lowering preserve the family and tag for checked error propagation.
+`raise UserError.Bad` is parsed as a `raise` call with one `Field` operand, while
+`raise UserError.Bad(value, ...)` wraps that field in a constructor call and preserves
+the positional payload expressions. Lowering keeps the family/tag identity for
+checked propagation and evaluates constructor payloads in source order.
 
 ## Effect declarations
 
