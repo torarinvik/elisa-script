@@ -260,10 +260,13 @@ whose spans can be proven against the complete match (for example,
 `([a-z]+)=([0-9]+)`). Nested, quantified, or top-level-alternating capture layouts
 remain literal rather than guessing a branch; this conservative fallback keeps
 replacement behavior deterministic until recursive regex match values are defined.
-The replacement language also accepts AWK/sed's `&` whole-match token, Perl's
-`$$` literal-dollar token, and `\&` for a literal ampersand; each token is consumed
-atomically and unknown forms remain literal. Named references with unknown or
-duplicate names are also kept literal rather than selecting an ambiguous capture.
+The replacement language also accepts AWK/sed's `&` whole-match token, Perl/Python
+whole-match spellings `\0` and `\g<0>`, positional `\1` through `\9` aliases for
+`$1` through `$9`, and named `\g<name>` aliases for `${name}`/`$<name>`. Perl's
+`$$` literal-dollar token and `\&` literal-ampersand token remain available; each
+token is consumed atomically and unknown forms remain literal. Named references
+with unknown or duplicate names are also kept literal rather than selecting an
+ambiguous capture.
 `RegexSplit` has signature `Text × Named(Regex) -> Array[Text]`. It uses those same
 spans as field boundaries, preserves empty fields, and applies an explicit one-byte
 advance for zero-width matches. The result is materialized in caller-owned flat

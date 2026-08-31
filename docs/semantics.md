@@ -254,7 +254,11 @@ capture span; unknown or duplicate names remain literal.
 
 Replacement tokens follow familiar Perl/AWK/sed conventions while remaining
 deterministic: `$0` is the complete match, `&` is an AWK/sed spelling of the
-complete match, `$$` emits a literal dollar, and `\&` emits a literal ampersand.
+complete match, and Perl/Python-style `\0` and `\g<0>` are equivalent whole-match
+tokens. `$1` through `$9` expand proven positional captures; `\1` through `\9`
+are equivalent spellings. For uniquely named flat groups, `${name}`, `$<name>`,
+and `\g<name>` expand the same proven capture. `$$` emits a literal dollar, and
+`\&` emits a literal ampersand.
 `split_regex(text, pattern) -> darray[sview]` uses the same matcher for
 Perl/AWK-style field boundaries. It preserves empty fields before, between, and
 after non-overlapping matches. A zero-width match emits its current field, advances
