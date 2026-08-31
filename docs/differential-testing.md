@@ -61,7 +61,8 @@ a `darray[sview]`. Call
 `validate_differential_runner` before handing the value to an adapter. Its explicit
 validation machine checks the name and target, requires an entry for adapter/module
 runner kinds, rejects an entry on kinds that do not consume one, scans every argument
-for embedded NUL bytes, and requires a positive timeout. A failed check returns
+for embedded NUL bytes, requires a positive timeout, and requires a positive
+`max_output_bytes` capture ceiling (64 MiB by default). A failed check returns
 `DifferentialRunnerCheck` with a stable issue kind and argument index; it does not
 launch anything.
 
@@ -103,7 +104,10 @@ bounded wait-poll budget; an expired child is killed and raises
 `DifferentialRunnerError.Timeout`. A normal nonzero process status, including
 the conventional `126`/`127` setup/exec statuses, remains ordinary
 `DifferentialRun.exit_status` data for comparison. Launch, wait, and capture
-failures use `DifferentialRunnerError.Process`.
+failures use `DifferentialRunnerError.Process`. Each captured stream is checked
+against the runner's `max_output_bytes` ceiling before allocation; exceeding it
+fails the invocation instead of allowing unbounded child output to exhaust the
+host.
 
 When a differential case needs both hermetic filesystem context and temporary
 environment values, use
