@@ -1119,7 +1119,7 @@ stages, keeping status observation explicit through `process_exit_status`.
 completed subprocess as a record: `result.returncode` and `result.exit_status`
 are aliases for `process_exit_status(result)`, while `result.stdout` and
 `result.stderr` alias `process_stdout(result)` and `process_stderr(result)`.
-The explicit `process_*` field spellings are accepted as well. All six forms
+The explicit `process_*` field spellings are accepted as well. All forms
 lower to the same checked IR operations and require a nominal `ProcessCapture`
 receiver; an unknown field is rejected statically.
 
