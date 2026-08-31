@@ -634,7 +634,7 @@ verified read/split/join/write instructions, keeping interpreter and bytecode
 behavior identical.
 
 Interpolated strings use Elisa's `f"...{expr}..."` syntax. The parser represents
-them as ordered `__fstr` pieces. Elisascript accepts text, `char`, any integer width, `f64`,
+them as ordered `__fstr` pieces. Elisascript accepts text, `char`, any integer width, `f32`/`f64`,
 `bool`, text-backed nominal, array, and dictionary dynamic pieces and lowers the
 sequence to `Concat` instructions, inserting the existing
 `FormatChar`/`FormatInt`/`FormatFloat`/`FormatBool`/`FormatNominal`/`FormatAggregate`
@@ -717,7 +717,7 @@ runtime spelling and keeps the returned text in permanent storage.
 payload. These formatting helpers are compiler-known and shadowable by source
 declarations.
 The Python-compatible `str(value) -> sview` facade accepts text (identity),
-`char`, any integer width, `f64`, `bool`, arrays, dictionaries, and the text-backed
+`char`, any integer width, `f32`/`f64`, `bool`, arrays, dictionaries, and the text-backed
 nominals `Path`, `Glob`, `Regex`, `Executable`, and `Url`, selecting the
 corresponding typed formatter. Aggregate values use the same bounded,
 deterministic bracketed rendering as f-strings and `print`; integer widths remain
@@ -1124,7 +1124,7 @@ programs should be split into multiple modules rather than bypassing the limit.
 
 Standard streams are explicit typed operations rather than shell behavior. The
 Python-shaped `print(value, ...) -> usize` convenience is compiler-known: it
-formats text, `char`, any integer width, `f64`, `bool`, text-backed nominal, array, and
+formats text, `char`, any integer width, `f32`/`f64`, `bool`, text-backed nominal, array, and
 dictionary arguments,
 joins them with the typed text control `sep` (default `" "`), appends the typed
 text control `end` (default `"\n"`), and delegates to the same stdout operation.

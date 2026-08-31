@@ -148,7 +148,7 @@ Terminating recovery also accepts a void operation, for example `try assert(x) e
 return`, when the recovery clause ends control flow.
 
 F-strings are parser sugar for the compiler-owned `__fstr` call. Lowering accepts
-text, `char`, any integer width, `f64`, `bool`, text-backed nominal, array, and
+text, `char`, any integer width, `f32`/`f64`, `bool`, text-backed nominal, array, and
 dictionary expressions, converting non-text pieces with the existing
 `FormatChar`/`FormatInt`/`FormatFloat`/`FormatBool`/`FormatNominal`/`FormatAggregate`
 operations before emitting a left-to-right chain of ordinary `Concat`
@@ -945,7 +945,7 @@ value's static type.
 `ParseFloat` has type `Text -> Float(64)` and shares the `ParseError` row. Its
 validation machine requires a decimal mantissa and, when present, a complete
 exponent before invoking the shared decimal evaluator; malformed input therefore
-cannot silently become zero. `FormatFloat` has type `Float(64) -> Text` and copies
+cannot silently become zero. `FormatFloat` has type `Float(32|64) -> Text` and copies
 the core `%g` spelling into permanent storage before returning its view. These
 opcodes are classified into the packed text dispatch family. `FormatBool` has
 type `Bool -> Text` and emits canonical lowercase `true` or `false`; it is
