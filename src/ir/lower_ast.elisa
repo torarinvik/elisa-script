@@ -51,6 +51,11 @@ extend EsIr:
             binding: Global
 
 
+        struct GlobalLiteralProbe:
+            valid: bool
+            literal: GlobalLiteral
+
+
         # A comprehension may iterate a materialized array/text value or an
         # integer range directly.  Ranges stay syntax-level here: the lowering
         # carries the current counter through the same explicit CFG used by
@@ -418,9 +423,70 @@ extend EsIr:
             return LoweredValue{valid: true, value: result, type: state.global_types[index]}
 
 
+        def lower_global_literal(declared: Type, initializer: Ast::Expr) -> GlobalLiteralProbe:
+            invalid: GlobalLiteralProbe = GlobalLiteralProbe{valid: false, literal: GlobalLiteral{kind: TypeKind.Void}}
+            result: mutable GlobalLiteral = GlobalLiteral{kind: declared.kind}
+            match initializer:
+                Expr.IntLit(value):
+                    return invalid if declared.kind != TypeKind.Int or declared.bits != 64 or not declared.signed
+                    result.integer <- value
+                Expr.IntLitTyped(value, suffix):
+                    suffix_type: Type = type_from_name(suffix)
+                    return invalid if declared.kind != TypeKind.Int or not same_type(declared, suffix_type)
+                    result.integer <- value
+                Expr.FloatLit(text):
+                    return invalid if declared.kind != TypeKind.Float
+                    result.decimal <- text
+                Expr.StringLit(text):
+                    return invalid if declared.kind != TypeKind.Text and not text_backed_named_type(declared)
+                    result.text <- text
+                Expr.CharLit(text):
+                    return invalid if declared.kind != TypeKind.Char
+                    result.text <- text
+                Expr.BoolLit(value):
+                    return invalid if declared.kind != TypeKind.Bool
+                    result.boolean <- value
+                Expr.Call(Expr.Ident(prefix, _), arguments, argument_names, _):
+                    return invalid if declared.kind != TypeKind.Named or arguments.count != 1 or (argument_names.count != 0 and argument_names[0] != "")
+                    expected_prefix: sview = "path" if declared.name == "Path" else "glob" if declared.name == "Glob" else "regex" if declared.name == "Regex" else "exe" if declared.name == "Executable" else "url" if declared.name == "Url" else ""
+                    return invalid if expected_prefix == "" or prefix != expected_prefix
+                    match arguments[0]:
+                        Expr.StringLit(text):
+                            result.text <- text
+                        _:
+                            return invalid
+                _:
+                    return invalid
+            return GlobalLiteralProbe{valid: true, literal: result}
+
+
         def lower_global_probe(name: sview, declared: Type, initializer: Ast::Expr) -> GlobalProbe:
             result: mutable Global = Global{name: name, type: declared}
             return GlobalProbe{valid: true, binding: result} if initializer is Expr.Invalid
+            match initializer:
+                Expr.Array(elements, _):
+                    return GlobalProbe{valid: false, binding: result} if declared.kind != TypeKind.Array or not global_type_supported(array_element_type(declared))
+                    element_type: Type = array_element_type(declared)
+                    for element in elements |result, element_type|:
+                        literal: GlobalLiteralProbe = lower_global_literal(element_type, element)
+                        return GlobalProbe{valid: false, binding: result} if not literal.valid
+                        result.aggregate_values.push(literal.literal)
+                    result.initialized <- true
+                    return GlobalProbe{valid: true, binding: result}
+                Expr.DictLit(entries, _):
+                    return GlobalProbe{valid: false, binding: result} if declared.kind != TypeKind.Map or not global_type_supported(map_key_type(declared)) or not global_type_supported(map_value_type(declared))
+                    key_type: Type = map_key_type(declared)
+                    value_type: Type = map_value_type(declared)
+                    for entry in entries |result, key_type, value_type|:
+                        key_literal: GlobalLiteralProbe = lower_global_literal(key_type, entry.key)
+                        value_literal: GlobalLiteralProbe = lower_global_literal(value_type, entry.value)
+                        return GlobalProbe{valid: false, binding: result} if not key_literal.valid or not value_literal.valid
+                        result.aggregate_values.push(key_literal.literal)
+                        result.aggregate_values.push(value_literal.literal)
+                    result.initialized <- true
+                    return GlobalProbe{valid: true, binding: result}
+                _:
+                    pass
             match initializer:
                 Expr.IntLit(value):
                     return GlobalProbe{valid: false, binding: result} if declared.kind != TypeKind.Int or declared.bits != 64 or not declared.signed
@@ -8529,7 +8595,7 @@ extend EsIr:
                         if is_mutable:
                             declared: Type = interned_type_from_expression(type_expression, type_table) if type_expression is not Ast::Expr.Absent else unknown_ir_type()
                             probe: GlobalProbe = lower_global_probe(name, declared, value)
-                            issues.push(LowerIssue{kind: LowerIssueKind.UnsupportedDeclaration, function: "", line: pos.line, message: "module globals require a supported scalar type and literal initializer"}) if not global_type_supported(declared) or not probe.valid
+                            issues.push(LowerIssue{kind: LowerIssueKind.UnsupportedDeclaration, function: "", line: pos.line, message: "module globals require a supported scalar or one-level collection type and literal initializer"}) if not global_type_supported(declared) or not probe.valid
                     _:
                         issues.push(LowerIssue{kind: LowerIssueKind.UnsupportedDeclaration, function: "", line: 0, message: "declaration is not in the initial IR lowering subset"})
             lowered_handlers: mutable darray[Handler] = []

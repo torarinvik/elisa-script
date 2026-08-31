@@ -23,7 +23,9 @@ SSA constants at each function entry. They are ordinary lexical bindings, so a
 parameter or local with the same name shadows the module constant. Scalar
 `global` declarations live in `Module.globals`; `LoadGlobal` and `StoreGlobal`
 provide shared storage across calls, with zero values for uninitialized bindings.
-Aggregate globals and non-literal initializers remain outside this lowering subset.
+Scalar literals and one-level literal arrays/maps are encoded as flat global
+payloads and materialized in the runtime arena. Nested aggregates and non-literal
+initializers remain outside this lowering subset.
 
 In an explicit `darray[T]` context, tuple syntax `(a, b, ...)` is lowered through
 the same `MakeArray` operation after each element is checked against `T`; `()`
