@@ -8246,9 +8246,9 @@ extend EsIr:
 
         # Array/list patterns are lowered through the same explicit CFG as scalar
         # matches.  The initial structural subset intentionally stays small: a
-        # pattern may contain array-element bindings or wildcards, followed by one
-        # optional `...rest` tail.  Nested patterns and literals remain rejected
-        # until the IR has a first-class aggregate-pattern representation.
+        # pattern may contain array-element bindings, literals, or wildcards,
+        # followed by one optional `...rest` tail.  Nested patterns remain
+        # rejected until the IR has a first-class aggregate-pattern representation.
         def array_match_pattern_parts(pattern: Ast::Pattern, prefixes: mutable darray[Ast::Pattern]&, rest_name: mutable sview&, has_rest: mutable bool&, valid: mutable bool&) -> bool:
             match pattern:
                 Pattern.Tuple(elements):
@@ -8260,7 +8260,7 @@ extend EsIr:
                                 seen_rest <- true
                                 has_rest <- true
                                 rest_name <- name
-                            Pattern.Binding(_) | Pattern.Wildcard:
+                            Pattern.Binding(_) | Pattern.Literal(_) | Pattern.Wildcard:
                                 valid <- false if seen_rest
                                 prefixes.push(element) if not seen_rest
                             _:
@@ -8298,7 +8298,7 @@ extend EsIr:
                         valid: mutable bool = true
                         array_match_pattern_parts(arm.pattern, prefixes, rest_name, has_rest, valid)
                         if not valid:
-                            add_issue(state, LowerIssueKind.UnsupportedStatement, pos.line, "array match patterns support element bindings or wildcards and one trailing rest pattern")
+                            add_issue(state, LowerIssueKind.UnsupportedStatement, pos.line, "array match patterns support element bindings, literals, or wildcards and one trailing rest pattern")
                             supported <- false
                         catch_all <- has_rest and prefixes.count == 0
                     Pattern.Wildcard | Pattern.Binding(_):
@@ -8422,7 +8422,9 @@ extend EsIr:
                 prefixes: mutable darray[Ast::Pattern] = []
                 rest_name: mutable sview = ""
                 has_rest: mutable bool = false
+                element_type: Type = array_element_type(scrutinee.type)
                 length_value: mutable u32 = 0
+                test_emitted: mutable bool = false
                 match arm.pattern:
                     Pattern.Tuple(_) | Pattern.Rest(_):
                         pattern_valid: mutable bool = true
@@ -8439,7 +8441,66 @@ extend EsIr:
                             state.operand_pool.push(shape_value.value)
                             shape_opcode: Opcode = Opcode.GreaterEqual if has_rest else Opcode.Equal
                             state.instructions.push(Instruction{opcode: shape_opcode, result: shape_result, result_type: type_from_name("bool"), operand_start: shape_operand_start, operand_count: 2, span: ir_span(pos)})
-                            condition <- LoweredValue{valid: true, value: shape_result, type: type_from_name("bool")}
+                            literal_positions: mutable darray[usize] = []
+                            for prefix_index in 0..<prefixes.count |prefixes, literal_positions|:
+                                match prefixes[prefix_index]:
+                                    Pattern.Literal(_):
+                                        literal_positions.push(prefix_index)
+                                    _:
+                                        pass
+                            if literal_positions.count != 0:
+                                literal_check_block: u32 = fresh_block(state)
+                                if next_test_block == merge_block:
+                                    shape_fallthrough_args: (start: u32, count: u16) = append_binding_arguments(state, carried_indices)
+                                    state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: shape_result, operand_count: 1, target0: literal_check_block, target1: next_test_block, target_count: 2, edge1_arg_start: shape_fallthrough_args.start, edge1_arg_count: shape_fallthrough_args.count, span: ir_span(pos)}
+                                    any_fallthrough <- true
+                                else:
+                                    state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: shape_result, operand_count: 1, target0: literal_check_block, target1: next_test_block, target_count: 2, span: ir_span(pos)}
+                                finish_block(state)
+                                test_emitted <- true
+                                state.current_block <- literal_check_block
+                                state.terminated <- false
+                                literal_failed: mutable bool = false
+                                for literal_offset in 0..<literal_positions.count |state, prefixes, literal_positions, scrutinee, element_type, literal_failed, matched_block, next_test_block, merge_block, carried_indices, any_fallthrough|:
+                                    if not literal_failed:
+                                        prefix_index: usize = literal_positions[literal_offset]
+                                        literal_text: mutable sview = ""
+                                        match prefixes[prefix_index]:
+                                            Pattern.Literal(text):
+                                                literal_text <- text
+                                            _:
+                                                pass
+                                        literal: LoweredValue = lower_match_literal(literal_text, element_type, pos, state)
+                                        if literal.valid:
+                                            index_value: LoweredValue = emit_constant(state, type_from_name("usize"), prefix_index.i64(), "", "", false, ir_span(pos))
+                                            element_value: u32 = fresh_value(state)
+                                            element_operand_start: u32 = state.operand_pool.count.u32()
+                                            state.operand_pool.push(scrutinee.value)
+                                            state.operand_pool.push(index_value.value)
+                                            state.instructions.push(Instruction{opcode: Opcode.Index, result: element_value, result_type: element_type, operand_start: element_operand_start, operand_count: 2, span: ir_span(pos)})
+                                            comparison: u32 = fresh_value(state)
+                                            comparison_operand_start: u32 = state.operand_pool.count.u32()
+                                            state.operand_pool.push(element_value)
+                                            state.operand_pool.push(literal.value)
+                                            state.instructions.push(Instruction{opcode: Opcode.Equal, result: comparison, result_type: type_from_name("bool"), operand_start: comparison_operand_start, operand_count: 2, span: ir_span(pos)})
+                                            final_literal: bool = literal_offset + 1 == literal_positions.count
+                                            literal_next_block: u32 = matched_block if final_literal else fresh_block(state)
+                                            if next_test_block == merge_block:
+                                                literal_fallthrough_args: (start: u32, count: u16) = append_binding_arguments(state, carried_indices)
+                                                state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: comparison, operand_count: 1, target0: literal_next_block, target1: next_test_block, target_count: 2, edge1_arg_start: literal_fallthrough_args.start, edge1_arg_count: literal_fallthrough_args.count, span: ir_span(pos)}
+                                                any_fallthrough <- true
+                                            else:
+                                                state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: comparison, operand_count: 1, target0: literal_next_block, target1: next_test_block, target_count: 2, span: ir_span(pos)}
+                                            finish_block(state)
+                                            if not final_literal:
+                                                state.current_block <- literal_next_block
+                                                state.terminated <- false
+                                        else:
+                                            literal_failed <- true
+                                            state.terminator <- Terminator{kind: TerminatorKind.Unreachable, span: ir_span(pos)}
+                                            finish_block(state)
+                            else:
+                                condition <- LoweredValue{valid: true, value: shape_result, type: type_from_name("bool")}
                     Pattern.Binding(name):
                         binder <- name
                         catch_all <- true
@@ -8447,16 +8508,17 @@ extend EsIr:
                         catch_all <- true
                     _:
                         pass
-                if catch_all:
-                    state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: matched_block, target_count: 1, span: ir_span(pos)}
-                elif condition.valid:
-                    if next_test_block == merge_block:
-                        fallthrough_args: (start: u32, count: u16) = append_binding_arguments(state, carried_indices)
-                        state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: condition.value, operand_count: 1, target0: matched_block, target1: next_test_block, target_count: 2, edge1_arg_start: fallthrough_args.start, edge1_arg_count: fallthrough_args.count, span: ir_span(pos)}
-                        any_fallthrough <- true
-                    else:
-                        state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: condition.value, operand_count: 1, target0: matched_block, target1: next_test_block, target_count: 2, span: ir_span(pos)}
-                finish_block(state)
+                if not test_emitted:
+                    if catch_all:
+                        state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: matched_block, target_count: 1, span: ir_span(pos)}
+                    elif condition.valid:
+                        if next_test_block == merge_block:
+                            fallthrough_args: (start: u32, count: u16) = append_binding_arguments(state, carried_indices)
+                            state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: condition.value, operand_count: 1, target0: matched_block, target1: next_test_block, target_count: 2, edge1_arg_start: fallthrough_args.start, edge1_arg_count: fallthrough_args.count, span: ir_span(pos)}
+                            any_fallthrough <- true
+                        else:
+                            state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: condition.value, operand_count: 1, target0: matched_block, target1: next_test_block, target_count: 2, span: ir_span(pos)}
+                    finish_block(state)
 
                 if guarded:
                     for index in 0..<scope_mark |state, base_values|:

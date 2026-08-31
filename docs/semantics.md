@@ -521,14 +521,14 @@ match values:
         return 0
 ```
 
-Each prefix position is either a binding or `_`; without a rest marker the
+Each prefix position is either a binding, a scalar literal, or `_`; without a rest marker the
 array length must equal the prefix count, while `...rest` accepts any length at
 least that count and binds the remaining suffix as the same array type. The
 empty `[...]` and `[...rest]` forms are useful for exact-empty and catch-all
 cases. Length checks execute before indexed extraction, and the lowering uses
 explicit `Length`, `Index`, `Slice`, and branch states, so a failed shape never
-performs an out-of-bounds read. Nested patterns and literal element tests remain
-rejected until aggregate-pattern descriptors are added.
+performs an out-of-bounds read. Nested element patterns remain rejected until
+aggregate-pattern descriptors are added.
 
 ## Typed comprehensions
 
