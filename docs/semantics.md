@@ -523,8 +523,10 @@ match exit_status:
 
 The lowerer expands each alternative into a typed, source-order arm, so each
 literal or pin is tested exactly once and a later arm remains available when an
-earlier guard fails. Alternatives that introduce incompatible bindings or use
-aggregate subpatterns remain rejected by the scalar lowering.
+earlier guard fails. The same expansion is available for array shape alternatives
+such as `[0, head] | [1, head]`; each alternative performs its own length and
+element checks before entering the shared body. Alternatives that introduce
+incompatible bindings or use nested aggregate subpatterns remain rejected.
 
 ## Structural array matching
 
