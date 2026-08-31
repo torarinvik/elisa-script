@@ -2655,6 +2655,120 @@ extend EsIr:
             return LoweredValue{valid: fallback.valid, value: result, type: guarded.type}
 
 
+        # Lower the expression-position `catch EXPR:` form.  The compact IR carries
+        # recoverable failure control flow, but it does not yet carry an error ordinal
+        # or payload value through a call.  Keep the supported surface honest: require
+        # one success arm followed by one catch-all arm, and make both arm expressions
+        # produce exactly the guarded call's static value type.  Variant arms are
+        # rejected rather than silently treated as catch-alls; the later error-union
+        # descriptor can then add precise dispatch without changing this CFG shape.
+        def lower_catch_expression(guarded_expression: Ast::Expr, arms: darray[Ast::MatchArm]&, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+            invalid: LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+            if arms.count != 2:
+                add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "catch expressions currently require one success arm and one catch-all error arm")
+                return invalid
+            success_arm: Ast::MatchArm = arms[0]
+            error_arm: Ast::MatchArm = arms[1]
+            match success_arm.pattern:
+                Pattern.Binding(_) | Pattern.Wildcard:
+                    pass
+                _:
+                    add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "catch success arm must use a binding or wildcard pattern")
+                    return invalid
+            match success_arm.guard:
+                Expr.Absent:
+                    pass
+                _:
+                    add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "catch success arms cannot have guards")
+                    return invalid
+            catch_all: mutable bool = false
+            match error_arm.pattern:
+                Pattern.Wildcard:
+                    catch_all <- true
+                Pattern.TypeBind(error_type_name, _):
+                    catch_all <- error_type_name == "error"
+                _:
+                    pass
+            if not catch_all:
+                add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "catch expression requires a final wildcard or error catch-all arm")
+                return invalid
+            match error_arm.guard:
+                Expr.Absent:
+                    pass
+                _:
+                    add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "catch error arms cannot have guards")
+                    return invalid
+            success_expression: mutable Ast::Expr = Expr.Invalid
+            success_expression_found: mutable bool = false
+            if success_arm.body.count == 1:
+                match success_arm.body[0]:
+                    Stmt.Expr(value, _):
+                        success_expression <- value
+                        success_expression_found <- true
+                    _:
+                        pass
+            error_expression: mutable Ast::Expr = Expr.Invalid
+            error_expression_found: mutable bool = false
+            if error_arm.body.count == 1:
+                match error_arm.body[0]:
+                    Stmt.Expr(value, _):
+                        error_expression <- value
+                        error_expression_found <- true
+                    _:
+                        pass
+            if not success_expression_found or not error_expression_found:
+                add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "catch arm bodies must each contain one value expression")
+                return invalid
+
+            fallback_block: u32 = fresh_block(state)
+            merge_block: u32 = fresh_block(state)
+            state.instructions.push(Instruction{opcode: Opcode.ErrorGuardPush, result: 0, result_type: void_ir_type(), integer: fallback_block.i64(), span: ir_span(pos)})
+            guarded: LoweredValue = lower_expression(guarded_expression, state)
+            if not guarded.valid:
+                return invalid
+            if guarded.type.kind == TypeKind.Void:
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "catch expression requires a value-producing guarded expression")
+                return invalid
+            state.instructions.push(Instruction{opcode: Opcode.ErrorGuardPop, result: 0, result_type: void_ir_type(), span: ir_span(pos)})
+
+            scope_mark: usize = state.names.count
+            match success_arm.pattern:
+                Pattern.Binding(success_name):
+                    state.names.push(success_name)
+                    state.values.push(guarded.value)
+                    state.types.push(guarded.type)
+                    state.mutables.push(false)
+                _:
+                    pass
+            success_value: LoweredValue = lower_expression_expected(success_expression, guarded.type, state)
+            state.names.truncate(scope_mark)
+            state.values.truncate(scope_mark)
+            state.types.truncate(scope_mark)
+            state.mutables.truncate(scope_mark)
+            if not success_value.valid:
+                return invalid
+            success_edge: u32 = state.edge_arg_pool.count.u32()
+            state.edge_arg_pool.push(success_value.value)
+            state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: merge_block, target_count: 1, edge0_arg_start: success_edge, edge0_arg_count: 1, span: ir_span(pos)}
+            finish_block(state)
+
+            state.current_block <- fallback_block
+            state.terminated <- false
+            fallback: LoweredValue = lower_expression_expected(error_expression, guarded.type, state)
+            if fallback.valid:
+                fallback_edge: u32 = state.edge_arg_pool.count.u32()
+                state.edge_arg_pool.push(fallback.value)
+                state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: merge_block, target_count: 1, edge0_arg_start: fallback_edge, edge0_arg_count: 1, span: ir_span(pos)}
+            finish_block(state)
+
+            result: u32 = fresh_value(state)
+            state.pending_parameter_blocks.push(merge_block)
+            state.pending_parameters.push(Parameter{value: result, type: guarded.type, name: "catch"})
+            state.current_block <- merge_block
+            state.terminated <- false
+            return LoweredValue{valid: fallback.valid, value: result, type: guarded.type}
+
+
         # Lower terminating recovery such as `try parse_int(text) else return 0i64`.
         # The success edge merges the guarded value into the surrounding expression;
         # the recovery block is required to terminate (`return`, `break`, or
@@ -3546,6 +3660,8 @@ extend EsIr:
                             return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
                 Expr.GetElse(guarded, recovery, pos):
                     return lower_error_control_flow(guarded, recovery, pos, state)
+                Expr.Catch(guarded, arms, pos):
+                    return lower_catch_expression(guarded, arms, pos, state)
                 Expr.Call(callee, arguments, argument_names, pos):
                     callee_name: mutable sview = ""
                     match callee:

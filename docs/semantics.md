@@ -443,6 +443,26 @@ lazy and may itself be fallible; any error it raises propagates through the
 enclosing function's ordinary `error[...]` row. Recovery does not erase the
 function's static error contract or catch internal control-flow failures.
 
+Expression-position `catch` provides the same error-first workflow when the
+success value needs a small transformation:
+
+```elisa
+number: i64 = catch int(text):
+    parsed:
+        parsed
+    error e:
+        0i64
+```
+
+Elisascript currently accepts one success binding (or `_`) and one final
+catch-all (`_` or `error e`) arm. Both arm bodies must contain one expression
+whose type exactly matches the guarded value; the error binder is intentionally
+not a runtime error payload. Variant-specific arms and terminating arm bodies
+remain explicit lowering diagnostics until the IR carries error ordinals and
+payloads. The guarded expression is evaluated once, with a lazy fallback and a
+typed state-machine merge; recoverable failures use the ordinary `error[...]`
+contract rather than a result wrapper.
+
 For early propagation, the fallback may be a terminating clause:
 
 ```elisa

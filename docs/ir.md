@@ -369,6 +369,13 @@ Terminating recovery (`try f() else return value`, or the corresponding `break`
 and `continue` forms) uses the same guard but gives the fallback its own block;
 that block must terminate, while success merges the guarded value into the
 surrounding state-machine region.
+Expression-position `catch f():` uses the same four-state shape (guarded call,
+success arm, fallback arm, typed merge). The current backend-neutral subset
+requires a binding or wildcard success arm and a final wildcard/`error` catch-all;
+both arm expressions must have the guarded call's exact type. The error binder is
+not materialized because the compact IR has no error payload slot yet. Variant
+dispatch and terminating value arms are rejected as explicit lowering issues
+until an error-union descriptor is available.
 `PathExists` is the first concrete filesystem opcode. Its verified signature is
 `Named(Path) -> Bool`, and verification also requires `File.Read` in the containing
 function's effect row. Lowering adds that effect automatically. The interpreter
