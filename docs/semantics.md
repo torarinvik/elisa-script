@@ -1360,7 +1360,9 @@ completed subprocess as a record: `result.returncode`, `result.exit_status`, and
 `result.stderr` alias `process_stdout(result)` and `process_stderr(result)`.
 The explicit `process_*` field spellings are accepted as well. All forms
 lower to the same checked IR operations and require a nominal `ProcessCapture`
-receiver; an unknown field is rejected statically.
+receiver; semantic inference preserves the integer/string result shape of every
+alias so assignments and downstream operators remain statically checked. An
+unknown field is rejected statically.
 
 ## Program entry point
 
