@@ -1537,8 +1537,10 @@ must call the same implementation used at runtime so the two cannot disagree.
 - Nominal literal results participate in assignment type checking.
 - Fixed-result scripting intrinsics preserve scalar, text, path, executable,
   filesystem, process, environment, and stream result types.
-- Numeric polymorphic intrinsics (`abs`, `any`, and `all`) preserve their
-  statically known result families, including source-function shadowing.
+- Numeric and collection-polymorphic intrinsics (`abs`, `min`, `max`, `sum`,
+  `product`, `sorted`, `reversed`, `any`, and `all`) preserve their statically
+  known result families or structural descriptors, including source-function
+  shadowing.
 - The qualified `subprocess` namespace resolves to the same typed process
   operations without introducing shell command strings.
 - The qualified `re` namespace preserves Python's pattern-first regex spellings
