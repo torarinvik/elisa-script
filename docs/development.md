@@ -5,14 +5,50 @@ stage1 compiler code. From this repository, the local stage0 entry point is:
 
 ```sh
 ELISA_LOCAL_COMPILER="../../Go projects/structpy-tree/compiler/bin/elisac"
-"$ELISA_LOCAL_COMPILER" -emit test test/ir/elisascript_interpreter_test.elisa
+run_bounded() {
+  source_file="$1"
+  log_file="$(mktemp -t elisascript-compiler.XXXXXX)"
+  "$ELISA_LOCAL_COMPILER" -emit lowered "$source_file" >"$log_file" 2>&1 &
+  compiler_pid=$!
+  started_at="$(date +%s)"
+  rss_guard=0
+  timeout_guard=0
+  while kill -0 "$compiler_pid" 2>/dev/null; do
+    rss_kb="$(ps -o rss= -p "$compiler_pid" 2>/dev/null | tr -d ' ')"
+    if [ -n "$rss_kb" ] && [ "$rss_kb" -gt 1800000 ]; then
+      kill -KILL "$compiler_pid" 2>/dev/null || true
+      rss_guard=1
+      break
+    fi
+    now="$(date +%s)"
+    if [ $((now - started_at)) -gt 120 ]; then
+      kill -KILL "$compiler_pid" 2>/dev/null || true
+      timeout_guard=1
+      break
+    fi
+    sleep 1
+  done
+  wait "$compiler_pid"
+  compiler_exit=$?
+  cat "$log_file"
+  unlink "$log_file"
+  [ "$rss_guard" -eq 0 ] && [ "$timeout_guard" -eq 0 ] && return "$compiler_exit"
+  return 125
+}
+
+# Start with a lowering-only or small one-function fixture.  Run the larger
+# executable test suites only after this guard remains below the RSS ceiling.
+run_bounded test/ir/elisascript_interpreter_test.elisa
 ```
 
 The local StructPy checkout keeps compiler changes isolated from the installed
 release at `~/.elisac/elisac` and the Elisa-core main-worktree binary; do not use
 either installed or main-worktree binaries for stage0/stage1 validation. Keep
-validation bounded with a watchdog that terminates the compiler before its RSS
-exceeds the host-safe ceiling; a virtual-memory limit alone is not sufficient.
+validation bounded with an RSS-and-time watchdog that terminates the compiler
+before its RSS exceeds the host-safe ceiling; a virtual-memory limit alone is not
+sufficient. The wrapper above deliberately uses `-emit lowered` first; do not
+relaunch the full interpreter fixture after an RSS incident until a smaller
+bounded repro has stayed under the guard.
 The same `ELISA_LOCAL_COMPILER` setting should be used for the lowering,
 interpreter, bytecode, source-loader, parser, lexer, semantic, and differential
 test suites. Rebuild the local Elisa-core compiler first when its stage0 or stage1
