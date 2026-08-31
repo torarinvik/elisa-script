@@ -802,6 +802,9 @@ The direct path uses the same overflow-safe flat-array range predicates as the
 interpreter for array/map indexing, slicing, membership, joining, concatenation,
 indexed updates, equality, key extraction, and process argument vectors; malformed external arguments
 therefore cannot diverge between engines.
+`Expr.IndexN` lowers to the same `Index` opcode repeatedly from left to right,
+so multi-dimensional array and map access introduces no new runtime operation or
+temporary collection.
 Process execution and capture (`RunProcess`, stdout/stderr
 capture, stdin transport, and `ProcessCapture` accessors) use the same typed argv
 and stream helpers as the oracle. Unsupported modules deterministically rebuild
