@@ -1512,8 +1512,14 @@ must call the same implementation used at runtime so the two cannot disagree.
 - Each prefix has its expected nominal result type.
 - Malformed constant payloads produce compile-time diagnostics.
 - Nominal literal results participate in assignment type checking.
+- Fixed-result scripting intrinsics preserve scalar, text, path, executable,
+  filesystem, process, environment, and stream result types.
+- Numeric polymorphic intrinsics (`abs`, `any`, and `all`) preserve their
+  statically known result families, including source-function shadowing.
 - Shell/Python-compatible `sleep` aliases resolve as known builtins for the
   typed lowering pass.
 
-Current result: 11/11 Elisascript semantic tests pass. Compiling this suite also
-compiles the complete retained semantic layer and its exhaustive diagnostic tables.
+The suite is intentionally kept alongside the copied semantic layer so each
+new scripting intrinsic has a source-level regression case. Compiler execution
+and the resulting test-count claim are deferred while the host safety guard
+keeps validation loops disabled.
