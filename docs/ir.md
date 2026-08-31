@@ -439,9 +439,12 @@ symlink-safe glob walker as `ExpandGlob`, keeping Python `Path.glob` and
 includes hidden entries, skips only `.` and `..`, sorts by unsigned byte order,
 and returns rooted child paths. It is lowered and executed directly by both the
 interpreter and packed bytecode backends without a glob-pattern round trip.
-`TouchPath` verifies as `Named(Path) -> Bool` with `File.Write` and `FileIoError`.
-Its interpreter bridge opens-or-creates without truncation, then refreshes the
-timestamps through POSIX `utimes`; packed bytecode uses the same helper.
+`TouchPath` verifies as `Named(Path) -> Bool` with `File.Write` and `FileIoError`
+for the legacy one-operand form, or `Named(Path) × Bool -> Bool` when the
+optional `exist_ok` control is present. Its interpreter bridge opens-or-creates
+without truncation, then refreshes timestamps through POSIX `utimes`; with
+`exist_ok=false`, an already-existing entry is reported as `FileIoError`.
+Packed bytecode uses the same helper and defaults the omitted control to `true`.
 `ChmodPath` verifies as `Named(Path) × Int(unsigned, 64) -> Bool` with `File.Write`
 and `FileIoError`; both execution engines call the POSIX `chmod` boundary directly.
 `FileSize` verifies as `Named(Path) -> Int(unsigned, 64)` with `File.Read` and

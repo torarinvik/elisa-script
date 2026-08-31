@@ -1041,6 +1041,9 @@ The corresponding metadata and directory mutations are available as
 `path.touch()`, `path.chmod(mode)`, `path.mkdir()`, and `path.rmdir()`;
 these retain the same `File.Write` or `Directory.Write` effects and typed error
 contracts as `touch`, `chmod`, `create_directory`, and `remove_directory`.
+`path.touch(exist_ok: bool)` also accepts the Python-compatible named control:
+the default is `true`, while `false` reports a `FileIoError` when any entry
+already exists. Touch never truncates an existing file.
 `path.mkdir(parents: bool, exist_ok: bool)` also accepts the Python-compatible
 named controls: `parents` creates missing ancestors like `mkdir -p`, while
 `exist_ok` succeeds when the final path is already a directory. Both default to
