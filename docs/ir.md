@@ -298,6 +298,10 @@ array operations.
 non-overlapping matched span. Zero-width matches advance explicitly, matching the
 termination rule used by `RegexSplit` and `RegexReplace`.
 
+Compiled `Regex` values also expose `search(text)` and `findall(text)` (with
+`find_all(text)` as a spelling alias); these receiver forms lower to the same
+`RegexSearch` and `RegexFind` contracts and do not add backend-specific state.
+
 `RegexCapture` has the same `Text × Named(Regex)` operands and returns an
 `Array[Text]` for the first match. Element zero is the complete matched span;
 subsequent elements are proven positional capture groups. If no match exists the

@@ -348,6 +348,13 @@ advance one input byte (with a final zero-width match at end-of-input terminatin
 the scan), so even anchor-only patterns are total. The operation is pure and uses
 the same deterministic ASCII matcher as search, replacement, and splitting.
 
+For ports that keep a compiled pattern in a local, `pattern.search(text)` is a
+typed receiver spelling of `matches(text, pattern)`, and
+`pattern.findall(text)`/`pattern.find_all(text)` are receiver spellings of
+`find_regex(text, pattern)`. The receiver must be the nominal `Regex` type and
+the haystack must be `sview`; both forms lower to the same verified opcodes and
+retain identical deterministic matching behavior.
+
 `capture_regex(text, pattern) -> darray[sview]` returns the first match and its
 proven capture groups. Element `0` is the complete match; elements `1` onward
 follow positional group order, and an unmatched proven group is represented by an
