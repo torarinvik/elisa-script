@@ -475,6 +475,10 @@ payload. The scripting-profile aliases `dirname`, `basename`, `suffix`, and
 `stem` lower to these same opcodes and retain source-level shadowing rules. The
 `Path` members `parent`, `name`, `suffix`, and `stem`, together with
 `joinpath`, `exists`, `is_file`, `is_symlink`, `readlink`, `read_link`, `symlink_to`, and `is_dir` methods, are lowered to the same operations.
+`Path.with_name` lowers to one `PathParent` followed by `PathJoin`; `Path.with_suffix`
+lowers to `PathParent`, `PathStem`, `Concat`, and `PathJoin`. Both return a nominal
+`Path`, take one positional `Text`/`sview` argument, add no effects or errors, and
+reuse the existing path operation semantics without a new runtime representation.
 `PathIsAbsolute` is likewise pure and verifies `Named(Path) -> Bool`; it checks
 only the first byte of the length-delimited path for `/`, adds no effect or error,
 and is eligible for direct bytecode execution. The global aliases `is_absolute`

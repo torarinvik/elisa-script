@@ -929,6 +929,16 @@ returns the final component without that suffix. Their results are views over
 permanent or input-owned bytes and are identical in the interpreter and packed
 bytecode.
 
+`Path.with_name(name: sview) -> Path` and `Path.with_suffix(suffix: sview) -> Path`
+are pure pathlib-shaped rewrites built from those same operations. `with_name`
+keeps the original parent and joins the supplied final component; `with_suffix`
+keeps the parent, removes the final suffix through `path_stem`, and joins the
+stem with the supplied suffix. They do not inspect or mutate the filesystem and
+their arguments are statically checked as `sview`. The scripting profile keeps
+the core path helpers permissive: an empty suffix therefore removes the final
+suffix, and unusual component text follows the existing `path_join` rules
+rather than introducing a new runtime error family.
+
 `path_is_absolute(path: Path) -> bool` is the pure lexical counterpart to shell
 absolute-path tests and Python `os.path.isabs`/`Path.is_absolute()`. It returns
 `true` only when the path is non-empty and begins with `/`; it does not consult
