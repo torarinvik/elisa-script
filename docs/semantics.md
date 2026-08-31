@@ -842,6 +842,9 @@ not materialize pair objects. All forms remain explicit state-machine CFGs.
 Multi-index access such as `matrix[row, column]` is equivalent to a left-to-right
 chain of typed indexes. Each index is evaluated once; arrays, dictionaries, and
 text retain their ordinary exact key/element checks at every step.
+The same spelling is valid as a mutation target for a mutable array/map root;
+the runtime performs typed immutable updates from the innermost aggregate back to
+that root, so nested writes never alias an untracked temporary.
 Python's `for left, right in zip(left_values, right_values)` spelling is also
 accepted for exactly two positional array or text sources. Each source is
 evaluated once, the element types remain exact (`char` for text), and iteration

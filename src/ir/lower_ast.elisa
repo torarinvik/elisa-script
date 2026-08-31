@@ -884,6 +884,8 @@ extend EsIr:
                                 add_unique_name(names, name) if supported_assignment_operator(operator)
                             Expr.Index(Expr.Ident(name, target_pos), index_expression, index_pos):
                                 add_unique_name(names, name) if supported_assignment_operator(operator)
+                            Expr.IndexN(Expr.Ident(name, target_pos), index_expressions, index_pos):
+                                add_unique_name(names, name) if supported_assignment_operator(operator)
                             _:
                                 pass
                     Stmt.If(condition, then_body, else_body, pos):
@@ -9071,6 +9073,129 @@ extend EsIr:
             return LoweredValue{valid: true, value: result, type: result_type}
 
 
+        def emit_set_index_value(collection: LoweredValue, index: LoweredValue, replacement: LoweredValue, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+            return LoweredValue{valid: false, value: 0, type: unknown_ir_type()} if not collection.valid or not index.valid or not replacement.valid
+            if collection.type.kind != TypeKind.Array and collection.type.kind != TypeKind.Map:
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "indexed assignment requires an array or dictionary at every updated level")
+                return LoweredValue{valid: false, value: 0, type: collection.type}
+            result: u32 = fresh_value(state)
+            operand_start: u32 = state.operand_pool.count.u32()
+            state.operand_pool.push(collection.value)
+            state.operand_pool.push(index.value)
+            state.operand_pool.push(replacement.value)
+            state.instructions.push(Instruction{opcode: Opcode.SetIndex, result: result, result_type: collection.type, operand_start: operand_start, operand_count: 3, span: ir_span(pos)})
+            return LoweredValue{valid: true, value: result, type: collection.type}
+
+
+        # Lower `matrix[row, column] <- value` without introducing a special
+        # runtime opcode.  Every receiver/index is evaluated once, the innermost
+        # element is replaced, and the updated aggregate is rebuilt toward the
+        # mutable root through typed immutable-update values.
+        def lower_multi_index_assignment(target: Ast::Expr, operator: TokenKind, value: Ast::Expr, pos: Ast::Pos&, state: mutable LowerState&) -> bool can[Memory.Allocate, Abort.Panic]:
+            base_expression: mutable Ast::Expr = Expr.Invalid
+            index_expressions: mutable darray[Ast::Expr] = []
+            match target:
+                Expr.IndexN(collection, arguments, _):
+                    base_expression <- collection
+                    index_expressions.extend(arguments)
+                _:
+                    return false
+            if index_expressions.count == 0:
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "multi-index assignment requires at least one index")
+                return true
+            target_name: mutable sview = ""
+            match base_expression:
+                Expr.Ident(name, _):
+                    target_name <- name
+                _:
+                    add_issue(state, LowerIssueKind.UnsupportedAssignmentTarget, pos.line, "multi-index assignment target must name a local or module global")
+                    return true
+            index: usize = binding_index(state, target_name)
+            global_index: usize = global_binding_index(state, target_name)
+            if index == state.names.count and global_index == state.global_names.count:
+                add_issue(state, LowerIssueKind.UnsupportedAssignmentTarget, pos.line, "multi-index assignment target must name a known local or module global")
+                return true
+            if not supported_assignment_operator(operator):
+                add_issue(state, LowerIssueKind.UnsupportedAssignmentTarget, pos.line, "multi-index assignment supports <- and typed arithmetic or bitwise compound assignment")
+                return true
+            root: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+            is_global: bool = index == state.names.count
+            if is_global:
+                root <- emit_global_load(state, global_index, pos)
+            else:
+                if not state.mutables[index]:
+                    add_issue(state, LowerIssueKind.ImmutableBinding, pos.line, "multi-index assignment requires a mutable root binding")
+                    return true
+                root <- LoweredValue{valid: true, value: state.values[index], type: state.types[index]}
+            if root.type.kind != TypeKind.Array and root.type.kind != TypeKind.Map:
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "multi-index assignment requires an array or dictionary root")
+                return true
+
+            collections: mutable darray[LoweredValue] = [root]
+            indices: mutable darray[LoweredValue] = []
+            current: mutable LoweredValue = root
+            for index_expression in index_expressions |index_expressions, pos, state, collections, indices, current|:
+                lowered_index: LoweredValue = lower_expression(index_expression, state)
+                if not lowered_index.valid:
+                    return true
+                indices.push(lowered_index)
+                last: bool = indices.count == index_expressions.count
+                if not last:
+                    nested: LoweredValue = lower_index_value(current, lowered_index, pos, state)
+                    if not nested.valid:
+                        return true
+                    collections.push(nested)
+                    current <- nested
+
+            final_collection: LoweredValue = collections[collections.count - 1]
+            final_index: LoweredValue = indices[indices.count - 1]
+            current_element: LoweredValue = lower_index_value(final_collection, final_index, pos, state)
+            if not current_element.valid:
+                return true
+            replacement: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: current_element.type}
+            if operator == TokenKind.LArrow:
+                replacement <- lower_expression_expected(value, current_element.type, state)
+                if replacement.valid and not same_type(replacement.type, current_element.type):
+                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "multi-index assignment value must match the collection element type")
+                    replacement.valid <- false
+            else:
+                lowered: LoweredValue = lower_expression_expected(value, current_element.type, state)
+                if lowered.valid:
+                    opcode: Opcode = compound_opcode(operator)
+                    arithmetic: bool = opcode in {Opcode.Add, Opcode.Subtract, Opcode.Multiply, Opcode.Divide, Opcode.Remainder}
+                    bitwise: bool = opcode in {Opcode.BitAnd, Opcode.BitOr, Opcode.BitXor, Opcode.ShiftLeft, Opcode.ShiftRight}
+                    operands_match: bool = same_type(current_element.type, lowered.type)
+                    valid_arithmetic: bool = arithmetic and operands_match and numeric_type(current_element.type) and (opcode != Opcode.Remainder or current_element.type.kind == TypeKind.Int)
+                    valid_bitwise: bool = bitwise and operands_match and current_element.type.kind == TypeKind.Int
+                    if not valid_arithmetic and not valid_bitwise:
+                        add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "multi-index compound assignment operands do not have compatible static types")
+                    else:
+                        operation_result: u32 = fresh_value(state)
+                        operation_start: u32 = state.operand_pool.count.u32()
+                        state.operand_pool.push(current_element.value)
+                        state.operand_pool.push(lowered.value)
+                        state.instructions.push(Instruction{opcode: opcode, result: operation_result, result_type: current_element.type, operand_start: operation_start, operand_count: 2, span: ir_span(pos)})
+                        replacement <- LoweredValue{valid: true, value: operation_result, type: current_element.type}
+            if not replacement.valid:
+                return true
+            updated: LoweredValue = emit_set_index_value(final_collection, final_index, replacement, pos, state)
+            if not updated.valid:
+                return true
+            parent: mutable usize = collections.count - 1
+            while parent > 0 |parent, collections, indices, updated, pos, state|:
+                parent <- parent - 1
+                updated <- emit_set_index_value(collections[parent], indices[parent], updated, pos, state)
+                return true if not updated.valid
+            if is_global:
+                store_start: u32 = state.operand_pool.count.u32()
+                state.operand_pool.push(updated.value)
+                state.instructions.push(Instruction{opcode: Opcode.StoreGlobal, result: 0, result_type: void_ir_type(), integer: global_index.i64(), operand_start: store_start, operand_count: 1, span: ir_span(pos)})
+            else:
+                state.values[index] <- updated.value
+                synchronize_mutable_element(state, index, pos)
+            return true
+
+
         def lower_statement(statement: Ast::Stmt, return_type: Type, state: mutable LowerState&) -> void can[Memory.Allocate, Abort.Panic]:
             if state.terminated:
                 return
@@ -9096,6 +9221,8 @@ extend EsIr:
                                 _ = lower_expression(expression, state)
                 Stmt.Assign(target, operator, value, pos):
                     if lower_destructuring_assignment(target, operator, value, pos, state):
+                        return
+                    if lower_multi_index_assignment(target, operator, value, pos, state):
                         return
                     target_name: mutable sview = ""
                     index_expression: mutable Ast::Expr = Expr.Absent

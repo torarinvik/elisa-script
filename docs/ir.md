@@ -805,6 +805,9 @@ therefore cannot diverge between engines.
 `Expr.IndexN` lowers to the same `Index` opcode repeatedly from left to right,
 so multi-dimensional array and map access introduces no new runtime operation or
 temporary collection.
+An `IndexN` assignment lowers the final replacement to `SetIndex` and then emits
+one outward `SetIndex` per parent aggregate before rebinding the mutable root (or
+storing a mutable module global).
 Process execution and capture (`RunProcess`, stdout/stderr
 capture, stdin transport, and `ProcessCapture` accessors) use the same typed argv
 and stream helpers as the oracle. Unsupported modules deterministically rebuild
