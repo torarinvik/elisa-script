@@ -1247,5 +1247,5 @@ must call the same implementation used at runtime so the two cannot disagree.
 - Shell/Python-compatible `sleep` aliases resolve as known builtins for the
   typed lowering pass.
 
-Current result: 10/10 Elisascript semantic tests pass. Compiling this suite also
+Current result: 11/11 Elisascript semantic tests pass. Compiling this suite also
 compiles the complete retained semantic layer and its exhaustive diagnostic tables.
