@@ -125,6 +125,10 @@ native handler only after semantic optimizations are complete.
 Elisa's `signal Family.Operation` and `signal Family.Operation(payload, ...)`
 syntax lower directly to `Perform`; payload expressions are evaluated once in
 source order and become its typed operand slice.
+The source reference must contain exactly one non-empty `Family.Operation`
+separator. Bare families and multi-dot names are rejected during lowering rather
+than being reinterpreted as a synthetic operation, so handler clause lookup and
+effect-row coverage cannot silently diverge from the source spelling.
 The function effect row may grant the complete operation or its family. Every
 perform receives a stable source-derived trace identity.
 

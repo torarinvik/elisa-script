@@ -144,6 +144,9 @@ until operation declarations provide authoritative parameter labels. Until the r
 ABI gains a dedicated signal node, the arguments are stored as ordered expression
 statements in `Stmt.Block("signal", ...)`; existing semantic block visitors therefore
 resolve and type-check them without a parallel traversal.
+Lowering requires the clause to use exactly one non-empty `Family.Operation`
+separator; bare families and multi-dot references are diagnosed instead of
+becoming implicit synthetic operations.
 
 Value-producing effects remain ordinary call-shaped parser nodes. The IR lowerer
 recognizes `perform("Family.Operation", payload)` only where an expected result
