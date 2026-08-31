@@ -619,7 +619,7 @@ descriptor, and copies the interleaved pair storage so top-level updates to
 either map do not alter the other map.
 The Python-compatible `values.count(element) -> usize` method counts exact
 element matches in an array, including nested arrays under the supported
-structural descriptor. It is pure, deterministic, and requires the argument to
+structural descriptor (including the six inline aggregate layers). It is pure, deterministic, and requires the argument to
 match the array element type exactly.
 The companion `values.find(element)` method returns the first matching element
 offset as a signed `i64`, or `-1` when no element matches. `values.index(element)`

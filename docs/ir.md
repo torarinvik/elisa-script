@@ -774,7 +774,7 @@ operations before reaching a terminal value state. The packed executor wraps the
 control cursor in another explicit machine for block entry, condition staging,
 instruction storage, jump-edge collection, and returns, so its direct loop has no
 implicit host control-flow state. The eligibility gate rejects
-other widths, arrays nested deeper than four levels, handlers, and continuations.
+other widths, arrays nested deeper than six levels, handlers, and continuations.
 Map values may use the inline bounded array/map layers on the packed path; nested
 aggregate shapes beyond the descriptor remain reference-interpreter-only.
 Error guards are eligible for the direct path: `ErrorGuardPush`/`ErrorGuardPop`
@@ -848,8 +848,8 @@ forms also normalize Python `range(stop)`, `range(start, stop)`, and
 `range(start, stop, step)` calls to the same counter-driven fold/query CFG.
 Empty literals use
 their expected array type in bindings, assignments, returns, and call arguments,
-so `[]` never introduces an untyped dynamic collection. Arrays may nest five levels
-(`darray[darray[darray[darray[darray[T]]]]]`) using the compatibility fields; a sixth array
+so `[]` never introduces an untyped dynamic collection. Arrays may nest six levels
+(`darray[darray[darray[darray[darray[darray[T]]]]]]`) using the compatibility fields; a seventh array
 layer remains an explicit lowering error until the recursive table is used directly by
 source typing. Dictionary values may be scalar or bounded combinations of arrays
 and nested maps; shapes whose value needs a deeper descriptor are rejected at the
@@ -1075,8 +1075,8 @@ compares lengths first and then elements deterministically from left to right;
 empty arrays, slices, concatenated arrays, separate equal allocations, and shared
 or copy-on-update storage therefore follow one value-semantic rule. Mixed array
 element types remain static errors; nested arrays use the same recursive runtime
-comparison within the supported five-level descriptor. The compact structural type
-descriptor currently carries five array layers; a sixth layer is reserved for the
+comparison within the supported six-level descriptor. The compact structural type
+descriptor currently carries six array layers; a seventh layer is reserved for the
 next migration step, where source typing will emit recursive table ids directly.
 Statement-form `array.push(value)` and the Python-compatible
 `array.append(value)` alias, together with `array.extend(values)`, are
