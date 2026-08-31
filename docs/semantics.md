@@ -132,6 +132,12 @@ Elisa's byte-oriented `sview` contract. A source function named `len` shadows
 the builtin like any other direct call, so ports can introduce a local helper
 without changing resolution rules.
 
+The compiler-known `is_empty(value) -> bool` (also `isempty`) and the matching
+`value.is_empty()`/`value.isempty()` methods accept the same array, dictionary, or
+text families. They compare the exact typed `Length` result with zero, making the
+shell `test -z` and Python emptiness check explicit without introducing general
+truthiness coercions.
+
 The compiler-known `abs(value)` builtin accepts a signed integer or `f64` and
 returns the same exact static type. It evaluates its argument once, then uses a
 typed comparison and branch to negate only negative values. The signed minimum

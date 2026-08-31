@@ -730,7 +730,10 @@ It also lowers homogeneous immutable array literals, scalar `darray[T]`/`array[T
 type annotations, integer indexing, the `.count` field, and the Python-compatible
 `len(value)` builtin. `len` is a compiler-known alias for the verified `Length`
 opcode over arrays, dictionaries, and byte-oriented text, and remains shadowable
-by an ordinary source function. The compiler-known `abs(value)` builtin lowers
+by an ordinary source function. `is_empty(value)`/`isempty(value)` and their
+receiver methods lower to `Length` plus an exact zero comparison over the same
+three families, without introducing general truthiness coercion. The
+compiler-known `abs(value)` builtin lowers
 to a typed comparison, branch, and merge using the existing `Less` and `Negate`
 operations, so it preserves single evaluation and exact integer/float types.
 The compiler-known `sorted(values)` builtin lowers to the existing `SortArray`
