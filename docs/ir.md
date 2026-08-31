@@ -484,6 +484,9 @@ status result.
 `CaptureProcessResultInDirectory` with an empty stdin snapshot followed by
 `ProcessResultExitStatus`; the child-only `Path` control therefore has the same
 parent-cwd isolation as the explicit capture form.
+`run_process_with_environment` lowers to
+`CaptureProcessResultWithEnvironment` with an empty stdin snapshot followed by
+`ProcessResultExitStatus`, preserving typed child-local environment overrides.
 `CaptureProcessStdout` has the same operands, effect, and error row, with `Text` as
 its result. Its opcode is handled by the interpreter's exhaustive Elisa dispatch
 machine. Execution redirects only stdout into an anonymous temporary file, reaps

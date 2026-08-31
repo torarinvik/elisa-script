@@ -906,6 +906,13 @@ working-directory counterpart. The child changes directory after `fork`, while
 the parent interpreter's current directory is unchanged; an invalid child
 directory produces the same setup status (`126`) as the explicit capture API.
 
+`run_process_with_environment(executable: Executable, arguments: darray[sview],
+environment: dict[sview, sview]) -> i64 error[ProcessError] can[Process.Run]`
+applies the supplied name/value overrides only in the forked child and returns
+its status. Environment names are validated with the same nonempty, NUL-free,
+no-`=` and duplicate-name rules as the explicit capture API; the parent
+environment remains unchanged.
+
 The return value is the process exit status. Normal exits produce `0` through `255`;
 signal termination produces `128 + signal`. Failure to create or wait for the process
 raises `ProcessError`. If the executable cannot be resolved, the child exits with
