@@ -27,11 +27,11 @@ Scalar literals and one-level literal arrays/maps are encoded as flat global
 payloads and materialized in the runtime arena. Nested aggregates and non-literal
 initializers remain outside this lowering subset.
 
-In an explicit `darray[T]` context, tuple syntax `(a, b, ...)` is lowered through
-the same `MakeArray` operation after each element is checked against `T`; `()`
-therefore provides a typed empty array initializer. The IR does not yet claim a
-first-class heterogeneous tuple representation, so unconstrained tuple values
-remain a lowering diagnostic.
+Tuple syntax `(a, b, ...)` is lowered through the same `MakeArray` operation after
+each element is checked against one homogeneous `T`. In an explicit `darray[T]`
+context this is also how `()` provides a typed empty array initializer. The IR does
+not yet claim a first-class heterogeneous tuple representation, so heterogeneous
+and unconstrained empty tuple values remain lowering diagnostics.
 
 Destructuring assignment over literal tuple/array values evaluates all source
 elements first and then performs typed SSA rebinds. Fresh `=` targets infer their

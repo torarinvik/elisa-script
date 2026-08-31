@@ -74,11 +74,11 @@ globals start at the type's zero value. Scalar literals and one-level literal
 arena; nested aggregates and non-literal initializers remain a deliberate lowering
 diagnostic.
 
-Tuple literals also have a contextual homogeneous-sequence form for Python-style
-ports: when the destination type is an explicit `darray[T]`, `(a, b, c)` is
-checked element-by-element against `T` and lowered as an ordinary array value.
-An empty `()` is accepted in the same context. Heterogeneous tuples and
-unconstrained tuple-typed values remain rejected until first-class recursive tuple
+Tuple literals have a homogeneous-sequence form for Python-style ports: `(a, b,
+c)` is checked element-by-element and lowered as an ordinary `darray[T]` value.
+When a destination type is explicit, each element is checked against that `T`; an
+empty `()` is accepted in that contextual form. Heterogeneous tuples and
+unconstrained empty tuple values remain rejected until first-class recursive tuple
 values are added.
 
 Comma-separated assignment targets are supported for literal tuple/array values:
