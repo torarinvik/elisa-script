@@ -514,6 +514,11 @@ total, deterministic, and identical across the interpreter and future
 bytecode, JIT, and native backends. A source function named `split` shadows the
 compiler-known operation normally.
 
+The Python-shaped `text.rsplit(separator)` method scans the same separator from
+the right and then returns fields in their original order. Its optional signed
+`i64` `maxsplit` limits rightmost matches; a negative value is unlimited and zero
+returns one unsplit field. It uses the same empty-separator byte rule as `split`.
+
 `join(fields, separator) -> sview` is the typed inverse for `darray[sview]` values.
 It inserts the separator only between fields, preserves empty fields, and returns
 empty text for an empty array. `join(split(text, separator), separator)` therefore
