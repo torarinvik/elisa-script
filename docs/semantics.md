@@ -1199,6 +1199,9 @@ missing ancestors like `mkdir -p`, while `exist_ok` succeeds when the final path
 is already a directory. All three
 controls default to their documented values, and invalid control types or modes
 raise the ordinary `DirectoryError` rather than being silently ignored.
+Lowering materializes those defaults for omitted named controls, so every
+control-bearing call uses the same `path, mode, parents, exist_ok` representation
+in the IR, bytecode VM, and interpreter.
 
 ## Process execution
 
