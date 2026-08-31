@@ -54,6 +54,13 @@ interpreter, bytecode, source-loader, parser, lexer, semantic, and differential
 test suites. Rebuild the local Elisa-core compiler first when its stage0 or stage1
 sources change, then rerun the Elisascript suites from this checkout.
 
+For a reusable guard instead of an inline shell function, run
+`scripts/run_bounded_lowering.sh test/ir/elisascript_lowering_test.elisa` from
+this repository. It accepts one or more small fixtures, refuses any compiler
+path outside the pinned StructPy checkout, and uses the same 1,800,000 KB RSS and
+120-second defaults. The limits can only be changed explicitly with
+`ELISASCRIPT_RSS_LIMIT_KB` and `ELISASCRIPT_TIME_LIMIT_SECONDS`.
+
 Elisascript source files use the `.elisascript` extension. The canonical source
 loader and runner tests should be the first checks after a compiler rebuild because
 they exercise parsing, semantic checking, lowering, verification, and execution
