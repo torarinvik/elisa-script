@@ -22,6 +22,35 @@ if [ "$#" -eq 0 ]; then
     exit 2
 fi
 
+process_tree_pids() {
+    process_tree_root="$1"
+    echo "$process_tree_root"
+    for process_tree_child in $(pgrep -P "$process_tree_root" 2>/dev/null); do
+        (process_tree_pids "$process_tree_child")
+    done
+}
+
+process_tree_rss_kb() {
+    process_tree_total=0
+    for process_tree_pid in $(process_tree_pids "$1"); do
+        process_tree_rss="$(ps -o rss= -p "$process_tree_pid" 2>/dev/null | awk '{print $1}')"
+        if [ -n "$process_tree_rss" ]; then
+            process_tree_total=$((process_tree_total + process_tree_rss))
+        fi
+    done
+    echo "$process_tree_total"
+}
+
+kill_process_tree() {
+    for process_tree_pid in $(process_tree_pids "$1"); do
+        kill -TERM "$process_tree_pid" 2>/dev/null || true
+    done
+    sleep 1
+    for process_tree_pid in $(process_tree_pids "$1"); do
+        kill -KILL "$process_tree_pid" 2>/dev/null || true
+    done
+}
+
 rss_limit_kb="${ELISASCRIPT_RSS_LIMIT_KB:-1800000}"
 time_limit_seconds="${ELISASCRIPT_TIME_LIMIT_SECONDS:-120}"
 
@@ -35,21 +64,17 @@ for source_file in "$@"; do
     compiler_exit=0
 
     while kill -0 "$compiler_pid" 2>/dev/null; do
-        rss_kb="$(ps -o rss= -p "$compiler_pid" | awk '{print $1}')"
-        if [ -n "$rss_kb" ] && [ "$rss_kb" -gt "$rss_limit_kb" ]; then
+        rss_kb="$(process_tree_rss_kb "$compiler_pid")"
+        if [ "$rss_kb" -gt "$rss_limit_kb" ]; then
             rss_guard=1
-            kill -TERM "$compiler_pid" 2>/dev/null || true
-            sleep 1
-            kill -KILL "$compiler_pid" 2>/dev/null || true
+            kill_process_tree "$compiler_pid"
             break
         fi
 
         now="$(date +%s)"
         if [ "$((now - started_at))" -gt "$time_limit_seconds" ]; then
             timeout_guard=1
-            kill -TERM "$compiler_pid" 2>/dev/null || true
-            sleep 1
-            kill -KILL "$compiler_pid" 2>/dev/null || true
+            kill_process_tree "$compiler_pid"
             break
         fi
         sleep 1
