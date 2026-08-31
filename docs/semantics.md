@@ -355,6 +355,11 @@ typed receiver spelling of `matches(text, pattern)`, and
 the haystack must be `sview`; both forms lower to the same verified opcodes and
 retain identical deterministic matching behavior.
 
+`pattern.sub(replacement, text)` is the Python-shaped receiver spelling of
+`replace_regex(text, pattern, replacement)`. Its replacement and haystack are
+both `sview`, and capture-expansion tokens follow the same deterministic
+Perl/AWK-compatible rules as the global operation.
+
 `capture_regex(text, pattern) -> darray[sview]` returns the first match and its
 proven capture groups. Element `0` is the complete match; elements `1` onward
 follow positional group order, and an unmatched proven group is represented by an
