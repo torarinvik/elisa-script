@@ -876,7 +876,8 @@ last byte offset, the input length for an empty needle, or `-1` for a miss.
 `text.index(substring)` and `text.rindex(substring)` lower to `TextIndex` and
 `TextRIndex`. They return the corresponding first/last offset (including empty
 needle boundaries) and raise `IndexOutOfBounds` on a miss through the function's
-declared error row. Array `.index(element)` remains `ArrayFind` for compatibility.
+declared error row. Array `.index(element)` lowers to checked `ArrayIndex`, while
+`array.find(element)` remains the sentinel-returning `ArrayFind` operation.
 The no-argument `text.isdigit()`, `text.isalpha()`, `text.isalnum()`,
 `text.isspace()`, `text.islower()`, `text.isupper()`, and `text.isascii()` methods lower to
 `TextPredicate` with a compile-time mode and return `Bool`. The interpreter and
@@ -975,8 +976,9 @@ mutation-name side effect.
 The expression-form `array.count(element)` lowers to `ArrayCount`, returns a
 `usize`, and compares elements with the same structural equality used by `==`.
 The verifier requires an exact array element type and a valid `usize` result.
-`array.find(element)` and `array.index(element)` lower to `ArrayFind` and return
-the first matching zero-based offset as signed `i64`, or `-1` when absent; the
+`array.find(element)` lowers to `ArrayFind` and returns the first matching
+zero-based offset as signed `i64`, or `-1` when absent. `array.index(element)`
+lowers to checked `ArrayIndex` and raises `IndexOutOfBounds` on a miss; the
 verifier preserves the complete element descriptor for structural comparison.
 The statement-form `array.sort(reverse: flag)` lowers to `SortArray` and, when
 selected, `ReverseArray`. It requires a mutable array whose element type is a

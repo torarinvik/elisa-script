@@ -211,8 +211,8 @@ positional text substring and expose no implicit Unicode or locale behavior.
 `text.index(substring) -> i64` and `text.rindex(substring) -> i64` use the same
 byte offsets as `find`/`rfind`, but raise `IndexOutOfBounds` through the ordinary
 `error[...]` channel when the substring is absent. Empty needles still return
-the start or end boundary respectively. Array `.index(element)` retains its
-existing `ArrayFind`/`-1` compatibility behavior.
+the start or end boundary respectively. Array `.index(element)` follows the
+same checked error behavior, while `.find(element)` remains the `-1` search form.
 
 Text classification methods `text.isdigit()`, `text.isalpha()`, `text.isalnum()`,
 `text.isspace()`, `text.islower()`, `text.isupper()`, and `text.isascii()` take no
@@ -482,11 +482,11 @@ The Python-compatible `values.count(element) -> usize` method counts exact
 element matches in an array, including nested arrays under the supported
 structural descriptor. It is pure, deterministic, and requires the argument to
 match the array element type exactly.
-The companion `values.find(element)` and `values.index(element)` methods return
-the first matching element offset as a signed `i64`, or `-1` when no element
-matches. They share structural equality with `count` and require an exact
-element type; `index` is an array-only spelling while `find` also remains valid
-for text values.
+The companion `values.find(element)` method returns the first matching element
+offset as a signed `i64`, or `-1` when no element matches. `values.index(element)`
+returns that offset but raises `IndexOutOfBounds` when absent. Both share
+structural equality with `count` and require an exact element type; `index` is
+an array-only spelling while `find` also remains valid for text values.
 `values.remove(element)` is the Python-compatible in-place removal operation. It
 requires a mutable array and an element of the exact array element type, removes
 only the first matching element, and rebinds the receiver through the same
