@@ -7,6 +7,14 @@
 
 set -u
 
+# Validation is disabled by default after repeated runaway compiler chains. A
+# caller must explicitly reauthorize a bounded run for this wrapper to launch
+# any compiler process.
+if [ "${ELISASCRIPT_VALIDATION_REAUTHORIZED:-0}" != "1" ]; then
+    echo "run_bounded_test: validation disabled; set ELISASCRIPT_VALIDATION_REAUTHORIZED=1 to reauthorize" >&2
+    exit 125
+fi
+
 default_compiler="$(CDPATH= cd -- "$(dirname -- "$0")/../../../Go projects/structpy-tree/compiler/bin" && pwd)/elisac"
 compiler="${ELISA_LOCAL_COMPILER:-${ELISACORE_BIN:-$default_compiler}}"
 case "$compiler" in
@@ -51,7 +59,7 @@ kill_process_tree() {
     done
 }
 
-rss_limit_kb="${ELISASCRIPT_RSS_LIMIT_KB:-1800000}"
+rss_limit_kb="${ELISASCRIPT_RSS_LIMIT_KB:-524288}"
 time_limit_seconds="${ELISASCRIPT_TIME_LIMIT_SECONDS:-120}"
 
 for source_file in "$@"; do
