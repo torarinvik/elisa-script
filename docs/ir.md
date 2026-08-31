@@ -873,6 +873,10 @@ lowers to `TextFind`; it returns the first byte offset, zero for an empty needle
 and `-1` for a miss.
 The matching `text.rfind(substring)` method lowers to `TextRFind` and returns the
 last byte offset, the input length for an empty needle, or `-1` for a miss.
+`text.index(substring)` and `text.rindex(substring)` lower to `TextIndex` and
+`TextRIndex`. They return the corresponding first/last offset (including empty
+needle boundaries) and raise `IndexOutOfBounds` on a miss through the function's
+declared error row. Array `.index(element)` remains `ArrayFind` for compatibility.
 The no-argument `text.isdigit()`, `text.isalpha()`, `text.isalnum()`,
 `text.isspace()`, `text.islower()`, `text.isupper()`, and `text.isascii()` methods lower to
 `TextPredicate` with a compile-time mode and return `Bool`. The interpreter and

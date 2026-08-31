@@ -208,6 +208,11 @@ byte-oriented comparison rules and is pure and deterministic.
 `text.rfind(substring) -> i64` returns the last byte offset, the input length for
 an empty substring, and `-1` for a miss. Both search methods require one
 positional text substring and expose no implicit Unicode or locale behavior.
+`text.index(substring) -> i64` and `text.rindex(substring) -> i64` use the same
+byte offsets as `find`/`rfind`, but raise `IndexOutOfBounds` through the ordinary
+`error[...]` channel when the substring is absent. Empty needles still return
+the start or end boundary respectively. Array `.index(element)` retains its
+existing `ArrayFind`/`-1` compatibility behavior.
 
 Text classification methods `text.isdigit()`, `text.isalpha()`, `text.isalnum()`,
 `text.isspace()`, `text.islower()`, `text.isupper()`, and `text.isascii()` take no
