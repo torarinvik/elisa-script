@@ -471,6 +471,10 @@ subject to their ordinary static collection and key checks. Malformed runtime
 storage still raises through `error[...]`. The final value and fallback must have
 the same exact type.
 
+The equivalent postfix spelling, `matrix[row, column] else -1i64`, is accepted
+for ports that do not need the explicit `get` keyword; it lowers to the same
+shared validity checks and lazy fallback.
+
 The same recovery syntax handles fallible calls declared with `error[...]`:
 
 ```elisa

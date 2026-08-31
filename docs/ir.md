@@ -953,6 +953,8 @@ each intermediate access keeps its exact array/map/text typing, a bounds or key
 miss at any depth selects the same fallback, and malformed storage failures are
 still propagated rather than recovered. The final value and fallback merge through
 one typed block parameter.
+The postfix `collection[index0, index1, …] else fallback` spelling is normalized
+to this same lowering path by the parser's binary-`else` node.
 Dynamic destructuring uses `UnpackArray(array, index)` with the required target
 arity stored in the instruction integer payload. The verifier checks the array
 element result type and requires `IndexOutOfBounds` in the function error row;
