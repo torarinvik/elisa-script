@@ -954,6 +954,10 @@ to name a `.elisascript` file, rejects embedded NUL bytes, and preserves all
 following values exactly; usage errors use process status `2`, while source or
 execution failures use status `1`.
 
+Source loading rejects `.elisascript` inputs larger than 4 MiB before parser-arena
+allocation. This keeps the source boundary's size arithmetic bounded; generated
+programs should be split into multiple modules rather than bypassing the limit.
+
 ## Standard streams
 
 Standard streams are explicit typed operations rather than shell behavior. The
