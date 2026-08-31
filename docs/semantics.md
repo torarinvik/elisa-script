@@ -315,6 +315,10 @@ number: i64 = try parse_int(text) else return 0i64
 
 The recovery block must end control flow (`return`, `break`, or `continue`);
 successful evaluation continues through the surrounding state-machine merge.
+Void fallible operations use the same guard machinery in statement position:
+`try assert(condition) else void` is an explicit no-op fallback, while
+`try assert(condition) else return` may terminate on failure. Void recovery never
+produces a sentinel value and is rejected when a non-void value is required.
 
 ## Typed comprehensions
 

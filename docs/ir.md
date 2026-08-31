@@ -124,6 +124,10 @@ interpreter and direct bytecode path both evaluate the operand once, continue on
 implicit truthiness conversion is involved. Because assertion failure is a
 recoverable runtime error, verified error guards may transfer to their fallback
 block and clear the failure before resuming normal state-machine execution.
+Void-producing operations can use the statement form `try operation() else void`
+(or another void fallback); the guard and fallback merge without a value parameter.
+Terminating recovery also accepts a void operation, for example `try assert(x) else
+return`, when the recovery clause ends control flow.
 
 F-strings are parser sugar for the compiler-owned `__fstr` call. Lowering accepts
 text, signed `i64`, `f64`, and `bool` expressions, converting non-text pieces with

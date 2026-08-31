@@ -2314,8 +2314,35 @@ extend EsIr:
             if not guarded.valid:
                 return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
             if guarded.type.kind == TypeKind.Void:
-                add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "value recovery requires a non-void fallible expression")
-                return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+                # A void fallible operation is recoverable as a statement.  `else void`
+                # is the explicit no-op spelling, while another void expression may be
+                # used when the fallback needs to perform an observation or cleanup.  The
+                # merge has no parameters because neither path produces a value.
+                state.instructions.push(Instruction{opcode: Opcode.ErrorGuardPop, result: 0, result_type: void_ir_type(), span: ir_span(pos)})
+                state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: merge_block, target_count: 1, span: ir_span(pos)}
+                finish_block(state)
+
+                state.current_block <- fallback_block
+                state.terminated <- false
+                fallback_valid: mutable bool = true
+                match fallback_expression:
+                    Expr.Ident(fallback_name, fallback_pos):
+                        # `void` is a language keyword in the recovery position, not a
+                        # local binding and therefore needs no IR instruction.
+                        fallback_valid <- fallback_name == "void"
+                        add_issue(state, LowerIssueKind.UnknownBinding, fallback_pos.line, "void recovery fallback must be the `void` keyword") if not fallback_valid
+                    _:
+                        fallback: LoweredValue = lower_expression(fallback_expression, state)
+                        fallback_valid <- fallback.valid
+                        if fallback.valid and fallback.type.kind != TypeKind.Void:
+                            add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "void recovery fallback must produce void")
+                            fallback_valid <- false
+                state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: merge_block, target_count: 1, span: ir_span(pos)} if fallback_valid
+                finish_block(state)
+
+                state.current_block <- merge_block
+                state.terminated <- false
+                return LoweredValue{valid: fallback_valid, value: 0, type: void_ir_type()}
             state.instructions.push(Instruction{opcode: Opcode.ErrorGuardPop, result: 0, result_type: void_ir_type(), span: ir_span(pos)})
             success_edge: u32 = state.edge_arg_pool.count.u32()
             state.edge_arg_pool.push(guarded.value)
@@ -2349,9 +2376,28 @@ extend EsIr:
             merge_block: u32 = fresh_block(state)
             state.instructions.push(Instruction{opcode: Opcode.ErrorGuardPush, result: 0, result_type: void_ir_type(), integer: fallback_block.i64(), span: ir_span(pos)})
             guarded: LoweredValue = lower_expression(guarded_expression, state)
-            if not guarded.valid or guarded.type.kind == TypeKind.Void:
-                add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "terminating recovery requires a non-void fallible expression") if guarded.valid and guarded.type.kind == TypeKind.Void
+            if not guarded.valid:
                 return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+            if guarded.type.kind == TypeKind.Void:
+                # Statement-form terminating recovery also supports void operations:
+                # `try assert(condition) else return` either falls through on success or
+                # terminates in the recovery block after an assertion failure.
+                state.instructions.push(Instruction{opcode: Opcode.ErrorGuardPop, result: 0, result_type: void_ir_type(), span: ir_span(pos)})
+                state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: merge_block, target_count: 1, span: ir_span(pos)}
+                finish_block(state)
+
+                state.current_block <- fallback_block
+                state.terminated <- false
+                for statement in recovery |state|:
+                    lower_statement(statement, state.function_return_type, state)
+                if not state.terminated:
+                    add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "terminating recovery clause must end control flow")
+                    state.terminator <- Terminator{kind: TerminatorKind.Unreachable, span: ir_span(pos)}
+                finish_block(state)
+
+                state.current_block <- merge_block
+                state.terminated <- false
+                return LoweredValue{valid: true, value: 0, type: void_ir_type()}
             state.instructions.push(Instruction{opcode: Opcode.ErrorGuardPop, result: 0, result_type: void_ir_type(), span: ir_span(pos)})
             success_edge: u32 = state.edge_arg_pool.count.u32()
             state.edge_arg_pool.push(guarded.value)
