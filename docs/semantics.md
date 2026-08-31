@@ -174,6 +174,14 @@ dictionaries, and text, corresponding to shell `test -n`. A nominal `Path`
 argument selects the filesystem form described below (`FileSize > 0`) while
 retaining the exact `File.Read`/`FileIoError` contract.
 
+The source semantic pass also carries the declared result shape of the direct
+scripting intrinsics into initializer and operator checks. This covers the
+fixed-result scalar, text, path, filesystem, process, environment, and stream
+families (`parse_int`, `read_text`, `run_process`, `normpath`, `file_mode`, and
+similar aliases) while preserving ordinary shadowing: a source function with
+the same name wins, and polymorphic collection builders remain conservative
+until their element shape is available from the interned type row.
+
 The compiler-known `abs(value)` builtin accepts a signed integer or `f64` and
 returns the same exact static type. It evaluates its argument once, then uses a
 typed comparison and branch to negate only negative values. The signed minimum
