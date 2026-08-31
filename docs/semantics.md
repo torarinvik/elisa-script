@@ -173,6 +173,10 @@ right boundary respectively; and
 `text.split(separator)` and `text.split(separator, maxsplit)` and `text.split()`
 return `darray[sview]`. The bounded form requires a signed `i64` `maxsplit`;
 negative values mean unlimited splitting and zero returns the unsplit text.
+`text.rsplit(separator)` and `text.rsplit(separator, maxsplit)` provide the
+right-to-left counterpart with the same typed separator and signed `i64` bound;
+the resulting fields are returned in their original left-to-right order. The
+zero-length separator follows the ordinary byte-splitting rule used by `split`.
 Receivers and arguments must be text values, and method arity is checked during
 lowering.
 The zero-argument form splits on runs of ASCII whitespace, drops leading and

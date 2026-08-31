@@ -823,7 +823,9 @@ well: `startswith`/`starts_with` and `endswith`/`ends_with` lower to
 `StartsWith`/`EndsWith`, `replace(old, replacement)` lowers to `TextReplace`,
 `strip()`/`trim()`/`lstrip()`/`rstrip()` lower to `TrimText` (modes 0/0/1/2),
 and `split(separator)`/`split(separator, maxsplit)`/`split()` lower to `Split`
-(modes 0/1). The method forms require text receivers and exact positional arity;
+(modes 0/1). `rsplit(separator)` and its bounded form use the same `Split`
+opcode with mode 2; the runtime scans separators from the right and reverses
+the materialized fields back to source order. The method forms require text receivers and exact positional arity;
 the bounded method form requires a signed `i64` limit, while zero-argument
 `split()` uses ASCII-whitespace runs and produces no empty fields.
 The Python-compatible `separator.join(fields)` method lowers to the existing
