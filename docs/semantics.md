@@ -850,6 +850,15 @@ to the `exe"..."` literal. It validates the runtime name before any process is
 started; empty names and embedded NUL bytes are rejected through the ordinary
 `error[...]` channel. A literal `exe"..."` is validated at compile time.
 
+Assertions are typed runtime checks rather than a result wrapper:
+`assert(condition) -> void error[AssertionError]`. The condition must be exactly
+`bool`; integers, text, and other values are rejected during lowering instead of
+being coerced through shell/Python-style truthiness. A true condition continues,
+while false raises `AssertionError` through the ordinary `error[...]` channel, so
+an enclosing `try ... else` or dynamic handler can recover it just like another
+recoverable runtime error. The compiler-known intrinsic is shadowable by a user
+function named `assert`, preserving normal Elisa name resolution.
+
 `run_process(executable: Executable, arguments: darray[sview]) -> i64
 error[ProcessError] can[Process.Run]` starts a process from an explicitly typed
 executable and argument vector. It never inserts a shell: spaces, wildcard characters,

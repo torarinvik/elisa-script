@@ -117,6 +117,14 @@ text or source formatting.
 `Observe` without defining a result. It provides a typed, backend-independent
 checkpoint for differential tests without depending on stdout or debug logging.
 
+`assert(condition)` lowers to `Assert` with one boolean operand, a void result,
+and the containing function's `AssertionError` error row entry. The reference
+interpreter and direct bytecode path both evaluate the operand once, continue on
+`true`, and raise the typed assertion failure on `false`; no result sentinel or
+implicit truthiness conversion is involved. Because assertion failure is a
+recoverable runtime error, verified error guards may transfer to their fallback
+block and clear the failure before resuming normal state-machine execution.
+
 F-strings are parser sugar for the compiler-owned `__fstr` call. Lowering accepts
 text, signed `i64`, `f64`, and `bool` expressions, converting non-text pieces with
 the existing `FormatInt`/`FormatFloat`/`FormatBool` operations before emitting a
