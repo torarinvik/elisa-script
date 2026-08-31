@@ -148,9 +148,8 @@ extend EsIr:
             failure_family: mutable sview = ""
             failure_operation: mutable sview = ""
             # Ordered payload values for the currently unwinding raised error.
-            # This remains an interpreter side channel until error-pattern
-            # binders have a stable ABI; carrying the values now keeps raise
-            # construction faithful without exposing an unstable public shape.
+            # Explicit catch arms consume this side channel through typed
+            # ErrorPayload instructions; it remains private to the interpreter.
             failure_payloads: mutable darray[RuntimeValue] = []
             continuations: mutable darray[ContinuationFrame]
             continuation_frames: mutable darray[ContinuationCallFrame] = []
@@ -1076,8 +1075,8 @@ extend EsIr:
         def evaluate_raise(machine: mutable Machine&, instruction: Instruction&, fn: Function&, ids: darray[u32]&, values: darray[RuntimeValue]&) -> void:
             # Error variants are carried in the instruction's static family/tag
             # metadata. Payload values are copied from the current frame in
-            # source order so a future error-pattern binder can consume them
-            # without changing the unwind protocol.
+            # source order so a matching catch arm can extract them without
+            # changing the unwind protocol.
             machine.failure_payloads.truncate(0)
             for offset in 0..<instruction.operand_count.usize() |machine, fn, instruction, ids, values|:
                 payload: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + offset], machine)
@@ -1086,6 +1085,17 @@ extend EsIr:
             machine.failure <- InterpretFailure.Raised
             machine.failure_family <- instruction.effect_family
             machine.failure_operation <- instruction.effect_operation
+
+
+        def evaluate_error_payload(machine: mutable Machine&, index: i64, result_type: Type&) -> RuntimeValue:
+            if index < 0 or index.usize() >= machine.failure_payloads.count:
+                machine.failure <- InterpretFailure.MissingValue
+                return runtime_void()
+            value: RuntimeValue = machine.failure_payloads[index.usize()]
+            if not runtime_global_matches(value, result_type):
+                machine.failure <- InterpretFailure.TypeMismatch
+                return runtime_void()
+            return value
 
 
         def evaluate_panic(machine: mutable Machine&) -> void:
@@ -6093,6 +6103,10 @@ extend EsIr:
                             dispatch.produces_value <- false
                             break
 
+                        Dispatch, Opcode.ErrorPayload:
+                            dispatch.value <- evaluate_error_payload(machine, instruction.integer, instruction.result_type)
+                            break
+
                         Dispatch, Opcode.HandlerPush:
                             handler_stack.push(instruction.symbol)
                             dispatch.produces_value <- false
@@ -6124,10 +6138,11 @@ extend EsIr:
                         if error_guard_matches(machine, guard):
                             _ = error_guards.pop()
                             handler_stack.truncate(guard.handler_depth)
+                            preserve_payloads: bool = guard.effect_family != "" and guard.effect_operation != ""
                             machine.failure <- InterpretFailure.None
                             machine.failure_family <- ""
                             machine.failure_operation <- ""
-                            machine.failure_payloads.truncate(0)
+                            machine.failure_payloads.truncate(0) if not preserve_payloads
                             block.terminator <- Terminator{kind: TerminatorKind.Jump, target0: guard.target, target_count: 1, span: block.terminator.span}
                             break
                     set_frame_value(ids, values, instruction.result, dispatch.value) if machine.failure == InterpretFailure.None and dispatch.produces_value

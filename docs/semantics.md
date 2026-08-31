@@ -482,18 +482,18 @@ number: i64 = catch int(text):
 ```
 
 Elisascript accepts one success binding (or `_`) and one error arm. The error arm
-may be a catch-all (`_` or `error e`) or a payload-free `Family.Tag` variant. Both
-arm bodies must contain one expression whose type exactly matches the guarded
-value; the error binder is intentionally not a runtime error payload. Variant
+may be a catch-all (`_` or `error e`) or an explicit `Family.Tag` variant. A
+variant's positional fields must match its declaration and may be bindings or
+wildcards; each binding receives the declared static payload type. Both arm bodies
+must contain one expression whose type exactly matches the guarded value. Variant
 arms recover only an explicitly raised matching tag; built-in failures and other
 raised variants continue through the enclosing `error[...]` contract. Payload
 construction is supported with the same enum-constructor arity and type checks as
 ordinary error values: `raise Family.Tag(value, ...)` evaluates each payload once
-in source order and carries it through the interpreter's failure channel. Payload
-matching and binding in variant arms, and terminating variant arms, remain deferred
-until those binders have a stable IR ABI; a catch-all arm may still terminate with
-`return` after the ordinary function return-type check. The guarded expression is
-evaluated once, with a lazy fallback and a typed state-machine merge.
+in source order and carries it through the interpreter's failure channel. A
+catch-all arm may still terminate with `return` after the ordinary function
+return-type check; terminating explicit-variant arms remain deferred. The guarded
+expression is evaluated once, with a lazy fallback and a typed state-machine merge.
 
 For early propagation, the fallback may be a terminating clause:
 
@@ -1114,10 +1114,11 @@ function whose signature includes that family in `error[...]` (for example,
 `def fail() -> void error[UserError]: raise UserError.Bad`). The operation has no
 result and does not use a result wrapper: an enclosing `try ... else` recovers it,
 and an uncaught raise exits through the ordinary checked error channel as
-`InterpretError.Raised`. A payload-free `Family.Tag` catch arm selects the matching
+`InterpretError.Raised`. An explicit `Family.Tag` catch arm selects the matching
 raised identity; wildcard and `error` arms remain catch-all. Constructor payloads
-are evaluated once in source order and preserved during interpreter unwinding;
-payload extraction into catch binders is left for the later error-payload ABI.
+are evaluated once in source order and preserved during interpreter unwinding.
+Positional variant bindings extract those values with their declared static types;
+terminating explicit-variant arms remain deferred.
 
 `run_process(executable: Executable, arguments: darray[sview]) -> i64
 error[ProcessError] can[Process.Run]` starts a process from an explicitly typed

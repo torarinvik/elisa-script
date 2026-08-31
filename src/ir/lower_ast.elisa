@@ -116,6 +116,8 @@ extend EsIr:
             function_errors: darray[sview]&
             handlers: darray[Handler]&
             comprehension_kinds: darray[Ast::EnumAnnotation]&
+            source_file: Ast::File&
+            type_table: mutable TypeTable&
             function_return_type: Type
             required_effects: mutable darray[sview]
             required_errors: mutable darray[sview]
@@ -205,8 +207,35 @@ extend EsIr:
             valid: bool = false
             # Optional payload expressions from `raise Error.Tag(value, …)`. The
             # first IR increment keeps them ordered in the Raise operand slice;
-            # matching/binding them in catch arms remains a later ABI step.
+            # matching catch arms extract them through typed ErrorPayload values.
             payloads: darray[Ast::Expr] = []
+
+
+        def error_payload_variant_position(file: Ast::File&, family: sview, operation: sview) -> usize:
+            enum_index: mutable usize = 0
+            while enum_index < file.payload_enum_names.count:
+                if file.payload_enum_names[enum_index] == family:
+                    variant_start: usize = file.payload_enum_variant_starts[enum_index]
+                    variant_count: usize = file.payload_enum_variant_counts[enum_index]
+                    for offset in 0..<variant_count |file, variant_start, operation|:
+                        variant_index: usize = variant_start + offset
+                        return variant_index if file.payload_enum_variant_names[variant_index] == operation
+                enum_index <- enum_index + 1
+            return file.payload_enum_variant_names.count
+
+
+        def error_payload_field_count(file: Ast::File&, family: sview, operation: sview) -> usize:
+            variant_index: usize = error_payload_variant_position(file, family, operation)
+            return 0 if variant_index >= file.payload_enum_variant_field_counts.count
+            return file.payload_enum_variant_field_counts[variant_index]
+
+
+        def error_payload_field_type(state: LowerState&, family: sview, operation: sview, index: usize) -> Type can[Memory.Allocate, Abort.Panic]:
+            variant_index: usize = error_payload_variant_position(state.source_file, family, operation)
+            return unknown_ir_type() if variant_index >= state.source_file.payload_enum_variant_field_counts.count
+            return unknown_ir_type() if index >= state.source_file.payload_enum_variant_field_counts[variant_index]
+            field_start: usize = state.source_file.payload_enum_variant_field_starts[variant_index]
+            return interned_type_from_expression(state.source_file.payload_enum_variant_fields[field_start + index], state.type_table)
 
 
         # The parser keeps `raise Error.Tag` and `raise Error.Tag(payload, …)` as
@@ -2856,12 +2885,11 @@ extend EsIr:
             return LoweredValue{valid: fallback.valid, value: result, type: guarded.type}
 
 
-        # Lower the expression-position `catch EXPR:` form.  Recovery remains a
-        # compact guard/fallback CFG, but explicit `Error.Tag` arms now carry their
-        # family and tag in the guard metadata.  The reference interpreter can use
-        # that identity for raised errors while ordinary catch-all arms retain the
-        # previous behavior.  Payload binders remain deferred until error payload
-        # storage is part of the runtime model.
+        # Lower the expression-position `catch EXPR:` form. Recovery remains a
+        # compact guard/fallback CFG, but explicit `Error.Tag` arms carry their
+        # family and tag in the guard metadata and may bind positional payloads.
+        # The reference interpreter extracts those payloads through typed
+        # ErrorPayload instructions; terminating variant arms remain deferred.
         def lower_catch_expression(guarded_expression: Ast::Expr, arms: darray[Ast::MatchArm]&, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
             invalid: LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
             if arms.count != 2:
@@ -2884,21 +2912,34 @@ extend EsIr:
             catch_all: mutable bool = false
             error_family: mutable sview = ""
             error_operation: mutable sview = ""
+            error_payload_fields: mutable darray[Ast::Pattern] = []
             match error_arm.pattern:
                 Pattern.Wildcard:
                     catch_all <- true
                 Pattern.TypeBind(error_type_name, _):
                     catch_all <- error_type_name == "error"
                 Pattern.Variant(error_reference, fields):
-                    if fields.count != 0 or not valid_effect_reference(error_reference):
-                        add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "catch error variants require a payload-free Family.Tag pattern")
+                    if not valid_effect_reference(error_reference):
+                        add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "catch error variants require a Family.Tag pattern")
                         return invalid
                     error_family <- effect_family(error_reference)
                     error_operation <- effect_operation(error_reference)
+                    expected_payload_count: usize = error_payload_field_count(state.source_file, error_family, error_operation)
+                    if fields.count != expected_payload_count:
+                        add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "catch error variant payload arity does not match its declaration")
+                        return invalid
+                    for field in fields:
+                        match field:
+                            Pattern.Binding(_) | Pattern.Wildcard:
+                                pass
+                            _:
+                                add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "error payload patterns support only bindings or wildcards")
+                                return invalid
+                    error_payload_fields.extend(fields)
                 _:
                     pass
             if not catch_all and (error_family == "" or error_operation == ""):
-                add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "catch expression requires a final wildcard, error catch-all, or payload-free Family.Tag arm")
+                add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "catch expression requires a final wildcard, error catch-all, or Family.Tag arm")
                 return invalid
             match error_arm.guard:
                 Expr.Absent:
@@ -2973,6 +3014,28 @@ extend EsIr:
 
             state.current_block <- fallback_block
             state.terminated <- false
+            payload_scope_mark: usize = state.names.count
+            payload_bindings_valid: mutable bool = true
+            for payload_index in 0..<error_payload_fields.count |state, error_payload_fields, error_family, error_operation|:
+                payload_type: Type = error_payload_field_type(state, error_family, error_operation, payload_index)
+                if payload_type.kind == TypeKind.Named and payload_type.name == "":
+                    add_issue(state, LowerIssueKind.UnknownType, pos.line, "error payload binding has no declared type")
+                    payload_bindings_valid <- false
+                    continue
+                match error_payload_fields[payload_index]:
+                    Pattern.Binding(payload_name):
+                        payload_value: u32 = fresh_value(state)
+                        state.instructions.push(Instruction{opcode: Opcode.ErrorPayload, result: payload_value, result_type: payload_type, integer: payload_index.i64(), span: ir_span(pos)})
+                        state.names.push(payload_name)
+                        state.values.push(payload_value)
+                        state.types.push(payload_type)
+                        state.mutables.push(false)
+                    Pattern.Wildcard:
+                        pass
+                    _:
+                        payload_bindings_valid <- false
+            if not payload_bindings_valid:
+                return invalid
             fallback_valid: mutable bool = true
             if error_return_found:
                 if error_return_has_value:
@@ -2998,6 +3061,10 @@ extend EsIr:
                     fallback_edge: u32 = state.edge_arg_pool.count.u32()
                     state.edge_arg_pool.push(fallback.value)
                     state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: merge_block, target_count: 1, edge0_arg_start: fallback_edge, edge0_arg_count: 1, span: ir_span(pos)}
+            state.names.truncate(payload_scope_mark)
+            state.values.truncate(payload_scope_mark)
+            state.types.truncate(payload_scope_mark)
+            state.mutables.truncate(payload_scope_mark)
             finish_block(state)
 
             result: u32 = fresh_value(state)
@@ -9124,10 +9191,10 @@ extend EsIr:
                     add_issue(state, LowerIssueKind.UnsupportedStatement, 0, "statement is not in the initial IR lowering subset")
 
 
-        def lower_function(name: sview, params: darray[Ast::ParamDecl]&, return_type_opt: Ast::Expr?, body: darray[Ast::Stmt]&, effects: darray[sview]&, declared_error_start: u32, declared_error_count: u16, pos: Ast::Pos&, function_names: darray[sview]&, function_returns: darray[Type]&, function_parameter_starts: darray[u32]&, function_parameter_counts: darray[u16]&, function_parameter_types: darray[Type]&, function_parameter_names: darray[sview]&, function_parameter_has_defaults: darray[bool]&, function_parameter_defaults: darray[Ast::Expr]&, function_effect_starts: darray[u32]&, function_effect_counts: darray[u16]&, function_effects: darray[sview]&, function_error_starts: darray[u32]&, function_error_counts: darray[u16]&, function_errors: darray[sview]&, handlers: darray[Handler]&, comprehension_kinds: darray[Ast::EnumAnnotation]&, constant_names: darray[sview]&, constant_types: darray[Type]&, constant_values: darray[Ast::Expr]&, global_names: darray[sview]&, global_types: darray[Type]&, type_table: mutable TypeTable&, outer_issues: mutable darray[LowerIssue]&) -> Function can[Memory.Allocate, Abort.Panic]:
+        def lower_function(name: sview, params: darray[Ast::ParamDecl]&, return_type_opt: Ast::Expr?, body: darray[Ast::Stmt]&, effects: darray[sview]&, declared_error_start: u32, declared_error_count: u16, pos: Ast::Pos&, function_names: darray[sview]&, function_returns: darray[Type]&, function_parameter_starts: darray[u32]&, function_parameter_counts: darray[u16]&, function_parameter_types: darray[Type]&, function_parameter_names: darray[sview]&, function_parameter_has_defaults: darray[bool]&, function_parameter_defaults: darray[Ast::Expr]&, function_effect_starts: darray[u32]&, function_effect_counts: darray[u16]&, function_effects: darray[sview]&, function_error_starts: darray[u32]&, function_error_counts: darray[u16]&, function_errors: darray[sview]&, handlers: darray[Handler]&, comprehension_kinds: darray[Ast::EnumAnnotation]&, source_file: Ast::File&, constant_names: darray[sview]&, constant_types: darray[Type]&, constant_values: darray[Ast::Expr]&, global_names: darray[sview]&, global_types: darray[Type]&, type_table: mutable TypeTable&, outer_issues: mutable darray[LowerIssue]&) -> Function can[Memory.Allocate, Abort.Panic]:
             return_type: mutable Type = void_ir_type()
             return_type <- interned_type_from_expression(return_expression, type_table) if return_type_opt is return_expression
-            state: mutable LowerState = LowerState{function: name, next_value: 1, current_block: 1, next_block: 2, instruction_start: 0, structured_depth: 0, blocks: [], names: [], values: [], types: [], mutables: [], instructions: [], operand_pool: [], edge_arg_pool: [], issues: [], break_targets: [], continue_targets: [], pending_parameter_blocks: [], pending_parameters: [], block_parameter_pool: [], loop_context_starts: [], loop_context_counts: [], loop_carried_indices: [], loop_handler_depths: [], element_binding_indices: [], element_owner_indices: [], element_index_values: [], active_handlers: [], terminated: false, terminator: Terminator{kind: TerminatorKind.Unreachable, span: ir_span(pos)}, function_names: function_names, function_returns: function_returns, function_parameter_starts: function_parameter_starts, function_parameter_counts: function_parameter_counts, function_parameter_types: function_parameter_types, function_parameter_names: function_parameter_names, function_parameter_has_defaults: function_parameter_has_defaults, function_parameter_defaults: function_parameter_defaults, function_effect_starts: function_effect_starts, function_effect_counts: function_effect_counts, function_effects: function_effects, function_error_starts: function_error_starts, function_error_counts: function_error_counts, function_errors: function_errors, handlers: handlers, comprehension_kinds: comprehension_kinds, function_return_type: return_type, required_effects: [], required_errors: [], constant_names: constant_names, constant_types: constant_types, constant_values: constant_values, global_names: global_names, global_types: global_types}
+            state: mutable LowerState = LowerState{function: name, next_value: 1, current_block: 1, next_block: 2, instruction_start: 0, structured_depth: 0, blocks: [], names: [], values: [], types: [], mutables: [], instructions: [], operand_pool: [], edge_arg_pool: [], issues: [], break_targets: [], continue_targets: [], pending_parameter_blocks: [], pending_parameters: [], block_parameter_pool: [], loop_context_starts: [], loop_context_counts: [], loop_carried_indices: [], loop_handler_depths: [], element_binding_indices: [], element_owner_indices: [], element_index_values: [], active_handlers: [], terminated: false, terminator: Terminator{kind: TerminatorKind.Unreachable, span: ir_span(pos)}, function_names: function_names, function_returns: function_returns, function_parameter_starts: function_parameter_starts, function_parameter_counts: function_parameter_counts, function_parameter_types: function_parameter_types, function_parameter_names: function_parameter_names, function_parameter_has_defaults: function_parameter_has_defaults, function_parameter_defaults: function_parameter_defaults, function_effect_starts: function_effect_starts, function_effect_counts: function_effect_counts, function_effects: function_effects, function_error_starts: function_error_starts, function_error_counts: function_error_counts, function_errors: function_errors, handlers: handlers, comprehension_kinds: comprehension_kinds, source_file: source_file, type_table: type_table, function_return_type: return_type, required_effects: [], required_errors: [], constant_names: constant_names, constant_types: constant_types, constant_values: constant_values, global_names: global_names, global_types: global_types}
             state.required_effects.extend(effects)
             for error_offset in 0..<declared_error_count.usize() |state, declared_error_start|:
                 declared_error: sview = function_errors[declared_error_start.usize() + error_offset]
@@ -9247,7 +9314,7 @@ extend EsIr:
                 match declaration:
                     Decl.Func(name, params, return_type_opt, body, effects, decorators, pos):
                         function_index: usize = functions.count
-                        functions.push(lower_function(name, params, return_type_opt, body, effects, error_starts[function_index], error_counts[function_index], pos, names, returns, parameter_starts, parameter_counts, parameter_types, parameter_names, parameter_has_defaults, parameter_defaults, effect_starts, effect_counts, signature_effects, error_starts, error_counts, signature_errors, effective_handlers, file.enum_annotations, constant_names, constant_types, constant_values, global_names, global_types, type_table, issues))
+                        functions.push(lower_function(name, params, return_type_opt, body, effects, error_starts[function_index], error_counts[function_index], pos, names, returns, parameter_starts, parameter_counts, parameter_types, parameter_names, parameter_has_defaults, parameter_defaults, effect_starts, effect_counts, signature_effects, error_starts, error_counts, signature_errors, effective_handlers, file.enum_annotations, file, constant_names, constant_types, constant_values, global_names, global_types, type_table, issues))
                     Decl.Const(name, type_expression, value, is_mutable, pos):
                         if is_mutable:
                             declared: Type = interned_type_from_expression(type_expression, type_table) if type_expression is not Ast::Expr.Absent else unknown_ir_type()

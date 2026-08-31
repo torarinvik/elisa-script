@@ -176,14 +176,15 @@ Source `raise Error.Tag` (or `raise Error.Tag(payload, ...)`) lowers to a void
 identity. The lowerer requires the family (or explicitly listed tag) in the
 function's `error[...]` row; the verifier repeats that check for hand-built IR.
 `Raise` is recoverable by the same error guards as built-in failures, while an
-uncaught raise is reported as `InterpretError.Raised`. Catch expressions may use a
-payload-free `Family.Tag` arm; the lowerer records that identity on the guard and
-the reference interpreter recovers only a matching explicit raise. Wildcard and
-`error` arms remain catch-all for built-in failures and any raised variant.
-A raised constructor may carry zero or more ordered SSA operands; the reference
-interpreter snapshots those runtime values in its failure channel while unwinding.
-Payload matching and binding, plus terminating variant arms, remain deferred until
-error ordinals and their binder ABI are finalized.
+uncaught raise is reported as `InterpretError.Raised`. Catch expressions may use an
+explicit `Family.Tag` arm; the lowerer records that identity on the guard and the
+reference interpreter recovers only a matching explicit raise. Positional fields
+must match the declared payload arity and lower to typed `ErrorPayload` instructions
+for bindings (wildcards discard the corresponding value). Wildcard and `error`
+arms remain catch-all for built-in failures and any raised variant. A raised
+constructor may carry zero or more ordered SSA operands; the reference interpreter
+snapshots those runtime values in its failure channel while unwinding. Terminating
+explicit-variant arms remain deferred.
 
 `panic([message])` lowers to a void `Panic` instruction with `Abort.Panic` effect
 metadata and zero or one evaluated operand. Unlike `Raise`, `Panic` is not an
@@ -420,13 +421,12 @@ surrounding state-machine region.
 Expression-position `catch f():` uses the same four-state shape (guarded call,
 success arm, fallback arm, typed merge). The backend-neutral subset requires a
 binding or wildcard success arm and accepts either a final wildcard/`error`
-catch-all or a payload-free explicit variant guard; both arm expressions must have
-the guarded call's exact type. The error binder is
-not materialized because catch binding still lacks a stable error-payload ABI.
-`Raise` itself carries ordered payload operands, and the interpreter preserves
-those values while unwinding; payload extraction and terminating payload-aware
-variant arms remain deferred. A single error arm may instead use `return` and
-terminate its fallback block after normal return-type checking.
+catch-all or an explicit variant guard; variant fields must match the declared
+arity and lower to typed `ErrorPayload` instructions. Both arm expressions must
+have the guarded call's exact type. `Raise` itself carries ordered payload
+operands, and the interpreter preserves those values while unwinding. A single
+error arm may instead use `return` and terminate its fallback block after normal
+return-type checking; terminating explicit-variant arms remain deferred.
 `PathExists` is the first concrete filesystem opcode. Its verified signature is
 `Named(Path) -> Bool`, and verification also requires `File.Read` in the containing
 function's effect row. Lowering adds that effect automatically. The interpreter
