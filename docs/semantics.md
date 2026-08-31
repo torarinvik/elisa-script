@@ -137,6 +137,9 @@ The compiler-known `is_empty(value) -> bool` (also `isempty`) and the matching
 text families. They compare the exact typed `Length` result with zero, making the
 shell `test -z` and Python emptiness check explicit without introducing general
 truthiness coercions.
+The complementary `is_nonempty(value)`/`nonempty(value)` spellings and receiver
+methods lower to the same check followed by typed boolean negation, corresponding
+to shell `test -n`.
 
 The compiler-known `abs(value)` builtin accepts a signed integer or `f64` and
 returns the same exact static type. It evaluates its argument once, then uses a
