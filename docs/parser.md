@@ -153,6 +153,11 @@ recognizes `perform("Family.Operation", payload)` only where an expected result
 type is available, preserving Elisa's expression grammar while keeping the
 effect reference and result type statically visible.
 
+Error-family declarations use the same enum-shaped AST metadata as Elisa:
+`error UserError:` records its variants without requiring a runtime declaration.
+`raise UserError.Bad` is parsed as a `raise` call with one `Field` operand, which
+lets lowering preserve the family and tag for checked error propagation.
+
 ## Deferred parser work
 
 The following features belong to later, explicitly designed changes:

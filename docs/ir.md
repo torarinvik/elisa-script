@@ -165,6 +165,15 @@ Void-producing operations can use the statement form `try operation() else void`
 Terminating recovery also accepts a void operation, for example `try assert(x) else
 return`, when the recovery clause ends control flow.
 
+Source `raise Error.Tag` lowers to a void `Raise` instruction whose
+`effect_family` and `effect_operation` fields preserve the declared error
+identity. The lowerer requires the family (or explicitly listed tag) in the
+function's `error[...]` row; the verifier repeats that check for hand-built IR.
+`Raise` is recoverable by the same error guards as built-in failures, while an
+uncaught raise is reported as `InterpretError.Raised`. The current catch surface
+remains catch-all; variant-specific payload matching is intentionally deferred
+until error ordinals and payload storage are part of the runtime model.
+
 F-strings are parser sugar for the compiler-owned `__fstr` call. Lowering accepts
 text, `char`, any integer width, `f32`/`f64`, `bool`, text-backed nominal, array, and
 dictionary expressions, converting non-text pieces with the existing

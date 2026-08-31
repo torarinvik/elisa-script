@@ -1042,6 +1042,15 @@ an enclosing `try ... else` or dynamic handler can recover it just like another
 recoverable runtime error. The compiler-known intrinsic is shadowable by a user
 function named `assert`, preserving normal Elisa name resolution.
 
+Declared error families can be raised directly with `raise Family.Tag` inside a
+function whose signature includes that family in `error[...]` (for example,
+`def fail() -> void error[UserError]: raise UserError.Bad`). The operation has no
+result and does not use a result wrapper: an enclosing `try ... else` recovers it,
+and an uncaught raise exits through the ordinary checked error channel as
+`InterpretError.Raised`. Catch arms are currently catch-all; preserving the
+family/tag in the IR leaves precise variant matching for the later error-payload
+runtime extension.
+
 `run_process(executable: Executable, arguments: darray[sview]) -> i64
 error[ProcessError] can[Process.Run]` starts a process from an explicitly typed
 executable and argument vector. It never inserts a shell: spaces, wildcard characters,

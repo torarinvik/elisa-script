@@ -20,6 +20,7 @@ extend EsIr:
             ImmutableBinding
             MutableMergePending
             TypeMismatch
+            MissingError
 
 
         struct LowerIssue:
@@ -196,6 +197,41 @@ extend EsIr:
             for index in 0..<sview_len(reference) |reference|:
                 reference[index + 1:sview_len(reference)] return if sview_at(reference, index) == 46
             return "signal"
+
+
+        struct RaiseReference:
+            owner: sview = ""
+            tag: sview = ""
+            valid: bool = false
+
+
+        # The parser keeps `raise Error.Tag` as a call-shaped expression. Keep
+        # the extraction strict: payload-bearing constructors and bare `raise`
+        # are not silently converted into an unrelated runtime failure.
+        def raised_error_reference(expression: Ast::Expr) -> RaiseReference:
+            match expression:
+                Expr.Call(Expr.Ident(head, _), arguments, argument_names, _):
+                    if head == "raise" and arguments.count == 1 and (argument_names.count == 0 or (argument_names.count == 1 and argument_names[0] == "")):
+                        match arguments[0]:
+                            Expr.Field(Expr.Ident(owner, _), tag, _):
+                                return RaiseReference{owner: owner, tag: tag, valid: owner != "" and tag != ""}
+                            _:
+                                pass
+                _:
+                    pass
+            return RaiseReference{}
+
+
+        def lower_raise_expression(arguments: darray[Ast::Expr]&, argument_names: darray[sview]&, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+            result_type: Type = void_ir_type()
+            reference: RaiseReference = raised_error_reference(Expr.Call(Expr.Ident("raise", pos), arguments, argument_names, pos))
+            if not reference.valid:
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "raise requires one positional Error.Tag reference")
+                return LoweredValue{valid: false, value: 0, type: result_type}
+            if not has_text(state.required_errors, reference.owner) and not has_text(state.required_errors, reference.tag):
+                add_issue(state, LowerIssueKind.MissingError, pos.line, "raised error family is absent from the function error row")
+            state.instructions.push(Instruction{opcode: Opcode.Raise, result: 0, result_type: result_type, effect_family: reference.owner, effect_operation: reference.tag, trace: trace_site(state, reference.tag, pos), span: ir_span(pos)})
+            return LoweredValue{valid: true, value: 0, type: result_type}
 
 
         # Effect references are intentionally split into exactly the same two
@@ -3224,6 +3260,9 @@ extend EsIr:
                 Expr.BoolLit(value):
                     return emit_constant(state, type_from_name("bool"), 0, "", "", value, zero_span())
                 Expr.Ident(name, pos):
+                    if name == "raise":
+                        add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "raise requires one positional Error.Tag reference")
+                        return LoweredValue{valid: false, value: 0, type: void_ir_type()}
                     binding: mutable LoweredValue = lookup_binding(state, name)
                     if not binding.valid:
                         global_index: usize = global_binding_index(state, name)
@@ -3912,6 +3951,8 @@ extend EsIr:
                         state.operand_pool.push(condition.value)
                         state.instructions.push(Instruction{opcode: Opcode.Assert, result: 0, result_type: result_type, operand_start: operand_start, operand_count: 1, trace: trace_site(state, "assert", pos), span: ir_span(pos)})
                         return LoweredValue{valid: true, value: 0, type: result_type}
+                    if callee_name == "raise" and callee_index == state.function_names.count:
+                        return lower_raise_expression(arguments, argument_names, pos, state)
                     if (callee_name == "print" or callee_name == "println" or callee_name == "echo" or callee_name == "eprint") and callee_index == state.function_names.count:
                         return lower_print(arguments, argument_names, pos, state, callee_name == "eprint")
                     # `len(value)` is the scripting-profile spelling of the
@@ -8919,6 +8960,11 @@ extend EsIr:
                             declared: Type = interned_type_from_expression(type_expression, type_table) if type_expression is not Ast::Expr.Absent else unknown_ir_type()
                             probe: GlobalProbe = lower_global_probe(name, declared, value)
                             issues.push(LowerIssue{kind: LowerIssueKind.UnsupportedDeclaration, function: "", line: pos.line, message: "module globals require a supported scalar or one-level collection type and literal initializer"}) if not global_type_supported(declared) or not probe.valid
+                    # Error families are represented in parser metadata and in
+                    # function error rows; they need no runtime declaration in
+                    # this closed IR.
+                    Decl.Enum(name, variants, is_const, storage_type, pos):
+                        pass
                     _:
                         issues.push(LowerIssue{kind: LowerIssueKind.UnsupportedDeclaration, function: "", line: 0, message: "declaration is not in the initial IR lowering subset"})
             lowered_handlers: mutable darray[Handler] = []
