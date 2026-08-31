@@ -349,11 +349,15 @@ the scan), so even anchor-only patterns are total. The operation is pure and use
 the same deterministic ASCII matcher as search, replacement, and splitting.
 
 For ports that keep a compiled pattern in a local, `pattern.search(text)` is a
-typed receiver spelling of `matches(text, pattern)`, and
+typed receiver spelling of `matches(text, pattern)`. `pattern.match(text)`
+anchors the match at the beginning while permitting a suffix, and
+`pattern.fullmatch(text)` requires the entire haystack to be consumed. These
+forms use the same verified `RegexSearch` opcode with a small mode (0, 1, or 2)
+and retain deterministic behavior across backends. The receiver must be the
+nominal `Regex` type and the haystack must be `sview`.
+
 `pattern.findall(text)`/`pattern.find_all(text)` are receiver spellings of
-`find_regex(text, pattern)`. The receiver must be the nominal `Regex` type and
-the haystack must be `sview`; both forms lower to the same verified opcodes and
-retain identical deterministic matching behavior.
+`find_regex(text, pattern)` and lower to `RegexFind`.
 
 `pattern.capture(text)`/`pattern.captures(text)` likewise spell
 `capture_regex(text, pattern)`, returning the complete first match followed by

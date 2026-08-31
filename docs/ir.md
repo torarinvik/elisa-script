@@ -298,9 +298,13 @@ array operations.
 non-overlapping matched span. Zero-width matches advance explicitly, matching the
 termination rule used by `RegexSplit` and `RegexReplace`.
 
-Compiled `Regex` values also expose `search(text)` and `findall(text)` (with
-`find_all(text)` as a spelling alias); these receiver forms lower to the same
-`RegexSearch` and `RegexFind` contracts and do not add backend-specific state.
+Compiled `Regex` values also expose `search(text)`, `match(text)`, and
+`fullmatch(text)`, plus `findall(text)` (with `find_all(text)` as a spelling
+alias). `search` is unanchored, `match` anchors at the beginning while
+permitting a suffix, and `fullmatch` requires the entire haystack to be
+consumed. These receiver forms lower to the same `RegexSearch` contract; its
+`Instruction.integer` mode is 0, 1, or 2 respectively. `findall` lowers to
+`RegexFind`; no backend-specific regex state is introduced.
 
 `RegexCapture` has the same `Text × Named(Regex)` operands and returns an
 `Array[Text]` for the first match. Element zero is the complete matched span;
