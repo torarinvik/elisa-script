@@ -4014,6 +4014,11 @@ extend EsIr:
                     return lower_error_control_flow(guarded, recovery, pos, state)
                 Expr.Catch(guarded, arms, pos):
                     return lower_catch_expression(guarded, arms, pos, state)
+                Expr.Match(scrutinee, arms, pos):
+                    if array_match_has_structural_pattern(arms):
+                        add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "expression-form structural array matches require aggregate result merging")
+                        return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+                    return lower_scalar_match_value(scrutinee, arms, pos, state)
                 Expr.Call(callee, arguments, argument_names, pos):
                     callee_name: mutable sview = ""
                     match callee:
@@ -8808,6 +8813,197 @@ extend EsIr:
                 state.terminated <- false
             else:
                 state.terminated <- true
+
+
+        # Expression-form scalar matches use the same ordered decision states as
+        # statement matches, but each successful arm contributes one value to an
+        # SSA merge parameter.  Keeping this separate from the statement helper
+        # avoids making the latter carry an optional result through every arm and
+        # preserves its existing mutable-binding merge behavior.
+        def lower_scalar_match_value(scrutinee_expression: Ast::Expr, arms: darray[Ast::MatchArm]&, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+            expanded_arms: mutable darray[Ast::MatchArm] = []
+            if expand_match_or_arms(arms, expanded_arms):
+                return lower_scalar_match_value(scrutinee_expression, expanded_arms, pos, state)
+            scrutinee: LoweredValue = lower_expression(scrutinee_expression, state)
+            return LoweredValue{valid: false, value: 0, type: unknown_ir_type()} if not scrutinee.valid
+            if not supported_scalar_match(arms, pos, state):
+                return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+            if scrutinee.type.kind not in {TypeKind.Int, TypeKind.Float, TypeKind.Bool, TypeKind.Char, TypeKind.Text}:
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "expression match requires an integer, float, boolean, character, or text scrutinee")
+                return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+            if not scalar_match_exhaustive(scrutinee.type, arms):
+                add_issue(state, LowerIssueKind.MissingReturn, pos.line, "expression match must be exhaustive or end with an unguarded catch-all arm")
+                return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+
+            # Expression arms are value blocks.  Probe their tails before creating
+            # the merge parameter so every edge agrees on one statically known type.
+            result_type: mutable Type = unknown_ir_type()
+            result_known: mutable bool = false
+            arm_values: mutable darray[Ast::Expr] = []
+            arm_binders: mutable darray[sview] = []
+            for arm in arms |state, pos, scrutinee, result_type, result_known, arm_values, arm_binders|:
+                if arm.body.count != 1:
+                    add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "expression match arms must contain exactly one value expression")
+                    arm_values.push(Expr.Invalid)
+                    arm_binders.push("")
+                    continue
+                tail: mutable Ast::Expr = Expr.Invalid
+                match arm.body[0]:
+                    Stmt.Expr(expression, _):
+                        tail <- expression
+                    _:
+                        pass
+                if tail is Expr.Invalid:
+                    add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "expression match arms must end in a value expression")
+                    arm_values.push(Expr.Invalid)
+                    arm_binders.push("")
+                    continue
+                binder: mutable sview = ""
+                match arm.pattern:
+                    Pattern.Binding(name):
+                        binder <- name
+                    _:
+                        pass
+                # The probe helper snapshots all emitted IR and diagnostics.  A
+                # synthetic name is used for arms without a binder so identifiers
+                # in the value still resolve against the surrounding lexical scope.
+                probe_name: sview = binder if binder != "" else "__elisascript_match_probe"
+                probed: LoweredValue = probe_comprehension_body(tail, probe_name, scrutinee.type, "", unknown_ir_type(), pos, state)
+                if not probed.valid:
+                    add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "expression match arm value must be a straight-line typed expression")
+                elif not result_known:
+                    result_type <- probed.type
+                    result_known <- true
+                elif not same_type(result_type, probed.type):
+                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "expression match arms must produce one static type")
+                arm_values.push(tail)
+                arm_binders.push(binder)
+            if not result_known:
+                return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+
+            scope_mark: usize = state.names.count
+            base_values: mutable darray[u32] = []
+            base_values.extend(state.values)
+            assigned_names: mutable darray[sview] = []
+            for arm in arms |assigned_names|:
+                collect_assigned_names(arm.body, assigned_names)
+            include_mutable_element_owners(state, assigned_names)
+            carried_indices: mutable darray[u32] = []
+            for name in assigned_names |state, carried_indices|:
+                index: usize = binding_index(state, name)
+                carried_indices.push(index.u32()) if index < scope_mark
+
+            merge_block: u32 = fresh_block(state)
+            merged_values: mutable darray[u32] = []
+            for binding_u32 in carried_indices |state, merge_block, merged_values|:
+                binding: usize = binding_u32.usize()
+                merged: u32 = fresh_value(state)
+                state.pending_parameter_blocks.push(merge_block)
+                state.pending_parameters.push(Parameter{value: merged, type: state.types[binding], name: state.names[binding]})
+                merged_values.push(merged)
+            result: u32 = fresh_value(state)
+            state.pending_parameter_blocks.push(merge_block)
+            state.pending_parameters.push(Parameter{value: result, type: result_type, name: "match-result"})
+
+            state.structured_depth <- state.structured_depth + 1
+            for arm_index in 0..<arms.count |state, arms, arm_values, arm_binders, pos, scrutinee, scope_mark, base_values, carried_indices, merge_block, result_type|:
+                arm: Ast::MatchArm = arms[arm_index]
+                body_block: u32 = fresh_block(state)
+                next_test_block: u32 = fresh_block(state)
+                guarded: mutable bool = false
+                match arm.guard:
+                    Expr.Absent:
+                        pass
+                    _:
+                        guarded <- true
+                matched_block: u32 = fresh_block(state) if guarded else body_block
+                binder: sview = arm_binders[arm_index]
+                catch_all: mutable bool = false
+                condition: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: type_from_name("bool")}
+                match arm.pattern:
+                    Pattern.Literal(text):
+                        literal: LoweredValue = lower_match_literal(text, scrutinee.type, pos, state)
+                        if literal.valid:
+                            condition <- emit_comparison(state, Opcode.Equal, scrutinee.value, literal.value, pos)
+                    Pattern.Pin(name):
+                        pinned: LoweredValue = lookup_binding(state, name)
+                        if not pinned.valid or not same_type(pinned.type, scrutinee.type):
+                            add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "pinned match binding must exist and match the scrutinee type")
+                        else:
+                            condition <- emit_comparison(state, Opcode.Equal, scrutinee.value, pinned.value, pos)
+                    Pattern.Binding(_):
+                        catch_all <- true
+                    Pattern.Wildcard:
+                        catch_all <- true
+                    _:
+                        add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "expression match supports scalar literals, pins, bindings, and wildcard patterns")
+                if catch_all:
+                    state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: matched_block, target_count: 1, span: ir_span(pos)}
+                elif condition.valid:
+                    fallthrough_args: (start: u32, count: u16) = append_binding_arguments(state, carried_indices)
+                    state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: condition.value, operand_count: 1, target0: matched_block, target1: next_test_block, target_count: 2, edge1_arg_start: fallthrough_args.start, edge1_arg_count: fallthrough_args.count, span: ir_span(pos)}
+                else:
+                    state.terminator <- Terminator{kind: TerminatorKind.Unreachable, span: ir_span(pos)}
+                finish_block(state)
+
+                if guarded:
+                    for index in 0..<scope_mark |state, base_values|:
+                        state.values[index] <- base_values[index]
+                    state.current_block <- matched_block
+                    state.terminated <- false
+                    if binder != "":
+                        state.names.push(binder)
+                        state.values.push(scrutinee.value)
+                        state.types.push(scrutinee.type)
+                        state.mutables.push(false)
+                    guard_value: LoweredValue = lower_expression(arm.guard, state)
+                    if guard_value.valid and guard_value.type.kind == TypeKind.Bool:
+                        guard_args: (start: u32, count: u16) = append_binding_arguments(state, carried_indices)
+                        state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: guard_value.value, operand_count: 1, target0: body_block, target1: next_test_block, target_count: 2, edge1_arg_start: guard_args.start, edge1_arg_count: guard_args.count, span: ir_span(pos)}
+                    else:
+                        add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "match arm guard must have boolean type") if guard_value.valid
+                        state.terminator <- Terminator{kind: TerminatorKind.Unreachable, span: ir_span(pos)}
+                    finish_block(state)
+                    state.names.truncate(scope_mark)
+                    state.values.truncate(scope_mark)
+                    state.types.truncate(scope_mark)
+                    state.mutables.truncate(scope_mark)
+
+                for index in 0..<scope_mark |state, base_values|:
+                    state.values[index] <- base_values[index]
+                state.current_block <- body_block
+                state.terminated <- false
+                if binder != "":
+                    state.names.push(binder)
+                    state.values.push(scrutinee.value)
+                    state.types.push(scrutinee.type)
+                    state.mutables.push(false)
+                arm_value: LoweredValue = lower_expression(arm_values[arm_index], state)
+                if arm_value.valid and same_type(arm_value.type, result_type):
+                    arm_args: (start: u32, count: u16) = append_binding_arguments(state, carried_indices)
+                    state.edge_arg_pool.push(arm_value.value)
+                    state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: merge_block, target_count: 1, edge0_arg_start: arm_args.start, edge0_arg_count: arm_args.count + 1, span: ir_span(pos)}
+                else:
+                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "expression match arm value does not match the merged result type") if arm_value.valid
+                    state.terminator <- Terminator{kind: TerminatorKind.Unreachable, span: ir_span(pos)}
+                finish_block(state)
+                state.names.truncate(scope_mark)
+                state.values.truncate(scope_mark)
+                state.types.truncate(scope_mark)
+                state.mutables.truncate(scope_mark)
+                for index in 0..<scope_mark |state, base_values|:
+                    state.values[index] <- base_values[index]
+                state.current_block <- next_test_block
+                state.terminated <- false
+
+            state.terminator <- Terminator{kind: TerminatorKind.Unreachable, span: ir_span(pos)}
+            finish_block(state)
+            state.structured_depth <- state.structured_depth - 1
+            for offset in 0..<carried_indices.count |state, carried_indices, merged_values|:
+                state.values[carried_indices[offset].usize()] <- merged_values[offset]
+            state.current_block <- merge_block
+            state.terminated <- false
+            return LoweredValue{valid: true, value: result, type: result_type}
 
 
         def lower_statement(statement: Ast::Stmt, return_type: Type, state: mutable LowerState&) -> void can[Memory.Allocate, Abort.Panic]:

@@ -528,6 +528,25 @@ such as `[0, head] | [1, head]`; each alternative performs its own length and
 element checks before entering the shared body. Alternatives that introduce
 incompatible bindings or use nested aggregate subpatterns remain rejected.
 
+Expression-position scalar matches use the same decision states and require an
+exhaustive arm set because every path must produce a value:
+
+```elisa
+label: sview = match exit_status:
+    0 | 2:
+        "acceptable"
+    code if code > 2:
+        "retry"
+    _:
+        "failed"
+```
+
+Literal, pin, binding, and wildcard arms (including guards and ordered `|`
+alternatives) are typed against one SSA merge value. Arm bindings are lexical
+and are available to both the guard and the value expression. Expression-form
+structural array matches remain rejected until aggregate result merging is
+available; statement-form structural arrays keep their existing lowering.
+
 ## Structural array matching
 
 Array values support a bounded, strongly typed prefix/rest pattern form in

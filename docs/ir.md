@@ -1225,6 +1225,13 @@ and guards run only after both comparisons succeed.
 Each arm has lexical bindings, while mutations of outer locals converge through
 typed merge-block parameters. Structural patterns remain explicit errors until
 structural IR values are available.
+Expression-form scalar `match` uses the same ordered states but requires an
+exhaustive arm set and lowers each arm's value expression through a typed
+`match-result` merge parameter. Literal, pin, binding, wildcard, guard, and
+ordered `|` alternatives are supported; arm bindings remain lexical. Structural
+array expression matches are rejected until aggregate result merging is added,
+while statement-form structural arrays use the `Length`/`Index`/`Slice` path
+described above.
 Unlabeled `break` and `continue` resolve through nested loop-target stacks. It produces structured
 lowering issues for every unsupported construct; it never drops a statement or
 expression silently.
