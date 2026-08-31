@@ -977,9 +977,10 @@ programs should be split into multiple modules rather than bypassing the limit.
 
 Standard streams are explicit typed operations rather than shell behavior. The
 Python-shaped `print(value, ...) -> usize` convenience is compiler-known: it
-formats text, signed `i64`, `f64`, and `bool` arguments, joins them with the
-typed text control `sep` (default `" "`), appends the typed text control `end`
-(default `"\n"`), and delegates to the same stdout operation. `echo` and
+formats text, signed `i64`, `f64`, `bool`, and text-backed nominal arguments,
+joins them with the typed text control `sep` (default `" "`), appends the typed
+text control `end` (default `"\n"`), and delegates to the same stdout operation.
+`echo` and
 `println` are equivalent stdout aliases, while `eprint` writes the same typed
 line to stderr. All four accept positional value arguments followed by at most
 one `sep: sview` and one `end: sview`; unsupported Python controls (`file` and
