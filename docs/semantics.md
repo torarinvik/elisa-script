@@ -1115,6 +1115,14 @@ working-directory changes are absent. The returned snapshot is the final stage's
 status/stdout/stderr; a stage's non-zero exit status does not suppress later
 stages, keeping status observation explicit through `process_exit_status`.
 
+`ProcessCapture` also supports typed field access for ports that naturally model a
+completed subprocess as a record: `result.returncode` and `result.exit_status`
+are aliases for `process_exit_status(result)`, while `result.stdout` and
+`result.stderr` alias `process_stdout(result)` and `process_stderr(result)`.
+The explicit `process_*` field spellings are accepted as well. All six forms
+lower to the same checked IR operations and require a nominal `ProcessCapture`
+receiver; an unknown field is rejected statically.
+
 ## Program entry point
 
 The launcher-facing program ABI is deliberately strict: a runnable script must
