@@ -988,6 +988,17 @@ and applies the environment overrides after `fork` and before descriptor setup o
 is reported by the child as status `126`, while the returned snapshot keeps the same
 exit-status, stdout, and stderr contract under the 64 MiB per-stream ceiling.
 
+`capture_process_pipeline(executables: darray[Executable], arguments:
+darray[darray[sview]], input: sview) -> ProcessCapture error[ProcessError]
+can[Process.Run]` provides a shell-free pipeline for differential scripts. The two
+arrays must have the same non-zero length; stage `i` receives `executables[i]`
+and `arguments[i]`, and its captured stdout becomes the next stage's stdin.
+Stages run sequentially through the same bounded temporary-file transport as
+`capture_process_result`, so shell quoting, pipe backpressure, and inherited
+working-directory changes are absent. The returned snapshot is the final stage's
+status/stdout/stderr; a stage's non-zero exit status does not suppress later
+stages, keeping status observation explicit through `process_exit_status`.
+
 ## Program entry point
 
 The launcher-facing program ABI is deliberately strict: a runnable script must

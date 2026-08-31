@@ -537,6 +537,12 @@ raise `ProcessError`.
 produces `Named(ProcessCapture)`. The directory and environment are applied only in
 the forked child, preserving the parent process state for deterministic
 differential-testing runs.
+`CaptureProcessPipeline` consumes `Array[Named(Executable)]`,
+`Array[Array[Text]]`, and `Text`, producing the final `ProcessCapture`. The arrays
+must be equal and non-empty at runtime; each stage's captured stdout is staged as
+the next stage's stdin through the same bounded temporary-file transport as
+`CaptureProcessResult`. It is deliberately sequential and shell-free, so argv
+boundaries remain typed and pipe backpressure cannot deadlock the interpreter.
 `Sleep` takes one signed/unsigned 64-bit integer or `f64` duration operand and
 returns `Void`. Its instruction integer is `0` for seconds and `1` for
 milliseconds. Verification requires `Time.Sleep` and `TimeError`; the reference
