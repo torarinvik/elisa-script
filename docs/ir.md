@@ -575,7 +575,9 @@ traversal in Elisa, filters symlink recursion, sorts and deduplicates owned matc
 and enforces a depth bound to make malformed/cyclic trees terminate deterministically.
 `ReadStdin` verifies as `() -> Text` with `Console.Read` and `ConsoleError`;
 `ReadStdinLine` verifies as `() -> Text` with the same effect/error row and consumes
-one line at a time, preserving stdin for subsequent reads. The Python-facing
+one line at a time, preserving stdin for subsequent reads. Both state machines
+enforce the interpreter's 64 MiB stdin safety ceiling before materializing the
+owned result. The Python-facing
 `input(prompt)` lowering emits an optional `WriteStdout` for the prompt followed by
 `ReadStdinLine`; EOF before a line is represented as the recoverable `Console` failure.
 `WriteStdout` and `WriteStderr` verify as `Text -> Int(unsigned, 64)` with

@@ -1020,18 +1020,20 @@ line to stderr. All four accept positional value arguments followed by at most
 one `sep: sview` and one `end: sview`; unsupported Python controls (`file` and
 `flush`) remain statically rejected:
 
-- `read_stdin() -> sview error[ConsoleError] can[Console.Read]` reads all bytes from
-  file descriptor 0 until EOF and returns an owned text snapshot. Read failures are
-  errors; an empty stream is a successful empty value.
+- `read_stdin() -> sview error[ConsoleError] can[Console.Read]` reads bytes from file
+  descriptor 0 until EOF, up to the interpreter's 64 MiB stdin safety ceiling, and
+  returns an owned text snapshot. Read failures and oversized input are errors; an
+  empty stream is a successful empty value.
 - `read_stdin_line() -> sview error[ConsoleError] can[Console.Read]` reads exactly one
-  line from file descriptor 0, removes its LF (and an optional preceding CR), and
-  returns an owned text snapshot. Repeated calls consume successive lines; reaching
-  EOF before any bytes is a `ConsoleError`.
+  line from file descriptor 0, up to the same 64 MiB ceiling, removes its LF (and an
+  optional preceding CR), and returns an owned text snapshot. Repeated calls consume
+  successive lines; reaching EOF before any bytes is a `ConsoleError`.
 - `input()` and `input(prompt: sview)` are Python-compatible line reads. The optional
   prompt is written to stdout before the read, so the prompted form carries both
   `Console.Write` and `Console.Read`; both forms return `sview` and report
-  `ConsoleError` at EOF or on I/O failure. Prompt arguments are positional and must be
-  text, and the prompt is not followed by an implicit newline.
+  `ConsoleError` at EOF, on I/O failure, or when the line exceeds the 64 MiB stdin
+  safety ceiling. Prompt arguments are positional and must be text, and the prompt
+  is not followed by an implicit newline.
 - `write_stdout(text: sview) -> usize error[ConsoleError] can[Console.Write]` writes
   every byte to file descriptor 1 and returns the exact byte count.
 - The shell-oriented `printf(text)` spelling is a typed no-newline alias for
