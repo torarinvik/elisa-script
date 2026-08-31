@@ -193,6 +193,12 @@ concatenation with a computed method result remain valid across the interpreter 
 bytecode backends. Other `+` operand pairs retain Elisa's numeric typing rules and
 are rejected when either operand is firmly non-numeric.
 
+The binary ordering operators (`<`, `<=`, `>`, `>=`) also accept two exactly
+text-typed (or exactly `char`-typed) operands. They compare unsigned `sview` bytes
+lexicographically, using the shorter common prefix as the tie-breaker. Numeric
+ordering remains unchanged, and mixed text/numeric operands are rejected rather
+than coerced.
+
 The compiler-known `strip(text) -> sview` and `trim(text) -> sview` names are
 equivalent byte-oriented boundary operations. They remove ASCII space, tab, line
 feed, vertical tab, form feed, and carriage return from the beginning and end,

@@ -951,7 +951,11 @@ selects `FormatInt`, `FormatFloat`, `FormatBool`, `FormatNominal`, or
 `FormatAggregate` for the corresponding exact type and returns text unchanged
 for text values; other integer widths are rejected before emission. Nominal and
 aggregate conversion is explicit at this boundary rather than an implicit
-coercion elsewhere.
+coercion elsewhere. Binary ordering (`Less`, `LessEqual`, `Greater`,
+`GreaterEqual`) accepts exact numeric types as before and also exact `Text`/`Char`
+pairs. Text ordering is unsigned byte-lexicographic and is implemented
+identically by the interpreter and direct bytecode helper; mixed families remain
+verifier errors.
 The `int(value)` and `float(value)` facades reuse `ParseInt`/`ParseFloat` for
 text and return exact `i64`/`f64` operands unchanged; `bool(value)` is an exact
 boolean identity. Lossy numeric and truthiness conversions are rejected before
