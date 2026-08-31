@@ -270,6 +270,9 @@ the map payload layout.
 The matching `mapping.values()` method takes no arguments and returns an
 insertion-ordered `darray[V]`, preserving the complete static value descriptor
 through a dedicated `MapValues` operation. It is likewise unavailable on sets.
+The global `keys(mapping)` and `values(mapping)` spellings are equivalent typed
+aliases for these receiver operations; each accepts exactly one dictionary value
+and remains shadowable by a source declaration.
 
 Text values also provide `text.count(substring) -> usize`. The operation counts
 left-to-right non-overlapping byte matches; an empty substring counts the input
