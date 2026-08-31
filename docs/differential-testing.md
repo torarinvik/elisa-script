@@ -132,7 +132,10 @@ argv/cwd/timeout before launch can keep using the two lower-level operations.
 `.elisascript` file. Set `kind` to `ElisascriptFile`, `target` to the source path,
 `entry` to the function to invoke, keep arguments as a text vector, and provide
 verified host-configured handlers through `handlers` when the candidate uses
-dynamic effects. The helper
+dynamic effects that need captures, introduced effects, or explicit error rows.
+Simple operation callbacks can instead use the source-level
+`@handler("name", "Family.Operation"[, "Policy"])` decorator; those clauses are
+derived during lowering and are available to the same in-process runner. The helper
 uses the canonical source/file execution boundary, converts the typed return value
 and `observe` events into owned differential values, and propagates source and
 runtime error families unchanged. Its `timeout_steps` field is the VM step limit;
