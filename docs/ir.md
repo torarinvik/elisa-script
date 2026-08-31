@@ -173,8 +173,9 @@ return`, when the recovery clause ends control flow.
 Source `raise Error.Tag` (or `raise Error.Tag(payload, ...)`) lowers to a void
 `Raise` instruction whose
 `effect_family` and `effect_operation` fields preserve the declared error
-identity. The lowerer requires the family (or explicitly listed tag) in the
-function's `error[...]` row; the verifier repeats that check for hand-built IR.
+identity. The lowerer requires the declared family in the function's `error[...]`
+row and rejects unknown family/tag pairs; the verifier repeats the row check for
+hand-built IR.
 `Raise` is recoverable by the same error guards as built-in failures, while an
 uncaught raise is reported as `InterpretError.Raised`. Catch expressions may use an
 explicit `Family.Tag` arm; the lowerer records that identity on the guard and the
