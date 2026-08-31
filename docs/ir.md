@@ -474,6 +474,9 @@ filesystem path as well as the reference interpreter.
 requires `Process.Run` plus `ProcessError`. The interpreter executes it directly as
 a POSIX `fork`/`execvp`/`waitpid` state transition with a NUL-terminated argv. No
 command string or shell expansion exists between typed IR and the operating system.
+Process waits use nonblocking `waitpid` polling and a 120-second deadline; a child
+that exceeds the deadline is killed and reported as `ProcessError` rather than
+blocking the host indefinitely.
 The explicit `executable(text)` constructor adapts a runtime `Text` value to the
 nominal `Executable` type for validated runner configurations. It contributes
 `ProcessError` to the enclosing function's error row and rejects empty or

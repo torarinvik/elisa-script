@@ -216,14 +216,22 @@ extend EsIr:
 
 
         const enum ProcessWaitState of u8:
+            Progress
             Exited
             Error
+
+
+        const INTERPRET_PROCESS_WAIT_NOHANG: int = 1
+        const INTERPRET_PROCESS_WAIT_KILL: int = 9
+        const INTERPRET_PROCESS_WAIT_POLL_MICROSECONDS: u32 = 1000
+        const INTERPRET_PROCESS_WAIT_MAX_POLLS: u64 = 120000
 
 
         struct ProcessWaiter:
             pid: int
             status: mutable int
             failed: mutable bool
+            polls: mutable u64 = 0
 
 
         struct InstructionDispatch:
@@ -3512,13 +3520,22 @@ extend EsIr:
                     _ = elisascript_posix_execvp(executable_items.cast[cstr], argv_items)
                     elisascript_posix_exit(127)
                     return runtime_void()
-                status: mutable int = 0
-                waited: int = elisascript_posix_waitpid(pid, status, 0)
-                if waited != pid:
+                waiter: mutable ProcessWaiter = ProcessWaiter{pid: pid, status: 0, failed: false}
+                machine over process_wait_next(waiter):
+                    state Wait
+                    start Wait
+
+                    Wait, ProcessWaitState.Progress:
+                        -> Wait
+                    Wait, ProcessWaitState.Exited:
+                        break
+                    Wait, ProcessWaitState.Error:
+                        break
+                if waiter.failed:
                     machine.failure <- InterpretFailure.Process
                     return runtime_void()
-                signal_number: int = status & 0x7f
-                return runtime_int(((status >> 8) & 0xff).i64()) if signal_number == 0
+                signal_number: int = waiter.status & 0x7f
+                return runtime_int(((waiter.status >> 8) & 0xff).i64()) if signal_number == 0
                 return runtime_int((128 + signal_number).i64())
 
 
@@ -3583,9 +3600,18 @@ extend EsIr:
                     _ = elisascript_posix_execvp(executable_items.cast[cstr], argv_items)
                     elisascript_posix_exit(127)
                     return runtime_void()
-                status: mutable int = 0
-                waited: int = elisascript_posix_waitpid(pid, status, 0)
-                if waited != pid or fseek(stream, 0, FILEIO_SEEK_END) != 0:
+                waiter: mutable ProcessWaiter = ProcessWaiter{pid: pid, status: 0, failed: false}
+                machine over process_wait_next(waiter):
+                    state Wait
+                    start Wait
+
+                    Wait, ProcessWaitState.Progress:
+                        -> Wait
+                    Wait, ProcessWaitState.Exited:
+                        break
+                    Wait, ProcessWaitState.Error:
+                        break
+                if waiter.failed or fseek(stream, 0, FILEIO_SEEK_END) != 0:
                     _ = fclose(stream)
                     machine.failure <- InterpretFailure.Process
                     return runtime_void()
@@ -3610,10 +3636,21 @@ extend EsIr:
 
 
         def process_wait_next(waiter: mutable ProcessWaiter&) -> ProcessWaitState can[Blocking.IO]:
-            waited: int = elisascript_posix_waitpid(waiter.pid, waiter.status, 0)
+            waited: int = elisascript_posix_waitpid(waiter.pid, waiter.status, INTERPRET_PROCESS_WAIT_NOHANG)
             if waited != waiter.pid:
-                waiter.failed <- true
-                return ProcessWaitState.Error
+                if waited < 0:
+                    waiter.failed <- true
+                    return ProcessWaitState.Error
+                if waiter.polls >= INTERPRET_PROCESS_WAIT_MAX_POLLS:
+                    _ = elisascript_posix_kill(waiter.pid, INTERPRET_PROCESS_WAIT_KILL)
+                    _ = elisascript_posix_waitpid(waiter.pid, waiter.status, 0)
+                    waiter.failed <- true
+                    return ProcessWaitState.Error
+                if elisascript_posix_usleep(INTERPRET_PROCESS_WAIT_POLL_MICROSECONDS) != 0:
+                    waiter.failed <- true
+                    return ProcessWaitState.Error
+                waiter.polls <- waiter.polls + 1
+                return ProcessWaitState.Progress
             return ProcessWaitState.Exited
 
 
@@ -3812,6 +3849,8 @@ extend EsIr:
                     state Wait
                     start Wait
 
+                    Wait, ProcessWaitState.Progress:
+                        -> Wait
                     Wait, ProcessWaitState.Exited:
                         break
                     Wait, ProcessWaitState.Error:
@@ -3940,6 +3979,8 @@ extend EsIr:
                     state Wait
                     start Wait
 
+                    Wait, ProcessWaitState.Progress:
+                        -> Wait
                     Wait, ProcessWaitState.Exited:
                         break
                     Wait, ProcessWaitState.Error:
