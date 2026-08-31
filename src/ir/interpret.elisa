@@ -125,6 +125,13 @@ extend EsIr:
             result: mutable RuntimeValue
 
 
+        # Process captures use temporary files, but the parent still needs a
+        # host-side allocation guard before materializing a child's output.
+        # Keep this conservative default shared by the reference interpreter
+        # and the packed bytecode helpers that construct a local Machine.
+        const INTERPRET_DEFAULT_MAX_PROCESS_OUTPUT_BYTES: u64 = 67108864
+
+
         struct Machine:
             steps: mutable u64
             step_limit: u64
@@ -140,6 +147,7 @@ extend EsIr:
             # Line-oriented stdin reads consume exactly one line at a time, so
             # repeated `input()` calls can share the same interpreter machine.
             stdin_eof: mutable bool = false
+            process_output_limit: u64 = INTERPRET_DEFAULT_MAX_PROCESS_OUTPUT_BYTES
 
 
         struct DirectoryScanner:
@@ -3560,27 +3568,10 @@ extend EsIr:
                     _ = fclose(stream)
                     machine.failure <- InterpretFailure.Process
                     return runtime_void()
-                size: i64 = ftell(stream)
-                if size < 0 or fseek(stream, 0, FILEIO_SEEK_SET) != 0:
-                    _ = fclose(stream)
-                    machine.failure <- InterpretFailure.Process
+                captured: sview = read_process_output(machine, stream)
+                if machine.failure != InterpretFailure.None:
                     return runtime_void()
-                if size == 0:
-                    _ = fclose(stream)
-                    return runtime_text("")
-                bytes: mutable dstr = ctx_fstr_alloc(size.usize())
-                if bytes.items == null:
-                    _ = fclose(stream)
-                    machine.failure <- InterpretFailure.Process
-                    return runtime_void()
-                byte_items: mutable u8& = bytes.items
-                read_count: usize = fread(byte_items.cast[mutable void&], 1, size.usize(), stream)
-                close_status: int = fclose(stream)
-                if read_count != size.usize() or close_status != 0:
-                    machine.failure <- InterpretFailure.Process
-                    return runtime_void()
-                bytes.count <- size.usize()
-                return runtime_text(bytes_view(bytes))
+                return runtime_text(captured)
 
 
         def process_input_next(writer: mutable ProcessInputWriter&) -> ProcessInputState:
@@ -3611,7 +3602,15 @@ extend EsIr:
                 _ = fclose(stream)
                 return ""
             size: i64 = ftell(stream)
-            if size < 0 or fseek(stream, 0, FILEIO_SEEK_SET) != 0:
+            if size < 0:
+                machine.failure <- InterpretFailure.Process
+                _ = fclose(stream)
+                return ""
+            if size.u64() > machine.process_output_limit:
+                machine.failure <- InterpretFailure.Process
+                _ = fclose(stream)
+                return ""
+            if fseek(stream, 0, FILEIO_SEEK_SET) != 0:
                 machine.failure <- InterpretFailure.Process
                 _ = fclose(stream)
                 return ""
@@ -3929,30 +3928,10 @@ extend EsIr:
                     _ = fclose(output_stream)
                     machine.failure <- InterpretFailure.Process
                     return runtime_void()
-                size: i64 = ftell(output_stream)
-                if size < 0 or fseek(output_stream, 0, FILEIO_SEEK_SET) != 0:
-                    _ = fclose(output_stream)
-                    machine.failure <- InterpretFailure.Process
+                captured: sview = read_process_output(machine, output_stream)
+                if machine.failure != InterpretFailure.None:
                     return runtime_void()
-                if size == 0:
-                    close_status: int = fclose(output_stream)
-                    if close_status != 0:
-                        machine.failure <- InterpretFailure.Process
-                        return runtime_void()
-                    return runtime_text("")
-                bytes: mutable dstr = ctx_fstr_alloc(size.usize())
-                if bytes.items == null:
-                    _ = fclose(output_stream)
-                    machine.failure <- InterpretFailure.Process
-                    return runtime_void()
-                byte_items: mutable u8& = bytes.items
-                read_count: usize = fread(byte_items.cast[mutable void&], 1, size.usize(), output_stream)
-                close_status: int = fclose(output_stream)
-                if read_count != size.usize() or close_status != 0:
-                    machine.failure <- InterpretFailure.Process
-                    return runtime_void()
-                bytes.count <- size.usize()
-                return runtime_text(bytes_view(bytes))
+                return runtime_text(captured)
 
 
         def text_has_nul(value: sview) -> bool:

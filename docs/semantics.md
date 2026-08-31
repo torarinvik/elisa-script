@@ -926,30 +926,34 @@ status `127`.
 
 `capture_process_stdout(executable: Executable, arguments: darray[sview]) -> sview
 error[ProcessError] can[Process.Run]` uses the same shell-free argv contract and
-returns every byte written to standard output. Standard error remains inherited.
-The child redirects stdout to an anonymous temporary file, avoiding both pipe
-backpressure deadlocks and fixed capture limits. Process creation, redirection,
-seek, read, close, and wait failures raise `ProcessError`. Exit status is deliberately
+returns the bytes written to standard output, up to the interpreter's 64 MiB
+per-stream safety ceiling. Standard error remains inherited. The child redirects
+stdout to an anonymous temporary file, avoiding pipe backpressure deadlocks; an
+oversized capture raises `ProcessError` before allocation. Process creation,
+redirection, seek, read, close, and wait failures raise `ProcessError`. Exit status is deliberately
 orthogonal to captured bytes; a missing executable therefore yields empty output,
 while `run_process` exposes its status `127` when status is the required observation.
 
 `capture_process_stderr(executable: Executable, arguments: darray[sview]) -> sview
 error[ProcessError] can[Process.Run]` is the descriptor-2 counterpart: it captures
-every byte written to standard error, while standard output remains inherited. Both
-capture operations use the same typed argv and temporary-file behavior, so selecting
-which stream to observe is explicit in the function name and effect contract.
+bytes written to standard error under the same 64 MiB per-stream ceiling, while
+standard output remains inherited. Both capture operations use the same typed argv
+and temporary-file behavior, so selecting which stream to observe is explicit in
+the function name and effect contract.
 
 `capture_process_stdout_with_stdin(executable: Executable, arguments: darray[sview],
 input: sview) -> sview error[ProcessError] can[Process.Run]` uses the same argv
 contract while feeding an owned text snapshot through the child's standard input.
 Input is staged in a temporary file before the child starts, so the operation has no
-pipe-size deadlock or truncation behavior. The child sees exactly the supplied bytes;
+pipe-size deadlock or input truncation behavior. Captured output remains subject to
+the 64 MiB per-stream ceiling. The child sees exactly the supplied bytes;
 wildcards, spaces, and quotes in both arguments and input remain ordinary bytes.
 
 `capture_process_stderr_with_stdin(executable: Executable, arguments: darray[sview],
 input: sview) -> sview error[ProcessError] can[Process.Run]` is the descriptor-2
 counterpart. It uses the same typed argv and temporary-file input staging, but returns
-the child's complete stderr snapshot while stdout remains inherited.
+the child's stderr snapshot under the same 64 MiB ceiling while stdout remains
+inherited.
 
 `capture_process_result_in_directory(executable: Executable, arguments: darray[sview],
 input: sview, directory: Path) -> ProcessCapture error[ProcessError] can[Process.Run]`
@@ -963,9 +967,9 @@ child directory is reported by the child as status `126`.
 input: sview, environment: dict[sview, sview]) -> ProcessCapture
 error[ProcessError] can[Process.Run]` applies the supplied name/value overrides only
 in the forked child before `exec`. The parent process environment is unchanged, and
-the returned snapshot includes the child's status, stdout, and stderr. Environment
-names must be non-empty text without NUL bytes; an invalid child `setenv` operation
-is reported as status `126`.
+the returned snapshot includes the child's status, stdout, and stderr, each stream
+bounded by the 64 MiB interpreter ceiling. Environment names must be non-empty text
+without NUL bytes; an invalid child `setenv` operation is reported as status `126`.
 
 `capture_process_result_in_directory_with_environment(executable: Executable,
 arguments: darray[sview], input: sview, directory: Path,
@@ -974,7 +978,7 @@ can[Process.Run]` composes both child-only controls. The child changes to `direc
 and applies the environment overrides after `fork` and before descriptor setup or
 `exec`; neither operation mutates the parent. Invalid directory or environment setup
 is reported by the child as status `126`, while the returned snapshot keeps the same
-exit-status, stdout, and stderr contract.
+exit-status, stdout, and stderr contract under the 64 MiB per-stream ceiling.
 
 ## Program entry point
 
