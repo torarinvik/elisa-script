@@ -435,6 +435,16 @@ zero-width progress rule.
 both `sview`, and capture-expansion tokens follow the same deterministic
 Perl/AWK-compatible rules as the global operation.
 
+Python ports may also use the qualified `re` facade with Python's pattern-first
+argument order: `re.search(pattern, text)`, `re.match(pattern, text)`, and
+`re.fullmatch(pattern, text)` return `bool`; `re.findall(pattern, text)` and
+`re.split(pattern, text)` return `darray[sview]`; and
+`re.sub(pattern, replacement, text)` returns `sview`. These names lower directly
+to the existing typed regex opcodes, so the pattern must be a nominal `Regex`,
+text and replacement values must be `sview`, and no dynamic regex object or
+implicit string compilation is introduced. `re.findall` also accepts the
+`find_all` spelling for consistency with the receiver method.
+
 `capture_regex(text, pattern) -> darray[sview]` returns the first match and its
 proven capture groups. Element `0` is the complete match; elements `1` onward
 follow positional group order, and an unmatched proven group is represented by an
@@ -1529,6 +1539,8 @@ must call the same implementation used at runtime so the two cannot disagree.
   statically known result families, including source-function shadowing.
 - The qualified `subprocess` namespace resolves to the same typed process
   operations without introducing shell command strings.
+- The qualified `re` namespace preserves Python's pattern-first regex spellings
+  while lowering to the same typed, deterministic regex operations.
 - Shell/Python-compatible `sleep` aliases resolve as known builtins for the
   typed lowering pass.
 
