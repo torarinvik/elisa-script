@@ -454,15 +454,16 @@ number: i64 = catch int(text):
         0i64
 ```
 
-Elisascript currently accepts one success binding (or `_`) and one final
-catch-all (`_` or `error e`) arm. Both arm bodies must contain one expression
-whose type exactly matches the guarded value; the error binder is intentionally
-not a runtime error payload. Variant-specific arms and terminating arm bodies
-remain explicit lowering diagnostics until the IR carries error ordinals and
-payloads, except that a single error arm may terminate with `return` after the
-ordinary function return-type check. The guarded expression is evaluated once,
-with a lazy fallback and a typed state-machine merge; recoverable failures use
-the ordinary `error[...]` contract rather than a result wrapper.
+Elisascript accepts one success binding (or `_`) and one error arm. The error arm
+may be a catch-all (`_` or `error e`) or a payload-free `Family.Tag` variant. Both
+arm bodies must contain one expression whose type exactly matches the guarded
+value; the error binder is intentionally not a runtime error payload. Variant
+arms recover only an explicitly raised matching tag; built-in failures and other
+raised variants continue through the enclosing `error[...]` contract. Payload
+matching and terminating variant arms remain deferred until the IR carries error
+ordinals and payloads, except that a catch-all arm may terminate with `return`
+after the ordinary function return-type check. The guarded expression is evaluated
+once, with a lazy fallback and a typed state-machine merge.
 
 For early propagation, the fallback may be a terminating clause:
 
@@ -1055,9 +1056,9 @@ function whose signature includes that family in `error[...]` (for example,
 `def fail() -> void error[UserError]: raise UserError.Bad`). The operation has no
 result and does not use a result wrapper: an enclosing `try ... else` recovers it,
 and an uncaught raise exits through the ordinary checked error channel as
-`InterpretError.Raised`. Catch arms are currently catch-all; preserving the
-family/tag in the IR leaves precise variant matching for the later error-payload
-runtime extension.
+`InterpretError.Raised`. A payload-free `Family.Tag` catch arm selects the matching
+raised identity; wildcard and `error` arms remain catch-all. Payload extraction is
+left for the later error-payload runtime extension.
 
 `run_process(executable: Executable, arguments: darray[sview]) -> i64
 error[ProcessError] can[Process.Run]` starts a process from an explicitly typed

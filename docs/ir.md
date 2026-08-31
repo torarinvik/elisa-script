@@ -170,9 +170,12 @@ Source `raise Error.Tag` lowers to a void `Raise` instruction whose
 identity. The lowerer requires the family (or explicitly listed tag) in the
 function's `error[...]` row; the verifier repeats that check for hand-built IR.
 `Raise` is recoverable by the same error guards as built-in failures, while an
-uncaught raise is reported as `InterpretError.Raised`. The current catch surface
-remains catch-all; variant-specific payload matching is intentionally deferred
-until error ordinals and payload storage are part of the runtime model.
+uncaught raise is reported as `InterpretError.Raised`. Catch expressions may use a
+payload-free `Family.Tag` arm; the lowerer records that identity on the guard and
+the reference interpreter recovers only a matching explicit raise. Wildcard and
+`error` arms remain catch-all for built-in failures and any raised variant.
+Payload-bearing error matching is intentionally deferred until error ordinals and
+payload storage are part of the runtime model.
 
 `panic([message])` lowers to a void `Panic` instruction with `Abort.Panic` effect
 metadata and zero or one evaluated operand. Unlike `Raise`, `Panic` is not an

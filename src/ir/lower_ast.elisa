@@ -2725,17 +2725,16 @@ extend EsIr:
             return LoweredValue{valid: fallback.valid, value: result, type: guarded.type}
 
 
-        # Lower the expression-position `catch EXPR:` form.  The compact IR carries
-        # recoverable failure control flow, but it does not yet carry an error ordinal
-        # or payload value through a call.  Keep the supported surface honest: require
-        # one success arm followed by one catch-all arm, and make both arm expressions
-        # produce exactly the guarded call's static value type.  Variant arms are
-        # rejected rather than silently treated as catch-alls; the later error-union
-        # descriptor can then add precise dispatch without changing this CFG shape.
+        # Lower the expression-position `catch EXPR:` form.  Recovery remains a
+        # compact guard/fallback CFG, but explicit `Error.Tag` arms now carry their
+        # family and tag in the guard metadata.  The reference interpreter can use
+        # that identity for raised errors while ordinary catch-all arms retain the
+        # previous behavior.  Payload binders remain deferred until error payload
+        # storage is part of the runtime model.
         def lower_catch_expression(guarded_expression: Ast::Expr, arms: darray[Ast::MatchArm]&, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
             invalid: LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
             if arms.count != 2:
-                add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "catch expressions currently require one success arm and one catch-all error arm")
+                add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "catch expressions currently require one success arm and one error arm")
                 return invalid
             success_arm: Ast::MatchArm = arms[0]
             error_arm: Ast::MatchArm = arms[1]
@@ -2752,15 +2751,23 @@ extend EsIr:
                     add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "catch success arms cannot have guards")
                     return invalid
             catch_all: mutable bool = false
+            error_family: mutable sview = ""
+            error_operation: mutable sview = ""
             match error_arm.pattern:
                 Pattern.Wildcard:
                     catch_all <- true
                 Pattern.TypeBind(error_type_name, _):
                     catch_all <- error_type_name == "error"
+                Pattern.Variant(error_reference, fields):
+                    if fields.count != 0 or not valid_effect_reference(error_reference):
+                        add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "catch error variants require a payload-free Family.Tag pattern")
+                        return invalid
+                    error_family <- effect_family(error_reference)
+                    error_operation <- effect_operation(error_reference)
                 _:
                     pass
-            if not catch_all:
-                add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "catch expression requires a final wildcard or error catch-all arm")
+            if not catch_all and (error_family == "" or error_operation == ""):
+                add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "catch expression requires a final wildcard, error catch-all, or payload-free Family.Tag arm")
                 return invalid
             match error_arm.guard:
                 Expr.Absent:
@@ -2800,7 +2807,7 @@ extend EsIr:
 
             fallback_block: u32 = fresh_block(state)
             merge_block: u32 = fresh_block(state)
-            state.instructions.push(Instruction{opcode: Opcode.ErrorGuardPush, result: 0, result_type: void_ir_type(), integer: fallback_block.i64(), span: ir_span(pos)})
+            state.instructions.push(Instruction{opcode: Opcode.ErrorGuardPush, result: 0, result_type: void_ir_type(), integer: fallback_block.i64(), effect_family: error_family, effect_operation: error_operation, span: ir_span(pos)})
             guarded: LoweredValue = lower_expression(guarded_expression, state)
             if not guarded.valid:
                 return invalid

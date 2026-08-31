@@ -142,6 +142,11 @@ extend EsIr:
             steps: mutable u64
             step_limit: u64
             failure: mutable InterpretFailure
+            # Explicit `raise Family.Tag` failures retain their static identity
+            # while unwinding through nested calls. Built-in failures leave these
+            # fields empty and continue to match only catch-all guards.
+            failure_family: mutable sview = ""
+            failure_operation: mutable sview = ""
             continuations: mutable darray[ContinuationFrame]
             continuation_frames: mutable darray[ContinuationCallFrame] = []
             active_calls: mutable darray[ContinuationCallFrame] = []
@@ -268,6 +273,10 @@ extend EsIr:
         struct ErrorGuard:
             target: u32
             handler_depth: usize
+            # Empty metadata denotes a catch-all guard. Non-empty fields match
+            # only the corresponding explicit raised error variant.
+            effect_family: sview = ""
+            effect_operation: sview = ""
 
 
         const enum TerminatorDispatchState of u8:
@@ -1005,13 +1014,14 @@ extend EsIr:
             machine.failure <- InterpretFailure.Assertion if not condition.boolean
 
 
-        def evaluate_raise(machine: mutable Machine&) -> void:
+        def evaluate_raise(machine: mutable Machine&, instruction: Instruction&) -> void:
             # Error variants are carried in the instruction's static family/tag
-            # metadata. The current public execution API exposes the fact that a
-            # declared error escaped; catch/try recovery still receives the full
-            # control-flow transfer. Variant-aware matching can be layered on top
-            # without changing the opcode contract.
+            # metadata. The public execution API still exposes the fact that a
+            # declared error escaped, while variant-filtered catch guards consult
+            # this side channel during the same control-flow transfer.
             machine.failure <- InterpretFailure.Raised
+            machine.failure_family <- instruction.effect_family
+            machine.failure_operation <- instruction.effect_operation
 
 
         def evaluate_panic(machine: mutable Machine&) -> void:
@@ -5095,6 +5105,11 @@ extend EsIr:
             return failure in {InterpretFailure.DivisionByZero, InterpretFailure.IntegerOverflow, InterpretFailure.InvalidNumber, InterpretFailure.FileIo, InterpretFailure.Process, InterpretFailure.Environment, InterpretFailure.Directory, InterpretFailure.Console, InterpretFailure.Time, InterpretFailure.RangeStepZero, InterpretFailure.InvalidShift, InterpretFailure.IndexOutOfBounds, InterpretFailure.Assertion, InterpretFailure.Raised}
 
 
+        def error_guard_matches(machine: Machine&, guard: ErrorGuard&) -> bool:
+            return true if guard.effect_family == "" and guard.effect_operation == ""
+            return machine.failure == InterpretFailure.Raised and machine.failure_family == guard.effect_family and machine.failure_operation == guard.effect_operation
+
+
         def execute_function(machine: mutable Machine&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, handler_stack: mutable darray[sview]&, module: Module&, function_index: usize, arguments: darray[RuntimeValue]&, resume_block: u32 = 0, resume_instruction: usize = 0, initial_ids: darray[u32] = [], initial_values: darray[RuntimeValue] = []) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
             if function_index >= module.functions.count:
                 machine.failure <- InterpretFailure.UnknownFunction
@@ -5908,7 +5923,7 @@ extend EsIr:
                             break
 
                         Dispatch, Opcode.Raise:
-                            evaluate_raise(machine)
+                            evaluate_raise(machine, instruction)
                             dispatch.produces_value <- false
                             break
 
@@ -5933,17 +5948,21 @@ extend EsIr:
                             break
 
                     return dispatch.value if machine.resume_requested
-                    error_guards.push(ErrorGuard{target: instruction.integer.u32(), handler_depth: handler_stack.count}) if instruction.opcode == Opcode.ErrorGuardPush
+                    error_guards.push(ErrorGuard{target: instruction.integer.u32(), handler_depth: handler_stack.count, effect_family: instruction.effect_family, effect_operation: instruction.effect_operation}) if instruction.opcode == Opcode.ErrorGuardPush
                     if instruction.opcode == Opcode.ErrorGuardPop:
                         machine.failure <- InterpretFailure.InvalidControlFlow if error_guards.count == 0
                         if error_guards.count > 0:
                             _ = error_guards.pop()
                     if machine.failure != InterpretFailure.None and error_guards.count > 0 and error_guard_recoverable(machine.failure):
-                        guard: ErrorGuard = error_guards.pop()
-                        handler_stack.truncate(guard.handler_depth)
-                        machine.failure <- InterpretFailure.None
-                        block.terminator <- Terminator{kind: TerminatorKind.Jump, target0: guard.target, target_count: 1, span: block.terminator.span}
-                        break
+                        guard: ErrorGuard = error_guards[error_guards.count - 1]
+                        if error_guard_matches(machine, guard):
+                            _ = error_guards.pop()
+                            handler_stack.truncate(guard.handler_depth)
+                            machine.failure <- InterpretFailure.None
+                            machine.failure_family <- ""
+                            machine.failure_operation <- ""
+                            block.terminator <- Terminator{kind: TerminatorKind.Jump, target0: guard.target, target_count: 1, span: block.terminator.span}
+                            break
                     set_frame_value(ids, values, instruction.result, dispatch.value) if machine.failure == InterpretFailure.None and dispatch.produces_value
 
                 runtime_void() return if machine.failure != InterpretFailure.None
