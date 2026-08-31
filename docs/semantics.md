@@ -1108,8 +1108,9 @@ distinct from declared `error[...]` variants while retaining a typed effect row
 for callers and future native/JIT backends. The compiler-known intrinsic is
 shadowable by a user function named `panic`.
 
-Declared error families can be raised directly with `raise Family.Tag` (or the
-positional payload form `raise Family.Tag(value, ...)`) inside a
+Declared error families and variants are resolved statically: a raise or explicit
+catch must name a variant declared by that family. They can be raised directly
+with `raise Family.Tag` (or the positional payload form `raise Family.Tag(value, ...)`) inside a
 function whose signature includes that family in `error[...]` (for example,
 `def fail() -> void error[UserError]: raise UserError.Bad`). The operation has no
 result and does not use a result wrapper: an enclosing `try ... else` recovers it,
