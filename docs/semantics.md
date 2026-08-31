@@ -459,9 +459,10 @@ catch-all (`_` or `error e`) arm. Both arm bodies must contain one expression
 whose type exactly matches the guarded value; the error binder is intentionally
 not a runtime error payload. Variant-specific arms and terminating arm bodies
 remain explicit lowering diagnostics until the IR carries error ordinals and
-payloads. The guarded expression is evaluated once, with a lazy fallback and a
-typed state-machine merge; recoverable failures use the ordinary `error[...]`
-contract rather than a result wrapper.
+payloads, except that a single error arm may terminate with `return` after the
+ordinary function return-type check. The guarded expression is evaluated once,
+with a lazy fallback and a typed state-machine merge; recoverable failures use
+the ordinary `error[...]` contract rather than a result wrapper.
 
 For early propagation, the fallback may be a terminating clause:
 
