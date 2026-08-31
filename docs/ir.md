@@ -873,10 +873,16 @@ the core `%g` spelling into permanent storage before returning its view. These
 opcodes are classified into the packed text dispatch family. `FormatBool` has
 type `Bool -> Text` and emits canonical lowercase `true` or `false`; it is
 classified in the same family and is eligible for the direct bytecode path.
+`FormatNominal` has type `Path|Glob|Regex|Executable|Url -> Text`; it exposes
+the underlying text representation of a text-backed nominal value for the
+explicit `str(value)` facade. It is verified separately from `Copy`, so no
+other implicit nominal-to-text conversion is introduced, and it is eligible
+for the same interpreter and direct bytecode paths.
 The Python-compatible `str(value)` facade selects `FormatInt`, `FormatFloat`,
-or `FormatBool` for the corresponding exact scalar type and returns text
-unchanged for text values; aggregates and other integer widths are rejected
-before emission.
+`FormatBool`, or `FormatNominal` for the corresponding exact scalar or
+text-backed nominal type and returns text unchanged for text values; aggregates
+and other integer widths are rejected before emission. Nominal conversion is
+explicit at this boundary rather than an implicit coercion elsewhere.
 The `int(value)` and `float(value)` facades reuse `ParseInt`/`ParseFloat` for
 text and return exact `i64`/`f64` operands unchanged; `bool(value)` is an exact
 boolean identity. Lossy numeric and truthiness conversions are rejected before

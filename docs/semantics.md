@@ -620,9 +620,11 @@ matching `format_float(value: f64) -> sview` uses Elisa's `%g`-style canonical
 runtime spelling and keeps the returned text in permanent storage.
 `format_bool(value: bool) -> sview` returns canonical lowercase `true` or `false`.
 The Python-compatible `str(value) -> sview` facade accepts text (identity),
-signed `i64`, `f64`, and `bool`, selecting the corresponding typed formatter
-without implicit aggregate or width conversions. A source function named `str`
-shadows this compiler-known operation.
+signed `i64`, `f64`, `bool`, and the text-backed nominals `Path`, `Glob`,
+`Regex`, `Executable`, and `Url`, selecting the corresponding typed formatter
+without implicit aggregate or width conversions. Nominal conversion is explicit
+at the `str(...)` boundary; no other operation gains an implicit nominal-to-text
+coercion. A source function named `str` shadows this compiler-known operation.
 The scalar constructors `int(value) -> i64` and `float(value) -> f64` accept
 their exact target scalar as an identity or parse `sview` through the checked
 `ParseError` path. `bool(value) -> bool` is likewise an exact-type identity.
