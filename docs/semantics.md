@@ -55,6 +55,21 @@ Nominal values cannot implicitly initialize primitive scalars:
 bad: i64 = path"src"  # type error: expected i64, got Path
 ```
 
+## Module constants
+
+Immutable, initialized module-level constants are available from every function
+with their declared (or inferred) type:
+
+```elisa
+const EXIT_CODE: i64 = 7
+const PREFIX: sview = "build: "
+```
+
+The IR materializes these values at function entry as typed SSA bindings. Normal
+lexical shadowing still applies, so a parameter or local with the same name wins.
+`global`/mutable and uninitialized declarations remain rejected by the initial
+scripting IR until explicit global storage semantics are added.
+
 String payloads are decoded once at the IR constant boundary. Ordinary and
 adjacent triple-quoted literals recognize Elisa's standard escapes (`\\n`, `\\t`,
 `\\r`, `\\0`, `\\\\`, `\\"`, `\\'`, `\\xNN`, and `\\uNNNN`); unknown or malformed

@@ -18,6 +18,12 @@ serialization:
 - Source spans survive lowering for diagnostics and reproducible failures.
 - Nominal types retain their Elisa name instead of collapsing to a machine representation.
 
+Immutable, initialized module-level `const` declarations are lowered into typed
+SSA constants at each function entry. They are ordinary lexical bindings, so a
+parameter or local with the same name shadows the module constant. Mutable or
+uninitialized globals remain outside this initial IR until explicit global storage
+and synchronization operations are defined.
+
 Aggregate `Type` fields remain bounded for compatibility with the first lowering,
 but every lowered module also carries a pointer-free `TypeTable`. Its one-based
 `TypeDescriptor` rows refer to child rows through a flat `u32` pool; interning
