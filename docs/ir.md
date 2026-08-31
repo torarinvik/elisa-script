@@ -222,7 +222,11 @@ resumptions (`MultiReplay`/`MultiClone`).
 Source callbacks may spell a typed resumption as `return resume("echo", payload)`.
 The lowerer requires a compile-time string-literal handler name, a non-void callback
 return type, and an exact payload/return type match, then emits `Opcode.Resume`.
-Handler descriptors and operation-clause wiring remain supplied at the source boundary.
+Source files may derive operation clauses with `@handler("name", "Family.Operation"[, "Policy"])`
+on ordinary callback functions. The source lowerer aggregates callbacks
+with the same handler name, preserves host-supplied descriptors, and leaves payload /
+resume typing to the callback signature plus the verifier. Host configuration remains
+the escape hatch for captures, introduced effects, and explicit `error[...]` rows.
 
 Handler failures are stored in explicit error-set rows on handlers and functions.
 They are not represented as `Result` values and are not merged into effect rows.

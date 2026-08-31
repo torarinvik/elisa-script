@@ -163,9 +163,17 @@ lets lowering preserve the family and tag for checked error propagation.
 The following features belong to later, explicitly designed changes:
 
 - Algebraic `effect` declarations
-- Source handler declarations and operation clauses (callbacks may use the ordinary
-  `resume("handler", payload)` call lowered by the IR frontend)
 - Script-level dependency declarations if decorators are insufficient
+
+Source operation handlers use the existing decorator syntax while the full `effect`
+declaration grammar remains deferred. A top-level callback can declare one exact
+operation clause with `@handler("name", "Family.Operation")`; an optional third
+argument selects `Linear`, `Affine`, `MultiReplay`, or `MultiClone`. Multiple callbacks
+may contribute clauses to the same handler, and their ordinary typed parameters and
+return types are checked against performed payloads and resumed values by the IR
+verifier. Callback bodies may use `resume("name", payload)` for value-producing
+operations. Host-supplied `Handler` descriptors remain supported for applications that
+need captures, introduced effects, or explicit error rows.
 
 The launcher does not depend on deferred `@command` derivation: the current
 driver uses the explicit `main(arguments: darray[sview]) -> i64` program ABI and

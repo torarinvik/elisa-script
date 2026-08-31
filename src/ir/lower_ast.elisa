@@ -642,6 +642,86 @@ extend EsIr:
                     state.required_errors.push(error_set) if error_set != "" and not has_text(state.required_errors, error_set)
 
 
+        # Source-level dynamic handlers are deliberately a narrow decorator DSL rather than
+        # a second effect-language grammar.  A callback such as
+        # `@handler("recorder", "Progress.Tick")` contributes one exact operation clause;
+        # the callback's ordinary typed parameters and return type remain the source of truth
+        # for payload and resumption typing.  An optional third argument selects the existing
+        # continuation policy (`Linear`, `Affine`, `MultiReplay`, or `MultiClone`).
+        def source_handler_annotation_arg(file: Ast::File&, annotation: Ast::Annotation&, offset: usize) -> sview:
+            index: usize = annotation.arg_start.usize() + offset
+            return file.annotation_args[index] if index < file.annotation_args.count and offset < annotation.arg_count.usize()
+            return sview("", 0, 0)
+
+
+        def source_handler_policy(name: sview, valid: mutable bool&) -> ContinuationPolicy:
+            valid <- true
+            return ContinuationPolicy.Linear if name == "Linear"
+            return ContinuationPolicy.Affine if name == "Affine"
+            return ContinuationPolicy.MultiReplay if name == "MultiReplay"
+            return ContinuationPolicy.MultiClone if name == "MultiClone"
+            valid <- false
+            return ContinuationPolicy.Linear
+
+
+        def source_handler_issue(issues: mutable darray[LowerIssue]&, function_name: sview, line: u32, message: sview) -> void can[Memory.Allocate, Abort.Panic]:
+            issues.push(LowerIssue{kind: LowerIssueKind.TypeMismatch, function: function_name, line: line, message: message})
+
+
+        def derive_source_handler_clause(file: Ast::File&, function_name: sview, decorator: Ast::Annotation&, handlers: mutable darray[Handler]&, issues: mutable darray[LowerIssue]&) -> void can[Memory.Allocate, Abort.Panic]:
+            line: u32 = decorator.line
+            count: usize = decorator.arg_count.usize()
+            if count != 2 and count != 3:
+                source_handler_issue(issues, function_name, line, "@handler expects a handler name, an exact Family.Operation reference, and an optional continuation policy")
+                return
+            handler_name: sview = source_handler_annotation_arg(file, decorator, 0)
+            reference: sview = source_handler_annotation_arg(file, decorator, 1)
+            if handler_name == "" or reference == "":
+                source_handler_issue(issues, function_name, line, "@handler arguments must not be empty")
+                return
+            if not valid_effect_reference(reference):
+                source_handler_issue(issues, function_name, line, "@handler operation must use Family.Operation form")
+                return
+            explicit_policy: mutable bool = false
+            policy: mutable ContinuationPolicy = ContinuationPolicy.Linear
+            if count == 3:
+                explicit_policy <- true
+                valid_policy: mutable bool = false
+                policy <- source_handler_policy(source_handler_annotation_arg(file, decorator, 2), valid_policy)
+                if not valid_policy:
+                    source_handler_issue(issues, function_name, line, "@handler continuation policy must be Linear, Affine, MultiReplay, or MultiClone")
+                    return
+            index: usize = handler_index(handlers, handler_name)
+            if index == handlers.count:
+                handlers.push(Handler{name: handler_name, handles: [effect_family(reference)], introduces_effects: [], errors: [], continuation: policy, clauses: []})
+                index <- handlers.count - 1
+            elif explicit_policy and handlers[index].continuation != policy:
+                source_handler_issue(issues, function_name, line, "@handler declarations for one handler must use one continuation policy")
+                return
+            family: sview = effect_family(reference)
+            operation: sview = effect_operation(reference)
+            handlers[index].handles.push(family) if not has_text(handlers[index].handles, family)
+            for clause in handlers[index].clauses:
+                if clause.effect_family == family and clause.effect_operation == operation:
+                    source_handler_issue(issues, function_name, line, "@handler declares the same effect operation more than once")
+                    return
+            handlers[index].clauses.push(HandlerClause{effect_family: family, effect_operation: operation, function: function_name})
+
+
+        def derive_source_handlers(declarations: darray[Ast::Decl]&, file: Ast::File&, handlers: mutable darray[Handler]&, issues: mutable darray[LowerIssue]&) -> void can[Memory.Allocate, Abort.Panic]:
+            for declaration in declarations |file, handlers, issues|:
+                match declaration:
+                    Decl.Func(name, _, _, _, _, decorators, _):
+                        for decorator in decorators |file, name, handlers, issues|:
+                            derive_source_handler_clause(file, name, decorator, handlers, issues) if decorator.name == "handler"
+                    Decl.Module(_, body, _):
+                        derive_source_handlers(body, file, handlers, issues)
+                    Decl.Scoped(body, _):
+                        derive_source_handlers(body, file, handlers, issues)
+                    _:
+                        pass
+
+
         def comprehension_kind(state: LowerState&, pos: Ast::Pos&) -> sview:
             for annotation in state.comprehension_kinds |pos|:
                 return annotation.name if annotation.owner == "__comprehension_kind" and annotation.line == pos.line
@@ -9137,11 +9217,17 @@ extend EsIr:
                         pass
             functions: mutable darray[Function] = []
             issues: mutable darray[LowerIssue] = []
+            # Host-provided descriptors remain the compatibility path.  Source decorators
+            # extend a private copy so loading a file never mutates the caller's handler
+            # configuration, while every function sees the same complete dynamic-handler set.
+            effective_handlers: mutable darray[Handler] = []
+            effective_handlers.extend(handlers)
+            derive_source_handlers(file.top_decls, file, effective_handlers, issues)
             for declaration in file.top_decls |functions, issues, names, returns, parameter_starts, parameter_counts, parameter_types, parameter_names, parameter_has_defaults, parameter_defaults, effect_starts, effect_counts, signature_effects, error_starts, error_counts, signature_errors, constant_names, constant_types, constant_values, global_names, global_types, globals|:
                 match declaration:
                     Decl.Func(name, params, return_type_opt, body, effects, decorators, pos):
                         function_index: usize = functions.count
-                        functions.push(lower_function(name, params, return_type_opt, body, effects, error_starts[function_index], error_counts[function_index], pos, names, returns, parameter_starts, parameter_counts, parameter_types, parameter_names, parameter_has_defaults, parameter_defaults, effect_starts, effect_counts, signature_effects, error_starts, error_counts, signature_errors, handlers, file.enum_annotations, constant_names, constant_types, constant_values, global_names, global_types, type_table, issues))
+                        functions.push(lower_function(name, params, return_type_opt, body, effects, error_starts[function_index], error_counts[function_index], pos, names, returns, parameter_starts, parameter_counts, parameter_types, parameter_names, parameter_has_defaults, parameter_defaults, effect_starts, effect_counts, signature_effects, error_starts, error_counts, signature_errors, effective_handlers, file.enum_annotations, constant_names, constant_types, constant_values, global_names, global_types, type_table, issues))
                     Decl.Const(name, type_expression, value, is_mutable, pos):
                         if is_mutable:
                             declared: Type = interned_type_from_expression(type_expression, type_table) if type_expression is not Ast::Expr.Absent else unknown_ir_type()
@@ -9155,7 +9241,7 @@ extend EsIr:
                     _:
                         issues.push(LowerIssue{kind: LowerIssueKind.UnsupportedDeclaration, function: "", line: 0, message: "declaration is not in the initial IR lowering subset"})
             lowered_handlers: mutable darray[Handler] = []
-            lowered_handlers.extend(handlers)
+            lowered_handlers.extend(effective_handlers)
             lowered_module: mutable Module = Module{name: module_name, functions: functions, globals: globals, handlers: lowered_handlers}
             intern_module_types(lowered_module)
             return LowerResult{module: lowered_module, issues: issues}
