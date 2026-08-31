@@ -913,6 +913,12 @@ its status. Environment names are validated with the same nonempty, NUL-free,
 no-`=` and duplicate-name rules as the explicit capture API; the parent
 environment remains unchanged.
 
+`run_process_in_directory_with_environment(executable: Executable,
+arguments: darray[sview], directory: Path, environment: dict[sview, sview]) -> i64
+error[ProcessError] can[Process.Run]` composes both controls. The child changes
+directory and applies overrides after `fork`; the parent world is unchanged and
+setup failures retain the explicit capture API's status behavior.
+
 The return value is the process exit status. Normal exits produce `0` through `255`;
 signal termination produces `128 + signal`. Failure to create or wait for the process
 raises `ProcessError`. If the executable cannot be resolved, the child exits with
