@@ -8244,6 +8244,296 @@ extend EsIr:
             return type.kind == TypeKind.Bool and saw_true and saw_false
 
 
+        # Array/list patterns are lowered through the same explicit CFG as scalar
+        # matches.  The initial structural subset intentionally stays small: a
+        # pattern may contain array-element bindings or wildcards, followed by one
+        # optional `...rest` tail.  Nested patterns and literals remain rejected
+        # until the IR has a first-class aggregate-pattern representation.
+        def array_match_pattern_parts(pattern: Ast::Pattern, prefixes: mutable darray[Ast::Pattern]&, rest_name: mutable sview&, has_rest: mutable bool&, valid: mutable bool&) -> bool:
+            match pattern:
+                Pattern.Tuple(elements):
+                    seen_rest: mutable bool = false
+                    for element in elements |prefixes, rest_name, has_rest, valid, seen_rest|:
+                        match element:
+                            Pattern.Rest(name):
+                                valid <- false if seen_rest
+                                seen_rest <- true
+                                has_rest <- true
+                                rest_name <- name
+                            Pattern.Binding(_) | Pattern.Wildcard:
+                                valid <- false if seen_rest
+                                prefixes.push(element) if not seen_rest
+                            _:
+                                valid <- false
+                    return true
+                Pattern.Rest(name):
+                    rest_name <- name
+                    has_rest <- true
+                    return true
+                _:
+                    pass
+            return false
+
+
+        def array_match_has_structural_pattern(arms: darray[Ast::MatchArm]&) -> bool:
+            for arm in arms:
+                match arm.pattern:
+                    Pattern.Tuple(_) | Pattern.Rest(_):
+                        return true
+                    _:
+                        pass
+            return false
+
+
+        def supported_array_match(arms: darray[Ast::MatchArm]&, pos: Ast::Pos&, state: mutable LowerState&) -> bool can[Memory.Allocate, Abort.Panic]:
+            supported: mutable bool = true
+            for index in 0..<arms.count |arms, pos, state, supported|:
+                arm: Ast::MatchArm = arms[index]
+                catch_all: mutable bool = false
+                match arm.pattern:
+                    Pattern.Tuple(_) | Pattern.Rest(_):
+                        prefixes: mutable darray[Ast::Pattern] = []
+                        rest_name: mutable sview = ""
+                        has_rest: mutable bool = false
+                        valid: mutable bool = true
+                        array_match_pattern_parts(arm.pattern, prefixes, rest_name, has_rest, valid)
+                        if not valid:
+                            add_issue(state, LowerIssueKind.UnsupportedStatement, pos.line, "array match patterns support element bindings or wildcards and one trailing rest pattern")
+                            supported <- false
+                        catch_all <- has_rest and prefixes.count == 0
+                    Pattern.Wildcard | Pattern.Binding(_):
+                        catch_all <- true
+                    _:
+                        add_issue(state, LowerIssueKind.UnsupportedStatement, pos.line, "array match lowering supports prefix/rest patterns, bindings, and wildcard arms")
+                        supported <- false
+                guarded: mutable bool = false
+                match arm.guard:
+                    Expr.Absent:
+                        pass
+                    _:
+                        guarded <- true
+                if catch_all and not guarded and index + 1 != arms.count:
+                    add_issue(state, LowerIssueKind.UnsupportedStatement, pos.line, "a catch-all array match arm must be last")
+                    supported <- false
+            return supported
+
+
+        def array_match_exhaustive(arms: darray[Ast::MatchArm]&) -> bool:
+            for arm in arms:
+                guarded: mutable bool = false
+                match arm.guard:
+                    Expr.Absent:
+                        pass
+                    _:
+                        guarded <- true
+                continue if guarded
+                match arm.pattern:
+                    Pattern.Wildcard | Pattern.Binding(_) | Pattern.Rest(_):
+                        return true
+                    Pattern.Tuple(elements):
+                        if elements.count == 1:
+                            match elements[0]:
+                                Pattern.Rest(_):
+                                    return true
+                                _:
+                                    pass
+                    _:
+                        pass
+            return false
+
+
+        def lower_array_match_bindings(prefixes: darray[Ast::Pattern]&, rest_name: sview, has_rest: bool, scrutinee: LoweredValue&, length_value: u32, pos: Ast::Pos&, state: mutable LowerState&) -> void can[Memory.Allocate, Abort.Panic]:
+            element_type: Type = array_element_type(scrutinee.type)
+            for index in 0..<prefixes.count |prefixes, scrutinee, element_type, pos, state|:
+                match prefixes[index]:
+                    Pattern.Binding(name):
+                        index_value: LoweredValue = emit_constant(state, type_from_name("usize"), index.i64(), "", "", false, ir_span(pos))
+                        element_value: u32 = fresh_value(state)
+                        operand_start: u32 = state.operand_pool.count.u32()
+                        state.operand_pool.push(scrutinee.value)
+                        state.operand_pool.push(index_value.value)
+                        state.instructions.push(Instruction{opcode: Opcode.Index, result: element_value, result_type: element_type, operand_start: operand_start, operand_count: 2, span: ir_span(pos)})
+                        state.names.push(name)
+                        state.values.push(element_value)
+                        state.types.push(element_type)
+                        state.mutables.push(false)
+                    _:
+                        pass
+            if has_rest and rest_name != "" and rest_name != "_":
+                low_value: LoweredValue = emit_constant(state, type_from_name("usize"), prefixes.count.i64(), "", "", false, ir_span(pos))
+                rest_value: u32 = fresh_value(state)
+                rest_operand_start: u32 = state.operand_pool.count.u32()
+                state.operand_pool.push(scrutinee.value)
+                state.operand_pool.push(low_value.value)
+                state.operand_pool.push(length_value)
+                state.instructions.push(Instruction{opcode: Opcode.Slice, result: rest_value, result_type: scrutinee.type, operand_start: rest_operand_start, operand_count: 3, span: ir_span(pos)})
+                state.names.push(rest_name)
+                state.values.push(rest_value)
+                state.types.push(scrutinee.type)
+                state.mutables.push(false)
+
+
+        def lower_array_match(scrutinee_expression: Ast::Expr, arms: darray[Ast::MatchArm]&, return_type: Type, pos: Ast::Pos&, state: mutable LowerState&) -> void can[Memory.Allocate, Abort.Panic]:
+            scrutinee: LoweredValue = lower_expression(scrutinee_expression, state)
+            return if not scrutinee.valid or not supported_array_match(arms, pos, state)
+            if scrutinee.type.kind != TypeKind.Array:
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "structural array match requires an array scrutinee")
+                return
+
+            scope_mark: usize = state.names.count
+            base_values: mutable darray[u32] = []
+            base_values.extend(state.values)
+            assigned_names: mutable darray[sview] = []
+            for arm in arms |assigned_names|:
+                collect_assigned_names(arm.body, assigned_names)
+            include_mutable_element_owners(state, assigned_names)
+            carried_indices: mutable darray[u32] = []
+            for name in assigned_names |state, carried_indices|:
+                index: usize = binding_index(state, name)
+                carried_indices.push(index.u32()) if index < scope_mark
+
+            merge_block: u32 = fresh_block(state)
+            merged_values: mutable darray[u32] = []
+            for binding_u32 in carried_indices |state, merge_block, merged_values|:
+                binding: usize = binding_u32.usize()
+                merged: u32 = fresh_value(state)
+                state.pending_parameter_blocks.push(merge_block)
+                state.pending_parameters.push(Parameter{value: merged, type: state.types[binding], name: state.names[binding]})
+                merged_values.push(merged)
+
+            state.structured_depth <- state.structured_depth + 1
+            any_fallthrough: mutable bool = arms.count == 0
+            exhaustive: bool = array_match_exhaustive(arms)
+            for arm_index in 0..<arms.count |state, arms, pos, scrutinee, return_type, scope_mark, base_values, carried_indices, merge_block, any_fallthrough, exhaustive|:
+                arm: Ast::MatchArm = arms[arm_index]
+                body_block: u32 = fresh_block(state)
+                final_arm: bool = arm_index + 1 == arms.count
+                next_test_block: u32 = merge_block if final_arm and exhaustive else fresh_block(state)
+                guarded: mutable bool = false
+                match arm.guard:
+                    Expr.Absent:
+                        pass
+                    _:
+                        guarded <- true
+                matched_block: u32 = fresh_block(state) if guarded else body_block
+                binder: mutable sview = ""
+                catch_all: mutable bool = false
+                condition: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: type_from_name("bool")}
+                prefixes: mutable darray[Ast::Pattern] = []
+                rest_name: mutable sview = ""
+                has_rest: mutable bool = false
+                length_value: mutable u32 = 0
+                match arm.pattern:
+                    Pattern.Tuple(_) | Pattern.Rest(_):
+                        pattern_valid: mutable bool = true
+                        array_match_pattern_parts(arm.pattern, prefixes, rest_name, has_rest, pattern_valid)
+                        if pattern_valid:
+                            length_value <- fresh_value(state)
+                            length_operand_start: u32 = state.operand_pool.count.u32()
+                            state.operand_pool.push(scrutinee.value)
+                            state.instructions.push(Instruction{opcode: Opcode.Length, result: length_value, result_type: type_from_name("usize"), operand_start: length_operand_start, operand_count: 1, span: ir_span(pos)})
+                            shape_value: LoweredValue = emit_constant(state, type_from_name("usize"), prefixes.count.i64(), "", "", false, ir_span(pos))
+                            shape_result: u32 = fresh_value(state)
+                            shape_operand_start: u32 = state.operand_pool.count.u32()
+                            state.operand_pool.push(length_value)
+                            state.operand_pool.push(shape_value.value)
+                            shape_opcode: Opcode = Opcode.GreaterEqual if has_rest else Opcode.Equal
+                            state.instructions.push(Instruction{opcode: shape_opcode, result: shape_result, result_type: type_from_name("bool"), operand_start: shape_operand_start, operand_count: 2, span: ir_span(pos)})
+                            condition <- LoweredValue{valid: true, value: shape_result, type: type_from_name("bool")}
+                    Pattern.Binding(name):
+                        binder <- name
+                        catch_all <- true
+                    Pattern.Wildcard:
+                        catch_all <- true
+                    _:
+                        pass
+                if catch_all:
+                    state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: matched_block, target_count: 1, span: ir_span(pos)}
+                elif condition.valid:
+                    if next_test_block == merge_block:
+                        fallthrough_args: (start: u32, count: u16) = append_binding_arguments(state, carried_indices)
+                        state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: condition.value, operand_count: 1, target0: matched_block, target1: next_test_block, target_count: 2, edge1_arg_start: fallthrough_args.start, edge1_arg_count: fallthrough_args.count, span: ir_span(pos)}
+                        any_fallthrough <- true
+                    else:
+                        state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: condition.value, operand_count: 1, target0: matched_block, target1: next_test_block, target_count: 2, span: ir_span(pos)}
+                finish_block(state)
+
+                if guarded:
+                    for index in 0..<scope_mark |state, base_values|:
+                        state.values[index] <- base_values[index]
+                    state.current_block <- matched_block
+                    state.terminated <- false
+                    if prefixes.count != 0 or has_rest:
+                        lower_array_match_bindings(prefixes, rest_name, has_rest, scrutinee, length_value, pos, state)
+                    elif binder != "":
+                        state.names.push(binder)
+                        state.values.push(scrutinee.value)
+                        state.types.push(scrutinee.type)
+                        state.mutables.push(false)
+                    guard_value: LoweredValue = lower_expression(arm.guard, state)
+                    guard_valid: mutable bool = guard_value.valid
+                    if guard_value.valid and guard_value.type.kind != TypeKind.Bool:
+                        add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "match arm guard must have boolean type")
+                        guard_valid <- false
+                    if guard_valid:
+                        if next_test_block == merge_block:
+                            guard_fallthrough_args: (start: u32, count: u16) = append_binding_arguments(state, carried_indices)
+                            state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: guard_value.value, operand_count: 1, target0: body_block, target1: next_test_block, target_count: 2, edge1_arg_start: guard_fallthrough_args.start, edge1_arg_count: guard_fallthrough_args.count, span: ir_span(pos)}
+                            any_fallthrough <- true
+                        else:
+                            state.terminator <- Terminator{kind: TerminatorKind.Branch, operand: guard_value.value, operand_count: 1, target0: body_block, target1: next_test_block, target_count: 2, span: ir_span(pos)}
+                    else:
+                        state.terminator <- Terminator{kind: TerminatorKind.Unreachable, span: ir_span(pos)}
+                    finish_block(state)
+                    state.names.truncate(scope_mark)
+                    state.values.truncate(scope_mark)
+                    state.types.truncate(scope_mark)
+                    state.mutables.truncate(scope_mark)
+
+                for index in 0..<scope_mark |state, base_values|:
+                    state.values[index] <- base_values[index]
+                state.current_block <- body_block
+                state.terminated <- false
+                if prefixes.count != 0 or has_rest:
+                    lower_array_match_bindings(prefixes, rest_name, has_rest, scrutinee, length_value, pos, state)
+                elif binder != "":
+                    state.names.push(binder)
+                    state.values.push(scrutinee.value)
+                    state.types.push(scrutinee.type)
+                    state.mutables.push(false)
+                for nested in arm.body |state, return_type|:
+                    lower_statement(nested, return_type, state)
+                if not state.terminated:
+                    arm_args: (start: u32, count: u16) = append_binding_arguments(state, carried_indices)
+                    state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: merge_block, target_count: 1, edge0_arg_start: arm_args.start, edge0_arg_count: arm_args.count, span: ir_span(pos)}
+                    any_fallthrough <- true
+                finish_block(state)
+                state.names.truncate(scope_mark)
+                state.values.truncate(scope_mark)
+                state.types.truncate(scope_mark)
+                state.mutables.truncate(scope_mark)
+                for index in 0..<scope_mark |state, base_values|:
+                    state.values[index] <- base_values[index]
+                state.current_block <- next_test_block
+                state.terminated <- false
+
+            if arms.count == 0:
+                empty_args: (start: u32, count: u16) = append_binding_arguments(state, carried_indices)
+                state.terminator <- Terminator{kind: TerminatorKind.Jump, target0: merge_block, target_count: 1, edge0_arg_start: empty_args.start, edge0_arg_count: empty_args.count, span: ir_span(pos)}
+                finish_block(state)
+            elif not exhaustive or not any_fallthrough:
+                state.terminator <- Terminator{kind: TerminatorKind.Unreachable, span: ir_span(pos)}
+                finish_block(state)
+            state.structured_depth <- state.structured_depth - 1
+            if any_fallthrough:
+                for offset in 0..<carried_indices.count |state, carried_indices, merged_values|:
+                    state.values[carried_indices[offset].usize()] <- merged_values[offset]
+                state.current_block <- merge_block
+                state.terminated <- false
+            else:
+                state.terminated <- true
+
+
         def lower_scalar_match(scrutinee_expression: Ast::Expr, arms: darray[Ast::MatchArm]&, return_type: Type, pos: Ast::Pos&, state: mutable LowerState&) -> void can[Memory.Allocate, Abort.Panic]:
             scrutinee: LoweredValue = lower_expression(scrutinee_expression, state)
             return if not scrutinee.valid or not supported_scalar_match(arms, pos, state)
@@ -9138,7 +9428,7 @@ extend EsIr:
                             state.current_block <- exit_block
                             state.terminated <- false
                 Stmt.Match(scrutinee, arms, pos):
-                    lower_scalar_match(scrutinee, arms, return_type, pos, state)
+                    lower_array_match(scrutinee, arms, return_type, pos, state) if array_match_has_structural_pattern(arms) else lower_scalar_match(scrutinee, arms, return_type, pos, state)
                 Stmt.Break(label, pos):
                     if label != "":
                         add_issue(state, LowerIssueKind.UnsupportedLoopLabel, pos.line, "labeled break is not in the initial IR lowering subset")

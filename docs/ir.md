@@ -870,7 +870,14 @@ source typing. Dictionary values may be scalar or bounded combinations of arrays
 and nested maps; shapes whose value needs a deeper descriptor are rejected at the
 source boundary. The
 `intern_module_types` pass records every type-bearing IR position in the shared
-table, and malformed ranges or duplicate rows are verifier errors.
+table, and malformed ranges or duplicate rows are verifier errors. Statement
+`match` also lowers array prefix/rest patterns such as `[head, ...tail]`: a
+typed `Length` shape check branches before `Index` extraction, and a matching
+rest binding is a typed `Slice` view of the original array. Prefix bindings and the
+rest suffix remain lexically scoped to the arm, while outer mutable bindings use
+the same merge parameters as scalar matches. Nested or literal aggregate
+subpatterns remain explicitly rejected until the IR gains aggregate-pattern
+descriptors.
 Source annotation lowering interns function signatures into the same structural
 identity space early; the final module pass then assigns ids to all inferred
 instruction and handler types before verification.
