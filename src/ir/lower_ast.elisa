@@ -247,12 +247,22 @@ extend EsIr:
             return false
 
 
-        def error_payload_field_type(state: LowerState&, family: sview, operation: sview, index: usize) -> Type can[Memory.Allocate, Abort.Panic]:
+        # `state` is mutable because `interned_type_from_expression` interns into
+        # `state.type_table`: the hidden region for that table is threaded from the state
+        # REFERENCE, and an immutable one carries none.
+        def error_payload_field_type(state: mutable LowerState&, family: sview, operation: sview, index: usize) -> Type can[Memory.Allocate, Abort.Panic]:
             variant_index: usize = error_payload_variant_position(state.source_file, family, operation)
             return unknown_ir_type() if variant_index >= state.source_file.payload_enum_variant_field_counts.count
             return unknown_ir_type() if index >= state.source_file.payload_enum_variant_field_counts[variant_index]
             field_start: usize = state.source_file.payload_enum_variant_field_starts[variant_index]
-            return interned_type_from_expression(state.source_file.payload_enum_variant_fields[field_start + index], state.type_table)
+            # Resolved WITHOUT interning. The interning variant takes `table: mutable TypeTable&`,
+            # whose hidden region is threaded from a parameter; here the only table available is
+            # `state.type_table`, and a field access carries no region (a local reference binding
+            # does not either — both were measured). Threading a `table` parameter down the whole
+            # expression-lowering chain to reach this one call is the alternative, and it is not
+            # worth it: `same_type` treats `descriptor_id == 0` as the documented compatibility
+            # path and compares field-wise, which is exactly what lowering-built types already do.
+            return type_from_expression(state.source_file.payload_enum_variant_fields[field_start + index])
 
 
         # The parser keeps `raise Error.Tag` and `raise Error.Tag(payload, …)` as
@@ -639,75 +649,116 @@ extend EsIr:
             return GlobalLiteralProbe{valid: true, literal: result}
 
 
-        def lower_global_probe(name: sview, declared: Type, initializer: Ast::Expr) -> GlobalProbe:
+        # Appends into the CALLER's darray and returns validity. A value backed by a region
+        # cannot escape via `return`, so the built Global is pushed rather than returned, and
+        # `aggregate_values` is built as `@r` storage and ASSIGNED to the field before the push
+        # — pushing a struct whose darray still lives in this frame's auto region is what the
+        # region checker rejects. Same shape as the handler-clause rebuild above.
+        # The call site pushed the binding unconditionally before, so it is pushed on every path.
+        def lower_global_probe[@r](name: sview, declared: Type, initializer: Ast::Expr, globals: mutable darray[Global] @r) -> bool can[Memory.Allocate, Abort.Panic]:
             result: mutable Global = Global{name: name, type: declared}
-            return GlobalProbe{valid: true, binding: result} if initializer is Expr.Invalid
+            if initializer is Expr.Invalid:
+                globals.push(result)
+                return true
             match initializer:
                 Expr.Array(elements, _):
                     array_element_declared: Type = array_element_type(declared)
-                    return GlobalProbe{valid: false, binding: result} if declared.kind != TypeKind.Array or not global_type_supported(array_element_declared)
+                    if declared.kind != TypeKind.Array or not global_type_supported(array_element_declared):
+                        globals.push(result)
+                        return false
                     element_type: Type = array_element_type(declared)
-                    for element in elements |result, element_type|:
+                    array_aggregate: mutable darray[GlobalLiteral] @r = []
+                    for element in elements |result, element_type, array_aggregate, globals|:
                         literal: GlobalLiteralProbe = lower_global_literal(element_type, element)
-                        return GlobalProbe{valid: false, binding: result} if not literal.valid
-                        result.aggregate_values.push(literal.literal)
+                        if not literal.valid:
+                            globals.push(result)
+                            return false
+                        array_aggregate.push(literal.literal)
+                    result.aggregate_values <- array_aggregate
                     result.initialized <- true
-                    return GlobalProbe{valid: true, binding: result}
+                    globals.push(result)
+                    return true
                 Expr.DictLit(entries, _):
                     map_key_declared: Type = map_key_type(declared)
                     map_value_declared: Type = map_value_type(declared)
-                    return GlobalProbe{valid: false, binding: result} if declared.kind != TypeKind.Map or not global_type_supported(map_key_declared) or not global_type_supported(map_value_declared)
+                    if declared.kind != TypeKind.Map or not global_type_supported(map_key_declared) or not global_type_supported(map_value_declared):
+                        globals.push(result)
+                        return false
                     key_type: Type = map_key_type(declared)
                     value_type: Type = map_value_type(declared)
-                    for entry in entries |result, key_type, value_type|:
+                    map_aggregate: mutable darray[GlobalLiteral] @r = []
+                    for entry in entries |result, key_type, value_type, map_aggregate, globals|:
                         key_literal: GlobalLiteralProbe = lower_global_literal(key_type, entry.key)
                         value_literal: GlobalLiteralProbe = lower_global_literal(value_type, entry.value)
-                        return GlobalProbe{valid: false, binding: result} if not key_literal.valid or not value_literal.valid
-                        result.aggregate_values.push(key_literal.literal)
-                        result.aggregate_values.push(value_literal.literal)
+                        if not key_literal.valid or not value_literal.valid:
+                            globals.push(result)
+                            return false
+                        map_aggregate.push(key_literal.literal)
+                        map_aggregate.push(value_literal.literal)
+                    result.aggregate_values <- map_aggregate
                     result.initialized <- true
-                    return GlobalProbe{valid: true, binding: result}
+                    globals.push(result)
+                    return true
                 _:
                     pass
             match initializer:
                 Expr.IntLit(value):
-                    return GlobalProbe{valid: false, binding: result} if declared.kind != TypeKind.Int or declared.bits != 64 or not declared.signed
+                    if declared.kind != TypeKind.Int or declared.bits != 64 or not declared.signed:
+                        globals.push(result)
+                        return false
                     result.integer <- value
                     result.initialized <- true
                 Expr.IntLitTyped(value, suffix):
                     suffix_type: Type = type_from_name(suffix)
-                    return GlobalProbe{valid: false, binding: result} if declared.kind != TypeKind.Int or not same_type(declared, suffix_type)
+                    if declared.kind != TypeKind.Int or not same_type(declared, suffix_type):
+                        globals.push(result)
+                        return false
                     result.integer <- value
                     result.initialized <- true
                 Expr.FloatLit(text):
-                    return GlobalProbe{valid: false, binding: result} if declared.kind != TypeKind.Float
+                    if declared.kind != TypeKind.Float:
+                        globals.push(result)
+                        return false
                     result.decimal <- text
                     result.initialized <- true
                 Expr.StringLit(text):
-                    return GlobalProbe{valid: false, binding: result} if declared.kind != TypeKind.Text
+                    if declared.kind != TypeKind.Text:
+                        globals.push(result)
+                        return false
                     result.text <- text
                     result.initialized <- true
                 Expr.CharLit(text):
-                    return GlobalProbe{valid: false, binding: result} if declared.kind != TypeKind.Char
+                    if declared.kind != TypeKind.Char:
+                        globals.push(result)
+                        return false
                     result.text <- text
                     result.initialized <- true
                 Expr.BoolLit(value):
-                    return GlobalProbe{valid: false, binding: result} if declared.kind != TypeKind.Bool
+                    if declared.kind != TypeKind.Bool:
+                        globals.push(result)
+                        return false
                     result.boolean <- value
                     result.initialized <- true
                 Expr.Call(Expr.Ident(prefix, _), arguments, argument_names, _):
-                    return GlobalProbe{valid: false, binding: result} if declared.kind != TypeKind.Named or arguments.count != 1 or (argument_names.count != 0 and argument_names[0] != "")
+                    if declared.kind != TypeKind.Named or arguments.count != 1 or (argument_names.count != 0 and argument_names[0] != ""):
+                        globals.push(result)
+                        return false
                     expected_prefix: sview = "path" if declared.name == "Path" else "glob" if declared.name == "Glob" else "regex" if declared.name == "Regex" else "exe" if declared.name == "Executable" else "url" if declared.name == "Url" else ""
-                    return GlobalProbe{valid: false, binding: result} if expected_prefix == "" or prefix != expected_prefix
+                    if expected_prefix == "" or prefix != expected_prefix:
+                        globals.push(result)
+                        return false
                     match arguments[0]:
                         Expr.StringLit(text):
                             result.text <- text
                             result.initialized <- true
                         _:
-                            return GlobalProbe{valid: false, binding: result}
+                            globals.push(result)
+                            return false
                 _:
-                    return GlobalProbe{valid: false, binding: result}
-            return GlobalProbe{valid: true, binding: result}
+                    globals.push(result)
+                    return false
+            globals.push(result)
+            return true
 
 
         def add_unique_name(names: mutable darray[sview]&, name: sview) -> void can[Memory.Allocate, Abort.Panic]:
@@ -10346,10 +10397,9 @@ extend EsIr:
                     Decl.Const(name, type_expression, value, is_mutable, pos):
                         if is_mutable:
                             declared: Type = interned_type_from_expression(type_expression, type_table) if type_expression is not Ast::Expr.Absent else unknown_ir_type()
-                            probe: GlobalProbe = lower_global_probe(name, declared, value)
+                            _ = lower_global_probe(name, declared, value, globals)
                             global_names.push(name)
                             global_types.push(declared)
-                            globals.push(probe.binding)
                         elif value is not Ast::Expr.Invalid:
                             constant_names.push(name)
                             constant_types.push(interned_type_from_expression(type_expression, type_table) if type_expression is not Ast::Expr.Absent else unknown_ir_type())
@@ -10372,8 +10422,9 @@ extend EsIr:
                     Decl.Const(name, type_expression, value, is_mutable, pos):
                         if is_mutable:
                             declared: Type = interned_type_from_expression(type_expression, type_table) if type_expression is not Ast::Expr.Absent else unknown_ir_type()
-                            probe: GlobalProbe = lower_global_probe(name, declared, value)
-                            issues.push(LowerIssue{kind: LowerIssueKind.UnsupportedDeclaration, function: "", line: pos.line, message: "module globals require a supported scalar or one-level collection type and literal initializer"}) if not global_type_supported(declared) or not probe.valid
+                            probe_globals: mutable darray[Global] = []
+                            probe_valid: bool = lower_global_probe(name, declared, value, probe_globals)
+                            issues.push(LowerIssue{kind: LowerIssueKind.UnsupportedDeclaration, function: "", line: pos.line, message: "module globals require a supported scalar or one-level collection type and literal initializer"}) if not global_type_supported(declared) or not probe_valid
                     # Error families are represented in parser metadata and in
                     # function error rows; they need no runtime declaration in
                     # this closed IR.
