@@ -1482,7 +1482,7 @@ Directory operations use nominal `Path` values and structured `DirectoryError`:
 - `change_directory(path: Path) -> bool error[DirectoryError] can[Directory.Write]`
 - `current_directory() -> Path error[DirectoryError] can[Directory.Read]`
 
-All four include `error[DirectoryError]`. Successful mutations return `true`;
+All five operations include `error[DirectoryError]`. Successful mutations return `true`;
 operating-system failures are errors rather than ambiguous `false` values. Creation
 uses mode `0755` before the process umask is applied. `current_directory` returns an
 owned nominal snapshot, so a later directory change cannot mutate the saved path.
