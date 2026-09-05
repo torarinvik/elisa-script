@@ -1740,5 +1740,6 @@ are `EsIr::ES_LAUNCHER_MAX_ARGUMENTS` (1,048,576 script arguments) and
 plus-script range before walking host argv storage, and rejects a source path
 whose borrowed view would place its NUL terminator at or beyond the shared
 `EsIr::ES_RUNTIME_DEFAULT_MAX_CSTRING_BYTES` host-string ceiling. These checks
-keep the ABI boundary subtraction-safe; the runner still applies its own typed
-argv and runtime-storage checks after parsing.
+also bound every raw host-argument C-string scan before it becomes a borrowed
+view, keeping the ABI boundary subtraction-safe; the runner still applies its
+own typed argv and runtime-storage checks after parsing.
