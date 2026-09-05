@@ -416,7 +416,11 @@ is present. Top-level `|` alternation evaluates branches from left to right, wit
 `^` and `$` scoped to the branch in which they occur; escaped pipes and pipes inside
 character classes remain literal members. Parenthesized groups may nest and
 participate in alternation and greedy quantifiers. Group-local `^` and `$` retain
-their ordinary whole-text meaning. `replace_regex(text, pattern, replacement) -> sview`
+their ordinary whole-text meaning. An unquantified empty group and empty
+alternation branches consume zero bytes. Each branch is tried with its
+surrounding suffix, including a trailing empty branch such as `(a|)b`.
+Unmatched group openers remain rejected by the matcher.
+`replace_regex(text, pattern, replacement) -> sview`
 provides deterministic substitution for this grammar: it finds non-overlapping
 matches from left to right and inserts the replacement text, expanding the portable
 `$0` token to the complete matched span. Perl-style named group markers
