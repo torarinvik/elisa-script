@@ -113,8 +113,9 @@ even when malformed, while verifier admission rejects an orphaned pool.
 differential reports today. It records format version, backend label, source
 revision, and fingerprint; the owned canonical byte stream is kept as the
 separate `canonical_module_bytes` value so its inferred region remains with the
-artifact writer. `artifact_fingerprint_matches_module` provides the corresponding
-constant-time metadata check.
+artifact writer. `artifact_metadata_valid` rejects version mismatches, an empty
+backend label, and backend/source-revision views above 4 KiB before
+`artifact_fingerprint_matches_module` correlates the metadata with a module.
 
 ## Bytecode lowering
 
