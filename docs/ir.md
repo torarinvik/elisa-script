@@ -1004,7 +1004,9 @@ becoming an unchecked host-memory access. Invalid indexing is a typed
 `IndexOutOfBounds` failure. A deterministic step limit makes runaway programs a
 typed `StepLimitExceeded` failure. The private failure-to-error conversion is an
 exhaustive Elisa machine over `InterpretFailure`, so adding a new runtime failure
-cannot silently fall through to success or a generic result value.
+cannot silently fall through to success or a generic result value. The same
+shared admission check rejects unknown `RuntimeValueKind` ordinals before
+argument or resumed-frame dispatch.
 Both execution engines check `steps >= step_limit` before incrementing, so even a
 maximum-`u64` budget cannot wrap the counter; a budget of `N` still permits exactly
 `N` ticks and fails on the next one.
