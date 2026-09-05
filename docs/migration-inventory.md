@@ -96,3 +96,9 @@ generator and [`docs/migration-inventory-schema.md`](migration-inventory-schema.
 defines its fields. The generated output is intentionally not checked in until
 records have reviewed owners and acceptance evidence; P1 remains open and no
 legacy file is eligible for deletion.
+
+Extension-only discovery is supplemented by the compiler-free
+`scripts/inventory_signals.sh` scanner. It records executable permission bits,
+legacy interpreter shebangs, and inline Python/Perl/AWK command references in a
+separate TSV report; those signals still require per-file ownership and
+disposition review.

@@ -32,3 +32,21 @@ dependencies, semantics, fixtures, and acceptance evidence have been reviewed.
 The inventory snapshot in `docs/migration-inventory.md` remains the source of
 the declared roots and raw counts; this schema supplies the per-file record
 shape needed before any deletion or migration claim.
+
+## Discovery signals
+
+`scripts/inventory_signals.sh` emits a separate, read-only TSV with the fields
+`path`, `signal`, and `detail`. It catches executable permission bits,
+Python/Perl/AWK/shell-family shebangs, and inline `python -c`, `perl -e`, or
+AWK command references. Signal rows are leads rather than dispositions: binary
+executables, vendored code, generated output, and comments can all produce a
+match and require maintainer review. The scanner never evaluates the matched
+file or embedded command.
+
+Regenerate the signal report outside the repository:
+
+```sh
+scripts/inventory_signals.sh \
+  "/Users/torarinvikbjarko/Documents/Coding Projects" \
+  > /tmp/elisascript-migration-signals.tsv
+```
