@@ -3970,24 +3970,33 @@ extend EsIr:
                 return ProcessInputState.Progress
 
 
+        # Terminate and reap the private process group on every parent-side
+        # wait failure. The direct PID covers the fork/setpgid race; the group
+        # signal handles descendants. Keeping this protocol in one helper
+        # prevents a failed poll from stranding a child or zombie.
+        def process_wait_terminate(waiter: mutable ProcessWaiter&) -> void can[Blocking.IO]:
+            _ = elisascript_posix_kill(-waiter.pid, INTERPRET_PROCESS_WAIT_KILL)
+            _ = elisascript_posix_kill(waiter.pid, INTERPRET_PROCESS_WAIT_KILL)
+            _ = elisascript_posix_waitpid(waiter.pid, waiter.status, 0)
+
+
         def process_wait_stream_exceeded(waiter: mutable ProcessWaiter&, stream: heap void&) -> bool can[Blocking.IO]:
             if waiter.output_limit == 0:
                 return false
             if fseek(stream, 0, FILEIO_SEEK_END) != 0:
                 waiter.failed <- true
-                return false
+                process_wait_terminate(waiter)
+                return true
             size: i64 = ftell(stream)
             if size < 0:
                 waiter.failed <- true
-                return false
+                process_wait_terminate(waiter)
+                return true
             if size.u64() <= waiter.output_limit:
                 return false
-            _ = elisascript_posix_kill(-waiter.pid, INTERPRET_PROCESS_WAIT_KILL)
-            _ = elisascript_posix_kill(waiter.pid, INTERPRET_PROCESS_WAIT_KILL)
-            _ = elisascript_posix_waitpid(waiter.pid, waiter.status, 0)
+            process_wait_terminate(waiter)
             waiter.output_exceeded <- true
             return true
-
 
         def process_wait_output_exceeded(waiter: mutable ProcessWaiter&) -> bool can[Blocking.IO]:
             return false if waiter.output_limit == 0
@@ -4004,16 +4013,16 @@ extend EsIr:
             waited: int = elisascript_posix_waitpid(waiter.pid, waiter.status, INTERPRET_PROCESS_WAIT_NOHANG)
             if waited != waiter.pid:
                 if waited < 0:
+                    process_wait_terminate(waiter)
                     waiter.failed <- true
                     return ProcessWaitState.Error
                 return ProcessWaitState.Error if process_wait_output_exceeded(waiter)
                 if waiter.polls >= INTERPRET_PROCESS_WAIT_MAX_POLLS:
-                    _ = elisascript_posix_kill(-waiter.pid, INTERPRET_PROCESS_WAIT_KILL)
-                    _ = elisascript_posix_kill(waiter.pid, INTERPRET_PROCESS_WAIT_KILL)
-                    _ = elisascript_posix_waitpid(waiter.pid, waiter.status, 0)
+                    process_wait_terminate(waiter)
                     waiter.failed <- true
                     return ProcessWaitState.Error
                 if elisascript_posix_usleep(INTERPRET_PROCESS_WAIT_POLL_MICROSECONDS) != 0:
+                    process_wait_terminate(waiter)
                     waiter.failed <- true
                     return ProcessWaitState.Error
                 waiter.polls <- waiter.polls + 1

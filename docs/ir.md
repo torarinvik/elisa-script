@@ -672,7 +672,9 @@ child redirects descriptors 0, 1, and 2 to separate temporary files; the parent
 polls both streams against the interpreter's 64 MiB per-stream safety ceiling while
 the child runs and before allocation. Crossing it kills the private process group
 and reports `InterpretError.OutputLimit`, so a reference process is never allowed
-to exhaust host memory.
+to exhaust host memory. Any wait, polling, or stream-position failure also kills
+and reaps the private group before returning `InterpretError.Process`; no failed
+capture path may strand a child or zombie.
  `process_exit_status`, `process_stdout`, and `process_stderr` are typed accessors
  over that value. The capture and accessor
  opcodes are separately verified and dispatched explicitly by the interpreter.
