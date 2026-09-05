@@ -560,6 +560,11 @@ directory snapshots, and fixed-size tuple-like results all use the shared
 the serialized domain, or an append that would cross it, therefore raises the
 typed overflow failure before publishing a view; this applies equally to the
 reference interpreter and direct bytecode path.
+The shared predicates additionally cap caller-owned runtime storage at 1,048,576
+values, independently of the much larger serialized offset domain. This prevents
+repeated aggregate construction from turning a valid `u32` view space into an
+unbounded host allocation; the same cap is enforced while admitting existing
+storage and function arguments.
 Text split and regex result builders use a related spare-slot check because an
 empty-input match can yield one field for zero input bytes. They reject a host
 text length whose worst-case field count cannot fit after the current pool
