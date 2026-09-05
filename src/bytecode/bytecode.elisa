@@ -121,6 +121,78 @@ module EsBytecode:
             return output
 
 
+        # Read one little-endian scalar without allowing a malformed envelope to
+        # wrap the offset. The caller owns the input storage; all validation is
+        # allocation-free and therefore safe to use before a cache entry creates
+        # an executable bytecode module.
+        def bytecode_artifact_read_u64(bytes: darray[u8]&, offset: mutable usize&, value: mutable u64&) -> bool:
+            return false if offset > bytes.count or bytes.count - offset < 8
+            value <- 0
+            for shift in 0..<8 |bytes, offset, value|:
+                value <- value | (bytes[offset + shift].u64() << (shift * 8))
+            offset <- offset + 8
+            return true
+
+
+        # Skip one length-prefixed UTF-8/text field and optionally expose its
+        # borrowed view. The byte envelope treats text as opaque bytes here; UTF-8
+        # policy belongs to the source-revision producer, while the backend tag is
+        # checked by the caller.
+        def bytecode_artifact_read_text(bytes: darray[u8]&, offset: mutable usize&, value: mutable sview&) -> bool:
+            length: mutable u64 = 0
+            return false if not bytecode_artifact_read_u64(bytes, offset, length)
+            return false if length > (bytes.count - offset).u64()
+            end: usize = offset + length.usize()
+            value <- sview(bytes, offset, end)
+            offset <- end
+            return true
+
+
+        # Validate the complete deterministic `ESBC` metadata envelope before a
+        # cache boundary accepts it. Every field is consumed exactly once, booleans
+        # and enum ordinals are range-checked, capability facts are cross-checked,
+        # and trailing bytes are rejected so two encodings cannot share a cache key.
+        def bytecode_artifact_bytes_valid(bytes: darray[u8]&) -> bool:
+            return false if bytes.count < 5
+            return false if bytes[0] != 69 or bytes[1] != 83 or bytes[2] != 66 or bytes[3] != 67
+            return false if bytes[4] != 1
+            offset: mutable usize = 5
+            backend: mutable sview = ""
+            revision: mutable sview = ""
+            return false if not bytecode_artifact_read_text(bytes, offset, backend)
+            return false if backend != "bytecode"
+            return false if not bytecode_artifact_read_text(bytes, offset, revision)
+            fingerprint: mutable u64 = 0
+            return false if not bytecode_artifact_read_u64(bytes, offset, fingerprint)
+            return false if offset >= bytes.count
+            engine: u8 = bytes[offset]
+            offset <- offset + 1
+            return false if engine != ExecutionEngine.DirectBytecode.u8() and engine != ExecutionEngine.BytecodeInterpreterFallback.u8()
+            return false if offset >= bytes.count
+            direct_flag: u8 = bytes[offset]
+            offset <- offset + 1
+            return false if direct_flag > 1
+            return false if direct_flag == 1 and engine != ExecutionEngine.DirectBytecode.u8()
+            return false if direct_flag == 0 and engine != ExecutionEngine.BytecodeInterpreterFallback.u8()
+            function_count: mutable u64 = 0
+            instruction_count: mutable u64 = 0
+            global_count: mutable u64 = 0
+            return false if not bytecode_artifact_read_u64(bytes, offset, function_count)
+            return false if not bytecode_artifact_read_u64(bytes, offset, instruction_count)
+            return false if not bytecode_artifact_read_u64(bytes, offset, global_count)
+            return offset == bytes.count
+
+
+        # Validate metadata independently of a module. This is the cheap first
+        # gate for stores that persist the typed record separately from its bytes;
+        # `bytecode_artifact_matches_module` remains the authoritative fingerprint
+        # and capability-count check once the verified module is available.
+        def bytecode_artifact_metadata_valid(artifact: BytecodeArtifact&) -> bool:
+            return false if artifact.format_version != 1 or artifact.backend != "bytecode"
+            return false if artifact.capability.engine != ExecutionEngine.DirectBytecode and artifact.capability.engine != ExecutionEngine.BytecodeInterpreterFallback
+            return artifact.capability.direct_supported if artifact.capability.engine == ExecutionEngine.DirectBytecode else not artifact.capability.direct_supported
+
+
         # The metadata fingerprint is useful for cache keys and diagnostics, but
         # it is not a replacement for `module_fingerprint`: callers must still
         # validate the artifact against the exact verified module and bytecode
@@ -2510,7 +2582,7 @@ module EsBytecode:
 
         def bytecode_artifact_matches_module(artifact: BytecodeArtifact, module: Module&, bytecode: BytecodeModule&) -> bool can[Memory.Allocate, Abort.Panic]:
             current: BytecodeCapabilityReport = bytecode_capability_report(bytecode)
-            return artifact.format_version == 1 and artifact.backend == "bytecode" and artifact.module_fingerprint == module_fingerprint(module) and artifact.capability.engine == current.engine and artifact.capability.direct_supported == current.direct_supported and artifact.capability.function_count == current.function_count and artifact.capability.instruction_count == current.instruction_count and artifact.capability.global_count == current.global_count
+            return bytecode_artifact_metadata_valid(artifact) and artifact.module_fingerprint == module_fingerprint(module) and artifact.capability.engine == current.engine and artifact.capability.direct_supported == current.direct_supported and artifact.capability.function_count == current.function_count and artifact.capability.instruction_count == current.instruction_count and artifact.capability.global_count == current.global_count
 
 
         def execution_capability_from_bytecode(report: BytecodeCapabilityReport) -> ExecutionCapability:

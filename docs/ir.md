@@ -138,6 +138,12 @@ with length-prefixed backend/revision strings, the module fingerprint, and the
 complete capability snapshot. `bytecode_artifact_fingerprint` hashes that exact
 envelope for cache keys or diagnostic correlation; it is intentionally not a
 substitute for validating the artifact against the verified module.
+`bytecode_artifact_bytes_valid` is the allocation-free cache-boundary check: it
+requires the exact magic/version, backend tag, bounded length-prefixed fields,
+known engine ordinal, consistent direct/fallback flag, all capability counters,
+and no trailing bytes. `bytecode_artifact_metadata_valid` performs the same
+cross-field checks on a decoded record, while `bytecode_artifact_matches_module`
+still compares the fingerprint and recomputed capability report before execution.
 
 `EsBytecode.execute_bytecode_direct_only` is the strict evidence entrypoint. It
 performs the same dispatch-table and IR verification, then rejects any module
