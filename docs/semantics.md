@@ -1324,8 +1324,10 @@ before any C-string duplication. This byte budget is checked with subtraction
 before addition, so a host-size length cannot wrap into an apparently small
 request. Embedders may set the byte budget to zero to opt out while retaining
 the element-count guard.
-Environment override maps and pipeline stage vectors use the same bound before
-their host reservations or child-spawn loops.
+Environment names and values use the same 64 MiB aggregate byte bound before
+their C-string copies are allocated. Environment override maps and pipeline
+stage vectors also use the element-count bound before their host reservations or
+child-spawn loops.
 
 The `subprocess` namespace provides the same operations with Python-shaped
 qualified names while retaining Elisascript's stronger boundary types:

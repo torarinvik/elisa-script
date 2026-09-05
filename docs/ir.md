@@ -752,8 +752,11 @@ is overflow-safe and leaves malformed non-text elements to the existing typed
 validation path; a zero configured byte budget means unlimited for embedders
 that deliberately opt out. The same byte guard applies to run, stream-capture,
 stdin-capture, and full-result process entrypoints.
-The same budget bounds environment override entries and pipeline stages before
-their reservation or child-spawn loops.
+Environment names and values are checked against the same 64 MiB byte budget
+before their independent C-string buffers are reserved; malformed entries still
+take the ordinary type path. The element-count budget also bounds environment
+override entries and pipeline stages before their reservation or child-spawn
+loops.
 Process waits use nonblocking `waitpid` polling and a 120-second deadline; a child
 that exceeds the deadline is killed and reported as `ProcessError` rather than
 blocking the host indefinitely.
