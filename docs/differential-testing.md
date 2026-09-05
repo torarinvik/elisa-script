@@ -284,6 +284,11 @@ prove that all engines ran the same typed module without depending on host
 pointers or backend instruction numbering. The fingerprint is a correlation key
 rather than a cryptographic digest; the canonical bytes, verified module, and
 source revision remain part of the reproducible artifact.
+The bytecode adapter must additionally record `BytecodeCapabilityReport` before
+execution and the returned `Execution.engine` afterward. The report includes the
+direct/fallback decision and function, instruction, and global counts. A case that
+claims independent interpreter/VM evidence fails if the candidate reports
+`BytecodeInterpreterFallback`, even when the values happen to match.
 
 ## Generation and shrinking
 

@@ -118,6 +118,10 @@ interpreter calls, `DirectBytecode` for the packed state machine, and
 `BytecodeInterpreterFallback` when the compatibility entrypoint deliberately
 reuses the verified interpreter. Consumers must inspect this field before
 counting a run as independent backend evidence.
+`EsBytecode.bytecode_capability_report` exposes the same decision before a run,
+along with function, instruction, and global counts. Record this report beside
+the execution artifact; counts are descriptive telemetry, while
+`direct_supported` and `engine` are the authoritative backend-selection facts.
 
 `EsBytecode.execute_bytecode_direct_only` is the strict evidence entrypoint. It
 performs the same dispatch-table and IR verification, then rejects any module
