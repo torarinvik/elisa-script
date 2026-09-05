@@ -484,6 +484,10 @@ capture probes; exhaustion reports the same typed limit instead of resetting for
 the next candidate match. These boundaries contain input amplification but do
 not make the recursive matcher provably linear. Replacement construction also
 rejects output growth beyond 64 MiB before final publication.
+Pattern delimiter, group, class, and quantifier helper scans charge the same
+work budget by their inspected span, and candidate-position scans charge it
+again for each search/replacement probe. This keeps helper-only work from
+escaping the operation limit.
 To contain host-stack use as a separate concern, pattern admission rejects
 more than 1,024 nested groups and one repeated atom cannot descend through
 more than 8,192 recursive repetition states. These failures use the same

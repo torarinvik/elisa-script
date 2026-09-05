@@ -479,6 +479,10 @@ produce no output; capture probing stops immediately on exhaustion.
 Replacement-reference delimiter scans charge each scanned byte. Named-capture
 lookups charge a step and the reference-name length before each comparison,
 including failed comparisons and unterminated-reference scans.
+Pattern delimiter, group, class, and quantifier scans also debit the same
+work budget by the bytes they inspect, including each candidate position in a
+search or replacement operation. Helper scans therefore cannot bypass the
+per-operation limit while leaving the recursive state count below its cap.
 The matcher also rejects patterns with more than 1,024 nested groups before
 matching and stops a single repeated atom after 8,192 recursive repetition
 states. Both guards report `InterpretError.OutputLimit`; they bound host-stack
