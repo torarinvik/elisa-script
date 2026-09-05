@@ -1668,6 +1668,10 @@ The filename C-string used by that boundary is likewise bounded to 4 KiB before
 the `.elisascript` suffix check; unterminated or oversized host names become
 `ElisascriptSourceError.InvalidExtension` instead of triggering an unbounded
 scan.
+The source C-string adapter permits a terminator exactly at the 4 MiB content
+boundary but never probes beyond that bounded terminator position; an
+unterminated input that reaches the limit is rejected as
+`ElisascriptSourceError.SourceTooLarge`.
 Hosts with an explicit in-memory byte span can use
 `lower_elisascript_source_bytes` (or its `_with_handlers` variant), which checks
 the supplied length for NUL bytes before constructing the terminated parser buffer.
