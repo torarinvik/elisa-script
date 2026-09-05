@@ -1525,7 +1525,9 @@ Directory operations use nominal `Path` values and structured `DirectoryError`:
 All five operations include `error[DirectoryError]`. Successful mutations return `true`;
 operating-system failures are errors rather than ambiguous `false` values. Creation
 uses mode `0755` before the process umask is applied. `current_directory` returns an
-owned nominal snapshot, so a later directory change cannot mutate the saved path.
+owned nominal snapshot, so a later directory change cannot mutate the saved path. If
+the host cannot allocate the returned snapshot, the operation reports
+`DirectoryError` and does not expose a partial path.
 Empty paths and embedded NUL bytes are rejected before entering the POSIX boundary.
 `create_directories` (also `makedirs` and `mkdir_p`) creates missing parents like
 shell `mkdir -p` or Python `os.makedirs`, succeeds when each existing component is
@@ -1535,7 +1537,8 @@ a directory, and reports a typed error when a component is not one.
 can[Directory.Read]` returns owned entry basenames. It omits the synthetic `.` and
 `..` entries and sorts remaining names by unsigned byte order, making discovery
 deterministic rather than dependent on filesystem enumeration order. Opening,
-enumeration, and close failures remain structured errors. Returned names do not
+enumeration, entry-name allocation, and close failures remain structured errors.
+Returned names do not
 borrow the operating system's reusable directory-entry buffer.
 The Python `listdir(path)` spelling is an equivalent typed alias.
 
