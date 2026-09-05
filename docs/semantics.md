@@ -1319,6 +1319,8 @@ The interpreter also bounds each process argument vector at one million entries
 before reserving argv pointers and owned C-string storage. Exceeding that
 runtime resource policy raises `ProcessError`; malformed element types continue
 to raise the ordinary type error before any child is forked.
+Environment override maps and pipeline stage vectors use the same bound before
+their host reservations or child-spawn loops.
 
 The `subprocess` namespace provides the same operations with Python-shaped
 qualified names while retaining Elisascript's stronger boundary types:

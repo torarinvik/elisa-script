@@ -739,6 +739,8 @@ Before reserving argv pointers or owned argument strings, the interpreter
 rejects vectors above its one-million-element process-argument budget with
 `InterpretError.Process`; this bounds host allocation for malformed or hostile
 runtime arrays while leaving ordinary typed argument and NUL validation intact.
+The same budget bounds environment override entries and pipeline stages before
+their reservation or child-spawn loops.
 Process waits use nonblocking `waitpid` polling and a 120-second deadline; a child
 that exceeds the deadline is killed and reported as `ProcessError` rather than
 blocking the host indefinitely.
