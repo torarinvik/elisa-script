@@ -38,6 +38,11 @@ text or values; identical runs return `DifferentialDifferenceKind.Equal`. The
 comparator is implemented as an explicit Elisa state machine, so it cannot skip a
 comparison phase or silently continue after a mismatch.
 
+The interpreter and direct-bytecode engine cap ordered `observe` events at one
+million per run. Crossing that shared budget raises `InterpretError.OutputLimit`
+before the next event is appended; differential adapters therefore receive a
+bounded trace rather than an implicit unbounded memory commitment.
+
 Observation and return values include `Void`, `Bool`, `Int`, exact `Float`, `Text`, recursive
 `Array`, order-insensitive `Map`, and structured `ProcessCapture` kinds. Arrays
 use a flat, owned value pool (`DifferentialRun.values`) with `(array_start,

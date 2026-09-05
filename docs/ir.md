@@ -239,6 +239,10 @@ text or source formatting.
 `observe(value)` is a compiler-known, value-consuming intrinsic that lowers to
 `Observe` without defining a result. It provides a typed, backend-independent
 checkpoint for differential tests without depending on stdout or debug logging.
+The interpreter and direct-bytecode engine share a one-million-event observation
+budget and raise `InterpretError.OutputLimit` before appending beyond it, so a
+tight trace loop cannot turn caller-owned evidence storage into an unbounded
+allocation.
 
 The differential adapter copies runtime arrays into its owned comparison pool
 only after validating their half-open ranges with checked subtraction. Its
