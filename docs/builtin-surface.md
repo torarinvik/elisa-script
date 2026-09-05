@@ -32,7 +32,9 @@ zero-argument character-class predicates `isdigit`, `isdecimal`, `isnumeric`,
 one-argument `contains` method is also registry-backed. Their arities exclude
 the receiver and are checked separately from the global; `count` likewise
 requires one text needle and returns `usize`; `find` and `rfind` each accept
-one text needle and return `i64` with `-1` for a miss.
+one text needle and return `i64` with `-1` for a miss; `index` and `rindex`
+also accept one text needle, return `i64`, and require `IndexOutOfBounds` on a
+miss.
 spellings; `join` requires one `darray[sview]` argument and returns `sview`,
 while both line-splitting aliases take no arguments and return `darray[sview]`.
 

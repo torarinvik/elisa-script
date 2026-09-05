@@ -50,6 +50,9 @@ opcode, and signed `i64` miss sentinel (`bf6fce1`).
 `Text.rfind` follows the same path with `TextRFind` and the reverse-search
 miss sentinel (`5f6b70a`).
 
+`Text.index` and `Text.rindex` now carry receiver-specific `TextIndex`/
+`TextRIndex` opcodes and the `IndexOutOfBounds` error row (`36b6684`).
+
 ## Evidence record template
 
 Every future executed or differential-verified entry must append a dated record
