@@ -19,7 +19,8 @@ file, requires the six expected qualified modules, and emits a TSV summary of
 every module and extension file together with its explicit `public:`/`private:`
 sections. It also checks that every public `IssueKind` variant appears in the
 driver's bytecode-diagnostic renderer, so verifier additions cannot silently
-fall back to an unknown diagnostic spelling.
+fall back to an unknown diagnostic spelling, and applies the same exhaustiveness
+check to `LowerIssueKind` source-lowering diagnostics.
 The vendored `Semantic` and standard-library namespaces are intentionally
 outside this check and remain governed by `vendor/elisa-compiler/SOURCE.md`.
 

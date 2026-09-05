@@ -1743,7 +1743,9 @@ typed error behavior of the ordinary runner APIs. Bytecode failures retain the
 first `IssueKind` plus its block, value, and trace identifiers behind
 `bytecode_issue_known`; borrowed function/message views are intentionally not
 stored beyond the lowered-module region. The driver renders that exact issue
-kind while keeping the aggregate phase stable.
+kind while keeping the aggregate phase stable. Source lowering failures retain
+the first `LowerIssueKind` and source line behind `source_lower_issue_known`,
+with the same no-borrowed-message rule.
 
 The reference command-line adapter lives in `src/driver/elisascript.elisa`. Its
 only raw host boundary is `main(argc, argv)`: it drops the executable name,
@@ -1761,8 +1763,9 @@ Usage failures return status `2`; allocation, source, entrypoint, bytecode, and
 execution failures return status `1`; a successful script's signed `i64` result
 is returned unchanged. Failure diagnostics include the source path and a phase
 (`source`, `entrypoint`, `bytecode`, or `runtime`) before a stable detail. For
-source, entrypoint, runtime, and bytecode failures, that detail is the exact
-enum or verifier-issue kind spelling retained by the diagnostic record. The underlying
+source, source-lowering, entrypoint, runtime, and bytecode failures, that detail
+is the exact enum or verifier-issue kind spelling retained by the diagnostic
+record. The underlying
 library APIs continue to propagate their typed `error[...]` families. The adapter copies the borrowed source view into a NUL-terminated
 buffer only at the file-I/O boundary, so the script itself never receives a
 raw C string or a command-string escape hatch. The public launcher contracts

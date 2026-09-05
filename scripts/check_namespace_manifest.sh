@@ -64,6 +64,15 @@ for issue_kind in $issue_kinds; do
     fi
 done
 
+lower_issue_kinds="$(sed -n '/^[[:space:]]*const enum LowerIssueKind of u8:/,/^[[:space:]]*struct LowerIssue:/p' "$source_root/ir/lower_ast.elisa" | sed -n 's/^[[:space:]]*\([A-Za-z_][A-Za-z0-9_]*\)[[:space:]]*$/\1/p')"
+lower_issue_renderer="$(sed -n '/^[[:space:]]*def lower_issue_detail/,/^[[:space:]]*def entrypoint_error_detail/p' "$source_root/driver/elisascript.elisa")"
+for lower_issue_kind in $lower_issue_kinds; do
+    if ! printf '%s\n' "$lower_issue_renderer" | grep -F "LowerIssueKind.$lower_issue_kind" >/dev/null 2>&1; then
+        echo "check_namespace_manifest: source diagnostic renderer omits LowerIssueKind.$lower_issue_kind" >&2
+        exit 1
+    fi
+done
+
 for expected in EsBytecode EsDifferential EsDriver EsIr EsIrArtifact EsRuntime; do
     if ! printf '%s\n' "$module_names" | grep -F -x "$expected" >/dev/null 2>&1; then
         echo "check_namespace_manifest: required module is missing: $expected" >&2
