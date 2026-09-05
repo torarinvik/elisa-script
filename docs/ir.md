@@ -374,9 +374,11 @@ active, so each `Resume` re-enters the suspended function at the instruction aft
 `Perform`, with a fresh copy of its SSA environment and dynamic-handler stack. Each
 payload therefore observes the same post-`Perform` computation independently; the
 enclosing `Perform` receives the callback's final return value. The frame records the
-resumption count and stores its flat snapshot in machine-owned pools. `MultiClone` requires every captured value to be classified
-`Unrestricted`; affine, linear, borrowed, region-bound, and opaque captures are
-rejected. `MultiReplay` requires every effect introduced by the handler to appear in
+resumption count and stores its flat snapshot in machine-owned pools. Both
+`MultiClone` and `MultiReplay` require every declared captured value to be
+classified `Unrestricted`; affine, linear, borrowed, region-bound, and opaque
+captures are rejected until an explicit replay/clone protocol proves their
+safety. `MultiReplay` also requires every effect introduced by the handler to appear in
 its statically verified replay-safe effect set. The snapshot now includes the
 active direct-call chain, so a handled effect in a helper replays the helper's
 post-`Perform` suffix and each caller's post-call suffix in order. A future
