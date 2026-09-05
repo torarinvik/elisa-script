@@ -194,8 +194,10 @@ positive magnitude is not representable; floating-point values follow the host
 IEEE sign rule.
 
 Integer `+`, `-`, and `*` use checked bounds for every supported width, including
-signed 64-bit values; signed division and remainder reject `min / -1` as
-`IntegerOverflow`. Left shifts are checked against the result type's signed or
+signed 64-bit values; signed negation rejects the signed minimum, and signed
+division and remainder reject `min / -1` as `IntegerOverflow`. Narrow signed
+bitwise results and unsigned bitwise complements are checked or masked to the
+declared width. Left shifts are checked against the result type's signed or
 unsigned range (negative or too-large shift counts remain `InvalidShift`). The
 reference interpreter and direct bytecode engine apply this contract before host
 arithmetic, so overflow cannot depend on the target's wrapping behavior.
