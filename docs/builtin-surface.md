@@ -7,6 +7,9 @@ argument-type descriptor, return type, effect row, error row, and semantic IR
 opcode name. The registry is namespaced
 as `EsBuiltin` and exposes only its contract type and lookup functions; helper
 implementation details remain private to the module as the registry grows.
+Receiver methods use the same record through `typed_builtin_method_spec`; the
+first receiver-aware family is `Text`, covering case conversion, boundary
+predicates, replacement, and all four trim modes.
 
 The current strict scalar/text slice contains these 23 spellings:
 
@@ -41,8 +44,10 @@ bash scripts/check_builtin_registry.sh
 surface, including temporary append-only seed spellings during migration.
 `check_builtin_registry.sh` verifies every registry row has a lowerer branch,
 an existing IR opcode, semantic metadata preservation, and a lowerer
-return/error consumer. Both checks are static by design while compiler
-execution remains suspended by the resource-safety gate.
+return/error consumer. It also verifies the receiver-aware `Text` method rows
+and their method-dispatch branches; boundary, replacement, and trim helpers
+now consume receiver-specific result/opcode rows. Both checks are static by design while
+compiler execution remains suspended by the resource-safety gate.
 
 The remaining Q03 work is intentionally explicit: migrate aggregate and
 variadic signatures, receiver method families, generic/container result
