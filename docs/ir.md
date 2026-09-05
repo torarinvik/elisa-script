@@ -1759,9 +1759,11 @@ the host-side collector alone.
 Usage failures return status `2`; allocation, source, entrypoint, bytecode, and
 execution failures return status `1`; a successful script's signed `i64` result
 is returned unchanged. Failure diagnostics include the source path and a phase
-(`source`, `entrypoint`, `bytecode`, or `runtime`) before a stable detail, while
-the underlying library APIs continue to propagate their typed `error[...]`
-families. The adapter copies the borrowed source view into a NUL-terminated
+(`source`, `entrypoint`, `bytecode`, or `runtime`) before a stable detail. For
+source, entrypoint, and runtime failures, that detail is the exact enum variant
+spelling retained by the diagnostic record; bytecode verification remains an
+aggregate phase until structured issue propagation is added. The underlying
+library APIs continue to propagate their typed `error[...]` families. The adapter copies the borrowed source view into a NUL-terminated
 buffer only at the file-I/O boundary, so the script itself never receives a
 raw C string or a command-string escape hatch. The public launcher contracts
 are `EsIr::ES_LAUNCHER_MAX_ARGUMENTS` (1,048,576 script arguments) and

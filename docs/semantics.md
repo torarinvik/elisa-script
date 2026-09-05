@@ -1589,9 +1589,10 @@ script-argument bytes. Count and byte-budget violations are typed
 cannot bypass the driver's pre-admission checks. Usage errors use process
 status `2`, while source,
 entrypoint, bytecode, and execution failures use status `1`. The driver includes
-the source path and failing phase in stderr diagnostics; the underlying runner
-still preserves its typed `error[...]` family for library and programmatic
-callers.
+the source path and failing phase in stderr diagnostics, and source,
+entrypoint, and runtime phases include the exact retained enum variant spelling;
+the underlying runner still preserves its typed `error[...]` family for library
+and programmatic callers.
 
 Source loading rejects `.elisascript` inputs larger than 4 MiB before parser-arena
 allocation. This keeps the source boundary's size arithmetic bounded; generated
