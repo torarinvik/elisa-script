@@ -1438,6 +1438,12 @@ file launch APIs. Hosts that need dynamic effect interception can use the
 `*_with_handlers` variants and pass a typed `darray[Handler]`; the ordinary
 APIs install no handlers.
 
+Before narrowing the host argument and runtime-storage counts into the runtime's
+serialized `u32` array view, the program runner checks that the complete argv
+slice is representable. An oversized caller-owned argument vector is rejected
+with `InterpretError.ArgumentMismatch` (or reported in the diagnostic runner)
+instead of wrapping into a different slice.
+
 The bundled driver (`src/driver/elisascript.elisa`) converts host `argv` into a
 typed `darray[sview]` request. It performs no shell quoting, splitting, globbing,
 or environment interpolation. `parse_elisascript_cli` requires the first value
