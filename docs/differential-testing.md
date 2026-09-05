@@ -53,6 +53,12 @@ observations are compared exactly by default. Call
 to opt into explicit absolute/relative float tolerance; negative tolerances remain
 non-matching, and all non-float values stay exact.
 
+The owned pool conversion also checks that every newly materialized aggregate
+slice remains representable by its serialized `u32` offset domain before
+truncating a host `usize`. Map placeholders are appended one pair at a time,
+avoiding a host-side `count * 2` overflow on narrower targets; malformed or
+unrepresentable snapshots raise `DifferentialRunnerError.Invalid`.
+
 The module keeps state-machine cursors, process-host symbols, and comparison
 helpers private; only runner/value records and the documented adapter/comparator
 entrypoints are public. Both runtime-to-owned conversion and comparison validate
