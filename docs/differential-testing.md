@@ -64,7 +64,10 @@ The owned pool conversion also checks that every newly materialized aggregate
 slice remains representable by its serialized `u32` offset domain before
 truncating a host `usize`. Map placeholders are appended one pair at a time,
 avoiding a host-side `count * 2` overflow on narrower targets; malformed or
-unrepresentable snapshots raise `DifferentialRunnerError.Invalid`.
+unrepresentable snapshots raise `DifferentialRunnerError.Invalid`. The owned
+pool itself is capped at one million values, and conversion raises
+`DifferentialRunnerError.OutputLimit` before a direct or recursive aggregate
+append would exceed that budget.
 
 The module keeps state-machine cursors, process-host symbols, and comparison
 helpers private; only runner/value records and the documented adapter/comparator
