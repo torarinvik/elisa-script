@@ -269,6 +269,11 @@ handler operations.
 Executable handler clauses map an exact effect family and operation to an ordinary
 typed IR function. At each covered `Perform`, verification matches the performed
 payload to that function's parameters and its return type to the resumed value.
+The callback is an ordinary call boundary for capability accounting as well: every
+callback effect must be covered by an active operation-aware handler or the enclosing
+function's effect row, and every callback `error[...]` entry must appear in the
+enclosing function's error row. A clause cannot smuggle undeclared effects or errors
+past the handler's static contract.
 Clause families must belong to the handler coverage set, callback symbols must
 exist, coverage entries must be non-empty and unique, and duplicate operation
 clauses are rejected. Terminal handlers cannot use
