@@ -1005,7 +1005,9 @@ stops at the shorter source without allocating pair objects. The builtin name
 is shadowable by a source declaration, just like `enumerate`.
 Mutable iteration remains restricted to arrays. Map equality is order-insensitive
 but matches pairs one-to-one, so malformed duplicate entries cannot be reused to
-hide a mismatch.
+hide a mismatch. Structural equality bounds nested aggregate comparison at 128
+levels in both execution engines; cyclic or excessively deep caller-owned views
+are a deterministic non-match rather than an unbounded host-stack recursion.
 
 ## Numeric text conversion
 

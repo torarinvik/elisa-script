@@ -1015,6 +1015,10 @@ typed adapter errors instead of becoming an implicit scalar.
 The interpreter/bytecode admission predicate also scans the complete
 caller-owned runtime pool before execution, validating every stored kind and
 aggregate span so a malformed nested value cannot hide behind a valid root view.
+Structural equality in both engines bounds aggregate comparison at 128 nested
+levels before descending another array/map view; cyclic caller-owned views
+therefore return a deterministic non-match rather than exhausting the host
+stack.
 Both execution engines check `steps >= step_limit` before incrementing, so even a
 maximum-`u64` budget cannot wrap the counter; a budget of `N` still permits exactly
 `N` ticks and fails on the next one.
