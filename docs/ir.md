@@ -697,7 +697,8 @@ child redirects descriptors 0, 1, and 2 to separate temporary files; the parent
 validates environment names as non-empty, NUL-free, and unique before `fork`, so
 a host-injected map cannot make child behavior depend on last-write-wins ordering.
 It then polls both streams against the interpreter's 64 MiB per-stream safety
-ceiling while the child runs and before allocation. Crossing it kills the private process group
+ceiling while the child runs and before allocation; stdout and stderr are checked
+independently, even when stdout remains within the ceiling. Crossing it kills the private process group
 and reports `InterpretError.OutputLimit`, so a reference process is never allowed
 to exhaust host memory. Any wait, polling, or stream-position failure also kills
 and reaps the private group before returning `InterpretError.Process`; no failed
