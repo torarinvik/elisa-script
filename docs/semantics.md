@@ -92,8 +92,11 @@ structural result spans remain conservative until the shared type interner handl
 them. The one-positional-payload `perform` form likewise checks a bare declared
 payload type; multi-parameter, generic, and refined payload spans remain deferred.
 The same narrow payload check applies to a source `signal` when its operation
-declaration is available. Dynamic handlers may therefore intercept user-defined
-operations without introducing a second runtime representation.
+declaration is available. Lowering also enforces the declared payload arity for
+both `perform` and `signal`; source-declared operations are closed by
+`(family, operation)`, while builtin and permission-only families remain open to
+host-defined operation names. Dynamic handlers may therefore intercept
+user-defined operations without introducing a second runtime representation.
 Duplicate-operation diagnostics point at the later operation token when source
 coordinates are available.
 

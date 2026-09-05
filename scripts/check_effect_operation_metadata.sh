@@ -61,7 +61,7 @@ for field in payload_signature result_signature; do
     fi
 done
 
-for helper in effect_operation_bare_result_spelling effect_operation_result_type effect_operation_result_is_known effect_operation_single_payload_type effect_operation_payload_is_known; do
+for helper in effect_operation_bare_result_spelling effect_operation_result_type effect_operation_result_is_known effect_operation_declared effect_operation_declared_arity effect_operation_single_payload_type effect_operation_payload_is_known; do
     if ! rg -q "def $helper\(" "$lowerer_file"; then
         printf 'effect operation metadata audit: lowerer omits %s\n' "$helper" >&2
         exit 1
@@ -79,6 +79,20 @@ if ! rg -q 'effect_operation_single_payload_type\(state\.source_file, effect_fam
     printf 'effect operation metadata audit: signal lowering does not consult declared payload metadata\n' >&2
     exit 1
 fi
+if ! rg -q 'effect_operation_declared\(state\.source_file, family, operation\)' "$lowerer_file"; then
+    printf 'effect operation metadata audit: perform lowering does not enforce source operation arity\n' >&2
+    exit 1
+fi
+if ! rg -q 'effect_operation_declared\(state\.source_file, effect_family\(reference\), effect_operation\(reference\)\)' "$lowerer_file"; then
+    printf 'effect operation metadata audit: signal lowering does not enforce source operation arity\n' >&2
+    exit 1
+fi
+for message in 'perform payload arity does not match the declared effect operation' 'signal payload arity does not match the declared effect operation'; do
+    if ! rg -q "$message" "$lowerer_file"; then
+        printf 'effect operation metadata audit: lowerer omits arity diagnostic: %s\n' "$message" >&2
+        exit 1
+    fi
+done
 
 if ! rg -q 'exact source spans for the parenthesized payload list and result type|payload_signature|result_signature' "$docs_file"; then
     printf 'effect operation metadata audit: semantics documentation omits preserved signature spans\n' >&2
