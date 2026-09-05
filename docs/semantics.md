@@ -1609,6 +1609,12 @@ value, and trace identifiers in the phase-aware record; borrowed function and
 message views remain internal to the lowered module region.
 Source lowering diagnostics likewise retain the first `LowerIssueKind` and
 source line without retaining its region-owned function/message views.
+Parser failures retain the first `Ast::ParseErrorKind`; semantic failures retain
+the first severity-1 `Semantic::DiagnosticKind` (with the Elisascript-specific
+negative-index exception preserved). Both records also retain line, column, and
+end-column coordinates before the parser arena is released. Context/name and
+expected/actual text remain region-owned, so exact caret and payload rendering
+is still an explicit follow-up rather than an unsafe borrowed view.
 Diagnostic writes use the same bounded short-progress policy as ordinary stdout:
 positive writes advance the borrowed message, `EINTR` is retried through a
 small budget that resets after progress, and zero, over-counted, or exhausted

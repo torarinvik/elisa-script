@@ -48,7 +48,55 @@ extend EsIr:
             kind: mutable LowerIssueKind = LowerIssueKind.TypeMismatch
             line: mutable u32 = 0
 
+        # Parser and semantic findings are copied into primitive coordinates before the
+        # parser region is released. The original `context`, `name`, and expected/actual
+        # views remain region-owned and deliberately do not cross this boundary.
+        struct ElisascriptSourceDiagnosticSummary:
+            parse_known: mutable bool = false
+            parse_kind: mutable Ast::ParseErrorKind = Ast::ParseErrorKind.ExpectedToken
+            semantic_known: mutable bool = false
+            semantic_kind: mutable Semantic::DiagnosticKind = Semantic::DiagnosticKind.UndefinedName
+            line: mutable u32 = 0
+            column: mutable u32 = 0
+            end_line: mutable u32 = 0
+            end_column: mutable u32 = 0
+
     private:
+        def elisascript_source_reset_diagnostic(summary: mutable ElisascriptSourceDiagnosticSummary&) -> void:
+            summary.parse_known <- false
+            summary.parse_kind <- Ast::ParseErrorKind.ExpectedToken
+            summary.semantic_known <- false
+            summary.semantic_kind <- Semantic::DiagnosticKind.UndefinedName
+            summary.line <- 0
+            summary.column <- 0
+            summary.end_line <- 0
+            summary.end_column <- 0
+
+
+        def elisascript_source_capture_parse_diagnostic(file: Ast::File&, summary: mutable ElisascriptSourceDiagnosticSummary&) -> void:
+            return if file.errors.count == 0
+            parse_error: Ast::ParseError = file.errors[0]
+            summary.parse_known <- true
+            summary.parse_kind <- parse_error.kind
+            summary.line <- parse_error.line
+            summary.column <- parse_error.column
+            summary.end_line <- parse_error.end_line
+            summary.end_column <- parse_error.end_column
+
+
+        def elisascript_source_capture_semantic_diagnostic(table: Semantic::SymbolTable&, summary: mutable ElisascriptSourceDiagnosticSummary&) -> bool:
+            for diagnostic in table.diagnostics:
+                continue if Semantic::diagnostic_severity(diagnostic) != 1 or diagnostic.kind == Semantic::DiagnosticKind.NegativeIndex
+                summary.semantic_known <- true
+                summary.semantic_kind <- diagnostic.kind
+                summary.line <- diagnostic.line
+                summary.column <- diagnostic.pos.column
+                summary.end_line <- diagnostic.pos.end_line
+                summary.end_column <- diagnostic.pos.end_column
+                return true
+            return false
+
+
         def elisascript_source_cstring_length_bounded(source: u8&, too_large: mutable bool&) -> usize:
             too_large <- false
             length: mutable usize = 0
@@ -125,22 +173,12 @@ extend EsIr:
 
 
     private:
-        # Warnings are useful at the source boundary but must not make an otherwise
-        # valid script unloadable.  The loader rejects only severity-1 diagnostics;
-        # this preserves the compiler's warning policy (for example, explicit
-        # numeric suffixes) without weakening any type or control-flow error.  The
-        # regular Elisa semantic pass also reports NegativeIndex, but Elisascript
-        # deliberately follows Python's sequence rule and normalizes negative
-        # indices at runtime, so that one diagnostic is not a source-load failure.
-        def elisascript_source_has_semantic_errors(table: Semantic::SymbolTable&) -> bool:
-            return any diagnostic in table.diagnostics where Semantic::diagnostic_severity(diagnostic) == 1 and diagnostic.kind != Semantic::DiagnosticKind.NegativeIndex
-
-
     public:
         # One typed source-to-IR boundary with caller-supplied dynamic handlers.
         # Host descriptors are copied into the resulting module; source callback
         # decorators are derived by the lowerer into a private extension of that set.
-        def lower_elisascript_source_buffer_with_handlers_diagnostic(filename: u8&, source: u8&, module_name: sview, handlers: darray[Handler]&, lower_issue: mutable ElisascriptLowerIssueSummary&) -> Module error[ElisascriptSourceError] can[Memory.Allocate, Abort.Panic]:
+        def lower_elisascript_source_buffer_with_handlers_diagnostic(filename: u8&, source: u8&, module_name: sview, handlers: darray[Handler]&, source_diagnostic: mutable ElisascriptSourceDiagnosticSummary&, lower_issue: mutable ElisascriptLowerIssueSummary&) -> Module error[ElisascriptSourceError] can[Memory.Allocate, Abort.Panic]:
+            elisascript_source_reset_diagnostic(source_diagnostic)
             lower_issue.known <- false
             lower_issue.kind <- LowerIssueKind.TypeMismatch
             lower_issue.line <- 0
@@ -152,9 +190,12 @@ extend EsIr:
             region source_pipeline(source_capacity) using malloc:
                 tokens: darray[Token] = frontend_tokenize(filename, source)
                 file: Ast::File = frontend_parser_parse_file(source, tokens)
-                raise ElisascriptSourceError.ParseFailed if file.errors.count != 0
+                if file.errors.count != 0:
+                    elisascript_source_capture_parse_diagnostic(file, source_diagnostic)
+                    raise ElisascriptSourceError.ParseFailed
                 semantic: Semantic::SymbolTable = Semantic::check(file)
-                raise ElisascriptSourceError.SemanticFailed if elisascript_source_has_semantic_errors(semantic)
+                if elisascript_source_capture_semantic_diagnostic(semantic, source_diagnostic):
+                    raise ElisascriptSourceError.SemanticFailed
                 lowered: LowerResult = lower_file_with_handlers(file, module_name, handlers)
                 if lowered.issues.count != 0:
                     lower_issue.known <- true
@@ -168,8 +209,9 @@ extend EsIr:
         # Ordinary callers keep the compact source API; diagnostic callers opt
         # into the bounded primitive summary without changing the typed error row.
         def lower_elisascript_source_buffer_with_handlers(filename: u8&, source: u8&, module_name: sview, handlers: darray[Handler]&) -> Module error[ElisascriptSourceError] can[Memory.Allocate, Abort.Panic]:
+            source_diagnostic: mutable ElisascriptSourceDiagnosticSummary = ElisascriptSourceDiagnosticSummary{}
             lower_issue: mutable ElisascriptLowerIssueSummary = ElisascriptLowerIssueSummary{}
-            return lower_elisascript_source_buffer_with_handlers_diagnostic(filename, source, module_name, handlers, lower_issue)
+            return lower_elisascript_source_buffer_with_handlers_diagnostic(filename, source, module_name, handlers, source_diagnostic, lower_issue)
 
 
         # Length-delimited source loading is the binary-safe boundary for hosts

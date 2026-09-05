@@ -1746,6 +1746,13 @@ stored beyond the lowered-module region. The driver renders that exact issue
 kind while keeping the aggregate phase stable. Source lowering failures retain
 the first `LowerIssueKind` and source line behind `source_lower_issue_known`,
 with the same no-borrowed-message rule.
+Parser and semantic source failures also retain their first typed kind and
+bounded source coordinates before the parser region is released: parser failures
+preserve `Ast::ParseErrorKind`, semantic failures preserve
+`Semantic::DiagnosticKind`, and both carry line/column/end-column data. The
+parser context token and semantic name/expected/actual text remain region-owned
+and are not copied into the launcher record. Human-readable source-span/caret
+rendering and structured text-payload transport remain follow-up work.
 
 The reference command-line adapter lives in `src/driver/elisascript.elisa`. Its
 only raw host boundary is `main(argc, argv)`: it drops the executable name,
