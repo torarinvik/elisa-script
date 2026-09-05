@@ -37,7 +37,14 @@ Both values must be positive decimal integers; malformed or zero values are
 rejected before any compiler process is created. Each fixture argument must be
 an existing `.elisascript` regular file. The wrapper installs signal/exit
 cleanup for its temporary log and owned compiler tree, and clears the child PID
-after `wait` so cleanup cannot act on a reused PID.
+after `wait` so cleanup cannot act on a reused PID. The lowering and executable
+wrappers also serialize validation through an atomic lease directory under
+`${TMPDIR:-/tmp}`. The lease records the owner PID and `ps` start identity; a
+live owner with an untrusted or reused identity fails closed, while a dead owner
+can be reclaimed. A missing readiness marker is never removed automatically,
+which avoids racing a worker that is still publishing its identity. This lease
+prevents two bounded workers from competing for the host's memory, but it does
+not turn the polling RSS guard into an instantaneous OS-enforced cap.
 
 Executable fixtures use the matching process-tree guard:
 
