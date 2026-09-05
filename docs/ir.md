@@ -52,6 +52,21 @@ sizes, bytecode slots, or host ABI facts. Those belong to target-specific loweri
 The copied compiler's EASM remains a later machine-level representation and is
 not used as the shared IR.
 
+## Host-runtime namespace
+
+`EsRuntime` is the sole qualified namespace for the POSIX host boundary. Its
+public section exposes the Darwin layout records/constants needed by the typed
+filesystem operations and forwarding functions consumed by `EsIr` and
+`EsDifferential`. Each `src/runtime/*_posix.elisa` extension keeps its
+`@link_name` C declarations private and gives them an `_impl` suffix; callers
+cannot bind the platform ABI symbol directly or accidentally bypass the typed
+effect/error boundary. The public forwarding names retain the existing
+`elisascript_posix_*` source contract while preserving the native libc symbol.
+`EsRuntime::ES_RUNTIME_CONTRACT_VERSION` is metadata for cache/tooling checks,
+not a promise of cross-platform ABI compatibility. A non-POSIX adapter must
+extend the same namespace with equivalent typed operations rather than leaking
+new global declarations.
+
 Every verified module also has canonical structural bytes through
 `canonical_module_bytes(module)` and a compact fingerprint through
 `module_fingerprint(module)` (with `canonical_module_hash` as the explicit
