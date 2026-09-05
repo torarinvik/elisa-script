@@ -67,6 +67,12 @@ ordinal is a deterministic mismatch rather than an implicit text value. This
 keeps future extensions from silently changing the meaning of malformed or
 stale differential artifacts.
 
+Runtime-to-owned conversion applies the corresponding public IR
+`runtime_value_kind_valid` predicate at every recursive storage value before
+matching it. A malformed nested `RuntimeValue` therefore raises the typed
+`DifferentialRunnerError.Invalid` path instead of being interpreted as a scalar
+or indexing aggregate fields under an unknown kind.
+
 The owned pool conversion also checks that every newly materialized aggregate
 slice remains representable by its serialized `u32` offset domain before
 truncating a host `usize`. Map placeholders are appended one pair at a time,

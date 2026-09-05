@@ -1007,6 +1007,10 @@ exhaustive Elisa machine over `InterpretFailure`, so adding a new runtime failur
 cannot silently fall through to success or a generic result value. The same
 shared admission check rejects unknown `RuntimeValueKind` ordinals before
 argument or resumed-frame dispatch.
+The kind predicate is also a public, allocation-free IR boundary helper so
+differential adapters can validate recursively materialized storage values before
+their kind-specific conversion match; malformed nested values therefore fail as
+typed adapter errors instead of becoming an implicit scalar.
 Both execution engines check `steps >= step_limit` before incrementing, so even a
 maximum-`u64` budget cannot wrap the counter; a budget of `N` still permits exactly
 `N` ticks and fails on the next one.
