@@ -973,7 +973,9 @@ The recursive `path.rglob` adapter applies the same check when adding its
 `ReadStdinLine` verifies as `() -> Text` with the same effect/error row and consumes
 one line at a time, preserving stdin for subsequent reads. Both state machines
 enforce the interpreter's 64 MiB stdin safety ceiling before materializing the
-owned result. The Python-facing
+owned result. Interrupted POSIX reads are retried through the explicit state
+machine up to a bounded count before becoming `ConsoleError`; successful reads
+reset that retry budget. The Python-facing
 `input(prompt)` lowering emits an optional `WriteStdout` for the prompt followed by
 `ReadStdinLine`; EOF before a line is represented as the recoverable `Console` failure.
 `WriteStdout` and `WriteStderr` verify as `Text -> Int(unsigned, 64)` with

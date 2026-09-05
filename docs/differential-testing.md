@@ -209,6 +209,9 @@ parent-side `waitpid` or stream-position failure after `fork` also terminates
 the confirmed private group (or only the direct leader when group setup failed)
 and reaps it before returning `Process`, so capture errors cannot strand a
 running child or zombie.
+An interrupted non-blocking `waitpid` is retried through the bounded polling
+state machine before the child is classified as a process failure; a successful
+poll resets that retry budget.
 Stdin staging also retries short temporary-file writes until the bounded payload
 is complete or a zero-progress failure is observed.
 Post-exit file sizes are also round-tripped through host `usize` before

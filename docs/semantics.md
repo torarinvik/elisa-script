@@ -1607,11 +1607,13 @@ needed. The unsupported Python `file` control remains statically rejected:
 - `read_stdin() -> sview error[ConsoleError] can[Console.Read]` reads bytes from file
   descriptor 0 until EOF, up to the interpreter's 64 MiB stdin safety ceiling, and
   returns an owned text snapshot. Read failures and oversized input are errors; an
-  empty stream is a successful empty value.
+  empty stream is a successful empty value. An interrupted POSIX read is retried
+  through the bounded state machine before it is reported as `ConsoleError`.
 - `read_stdin_line() -> sview error[ConsoleError] can[Console.Read]` reads exactly one
   line from file descriptor 0, up to the same 64 MiB ceiling, removes its LF (and an
   optional preceding CR), and returns an owned text snapshot. Repeated calls consume
-  successive lines; reaching EOF before any bytes is a `ConsoleError`.
+  successive lines; interrupted reads use the same bounded retry policy, and
+  reaching EOF before any bytes is a `ConsoleError`.
 - `input()` and `input(prompt: sview)` are Python-compatible line reads. The optional
   prompt is written to stdout before the read, so the prompted form carries both
   `Console.Write` and `Console.Read`; both forms return `sview` and report
