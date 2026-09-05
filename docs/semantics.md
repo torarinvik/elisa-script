@@ -1593,6 +1593,9 @@ the source path and failing phase in stderr diagnostics, and source,
 entrypoint, and runtime phases include the exact retained enum variant spelling;
 the underlying runner still preserves its typed `error[...]` family for library
 and programmatic callers.
+The raw ABI ceiling is the public derived `ES_LAUNCHER_MAX_ARGC` contract
+(executable plus source plus admitted script arguments), so the native shim and
+typed parser share one source of truth.
 Diagnostic writes use the same bounded short-progress policy as ordinary stdout:
 positive writes advance the borrowed message, `EINTR` is retried through a
 small budget that resets after progress, and zero, over-counted, or exhausted

@@ -1766,8 +1766,9 @@ aggregate phase until structured issue propagation is added. The underlying
 library APIs continue to propagate their typed `error[...]` families. The adapter copies the borrowed source view into a NUL-terminated
 buffer only at the file-I/O boundary, so the script itself never receives a
 raw C string or a command-string escape hatch. The public launcher contracts
-are `EsIr::ES_LAUNCHER_MAX_ARGUMENTS` (1,048,576 script arguments) and
-`EsIr::ES_LAUNCHER_MAX_ARGUMENT_BYTES` (64 MiB aggregate text). The native
+are `EsIr::ES_LAUNCHER_MAX_ARGUMENTS` (1,048,576 script arguments),
+`EsIr::ES_LAUNCHER_MAX_ARGUMENT_BYTES` (64 MiB aggregate text), and the
+derived raw-ABI ceiling `EsIr::ES_LAUNCHER_MAX_ARGC`. The native
 `main(argc, argv)` shim rejects an `argc` outside the corresponding executable
 plus-script range before walking host argv storage, and rejects a source path
 whose borrowed view would place its NUL terminator at or beyond the shared
