@@ -477,7 +477,10 @@ inline descriptor limit; `MakeMap` consumes an even key/value
 operand sequence and produces the corresponding map. `Index`, `IndexValid`, `Contains`,
 `Length`, and `SetIndex` accept maps with typed key/value contracts. Runtime map payloads are
 interleaved key/value pairs in caller-owned flat storage and validate their complete
-pair range before access. Missing keys use the existing typed
+pair range before access. Because view offsets are serialized as `u32`, validation
+also rejects a non-empty span whose final addressed element would exceed the
+`u32` offset domain, even when the host `usize` can represent the backing storage.
+Missing keys use the existing typed
 `IndexOutOfBounds` error rather than a sentinel value. The reference interpreter and
 the bytecode facade share this representation. Maps whose key and value types are
 direct scalar/nominal representations, supported arrays, or recursively supported
