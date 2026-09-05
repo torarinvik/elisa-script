@@ -113,6 +113,11 @@ another unsupported family. Global-bearing bytecode modules retain their global
 table and use the interpreter fallback until the packed frame owns a global arena.
 Both paths are checked against the same result, step count, and observation
 trace/value contract in the bytecode tests.
+Every `Execution` also records its `engine`: `ReferenceInterpreter` for direct
+interpreter calls, `DirectBytecode` for the packed state machine, and
+`BytecodeInterpreterFallback` when the compatibility entrypoint deliberately
+reuses the verified interpreter. Consumers must inspect this field before
+counting a run as independent backend evidence.
 
 `EsBytecode.execute_bytecode_direct_only` is the strict evidence entrypoint. It
 performs the same dispatch-table and IR verification, then rejects any module
