@@ -1753,9 +1753,10 @@ preserve `Ast::ParseErrorKind`, semantic failures preserve
 parser context token and semantic name/expected/actual/detail text are copied
 through a 4 KiB-per-field permanent-storage bound; oversized fields set an
 explicit truncation flag. A deterministic FNV payload hash is retained for
-differential correlation, and the driver now renders semantic messages from the
-bounded owned fields. Human-readable source-span/caret rendering beyond the
-retained coordinates and exact diagnostic snapshots remain follow-up work.
+differential correlation, and the driver now renders parser context and semantic
+messages from the bounded owned fields. Human-readable source-span/caret
+rendering beyond the retained coordinates and exact diagnostic snapshots remain
+follow-up work.
 
 The reference command-line adapter lives in `src/driver/elisascript.elisa`. Its
 only raw host boundary is `main(argc, argv)`: it drops the executable name,
