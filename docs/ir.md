@@ -838,6 +838,8 @@ and enforces a depth bound to make malformed/cyclic trees terminate deterministi
 Path joins and brace-variant assembly detect host-size addition wrap before
 allocation; the walker reports the existing `DirectoryError` rather than
 publishing a truncated match.
+The recursive `path.rglob` adapter applies the same check when adding its
+`**/` prefix.
 `ReadStdin` verifies as `() -> Text` with `Console.Read` and `ConsoleError`;
 `ReadStdinLine` verifies as `() -> Text` with the same effect/error row and consumes
 one line at a time, preserving stdin for subsequent reads. Both state machines
