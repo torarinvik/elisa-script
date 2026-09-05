@@ -21,7 +21,7 @@ if [ ! -d "$scan_root" ]; then
     exit 2
 fi
 
-printf '%s\n' 'path\tkind\towner\tentrypoint\tdisposition\trisk\tnotes'
+printf 'path\tkind\towner\tentrypoint\tdisposition\trisk\tnotes\n'
 
 candidate_kind() {
     candidate_path="$1"
