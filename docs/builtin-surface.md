@@ -1,22 +1,47 @@
-# Builtin surface audit
+# Builtin surface and typed registry
 
-Elisascript currently has two builtin authorities: the vendored semantic seed
-table and the scripting lowerer's typed dispatch ladder. They are intentionally
-kept separate until Q03 can replace them with one typed registry carrying
-spelling, receiver shape, argument/return types, effects, errors, and backend
-opcode mapping.
+The first Q03 vertical slice now has one shared registry at
+`vendor/elisa-compiler/src/semantic/builtin_registry.elisa`. Each registered
+row owns the spelling, receiver category, required/maximum arity, return type,
+effect row, error row, and semantic IR opcode name. The registry is namespaced
+as `EsBuiltin` and exposes only its contract type and lookup functions; helper
+implementation details remain private to the module as the registry grows.
 
-Until that refactor lands, run the compiler-free audit:
+The current strict scalar/text slice contains these 23 spellings:
+
+| Family | Spellings | Contract shape |
+|---|---|---|
+| Length and predicates | `len`, `contains`, `is_empty`, `isempty`, `is_nonempty`, `nonempty` | fixed arity; `usize` or `bool` result |
+| Text conversion | `str` | one value to `sview` |
+| Text predicates | `starts_with`, `startswith`, `ends_with`, `endswith` | two text values to `bool` |
+| Text transforms | `replace`, `strip`, `trim`, `lower`, `upper`, `casefold` | text result; `casefold` currently reuses `LowerText` until a Unicode-aware opcode exists |
+| Numeric parsing/formatting | `parse_int`, `format_int`, `parse_float`, `format_float` | checked `i64`/`f64` conversions; parsers require `ParseError` |
+| Scalar formatting | `format_bool`, `format_char` | one scalar to `sview` |
+
+Semantic builtin seeding consults `EsBuiltin::typed_builtin_spec` and stores
+the row's `arity_min`, `arity_max`, `return_type`, `effects`, `errors`, and
+`opcode` on the qualified semantic symbol. This removes the former untyped
+`contains` duplicate and lets direct-call arity checking see the registry
+contract. The lowerer obtains result types and parser error requirements from
+the same row before selecting the existing IR opcode. Unknown names continue
+to use the legacy seed path until their richer signatures are migrated.
+
+Run the compiler-free audits:
 
 ```sh
 bash scripts/check_builtin_surface.sh
+bash scripts/check_builtin_registry.sh
 ```
 
-The audit extracts every `callee_name == "..."` global dispatch spelling from
-`src/ir/lower_ast.elisa`, extracts both the large semantic seed row and its
-`add_symbol("...")` extensions, and fails closed if any lowerer spelling is not
-seeded. Receiver `method_name` strings are deliberately excluded because they
-are selected after receiver type checking rather than by bare-name lookup.
-This check catches one class of frontend drift but does not claim that the
-duplicated authorities have identical signatures; the typed registry and its
-generated semantic/lowering/verifier consistency check remain required.
+`check_builtin_surface.sh` still protects the complete legacy seed/lowerer
+surface, including temporary append-only seed spellings during migration.
+`check_builtin_registry.sh` verifies every registry row has a lowerer branch,
+an existing IR opcode, semantic metadata preservation, and a lowerer
+return/error consumer. Both checks are static by design while compiler
+execution remains suspended by the resource-safety gate.
+
+The remaining Q03 work is intentionally explicit: migrate aggregate and
+variadic signatures, receiver method families, generic/container result
+descriptors, effect and error sets with structured IDs, and verifier-side
+opcode/type compatibility. New builtins must not be added to the legacy seed
+list alone; add a registry row and extend the static audit first.
