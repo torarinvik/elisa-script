@@ -259,7 +259,9 @@ with handler sandbox:
 
 The IR declares each handler's covered effect families, introduced effects,
 `error[...]` sets, and continuation policy (`Terminal`, `Linear`, `Affine`,
-`MultiReplay`, or `MultiClone`). `HandlerPush` and `HandlerPop` delimit dynamic
+`MultiReplay`, or `MultiClone`). The policy is a closed enum: the verifier
+rejects unknown ordinals and the runtime fails closed if one reaches dispatch.
+`HandlerPush` and `HandlerPop` delimit dynamic
 installation. `Resume` names the handler whose continuation it consumes and
 requires one payload operand plus a typed result; the verifier rejects terminal
 handlers, malformed payload/result pairs, unknown handlers, and unbalanced
