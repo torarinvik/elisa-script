@@ -109,6 +109,10 @@ frame-based call protocol is complete. Multi-shot capture also fails closed
 with `InterpretError.InvalidContinuation` when a current or active caller
 snapshot contains a mutable array/map view; deep storage cloning is required
 before those values can be replayed independently.
+Before a multi-shot resume indexes its saved suffix, the interpreter validates
+the replay-frame range and each saved SSA-id, runtime-value, and handler-name
+slice against the bounded continuation pools; malformed metadata reports
+`InvalidContinuation` and is never indexed.
 
 ## Module constants
 
