@@ -188,7 +188,8 @@ substitute for validating the artifact against the verified module.
 `decode_bytecode_artifact` first applies that allocation-free validation and then
 returns a borrowed, typed metadata record without copying its strings;
 `bytecode_artifact_bytes_valid` is the allocation-free cache-boundary check: it
-requires the exact magic/version, backend tag, bounded length-prefixed fields,
+requires the exact magic/version, backend tag, a bounded 4 KiB source-revision
+field and other bounded length-prefixed fields,
 known engine ordinal, consistent direct/fallback flag, all capability counters,
 capability counters representable by the host `usize`, and no trailing bytes.
 `bytecode_artifact_metadata_valid` performs the same
