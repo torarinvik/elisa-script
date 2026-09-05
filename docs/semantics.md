@@ -465,6 +465,9 @@ Output checks apply to emitted bytes: an empty capture expansion remains valid
 when the output already equals the limit. Replacement tokens and capture
 candidate probes consume the operation's work budget, including probes that
 produce no output; capture probing stops immediately on exhaustion.
+Replacement-reference delimiter scans charge each scanned byte. Named-capture
+lookups charge a step and the reference-name length before each comparison,
+including failed comparisons and unterminated-reference scans.
 
 For ports that keep a compiled pattern in a local, `pattern.search(text)` is a
 typed receiver spelling of `matches(text, pattern)`. `pattern.match(text)`
