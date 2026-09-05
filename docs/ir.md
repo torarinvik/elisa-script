@@ -114,6 +114,14 @@ table and use the interpreter fallback until the packed frame owns a global aren
 Both paths are checked against the same result, step count, and observation
 trace/value contract in the bytecode tests.
 
+`EsBytecode.execute_bytecode_direct_only` is the strict evidence entrypoint. It
+performs the same dispatch-table and IR verification, then rejects any module
+outside `bytecode_direct_supported` with `InterpretError.UnsupportedInstruction`
+instead of falling back. Differential and backend conformance tests should use
+this mode when they need to prove that the packed bytecode engine itself ran;
+the ordinary `execute_bytecode` API remains the compatibility path that may use
+the verified interpreter for unsupported features.
+
 ## Algebraic effects
 
 `Perform` is an IR operation, not an early rewrite to a runtime function call. It
