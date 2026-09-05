@@ -204,6 +204,7 @@ extend EsIr:
         struct GlobWalker:
             matches: mutable darray[dstr]
             failed: mutable bool
+            match_bytes: mutable usize = 0
 
 
         const enum StdioReadState of u8:
@@ -311,6 +312,8 @@ extend EsIr:
         const INTERPRET_MAX_DIRECTORY_NAME_BYTES: usize = 67108864
         const INTERPRET_MAX_GLOB_VARIANTS: usize = 262144
         const INTERPRET_MAX_GLOB_MATCHES: usize = 1048576
+        const INTERPRET_MAX_GLOB_VARIANT_BYTES: usize = 67108864
+        const INTERPRET_MAX_GLOB_MATCH_BYTES: usize = 67108864
         # IEEE-754 values have already saturated to zero or infinity long before
         # this many decimal scale steps. Cap the textual exponent so malformed
         # input cannot overflow the parser's i64 accumulator or turn one float
@@ -5264,12 +5267,17 @@ extend EsIr:
                 walker.failed <- true
                 return
             view: sview = bytes_view(path)
-            owned: mutable dstr = ctx_fstr_alloc(sview_len(view))
+            length: usize = sview_len(view)
+            if walker.match_bytes > INTERPRET_MAX_GLOB_MATCH_BYTES or length > INTERPRET_MAX_GLOB_MATCH_BYTES - walker.match_bytes:
+                walker.failed <- true
+                return
+            owned: mutable dstr = ctx_fstr_alloc(length)
             if owned.items == null:
                 walker.failed <- true
                 return
             ctx_fstr_append(owned, view.data, sview_len(view))
             walker.matches.push(owned)
+            walker.match_bytes <- walker.match_bytes + length
 
 
         def append_glob_range(out: mutable dstr&, source: sview, start: usize, end: usize) -> void:
@@ -5317,7 +5325,7 @@ extend EsIr:
             return close
 
 
-        def collect_glob_variants(variants: mutable darray[dstr]&, pattern: sview, failed: mutable bool&) -> void can[Memory.Allocate, Abort.Panic]:
+        def collect_glob_variants(variants: mutable darray[dstr]&, pattern: sview, failed: mutable bool&, variant_bytes: mutable usize&) -> void can[Memory.Allocate, Abort.Panic]:
             return if failed
             open: mutable usize = 0
             close: mutable usize = sview_len(pattern)
@@ -5346,7 +5354,11 @@ extend EsIr:
                     comma <- cursor if comma == sview_len(pattern)
                 cursor <- cursor + 1
             if open == 0 and (sview_len(pattern) == 0 or sview_at(pattern, 0) != 123):
-                variant: mutable dstr = ctx_fstr_alloc(sview_len(pattern))
+                if variants.count >= INTERPRET_MAX_GLOB_VARIANTS or variant_bytes > INTERPRET_MAX_GLOB_VARIANT_BYTES or sview_len(pattern) > INTERPRET_MAX_GLOB_VARIANT_BYTES - variant_bytes:
+                    failed <- true
+                    return
+                variant_length: usize = sview_len(pattern)
+                variant: mutable dstr = ctx_fstr_alloc(variant_length)
                 if variant.items == null:
                     failed <- true
                     return
@@ -5355,9 +5367,14 @@ extend EsIr:
                     return
                 ctx_fstr_append(variant, pattern.data, sview_len(pattern))
                 variants.push(variant)
+                variant_bytes <- variant_bytes + variant_length
                 return
             if close == sview_len(pattern) or comma == sview_len(pattern):
-                variant: mutable dstr = ctx_fstr_alloc(sview_len(pattern))
+                if variants.count >= INTERPRET_MAX_GLOB_VARIANTS or variant_bytes > INTERPRET_MAX_GLOB_VARIANT_BYTES or sview_len(pattern) > INTERPRET_MAX_GLOB_VARIANT_BYTES - variant_bytes:
+                    failed <- true
+                    return
+                variant_length: usize = sview_len(pattern)
+                variant: mutable dstr = ctx_fstr_alloc(variant_length)
                 if variant.items == null:
                     failed <- true
                     return
@@ -5366,6 +5383,7 @@ extend EsIr:
                     return
                 ctx_fstr_append(variant, pattern.data, sview_len(pattern))
                 variants.push(variant)
+                variant_bytes <- variant_bytes + variant_length
                 return
             prefix: sview = string_view_slice(pattern, 0, open.i64())
             suffix: sview = pattern
@@ -5378,7 +5396,7 @@ extend EsIr:
                 if variant.items == null:
                     failed <- true
                     return
-                collect_glob_variants(variants, bytes_view(variant), failed)
+                collect_glob_variants(variants, bytes_view(variant), failed, variant_bytes)
                 break if alternative_end == close
                 alternative_start <- alternative_end + 1
                 alternative_end <- next_glob_alternative(pattern, alternative_start, close)
@@ -5450,7 +5468,8 @@ extend EsIr:
                 return runtime_void()
             variants: mutable darray[dstr] = []
             variants_failed: mutable bool = false
-            collect_glob_variants(variants, pattern.text, variants_failed)
+            variant_bytes: mutable usize = 0
+            collect_glob_variants(variants, pattern.text, variants_failed, variant_bytes)
             if variants_failed:
                 machine.failure <- InterpretFailure.Directory
                 return runtime_void()
