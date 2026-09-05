@@ -91,8 +91,9 @@ primitive/nominal result spellings are resolved during lowering and a value-prod
 structural result spans remain conservative until the shared type interner handles
 them. The one-positional-payload `perform` form likewise checks a bare declared
 payload type; multi-parameter, generic, and refined payload spans remain deferred.
-Dynamic handlers may therefore intercept user-defined operations without introducing
-a second runtime representation.
+The same narrow payload check applies to a source `signal` when its operation
+declaration is available. Dynamic handlers may therefore intercept user-defined
+operations without introducing a second runtime representation.
 Duplicate-operation diagnostics point at the later operation token when source
 coordinates are available.
 

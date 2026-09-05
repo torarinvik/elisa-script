@@ -75,6 +75,10 @@ if ! rg -q 'effect_operation_single_payload_type\(state\.source_file, family, op
     printf 'effect operation metadata audit: perform lowering does not consult declared payload metadata\n' >&2
     exit 1
 fi
+if ! rg -q 'effect_operation_single_payload_type\(state\.source_file, effect_family\(reference\), effect_operation\(reference\)\)' "$lowerer_file"; then
+    printf 'effect operation metadata audit: signal lowering does not consult declared payload metadata\n' >&2
+    exit 1
+fi
 
 if ! rg -q 'exact source spans for the parenthesized payload list and result type|payload_signature|result_signature' "$docs_file"; then
     printf 'effect operation metadata audit: semantics documentation omits preserved signature spans\n' >&2
