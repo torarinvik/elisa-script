@@ -21,8 +21,13 @@ for required_file in "$registry_file" "$semantic_file" "$lowerer_file" "$opcode_
 done
 
 registry_names="$(sed -n '/def typed_builtin_names/,/^        def /p' "$registry_file" | rg -o '"[a-z_][a-z0-9_]*"' | tr -d '"' | sort -u)"
+method_names="$(sed -n '/def typed_builtin_method_names/,$p' "$registry_file" | rg -o '"[a-z_][a-z0-9_]*"' | tr -d '"' | sort -u)"
 if [[ -z "$registry_names" ]]; then
     printf 'builtin registry audit: typed_builtin_names is empty\n' >&2
+    exit 1
+fi
+if [[ -z "$method_names" ]]; then
+    printf 'builtin registry audit: typed_builtin_method_names is empty\n' >&2
     exit 1
 fi
 
@@ -47,6 +52,22 @@ for name in $registry_names; do
     argument_types="$(sed -n "s/.*name: \"$name\".*argument_types: \"\([^\"]*\)\".*/\1/p" "$registry_file" | head -1)"
     if [[ -z "$argument_types" ]]; then
         printf 'builtin registry audit: %s has no argument-type descriptor\n' "$name" >&2
+        exit 1
+    fi
+done
+
+if ! rg -q 'typed_builtin_method_spec\("Text", method_name\)' "$lowerer_file"; then
+    printf 'builtin registry audit: lowerer has no receiver-method registry consumer\n' >&2
+    exit 1
+fi
+
+for name in $method_names; do
+    if ! rg -q "known: true, name: \"$name\", receiver: \"Text\"" "$registry_file"; then
+        printf 'builtin registry audit: Text.%s has no receiver-specific registry row\n' "$name" >&2
+        exit 1
+    fi
+    if ! rg -q "method_name == \"$name\"" "$lowerer_file"; then
+        printf 'builtin registry audit: lowerer has no Text method branch for %s\n' "$name" >&2
         exit 1
     fi
 done
