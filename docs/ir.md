@@ -804,17 +804,17 @@ Before reserving argv pointers or owned argument strings, the interpreter
 rejects vectors above its one-million-element process-argument budget with
 `InterpretError.Process`; this bounds host allocation for malformed or hostile
 runtime arrays while leaving ordinary typed argument and NUL validation intact.
-It also rejects an aggregate executable/argv text payload above its 64 MiB
-process-argument byte budget before duplicating any C strings. The byte guard
-is overflow-safe and leaves malformed non-text elements to the existing typed
-validation path; a zero configured byte budget means unlimited for embedders
-that deliberately opt out. The same byte guard applies to run, stream-capture,
-stdin-capture, and full-result process entrypoints.
-Environment names and values are checked against the same 64 MiB byte budget
-before their independent C-string buffers are reserved; malformed entries still
-take the ordinary type path. The element-count budget also bounds environment
-override entries and pipeline stages before their reservation or child-spawn
-loops.
+It also rejects an aggregate terminated executable/argv C-string payload above
+its 64 MiB process-argument byte budget before duplicating any C strings. Each
+payload's trailing NUL is included. The byte guard is overflow-safe and leaves
+malformed non-text elements to the existing typed validation path; a zero
+configured byte budget means unlimited for embedders that deliberately opt out.
+The same byte guard applies to run, stream-capture, stdin-capture, and
+full-result process entrypoints. Environment names and values are checked
+against the same terminated 64 MiB byte budget before their independent
+C-string buffers are reserved; malformed entries still take the ordinary type
+path. The element-count budget also bounds environment override entries and
+pipeline stages before their reservation or child-spawn loops.
 Process waits use nonblocking `waitpid` polling and a 120-second deadline; a child
 that exceeds the deadline is killed and reported as `ProcessError` rather than
 blocking the host indefinitely.

@@ -1396,15 +1396,15 @@ The interpreter also bounds each process argument vector at one million entries
 before reserving argv pointers and owned C-string storage. Exceeding that
 runtime resource policy raises `ProcessError`; malformed element types continue
 to raise the ordinary type error before any child is forked.
-The aggregate executable and argument text is independently capped at 64 MiB
-before any C-string duplication. This byte budget is checked with subtraction
-before addition, so a host-size length cannot wrap into an apparently small
-request. Embedders may set the byte budget to zero to opt out while retaining
-the element-count guard.
-Environment names and values use the same 64 MiB aggregate byte bound before
-their C-string copies are allocated. Environment override maps and pipeline
-stage vectors also use the element-count bound before their host reservations or
-child-spawn loops.
+The aggregate terminated executable and argument C-string payload is
+independently capped at 64 MiB before any duplication. Each payload includes
+its trailing NUL, and the byte budget is checked with subtraction before
+addition, so a host-size length cannot wrap into an apparently small request.
+Embedders may set the byte budget to zero to opt out while retaining the
+element-count guard. Environment names and values use the same terminated
+64 MiB aggregate byte bound before their C-string copies are allocated.
+Environment override maps and pipeline stage vectors also use the element-count
+bound before their host reservations or child-spawn loops.
 
 The `subprocess` namespace provides the same operations with Python-shaped
 qualified names while retaining Elisascript's stronger boundary types:
