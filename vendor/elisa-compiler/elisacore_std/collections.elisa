@@ -167,19 +167,33 @@ def arena_box_zeroed[T](a: mutable Arena&) -> mutable heap T&:
 # Dynamic array helpers (replacement for C macros)
 # ------------------------------------------------------------
 
+@internal
+def collections_byte_size[T](count: usize) -> usize can[Abort.Panic]:
+    element_size: usize = size_of(T)
+    return 0 if count == 0 or element_size == 0
+    bytes: usize = count * element_size
+    panic("dynamic array byte-size overflow") if bytes / element_size != count
+    return bytes
+
+@internal
+def collections_next_capacity(current: usize, needed: usize) -> usize can[Abort.Panic]:
+    return 0 if needed == 0
+    capacity: mutable usize = current
+    capacity <- ARENA_DA_INIT_CAP if capacity == 0
+    trusted Unsafe.AssumeProgress:
+        while needed > capacity:
+            next_capacity: usize = capacity * 2
+            panic("dynamic array capacity overflow") if next_capacity < capacity
+            capacity <- next_capacity
+    return capacity
+
 def arena_da_reserve[T](a: mutable Arena&, da: mutable darray[T, shape_in]&, needed: usize) -> mutable darray[T, shape_out]&:
     can Memory.Allocate, Abort.Panic:
         da return if needed <= da.capacity
 
-        new_capacity: mutable usize = da.capacity
-        new_capacity <- ARENA_DA_INIT_CAP if new_capacity == 0
-
-        trusted Unsafe.AssumeProgress:
-            while needed > new_capacity:
-                new_capacity <- new_capacity * 2
-
-        old_size: usize = da.capacity * size_of(T)
-        new_size: usize = new_capacity * size_of(T)
+        new_capacity: usize = collections_next_capacity(da.capacity, needed)
+        old_size: usize = collections_byte_size[T](da.capacity)
+        new_size: usize = collections_byte_size[T](new_capacity)
 
         if da.items == null:
             da.items as & <- collections_items_from_alloc[T](arena_alloc(a, new_size))
@@ -372,7 +386,9 @@ def inline_vec_spill[T, N: usize](vec: mutable InlineVec[T, N]&):
         assert vec.owner != null
         owner: mutable Arena& = vec.owner
         in owner:
-            _ = vec.overflow.reserve(N * 2)
+            spill_capacity: usize = N * 2
+            panic("inline vector spill capacity overflow") if spill_capacity < N
+            _ = vec.overflow.reserve(spill_capacity)
             for index in 0..<vec.len:
                 trusted Unsafe.UncheckedIndex:
                     vec.overflow.push(vec.inline_items[index])
@@ -387,13 +403,17 @@ def inline_vec_push[T, N: usize](vec: mutable InlineVec[T, N]&, item: T):
             owner: mutable Arena& = vec.owner
             in owner:
                 vec.overflow.push(item)
-            vec.len <- vec.len + 1
+            next_len: usize = vec.len + 1
+            panic("inline vector length overflow") if next_len == 0
+            vec.len <- next_len
             return
 
         if vec.len < N:
             trusted Unsafe.UncheckedIndex:
                 vec.inline_items[vec.len] <- item
-            vec.len <- vec.len + 1
+            next_len: usize = vec.len + 1
+            panic("inline vector length overflow") if next_len == 0
+            vec.len <- next_len
             return
 
         inline_vec_spill[T, N](vec)
@@ -401,7 +421,9 @@ def inline_vec_push[T, N: usize](vec: mutable InlineVec[T, N]&, item: T):
         owner: mutable Arena& = vec.owner
         in owner:
             vec.overflow.push(item)
-        vec.len <- vec.len + 1
+        next_len: usize = vec.len + 1
+        panic("inline vector length overflow") if next_len == 0
+        vec.len <- next_len
 
 
 def push[T, N: usize](vec: mutable InlineVec[T, N]&, item: T):
@@ -546,8 +568,10 @@ def flags_difference[T](left: Flags[T]&, right: Flags[T]&) -> Flags[T]:
 
 def arena_da_append[T](a: mutable Arena&, da: mutable darray[T, shape_in]&, item: T) -> mutable darray[T, shape_out]&:
     can Memory.Allocate, Abort.Panic:
+        needed: usize = da.count + 1
+        panic("dynamic array count overflow") if needed == 0
         in a:
-            _ = da.reserve(da.count + 1)
+            _ = da.reserve(needed)
 
         assert da.items != null
 
@@ -720,17 +744,12 @@ def binary_search[T](da: darray[T], target: T, less: fn(T, T) -> bool) -> bool:
 def arena_da_append_many[T](a: mutable Arena&, da: mutable darray[T, shape_in]&, new_items: T&, new_items_count: usize) -> mutable darray[T, shape_out]&:
     can Memory.Allocate, Abort.Panic:
         needed: usize = da.count + new_items_count
+        panic("dynamic array count overflow") if needed < da.count
 
         if needed > da.capacity:
-            new_capacity: mutable usize = da.capacity
-            new_capacity <- ARENA_DA_INIT_CAP if new_capacity == 0
-
-            trusted Unsafe.AssumeProgress:
-                while needed > new_capacity:
-                    new_capacity <- new_capacity * 2
-
-            old_size: usize = da.capacity * size_of(T)
-            new_size: usize = new_capacity * size_of(T)
+            new_capacity: usize = collections_next_capacity(da.capacity, needed)
+            old_size: usize = collections_byte_size[T](da.capacity)
+            new_size: usize = collections_byte_size[T](new_capacity)
 
             if da.items == null:
                 da.items as & <- collections_items_from_alloc[T](arena_alloc(a, new_size))
@@ -750,7 +769,7 @@ def arena_da_append_many[T](a: mutable Arena&, da: mutable darray[T, shape_in]&,
         arena_memcpy(
             collections_mutable_void_from_items_at[T](da.items, da.count),
             collections_void_from_items[T](new_items),
-            new_items_count * size_of(T)
+            collections_byte_size[T](new_items_count)
         )
 
         da.count <- da.count + new_items_count
@@ -772,13 +791,15 @@ def arena_sb_append_null(a: mutable Arena&, sb: mutable darray[u8, shape_in]&) -
 # Dictionary helpers
 # ------------------------------------------------------------
 
-def arena_dict_next_capacity(min_capacity: usize) -> usize:
+def arena_dict_next_capacity(min_capacity: usize) -> usize can[Abort.Panic]:
     0 return if min_capacity == 0
 
     cap: mutable usize = DICT_INIT_CAP
     trusted Unsafe.AssumeProgress:
         while cap < min_capacity:
-            cap <- cap * 2
+            next_capacity: usize = cap * 2
+            panic("dictionary capacity overflow") if next_capacity < cap
+            cap <- next_capacity
     return cap
 
 # Key hashing for the open-addressing dict. The `ctx_hash_value` builtin (compiler-emitted)
@@ -874,15 +895,18 @@ def arena_dict_find_cstr_view_index[T](m: dict[cstr, T]&, key: sview) -> DictPro
 
 # Place (key, value) into a table that is known to have room and to not already contain `key`
 # (used by rehash). The probe terminates at an empty slot since the fresh table has no tombstones.
-def arena_dict_place_fresh[K, T](m: mutable dict[K, T]&, key: K, value: T) -> void:
+def arena_dict_place_fresh[K, T](m: mutable dict[K, T]&, key: K, value: T) -> void can[Abort.Panic]:
     assert m.items != null
     items: mutable DictBucket[K, T]& = m.items
     probe: DictProbeResult = arena_dict_find_index(m, key)
     items[probe.index].key <- key
     items[probe.index].value <- value
     items[probe.index].state <- 1
-    m.count <- m.count + 1.usize()
-    m.used <- m.used + 1.usize()
+    next_count: usize = m.count + 1.usize()
+    next_used: usize = m.used + 1.usize()
+    panic("dictionary count overflow") if next_count == 0 or next_used == 0
+    m.count <- next_count
+    m.used <- next_used
 
 def arena_dict_zero_buckets[K, T](items: mutable DictBucket[K, T]&, capacity: usize):
     view: view[DictBucket[K, T]] = DynArrayView{data: collections_void_from_items[DictBucket[K, T]](items), len: capacity}
@@ -896,7 +920,7 @@ def arena_dict_new[K, T](a: mutable Arena&, initial_capacity: usize) -> dict[K, 
         capacity: usize = arena_dict_next_capacity(initial_capacity)
         out return if capacity == 0
 
-        items: mutable DictBucket[K, T]& = collections_items_from_alloc[DictBucket[K, T]](arena_alloc(a, capacity * size_of(DictBucket[K, T])))
+        items: mutable DictBucket[K, T]& = collections_items_from_alloc[DictBucket[K, T]](arena_alloc(a, collections_byte_size[DictBucket[K, T]](capacity)))
         arena_dict_zero_buckets(items, capacity)
 
         out.items as & <- items
@@ -916,7 +940,7 @@ def arena_dict_reserve[K, T](a: mutable Arena&, m: mutable dict[K, T]&, min_capa
         old_items_opt: mutable DictBucket[K, T]&? = m.items
         old_capacity: usize = m.capacity
 
-        new_items: mutable DictBucket[K, T]& = collections_items_from_alloc[DictBucket[K, T]](arena_alloc(owner, target_capacity * size_of(DictBucket[K, T])))
+        new_items: mutable DictBucket[K, T]& = collections_items_from_alloc[DictBucket[K, T]](arena_alloc(owner, collections_byte_size[DictBucket[K, T]](target_capacity)))
         arena_dict_zero_buckets(new_items, target_capacity)
 
         # Rehash through a distinct dictionary value so reads from the old
@@ -988,9 +1012,21 @@ def arena_dict_put[K, T](a: mutable Arena&, m: mutable dict[K, T]&, key: K, valu
         m.arena as & <- owner if m.arena == null
 
         # Grow before probing when the load (occupied + tombstones) would exceed 3/4, so a probe
-        # always terminates at an empty slot. Growing rehashes and clears tombstones.
-        if m.capacity == 0 or (m.used + 1.usize()) * 4.usize() > m.capacity * 3.usize():
-            target_capacity: usize = DICT_INIT_CAP if m.capacity == 0 else m.capacity * 2
+        # always terminates at an empty slot. Growing rehashes and clears tombstones. Keep the
+        # comparison division/subtraction based so hostile counts cannot wrap the old products.
+        grow: mutable bool = m.capacity == 0
+        if m.capacity > 0:
+            grow <- true if m.used >= m.capacity
+            if not grow:
+                free_slots: usize = m.capacity - m.used
+                quarter: mutable usize = m.capacity / 4
+                quarter <- quarter + 1 if m.capacity % 4 != 0
+                grow <- free_slots <= quarter
+        if grow:
+            target_capacity: mutable usize = DICT_INIT_CAP
+            if m.capacity > 0:
+                target_capacity <- m.capacity * 2
+                panic("dictionary capacity overflow") if target_capacity < m.capacity
             try arena_dict_reserve(owner, m, target_capacity)
 
         assert m.items != null
@@ -1006,8 +1042,13 @@ def arena_dict_put[K, T](a: mutable Arena&, m: mutable dict[K, T]&, key: K, valu
         items[probe.index].key <- key
         items[probe.index].value <- value
         items[probe.index].state <- 1
-        m.count <- m.count + 1.usize()
-        m.used <- m.used + 1.usize() if not reused_tombstone
+        next_count: usize = m.count + 1.usize()
+        panic("dictionary count overflow") if next_count == 0
+        m.count <- next_count
+        if not reused_tombstone:
+            next_used: usize = m.used + 1.usize()
+            panic("dictionary occupancy overflow") if next_used == 0
+            m.used <- next_used
         return &items[probe.index].value
 
 def arena_dict_get_or_insert[K, T](a: mutable Arena&, m: mutable dict[K, T]&, key: K, value: T) -> mutable T&? error[RuntimeError]:
@@ -1156,14 +1197,17 @@ def arena_set_find_index[T](s: set[T]&, key: T) -> DictProbeResult:
     DictProbeResult{index: insert_slot, found: false} return if insert_slot != s.capacity
     return DictProbeResult{index: 0, found: false}
 
-def arena_set_place_fresh[T](s: mutable set[T]&, key: T) -> void:
+def arena_set_place_fresh[T](s: mutable set[T]&, key: T) -> void can[Abort.Panic]:
     assert s.items != null
     items: mutable SetBucket[T]& = s.items
     probe: DictProbeResult = arena_set_find_index(s, key)
     items[probe.index].key <- key
     items[probe.index].state <- 1
-    s.count <- s.count + 1.usize()
-    s.used <- s.used + 1.usize()
+    next_count: usize = s.count + 1.usize()
+    next_used: usize = s.used + 1.usize()
+    panic("set count overflow") if next_count == 0 or next_used == 0
+    s.count <- next_count
+    s.used <- next_used
 
 def arena_set_zero_buckets[T](items: mutable SetBucket[T]&, capacity: usize):
     view: view[SetBucket[T]] = DynArrayView{data: collections_void_from_items[SetBucket[T]](items), len: capacity}
@@ -1177,7 +1221,7 @@ def arena_set_new[T](a: mutable Arena&, initial_capacity: usize) -> set[T]:
         capacity: usize = arena_dict_next_capacity(initial_capacity)
         out return if capacity == 0
 
-        items: mutable SetBucket[T]& = collections_items_from_alloc[SetBucket[T]](arena_alloc(a, capacity * size_of(SetBucket[T])))
+        items: mutable SetBucket[T]& = collections_items_from_alloc[SetBucket[T]](arena_alloc(a, collections_byte_size[SetBucket[T]](capacity)))
         arena_set_zero_buckets(items, capacity)
 
         out.items as & <- items
@@ -1197,7 +1241,7 @@ def arena_set_reserve[T](a: mutable Arena&, s: mutable set[T]&, min_capacity: us
         old_items_opt: mutable SetBucket[T]&? = s.items
         old_capacity: usize = s.capacity
 
-        new_items: mutable SetBucket[T]& = collections_items_from_alloc[SetBucket[T]](arena_alloc(owner, target_capacity * size_of(SetBucket[T])))
+        new_items: mutable SetBucket[T]& = collections_items_from_alloc[SetBucket[T]](arena_alloc(owner, collections_byte_size[SetBucket[T]](target_capacity)))
         arena_set_zero_buckets(new_items, target_capacity)
 
         # Rehash through a separate set value. This keeps the old backing read
@@ -1224,8 +1268,19 @@ def arena_set_add[T](a: mutable Arena&, s: mutable set[T]&, key: T) -> bool erro
         owner: mutable Arena& = s.arena if s.arena != null else a
         s.arena as & <- owner if s.arena == null
 
-        if s.capacity == 0 or (s.used + 1.usize()) * 4.usize() > s.capacity * 3.usize():
-            target_capacity: usize = DICT_INIT_CAP if s.capacity == 0 else s.capacity * 2
+        grow: mutable bool = s.capacity == 0
+        if s.capacity > 0:
+            grow <- true if s.used >= s.capacity
+            if not grow:
+                free_slots: usize = s.capacity - s.used
+                quarter: mutable usize = s.capacity / 4
+                quarter <- quarter + 1 if s.capacity % 4 != 0
+                grow <- free_slots <= quarter
+        if grow:
+            target_capacity: mutable usize = DICT_INIT_CAP
+            if s.capacity > 0:
+                target_capacity <- s.capacity * 2
+                panic("set capacity overflow") if target_capacity < s.capacity
             try arena_set_reserve(owner, s, target_capacity)
 
         assert s.items != null
@@ -1238,8 +1293,13 @@ def arena_set_add[T](a: mutable Arena&, s: mutable set[T]&, key: T) -> bool erro
         reused_tombstone: bool = items[probe.index].state == 2
         items[probe.index].key <- key
         items[probe.index].state <- 1
-        s.count <- s.count + 1.usize()
-        s.used <- s.used + 1.usize() if not reused_tombstone
+        next_count: usize = s.count + 1.usize()
+        panic("set count overflow") if next_count == 0
+        s.count <- next_count
+        if not reused_tombstone:
+            next_used: usize = s.used + 1.usize()
+            panic("set occupancy overflow") if next_used == 0
+            s.used <- next_used
         return true
 
 def arena_set_add_or_panic[T](a: mutable Arena&, s: mutable set[T]&, key: T) -> bool:
