@@ -493,6 +493,13 @@ the bytecode facade share this representation. Maps whose key and value types ar
 Function and backend entrypoints validate aggregate arguments against these same
 range predicates before executing or returning them, so malformed externally
 assembled views cannot alias a valid flat-pool slice.
+Aggregate-producing operations also validate the append span before narrowing the
+flat-pool cursor to `u32`: array segments, interleaved map pairs, concatenations,
+directory snapshots, and fixed-size tuple-like results all use the shared
+`runtime_storage_*_u32_valid` predicates. A host `usize` pool that is already past
+the serialized domain, or an append that would cross it, therefore raises the
+typed overflow failure before publishing a view; this applies equally to the
+reference interpreter and direct bytecode path.
 direct scalar/nominal representations, supported arrays, or recursively supported
 nested maps use the packed path for construction, lookup, membership, equality,
 updates, and key extraction. Other aggregates continue through the verified
