@@ -9,7 +9,8 @@ as `EsBuiltin` and exposes only its contract type and lookup functions; helper
 implementation details remain private to the module as the registry grows.
 Receiver methods use the same record through `typed_builtin_method_spec`; the
 first receiver-aware family is `Text`, covering case conversion, boundary
-predicates, replacement, joining, line splitting, and all four trim modes.
+predicates, replacement, joining, line splitting, text predicates, and all four
+trim modes.
 
 The current strict scalar/text slice contains these 23 spellings:
 
@@ -24,7 +25,10 @@ The current strict scalar/text slice contains these 23 spellings:
 
 The receiver-aware `Text` rows currently cover `lower`, `upper`, `casefold`,
 `starts_with`/`startswith`, `ends_with`/`endswith`, `replace`, `strip`,
-`trim`, `lstrip`, `rstrip`, `join`, and `splitlines`/`split_lines`. Their
+`trim`, `lstrip`, `rstrip`, `join`, `splitlines`/`split_lines`, and the
+zero-argument character-class predicates `isdigit`, `isdecimal`, `isnumeric`,
+`isalpha`, `isalnum`, `isspace`, `islower`, `isupper`, `isascii`, and
+`isprintable`. Their
 arities exclude the receiver and are checked separately from the global
 spellings; `join` requires one `darray[sview]` argument and returns `sview`,
 while both line-splitting aliases take no arguments and return `darray[sview]`.
