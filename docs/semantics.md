@@ -818,6 +818,13 @@ add an extra final newline, and reports the number of bytes written. It requires
 verified read/split/join/write instructions, keeping interpreter and bytecode
 behavior identical.
 
+The same contracts are available as receiver methods: `path.read_lines()` returns
+`darray[sview]`, while `path.write_lines(lines)` and `path.append_lines(lines)` return
+`usize`; the latter appends through `AppendText`. `path.append_text(text)` and
+`path.append_bytes(bytes)` expose the corresponding primitive append operations.
+All receiver forms preserve the nominal `Path`, `File.Read`/`File.Write` effects, and
+`FileIoError` error row rather than constructing a shell command.
+
 Interpolated strings use Elisa's `f"...{expr}..."` syntax. The parser represents
 them as ordered `__fstr` pieces. Elisascript accepts text, `char`, any integer width, `f32`/`f64`,
 `bool`, text-backed nominal, array, and dictionary dynamic pieces and lowers the

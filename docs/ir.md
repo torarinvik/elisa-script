@@ -572,6 +572,10 @@ deliberately not new opcodes: lowering expands them to `ReadText` + `Split`,
 `Join` + `WriteText`, and `Join` + `AppendText`, respectively. This keeps their
 effect/error rows and runtime behavior identical to the primitive operations while
 making empty lines and final-newline handling explicit.
+The equivalent receiver forms `path.read_lines()`, `path.write_lines(lines)`, and
+`path.append_lines(lines)` lower to the same instruction sequences. `path.append_text`
+and `path.append_bytes` likewise reuse `AppendText` and `AppendBytes`, so the method
+surface adds no interpreter or bytecode cases.
 `RemovePath` verifies as `Named(Path) -> Bool` with `File.Write`. It calls Elisa's
 core unlink wrapper using the same owned NUL-terminated path conversion as the other
 filesystem operations. Missing paths produce `false`; they are not conflated with
