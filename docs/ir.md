@@ -1750,7 +1750,8 @@ Parser and semantic source failures also retain their first typed kind and
 bounded source coordinates before the parser region is released: parser failures
 preserve `Ast::ParseErrorKind`, semantic failures preserve
 `Semantic::DiagnosticKind`, and both carry line/column/end-column data. The
-parser context token and semantic name/expected/actual/detail text are copied
+parser context token and semantic name/expected/actual/detail text plus typed
+expected/actual counts are copied
 through a 4 KiB-per-field permanent-storage bound; oversized fields set an
 explicit truncation flag. A deterministic FNV payload hash is retained for
 differential correlation, and the driver now renders parser context and semantic
