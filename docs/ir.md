@@ -98,6 +98,12 @@ encoding. This makes the bytes and their deterministic
 non-cryptographic `u64` fingerprint suitable for backend and differential-test
 artifact correlation; neither is a security identity or a replacement for IR
 verification.
+Before either operation, `canonical_module_counts_valid` checks every collection
+whose length is encoded as u32, including nested globals, handlers, and function
+pools. An unrepresentable host count therefore returns the empty byte sentinel
+from `canonical_module_bytes` and zero from `canonical_module_hash` instead of
+silently truncating a cache identity; normal verified modules remain on the
+version-1 stream.
 Field-level emitters and hash primitives are private to `EsIr`'s serializer. The
 bytecode artifact envelope uses only the qualified
 `EsIr::canonical_artifact_*` adapters, keeping its metadata format independent
