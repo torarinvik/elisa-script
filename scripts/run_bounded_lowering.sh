@@ -73,11 +73,12 @@ process_tree_rss_kb() {
 }
 
 kill_process_tree() {
-    for process_tree_pid in $(process_tree_pids "$1"); do
+    process_tree_snapshot="$(process_tree_pids "$1")"
+    for process_tree_pid in $process_tree_snapshot; do
         kill -TERM "$process_tree_pid" 2>/dev/null || true
     done
     sleep 1
-    for process_tree_pid in $(process_tree_pids "$1"); do
+    for process_tree_pid in $process_tree_snapshot; do
         kill -KILL "$process_tree_pid" 2>/dev/null || true
     done
 }

@@ -39,7 +39,9 @@ created. The log ceiling defaults to 64 MiB and bounds the temporary compiler
 diagnostic file using the same polling model as the RSS/time watchdog. Each
 fixture argument must be an existing `.elisascript` regular file. The wrapper installs signal/exit
 cleanup for its temporary log and owned compiler tree, and clears the child PID
-after `wait` so cleanup cannot act on a reused PID. The lowering and executable
+after `wait` so cleanup cannot act on a reused PID. Tree termination snapshots
+the owned PID set before signaling the root, so children that become reparented
+after the root exits still receive the forced second signal. The lowering and executable
 wrappers also serialize validation through an atomic lease directory under
 `${TMPDIR:-/tmp}`. The lease records the owner PID and `ps` start identity; a
 live owner with an untrusted or reused identity fails closed, while a dead owner
