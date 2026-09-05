@@ -380,8 +380,9 @@ post-`Perform` suffix and each caller's post-call suffix in order. A future
 increment can replace this flat replay chain with a general suspended-stack
 object for non-call control transfers.
 The runtime rejects a continuation before its `u32` resumption counter would
-wrap, reporting `InterpretError.InvalidContinuation` rather than silently
-reusing a wrapped count. Snapshot ids, values, handler names, and replay frames
+wrap or before its 100,000-resumption policy budget is exceeded, reporting
+`InterpretError.InvalidContinuation` rather than silently reusing a wrapped
+count. Snapshot ids, values, handler names, and replay frames
 also use bounded machine pools (one million copied values and 100,000 frames).
 A dynamic handler that exceeds those limits fails with `InvalidContinuation`
 without retaining a partial snapshot; completed callbacks reclaim their private
