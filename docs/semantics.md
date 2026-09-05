@@ -454,8 +454,9 @@ state work budget across scanner positions, backtracking, and capture probes, so
 exhaustion raises the same error instead of silently resetting the budget for a
 new match. These are containment rules, not a proof that every accepted pattern
 has linear runtime; adversarial-complexity qualification remains part of the
-regex completion gate. Replacement output expansion has a separate output-size
-qualification and must not be treated as unlimited merely because its inputs fit.
+regex completion gate. Replacement output is also capped at 64 MiB before its
+final owned buffer is allocated, and must not be treated as unlimited merely
+because its inputs fit.
 
 For ports that keep a compiled pattern in a local, `pattern.search(text)` is a
 typed receiver spelling of `matches(text, pattern)`. `pattern.match(text)`

@@ -482,8 +482,8 @@ builder can allocate or recurse. Each complete operation shares a 100-million
 state matcher budget across all scanner positions, recursive backtracking, and
 capture probes; exhaustion reports the same typed limit instead of resetting for
 the next candidate match. These boundaries contain input amplification but do
-not make the recursive matcher provably linear, and replacement output still
-needs a separate output-size qualification.
+not make the recursive matcher provably linear. Replacement construction also
+rejects output growth beyond 64 MiB before final publication.
 
 Compiled `Regex` values also expose `search(text)`, `match(text)`, and
 `fullmatch(text)`, plus `findall(text)` (with `find_all(text)` as a spelling

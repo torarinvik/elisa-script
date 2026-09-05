@@ -316,6 +316,7 @@ extend EsIr:
         const INTERPRET_MAX_GLOB_MATCH_BYTES: usize = 67108864
         const INTERPRET_MAX_REGEX_PATTERN_BYTES: usize = 65536
         const INTERPRET_MAX_REGEX_TEXT_BYTES: usize = 67108864
+        const INTERPRET_MAX_REGEX_OUTPUT_BYTES: usize = 67108864
         # Recursive regex matching consumes one unit at every matcher state.
         # Keep the budget shared by one complete operation, including all
         # scanner positions and capture probes, so backtracking cannot reset it.
@@ -2716,6 +2717,23 @@ extend EsIr:
                 out.push(sview_at(value, index))
 
 
+        def append_regex_output(out: mutable dstr&, value: sview, start: usize, end: usize, budget: mutable RegexWorkBudget&) -> void:
+            return if budget.exhausted
+            if start > end or end > sview_len(value) or out.count > INTERPRET_MAX_REGEX_OUTPUT_BYTES or end - start > INTERPRET_MAX_REGEX_OUTPUT_BYTES - out.count:
+                budget.exhausted <- true
+                return
+            for index in start..<end |out, value|:
+                out.push(sview_at(value, index))
+
+
+        def append_regex_byte(out: mutable dstr&, value: u8, budget: mutable RegexWorkBudget&) -> void:
+            return if budget.exhausted
+            if out.count >= INTERPRET_MAX_REGEX_OUTPUT_BYTES:
+                budget.exhausted <- true
+                return
+            out.push(value)
+
+
         # Capture extraction is intentionally conservative. The search matcher
         # supports nested groups and quantified groups, but deriving captures
         # from its endpoint-only result would be ambiguous in those cases. We
@@ -2791,25 +2809,29 @@ extend EsIr:
         # literal dollar and `&` provides the AWK/sed whole-match spelling;
         # `\&` escapes that ampersand. Unknown or ambiguous references remain
         # literal. Tokens are consumed atomically, including for an empty match.
-        def append_regex_replacement(out: mutable dstr&, replacement: sview, text: sview, span: RegexMatchSpan, captures: darray[RegexMatchSpan]&, names: darray[sview]&) -> void:
+        def append_regex_replacement(out: mutable dstr&, replacement: sview, text: sview, span: RegexMatchSpan, captures: darray[RegexMatchSpan]&, names: darray[sview]&, budget: mutable RegexWorkBudget&) -> void:
             index: mutable usize = 0
             while index < sview_len(replacement):
+                return if budget.exhausted
+                if out.count >= INTERPRET_MAX_REGEX_OUTPUT_BYTES:
+                    budget.exhausted <- true
+                    return
                 byte: u8 = sview_at(replacement, index)
                 if byte == 92 and sview_len(replacement) - index > 1 and sview_at(replacement, index + 1) == 38:
-                    out.push(38)
+                    append_regex_byte(out, 38, budget)
                     index <- index + 2
                 elif byte == 92 and sview_len(replacement) - index > 1 and (sview_at(replacement, index + 1) == 48 or (sview_at(replacement, index + 1) >= 49 and sview_at(replacement, index + 1) <= 57)):
                     reference: u8 = sview_at(replacement, index + 1)
                     if reference == 48:
-                        append_regex_text(out, text, span.start, span.end)
+                        append_regex_output(out, text, span.start, span.end, budget)
                     else:
                         capture_index: usize = (reference - 49).usize()
                         if capture_index < captures.count.usize() and captures[capture_index].found:
                             capture: RegexMatchSpan = captures[capture_index]
-                            append_regex_text(out, text, capture.start, capture.end)
+                            append_regex_output(out, text, capture.start, capture.end, budget)
                         else:
-                            out.push(byte)
-                            out.push(reference)
+                            append_regex_byte(out, byte, budget)
+                            append_regex_byte(out, reference, budget)
                     index <- index + 2
                 elif byte == 92 and sview_len(replacement) - index > 3 and sview_at(replacement, index + 1) == 103 and sview_at(replacement, index + 2) == 60:
                     cursor: mutable usize = index + 3
@@ -2818,14 +2840,14 @@ extend EsIr:
                     if cursor < sview_len(replacement):
                         name: sview = replacement[index + 3:cursor]
                         if name == "0":
-                            append_regex_text(out, text, span.start, span.end)
+                            append_regex_output(out, text, span.start, span.end, budget)
                         elif sview_len(name) == 1 and sview_at(name, 0) >= 49 and sview_at(name, 0) <= 57:
                             capture_index: usize = (sview_at(name, 0) - 49).usize()
                             if capture_index < captures.count.usize() and captures[capture_index].found:
                                 capture: RegexMatchSpan = captures[capture_index]
-                                append_regex_text(out, text, capture.start, capture.end)
+                                append_regex_output(out, text, capture.start, capture.end, budget)
                             else:
-                                append_regex_text(out, replacement, index, cursor + 1)
+                                append_regex_output(out, replacement, index, cursor + 1, budget)
                         else:
                             named_index: mutable usize = 0
                             named_match_index: mutable usize = names.count
@@ -2837,15 +2859,15 @@ extend EsIr:
                                 named_index <- named_index + 1
                             if name != "" and named_matches == 1 and named_match_index < captures.count and captures[named_match_index].found:
                                 capture: RegexMatchSpan = captures[named_match_index]
-                                append_regex_text(out, text, capture.start, capture.end)
+                                append_regex_output(out, text, capture.start, capture.end, budget)
                             else:
-                                append_regex_text(out, replacement, index, cursor + 1)
+                                append_regex_output(out, replacement, index, cursor + 1, budget)
                         index <- cursor + 1
                     else:
-                        out.push(byte)
+                        append_regex_byte(out, byte, budget)
                         index <- index + 1
                 elif byte == 38:
-                    append_regex_text(out, text, span.start, span.end)
+                    append_regex_output(out, text, span.start, span.end, budget)
                     index <- index + 1
                 elif byte == 36 and sview_len(replacement) - index > 1 and (sview_at(replacement, index + 1) == 123 or sview_at(replacement, index + 1) == 60):
                     marker: u8 = sview_at(replacement, index + 1)
@@ -2865,35 +2887,35 @@ extend EsIr:
                             named_index <- named_index + 1
                         if name != "" and named_matches == 1 and named_match_index < captures.count and captures[named_match_index].found:
                             capture: RegexMatchSpan = captures[named_match_index]
-                            append_regex_text(out, text, capture.start, capture.end)
+                            append_regex_output(out, text, capture.start, capture.end, budget)
                         else:
-                            append_regex_text(out, replacement, index, cursor + 1)
+                            append_regex_output(out, replacement, index, cursor + 1, budget)
                         index <- cursor + 1
                     else:
-                        out.push(byte)
+                        append_regex_byte(out, byte, budget)
                         index <- index + 1
                 elif byte == 36 and sview_len(replacement) - index > 1:
                     reference: u8 = sview_at(replacement, index + 1)
                     if reference == 36:
-                        out.push(36)
+                        append_regex_byte(out, 36, budget)
                         index <- index + 2
                     elif reference == 48:
-                        append_regex_text(out, text, span.start, span.end)
+                        append_regex_output(out, text, span.start, span.end, budget)
                         index <- index + 2
                     elif reference >= 49 and reference <= 57:
                         capture_index: usize = (reference - 49).usize()
                         if capture_index < captures.count.usize() and captures[capture_index].found:
                             capture: RegexMatchSpan = captures[capture_index]
-                            append_regex_text(out, text, capture.start, capture.end)
+                            append_regex_output(out, text, capture.start, capture.end, budget)
                         else:
-                            out.push(36)
-                            out.push(reference)
+                            append_regex_byte(out, 36, budget)
+                            append_regex_byte(out, reference, budget)
                         index <- index + 2
                     else:
-                        out.push(sview_at(replacement, index))
+                        append_regex_byte(out, sview_at(replacement, index), budget)
                         index <- index + 1
                 else:
-                    out.push(byte)
+                    append_regex_byte(out, byte, budget)
                     index <- index + 1
 
 
@@ -2905,14 +2927,17 @@ extend EsIr:
                 span: RegexMatchSpan = regex_find_match(text, pattern, cursor, budget)
                 return "" if budget.exhausted
                 if not span.found:
-                    append_regex_text(output, text, cursor, length)
+                    append_regex_output(output, text, cursor, length, budget)
+                    return "" if budget.exhausted
                     break
-                append_regex_text(output, text, cursor, span.start)
+                append_regex_output(output, text, cursor, span.start, budget)
+                return "" if budget.exhausted
                 captures: mutable darray[RegexMatchSpan] = []
                 names: mutable darray[sview] = []
                 regex_capture_spans_for_match(text, pattern, span, captures, names, budget)
                 return "" if budget.exhausted
-                append_regex_replacement(output, replacement, text, span, captures, names)
+                append_regex_replacement(output, replacement, text, span, captures, names, budget)
+                return "" if budget.exhausted
                 if span.start == span.end:
                     if span.start < length:
                         output.push(sview_at(text, span.start))
