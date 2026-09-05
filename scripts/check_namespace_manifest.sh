@@ -29,6 +29,40 @@ for extension in $extension_names; do
     fi
 done
 
+# POSIX ABI declarations are implementation details of the qualified runtime
+# namespace. Keep every link-name/extern pair inside an `EsRuntime` extension
+# and its `private:` section, and reject direct `_impl` calls from higher-level
+# source. This is deliberately lexical: it catches namespace leakage before a
+# compiler or platform linker is involved.
+runtime_root="$source_root/runtime"
+if [ -d "$runtime_root" ]; then
+    if ! rg --files "$runtime_root" -g '*.elisa' 2>/dev/null | sort | while IFS= read -r runtime_file; do
+        if rg -q '^\s*(extern|@link_name)' "$runtime_file" && ! rg -q '^extend EsRuntime:' "$runtime_file"; then
+            echo "check_namespace_manifest: POSIX ABI declaration is outside EsRuntime: $runtime_file" >&2
+            exit 1
+        fi
+        if ! awk '
+            /^[[:space:]]+private:/ { in_private=1; next }
+            /^[[:space:]]+public:/ { in_private=0; next }
+            /^[[:space:]]*(extern|@link_name)/ && !in_private {
+                print FILENAME ": POSIX ABI declaration is not private at line " FNR
+                bad=1
+            }
+            END { exit bad ? 1 : 0 }
+        ' "$runtime_file"; then
+            exit 1
+        fi
+    done; then
+        exit 1
+    fi
+    leaked_impls="$(rg -n --glob '*.elisa' 'elisascript_posix_[A-Za-z0-9_]+_impl\(' "$source_root" 2>/dev/null | awk -F: '$1 !~ /\/runtime\//' || true)"
+    if [ -n "$leaked_impls" ]; then
+        echo "check_namespace_manifest: private POSIX _impl call leaked outside runtime:" >&2
+        printf '%s\n' "$leaked_impls" >&2
+        exit 1
+    fi
+fi
+
 # Resolve every literal include relative to the file that declares it. This
 # remains compiler-free, but prevents a copied source tree from silently
 # depending on a missing or accidentally renamed module fragment.

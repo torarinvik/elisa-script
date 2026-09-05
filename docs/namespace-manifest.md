@@ -25,6 +25,11 @@ Parser diagnostics are checked in the same way for every `Ast::ParseErrorKind`
 branch. Semantic wording remains delegated to the exhaustive vendored
 `Semantic::diagnostic_message` renderer; the launcher supplies it only a
 region-independent diagnostic kind and bounded coordinates.
+The audit also walks every `src/runtime` extension: each `@link_name`/`extern`
+ABI declaration must be inside an `EsRuntime` extension and a `private:`
+section, and no higher-level source may call an `_impl` ABI symbol directly.
+This keeps libc names and platform-specific signatures behind the typed runtime
+forwarders while still preserving their stable link names.
 The vendored `Semantic` and standard-library namespaces are intentionally
 outside this check and remain governed by `vendor/elisa-compiler/SOURCE.md`.
 
