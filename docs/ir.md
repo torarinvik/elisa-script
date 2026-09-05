@@ -824,6 +824,8 @@ Process waits use nonblocking `waitpid` polling and a 120-second deadline; a chi
 that exceeds the deadline is killed and reported as `ProcessError` rather than
 blocking the host indefinitely. Interrupted waits and one-millisecond poll
 sleeps retry through bounded `EINTR` budgets before becoming `ProcessError`.
+The parent-side `setpgid(child, child)` admission also retries `EINTR`; any
+other failure leaves `group_ready` false and retains direct-child-only cleanup.
 Negative-PID group signaling is attempted only
 after the parent confirms `setpgid(child, child)` succeeded; if group setup
 fails, cleanup signals and reaps the direct child without risking an unrelated

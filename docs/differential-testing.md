@@ -199,7 +199,8 @@ long-running child is terminated as soon as a stream crosses its ceiling. Each
 child creates a private process group before `execvp`; timeout and output-limit
 cleanup signal that confirmed group and then reap the leader, preventing
 descendants from surviving a failed differential case. If parent-side `setpgid`
-fails, cleanup signals only the direct leader so a failed group setup can never
+is interrupted it is retried through a bounded `EINTR` budget; if it still fails,
+cleanup signals only the direct leader so a failed group setup can never
 target an unrelated process group. Group setup is best-effort on platforms
 without POSIX process groups and those adapters must report that limitation. The
 post-exit reader owns both temporary streams as a pair: if either stream fails
