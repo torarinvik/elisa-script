@@ -55,7 +55,13 @@ which avoids racing a worker that is still publishing its identity. This lease
 prevents two bounded workers from competing for the host's memory. Both
 wrappers set `umask 077` before creating lease metadata or temporary logs, and
 the lease does not turn the polling RSS guard into an instantaneous OS-enforced
-cap.
+cap. `scripts/stop_bounded_validation.sh` is the scoped emergency stop: it
+sets `${TMPDIR:-/tmp}/elisascript-validation.disabled`, verifies the live lease
+owner's PID, start identity, and wrapper command, then terminates only that
+wrapper's snapshotted process tree. Any RSS, timeout, or diagnostic-log guard
+trip also sets this latch. Both validation wrappers refuse to relaunch while
+the latch exists; remove it manually only after reviewing the failure and
+deciding to reauthorize a smaller bounded run.
 
 Executable fixtures use the matching process-tree guard:
 

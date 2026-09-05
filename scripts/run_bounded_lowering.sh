@@ -8,6 +8,13 @@
 set -u
 umask 077
 
+validation_disabled_file="${TMPDIR:-/tmp}/elisascript-validation.disabled"
+
+if [ -e "$validation_disabled_file" ]; then
+    echo "run_bounded_lowering: validation emergency-stop latch is set; remove $validation_disabled_file only after review" >&2
+    exit 125
+fi
+
 # Validation is disabled by default after repeated runaway compiler chains. A
 # caller must explicitly reauthorize a bounded run for this wrapper to launch
 # any compiler process.
@@ -93,6 +100,13 @@ validation_lease_dir="${TMPDIR:-/tmp}/elisascript-validation.lease"
 validation_lease_pid="$$"
 validation_lease_start=""
 validation_lease_acquired=0
+
+latch_validation_disabled() {
+    latch_reason="$1"
+    if ! printf '%s\n' "$latch_reason" >"$validation_disabled_file"; then
+        echo "run_bounded_lowering: unable to persist emergency-stop latch" >&2
+    fi
+}
 
 acquire_validation_lease() {
     validation_lease_start="$(ps -o lstart= -p "$validation_lease_pid" 2>/dev/null | sed 's/^[[:space:]]*//')"
@@ -201,6 +215,7 @@ for source_file in "$@"; do
         rss_kb="$(process_tree_rss_kb "$compiler_pid")"
         if [ "$rss_kb" -gt "$rss_limit_kb" ]; then
             rss_guard=1
+            latch_validation_disabled "run_bounded_lowering rss_guard pid=$compiler_pid rss_kb=$rss_kb limit_kb=$rss_limit_kb"
             kill_process_tree "$compiler_pid"
             break
         fi
@@ -208,6 +223,7 @@ for source_file in "$@"; do
         log_bytes="$(wc -c <"$log_file" | tr -d '[:space:]')"
         if [ "$log_bytes" -gt "$log_limit_bytes" ]; then
             output_guard=1
+            latch_validation_disabled "run_bounded_lowering output_guard pid=$compiler_pid log_bytes=$log_bytes limit_bytes=$log_limit_bytes"
             kill_process_tree "$compiler_pid"
             break
         fi
@@ -215,6 +231,7 @@ for source_file in "$@"; do
         now="$(date +%s)"
         if [ "$((now - started_at))" -gt "$time_limit_seconds" ]; then
             timeout_guard=1
+            latch_validation_disabled "run_bounded_lowering timeout_guard pid=$compiler_pid limit_seconds=$time_limit_seconds"
             kill_process_tree "$compiler_pid"
             break
         fi
