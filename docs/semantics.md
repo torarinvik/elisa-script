@@ -741,6 +741,8 @@ typed default when the key is absent, and inserts that default into a mutable
 dictionary only on a miss. The key and default must match the dictionary's exact
 key/value types; the operation preserves insertion order and returns the value
 type directly without a result wrapper.
+If an insertion would exceed the runtime map's serialized `u32` entry count,
+the operation raises `InterpretError.IntegerOverflow` and publishes no new map.
 
 Mutable arrays accept both Elisa's `values.push(element)` spelling and the
 Python-compatible `values.append(element)` alias. Both require one positional
