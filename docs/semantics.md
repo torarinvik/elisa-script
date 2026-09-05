@@ -330,8 +330,10 @@ and remains shadowable by a source declaration.
 
 Text values also provide `text.count(substring) -> usize`. The operation counts
 left-to-right non-overlapping byte matches; an empty substring counts the input
-boundaries (`length + 1`). It is pure, deterministic, and rejects non-text
-receivers or arguments during lowering.
+boundaries (`length + 1`). Both interpreter and direct-bytecode scanners use
+subtraction-based bounds before forming a candidate offset, so malformed or
+host-sized views cannot wrap a cursor into an out-of-range read. It is pure,
+deterministic, and rejects non-text receivers or arguments during lowering.
 The companion `text.find(substring) -> i64` method returns the first byte offset,
 `0` for an empty substring, and `-1` when no match exists. It uses the same
 byte-oriented comparison rules and is pure and deterministic.
