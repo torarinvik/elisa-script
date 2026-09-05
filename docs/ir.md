@@ -1692,7 +1692,8 @@ The launcher-facing ABI is `main(arguments: darray[sview]) -> i64`. The program
 runner appends each host argument to caller-owned runtime storage, passes one typed
 array value to `main`, and returns the signed 64-bit result as the process status.
 Before copying, it bounds the aggregate argument text at 64 MiB and checks the
-existing runtime `u32` storage span; exceeding either limit remains a typed
+argument vector at one million elements and the aggregate text at 64 MiB, and
+checks the existing runtime `u32` storage span; exceeding any limit remains a typed
 `InterpretError.ArgumentMismatch` rather than partially publishing an argv array.
 `validate_elisascript_entrypoint` rejects a missing or differently typed `main`
 before lowering to bytecode; source and runtime failures continue to use their
