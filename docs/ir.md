@@ -331,6 +331,9 @@ clauses are rejected. Terminal handlers cannot use
 this resuming clause form; nonterminal policies select whether the captured frame
 is consumed once (`Linear`/`Affine`) or remains available for repeated callback-local
 resumptions (`MultiReplay`/`MultiClone`).
+Continuation-capture metadata is also checked before execution: names must be
+non-empty and unique, and capture types cannot be `Void`. Malformed metadata is
+a handler-contract issue rather than permission to replay an untyped value.
 Coverage is operation-aware: a handler with one or more clauses handles only the
 exact `Family.Operation` pairs it declares, so an unmatched operation continues
 searching through outer handlers. A handler with an empty clause set is an

@@ -95,7 +95,9 @@ values, 100,000 replay frames, and 100,000 resumptions per captured
 continuation, reporting `InvalidContinuation` on exhaustion,
 and reclaims call and callback snapshot suffixes as soon as they return. These
 limits are runtime resource guards, not implicit weakening of the static effect
-or ownership checks. Ordinary interpreter and direct-bytecode call entrypoints
+or ownership checks. Capture declarations must use unique non-empty names and
+non-void types before a handler can be verified. Ordinary interpreter and
+direct-bytecode call entrypoints
 also reject an active-call or handler depth at 4,096 with the typed
 `InterpretError.OutputLimit`; this bounds host-stack recursion until the fully
 frame-based call protocol is complete.
