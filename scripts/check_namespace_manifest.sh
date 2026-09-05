@@ -51,6 +51,19 @@ done; then
     exit 1
 fi
 
+# Keep the host diagnostic renderer exhaustive when the verifier adds a new
+# issue kind. The enum and renderer intentionally live in different modules,
+# so this source-level check prevents a new variant from silently collapsing
+# to `UnknownBytecodeIssue`.
+issue_kinds="$(sed -n '/^[[:space:]]*const enum IssueKind of u8:/,/^[[:space:]]*struct Issue:/p' "$source_root/ir/ir_model.elisa" | sed -n 's/^[[:space:]]*\([A-Za-z_][A-Za-z0-9_]*\)[[:space:]]*$/\1/p')"
+issue_renderer="$(sed -n '/^[[:space:]]*def bytecode_issue_detail/,/^[[:space:]]*def runtime_error_detail/p' "$source_root/driver/elisascript.elisa")"
+for issue_kind in $issue_kinds; do
+    if ! printf '%s\n' "$issue_renderer" | grep -F "IssueKind.$issue_kind" >/dev/null 2>&1; then
+        echo "check_namespace_manifest: bytecode diagnostic renderer omits IssueKind.$issue_kind" >&2
+        exit 1
+    fi
+done
+
 for expected in EsBytecode EsDifferential EsDriver EsIr EsIrArtifact EsRuntime; do
     if ! printf '%s\n' "$module_names" | grep -F -x "$expected" >/dev/null 2>&1; then
         echo "check_namespace_manifest: required module is missing: $expected" >&2
