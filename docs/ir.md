@@ -712,7 +712,9 @@ making empty lines and final-newline handling explicit.
 The equivalent receiver forms `path.read_lines()`, `path.write_lines(lines)`, and
 `path.append_lines(lines)` lower to the same instruction sequences. `path.append_text`
 and `path.append_bytes` likewise reuse `AppendText` and `AppendBytes`, so the method
-surface adds no interpreter or bytecode cases.
+surface adds no interpreter or bytecode cases. The line writers lower their input
+array contextually as `darray[sview]`, so an empty literal is still a statically
+typed empty collection rather than an untyped escape hatch.
 `RemovePath` verifies as `Named(Path) -> Bool` with `File.Write`. It calls Elisa's
 core unlink wrapper using the same owned NUL-terminated path conversion as the other
 filesystem operations. Missing paths produce `false`; they are not conflated with

@@ -851,6 +851,8 @@ The same contracts are available as receiver methods: `path.read_lines()` return
 `darray[sview]`, while `path.write_lines(lines)` and `path.append_lines(lines)` return
 `usize`; the latter appends through `AppendText`. `path.append_text(text)` and
 `path.append_bytes(bytes)` expose the corresponding primitive append operations.
+The line writers provide the `darray[sview]` element context to their argument, so
+`path.write_lines([])` and `append_lines(path, [])` are well-typed empty collections.
 All receiver forms preserve the nominal `Path`, `File.Read`/`File.Write` effects, and
 `FileIoError` error row rather than constructing a shell command.
 
