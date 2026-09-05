@@ -2,8 +2,9 @@
 
 The first Q03 vertical slice now has one shared registry at
 `vendor/elisa-compiler/src/semantic/builtin_registry.elisa`. Each registered
-row owns the spelling, receiver category, required/maximum arity, return type,
-effect row, error row, and semantic IR opcode name. The registry is namespaced
+row owns the spelling, receiver category, required/maximum arity, canonical
+argument-type descriptor, return type, effect row, error row, and semantic IR
+opcode name. The registry is namespaced
 as `EsBuiltin` and exposes only its contract type and lookup functions; helper
 implementation details remain private to the module as the registry grows.
 
@@ -20,7 +21,8 @@ The current strict scalar/text slice contains these 23 spellings:
 
 Semantic builtin seeding consults `EsBuiltin::typed_builtin_spec` and stores
 the row's `arity_min`, `arity_max`, `return_type`, `effects`, `errors`, and
-`opcode` on the qualified semantic symbol. This removes the former untyped
+`argument_types`, `effects`, `errors`, and `opcode` on the qualified semantic
+symbol. This removes the former untyped
 `contains` duplicate and lets direct-call arity checking see the registry
 contract. The lowerer obtains result types and parser error requirements from
 the same row before selecting the existing IR opcode. Unknown names continue
