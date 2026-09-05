@@ -92,6 +92,13 @@ The comparator repeats the observation and owned-pool budgets before it creates
 its explicit pending-pair or map-bijection state. Publicly assembled runs that
 bypass adapter constructors therefore fail closed with a bounded comparison
 record instead of allocating from an untrusted count.
+Comparator work is bounded independently of pool size: it selects at most one
+million pending pairs and rejects aggregate paths deeper than 128 levels.
+Array pairs carry their depth through the explicit state machine, while map
+pair matching propagates the same bound across its helper calls. Cyclic or
+pathologically shared flat snapshots therefore become a deterministic
+`ObservationValue` mismatch instead of an infinite comparison or host-stack
+overflow.
 
 The module keeps state-machine cursors, process-host symbols, and comparison
 helpers private; only runner/value records and the documented adapter/comparator

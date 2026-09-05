@@ -66,6 +66,10 @@ module EsDifferential:
         # A comparison artifact must not retain an effectively unbounded flat
         # value pool even when every individual offset is representable.
         const DIFFERENTIAL_DEFAULT_MAX_VALUES: usize = 1048576
+        # Equality may revisit shared or cyclic aggregate views. Bound the
+        # number of selected pairs independently from pool size so a malformed
+        # DAG cannot turn comparison into an unbounded work loop.
+        const DIFFERENTIAL_DEFAULT_MAX_COMPARISON_PAIRS: usize = 1048576
         # Runtime aggregate snapshots are recursively converted into the owned
         # pool. Keep hostile nesting from exhausting the host call stack.
         const DIFFERENTIAL_DEFAULT_MAX_VALUE_DEPTH: usize = 128
@@ -998,6 +1002,7 @@ module EsDifferential:
         struct DifferentialValueEqualPair:
             left: DifferentialValue
             right: DifferentialValue
+            depth: usize
 
 
         struct DifferentialValueEqualCursor:
@@ -1006,12 +1011,14 @@ module EsDifferential:
             current: mutable DifferentialValueEqualPair
             pending: mutable darray[DifferentialValueEqualPair]
             equal: mutable bool
+            comparisons: mutable usize
             tolerance: DifferentialFloatTolerance
 
 
-        # Equality uses an explicit pair stack rather than recursive calls. This
-        # keeps arbitrarily nested arrays bounded by caller-owned storage and
-        # makes every comparison transition visible to the Elisa machine.
+        # Equality uses an explicit pair stack rather than recursive array calls.
+        # Pair depth and total selections are bounded as well, so cyclic or
+        # heavily shared flat views cannot exhaust the host stack or loop
+        # forever through the map helper.
         def differential_float_equal(left: f64, right: f64, tolerance: DifferentialFloatTolerance) -> bool:
             return false if tolerance.absolute < 0.0 or tolerance.relative < 0.0
             # Preserve exact equality for the same infinity, while rejecting a
@@ -1031,9 +1038,10 @@ module EsDifferential:
             return difference <= tolerance.absolute + tolerance.relative * scale
 
 
-        def differential_values_equal(left_storage: darray[DifferentialValue]&, left: DifferentialValue, right_storage: darray[DifferentialValue]&, right: DifferentialValue, tolerance: DifferentialFloatTolerance = DifferentialFloatTolerance{}) -> bool can[Memory.Allocate, Abort.Panic]:
+        def differential_values_equal(left_storage: darray[DifferentialValue]&, left: DifferentialValue, right_storage: darray[DifferentialValue]&, right: DifferentialValue, tolerance: DifferentialFloatTolerance = DifferentialFloatTolerance{}, depth: usize = 0) -> bool can[Memory.Allocate, Abort.Panic]:
             return false if left_storage.count > DIFFERENTIAL_DEFAULT_MAX_VALUES or right_storage.count > DIFFERENTIAL_DEFAULT_MAX_VALUES
-            cursor: mutable DifferentialValueEqualCursor = DifferentialValueEqualCursor{state: DifferentialValueEqualState.Select, index: 0, current: DifferentialValueEqualPair{left: left, right: right}, pending: [DifferentialValueEqualPair{left: left, right: right}], equal: true, tolerance: tolerance}
+            return false if depth > DIFFERENTIAL_DEFAULT_MAX_VALUE_DEPTH
+            cursor: mutable DifferentialValueEqualCursor = DifferentialValueEqualCursor{state: DifferentialValueEqualState.Select, index: 0, current: DifferentialValueEqualPair{left: left, right: right, depth: depth}, pending: [DifferentialValueEqualPair{left: left, right: right, depth: depth}], equal: true, comparisons: 0, tolerance: tolerance}
             machine over cursor.state while cursor.equal:
                 state Compare
                 start Compare
@@ -1041,23 +1049,23 @@ module EsDifferential:
                 Compare, DifferentialValueEqualState.Select if cursor.pending.count == 0:
                     cursor.state <- DifferentialValueEqualState.Done
                     -> Compare
+                Compare, DifferentialValueEqualState.Select if cursor.comparisons >= DIFFERENTIAL_DEFAULT_MAX_COMPARISON_PAIRS:
+                    cursor.equal <- false
+                    cursor.state <- DifferentialValueEqualState.Done
+                    -> Compare
                 Compare, DifferentialValueEqualState.Select if not differential_value_kind_valid(cursor.pending[cursor.pending.count - 1].left.kind) or not differential_value_kind_valid(cursor.pending[cursor.pending.count - 1].right.kind):
                     cursor.equal <- false
                     cursor.state <- DifferentialValueEqualState.Done
                     -> Compare
-                Compare, DifferentialValueEqualState.Select if cursor.pending[cursor.pending.count - 1].left.kind == DifferentialValueKind.Array:
-                    cursor.current <- cursor.pending.pop()
-                    cursor.state <- DifferentialValueEqualState.ArrayValidate
-                    -> Compare
-                Compare, DifferentialValueEqualState.Select if cursor.pending[cursor.pending.count - 1].left.kind == DifferentialValueKind.Map:
-                    cursor.current <- cursor.pending.pop()
-                    cursor.state <- DifferentialValueEqualState.MapValidate
+                Compare, DifferentialValueEqualState.Select if cursor.pending[cursor.pending.count - 1].depth > DIFFERENTIAL_DEFAULT_MAX_VALUE_DEPTH:
+                    cursor.equal <- false
+                    cursor.state <- DifferentialValueEqualState.Done
                     -> Compare
                 Compare, DifferentialValueEqualState.Select:
+                    cursor.comparisons <- cursor.comparisons + 1
                     cursor.current <- cursor.pending.pop()
-                    cursor.state <- DifferentialValueEqualState.Scalar
+                    cursor.state <- DifferentialValueEqualState.ArrayValidate if cursor.current.left.kind == DifferentialValueKind.Array else DifferentialValueEqualState.MapValidate if cursor.current.left.kind == DifferentialValueKind.Map else DifferentialValueEqualState.Scalar
                     -> Compare
-
                 Compare, DifferentialValueEqualState.Scalar if cursor.current.left.kind != cursor.current.right.kind:
                     cursor.equal <- false
                     cursor.state <- DifferentialValueEqualState.Done
@@ -1107,12 +1115,12 @@ module EsDifferential:
                     cursor.state <- DifferentialValueEqualState.Select
                     -> Compare
                 Compare, DifferentialValueEqualState.ArrayPush:
-                    cursor.pending.push(DifferentialValueEqualPair{left: left_storage[cursor.current.left.array_start.usize() + cursor.index], right: right_storage[cursor.current.right.array_start.usize() + cursor.index]})
+                    cursor.pending.push(DifferentialValueEqualPair{left: left_storage[cursor.current.left.array_start.usize() + cursor.index], right: right_storage[cursor.current.right.array_start.usize() + cursor.index], depth: cursor.current.depth + 1})
                     cursor.index <- cursor.index + 1
                     -> Compare
 
                 Compare, DifferentialValueEqualState.MapValidate:
-                    cursor.equal <- differential_map_values_equal(left_storage, cursor.current.left, right_storage, cursor.current.right, cursor.tolerance)
+                    cursor.equal <- differential_map_values_equal(left_storage, cursor.current.left, right_storage, cursor.current.right, cursor.tolerance, cursor.current.depth)
                     cursor.state <- DifferentialValueEqualState.Select if cursor.equal else DifferentialValueEqualState.Done
                     -> Compare
 
@@ -1125,7 +1133,8 @@ module EsDifferential:
         # Map snapshots use the same order-insensitive key/value semantics as the
         # interpreter.  A key/value pair is considered present when both members
         # compare equal; duplicate entries therefore remain deterministic data.
-        def differential_map_values_equal(left_storage: darray[DifferentialValue]&, left: DifferentialValue, right_storage: darray[DifferentialValue]&, right: DifferentialValue, tolerance: DifferentialFloatTolerance = DifferentialFloatTolerance{}) -> bool can[Memory.Allocate, Abort.Panic]:
+        def differential_map_values_equal(left_storage: darray[DifferentialValue]&, left: DifferentialValue, right_storage: darray[DifferentialValue]&, right: DifferentialValue, tolerance: DifferentialFloatTolerance = DifferentialFloatTolerance{}, depth: usize = 0) -> bool can[Memory.Allocate, Abort.Panic]:
+            return false if depth > DIFFERENTIAL_DEFAULT_MAX_VALUE_DEPTH
             false return if left.kind != DifferentialValueKind.Map or right.kind != DifferentialValueKind.Map
             false return if left.map_count != right.map_count
             false return if left_storage.count > DIFFERENTIAL_DEFAULT_MAX_VALUES or right_storage.count > DIFFERENTIAL_DEFAULT_MAX_VALUES
@@ -1149,7 +1158,7 @@ module EsDifferential:
                     right_pair: usize = right.map_start.usize() + right_offset * 2
                     right_key: DifferentialValue = right_storage[right_pair]
                     right_value: DifferentialValue = right_storage[right_pair + 1]
-                    if not matched[right_offset] and differential_values_equal(left_storage, left_key, right_storage, right_key, tolerance) and differential_values_equal(left_storage, left_value, right_storage, right_value, tolerance):
+                    if not matched[right_offset] and differential_values_equal(left_storage, left_key, right_storage, right_key, tolerance, depth + 1) and differential_values_equal(left_storage, left_value, right_storage, right_value, tolerance, depth + 1):
                         found <- true
                         matched[right_offset] <- true
                 false return if not found
