@@ -943,6 +943,9 @@ an arbitrary string and contributes `File.Read` to the enclosing function's effe
 row. The reference interpreter executes it through Elisa's own
 `elisacore_fileio.elisa` runtime; it does not invoke a shell or Python. A
 source-defined `path_exists` function shadows the compiler-known operation.
+Empty or embedded-NUL paths are treated as non-existent and never reach the
+POSIX boundary; allocation failure while preparing the terminated host view is
+also fail-closed as `false`.
 
 `is_file(path: Path) -> bool` is the regular-file predicate used by shell `test -f`
 and Python `Path.is_file()`. It contributes `File.Read`; missing paths and entries
@@ -1139,7 +1142,9 @@ embedded NUL, or cannot be resolved.
 
 `copy_path(source: Path, destination: Path) -> bool error[FileIoError]
 can[File.Read, File.Write]` copies one regular file by length-delimited bytes and
-replaces the destination. `move_path(source: Path, destination: Path) -> bool
+replaces the destination. The source is subject to the interpreter's 64 MiB
+whole-file safety ceiling, just like `read_bytes`; oversized copies fail before
+materializing the source buffer. `move_path(source: Path, destination: Path) -> bool
 error[FileIoError] can[File.Write]` performs an atomic POSIX rename within the
 filesystem. Both operations reject arbitrary text at compile time and report
 operating-system failures through `error[...]`; neither constructs a shell command.
