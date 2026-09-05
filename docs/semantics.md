@@ -264,6 +264,8 @@ exactly text-typed. The result is an owned text value, so chained expressions an
 concatenation with a computed method result remain valid across the interpreter and
 bytecode backends. Other `+` operand pairs retain Elisa's numeric typing rules and
 are rejected when either operand is firmly non-numeric.
+Text concatenation checks the host-size sum before allocation and raises
+`InterpretError.IntegerOverflow` if the result length would wrap.
 
 The binary ordering operators (`<`, `<=`, `>`, `>=`) also accept two exactly
 text-typed (or exactly `char`-typed) operands. They compare unsigned `sview` bytes
