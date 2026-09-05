@@ -1776,4 +1776,7 @@ also bound every raw host-argument C-string scan before it becomes a borrowed
 view, and stop admitting script arguments once their aggregate text reaches
 the same 64 MiB launcher budget. This keeps the ABI boundary subtraction-safe;
 the runner still applies its own typed argv and runtime-storage checks after
-parsing.
+parsing. Launcher stderr writes retry bounded `EINTR` interruptions and short
+positive progress, resetting the interruption budget after progress; zero,
+over-counted, or exhausted writes terminate the diagnostic without silently
+advancing beyond its borrowed message.

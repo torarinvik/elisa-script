@@ -1593,6 +1593,10 @@ the source path and failing phase in stderr diagnostics, and source,
 entrypoint, and runtime phases include the exact retained enum variant spelling;
 the underlying runner still preserves its typed `error[...]` family for library
 and programmatic callers.
+Diagnostic writes use the same bounded short-progress policy as ordinary stdout:
+positive writes advance the borrowed message, `EINTR` is retried through a
+small budget that resets after progress, and zero, over-counted, or exhausted
+writes stop without claiming a complete diagnostic.
 
 Source loading rejects `.elisascript` inputs larger than 4 MiB before parser-arena
 allocation. This keeps the source boundary's size arithmetic bounded; generated
