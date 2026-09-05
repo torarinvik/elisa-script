@@ -1248,7 +1248,9 @@ adds a recursive `**/` component. Both use the same bounded, symlink-safe glob
 walker as `expand_glob` and carry `Directory.Read`/`DirectoryError`.
 Every owned path/variant buffer is checked before it is appended; allocation
 failure aborts the traversal as `DirectoryError` rather than publishing a
-partial or null match.
+partial or null match. Each scan is capped at 262,144 directory entries and
+64 MiB of aggregate entry-name bytes; brace variants and final matches also have
+bounded budgets, and crossing one raises `DirectoryError` before publication.
 `path.iterdir()` takes no arguments and returns a deterministic `darray[sview]`
 of rooted direct children. It performs no pattern filtering, includes dotfiles,
 skips only the synthetic `.` and `..` entries, does not recurse, and carries the
@@ -1609,6 +1611,9 @@ can[Directory.Read]` returns owned entry basenames. It omits the synthetic `.` a
 `..` entries and sorts remaining names by unsigned byte order, making discovery
 deterministic rather than dependent on filesystem enumeration order. Opening,
 enumeration, entry-name allocation, and close failures remain structured errors.
+The scanner rejects a directory with more than 262,144 published entries or
+64 MiB of aggregate entry-name bytes before returning a partial array; the same
+bounded scanner is shared by `path.iterdir()` and glob traversal.
 Returned names do not
 borrow the operating system's reusable directory-entry buffer.
 The Python `listdir(path)` spelling is an equivalent typed alias.
