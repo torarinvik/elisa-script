@@ -1204,6 +1204,9 @@ their effects, errors, and exact result types remain visible to every backend.
 return deterministic `darray[sview]` matches rooted at the receiver; `rglob`
 adds a recursive `**/` component. Both use the same bounded, symlink-safe glob
 walker as `expand_glob` and carry `Directory.Read`/`DirectoryError`.
+Every owned path/variant buffer is checked before it is appended; allocation
+failure aborts the traversal as `DirectoryError` rather than publishing a
+partial or null match.
 `path.iterdir()` takes no arguments and returns a deterministic `darray[sview]`
 of rooted direct children. It performs no pattern filtering, includes dotfiles,
 skips only the synthetic `.` and `..` entries, does not recurse, and carries the
