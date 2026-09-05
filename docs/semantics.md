@@ -85,8 +85,12 @@ function-type, or refinement spelling. Overloads are not accepted in the initial
 ABI because dispatch identifies an operation by its family and name. Operation
 payload and resumption types remain governed by the ordinary typed handler callback
 and IR verifier until the resolver consumes these preserved spans, so declaration
-metadata cannot weaken static checking. Dynamic handlers may therefore intercept
-user-defined operations without introducing a second runtime representation.
+metadata cannot weaken static checking. As an initial enforcement slice, bare
+primitive/nominal result spellings are resolved during lowering and a value-producing
+`perform` is rejected when its contextual destination type disagrees; generic or
+structural result spans remain conservative until the shared type interner handles
+them. Dynamic handlers may therefore intercept user-defined operations without
+introducing a second runtime representation.
 Duplicate-operation diagnostics point at the later operation token when source
 coordinates are available.
 

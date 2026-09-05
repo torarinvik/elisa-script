@@ -14,8 +14,9 @@ parser_file="$repo_root/vendor/elisa-compiler/src/parser/parser_decl_effect.elis
 capture_file="$repo_root/vendor/elisa-compiler/src/parser/parser_decl_impl.elisa"
 semantic_file="$repo_root/vendor/elisa-compiler/src/semantic/check_signal_effect.elisa"
 docs_file="$repo_root/docs/semantics.md"
+lowerer_file="$repo_root/src/ir/lower_ast.elisa"
 
-for required_file in "$tokens_file" "$parser_file" "$capture_file" "$semantic_file" "$docs_file"; do
+for required_file in "$tokens_file" "$parser_file" "$capture_file" "$semantic_file" "$docs_file" "$lowerer_file"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'effect operation metadata audit: missing file: %s\n' "$required_file" >&2
         exit 2
@@ -59,6 +60,17 @@ for field in payload_signature result_signature; do
         exit 1
     fi
 done
+
+for helper in effect_operation_bare_result_spelling effect_operation_result_type effect_operation_result_is_known; do
+    if ! rg -q "def $helper\(" "$lowerer_file"; then
+        printf 'effect operation metadata audit: lowerer omits %s\n' "$helper" >&2
+        exit 1
+    fi
+done
+if ! rg -q 'effect_operation_result_type\(state\.source_file, family, operation\)' "$lowerer_file"; then
+    printf 'effect operation metadata audit: perform lowering does not consult declared result metadata\n' >&2
+    exit 1
+fi
 
 if ! rg -q 'exact source spans for the parenthesized payload list and result type|payload_signature|result_signature' "$docs_file"; then
     printf 'effect operation metadata audit: semantics documentation omits preserved signature spans\n' >&2
