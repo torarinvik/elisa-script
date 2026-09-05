@@ -53,6 +53,10 @@ miss sentinel (`5f6b70a`).
 `Text.index` and `Text.rindex` now carry receiver-specific `TextIndex`/
 `TextRIndex` opcodes and the `IndexOutOfBounds` error row (`36b6684`).
 
+`Text.partition` and `Text.rpartition` now carry the `TextPartition` opcode and
+fixed text-separator contract while preserving their `darray[sview]` result
+shape (`881a636`).
+
 ## Evidence record template
 
 Every future executed or differential-verified entry must append a dated record
