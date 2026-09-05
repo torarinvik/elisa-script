@@ -38,11 +38,14 @@ the row's `arity_min`, `arity_max`, `return_type`, `effects`, `errors`, and
 `argument_types`, `effects`, `errors`, and `opcode` on the qualified semantic
 symbol. This removes the former untyped
 `contains` duplicate and lets direct-call arity checking see the registry
-contract. The lowerer obtains arity/named-argument shape, result types, and
-parser error requirements from the same row before selecting the existing IR opcode; the shared text-case
-helper also uses the registry result/opcode metadata for global and receiver
-forms. Unknown names continue to use the legacy seed path until their richer
-signatures are migrated.
+contract. Receiver unknown-method admission also consults
+`EsBuiltin::typed_builtin_method_spec("Text", method)`, while legacy
+collection/path names remain in a compatibility list until their structural
+descriptors migrate. The lowerer obtains arity/named-argument shape, result
+types, and parser error requirements from the same row before selecting the
+existing IR opcode; the shared text-case helper also uses the registry
+result/opcode metadata for global and receiver forms. Unknown names continue
+to use the legacy seed path until their richer signatures are migrated.
 
 Run the compiler-free audits:
 

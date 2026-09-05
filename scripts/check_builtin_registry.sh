@@ -10,10 +10,11 @@ script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 registry_file="$repo_root/vendor/elisa-compiler/src/semantic/builtin_registry.elisa"
 semantic_file="$repo_root/vendor/elisa-compiler/src/semantic/symbols.elisa"
+receiver_semantic_file="$repo_root/vendor/elisa-compiler/src/semantic/check_ufcs_unknown_method.elisa"
 lowerer_file="$repo_root/src/ir/lower_ast.elisa"
 opcode_file="$repo_root/src/ir/ir_model.elisa"
 
-for required_file in "$registry_file" "$semantic_file" "$lowerer_file" "$opcode_file"; do
+for required_file in "$registry_file" "$semantic_file" "$receiver_semantic_file" "$lowerer_file" "$opcode_file"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'builtin registry audit: missing file: %s\n' "$required_file" >&2
         exit 2
@@ -62,6 +63,10 @@ if ! rg -q 'typed_builtin_method_spec\("Text", method_name\)' "$lowerer_file"; t
 fi
 if ! rg -q 'typed_builtin_method_call_shape\("Text", method_name' "$lowerer_file"; then
     printf 'builtin registry audit: lowerer has no receiver-method shape consumer\n' >&2
+    exit 1
+fi
+if ! rg -q 'typed_builtin_method_spec\("Text", method\)\.known' "$receiver_semantic_file"; then
+    printf 'builtin registry audit: semantic receiver admission does not consume the Text registry\n' >&2
     exit 1
 fi
 
