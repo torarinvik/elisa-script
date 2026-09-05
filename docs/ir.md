@@ -706,9 +706,9 @@ opens in append mode so each byte is written after the existing file contents.
 It is the typed IR counterpart to shell `>>` and Python append-mode writes.
 `ReadBytes` verifies as `Named(Path) -> Array[Int(unsigned, 8)]` and requires
 `File.Read` plus `FileIoError`. The interpreter reads exact length-delimited file
-bytes, checks the size against its 64 MiB input safety ceiling before allocation,
-stores them as flat runtime integer values, and preserves embedded NULs. Empty files
-produce an empty array. `WriteBytes` and `AppendBytes` verify as
+bytes, checks the size against its 64 MiB input safety ceiling and the remaining
+u32 runtime-storage span before allocation, stores them as flat runtime integer
+values, and preserves embedded NULs. Empty files produce an empty array. `WriteBytes` and `AppendBytes` verify as
 `Named(Path) × Array[Int(unsigned, 8)] -> Int(unsigned, 64)` and require
 `File.Write` plus `FileIoError`; they replace or append respectively and return the
 exact byte count. Their direct bytecode path calls the same checked runtime
