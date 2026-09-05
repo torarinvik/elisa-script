@@ -423,6 +423,11 @@ as an owned text field, in left-to-right order. Empty matches are included and
 advance one input byte (with a final zero-width match at end-of-input terminating
 the scan), so even anchor-only patterns are total. The operation is pure and uses
 the same deterministic ASCII matcher as search, replacement, and splitting.
+All regex scanners treat the end position as a real terminal boundary: a failed
+probe at that position terminates without incrementing the position, and a
+zero-width replacement there is terminal rather than manufacturing a
+`length + 1` cursor. This keeps matcher, capture, split, find, and replacement
+progress bounded for the full `usize` input domain.
 
 For ports that keep a compiled pattern in a local, `pattern.search(text)` is a
 typed receiver spelling of `matches(text, pattern)`. `pattern.match(text)`
