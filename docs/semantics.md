@@ -1454,9 +1454,10 @@ setup failures retain the explicit capture API's status behavior.
 The return value is the process exit status. Normal exits produce `0` through `255`;
 signal termination produces `128 + signal`. Failure to create or wait for the process
 raises `ProcessError`; waits poll without blocking indefinitely and terminate the
-child's private process group after the interpreter's 120-second process deadline,
-then reap the direct child. Descendants therefore cannot outlive a timed-out
-operation under the POSIX adapter. If the executable cannot
+child's confirmed private process group after the interpreter's 120-second process
+deadline, then reap the direct child. If `setpgid` fails, cleanup signals only
+the direct child to avoid targeting an unrelated process group; the operation
+still reports `ProcessError`. If the executable cannot
 be resolved, the child exits with status `127`.
 
 `capture_process_stdout(executable: Executable, arguments: darray[sview]) -> sview
@@ -1464,7 +1465,8 @@ error[ProcessError] can[Process.Run]` uses the same shell-free argv contract and
 returns the bytes written to standard output, up to the interpreter's 64 MiB
 per-stream safety ceiling. Standard error remains inherited. The child redirects
 stdout to an anonymous temporary file, avoiding pipe backpressure deadlocks; the
-wait state machine polls that file and kills the private process group when the
+wait state machine polls that file and kills the confirmed private process group
+(or only the direct child when group setup failed) when the
 ceiling is crossed, before allocation. The host boundary reports that condition as
 `InterpretError.OutputLimit`; ordinary process setup failures remain `ProcessError`.
 Process creation,
@@ -1510,7 +1512,8 @@ error[ProcessError] can[Process.Run]` applies the supplied name/value overrides 
 in the forked child before `exec`. The parent process environment is unchanged, and
 the returned snapshot includes the child's status, stdout, and stderr, each stream
 bounded by the 64 MiB interpreter ceiling. Both streams are polled while the child
-runs; crossing the ceiling terminates its private process group and reports
+runs; crossing the ceiling terminates its confirmed private process group (or
+only the direct child when group setup failed) and reports
 `InterpretError.OutputLimit` at the host boundary. Environment names must be
 non-empty text without NUL bytes or `=`; an invalid child `setenv` operation is
 reported as status `126`.

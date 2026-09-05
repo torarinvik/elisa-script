@@ -821,7 +821,10 @@ and malformed entries still take the ordinary type path. The element-count budge
 pipeline stages before their reservation or child-spawn loops.
 Process waits use nonblocking `waitpid` polling and a 120-second deadline; a child
 that exceeds the deadline is killed and reported as `ProcessError` rather than
-blocking the host indefinitely.
+blocking the host indefinitely. Negative-PID group signaling is attempted only
+after the parent confirms `setpgid(child, child)` succeeded; if group setup
+fails, cleanup signals and reaps the direct child without risking an unrelated
+process group.
 The explicit `executable(text)` constructor adapts a runtime `Text` value to the
 nominal `Executable` type for validated runner configurations. It contributes
 `ProcessError` to the enclosing function's error row and rejects empty or
@@ -849,7 +852,8 @@ its result. Its opcode is handled by the interpreter's exhaustive Elisa dispatch
 machine. Execution redirects only stdout into an anonymous temporary file, reaps
 the child, and returns owned length-delimited bytes. The interpreter polls the
 temporary-file size against its 64 MiB per-stream safety ceiling while the child
-runs and before allocation; crossing it kills the private process group and
+runs and before allocation; crossing it kills the confirmed private process
+group (or only the direct child if group setup failed) and
 reports `InterpretError.OutputLimit` at the host boundary. It does not reinterpret
 output as a C string or capture stderr.
 `CaptureProcessStderr` has the same verified signature and redirects descriptor 2
@@ -876,10 +880,11 @@ materialization. It then validates environment names as non-empty, NUL-free, and
 a host-injected map cannot make child behavior depend on last-write-wins ordering.
 It then polls both streams against the interpreter's 64 MiB per-stream safety
 ceiling while the child runs and before allocation; stdout and stderr are checked
-independently, even when stdout remains within the ceiling. Crossing it kills the private process group
+independently, even when stdout remains within the ceiling. Crossing it kills the confirmed private process group
 and reports `InterpretError.OutputLimit`, so a reference process is never allowed
 to exhaust host memory. Any wait, polling, or stream-position failure also kills
-and reaps the private group before returning `InterpretError.Process`; no failed
+and reaps the confirmed private group (or only the direct child if group setup
+failed) before returning `InterpretError.Process`; no failed
 capture path may strand a child or zombie.
 Before allocating a completed stream, its `i64` file size is round-tripped
 through host `usize`; a size that the target cannot represent is rejected as a

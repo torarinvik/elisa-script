@@ -197,15 +197,18 @@ fails the invocation instead of allowing unbounded child output to exhaust the
 host. Output files are checked during the wait loop as well as after exit, so a
 long-running child is terminated as soon as a stream crosses its ceiling. Each
 child creates a private process group before `execvp`; timeout and output-limit
-cleanup signal the group and then reap the leader, preventing descendants from
-surviving a failed differential case. Group setup is best-effort on platforms
+cleanup signal that confirmed group and then reap the leader, preventing
+descendants from surviving a failed differential case. If parent-side `setpgid`
+fails, cleanup signals only the direct leader so a failed group setup can never
+target an unrelated process group. Group setup is best-effort on platforms
 without POSIX process groups and those adapters must report that limitation. The
 post-exit reader owns both temporary streams as a pair: if either stream fails
 or exceeds the ceiling, the sibling is closed before the typed failure is
 propagated, preventing descriptor leaks across repeated negative cases. Any
 parent-side `waitpid` or stream-position failure after `fork` also terminates
-the private group and reaps its leader before returning `Process`, so capture
-errors cannot strand a running child or zombie.
+the confirmed private group (or only the direct leader when group setup failed)
+and reaps it before returning `Process`, so capture errors cannot strand a
+running child or zombie.
 Post-exit file sizes are also round-tripped through host `usize` before
 allocation; a stream size representable in `i64` but not on the target host is
 reported as `DifferentialRunnerError.Process` rather than truncated.
