@@ -67,9 +67,10 @@ artifact correlation; neither is a security identity or a replacement for IR
 verification.
 
 When a module has an interned `TypeTable`, the canonical stream appends tagged
-descriptor-row and child-pool records before the function collection. Empty tables
-are omitted so hand-built legacy modules retain their original version-1 encoding;
-the table records are still included in the fingerprint whenever present.
+descriptor-row and child-pool records before the function collection. Tables with
+both rows and children empty are omitted so hand-built legacy modules retain their
+original version-1 encoding; any non-empty child pool is serialized and fingerprinted
+even when malformed, while verifier admission rejects an orphaned pool.
 
 `EsIrArtifact.ModuleArtifact` is the small typed metadata envelope used by
 differential reports today. It records format version, backend label, source
