@@ -133,6 +133,11 @@ it stores the canonical module fingerprint, source revision, backend tag, and
 capability report together. `bytecode_artifact_matches_module` recomputes both
 the fingerprint and capability counts/decision, so stale metadata cannot be
 accepted merely because the source revision string was left unchanged.
+`canonical_bytecode_artifact_bytes` emits a versioned `ESBC` metadata envelope
+with length-prefixed backend/revision strings, the module fingerprint, and the
+complete capability snapshot. `bytecode_artifact_fingerprint` hashes that exact
+envelope for cache keys or diagnostic correlation; it is intentionally not a
+substitute for validating the artifact against the verified module.
 
 `EsBytecode.execute_bytecode_direct_only` is the strict evidence entrypoint. It
 performs the same dispatch-table and IR verification, then rejects any module

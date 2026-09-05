@@ -284,6 +284,11 @@ prove that all engines ran the same typed module without depending on host
 pointers or backend instruction numbering. The fingerprint is a correlation key
 rather than a cryptographic digest; the canonical bytes, verified module, and
 source revision remain part of the reproducible artifact.
+Persisted metadata should use `canonical_bytecode_artifact_bytes`, the
+versioned length-prefixed `ESBC` envelope. Its
+`bytecode_artifact_fingerprint` is a deterministic cache/correlation key only;
+the artifact still must satisfy `bytecode_artifact_matches_module` against the
+exact verified module and capability report before execution.
 The bytecode adapter must additionally record `BytecodeCapabilityReport` before
 execution and the returned `Execution.engine` afterward. The report includes the
 direct/fallback decision and function, instruction, and global counts. A case that
