@@ -45,8 +45,12 @@ collection/path names remain in a compatibility list until their structural
 descriptors migrate. The lowerer obtains arity/named-argument shape, result
 types, and parser error requirements from the same row before selecting the
 existing IR opcode; the shared text-case helper also uses the registry
-result/opcode metadata for global and receiver forms. Unknown names continue
-to use the legacy seed path until their richer signatures are migrated.
+result/opcode metadata for global and receiver forms. Firmly inferred `Text`
+receivers additionally use the row's receiver-excluded arity range at the
+semantic boundary and emit the same structured `ArityMismatch` form as direct
+calls; unknown receivers remain conservative and continue through ordinary
+UFCS resolution. Unknown names continue to use the legacy seed path until
+their richer signatures are migrated.
 
 Run the compiler-free audits:
 
@@ -61,7 +65,8 @@ surface, including temporary append-only seed spellings during migration.
 an existing IR opcode, semantic metadata preservation, and a lowerer
 return/error consumer. It also verifies the receiver-aware `Text` method rows
 and their method-dispatch branches; boundary, replacement, and trim helpers
-now consume receiver-specific result/opcode and call-shape rows. Both checks are static by design while
+now consume receiver-specific result/opcode and call-shape rows, while the
+receiver semantic checker consumes the registry arity range. Both checks are static by design while
 compiler execution remains suspended by the resource-safety gate.
 
 The remaining Q03 work is intentionally explicit: migrate aggregate and
