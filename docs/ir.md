@@ -331,6 +331,7 @@ clauses are rejected. Terminal handlers cannot use
 this resuming clause form; nonterminal policies select whether the captured frame
 is consumed once (`Linear`/`Affine`) or remains available for repeated callback-local
 resumptions (`MultiReplay`/`MultiClone`).
+Replay-safe effect metadata is also a set: entries cannot be empty or duplicated.
 Continuation-capture metadata is also checked before execution: names must be
 non-empty and unique, capture types cannot be `Void`, and the capture class must
 be one of the six declared ownership classes. Unknown enum ordinals are rejected

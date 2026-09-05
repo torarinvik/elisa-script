@@ -99,7 +99,8 @@ or ownership checks. Capture declarations must use unique non-empty names,
 non-void types, and one of the declared ownership classes before a handler can
 be verified; unknown capture-class ordinals are rejected as malformed handler
 metadata. Stable multi-shot policies also
-require declared captures to be `Unrestricted`; other capture classes are
+require declared captures to be `Unrestricted`; replay-safe effect declarations
+must be non-empty and unique, and other capture classes are
 rejected until their replay or clone protocol is explicit. Ordinary interpreter and
 direct-bytecode call entrypoints
 also reject an active-call or handler depth at 4,096 with the typed
