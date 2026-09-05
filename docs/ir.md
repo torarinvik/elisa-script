@@ -1180,8 +1180,9 @@ allocations.
 The inverse compiler-known `join(fields, separator)` operation has type
 `Array[Text] × Text -> Text` and lowers to `Join`. Verification rejects non-text
 arrays before execution; the interpreter also validates each runtime element and
-constructs one owned output buffer. Empty arrays join to empty text, separators
-appear only between fields, and empty fields remain observable.
+constructs one owned output buffer. Separator bytes and field bytes are
+accumulated with checked additions before allocation. Empty arrays join to empty
+text, separators appear only between fields, and empty fields remain observable.
 The compiler-known `starts_with(text, prefix)` and `ends_with(text, suffix)`
 predicates have type `Text × Text -> Bool` and lower to dedicated semantic
 opcodes. They compare bytes under the same `sview` contract as indexing and
