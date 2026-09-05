@@ -95,7 +95,9 @@ fixtures. `scripts/inventory_candidates.sh` now supplies the read-only TSV
 generator and [`docs/migration-inventory-schema.md`](migration-inventory-schema.md)
 defines its fields. The generated output is intentionally not checked in until
 records have reviewed owners and acceptance evidence; P1 remains open and no
-legacy file is eligible for deletion.
+legacy file is eligible for deletion. The candidate generator also refuses
+roots above 200,000 regular files, so large project collections must be
+partitioned before path de-duplication.
 
 Extension-only discovery is supplemented by the compiler-free
 `scripts/inventory_signals.sh` scanner. It records executable permission bits,

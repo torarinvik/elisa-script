@@ -21,6 +21,25 @@ if [ ! -d "$scan_root" ]; then
     exit 2
 fi
 
+# Keep the path-only census bounded before the candidate stream reaches sort.
+# Dependency/cache trees are excluded consistently with the signal scanner;
+# callers should split a larger project root into reviewable slices instead of
+# turning discovery into an unbounded whole-drive operation.
+max_scan_files=200000
+scan_file_count="$(find "$scan_root" \
+    \( -path '*/.git' -o -path '*/node_modules' -o -path '*/.venv' -o -path '*/__pycache__' -o -path '*/vendor' -o -path '*/third_party' \) -prune -o \
+    -type f -print 2>/dev/null | wc -l | tr -d '[:space:]')"
+case "$scan_file_count" in
+    ''|*[!0-9]*)
+        echo "inventory_candidates: unable to count regular files under $scan_root" >&2
+        exit 3
+        ;;
+esac
+if [ "$scan_file_count" -gt "$max_scan_files" ]; then
+    echo "inventory_candidates: root contains $scan_file_count regular files; split the root (limit $max_scan_files)" >&2
+    exit 3
+fi
+
 printf 'path\tkind\towner\tentrypoint\tdisposition\trisk\tnotes\n'
 
 candidate_kind() {

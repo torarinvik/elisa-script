@@ -3,7 +3,9 @@
 `scripts/inventory_candidates.sh` emits a tab-separated, machine-readable
 candidate manifest. It is a discovery artifact only: paths are never executed,
 and `classify`/`classify-generated`/`retain-external` are provisional
-dispositions until a maintainer reviews the record.
+dispositions until a maintainer reviews the record. The scanner refuses roots
+with more than 200,000 regular files so its path stream and de-duplication sort
+remain bounded; split larger roots before generating a manifest.
 
 The first row is the exact header. Every later row has these fields:
 
