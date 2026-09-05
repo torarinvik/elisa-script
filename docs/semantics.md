@@ -83,6 +83,8 @@ by its family and name. Operation payload and resumption types remain governed
 by the ordinary typed handler callback and IR verifier, so declaration metadata
 cannot weaken static checking. Dynamic handlers may therefore intercept
 user-defined operations without introducing a second AST or runtime representation.
+Duplicate-operation diagnostics point at the later operation token when source
+coordinates are available.
 
 ## Module constants
 

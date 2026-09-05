@@ -186,7 +186,8 @@ first-level operation names and payload arities in file metadata. Semantic analy
 uses that registry to make both `signal Writer.write(...)` and value-producing
 `perform("Writer.write", payload)` statically checkable; duplicate operation names
 within one family are rejected because the initial ABI does not define overload
-selection. Operations on builtin or permission-only families remain host-defined. Operation
+selection. The operation token's line and column span are retained for diagnostics.
+Operations on builtin or permission-only families remain host-defined. Operation
 parameter/return contracts are still checked at handler clauses and performed
 values by the IR verifier, so a source effect declaration never weakens callback
 typing.
