@@ -648,7 +648,10 @@ The explicit `executable(text)` constructor adapts a runtime `Text` value to the
 nominal `Executable` type for validated runner configurations. It contributes
 `ProcessError` to the enclosing function's error row and rejects empty or
 embedded-NUL names at execution time; every process opcode applies the same NUL
-check to its executable and argument values before constructing C strings.
+check to its executable and argument values before constructing C strings. The
+run and capture entrypoints also recheck empty executable payloads at the host
+boundary, so a nominal value injected by an adapter cannot reach `fork` with an
+empty `argv[0]`.
 The scripting-profile `run_process_with_stdin` facade lowers to a
 `CaptureProcessResult` followed by `ProcessResultExitStatus`, preserving the
 same typed stdin staging and one-shot child execution while exposing only the
