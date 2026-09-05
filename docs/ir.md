@@ -88,6 +88,10 @@ encoding. This makes the bytes and their deterministic
 non-cryptographic `u64` fingerprint suitable for backend and differential-test
 artifact correlation; neither is a security identity or a replacement for IR
 verification.
+Field-level emitters and hash primitives are private to `EsIr`'s serializer. The
+bytecode artifact envelope uses only the qualified
+`EsIr::canonical_artifact_*` adapters, keeping its metadata format independent
+of the IR serializer's representation helpers.
 
 When a module has an interned `TypeTable`, the canonical stream appends tagged
 descriptor-row and child-pool records before the function collection. Tables with
