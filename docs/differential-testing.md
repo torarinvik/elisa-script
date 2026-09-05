@@ -41,7 +41,9 @@ comparison phase or silently continue after a mismatch.
 The interpreter and direct-bytecode engine cap ordered `observe` events at one
 million per run. Crossing that shared budget raises `InterpretError.OutputLimit`
 before the next event is appended; differential adapters therefore receive a
-bounded trace rather than an implicit unbounded memory commitment.
+bounded trace rather than an implicit unbounded memory commitment. The runtime
+adapter also rejects externally supplied observation snapshots above the same
+budget before converting any element into its owned comparison pools.
 
 Observation and return values include `Void`, `Bool`, `Int`, exact `Float`, `Text`, recursive
 `Array`, order-insensitive `Map`, and structured `ProcessCapture` kinds. Arrays
