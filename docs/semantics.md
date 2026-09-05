@@ -74,15 +74,19 @@ def emit(value: sview) -> void can[Writer.write]:
     signal Writer.write(value)
 ```
 
-The parser records the family, each first-level operation, and its payload arity
-in file metadata; semantic analysis rejects unknown `signal` and `perform`
-operations, duplicate `(family, operation)` declarations, and payload-count mismatches
-while leaving builtin and permission-only families open to host-defined operations.
-Overloads are not accepted in the initial ABI because dispatch identifies an operation
-by its family and name. Operation payload and resumption types remain governed
-by the ordinary typed handler callback and IR verifier, so declaration metadata
-cannot weaken static checking. Dynamic handlers may therefore intercept
-user-defined operations without introducing a second AST or runtime representation.
+The parser records the family, each first-level operation, its payload arity, and
+the exact source spans for the parenthesized payload list and result type in file
+metadata; semantic analysis rejects unknown `signal` and `perform` operations,
+duplicate `(family, operation)` declarations, and payload-count mismatches while
+leaving builtin and permission-only families open to host-defined operations.
+The spans are borrowed views into the source buffer, not a second AST, so the
+ordinary type resolver can intern the declaration types without losing generic,
+function-type, or refinement spelling. Overloads are not accepted in the initial
+ABI because dispatch identifies an operation by its family and name. Operation
+payload and resumption types remain governed by the ordinary typed handler callback
+and IR verifier until the resolver consumes these preserved spans, so declaration
+metadata cannot weaken static checking. Dynamic handlers may therefore intercept
+user-defined operations without introducing a second runtime representation.
 Duplicate-operation diagnostics point at the later operation token when source
 coordinates are available.
 
