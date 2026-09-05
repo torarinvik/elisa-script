@@ -1402,7 +1402,8 @@ its trailing NUL, and the byte budget is checked with subtraction before
 addition, so a host-size length cannot wrap into an apparently small request.
 Embedders may set the byte budget to zero to opt out while retaining the
 element-count guard. Environment names and values use the same terminated
-64 MiB aggregate byte bound before their C-string copies are allocated.
+64 MiB aggregate byte bound before their C-string copies are allocated,
+including the `=` separator materialized by `setenv`.
 Environment override maps and pipeline stage vectors also use the element-count
 bound before their host reservations or child-spawn loops.
 

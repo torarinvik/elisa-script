@@ -812,8 +812,8 @@ configured byte budget means unlimited for embedders that deliberately opt out.
 The same byte guard applies to run, stream-capture, stdin-capture, and
 full-result process entrypoints. Environment names and values are checked
 against the same terminated 64 MiB byte budget before their independent
-C-string buffers are reserved; malformed entries still take the ordinary type
-path. The element-count budget also bounds environment override entries and
+C-string buffers are reserved; the `=` separator used by `setenv` is included,
+and malformed entries still take the ordinary type path. The element-count budget also bounds environment override entries and
 pipeline stages before their reservation or child-spawn loops.
 Process waits use nonblocking `waitpid` polling and a 120-second deadline; a child
 that exceeds the deadline is killed and reported as `ProcessError` rather than
