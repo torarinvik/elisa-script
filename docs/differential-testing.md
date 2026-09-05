@@ -142,6 +142,9 @@ propagated, preventing descriptor leaks across repeated negative cases. Any
 parent-side `waitpid` or stream-position failure after `fork` also terminates
 the private group and reaps its leader before returning `Process`, so capture
 errors cannot strand a running child or zombie.
+Post-exit file sizes are also round-tripped through host `usize` before
+allocation; a stream size representable in `i64` but not on the target host is
+reported as `DifferentialRunnerError.Process` rather than truncated.
 
 When a differential case needs both hermetic filesystem context and temporary
 environment values, use

@@ -776,6 +776,9 @@ and reports `InterpretError.OutputLimit`, so a reference process is never allowe
 to exhaust host memory. Any wait, polling, or stream-position failure also kills
 and reaps the private group before returning `InterpretError.Process`; no failed
 capture path may strand a child or zombie.
+Before allocating a completed stream, its `i64` file size is round-tripped
+through host `usize`; a size that the target cannot represent is rejected as a
+process failure instead of being truncated.
  `process_exit_status`, `process_stdout`, and `process_stderr` are typed accessors
  over that value. The capture and accessor
  opcodes are separately verified and dispatched explicitly by the interpreter.
