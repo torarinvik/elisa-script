@@ -420,6 +420,9 @@ their ordinary whole-text meaning. An unquantified empty group and empty
 alternation branches consume zero bytes. Each branch is tried with its
 surrounding suffix, including a trailing empty branch such as `(a|)b`.
 Unmatched group openers remain rejected by the matcher.
+When a repeated atom succeeds without consuming input, the endpoint matcher
+satisfies any remaining minimum at that position and tries the suffix once.
+This allows `()+` and `(){3,}` without recursively repeating the same position.
 `replace_regex(text, pattern, replacement) -> sview`
 provides deterministic substitution for this grammar: it finds non-overlapping
 matches from left to right and inserts the replacement text, expanding the portable
