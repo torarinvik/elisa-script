@@ -835,6 +835,9 @@ or error contract.
 `DirectoryError`. The interpreter performs component matching and recursive `**`
 traversal in Elisa, filters symlink recursion, sorts and deduplicates owned matches,
 and enforces a depth bound to make malformed/cyclic trees terminate deterministically.
+Path joins and brace-variant assembly detect host-size addition wrap before
+allocation; the walker reports the existing `DirectoryError` rather than
+publishing a truncated match.
 `ReadStdin` verifies as `() -> Text` with `Console.Read` and `ConsoleError`;
 `ReadStdinLine` verifies as `() -> Text` with the same effect/error row and consumes
 one line at a time, preserving stdin for subsequent reads. Both state machines
