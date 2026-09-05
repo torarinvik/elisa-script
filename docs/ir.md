@@ -624,6 +624,10 @@ function's effect row. Lowering adds that effect automatically. The interpreter
 copies the path into a NUL-terminated Elisa-owned buffer before calling the
 self-hosted core file-I/O layer, so a length-delimited `sview` is never passed to
 libc as though it were a C string.
+The shared terminated-buffer adapter rejects any payload at or above its 64 MiB
+host C-string ceiling before adding the terminator or allocating. This applies
+to filesystem paths, environment names/values, and process text in addition to
+their operation-specific aggregate budgets.
 `IsFile` has the same verified `Named(Path) -> Bool` shape and `File.Read` effect,
 but tests the POSIX mode bits and returns `false` for missing or non-regular entries.
 The scripting `is_file(path)` alias and `Path.is_file()` method lower to this opcode.
