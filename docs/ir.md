@@ -265,7 +265,8 @@ Executable handler clauses map an exact effect family and operation to an ordina
 typed IR function. At each covered `Perform`, verification matches the performed
 payload to that function's parameters and its return type to the resumed value.
 Clause families must belong to the handler coverage set, callback symbols must
-exist, and duplicate operation clauses are rejected. Terminal handlers cannot use
+exist, coverage entries must be non-empty and unique, and duplicate operation
+clauses are rejected. Terminal handlers cannot use
 this resuming clause form; nonterminal policies select whether the captured frame
 is consumed once (`Linear`/`Affine`) or remains available for repeated callback-local
 resumptions (`MultiReplay`/`MultiClone`).
