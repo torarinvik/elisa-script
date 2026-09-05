@@ -614,7 +614,9 @@ and `isabs`, plus `Path.is_absolute()`, lower to this opcode.
 `PathNormalize` is pure and verifies `Named(Path) -> Named(Path)`. It performs
 lexical separator, dot, and dot-dot cleanup in the core `Fs.normalize` helper,
 without filesystem or working-directory access, and is eligible for direct
-bytecode execution. The `path_normalize`, `normalize_path`, and `normpath`
+bytecode execution. The shared `Fs.normalize` and `Fs.relative` scanners advance
+only while a byte remains, so a host-sized view cannot wrap a terminal cursor.
+The `path_normalize`, `normalize_path`, and `normpath`
 builtins plus `Path.normalize()` lower to this opcode.
 `PathAbsolute` verifies `Named(Path) -> Named(Path)` and requires
 `Directory.Read` plus `DirectoryError`. It reads the current directory through
