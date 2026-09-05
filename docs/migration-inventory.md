@@ -101,4 +101,6 @@ Extension-only discovery is supplemented by the compiler-free
 `scripts/inventory_signals.sh` scanner. It records executable permission bits,
 legacy interpreter shebangs, and inline Python/Perl/AWK command references in a
 separate TSV report; those signals still require per-file ownership and
-disposition review.
+disposition review. The scanner fails closed above 200,000 regular files and
+skips content files larger than 8 MiB, so the declared project roots must be
+scanned in bounded slices rather than as one unbounded whole-drive job.

@@ -42,9 +42,10 @@ AWK command references. Signal rows are leads rather than dispositions: binary
 executables, vendored code, generated output, and comments can all produce a
 match and require maintainer review. The scanner never evaluates the matched
 file or embedded command. To keep a broad root scan bounded, it skips `.git`,
-`node_modules`, virtualenvs, Python caches, `vendor`, and `third_party`; use the
-candidate manifest or a narrow explicit root when those trees themselves
-require review.
+`node_modules`, virtualenvs, Python caches, `vendor`, and `third_party`, refuses
+roots with more than 200,000 regular files, and limits content inspection to
+files no larger than 8 MiB. Split larger roots and use the candidate manifest
+when those trees themselves require review.
 
 Regenerate the signal report outside the repository:
 

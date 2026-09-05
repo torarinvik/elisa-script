@@ -20,6 +20,28 @@ if [ ! -d "$scan_root" ]; then
     exit 2
 fi
 
+# Signal discovery is intentionally bounded before any content search starts.
+# A broad projects directory can contain generated or dependency trees that are
+# individually harmless but collectively expensive; callers should split such
+# roots rather than allowing the scanner to become an unbounded workload. The
+# count is conservative for filenames containing newlines, which is safe for a
+# discovery-only report.
+max_scan_files=200000
+max_scan_file_bytes='8M'
+scan_file_count="$(find "$scan_root" \
+    \( -path '*/.git' -o -path '*/node_modules' -o -path '*/.venv' -o -path '*/__pycache__' -o -path '*/vendor' -o -path '*/third_party' \) -prune -o \
+    -type f -print 2>/dev/null | wc -l | tr -d '[:space:]')"
+case "$scan_file_count" in
+    ''|*[!0-9]*)
+        echo "inventory_signals: unable to count regular files under $scan_root" >&2
+        exit 3
+        ;;
+esac
+if [ "$scan_file_count" -gt "$max_scan_files" ]; then
+    echo "inventory_signals: root contains $scan_file_count regular files; split the root (limit $max_scan_files)" >&2
+    exit 3
+fi
+
 printf 'path\tsignal\tdetail\n'
 
 {
@@ -33,14 +55,14 @@ printf 'path\tsignal\tdetail\n'
             printf '%s\texecutable-file\tpermission bit; inspect file type and shebang before classifying\n' "$path"
         done
 
-    rg -l --hidden --no-messages --glob '!.git/**' --glob '!**/node_modules/**' --glob '!**/.venv/**' --glob '!**/__pycache__/**' --glob '!**/vendor/**' --glob '!**/third_party/**' \
+    rg -l --hidden --no-messages --max-filesize "$max_scan_file_bytes" --glob '!.git/**' --glob '!**/node_modules/**' --glob '!**/.venv/**' --glob '!**/__pycache__/**' --glob '!**/vendor/**' --glob '!**/third_party/**' \
         '^[[:space:]]*#![[:space:]]*(/[^[:space:]]*/)?(env[[:space:]]+)?(python3?|pypy3?|perl|awk|gawk|mawk|sh|bash|zsh|fish)([[:space:]]|$)' \
         "$scan_root" 2>/dev/null |
         while IFS= read -r path; do
             printf '%s\tlegacy-shebang\tinterpreter shebang; review runtime, argv, cwd, environment, and exit behavior\n' "$path"
         done
 
-    rg -l --hidden --no-messages --glob '!.git/**' --glob '!**/node_modules/**' --glob '!**/.venv/**' --glob '!**/__pycache__/**' --glob '!**/vendor/**' --glob '!**/third_party/**' \
+    rg -l --hidden --no-messages --max-filesize "$max_scan_file_bytes" --glob '!.git/**' --glob '!**/node_modules/**' --glob '!**/.venv/**' --glob '!**/__pycache__/**' --glob '!**/vendor/**' --glob '!**/third_party/**' \
         '(^|[^[:alnum:]_])(python3?|pypy3?)[[:space:]]+-c([[:space:]]|$)|(^|[^[:alnum:]_])perl[[:space:]]+-e([[:space:]]|$)|(^|[^[:alnum:]_])(g?awk|mawk)([[:space:]]|$)' \
         "$scan_root" 2>/dev/null |
         while IFS= read -r path; do
