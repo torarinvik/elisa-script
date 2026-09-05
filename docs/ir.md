@@ -49,7 +49,9 @@ Legacy inline fields stay populated while verifier and backend consumers migrate
 Type interning rejects child pools wider than the descriptor's `u16` count or
 the serialized `u32` offset domain and returns the verifier's invalid id
 sentinel before narrowing; this prevents oversized host collections from
-aliasing a valid structural type.
+aliasing a valid structural type. Descriptor rows also use a closed `TypeKind`
+vocabulary: unknown serialized enum ordinals are rejected before child
+traversal rather than being interpreted as a backend-specific type.
 
 The vocabulary intentionally contains no LLVM values, native registers, pointer
 sizes, bytecode slots, or host ABI facts. Those belong to target-specific lowering.
