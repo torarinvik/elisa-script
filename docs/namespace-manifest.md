@@ -11,11 +11,13 @@ Elisascript-owned implementation is divided into qualified namespaces:
 | `EsDriver` | Native CLI boundary | `EsDriver::run` | Argument collection, diagnostics, and parsing helpers |
 | `EsDifferential` | External-oracle and backend parity harness | Case/run/comparison APIs | Process staging, snapshot ownership, comparator state machines |
 
-`scripts/check_namespace_manifest.sh` performs a compiler-free collision audit
-of the Elisascript-owned `src/` tree. It rejects duplicate top-level module
-declarations, rejects `extend` blocks targeting undeclared modules, requires
-the six expected qualified modules, and emits a TSV summary of every module
-and extension file together with its explicit `public:`/`private:` sections.
+`scripts/check_namespace_manifest.sh` performs a compiler-free collision and
+assembly audit of the Elisascript-owned `src/` tree. It rejects duplicate
+top-level module declarations, rejects `extend` blocks targeting undeclared
+modules, verifies every literal include resolves relative to its declaring
+file, requires the six expected qualified modules, and emits a TSV summary of
+every module and extension file together with its explicit `public:`/`private:`
+sections.
 The vendored `Semantic` and standard-library namespaces are intentionally
 outside this check and remain governed by `vendor/elisa-compiler/SOURCE.md`.
 

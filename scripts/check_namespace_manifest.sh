@@ -29,6 +29,28 @@ for extension in $extension_names; do
     fi
 done
 
+# Resolve every literal include relative to the file that declares it. This
+# remains compiler-free, but prevents a copied source tree from silently
+# depending on a missing or accidentally renamed module fragment.
+if ! rg --files "$source_root" -g '*.elisa' 2>/dev/null | sort | while IFS= read -r source_file; do
+    source_dir="$(dirname -- "$source_file")"
+    includes="$(sed -n 's/^[[:space:]]*include[[:space:]]*"\([^"]*\)".*/\1/p' "$source_file")"
+    if [ -n "$includes" ]; then
+        printf '%s\n' "$includes" | while IFS= read -r include_path; do
+            [ -n "$include_path" ] || continue
+            include_target="$source_dir/$include_path"
+            if [ ! -f "$include_target" ]; then
+                echo "check_namespace_manifest: missing include: $source_file -> $include_path" >&2
+                exit 1
+            fi
+        done
+        include_status=$?
+        [ "$include_status" -eq 0 ] || exit "$include_status"
+    fi
+done; then
+    exit 1
+fi
+
 for expected in EsBytecode EsDifferential EsDriver EsIr EsIrArtifact EsRuntime; do
     if ! printf '%s\n' "$module_names" | grep -F -x "$expected" >/dev/null 2>&1; then
         echo "check_namespace_manifest: required module is missing: $expected" >&2
