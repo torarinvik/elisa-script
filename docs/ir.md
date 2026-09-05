@@ -1718,7 +1718,8 @@ The reference command-line adapter lives in `src/driver/elisascript.elisa`. Its
 only raw host boundary is `main(argc, argv)`: it drops the executable name,
 constructs a `darray[sview]` without shell splitting or environment expansion,
 and sends that request through `parse_elisascript_cli`. The parser requires a
-`.elisascript` source path, rejects embedded NUL bytes, and preserves every
+`.elisascript` source path, rejects embedded NUL bytes in the source and every
+typed argument, and preserves every
 remaining argv element—including spaces and empty strings—as one typed value.
 Usage failures return status `2`; allocation, source, entrypoint, bytecode, and
 execution failures return status `1`; a successful script's signed `i64` result
