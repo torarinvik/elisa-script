@@ -193,6 +193,13 @@ integer still raises the ordinary `IntegerOverflow` runtime error because its
 positive magnitude is not representable; floating-point values follow the host
 IEEE sign rule.
 
+Integer `+`, `-`, and `*` use checked bounds for every supported width, including
+signed 64-bit values; signed division and remainder reject `min / -1` as
+`IntegerOverflow`. Left shifts are checked against the result type's signed or
+unsigned range (negative or too-large shift counts remain `InvalidShift`). The
+reference interpreter and direct bytecode engine apply this contract before host
+arithmetic, so overflow cannot depend on the target's wrapping behavior.
+
 The compiler-known `sorted(values, reverse: flag)` builtin accepts a typed array of
 orderable scalar values (`bool`, integer, float, `char`, or text) and returns a
 fresh array with the same exact element type. The optional `reverse` bool may be a
