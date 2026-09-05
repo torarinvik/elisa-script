@@ -479,6 +479,11 @@ produce no output; capture probing stops immediately on exhaustion.
 Replacement-reference delimiter scans charge each scanned byte. Named-capture
 lookups charge a step and the reference-name length before each comparison,
 including failed comparisons and unterminated-reference scans.
+The matcher also rejects patterns with more than 1,024 nested groups before
+matching and stops a single repeated atom after 8,192 recursive repetition
+states. Both guards report `InterpretError.OutputLimit`; they bound host-stack
+use independently of the shared work counter and apply equally to the
+reference interpreter and direct bytecode facade.
 
 For ports that keep a compiled pattern in a local, `pattern.search(text)` is a
 typed receiver spelling of `matches(text, pattern)`. `pattern.match(text)`

@@ -318,6 +318,12 @@ extend EsIr:
         const INTERPRET_MAX_REGEX_TEXT_BYTES: usize = 67108864
         const INTERPRET_MAX_REGEX_OUTPUT_BYTES: usize = 67108864
         const INTERPRET_MAX_TEXT_REPLACEMENT_BYTES: usize = 67108864
+        # Recursive group descent and repeated-atom backtracking both use the
+        # host call stack. Reject patterns that would require an unbounded
+        # stack before matching can begin, while keeping the ordinary work
+        # budget available for shallower patterns.
+        const INTERPRET_MAX_REGEX_GROUP_DEPTH: usize = 1024
+        const INTERPRET_MAX_REGEX_REPEAT_DEPTH: usize = 8192
         # Recursive regex matching consumes one unit at every matcher state.
         # Keep the budget shared by one complete operation, including all
         # scanner positions and capture probes, so backtracking cannot reset it.
@@ -2395,12 +2401,34 @@ extend EsIr:
             return value in {9, 10, 11, 12, 13, 32}
 
 
-        def regex_input_within_budget(text: sview, pattern: sview) -> bool:
-            return sview_len(text) <= INTERPRET_MAX_REGEX_TEXT_BYTES and sview_len(pattern) <= INTERPRET_MAX_REGEX_PATTERN_BYTES
-
-
         def regex_replacement_within_budget(replacement: sview) -> bool:
             return sview_len(replacement) <= INTERPRET_MAX_REGEX_TEXT_BYTES
+
+
+        def regex_pattern_depth_within_budget(pattern: sview) -> bool:
+            depth: mutable usize = 0
+            in_class: mutable bool = false
+            escaped: mutable bool = false
+            for index in 0..<sview_len(pattern) |pattern|:
+                byte: u8 = sview_at(pattern, index)
+                if escaped:
+                    escaped <- false
+                elif byte == 92:
+                    escaped <- true
+                elif in_class:
+                    in_class <- false if byte == 93
+                elif byte == 91:
+                    in_class <- true
+                elif byte == 40:
+                    return false if depth >= INTERPRET_MAX_REGEX_GROUP_DEPTH
+                    depth <- depth + 1
+                elif byte == 41 and depth > 0:
+                    depth <- depth - 1
+            return true
+
+
+        def regex_input_within_budget(text: sview, pattern: sview) -> bool:
+            return sview_len(text) <= INTERPRET_MAX_REGEX_TEXT_BYTES and sview_len(pattern) <= INTERPRET_MAX_REGEX_PATTERN_BYTES and regex_pattern_depth_within_budget(pattern)
 
 
         def regex_work_step(budget: mutable RegexWorkBudget&) -> bool:
@@ -2642,6 +2670,9 @@ extend EsIr:
         def regex_repeat_segment_end(pattern: sview, atom_start: usize, atom_end: usize, suffix_start: usize, suffix_end: usize, text: sview, text_index: usize, minimum: usize, maximum: usize, count: usize, budget: mutable RegexWorkBudget&) -> i64:
             return -1 if not regex_work_step(budget)
             if count < maximum:
+                if count >= INTERPRET_MAX_REGEX_REPEAT_DEPTH:
+                    budget.exhausted <- true
+                    return -1
                 endpoint: i64 = regex_atom_match_end(pattern, atom_start, atom_end, text, text_index, budget)
                 if endpoint > text_index.i64():
                     deeper: i64 = regex_repeat_segment_end(pattern, atom_start, atom_end, suffix_start, suffix_end, text, endpoint.usize(), minimum, maximum, count + 1, budget)

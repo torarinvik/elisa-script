@@ -484,6 +484,11 @@ capture probes; exhaustion reports the same typed limit instead of resetting for
 the next candidate match. These boundaries contain input amplification but do
 not make the recursive matcher provably linear. Replacement construction also
 rejects output growth beyond 64 MiB before final publication.
+To contain host-stack use as a separate concern, pattern admission rejects
+more than 1,024 nested groups and one repeated atom cannot descend through
+more than 8,192 recursive repetition states. These failures use the same
+typed `InterpretError.OutputLimit` as the other regex resource guards, and
+are checked consistently by the reference and direct-bytecode entrypoints.
 
 Compiled `Regex` values also expose `search(text)`, `match(text)`, and
 `fullmatch(text)`, plus `findall(text)` (with `find_all(text)` as a spelling
