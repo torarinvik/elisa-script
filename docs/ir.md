@@ -1739,10 +1739,11 @@ pipeline but records a stable phase (`source`, `entrypoint`, `bytecode`, or
 `runtime`) and detail in `ElisascriptProgramDiagnostic`; it also preserves the
 exact `ElisascriptSourceError`, `ElisascriptEntrypointError`, or `InterpretError`
 variant behind a corresponding `*_error_known` flag. It does not weaken the
-typed error behavior of the ordinary runner APIs. Bytecode verification issues
-and their source spans remain a separate structured-diagnostic slice; the
-current aggregate `bytecode` detail is intentionally not presented as an exact
-variant.
+typed error behavior of the ordinary runner APIs. Bytecode failures retain the
+first `IssueKind` plus its block, value, and trace identifiers behind
+`bytecode_issue_known`; borrowed function/message views are intentionally not
+stored beyond the lowered-module region. The driver renders that exact issue
+kind while keeping the aggregate phase stable.
 
 The reference command-line adapter lives in `src/driver/elisascript.elisa`. Its
 only raw host boundary is `main(argc, argv)`: it drops the executable name,
@@ -1760,9 +1761,8 @@ Usage failures return status `2`; allocation, source, entrypoint, bytecode, and
 execution failures return status `1`; a successful script's signed `i64` result
 is returned unchanged. Failure diagnostics include the source path and a phase
 (`source`, `entrypoint`, `bytecode`, or `runtime`) before a stable detail. For
-source, entrypoint, and runtime failures, that detail is the exact enum variant
-spelling retained by the diagnostic record; bytecode verification remains an
-aggregate phase until structured issue propagation is added. The underlying
+source, entrypoint, runtime, and bytecode failures, that detail is the exact
+enum or verifier-issue kind spelling retained by the diagnostic record. The underlying
 library APIs continue to propagate their typed `error[...]` families. The adapter copies the borrowed source view into a NUL-terminated
 buffer only at the file-I/O boundary, so the script itself never receives a
 raw C string or a command-string escape hatch. The public launcher contracts

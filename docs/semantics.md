@@ -1590,7 +1590,8 @@ cannot bypass the driver's pre-admission checks. Usage errors use process
 status `2`, while source,
 entrypoint, bytecode, and execution failures use status `1`. The driver includes
 the source path and failing phase in stderr diagnostics, and source,
-entrypoint, and runtime phases include the exact retained enum variant spelling;
+entrypoint, runtime, and bytecode phases include the exact retained enum or
+verification-issue kind spelling;
 the underlying runner still preserves its typed `error[...]` family for library
 and programmatic callers.
 The raw ABI ceiling is the public derived `ES_LAUNCHER_MAX_ARGC` contract
@@ -1599,6 +1600,9 @@ typed parser share one source of truth.
 Before copying the source view into a terminated path buffer, the driver also
 enforces `EsIr::ELISASCRIPT_MAX_FILENAME_BYTES`; an overlong source path is
 reported without echoing the unbounded borrowed text into stderr.
+Bytecode diagnostics retain the first verifier issue's kind and numeric block,
+value, and trace identifiers in the phase-aware record; borrowed function and
+message views remain internal to the lowered module region.
 Diagnostic writes use the same bounded short-progress policy as ordinary stdout:
 positive writes advance the borrowed message, `EINTR` is retried through a
 small budget that resets after progress, and zero, over-counted, or exhausted
