@@ -67,7 +67,10 @@ avoiding a host-side `count * 2` overflow on narrower targets; malformed or
 unrepresentable snapshots raise `DifferentialRunnerError.Invalid`. The owned
 pool itself is capped at one million values, and conversion raises
 `DifferentialRunnerError.OutputLimit` before a direct or recursive aggregate
-append would exceed that budget.
+append would exceed that budget. Recursive conversion also rejects nesting past
+128 aggregate levels, keeping malformed snapshots from exhausting the host call
+stack; the depth guard is private to the module while the stable conversion
+wrapper keeps adapter call sites typed and unchanged.
 
 The module keeps state-machine cursors, process-host symbols, and comparison
 helpers private; only runner/value records and the documented adapter/comparator

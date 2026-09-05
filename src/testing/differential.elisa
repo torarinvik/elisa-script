@@ -66,6 +66,9 @@ module EsDifferential:
         # A comparison artifact must not retain an effectively unbounded flat
         # value pool even when every individual offset is representable.
         const DIFFERENTIAL_DEFAULT_MAX_VALUES: usize = 1048576
+        # Runtime aggregate snapshots are recursively converted into the owned
+        # pool. Keep hostile nesting from exhausting the host call stack.
+        const DIFFERENTIAL_DEFAULT_MAX_VALUE_DEPTH: usize = 128
 
 
         # Differential snapshots keep u32 offsets for stable interchange.
@@ -155,10 +158,18 @@ module EsDifferential:
             return DifferentialValue{kind: DifferentialValueKind.Map, map_start: start, map_count: (keys_and_values.count / 2).u32()}
 
 
-        # Convert an interpreter observation into the owned comparison value. Array
-        # elements are copied recursively so a comparison never depends on the
-        # interpreter's transient flat runtime storage.
+        # Convert an interpreter observation into the owned comparison value. The
+        # public wrapper keeps the adapter API stable while the recursive helper
+        # applies an explicit nesting budget.
         def differential_value_from_runtime(storage: darray[EsIr::RuntimeValue]&, value: EsIr::RuntimeValue, values: mutable darray[DifferentialValue]&) -> DifferentialValue error[DifferentialRunnerError] can[Memory.Allocate, Abort.Panic]:
+            return try differential_value_from_runtime_at_depth(storage, value, values, 0)
+
+
+    private:
+        # Array elements are copied recursively so a comparison never depends on
+        # the interpreter's transient flat runtime storage.
+        def differential_value_from_runtime_at_depth(storage: darray[EsIr::RuntimeValue]&, value: EsIr::RuntimeValue, values: mutable darray[DifferentialValue]&, depth: usize) -> DifferentialValue error[DifferentialRunnerError] can[Memory.Allocate, Abort.Panic]:
+            raise DifferentialRunnerError.OutputLimit if depth > DIFFERENTIAL_DEFAULT_MAX_VALUE_DEPTH
             match value.kind:
                 EsIr::RuntimeValueKind.Void:
                     return DifferentialValue{kind: DifferentialValueKind.Void}
@@ -182,7 +193,7 @@ module EsDifferential:
                     for offset in 0..<value.array_count.usize() |values|:
                         values.push(DifferentialValue{kind: DifferentialValueKind.Void})
                     for offset in 0..<count |storage, value, values, start|:
-                        values[start + offset] <- try differential_value_from_runtime(storage, storage[value.array_start.usize() + offset], values)
+                        values[start + offset] <- try differential_value_from_runtime_at_depth(storage, storage[value.array_start.usize() + offset], values, depth + 1)
                     return DifferentialValue{kind: DifferentialValueKind.Array, array_start: start.u32(), array_count: value.array_count}
                 EsIr::RuntimeValueKind.Map:
                     raise DifferentialRunnerError.Invalid if not EsIr::runtime_map_range_valid(storage, value)
@@ -196,11 +207,12 @@ module EsDifferential:
                         values.push(DifferentialValue{kind: DifferentialValueKind.Void})
                     for offset in 0..<pair_count |storage, value, values, start|:
                         key_offset: usize = offset * 2
-                        values[start + key_offset] <- try differential_value_from_runtime(storage, storage[value.map_start.usize() + key_offset], values)
-                        values[start + key_offset + 1] <- try differential_value_from_runtime(storage, storage[value.map_start.usize() + key_offset + 1], values)
+                        values[start + key_offset] <- try differential_value_from_runtime_at_depth(storage, storage[value.map_start.usize() + key_offset], values, depth + 1)
+                        values[start + key_offset + 1] <- try differential_value_from_runtime_at_depth(storage, storage[value.map_start.usize() + key_offset + 1], values, depth + 1)
                     return DifferentialValue{kind: DifferentialValueKind.Map, map_start: start.u32(), map_count: value.map_count}
 
 
+    public:
         def append_differential_observations_from_runtime(storage: darray[EsIr::RuntimeValue]&, observations: darray[EsIr::Observation], values: mutable darray[DifferentialValue]&, converted: mutable darray[DifferentialObservation]&) -> void error[DifferentialRunnerError] can[Memory.Allocate, Abort.Panic]:
             # Adapters may receive snapshots assembled outside the execution
             # engines, so enforce the same trace budget before converting any
