@@ -353,9 +353,9 @@ Text values also provide `text.count(substring) -> usize`. The operation counts
 left-to-right non-overlapping byte matches; an empty substring counts the input
 boundaries (`length + 1`). Both interpreter and direct-bytecode scanners use
 subtraction-based bounds before forming a candidate offset, so malformed or
-host-sized views cannot wrap a cursor into an out-of-range read. The direct
-backend also rejects a count that cannot be represented by its signed runtime
-result rather than wrapping. It is pure,
+host-sized views cannot wrap a cursor into an out-of-range read. Both backends
+also reject a count that cannot be represented by its signed runtime result
+rather than wrapping. It is pure,
 deterministic, and rejects non-text receivers or arguments during lowering.
 The companion `text.find(substring) -> i64` method returns the first byte offset,
 `0` for an empty substring, and `-1` when no match exists. It uses the same
