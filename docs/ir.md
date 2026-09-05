@@ -1005,8 +1005,9 @@ maximum-`u64` budget cannot wrap the counter; a budget of `N` still permits exac
 Reference calls and direct-bytecode call recursion share a 4,096 active-depth
 guard (including installed handlers) and report `InterpretError.OutputLimit`
 before entering a deeper host frame. This is a containment policy while the
-portable VM call stack is migrated fully to explicit frames; it does not turn
-deep recursion into a fabricated value.
+portable VM call stack is migrated fully to explicit frames; repeated dynamic
+handler installation within one function applies the same bound. This does not
+turn deep recursion into a fabricated value.
 
 The interpreter's opcode dispatcher is an Elisa `machine` over the closed
 `Opcode` enum. Every opcode is named explicitly—there is no wildcard arm—so
