@@ -44,6 +44,9 @@ checks its semantic/lowerer/verifier path alongside the existing rows.
 `Text.count` now follows the same registry-backed semantic, inference, lowerer,
 and verifier path with a text needle and `usize` result (`f618e09`).
 
+`Text.find` now follows the registry-backed path with a text needle, `TextFind`
+opcode, and signed `i64` miss sentinel (`bf6fce1`).
+
 ## Evidence record template
 
 Every future executed or differential-verified entry must append a dated record
