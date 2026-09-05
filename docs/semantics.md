@@ -1627,8 +1627,9 @@ source without borrowing parser-region storage. Programmatic callers can obtain
 fingerprint over every host-visible diagnostic field (phase/detail, typed error
 variants, coordinates, bounded payload text/counts, lowerer/verifier identifiers,
 and truncation state). The fingerprint is only a compact equality key; the
-typed diagnostic record remains authoritative and future record changes must
-bump its snapshot version.
+typed diagnostic record remains authoritative. Exact fixture comparisons use
+`elisascript_program_diagnostic_snapshot_equal`; future record changes must bump
+the snapshot version and extend both operations together.
 Diagnostic writes use the same bounded short-progress policy as ordinary stdout:
 positive writes advance the borrowed message, `EINTR` is retried through a
 small budget that resets after progress, and zero, over-counted, or exhausted
