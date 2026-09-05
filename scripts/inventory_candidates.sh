@@ -73,12 +73,27 @@ candidate_disposition() {
     esac
 }
 
+# The patterns are mutually exclusive, so a global sort/de-duplication pass is
+# unnecessary. Materialize the bounded path list in a private temporary file;
+# redirecting the state-machine reader from a regular file avoids keeping a
+# producer pipe open while a shell `while read` waits for EOF on large roots.
+candidate_paths_file="$(mktemp "${TMPDIR:-/tmp}/elisascript-candidates.XXXXXX")" || {
+    echo "inventory_candidates: unable to create a private path-list file" >&2
+    exit 3
+}
+cleanup_candidate_paths() {
+    rm -f -- "$candidate_paths_file"
+}
+trap cleanup_candidate_paths EXIT HUP INT TERM
+
 for candidate_pattern in '*.py' '*.pl' '*.pm' '*.awk' '*.sh' '*.bash' '*.zsh' '*.fish' 'Makefile' 'makefile'; do
-    rg --files --hidden -g "$candidate_pattern" "$scan_root" 2>/dev/null || true
-done | sort -u | while IFS= read -r candidate_path; do
+    rg --files --hidden -g "$candidate_pattern" "$scan_root" 2>/dev/null >> "$candidate_paths_file" || true
+done
+
+while IFS= read -r candidate_path; do
     [ -n "$candidate_path" ] || continue
     kind="$(candidate_kind "$candidate_path")"
     risk="$(candidate_risk "$candidate_path")"
     disposition="$(candidate_disposition "$candidate_path")"
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$candidate_path" "$kind" unassigned unknown "$disposition" "$risk" 'read-only candidate; classify before porting or deletion'
-done
+done < "$candidate_paths_file"
