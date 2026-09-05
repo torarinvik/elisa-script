@@ -827,7 +827,8 @@ sleeps retry through bounded `EINTR` budgets before becoming `ProcessError`.
 Negative-PID group signaling is attempted only
 after the parent confirms `setpgid(child, child)` succeeded; if group setup
 fails, cleanup signals and reaps the direct child without risking an unrelated
-process group.
+process group. Cleanup signaling and the blocking reap retry bounded `EINTR`
+interruptions before reporting process failure.
 The explicit `executable(text)` constructor adapts a runtime `Text` value to the
 nominal `Executable` type for validated runner configurations. It contributes
 `ProcessError` to the enclosing function's error row and rejects empty or

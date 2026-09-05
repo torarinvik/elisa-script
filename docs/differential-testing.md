@@ -208,7 +208,9 @@ propagated, preventing descriptor leaks across repeated negative cases. Any
 parent-side `waitpid` or stream-position failure after `fork` also terminates
 the confirmed private group (or only the direct leader when group setup failed)
 and reaps it before returning `Process`, so capture errors cannot strand a
-running child or zombie.
+running child or zombie. The termination signal and blocking reap each retry
+bounded `EINTR` interruptions before giving up, preserving this cleanup
+guarantee when the parent is itself interrupted during failure handling.
 An interrupted non-blocking `waitpid` is retried through the bounded polling
 state machine before the child is classified as a process failure; a successful
 poll resets that retry budget. The one-millisecond polling sleep also retries
