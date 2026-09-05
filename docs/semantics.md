@@ -1622,7 +1622,13 @@ bounded source-line excerpt and caret: the excerpt line and caret each cap at
 the numeric start/end coordinates remain authoritative. The launcher prints
 that excerpt on its own line after the phase/detail message, so tooling can
 snapshot the stable coordinates and human readers still see the offending
-source without borrowing parser-region storage.
+source without borrowing parser-region storage. Programmatic callers can obtain
+`elisascript_program_diagnostic_snapshot_fingerprint`, a versioned FNV-style
+fingerprint over every host-visible diagnostic field (phase/detail, typed error
+variants, coordinates, bounded payload text/counts, lowerer/verifier identifiers,
+and truncation state). The fingerprint is only a compact equality key; the
+typed diagnostic record remains authoritative and future record changes must
+bump its snapshot version.
 Diagnostic writes use the same bounded short-progress policy as ordinary stdout:
 positive writes advance the borrowed message, `EINTR` is retried through a
 small budget that resets after progress, and zero, over-counted, or exhausted
