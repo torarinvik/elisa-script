@@ -38,7 +38,8 @@ the row's `arity_min`, `arity_max`, `return_type`, `effects`, `errors`, and
 `argument_types`, `effects`, `errors`, and `opcode` on the qualified semantic
 symbol. This removes the former untyped
 `contains` duplicate and lets direct-call arity checking see the registry
-contract. Receiver unknown-method admission also consults
+contract. Receiver unknown-method admission and the text-method return-type
+inference adapter also consult
 `EsBuiltin::typed_builtin_method_spec("Text", method)`, while legacy
 collection/path names remain in a compatibility list until their structural
 descriptors migrate. The lowerer obtains arity/named-argument shape, result
