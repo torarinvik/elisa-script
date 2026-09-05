@@ -1035,13 +1035,17 @@ destination root must not already exist, and traversal is bounded to 128 levels.
 discarding embedded bytes, subject to the interpreter's 64 MiB file-input safety
 ceiling. It contributes the same `File.Read` effect and adds `FileIoError` to the
 enclosing error row. Open, seek, read, and close failures, including an oversized
-file, remain errors; a failed read is never confused with a successfully read empty file.
+file, remain errors; a failed read is never confused with a successfully read empty
+file. Empty paths and paths containing an embedded NUL are rejected before the
+POSIX boundary, including when a nominal `Path` arrives through a dynamic
+constructor or host call.
 The shell-oriented `cat(path)` spelling is a typed alias for the same operation.
 
 `write_text(path: Path, contents: sview) -> usize error[FileIoError]` replaces or
 creates a file and returns the exact byte count written. It contributes `File.Write`
 and `FileIoError`; partial writes and close failures are errors rather than apparent
-success. Together, `path_exists`, `read_text`, and `write_text` form the first
+success. Empty or embedded-NUL paths are rejected before opening the target.
+Together, `path_exists`, `read_text`, and `write_text` form the first
 complete filesystem round trip without shell or Python.
 
 `read_bytes(path: Path) -> darray[u8] error[FileIoError] can[File.Read]` reads a
@@ -1055,7 +1059,8 @@ can[File.Write]` replaces or creates a file and returns the exact number of byte
 written. `append_bytes` opens in append mode with the same typed contract, and
 `write_binary`/`append_binary` are equivalent aliases. Invalid byte values cannot
 be constructed through a well-typed `u8` array; runtime values are still checked
-at the filesystem boundary, and partial writes or close failures remain
+at the filesystem boundary. Empty or embedded-NUL paths are rejected before
+opening the target, and partial writes or close failures remain
 `FileIoError` errors.
 
 `remove_path(path: Path) -> bool` removes a filesystem entry and contributes

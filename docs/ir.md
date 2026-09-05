@@ -571,6 +571,11 @@ The shell-size predicate has no dedicated opcode: `is_nonempty`/`file_nonempty`
 lower to `FileSize` followed by a typed `Greater` comparison against zero. This
 keeps the existing `Named(Path) -> Int(unsigned, 64)` file-size contract while
 retaining `File.Read` and `FileIoError` on the enclosing function.
+All filesystem text and byte operations reject an empty path or a path containing
+an embedded NUL before entering the POSIX boundary. This check also applies to
+nominal `Path` values received from host calls or dynamic constructors; it keeps
+the length-delimited source representation from being silently truncated by the
+C-string adapter.
 `ReadText` extends that contract to whole-file input with verified signature
 `Named(Path) -> Text`. Its function must carry both `File.Read` and `FileIoError`;
 lowering supplies both and the verifier rejects either omission. The interpreter
