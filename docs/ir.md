@@ -53,7 +53,9 @@ aliasing a valid structural type. Descriptor rows also use a closed `TypeKind`
 vocabulary: unknown serialized enum ordinals are rejected before child
 traversal rather than being interpreted as a backend-specific type. The same
 closed-vocabulary check applies to legacy inline type fields even when a module
-has no interned table.
+has no interned table. Inline-shape matching also has a 128-level recursion
+guard, so cyclic or hostile descriptor graphs fail as `InvalidTypeTable` before
+host-stack exhaustion.
 
 The vocabulary intentionally contains no LLVM values, native registers, pointer
 sizes, bytecode slots, or host ABI facts. Those belong to target-specific lowering.
