@@ -70,7 +70,8 @@ an existing IR opcode, semantic metadata preservation, and a lowerer
 return/error consumer. It also verifies the receiver-aware `Text` method rows
 and their method-dispatch branches; boundary, replacement, and trim helpers
 now consume receiver-specific result/opcode and call-shape rows, while the
-receiver semantic checker consumes the registry arity range. Both checks are static by design while
+receiver semantic checker consumes the registry arity range and rejects named
+arguments for rows that intentionally expose no parameter names. Both checks are static by design while
 compiler execution remains suspended by the resource-safety gate.
 
 The remaining Q03 work is intentionally explicit: migrate aggregate and

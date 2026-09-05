@@ -76,8 +76,10 @@ if ! rg -q 'typed_builtin_method_spec\("Text", method\)' "$inference_file"; then
 fi
 if ! rg -q 'ufm_check_text_builtin_arity' "$receiver_semantic_file" || \
    ! rg -q 'spec\.arity_min' "$receiver_semantic_file" || \
-   ! rg -q 'DiagnosticKind\.ArityMismatch' "$receiver_semantic_file"; then
-    printf 'builtin registry audit: semantic receiver arity checking does not consume registry ranges\n' >&2
+   ! rg -q 'DiagnosticKind\.ArityMismatch' "$receiver_semantic_file" || \
+   ! rg -q 'DiagnosticKind\.CallArgumentError' "$receiver_semantic_file" || \
+   ! rg -q '"no_names"' "$receiver_semantic_file"; then
+    printf 'builtin registry audit: semantic receiver arity/named-argument checking does not consume registry ranges\n' >&2
     exit 1
 fi
 if ! rg -q 'ufm_check_text_builtin_argument_types' "$receiver_semantic_file" || \
