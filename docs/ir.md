@@ -500,6 +500,10 @@ directory snapshots, and fixed-size tuple-like results all use the shared
 the serialized domain, or an append that would cross it, therefore raises the
 typed overflow failure before publishing a view; this applies equally to the
 reference interpreter and direct bytecode path.
+Text split and regex result builders use a related spare-slot check because an
+empty-input match can yield one field for zero input bytes. They reject a host
+text length whose worst-case field count cannot fit after the current pool
+cursor, avoiding a wrapping `length + 1` during result construction.
 direct scalar/nominal representations, supported arrays, or recursively supported
 nested maps use the packed path for construction, lookup, membership, equality,
 updates, and key extraction. Other aggregates continue through the verified
