@@ -183,13 +183,17 @@ the fingerprint and capability counts/decision, so stale metadata cannot be
 accepted merely because the source revision string was left unchanged.
 `canonical_bytecode_artifact_bytes` emits a versioned `ESBC` metadata envelope
 with length-prefixed backend/revision strings, the module fingerprint, and the
-complete capability snapshot. `bytecode_artifact_fingerprint` hashes that exact
-envelope for cache keys or diagnostic correlation; it is intentionally not a
-substitute for validating the artifact against the verified module.
+complete capability snapshot. The writer applies the same version, backend,
+revision-size, and engine/directness checks as the reader and returns the empty
+sentinel for metadata that would not be cache-admissible. `bytecode_artifact_fingerprint`
+returns zero for that invalid metadata and otherwise hashes the exact envelope
+for cache keys or diagnostic correlation; it is intentionally not a substitute
+for validating the artifact against the verified module.
 `decode_bytecode_artifact` first applies that allocation-free validation and then
 returns a borrowed, typed metadata record without copying its strings;
 `bytecode_artifact_bytes_valid` is the allocation-free cache-boundary check: it
-requires the exact magic/version, backend tag, a bounded 4 KiB source-revision
+rejects records above the 64 KiB envelope ceiling, then requires the exact
+magic/version, backend tag, a bounded 4 KiB source-revision
 field and other bounded length-prefixed fields,
 known engine ordinal, consistent direct/fallback flag, all capability counters,
 capability counters representable by the host `usize`, and no trailing bytes.
