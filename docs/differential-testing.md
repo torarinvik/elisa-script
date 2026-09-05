@@ -209,6 +209,8 @@ parent-side `waitpid` or stream-position failure after `fork` also terminates
 the confirmed private group (or only the direct leader when group setup failed)
 and reaps it before returning `Process`, so capture errors cannot strand a
 running child or zombie.
+Stdin staging also retries short temporary-file writes until the bounded payload
+is complete or a zero-progress failure is observed.
 Post-exit file sizes are also round-tripped through host `usize` before
 allocation; a stream size representable in `i64` but not on the target host is
 reported as `DifferentialRunnerError.Process` rather than truncated.

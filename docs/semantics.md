@@ -1170,7 +1170,9 @@ The shell-oriented `cat(path)` spelling is a typed alias for the same operation.
 `write_text(path: Path, contents: sview) -> usize error[FileIoError]` replaces or
 creates a file and returns the exact byte count written. It contributes `File.Write`
 and `FileIoError`; partial writes and close failures are errors rather than apparent
-success. Empty or embedded-NUL paths are rejected before opening the target.
+success; the adapter retries short stdio progress and reports an error only when
+the complete payload cannot be written or the close fails. Empty or embedded-NUL
+paths are rejected before opening the target.
 Together, `path_exists`, `read_text`, and `write_text` form the first
 complete filesystem round trip without shell or Python.
 
@@ -1188,7 +1190,7 @@ written. `append_bytes` opens in append mode with the same typed contract, and
 be constructed through a well-typed `u8` array; runtime values are still checked
 at the filesystem boundary. Empty or embedded-NUL paths are rejected before
 opening the target, and partial writes or close failures remain
-`FileIoError` errors.
+`FileIoError` errors after bounded short-write retries.
 
 `remove_path(path: Path) -> bool` removes a filesystem entry and contributes
 `File.Write`. It returns `true` only when removal succeeded; a missing or otherwise

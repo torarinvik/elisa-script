@@ -761,8 +761,9 @@ the nominal `Path`, effect, and error contract.
 `WriteText` has verified signature `Named(Path) × Text -> usize` and requires
 `File.Write` plus `FileIoError`. Execution opens in replacement mode, verifies the
 complete byte count, checks close status, and returns that count. A partial write
-never produces a successful result, and empty text still creates or truncates the
-target file deterministically.
+is retried while stdio makes progress and never produces a successful result when
+progress stops; empty text still creates or truncates the target file
+deterministically.
 `AppendText` has the same verified signature and effect/error requirements, but
 opens in append mode so each byte is written after the existing file contents.
 It is the typed IR counterpart to shell `>>` and Python append-mode writes.
