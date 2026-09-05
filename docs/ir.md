@@ -46,6 +46,10 @@ deduplicates `(kind, name, width, signedness, children)` structurally. This is t
 recursive descriptor seam for future tuples, records, and arbitrarily nested
 containers, without putting recursive values or allocator addresses in the IR.
 Legacy inline fields stay populated while verifier and backend consumers migrate.
+Type interning rejects child pools wider than the descriptor's `u16` count or
+the serialized `u32` offset domain and returns the verifier's invalid id
+sentinel before narrowing; this prevents oversized host collections from
+aliasing a valid structural type.
 
 The vocabulary intentionally contains no LLVM values, native registers, pointer
 sizes, bytecode slots, or host ABI facts. Those belong to target-specific lowering.
