@@ -971,6 +971,9 @@ allocation; the walker reports the existing `DirectoryError` rather than
 publishing a truncated match.
 The recursive `path.rglob` adapter applies the same check when adding its
 `**/` prefix.
+Directory enumeration treats an interrupted `readdir` as a bounded retry rather
+than publishing a partial snapshot; the retry budget resets after a directory
+entry is observed and exhaustion becomes `DirectoryError`.
 `ReadStdin` verifies as `() -> Text` with `Console.Read` and `ConsoleError`;
 `ReadStdinLine` verifies as `() -> Text` with the same effect/error row and consumes
 one line at a time, preserving stdin for subsequent reads. Both state machines
