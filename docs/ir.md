@@ -67,6 +67,14 @@ not a promise of cross-platform ABI compatibility. A non-POSIX adapter must
 extend the same namespace with equivalent typed operations rather than leaking
 new global declarations.
 
+The native launcher follows the same rule. `src/driver/elisascript.elisa`
+defines an `EsDriver` module whose argument collection, CLI parsing, stderr
+formatting, and phase-reporting helpers are private. Its only public surface is
+`EsDriver::run`; the required process entrypoint `main(argc, argv)` is a global
+ABI shim that forwards directly to that function. This keeps host-facing ABI
+code small while preventing driver implementation helpers from entering the
+program-wide namespace.
+
 Every verified module also has canonical structural bytes through
 `canonical_module_bytes(module)` and a compact fingerprint through
 `module_fingerprint(module)` (with `canonical_module_hash` as the explicit
