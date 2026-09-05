@@ -76,8 +76,10 @@ def emit(value: sview) -> void can[Writer.write]:
 
 The parser records the family, each first-level operation, and its payload arity
 in file metadata; semantic analysis rejects unknown `signal` and `perform`
-operations and payload-count mismatches while leaving builtin and permission-only
-families open to host-defined operations. Operation payload and resumption types remain governed
+operations, duplicate `(family, operation)` declarations, and payload-count mismatches
+while leaving builtin and permission-only families open to host-defined operations.
+Overloads are not accepted in the initial ABI because dispatch identifies an operation
+by its family and name. Operation payload and resumption types remain governed
 by the ordinary typed handler callback and IR verifier, so declaration metadata
 cannot weaken static checking. Dynamic handlers may therefore intercept
 user-defined operations without introducing a second AST or runtime representation.

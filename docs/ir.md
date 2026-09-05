@@ -159,7 +159,9 @@ Elisa's `signal Family.Operation` and `signal Family.Operation(payload, ...)`
 syntax lower directly to `Perform`; payload expressions are evaluated once in
 source order and become its typed operand slice.
 Source `effect Family:` declarations register their first-level operation names
-and payload arities in parser metadata. Semantic analysis uses that registry to
+and payload arities in parser metadata. Duplicate operation names within one family
+are rejected because the runtime identity is the `(family, operation)` pair; overloads
+are not part of the initial ABI. Semantic analysis uses that registry to
 reject unknown operations and payload-count mismatches for both `signal` and
 value-producing `perform` requests in user-declared families;
 builtin and permission-only families keep their host-defined operation sets.
