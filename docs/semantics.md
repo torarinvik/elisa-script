@@ -1616,8 +1616,13 @@ end-column coordinates before the parser arena is released. Context/name and
 expected/actual/detail text and numeric expected/actual counts are copied through
 a 4 KiB-per-field permanent storage bound, with an explicit truncation flag; a deterministic payload hash is
 also kept for differential correlation. Parser context and semantic wording are
-rendered from the bounded owned fields, while exact caret/source snapshots
-remain follow-up work.
+rendered from the bounded owned fields. Source failures additionally retain a
+bounded source-line excerpt and caret: the excerpt line and caret each cap at
+1024 bytes, and multi-line or clipped spans set the same truncation flag while
+the numeric start/end coordinates remain authoritative. The launcher prints
+that excerpt on its own line after the phase/detail message, so tooling can
+snapshot the stable coordinates and human readers still see the offending
+source without borrowing parser-region storage.
 Diagnostic writes use the same bounded short-progress policy as ordinary stdout:
 positive writes advance the borrowed message, `EINTR` is retried through a
 small budget that resets after progress, and zero, over-counted, or exhausted

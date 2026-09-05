@@ -43,6 +43,11 @@ extend EsIr:
         # bounded adapter. This preserves actionable names/types without letting
         # a hostile source token turn one failed load into an unbounded retention.
         const ELISASCRIPT_MAX_DIAGNOSTIC_TEXT_BYTES: usize = 4096
+        # Keep one source-line excerpt plus its caret independently bounded.
+        # The coordinates remain authoritative when a long or multi-line span
+        # cannot fit in this human-readable rendering.
+        const ELISASCRIPT_MAX_DIAGNOSTIC_EXCERPT_LINE_BYTES: usize = 1024
+        const ELISASCRIPT_MAX_DIAGNOSTIC_EXCERPT_CARET_BYTES: usize = 1024
 
         # A lowering diagnostic retains only region-independent facts. LowerIssue's
         # function/message views belong to the parser arena and must never escape it;
@@ -72,6 +77,7 @@ extend EsIr:
             payload_detail: mutable dstr = []
             payload_detail2: mutable dstr = []
             payload_detail3: mutable dstr = []
+            payload_excerpt: mutable dstr = []
             payload_expected_count: mutable u32 = 0
             payload_actual_count: mutable u32 = 0
             payload_truncated: mutable bool = false
@@ -94,6 +100,7 @@ extend EsIr:
             summary.payload_detail <- []
             summary.payload_detail2 <- []
             summary.payload_detail3 <- []
+            summary.payload_excerpt <- []
             summary.payload_expected_count <- 0
             summary.payload_actual_count <- 0
             summary.payload_truncated <- false
@@ -113,7 +120,69 @@ extend EsIr:
             return result
 
 
-        def elisascript_source_capture_parse_diagnostic(file: Ast::File&, summary: mutable ElisascriptSourceDiagnosticSummary&) -> void:
+        def elisascript_source_line_bounds(source: u8&, source_length: usize, line: u32, start: mutable usize&, end: mutable usize&) -> bool:
+            return false if line == 0
+            target: usize = line.usize()
+            current: mutable usize = 1
+            index: mutable usize = 0
+            line_start: mutable usize = 0
+            while index < source_length and current < target:
+                if source[index] == 10:
+                    current <- current + 1
+                    line_start <- index + 1
+                index <- index + 1
+            return false if current != target
+            line_end: mutable usize = line_start
+            while line_end < source_length and source[line_end] != 10:
+                line_end <- line_end + 1
+            start <- line_start
+            end <- line_end
+            return true
+
+
+        def elisascript_source_capture_excerpt(source: u8&, source_length: usize, line: u32, column: u32, end_line: u32, end_column: u32, summary: mutable ElisascriptSourceDiagnosticSummary&) -> void can[Memory.Allocate, Abort.Panic]:
+            return if line == 0 or column == 0
+            line_start: mutable usize = 0
+            line_end: mutable usize = 0
+            return if not elisascript_source_line_bounds(source, source_length, line, line_start, line_end)
+
+            line_length: usize = line_end - line_start
+            line_limit: usize = ELISASCRIPT_MAX_DIAGNOSTIC_EXCERPT_LINE_BYTES
+            if line_length > line_limit:
+                line_length <- line_limit
+                summary.payload_truncated <- true
+            caret_offset: usize = column.usize() - 1
+            caret_limit: usize = ELISASCRIPT_MAX_DIAGNOSTIC_EXCERPT_CARET_BYTES - 1
+            if caret_offset > caret_limit:
+                caret_offset <- caret_limit
+                summary.payload_truncated <- true
+            caret_length: usize = 1
+            if end_line == line and end_column > column:
+                caret_length <- (end_column - column).usize()
+            caret_length <- 1 if caret_length == 0
+            if caret_length > ELISASCRIPT_MAX_DIAGNOSTIC_EXCERPT_CARET_BYTES:
+                caret_length <- ELISASCRIPT_MAX_DIAGNOSTIC_EXCERPT_CARET_BYTES
+                summary.payload_truncated <- true
+            summary.payload_truncated <- true if end_line != 0 and end_line != line
+
+            excerpt: mutable dstr = ctx_fstr_alloc(ELISASCRIPT_MAX_DIAGNOSTIC_TEXT_BYTES)
+            if excerpt.items == null:
+                summary.payload_truncated <- true
+                return
+            ctx_fstr_append(excerpt, source + line_start, line_length)
+            ctx_fstr_append(excerpt, "\n", 1)
+            padding: mutable usize = 0
+            while padding < caret_offset:
+                ctx_fstr_append(excerpt, " ", 1)
+                padding <- padding + 1
+            caret: mutable usize = 0
+            while caret < caret_length:
+                ctx_fstr_append(excerpt, "^", 1)
+                caret <- caret + 1
+            summary.payload_excerpt <- excerpt
+
+
+        def elisascript_source_capture_parse_diagnostic(file: Ast::File&, source: u8&, source_length: usize, summary: mutable ElisascriptSourceDiagnosticSummary&) -> void:
             return if file.errors.count == 0
             parse_error: Ast::ParseError = file.errors[0]
             summary.parse_known <- true
@@ -124,9 +193,10 @@ extend EsIr:
             summary.end_column <- parse_error.end_column
             summary.payload_hash <- ctx_hash_sview(parse_error.context)
             summary.payload_context <- elisascript_source_copy_diagnostic_text(parse_error.context, summary.payload_truncated)
+            elisascript_source_capture_excerpt(source, source_length, summary.line, summary.column, summary.end_line, summary.end_column, summary)
 
 
-        def elisascript_source_capture_semantic_diagnostic(table: Semantic::SymbolTable&, summary: mutable ElisascriptSourceDiagnosticSummary&) -> bool:
+        def elisascript_source_capture_semantic_diagnostic(table: Semantic::SymbolTable&, source: u8&, source_length: usize, summary: mutable ElisascriptSourceDiagnosticSummary&) -> bool:
             for diagnostic in table.diagnostics:
                 continue if Semantic::diagnostic_severity(diagnostic) != 1 or diagnostic.kind == Semantic::DiagnosticKind.NegativeIndex
                 summary.semantic_known <- true
@@ -148,6 +218,7 @@ extend EsIr:
                 summary.payload_detail3 <- elisascript_source_copy_diagnostic_text(diagnostic.detail3, summary.payload_truncated)
                 summary.payload_expected_count <- diagnostic.expected_count
                 summary.payload_actual_count <- diagnostic.actual_count
+                elisascript_source_capture_excerpt(source, source_length, summary.line, summary.column, summary.end_line, summary.end_column, summary)
                 return true
             return false
 
@@ -246,10 +317,10 @@ extend EsIr:
                 tokens: darray[Token] = frontend_tokenize(filename, source)
                 file: Ast::File = frontend_parser_parse_file(source, tokens)
                 if file.errors.count != 0:
-                    elisascript_source_capture_parse_diagnostic(file, source_diagnostic)
+                    elisascript_source_capture_parse_diagnostic(file, source, source_length, source_diagnostic)
                     raise ElisascriptSourceError.ParseFailed
                 semantic: Semantic::SymbolTable = Semantic::check(file)
-                if elisascript_source_capture_semantic_diagnostic(semantic, source_diagnostic):
+                if elisascript_source_capture_semantic_diagnostic(semantic, source, source_length, source_diagnostic):
                     raise ElisascriptSourceError.SemanticFailed
                 lowered: LowerResult = lower_file_with_handlers(file, module_name, handlers)
                 if lowered.issues.count != 0:
