@@ -184,6 +184,10 @@ at one million entries before argv or owned C-string reservation, and environmen
 override entries use the same bound. The validator reports count and aggregate
 byte limits as explicit resource issues; the low-level invocation API repeats
 the check before launch.
+`max_output_bytes` remains caller-configurable below the default 64 MiB ceiling,
+but values above that hard capture budget are rejected before fork; this keeps
+temporary-file growth and post-exit materialization bounded even when a caller
+bypasses runner preparation.
 The poll counter checks the positive budget before incrementing, so a
 maximum-width timeout cannot wrap into an unbounded wait. Launch, wait, and capture
 failures use `DifferentialRunnerError.Process`. Each captured stream is checked
