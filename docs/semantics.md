@@ -1646,7 +1646,9 @@ shell `sleep`; negative values, NaN, and infinity raise `TimeError`.
 
 The operation is lowered to one unit-tagged IR instruction. Both execution
 backends call the POSIX `usleep` bridge in bounded chunks, so long waits and
-fractional seconds have the same behavior without invoking a shell.
+fractional seconds have the same behavior without invoking a shell. Each chunk
+retries bounded `EINTR` interruptions before becoming `TimeError`, so a signal
+does not silently shorten a requested delay.
 
 ## Process environment
 

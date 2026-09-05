@@ -920,7 +920,8 @@ boundaries remain typed and pipe backpressure cannot deadlock the interpreter.
 returns `Void`. Its instruction integer is `0` for seconds and `1` for
 milliseconds. Verification requires `Time.Sleep` and `TimeError`; the reference
 interpreter and direct bytecode path share the same bounded POSIX `usleep`
-implementation and reject negative or non-finite durations.
+implementation, retry interrupted chunks through the bounded `EINTR` policy,
+and reject negative or non-finite durations.
 `GetEnvironment`, `SetEnvironment`, and `UnsetEnvironment` operate on `Text`
 operands. Reads produce owned `Text` under `Environment.Read`; mutations produce
 `Bool` under `Environment.Write`. All three require `EnvironmentError`, reject C
