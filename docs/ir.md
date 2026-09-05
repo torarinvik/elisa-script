@@ -746,6 +746,12 @@ Before reserving argv pointers or owned argument strings, the interpreter
 rejects vectors above its one-million-element process-argument budget with
 `InterpretError.Process`; this bounds host allocation for malformed or hostile
 runtime arrays while leaving ordinary typed argument and NUL validation intact.
+It also rejects an aggregate executable/argv text payload above its 64 MiB
+process-argument byte budget before duplicating any C strings. The byte guard
+is overflow-safe and leaves malformed non-text elements to the existing typed
+validation path; a zero configured byte budget means unlimited for embedders
+that deliberately opt out. The same byte guard applies to run, stream-capture,
+stdin-capture, and full-result process entrypoints.
 The same budget bounds environment override entries and pipeline stages before
 their reservation or child-spawn loops.
 Process waits use nonblocking `waitpid` polling and a 120-second deadline; a child

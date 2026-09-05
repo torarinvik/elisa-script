@@ -1319,6 +1319,11 @@ The interpreter also bounds each process argument vector at one million entries
 before reserving argv pointers and owned C-string storage. Exceeding that
 runtime resource policy raises `ProcessError`; malformed element types continue
 to raise the ordinary type error before any child is forked.
+The aggregate executable and argument text is independently capped at 64 MiB
+before any C-string duplication. This byte budget is checked with subtraction
+before addition, so a host-size length cannot wrap into an apparently small
+request. Embedders may set the byte budget to zero to opt out while retaining
+the element-count guard.
 Environment override maps and pipeline stage vectors use the same bound before
 their host reservations or child-spawn loops.
 
