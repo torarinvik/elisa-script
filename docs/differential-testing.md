@@ -228,6 +228,10 @@ Comparator.fields[State](ignore = [.timestamp, .host_address])
 Normalization must be explicit and reported. The framework must never silently
 discard nondeterministic fields merely to make a test pass.
 
+Float comparison is exact by default. Explicit absolute and relative tolerances
+must be nonnegative; NaN never equals anything, equal infinities compare equal,
+and an infinity cannot match a finite value through relative scaling.
+
 ## Deterministic worlds
 
 Both sides should receive the same controlled world where possible:
