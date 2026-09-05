@@ -94,7 +94,10 @@ names. The interpreter bounds those continuation pools at one million copied
 values and 100,000 replay frames, reports `InvalidContinuation` on exhaustion,
 and reclaims call and callback snapshot suffixes as soon as they return. These
 limits are runtime resource guards, not implicit weakening of the static effect
-or ownership checks.
+or ownership checks. Ordinary interpreter and direct-bytecode call entrypoints
+also reject an active-call or handler depth at 4,096 with the typed
+`InterpretError.OutputLimit`; this bounds host-stack recursion until the fully
+frame-based call protocol is complete.
 
 ## Module constants
 

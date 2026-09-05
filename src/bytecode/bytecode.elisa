@@ -133,6 +133,10 @@ module EsBytecode:
         # reconstruction cursor and turn a later slice into a false-valid range.
         const BYTECODE_U32_MAX: usize = 4294967295
         const BYTECODE_MAX_TEXT_OUTPUT_BYTES: usize = 67108864
+        # Direct calls recurse through this facade while the packed VM call
+        # protocol is still being completed. Keep its host stack bounded with
+        # the same policy as the reference interpreter.
+        const BYTECODE_MAX_EXECUTION_CALL_DEPTH: usize = 4096
 
 
         # Read one little-endian scalar without allowing a malformed envelope to
@@ -1672,7 +1676,7 @@ module EsBytecode:
         # Evaluate the closed scalar, aggregate, filesystem, and process subset
         # through a state machine driven by the instruction cursor. Unsupported
         # families never enter this path.
-        def bytecode_direct_instruction(module: BytecodeModule&, instruction: Instruction, fn: BytecodeFunction&, ids: darray[u32]&, values: darray[RuntimeValue]&, storage: mutable darray[RuntimeValue]&, observations: mutable darray[Observation]&, step_limit: u64, steps: mutable u64&) -> RuntimeValue error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+        def bytecode_direct_instruction(module: BytecodeModule&, instruction: Instruction, fn: BytecodeFunction&, ids: darray[u32]&, values: darray[RuntimeValue]&, storage: mutable darray[RuntimeValue]&, observations: mutable darray[Observation]&, step_limit: u64, steps: mutable u64&, call_depth: usize) -> RuntimeValue error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             raise InterpretError.Panic if instruction.opcode == Opcode.Panic
             raise InterpretError.Raised if instruction.opcode == Opcode.Raise
             operand: mutable RuntimeValue = runtime_void()
@@ -2329,7 +2333,7 @@ module EsBytecode:
                 for offset in 0..<instruction.operand_count.usize() |module, instruction, fn, ids, values, call_arguments|:
                     call_arguments.push(bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + offset]))
                 remaining: u64 = step_limit - steps
-                nested: Execution = try execute_bytecode_direct(module, instruction.symbol, call_arguments, observations, storage, remaining)
+                nested: Execution = try execute_bytecode_direct(module, instruction.symbol, call_arguments, observations, storage, remaining, call_depth + 1)
                 steps <- steps + nested.steps
                 call_value <- nested.value
             binary_value: mutable RuntimeValue = runtime_void()
@@ -2660,9 +2664,9 @@ module EsBytecode:
             return failure in {InterpretError.DivisionByZero, InterpretError.IntegerOverflow, InterpretError.InvalidNumber, InterpretError.FileIo, InterpretError.Process, InterpretError.OutputLimit, InterpretError.Environment, InterpretError.Directory, InterpretError.Console, InterpretError.Time, InterpretError.RangeStepZero, InterpretError.InvalidShift, InterpretError.IndexOutOfBounds, InterpretError.Assertion, InterpretError.Raised}
 
 
-        def bytecode_direct_instruction_guarded(module: BytecodeModule&, instruction: Instruction, fn: BytecodeFunction&, ids: darray[u32]&, values: darray[RuntimeValue]&, storage: mutable darray[RuntimeValue]&, observations: mutable darray[Observation]&, step_limit: u64, steps: mutable u64&, guards: mutable darray[BytecodeErrorGuard]&, recovered: mutable bool&, recovery_target: mutable u32&) -> RuntimeValue error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+        def bytecode_direct_instruction_guarded(module: BytecodeModule&, instruction: Instruction, fn: BytecodeFunction&, ids: darray[u32]&, values: darray[RuntimeValue]&, storage: mutable darray[RuntimeValue]&, observations: mutable darray[Observation]&, step_limit: u64, steps: mutable u64&, guards: mutable darray[BytecodeErrorGuard]&, recovered: mutable bool&, recovery_target: mutable u32&, call_depth: usize) -> RuntimeValue error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             recovered <- false
-            catch bytecode_direct_instruction(module, instruction, fn, ids, values, storage, observations, step_limit, steps):
+            catch bytecode_direct_instruction(module, instruction, fn, ids, values, storage, observations, step_limit, steps, call_depth):
                 ok:
                     return ok
                 error failure:
@@ -2788,7 +2792,8 @@ module EsBytecode:
             return function.blocks.count
 
 
-        def execute_bytecode_direct(module: BytecodeModule&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, step_limit: u64 = 1000000) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+        def execute_bytecode_direct(module: BytecodeModule&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, step_limit: u64 = 1000000, call_depth: usize = 0) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+            raise InterpretError.OutputLimit if call_depth >= BYTECODE_MAX_EXECUTION_CALL_DEPTH
             function_index: usize = bytecode_function_index(module, entry)
             raise InterpretError.UnknownFunction if function_index == module.functions.count
             fn: BytecodeFunction = module.functions[function_index]
@@ -2868,7 +2873,7 @@ module EsBytecode:
                     cursor.steps <- cursor.steps + 1
                     instruction: Instruction = fn.instructions[instruction_index]
                     try bytecode_prepare_guard_instruction(instruction, error_guards)
-                    cursor.value <- try bytecode_direct_instruction_guarded(module, instruction, fn, ids, values, storage, observations, step_limit, cursor.steps, error_guards, cursor.recovered, cursor.recovery_target)
+                    cursor.value <- try bytecode_direct_instruction_guarded(module, instruction, fn, ids, values, storage, observations, step_limit, cursor.steps, error_guards, cursor.recovered, cursor.recovery_target, call_depth)
                     cursor.state <- BytecodeExecutionState.Recover if cursor.recovered else BytecodeExecutionState.StoreInstruction
                     -> Execute
 
