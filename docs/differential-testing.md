@@ -103,8 +103,10 @@ overflow.
 The module keeps state-machine cursors, process-host symbols, and comparison
 helpers private; only runner/value records and the documented adapter/comparator
 entrypoints are public. Both runtime-to-owned conversion and comparison validate
-array offsets with checked subtraction before indexing, so a wrapped `u32` slice
-cannot become a host access even when a test supplies a malformed snapshot.
+array and map offsets with checked subtraction before indexing, so a wrapped
+`u32` slice or an incomplete key/value pair cannot become a host access even
+when a test supplies a malformed snapshot. Dedicated runtime and owned-map
+fixtures cover out-of-bounds and maximum-offset cases.
 
 The executable contract is `EsDifferential.DifferentialRunner`. It is a typed
 specification, not a command-string escape hatch: the target executable, optional entry point,
