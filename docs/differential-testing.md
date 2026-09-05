@@ -53,6 +53,12 @@ observations are compared exactly by default. Call
 to opt into explicit absolute/relative float tolerance; negative tolerances remain
 non-matching, and all non-float values stay exact.
 
+The module keeps state-machine cursors, process-host symbols, and comparison
+helpers private; only runner/value records and the documented adapter/comparator
+entrypoints are public. Both runtime-to-owned conversion and comparison validate
+array offsets with checked subtraction before indexing, so a wrapped `u32` slice
+cannot become a host access even when a test supplies a malformed snapshot.
+
 The executable contract is `EsDifferential.DifferentialRunner`. It is a typed
 specification, not a command-string escape hatch: the target executable, optional entry point,
 working directory, environment overrides, stdin, protocol, timeout, dynamic
