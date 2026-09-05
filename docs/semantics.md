@@ -1251,7 +1251,8 @@ canonical absolute path. It matches the common `readlink -f`,
 `resolve_path` aliases are equivalent, and `path.realpath()`/`path.resolve()`
 are method forms. Unlike `path_normalize`, this operation consults the
 filesystem and reports `FileIoError` when the input is empty, contains an
-embedded NUL, or cannot be resolved.
+embedded NUL, or cannot be resolved. The returned libc path is bounded by the
+shared 64 MiB host C-string ceiling before it is copied into an owned `Path`.
 
 `copy_path(source: Path, destination: Path) -> bool error[FileIoError]
 can[File.Read, File.Write]` copies one regular file by length-delimited bytes and
@@ -1655,7 +1656,10 @@ Names must be non-empty, must not contain `=`, and neither names nor values may
 contain embedded NUL bytes. The same rules apply to child-only overrides and to
 process-global reads and mutations. These mutations intentionally affect later
 child processes and therefore make the environment dependency visible in the
-inferred effect row.
+inferred effect row. Values returned by the POSIX environment bridge are scanned
+against the shared 64 MiB host C-string ceiling before they are copied into an
+owned `sview`; an unterminated or overlong host value raises `EnvironmentError`
+instead of performing an unbounded C-string walk.
 
 ## Directories and working directory
 
@@ -1674,6 +1678,9 @@ owned nominal snapshot, so a later directory change cannot mutate the saved path
 the host cannot allocate the returned snapshot, the operation reports
 `DirectoryError` and does not expose a partial path.
 Empty paths and embedded NUL bytes are rejected before entering the POSIX boundary.
+The `getcwd` result is scanned against the shared 64 MiB host C-string ceiling
+before it becomes the owned `Path`; an unterminated or overlong result reports
+`DirectoryError`.
 `create_directories` (also `makedirs` and `mkdir_p`) creates missing parents like
 shell `mkdir -p` or Python `os.makedirs`, succeeds when each existing component is
 a directory, and reports a typed error when a component is not one.
