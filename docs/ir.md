@@ -128,6 +128,11 @@ false because they have no bytecode preflight.
 along with function, instruction, and global counts. Record this report beside
 the execution artifact; counts are descriptive telemetry, while
 `direct_supported` and `engine` are the authoritative backend-selection facts.
+`EsBytecode.make_bytecode_artifact` provides the typed pairing for that record:
+it stores the canonical module fingerprint, source revision, backend tag, and
+capability report together. `bytecode_artifact_matches_module` recomputes both
+the fingerprint and capability counts/decision, so stale metadata cannot be
+accepted merely because the source revision string was left unchanged.
 
 `EsBytecode.execute_bytecode_direct_only` is the strict evidence entrypoint. It
 performs the same dispatch-table and IR verification, then rejects any module
