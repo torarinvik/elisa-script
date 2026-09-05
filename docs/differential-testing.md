@@ -302,6 +302,18 @@ serialized or later comparison record cannot lose the pre-run capability facts.
 Reference-interpreter and external-process runs deliberately leave the snapshot
 unknown; zero counts must not be interpreted as proof that a module was empty.
 
+`compare_differential_runs` remains a value/observation comparator and therefore
+does not reject an unknown engine by default. Backend qualification must use
+`compare_differential_runs_with_engine_requirement` with an explicit
+`DifferentialEngineRequirement`: `RequireKnown` checks that both sides report an
+engine, `RequireDistinct` additionally requires different known engines, and
+`RequireDirectBytecodeCandidate` requires the candidate to have run the direct
+bytecode engine. A failed requirement returns the machine-readable `Engine`
+difference kind with both recorded engine identities, before ordinary output or
+return-value comparisons. This prevents a compatibility fallback from being
+mistaken for independent VM evidence while retaining flexible comparisons for
+external legacy references.
+
 ## Generation and shrinking
 
 Differential cases should integrate property-based generation and deterministic
