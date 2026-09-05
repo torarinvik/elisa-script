@@ -224,6 +224,10 @@ Stdin staging also retries short temporary-file writes until the bounded payload
 is complete or a zero-progress failure is observed. Each host-returned write count
 must also fit the requested remaining span; impossible over-counts fail as
 `DifferentialRunnerError.Process` before the offset is advanced.
+Post-exit stdout/stderr materialization applies the same bounded progress policy
+to exact-size reads: positive short `fread` counts advance and retry, while zero
+progress or an over-count fails the owned stream snapshot as
+`DifferentialRunnerError.Process`.
 Post-exit file sizes are also round-tripped through host `usize` before
 allocation; a stream size representable in `i64` but not on the target host is
 reported as `DifferentialRunnerError.Process` rather than truncated.

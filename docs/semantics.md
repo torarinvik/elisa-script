@@ -1179,7 +1179,10 @@ complete filesystem round trip without shell or Python.
 `read_bytes(path: Path) -> darray[u8] error[FileIoError] can[File.Read]` reads a
 whole file as its exact bytes, including embedded NULs, subject to the interpreter's
 64 MiB file-input safety ceiling and remaining u32 runtime-storage span, and
-returns an empty array for an empty file.
+returns an empty array for an empty file. Exact-size reads tolerate positive
+short `fread` progress by retrying from the advanced offset; zero progress or
+an impossible over-count is a typed file failure, so a truncation or race
+cannot publish a partial array.
 `read_binary` is an equivalent alias. The byte array is
 strongly typed: arbitrary integer arrays are not accepted by the write operations.
 
