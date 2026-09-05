@@ -72,6 +72,11 @@ append would exceed that budget. Recursive conversion also rejects nesting past
 stack; the depth guard is private to the module while the stable conversion
 wrapper keeps adapter call sites typed and unchanged.
 
+The comparator repeats the observation and owned-pool budgets before it creates
+its explicit pending-pair or map-bijection state. Publicly assembled runs that
+bypass adapter constructors therefore fail closed with a bounded comparison
+record instead of allocating from an untrusted count.
+
 The module keeps state-machine cursors, process-host symbols, and comparison
 helpers private; only runner/value records and the documented adapter/comparator
 entrypoints are public. Both runtime-to-owned conversion and comparison validate
