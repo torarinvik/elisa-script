@@ -92,6 +92,8 @@ the working directory, while stdin remains length-delimited so binary-compatible
 fixtures are possible. Child environment overrides are ordered typed
 `(name, value)` entries and are applied only after `fork`, so the parent
 runner's environment remains unchanged.
+NUL scanning records a dedicated found flag rather than using a `length + 1`
+sentinel, so a maximum-width text view cannot wrap while being validated.
 Environment names are validated before launch: they must be nonempty, contain no
 NUL byte, and contain no `=` separator; duplicate names are rejected as well.
 
