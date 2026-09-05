@@ -1596,6 +1596,9 @@ and programmatic callers.
 The raw ABI ceiling is the public derived `ES_LAUNCHER_MAX_ARGC` contract
 (executable plus source plus admitted script arguments), so the native shim and
 typed parser share one source of truth.
+Before copying the source view into a terminated path buffer, the driver also
+enforces `EsIr::ELISASCRIPT_MAX_FILENAME_BYTES`; an overlong source path is
+reported without echoing the unbounded borrowed text into stderr.
 Diagnostic writes use the same bounded short-progress policy as ordinary stdout:
 positive writes advance the borrowed message, `EINTR` is retried through a
 small budget that resets after progress, and zero, over-counted, or exhausted

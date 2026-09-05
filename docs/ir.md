@@ -1781,3 +1781,6 @@ parsing. Launcher stderr writes retry bounded `EINTR` interruptions and short
 positive progress, resetting the interruption budget after progress; zero,
 over-counted, or exhausted writes terminate the diagnostic without silently
 advancing beyond its borrowed message.
+The driver rejects the stricter 4 KiB filename ceiling before allocating the
+terminated source path and suppresses echoing an overlong borrowed path in that
+failure diagnostic.
