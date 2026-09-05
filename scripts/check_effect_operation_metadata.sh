@@ -61,7 +61,7 @@ for field in payload_signature result_signature; do
     fi
 done
 
-for helper in effect_operation_bare_result_spelling effect_operation_result_type effect_operation_result_is_known; do
+for helper in effect_operation_bare_result_spelling effect_operation_result_type effect_operation_result_is_known effect_operation_single_payload_type effect_operation_payload_is_known; do
     if ! rg -q "def $helper\(" "$lowerer_file"; then
         printf 'effect operation metadata audit: lowerer omits %s\n' "$helper" >&2
         exit 1
@@ -69,6 +69,10 @@ for helper in effect_operation_bare_result_spelling effect_operation_result_type
 done
 if ! rg -q 'effect_operation_result_type\(state\.source_file, family, operation\)' "$lowerer_file"; then
     printf 'effect operation metadata audit: perform lowering does not consult declared result metadata\n' >&2
+    exit 1
+fi
+if ! rg -q 'effect_operation_single_payload_type\(state\.source_file, family, operation\)' "$lowerer_file"; then
+    printf 'effect operation metadata audit: perform lowering does not consult declared payload metadata\n' >&2
     exit 1
 fi
 
