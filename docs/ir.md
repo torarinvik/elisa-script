@@ -797,16 +797,20 @@ keeps byte ownership, wait behavior, and shell-free argument handling identical.
 -> Text` with the same `Process.Run` effect and `ProcessError` row. The interpreter
 stages the input in a temporary file, redirects descriptors 0 and 1 in the child,
 and drives input writing and process waiting through explicit state machines before
-returning the owned stdout snapshot, subject to the 64 MiB per-stream safety ceiling.
+returning the owned stdout snapshot, subject to the 64 MiB process-input and
+per-stream safety ceilings. Oversized input is rejected before a temporary file
+or child is created.
 `CaptureProcessStderrWithStdin` has the same verified signature and contract, but
 redirects descriptor 2 and returns the owned stderr snapshot under the same 64 MiB
 ceiling while stdout remains inherited. It shares the same state-machine input staging and shell-free argv
 execution path as the stdout variant.
 `CaptureProcessResult` is the differential-testing primitive: it has the same typed
  executable, argument-vector, and stdin operands but returns nominal `ProcessCapture`
- data containing the exit status, stdout, and stderr from one child execution. The
+data containing the exit status, stdout, and stderr from one child execution. The
 child redirects descriptors 0, 1, and 2 to separate temporary files; the parent
-validates environment names as non-empty, NUL-free, and unique before `fork`, so
+rejects stdin snapshots above its 64 MiB process-input ceiling before staging a
+temporary file, so a large caller-owned text value cannot force unbounded input
+materialization. It then validates environment names as non-empty, NUL-free, and unique before `fork`, so
 a host-injected map cannot make child behavior depend on last-write-wins ordering.
 It then polls both streams against the interpreter's 64 MiB per-stream safety
 ceiling while the child runs and before allocation; stdout and stderr are checked

@@ -1347,7 +1347,8 @@ length-delimited input in a temporary file, executes the same shell-free argv,
 and returns the child's exit status while discarding the captured output. It
 shares the one-shot `ProcessCapture` implementation used by the explicit result
 API, so stdin transport and status behavior remain identical across the
-interpreter and bytecode backend.
+interpreter and bytecode backend. Input above the interpreter's 64 MiB
+process-input budget is rejected before temporary-file staging or child creation.
 
 `run_process_in_directory(executable: Executable, arguments: darray[sview],
 directory: Path) -> i64 error[ProcessError] can[Process.Run]` is the status-only
