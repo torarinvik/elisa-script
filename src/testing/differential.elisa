@@ -16,6 +16,7 @@ error DifferentialRunnerError:
     UnsupportedConfiguration
     Process
     Timeout
+    OutputLimit
 
 
 module EsDifferential:
@@ -272,6 +273,9 @@ module EsDifferential:
         @link_name(kill)
         extern elisascript_posix_kill(pid: int, signal: int) -> int can[Blocking.IO]
 
+        @link_name(setpgid)
+        extern elisascript_posix_setpgid(pid: int, process_group: int) -> int can[Blocking.IO]
+
         @link_name(usleep)
         extern elisascript_posix_usleep(microseconds: u32) -> int can[Blocking.IO]
 
@@ -477,7 +481,13 @@ module EsDifferential:
                 _ = fclose(stream)
                 raise DifferentialRunnerError.Process
             size: i64 = ftell(stream)
-            if size < 0 or size.u64() > max_output_bytes or fseek(stream, 0, FILEIO_SEEK_SET) != 0:
+            if size < 0:
+                _ = fclose(stream)
+                raise DifferentialRunnerError.Process
+            if size.u64() > max_output_bytes:
+                _ = fclose(stream)
+                raise DifferentialRunnerError.OutputLimit
+            if fseek(stream, 0, FILEIO_SEEK_SET) != 0:
                 _ = fclose(stream)
                 raise DifferentialRunnerError.Process
             if size == 0:
@@ -495,6 +505,18 @@ module EsDifferential:
                 raise DifferentialRunnerError.Process
             bytes.count <- size.usize()
             return bytes_view(bytes)
+
+
+        # Temporary files prevent pipe deadlocks, but they do not by themselves
+        # bound a child's output while it is still running.  Poll the file size
+        # and let the caller terminate the private process group as soon as a
+        # stream crosses its declared ceiling.
+        def differential_stream_size(stream: heap void&) -> i64 error[DifferentialRunnerError] can[Blocking.IO]:
+            if fseek(stream, 0, FILEIO_SEEK_END) != 0:
+                raise DifferentialRunnerError.Process
+            size: i64 = ftell(stream)
+            raise DifferentialRunnerError.Process if size < 0
+            return size
 
 
         def differential_process_status(status: int) -> i64:
@@ -611,6 +633,9 @@ module EsDifferential:
                     _ = fclose(stderr_stream)
                     raise DifferentialRunnerError.Process
                 if pid == 0:
+                    # Keep the reference process and every descendant in one
+                    # private group so timeout cleanup cannot leak a child.
+                    _ = elisascript_posix_setpgid(0, 0)
                     elisascript_posix_exit(126) if elisascript_posix_dup2(input_descriptor, 0) < 0
                     elisascript_posix_exit(126) if elisascript_posix_dup2(stdout_descriptor, 1) < 0
                     elisascript_posix_exit(126) if elisascript_posix_dup2(stderr_descriptor, 2) < 0
@@ -630,6 +655,7 @@ module EsDifferential:
                     elisascript_posix_exit(127)
                     return DifferentialRun{observations: []}
 
+                _ = elisascript_posix_setpgid(pid, pid)
                 status: mutable int = 0
                 polls: mutable u64 = 0
                 finished: mutable bool = false
@@ -643,8 +669,19 @@ module EsDifferential:
                         _ = fclose(stderr_stream)
                         raise DifferentialRunnerError.Process
                     else:
+                        stdout_size: i64 = try differential_stream_size(stdout_stream)
+                        stderr_size: i64 = try differential_stream_size(stderr_stream)
+                        if stdout_size.u64() > invocation.max_output_bytes or stderr_size.u64() > invocation.max_output_bytes:
+                            _ = elisascript_posix_kill(-pid, DIFFERENTIAL_SIGNAL_KILL)
+                            _ = elisascript_posix_kill(pid, DIFFERENTIAL_SIGNAL_KILL)
+                            _ = elisascript_posix_waitpid(pid, status, 0)
+                            _ = fclose(input_stream)
+                            _ = fclose(stdout_stream)
+                            _ = fclose(stderr_stream)
+                            raise DifferentialRunnerError.OutputLimit
                         polls <- polls + 1
                         if polls >= invocation.timeout_steps:
+                            _ = elisascript_posix_kill(-pid, DIFFERENTIAL_SIGNAL_KILL)
                             _ = elisascript_posix_kill(pid, DIFFERENTIAL_SIGNAL_KILL)
                             _ = elisascript_posix_waitpid(pid, status, 0)
                             _ = fclose(input_stream)

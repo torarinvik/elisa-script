@@ -1295,7 +1295,9 @@ setup failures retain the explicit capture API's status behavior.
 The return value is the process exit status. Normal exits produce `0` through `255`;
 signal termination produces `128 + signal`. Failure to create or wait for the process
 raises `ProcessError`; waits poll without blocking indefinitely and terminate the
-child after the interpreter's 120-second process deadline. If the executable cannot
+child's private process group after the interpreter's 120-second process deadline,
+then reap the direct child. Descendants therefore cannot outlive a timed-out
+operation under the POSIX adapter. If the executable cannot
 be resolved, the child exits with status `127`.
 
 `capture_process_stdout(executable: Executable, arguments: darray[sview]) -> sview
