@@ -1290,6 +1290,9 @@ including when the variant arm terminates with `return`.
 error[ProcessError] can[Process.Run]` starts a process from an explicitly typed
 executable and argument vector. It never inserts a shell: spaces, wildcard characters,
 quotes, and other shell syntax in an argument remain ordinary argument bytes.
+The process adapters reject a host-size text length whose required NUL
+terminator would wrap before allocating the C-compatible argument string; this
+failure is reported through the existing typed process error path.
 
 The `subprocess` namespace provides the same operations with Python-shaped
 qualified names while retaining Elisascript's stronger boundary types:
