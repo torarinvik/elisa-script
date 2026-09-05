@@ -41,6 +41,9 @@ The ES-TYPE-001 registry slice also includes receiver-aware `Text.contains`
 metadata and lowerer consumption (`6d3cd17`); the compiler-free registry audit
 checks its semantic/lowerer/verifier path alongside the existing rows.
 
+`Text.count` now follows the same registry-backed semantic, inference, lowerer,
+and verifier path with a text needle and `usize` result (`f618e09`).
+
 ## Evidence record template
 
 Every future executed or differential-verified entry must append a dated record
