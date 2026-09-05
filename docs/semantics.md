@@ -106,7 +106,8 @@ direct-bytecode call entrypoints
 also reject an active-call or handler depth at 4,096 with the typed
 `InterpretError.OutputLimit`; this bounds host-stack recursion until the fully
 frame-based call protocol is complete, and repeated handler installation in one
-function uses the same bound. Multi-shot capture also fails closed
+function uses the same bound. Recoverable error-guard installation also shares
+that 4,096 bound across the reference and direct-bytecode engines. Multi-shot capture also fails closed
 with `InterpretError.InvalidContinuation` when a current or active caller
 snapshot contains a mutable array/map view; deep storage cloning is required
 before those values can be replayed independently.
