@@ -1733,4 +1733,12 @@ is returned unchanged. Failure diagnostics include the source path and a phase
 the underlying library APIs continue to propagate their typed `error[...]`
 families. The adapter copies the borrowed source view into a NUL-terminated
 buffer only at the file-I/O boundary, so the script itself never receives a
-raw C string or a command-string escape hatch.
+raw C string or a command-string escape hatch. The public launcher contracts
+are `EsIr::ES_LAUNCHER_MAX_ARGUMENTS` (1,048,576 script arguments) and
+`EsIr::ES_LAUNCHER_MAX_ARGUMENT_BYTES` (64 MiB aggregate text). The native
+`main(argc, argv)` shim rejects an `argc` outside the corresponding executable
+plus-script range before walking host argv storage, and rejects a source path
+whose borrowed view would place its NUL terminator at or beyond the shared
+`EsIr::ES_RUNTIME_DEFAULT_MAX_CSTRING_BYTES` host-string ceiling. These checks
+keep the ABI boundary subtraction-safe; the runner still applies its own typed
+argv and runtime-storage checks after parsing.
