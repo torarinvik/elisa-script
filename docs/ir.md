@@ -487,6 +487,9 @@ also rejects a non-empty span whose final addressed element would exceed the
 Missing keys use the existing typed
 `IndexOutOfBounds` error rather than a sentinel value. The reference interpreter and
 the bytecode facade share this representation. Maps whose key and value types are
+Function and backend entrypoints validate aggregate arguments against these same
+range predicates before executing or returning them, so malformed externally
+assembled views cannot alias a valid flat-pool slice.
 direct scalar/nominal representations, supported arrays, or recursively supported
 nested maps use the packed path for construction, lookup, membership, equality,
 updates, and key extraction. Other aggregates continue through the verified
