@@ -1751,6 +1751,11 @@ and sends that request through `parse_elisascript_cli`. The parser requires a
 `.elisascript` source path, rejects embedded NUL bytes in the source and every
 typed argument, and preserves every
 remaining argv element—including spaces and empty strings—as one typed value.
+It enforces the same public launcher budgets as the native adapter before
+allocating the request (`ES_LAUNCHER_MAX_ARGUMENTS` script arguments and
+`ES_LAUNCHER_MAX_ARGUMENT_BYTES` aggregate script-argument bytes), reporting
+typed `TooManyArguments` or `ArgumentsTooLarge` errors instead of relying on
+the host-side collector alone.
 Usage failures return status `2`; allocation, source, entrypoint, bytecode, and
 execution failures return status `1`; a successful script's signed `i64` result
 is returned unchanged. Failure diagnostics include the source path and a phase

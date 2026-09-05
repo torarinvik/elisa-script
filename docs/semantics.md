@@ -1578,7 +1578,13 @@ The bundled driver (`src/driver/elisascript.elisa`) converts host `argv` into a
 typed `darray[sview]` request. It performs no shell quoting, splitting, globbing,
 or environment interpolation. `parse_elisascript_cli` requires the first value
 to name a `.elisascript` file, rejects embedded NUL bytes, and preserves all
-following values exactly; usage errors use process status `2`, while source,
+following values exactly. The parser itself enforces the public launcher
+budgets before allocating its result: at most `ES_LAUNCHER_MAX_ARGUMENTS`
+script arguments and at most `ES_LAUNCHER_MAX_ARGUMENT_BYTES` aggregate
+script-argument bytes. Count and byte-budget violations are typed
+`TooManyArguments` and `ArgumentsTooLarge` CLI errors, so library callers
+cannot bypass the driver's pre-admission checks. Usage errors use process
+status `2`, while source,
 entrypoint, bytecode, and execution failures use status `1`. The driver includes
 the source path and failing phase in stderr diagnostics; the underlying runner
 still preserves its typed `error[...]` family for library and programmatic
