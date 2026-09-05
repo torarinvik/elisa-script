@@ -446,14 +446,16 @@ zero-width replacement there is terminal rather than manufacturing a
 progress bounded for the full `usize` input domain.
 
 All regex operations apply the same input boundary before matching: the haystack
-is limited to 64 MiB and the pattern to 64 KiB. A violation raises the typed
-`InterpretError.OutputLimit` error in the reference interpreter and direct
-bytecode facade, before recursive matching or replacement begins. This is an
-input-size containment rule, not a proof that every accepted pattern has linear
-runtime; the recursive backtracking engine still requires a separate work-budget
-and adversarial-complexity qualification before regex support is considered
-complete. Replacement output remains subject to the general text-storage and
-output resource limits.
+is limited to 64 MiB and the pattern to 64 KiB; replacement text is limited to
+64 MiB. A violation raises the typed `InterpretError.OutputLimit` error in the
+reference interpreter and direct bytecode facade, before recursive matching or
+replacement begins. Each complete operation also consumes a shared 100-million
+state work budget across scanner positions, backtracking, and capture probes, so
+exhaustion raises the same error instead of silently resetting the budget for a
+new match. These are containment rules, not a proof that every accepted pattern
+has linear runtime; adversarial-complexity qualification remains part of the
+regex completion gate. Replacement output expansion has a separate output-size
+qualification and must not be treated as unlimited merely because its inputs fit.
 
 For ports that keep a compiled pattern in a local, `pattern.search(text)` is a
 typed receiver spelling of `matches(text, pattern)`. `pattern.match(text)`

@@ -475,12 +475,15 @@ non-overlapping matched span. Zero-width matches advance explicitly, matching th
 termination rule used by `RegexSplit` and `RegexReplace`.
 
 Before any regex opcode executes, both backends enforce a shared input-size
-boundary: haystack text is at most 64 MiB and the compiled-pattern payload is at
-most 64 KiB. Oversized operands fail with `InterpretError.OutputLimit` before
-the matcher, scanner, or replacement builder can allocate or recurse. The
-boundary contains input amplification but does not make the current recursive
-backtracking matcher provably linear; an explicit regex-work budget and
-pathological-pattern evidence remain required by the implementation plan.
+boundary: haystack text is at most 64 MiB, the compiled-pattern payload is at
+most 64 KiB, and replacement text is at most 64 MiB. Oversized operands fail
+with `InterpretError.OutputLimit` before the matcher, scanner, or replacement
+builder can allocate or recurse. Each complete operation shares a 100-million
+state matcher budget across all scanner positions, recursive backtracking, and
+capture probes; exhaustion reports the same typed limit instead of resetting for
+the next candidate match. These boundaries contain input amplification but do
+not make the recursive matcher provably linear, and replacement output still
+needs a separate output-size qualification.
 
 Compiled `Regex` values also expose `search(text)`, `match(text)`, and
 `fullmatch(text)`, plus `findall(text)` (with `find_all(text)` as a spelling

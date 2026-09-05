@@ -316,6 +316,10 @@ extend EsIr:
         const INTERPRET_MAX_GLOB_MATCH_BYTES: usize = 67108864
         const INTERPRET_MAX_REGEX_PATTERN_BYTES: usize = 65536
         const INTERPRET_MAX_REGEX_TEXT_BYTES: usize = 67108864
+        # Recursive regex matching consumes one unit at every matcher state.
+        # Keep the budget shared by one complete operation, including all
+        # scanner positions and capture probes, so backtracking cannot reset it.
+        const INTERPRET_MAX_REGEX_WORK: u64 = 100000000
         # IEEE-754 values have already saturated to zero or infinity long before
         # this many decimal scale steps. Cap the textual exponent so malformed
         # input cannot overflow the parser's i64 accumulator or turn one float
@@ -651,6 +655,11 @@ extend EsIr:
             start: usize
             end: usize
             found: bool
+
+
+        struct RegexWorkBudget:
+            remaining: mutable u64
+            exhausted: mutable bool = false
 
 
         struct RegexQuantifier:
@@ -2388,6 +2397,19 @@ extend EsIr:
             return sview_len(text) <= INTERPRET_MAX_REGEX_TEXT_BYTES and sview_len(pattern) <= INTERPRET_MAX_REGEX_PATTERN_BYTES
 
 
+        def regex_replacement_within_budget(replacement: sview) -> bool:
+            return sview_len(replacement) <= INTERPRET_MAX_REGEX_TEXT_BYTES
+
+
+        def regex_work_step(budget: mutable RegexWorkBudget&) -> bool:
+            return false if budget.exhausted
+            if budget.remaining == 0:
+                budget.exhausted <- true
+                return false
+            budget.remaining <- budget.remaining - 1
+            return true
+
+
         def regex_escape_matches(code: u8, value: u8) -> bool:
             return regex_ascii_digit(value) if code == 100
             return not regex_ascii_digit(value) if code == 68
@@ -2573,14 +2595,15 @@ extend EsIr:
             return regex_branch_end_until(pattern, branch_start, sview_len(pattern))
 
 
-        def regex_atom_match_end(pattern: sview, pattern_index: usize, pattern_end: usize, text: sview, text_index: usize) -> i64:
+        def regex_atom_match_end(pattern: sview, pattern_index: usize, pattern_end: usize, text: sview, text_index: usize, budget: mutable RegexWorkBudget&) -> i64:
+            return -1 if not regex_work_step(budget)
             return -1 if pattern_index >= pattern_end
             atom: u8 = sview_at(pattern, pattern_index)
             if atom == 40:
                 width: usize = regex_group_width(pattern, pattern_index, pattern_end)
                 return -1 if width <= 1
                 group_end: usize = pattern_index + width - 1
-                return regex_match_expression_end(pattern, regex_group_content_start(pattern, pattern_index, group_end), group_end, text, text_index)
+                return regex_match_expression_end(pattern, regex_group_content_start(pattern, pattern_index, group_end), group_end, text, text_index, budget)
             if atom == 92 and pattern_end - pattern_index > 1:
                 escape: u8 = sview_at(pattern, pattern_index + 1)
                 if escape == 98 or escape == 66:
@@ -2596,16 +2619,18 @@ extend EsIr:
             return text_index.i64() + 1 if atom == value else -1
 
 
-        def regex_repeat_segment_end(pattern: sview, atom_start: usize, atom_end: usize, suffix_start: usize, suffix_end: usize, text: sview, text_index: usize, minimum: usize, maximum: usize, count: usize) -> i64:
+        def regex_repeat_segment_end(pattern: sview, atom_start: usize, atom_end: usize, suffix_start: usize, suffix_end: usize, text: sview, text_index: usize, minimum: usize, maximum: usize, count: usize, budget: mutable RegexWorkBudget&) -> i64:
+            return -1 if not regex_work_step(budget)
             if count < maximum:
-                endpoint: i64 = regex_atom_match_end(pattern, atom_start, atom_end, text, text_index)
+                endpoint: i64 = regex_atom_match_end(pattern, atom_start, atom_end, text, text_index, budget)
                 if endpoint > text_index.i64():
-                    deeper: i64 = regex_repeat_segment_end(pattern, atom_start, atom_end, suffix_start, suffix_end, text, endpoint.usize(), minimum, maximum, count + 1)
+                    deeper: i64 = regex_repeat_segment_end(pattern, atom_start, atom_end, suffix_start, suffix_end, text, endpoint.usize(), minimum, maximum, count + 1, budget)
                     return deeper if deeper >= 0
-            return regex_match_segment_end(pattern, suffix_start, suffix_end, text, text_index) if count >= minimum else -1
+            return regex_match_segment_end(pattern, suffix_start, suffix_end, text, text_index, budget) if count >= minimum else -1
 
 
-        def regex_match_segment_end(pattern: sview, pattern_index: usize, pattern_end: usize, text: sview, text_index: usize) -> i64:
+        def regex_match_segment_end(pattern: sview, pattern_index: usize, pattern_end: usize, text: sview, text_index: usize, budget: mutable RegexWorkBudget&) -> i64:
+            return -1 if not regex_work_step(budget)
             return text_index.i64() if pattern_index >= pattern_end
             if sview_at(pattern, pattern_index) == 36 and pattern_end - pattern_index == 1:
                 return text_index.i64() if text_index == sview_len(text) else -1
@@ -2626,9 +2651,9 @@ extend EsIr:
                     branch_end: usize = regex_branch_end_until(pattern, branch_start, group_end)
                     anchored: bool = branch_start < branch_end and sview_at(pattern, branch_start) == 94
                     inner_start: usize = branch_start + 1 if anchored else branch_start
-                    endpoint: i64 = regex_match_segment_end(pattern, inner_start, branch_end, text, text_index) if not anchored or text_index == 0 else -1
+                    endpoint: i64 = regex_match_segment_end(pattern, inner_start, branch_end, text, text_index, budget) if not anchored or text_index == 0 else -1
                     if endpoint >= 0:
-                        suffix_endpoint: i64 = regex_match_segment_end(pattern, next, pattern_end, text, endpoint.usize())
+                        suffix_endpoint: i64 = regex_match_segment_end(pattern, next, pattern_end, text, endpoint.usize(), budget)
                         return suffix_endpoint if suffix_endpoint >= 0
                     break if branch_end == group_end
                     branch_start <- branch_end + 1
@@ -2636,48 +2661,51 @@ extend EsIr:
             if quantifier in {42, 43, 63}:
                 minimum: usize = 0 if quantifier == 42 or quantifier == 63 else 1
                 maximum: usize = 1 if quantifier == 63 else sview_len(text) - text_index + 1
-                return regex_repeat_segment_end(pattern, pattern_index, next, next + 1, pattern_end, text, text_index, minimum, maximum, 0)
+                return regex_repeat_segment_end(pattern, pattern_index, next, next + 1, pattern_end, text, text_index, minimum, maximum, 0, budget)
             if bounded.found:
                 maximum: usize = sview_len(text) - text_index + 1 if bounded.unbounded else bounded.maximum
-                return regex_repeat_segment_end(pattern, pattern_index, next, bounded.end, pattern_end, text, text_index, bounded.minimum, maximum, 0)
-            endpoint: i64 = regex_atom_match_end(pattern, pattern_index, next, text, text_index)
+                return regex_repeat_segment_end(pattern, pattern_index, next, bounded.end, pattern_end, text, text_index, bounded.minimum, maximum, 0, budget)
+            endpoint: i64 = regex_atom_match_end(pattern, pattern_index, next, text, text_index, budget)
             return -1 if endpoint < 0
-            return regex_match_segment_end(pattern, next, pattern_end, text, endpoint.usize())
+            return regex_match_segment_end(pattern, next, pattern_end, text, endpoint.usize(), budget)
 
 
-        def regex_match_expression_end(pattern: sview, pattern_start: usize, pattern_end: usize, text: sview, text_index: usize) -> i64:
+        def regex_match_expression_end(pattern: sview, pattern_start: usize, pattern_end: usize, text: sview, text_index: usize, budget: mutable RegexWorkBudget&) -> i64:
+            return -1 if not regex_work_step(budget)
             branch_start: mutable usize = pattern_start
             while branch_start <= pattern_end:
                 branch_end: usize = regex_branch_end_until(pattern, branch_start, pattern_end)
                 anchored: bool = branch_start < branch_end and sview_at(pattern, branch_start) == 94
                 atom_start: usize = branch_start + 1 if anchored else branch_start
-                endpoint: i64 = regex_match_segment_end(pattern, atom_start, branch_end, text, text_index) if not anchored or text_index == 0 else -1
+                endpoint: i64 = regex_match_segment_end(pattern, atom_start, branch_end, text, text_index, budget) if not anchored or text_index == 0 else -1
                 return endpoint if endpoint >= 0
                 break if branch_end == pattern_end
                 branch_start <- branch_end + 1
             return -1
 
 
-        def regex_match_segment(pattern: sview, pattern_index: usize, pattern_end: usize, text: sview, text_index: usize) -> bool:
-            return regex_match_segment_end(pattern, pattern_index, pattern_end, text, text_index) >= 0
+        def regex_match_segment(pattern: sview, pattern_index: usize, pattern_end: usize, text: sview, text_index: usize, budget: mutable RegexWorkBudget&) -> bool:
+            return regex_match_segment_end(pattern, pattern_index, pattern_end, text, text_index, budget) >= 0
 
 
-        def regex_find_match(text: sview, pattern: sview, start_at: usize) -> RegexMatchSpan:
+        def regex_find_match(text: sview, pattern: sview, start_at: usize, budget: mutable RegexWorkBudget&) -> RegexMatchSpan:
             start: mutable usize = start_at
             length: usize = sview_len(text)
             while start <= length:
-                endpoint: i64 = regex_match_expression_end(pattern, 0, sview_len(pattern), text, start)
+                endpoint: i64 = regex_match_expression_end(pattern, 0, sview_len(pattern), text, start, budget)
                 return RegexMatchSpan{start: start, end: endpoint.usize(), found: true} if endpoint >= 0
+                return RegexMatchSpan{start: 0, end: 0, found: false} if budget.exhausted
                 break if start == length
                 start <- start + 1
             return RegexMatchSpan{start: 0, end: 0, found: false}
 
 
-        def regex_search(text: sview, pattern: sview) -> bool:
+        def regex_search(text: sview, pattern: sview, budget: mutable RegexWorkBudget&) -> bool:
             start: mutable usize = 0
             length: usize = sview_len(text)
             while start <= length:
-                true return if regex_match_expression_end(pattern, 0, sview_len(pattern), text, start) >= 0
+                true return if regex_match_expression_end(pattern, 0, sview_len(pattern), text, start, budget) >= 0
+                return false if budget.exhausted
                 break if start == length
                 start <- start + 1
             return false
@@ -2730,7 +2758,7 @@ extend EsIr:
             return group_depth == 0 and not top_level_alternation and opens.count == starts.count and starts.count == ends.count and ends.count == names.count
 
 
-        def regex_capture_spans_for_match(text: sview, pattern: sview, span: RegexMatchSpan, captures: mutable darray[RegexMatchSpan]&, names: mutable darray[sview]&) -> bool can[Memory.Allocate, Abort.Panic]:
+        def regex_capture_spans_for_match(text: sview, pattern: sview, span: RegexMatchSpan, captures: mutable darray[RegexMatchSpan]&, names: mutable darray[sview]&, budget: mutable RegexWorkBudget&) -> bool can[Memory.Allocate, Abort.Panic]:
             opens: mutable darray[usize] = []
             starts: mutable darray[usize] = []
             ends: mutable darray[usize] = []
@@ -2739,20 +2767,20 @@ extend EsIr:
                 open: usize = opens[group_index]
                 inner_start: usize = starts[group_index]
                 inner_end: usize = ends[group_index]
-                prefix_endpoint: i64 = regex_match_expression_end(pattern, 0, open, text, span.start)
+                prefix_endpoint: i64 = regex_match_expression_end(pattern, 0, open, text, span.start, budget)
                 found: mutable bool = false
                 candidate: mutable usize = span.start
                 while candidate <= span.end and not found:
                     if prefix_endpoint == candidate.i64():
-                        group_endpoint: i64 = regex_match_expression_end(pattern, inner_start, inner_end, text, candidate)
+                        group_endpoint: i64 = regex_match_expression_end(pattern, inner_start, inner_end, text, candidate, budget)
                         if group_endpoint >= 0 and group_endpoint.usize() <= span.end:
-                            suffix_endpoint: i64 = regex_match_expression_end(pattern, inner_end + 1, sview_len(pattern), text, group_endpoint.usize())
+                            suffix_endpoint: i64 = regex_match_expression_end(pattern, inner_end + 1, sview_len(pattern), text, group_endpoint.usize(), budget)
                             if suffix_endpoint == span.end.i64():
                                 captures.push(RegexMatchSpan{start: candidate, end: group_endpoint.usize(), found: true})
                                 found <- true
                     break if candidate == span.end
                     candidate <- candidate + 1
-                return false if not found
+                return false if budget.exhausted or not found
             return true
 
 
@@ -2869,19 +2897,21 @@ extend EsIr:
                     index <- index + 1
 
 
-        def regex_replace_snapshot(text: sview, pattern: sview, replacement: sview) -> sview can[Memory.Allocate, Abort.Panic]:
+        def regex_replace_snapshot(text: sview, pattern: sview, replacement: sview, budget: mutable RegexWorkBudget&) -> sview can[Memory.Allocate, Abort.Panic]:
             output: mutable dstr = []
             cursor: mutable usize = 0
             length: usize = sview_len(text)
             while cursor <= length:
-                span: RegexMatchSpan = regex_find_match(text, pattern, cursor)
+                span: RegexMatchSpan = regex_find_match(text, pattern, cursor, budget)
+                return "" if budget.exhausted
                 if not span.found:
                     append_regex_text(output, text, cursor, length)
                     break
                 append_regex_text(output, text, cursor, span.start)
                 captures: mutable darray[RegexMatchSpan] = []
                 names: mutable darray[sview] = []
-                regex_capture_spans_for_match(text, pattern, span, captures, names)
+                regex_capture_spans_for_match(text, pattern, span, captures, names, budget)
+                return "" if budget.exhausted
                 append_regex_replacement(output, replacement, text, span, captures, names)
                 if span.start == span.end:
                     if span.start < length:
@@ -2905,10 +2935,15 @@ extend EsIr:
             if text.kind != RuntimeValueKind.Text or pattern.kind != RuntimeValueKind.Text or replacement.kind != RuntimeValueKind.Text:
                 machine.failure <- InterpretFailure.TypeMismatch
                 return runtime_void()
-            if not regex_input_within_budget(text.text, pattern.text):
+            if not regex_input_within_budget(text.text, pattern.text) or not regex_replacement_within_budget(replacement.text):
                 machine.failure <- InterpretFailure.OutputLimit
                 return runtime_void()
-            return runtime_text(regex_replace_snapshot(text.text, pattern.text, replacement.text))
+            budget: mutable RegexWorkBudget = RegexWorkBudget{remaining: INTERPRET_MAX_REGEX_WORK}
+            value: sview = regex_replace_snapshot(text.text, pattern.text, replacement.text, budget)
+            if budget.exhausted:
+                machine.failure <- InterpretFailure.OutputLimit
+                return runtime_void()
+            return runtime_text(value)
 
 
         def text_replace_snapshot(text: sview, old: sview, replacement: sview) -> sview can[Memory.Allocate, Abort.Panic]:
@@ -2958,8 +2993,12 @@ extend EsIr:
             cursor: mutable usize = 0
             fields: mutable u32 = 0
             length: usize = sview_len(text.text)
+            budget: mutable RegexWorkBudget = RegexWorkBudget{remaining: INTERPRET_MAX_REGEX_WORK}
             while cursor <= length:
-                span: RegexMatchSpan = regex_find_match(text.text, pattern.text, cursor)
+                span: RegexMatchSpan = regex_find_match(text.text, pattern.text, cursor, budget)
+                if budget.exhausted:
+                    machine.failure <- InterpretFailure.OutputLimit
+                    return runtime_void()
                 if not span.found:
                     storage.push(runtime_text(text.text[field_start:length]))
                     fields <- fields + 1
@@ -2995,8 +3034,12 @@ extend EsIr:
             matches: mutable u32 = 0
             cursor: mutable usize = 0
             length: usize = sview_len(text.text)
+            budget: mutable RegexWorkBudget = RegexWorkBudget{remaining: INTERPRET_MAX_REGEX_WORK}
             while cursor <= length:
-                span: RegexMatchSpan = regex_find_match(text.text, pattern.text, cursor)
+                span: RegexMatchSpan = regex_find_match(text.text, pattern.text, cursor, budget)
+                if budget.exhausted:
+                    machine.failure <- InterpretFailure.OutputLimit
+                    return runtime_void()
                 if not span.found:
                     break
                 storage.push(runtime_text(text.text[span.start:span.end]))
@@ -3025,12 +3068,20 @@ extend EsIr:
                 machine.failure <- InterpretFailure.IntegerOverflow
                 return runtime_void()
             result_start: u32 = storage.count.u32()
-            span: RegexMatchSpan = regex_find_match(text.text, pattern.text, 0)
+            budget: mutable RegexWorkBudget = RegexWorkBudget{remaining: INTERPRET_MAX_REGEX_WORK}
+            span: RegexMatchSpan = regex_find_match(text.text, pattern.text, 0, budget)
+            if budget.exhausted:
+                machine.failure <- InterpretFailure.OutputLimit
+                return runtime_void()
             return runtime_array(result_start, 0) if not span.found
             storage.push(runtime_text(text.text[span.start:span.end]))
             captures: mutable darray[RegexMatchSpan] = []
             names: mutable darray[sview] = []
-            if regex_capture_spans_for_match(text.text, pattern.text, span, captures, names):
+            captures_found: bool = regex_capture_spans_for_match(text.text, pattern.text, span, captures, names, budget)
+            if budget.exhausted:
+                machine.failure <- InterpretFailure.OutputLimit
+                return runtime_void()
+            if captures_found:
                 for capture in captures |storage, text|:
                     storage.push(runtime_text(text.text[capture.start:capture.end]) if capture.found else runtime_text(""))
             return runtime_array(result_start, storage.count.u32() - result_start)
@@ -3046,12 +3097,24 @@ extend EsIr:
             if not regex_input_within_budget(text.text, pattern.text):
                 machine.failure <- InterpretFailure.OutputLimit
                 return runtime_void()
+            budget: mutable RegexWorkBudget = RegexWorkBudget{remaining: INTERPRET_MAX_REGEX_WORK}
             if mode == 0:
-                return runtime_bool(regex_search(text.text, pattern.text))
+                found: bool = regex_search(text.text, pattern.text, budget)
+                if budget.exhausted:
+                    machine.failure <- InterpretFailure.OutputLimit
+                    return runtime_void()
+                return runtime_bool(found)
             if mode == 1:
-                return runtime_bool(regex_match_expression_end(pattern.text, 0, sview_len(pattern.text), text.text, 0) >= 0)
+                endpoint: i64 = regex_match_expression_end(pattern.text, 0, sview_len(pattern.text), text.text, 0, budget)
+                if budget.exhausted:
+                    machine.failure <- InterpretFailure.OutputLimit
+                    return runtime_void()
+                return runtime_bool(endpoint >= 0)
             if mode == 2:
-                endpoint: i64 = regex_match_expression_end(pattern.text, 0, sview_len(pattern.text), text.text, 0)
+                endpoint: i64 = regex_match_expression_end(pattern.text, 0, sview_len(pattern.text), text.text, 0, budget)
+                if budget.exhausted:
+                    machine.failure <- InterpretFailure.OutputLimit
+                    return runtime_void()
                 return runtime_bool(endpoint >= 0 and endpoint.usize() == sview_len(text.text))
             machine.failure <- InterpretFailure.TypeMismatch
             return runtime_void()
@@ -7512,23 +7575,34 @@ extend EsIr:
 
         def regex_search_text(text: sview, pattern: sview) -> bool error[InterpretError]:
             raise InterpretError.OutputLimit if not regex_input_within_budget(text, pattern)
-            return regex_search(text, pattern)
+            budget: mutable RegexWorkBudget = RegexWorkBudget{remaining: INTERPRET_MAX_REGEX_WORK}
+            value: bool = regex_search(text, pattern, budget)
+            raise InterpretError.OutputLimit if budget.exhausted
+            return value
 
 
         def regex_match_text(text: sview, pattern: sview) -> bool error[InterpretError]:
             raise InterpretError.OutputLimit if not regex_input_within_budget(text, pattern)
-            return regex_match_expression_end(pattern, 0, sview_len(pattern), text, 0) >= 0
+            budget: mutable RegexWorkBudget = RegexWorkBudget{remaining: INTERPRET_MAX_REGEX_WORK}
+            endpoint: i64 = regex_match_expression_end(pattern, 0, sview_len(pattern), text, 0, budget)
+            raise InterpretError.OutputLimit if budget.exhausted
+            return endpoint >= 0
 
 
         def regex_fullmatch_text(text: sview, pattern: sview) -> bool error[InterpretError]:
             raise InterpretError.OutputLimit if not regex_input_within_budget(text, pattern)
-            endpoint: i64 = regex_match_expression_end(pattern, 0, sview_len(pattern), text, 0)
+            budget: mutable RegexWorkBudget = RegexWorkBudget{remaining: INTERPRET_MAX_REGEX_WORK}
+            endpoint: i64 = regex_match_expression_end(pattern, 0, sview_len(pattern), text, 0, budget)
+            raise InterpretError.OutputLimit if budget.exhausted
             return endpoint >= 0 and endpoint.usize() == sview_len(text)
 
 
         def regex_replace_text(text: sview, pattern: sview, replacement: sview) -> sview error[InterpretError] can[Memory.Allocate, Abort.Panic]:
-            raise InterpretError.OutputLimit if not regex_input_within_budget(text, pattern)
-            return regex_replace_snapshot(text, pattern, replacement)
+            raise InterpretError.OutputLimit if not regex_input_within_budget(text, pattern) or not regex_replacement_within_budget(replacement)
+            budget: mutable RegexWorkBudget = RegexWorkBudget{remaining: INTERPRET_MAX_REGEX_WORK}
+            value: sview = regex_replace_snapshot(text, pattern, replacement, budget)
+            raise InterpretError.OutputLimit if budget.exhausted
+            return value
 
 
         def regex_split_value(storage: mutable darray[RuntimeValue]&, text: sview, pattern: sview) -> RuntimeValue error[InterpretError] can[Memory.Allocate, Abort.Panic]:
