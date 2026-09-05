@@ -464,7 +464,9 @@ slice starts and counts cannot wrap on a narrower host before the bounds issue i
 reported. Invalid slices are clamped for diagnostic iteration, so a hostile module
 cannot turn validation itself into an out-of-bounds access.
 The same rule applies to interned `TypeTable` child ranges before descriptor
-deduplication or recursive identity checks inspect a child id.
+deduplication or recursive identity checks inspect a child id. Public child lookup
+and inline-shape validation return a neutral failure (`0`/`false`) for malformed
+ranges instead of relying on callers to verify first.
 
 Direct calls also preserve algebraic-effect and `error[...]` contracts. Lowering
 adds every unhandled callee effect to the caller effect row and propagates callee
