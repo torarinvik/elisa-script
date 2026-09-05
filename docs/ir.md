@@ -892,8 +892,9 @@ or error contract.
 traversal in Elisa, filters symlink recursion, sorts and deduplicates owned matches,
 and enforces a depth bound to make malformed/cyclic trees terminate deterministically.
 Each directory scan is capped at 262,144 entries and 64 MiB of aggregate name
-bytes; brace expansion and final glob matches are each capped at 262,144 items
-and 64 MiB of aggregate variant/result bytes. Crossing any budget fails with
+bytes; brace expansion is capped at 262,144 variants, while final glob matches
+are capped at 1,048,576 items; each collection also has a 64 MiB aggregate
+variant/result-byte budget. Crossing any budget fails with
 `DirectoryError` before partial results are published.
 Path joins and brace-variant assembly detect host-size addition wrap before
 allocation; the walker reports the existing `DirectoryError` rather than
