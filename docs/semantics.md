@@ -299,7 +299,10 @@ concatenation with a computed method result remain valid across the interpreter 
 bytecode backends. Other `+` operand pairs retain Elisa's numeric typing rules and
 are rejected when either operand is firmly non-numeric.
 Text concatenation checks the host-size sum before allocation and raises
-`InterpretError.IntegerOverflow` if the result length would wrap.
+`InterpretError.IntegerOverflow` if the result length would wrap. Both text
+concatenation and the allocating ASCII case-conversion operations also cap
+their result at 64 MiB and raise `InterpretError.OutputLimit` before allocation;
+the direct bytecode facade and reference interpreter share this boundary.
 
 The binary ordering operators (`<`, `<=`, `>`, `>=`) also accept two exactly
 text-typed (or exactly `char`-typed) operands. They compare unsigned `sview` bytes
@@ -908,8 +911,9 @@ canonical empty text without requesting a zero-byte host buffer; a failed
 non-empty snapshot allocation fails closed as empty text in both engines.
 Before allocation, both backends accumulate separator and field lengths with
 checked additions and report `InterpretError.IntegerOverflow` rather than
-constructing truncated text; no separator-size multiplication is performed
-before the overflow guard.
+constructing truncated text. A materialized result above 64 MiB reports
+`InterpretError.OutputLimit` before allocation; no separator-size multiplication
+is performed before the overflow guard.
 
 Line-oriented file helpers build on those same deterministic text rules:
 
