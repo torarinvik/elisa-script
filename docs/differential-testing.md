@@ -135,7 +135,8 @@ fixtures are possible. Child environment overrides are ordered typed
 runner's environment remains unchanged.
 The validator also caps the aggregate terminated C-string payload for the
 executable, adapter entry, arguments, working directory, and environment at
-64 MiB, and caps staged stdin at 64 MiB. The low-level invocation boundary
+64 MiB; each environment entry includes the `=` separator materialized by
+`setenv`. Staged stdin is capped at 64 MiB. The low-level invocation boundary
 repeats these byte checks before reserving or writing host buffers, so bypassing
 runner preparation cannot turn a large differential case into an unbounded
 allocation.
