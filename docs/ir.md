@@ -128,7 +128,10 @@ exhaustive `bytecode_opcode_class` state machine groups every semantic opcode in
 the handler family that a packed VM will use (literal, frame, aggregate, process,
 effect, continuation, and so on). `bytecode_dispatch_table_valid` walks functions
 and instructions with explicit preflight states and rejects a missing, stale, or
-invalid class entry before execution.
+invalid class entry before execution. It also validates the cumulative u32 block
+layout and exact instruction coverage before `bytecode_to_ir` reconstructs
+instruction starts, preventing a malformed block-count sum from wrapping the
+reconstruction cursor ahead of full IR verification.
 
 `bytecode_next_control` is the first executable packed-loop primitive. Its
 program-counter cursor advances one instruction at a time and then selects a
