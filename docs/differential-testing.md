@@ -72,6 +72,9 @@ Runtime-to-owned conversion applies the corresponding public IR
 matching it. A malformed nested `RuntimeValue` therefore raises the typed
 `DifferentialRunnerError.Invalid` path instead of being interpreted as a scalar
 or indexing aggregate fields under an unknown kind.
+The interpreter/bytecode admission predicate independently scans the complete
+caller-owned runtime pool before execution, so this adapter-level check is not
+the only protection for nested snapshots.
 
 The owned pool conversion also checks that every newly materialized aggregate
 slice remains representable by its serialized `u32` offset domain before
