@@ -372,6 +372,9 @@ active direct-call chain, so a handled effect in a helper replays the helper's
 post-`Perform` suffix and each caller's post-call suffix in order. A future
 increment can replace this flat replay chain with a general suspended-stack
 object for non-call control transfers.
+The runtime rejects a continuation before its `u32` resumption counter would
+wrap, reporting `InterpretError.InvalidContinuation` rather than silently
+reusing a wrapped count.
 
 The IR verifier rejects missing/duplicate trace sites, ungranted effects,
 undefined or duplicate SSA values, bad entry blocks, unknown branch targets, and
