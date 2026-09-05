@@ -690,8 +690,10 @@ execution path as the stdout variant.
  executable, argument-vector, and stdin operands but returns nominal `ProcessCapture`
  data containing the exit status, stdout, and stderr from one child execution. The
 child redirects descriptors 0, 1, and 2 to separate temporary files; the parent
-polls both streams against the interpreter's 64 MiB per-stream safety ceiling while
-the child runs and before allocation. Crossing it kills the private process group
+validates environment names as non-empty, NUL-free, and unique before `fork`, so
+a host-injected map cannot make child behavior depend on last-write-wins ordering.
+It then polls both streams against the interpreter's 64 MiB per-stream safety
+ceiling while the child runs and before allocation. Crossing it kills the private process group
 and reports `InterpretError.OutputLimit`, so a reference process is never allowed
 to exhaust host memory. Any wait, polling, or stream-position failure also kills
 and reaps the private group before returning `InterpretError.Process`; no failed

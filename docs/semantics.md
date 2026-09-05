@@ -1226,9 +1226,9 @@ in the IR, bytecode VM, and interpreter.
 to the `exe"..."` literal. It validates the runtime name before any process is
 started; empty names and embedded NUL bytes are rejected through the ordinary
 `error[...]` channel. A literal `exe"..."` is validated at compile time. The
-run/capture implementations repeat the empty-name check as a defense against
-host adapters that construct a nominal value without calling the source
-constructor.
+interpreter repeats the empty-name check at every process host boundary as
+defense-in-depth for adapters that construct a nominal `Executable` without
+calling the source-level constructor.
 
 Assertions are typed runtime checks rather than a result wrapper:
 `assert(condition) -> void error[AssertionError]`. The condition must be exactly
