@@ -1,5 +1,10 @@
 # Elisascript development builds
 
+The current pinned identity and host/bootstrap metadata are recorded in
+[`docs/validation-baseline.md`](validation-baseline.md). Refresh that record
+before changing the compiler pin or treating any validation result as
+reproducible.
+
 Use the compiler built from the local Elisa-core checkout when changing stage0 or
 stage1 compiler code. Validation is currently fail-closed after an RSS incident:
 the checked-in process-tree watchdog refuses to launch unless the user explicitly
