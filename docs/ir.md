@@ -1429,8 +1429,13 @@ ordinary `error[...]` families.
 Launchers that need a host-facing message can use
 `execute_elisascript_program_file_diagnostic`. It runs the same canonical
 pipeline but records a stable phase (`source`, `entrypoint`, `bytecode`, or
-`runtime`) and detail in `ElisascriptProgramDiagnostic`; it does not weaken the
-typed error behavior of the ordinary runner APIs.
+`runtime`) and detail in `ElisascriptProgramDiagnostic`; it also preserves the
+exact `ElisascriptSourceError`, `ElisascriptEntrypointError`, or `InterpretError`
+variant behind a corresponding `*_error_known` flag. It does not weaken the
+typed error behavior of the ordinary runner APIs. Bytecode verification issues
+and their source spans remain a separate structured-diagnostic slice; the
+current aggregate `bytecode` detail is intentionally not presented as an exact
+variant.
 
 The reference command-line adapter lives in `src/driver/elisascript.elisa`. Its
 only raw host boundary is `main(argc, argv)`: it drops the executable name,
