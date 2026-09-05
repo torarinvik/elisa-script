@@ -554,6 +554,16 @@ module EsDifferential:
             return ((status >> 8) & 0xff).i64() if signal_number == 0 else (128 + signal_number).i64()
 
 
+        # Best-effort termination used on every parent-side failure after fork.
+        # The negative PID targets the private process group; the direct PID
+        # covers the short race before the child has installed that group. The
+        # blocking reap prevents a failed capture from leaving a zombie behind.
+        def differential_terminate_process(pid: int, status: mutable int&) -> void can[Blocking.IO]:
+            _ = elisascript_posix_kill(-pid, DIFFERENTIAL_SIGNAL_KILL)
+            _ = elisascript_posix_kill(pid, DIFFERENTIAL_SIGNAL_KILL)
+            _ = elisascript_posix_waitpid(pid, status, 0)
+
+
         # Execute a validated process invocation without a shell.  The optional
         # entry is the first argv element for adapter-style invocations (for
         # example `python3 adapter.py ...`).  stdout, stderr, and stdin use
@@ -694,26 +704,41 @@ module EsDifferential:
                     if waited == pid:
                         finished <- true
                     elif waited < 0:
+                        differential_terminate_process(pid, status)
                         _ = fclose(input_stream)
                         _ = fclose(stdout_stream)
                         _ = fclose(stderr_stream)
                         raise DifferentialRunnerError.Process
                     else:
-                        stdout_size: i64 = try differential_stream_size(stdout_stream)
-                        stderr_size: i64 = try differential_stream_size(stderr_stream)
+                        stdout_size: mutable i64 = 0
+                        stderr_size: mutable i64 = 0
+                        catch differential_stream_size(stdout_stream):
+                            ok size:
+                                stdout_size <- size
+                            error failure:
+                                differential_terminate_process(pid, status)
+                                _ = fclose(input_stream)
+                                _ = fclose(stdout_stream)
+                                _ = fclose(stderr_stream)
+                                raise failure
+                        catch differential_stream_size(stderr_stream):
+                            ok size:
+                                stderr_size <- size
+                            error failure:
+                                differential_terminate_process(pid, status)
+                                _ = fclose(input_stream)
+                                _ = fclose(stdout_stream)
+                                _ = fclose(stderr_stream)
+                                raise failure
                         if stdout_size.u64() > invocation.max_output_bytes or stderr_size.u64() > invocation.max_output_bytes:
-                            _ = elisascript_posix_kill(-pid, DIFFERENTIAL_SIGNAL_KILL)
-                            _ = elisascript_posix_kill(pid, DIFFERENTIAL_SIGNAL_KILL)
-                            _ = elisascript_posix_waitpid(pid, status, 0)
+                            differential_terminate_process(pid, status)
                             _ = fclose(input_stream)
                             _ = fclose(stdout_stream)
                             _ = fclose(stderr_stream)
                             raise DifferentialRunnerError.OutputLimit
                         polls <- polls + 1
                         if polls >= invocation.timeout_steps:
-                            _ = elisascript_posix_kill(-pid, DIFFERENTIAL_SIGNAL_KILL)
-                            _ = elisascript_posix_kill(pid, DIFFERENTIAL_SIGNAL_KILL)
-                            _ = elisascript_posix_waitpid(pid, status, 0)
+                            differential_terminate_process(pid, status)
                             _ = fclose(input_stream)
                             _ = fclose(stdout_stream)
                             _ = fclose(stderr_stream)

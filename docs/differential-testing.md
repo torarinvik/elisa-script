@@ -121,7 +121,10 @@ surviving a failed differential case. Group setup is best-effort on platforms
 without POSIX process groups and those adapters must report that limitation. The
 post-exit reader owns both temporary streams as a pair: if either stream fails
 or exceeds the ceiling, the sibling is closed before the typed failure is
-propagated, preventing descriptor leaks across repeated negative cases.
+propagated, preventing descriptor leaks across repeated negative cases. Any
+parent-side `waitpid` or stream-position failure after `fork` also terminates
+the private group and reaps its leader before returning `Process`, so capture
+errors cannot strand a running child or zombie.
 
 When a differential case needs both hermetic filesystem context and temporary
 environment values, use
