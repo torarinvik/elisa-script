@@ -51,7 +51,9 @@ the serialized `u32` offset domain and returns the verifier's invalid id
 sentinel before narrowing; this prevents oversized host collections from
 aliasing a valid structural type. Descriptor rows also use a closed `TypeKind`
 vocabulary: unknown serialized enum ordinals are rejected before child
-traversal rather than being interpreted as a backend-specific type.
+traversal rather than being interpreted as a backend-specific type. The same
+closed-vocabulary check applies to legacy inline type fields even when a module
+has no interned table.
 
 The vocabulary intentionally contains no LLVM values, native registers, pointer
 sizes, bytecode slots, or host ABI facts. Those belong to target-specific lowering.
