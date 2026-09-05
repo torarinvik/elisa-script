@@ -25,8 +25,10 @@ the row's `arity_min`, `arity_max`, `return_type`, `effects`, `errors`, and
 symbol. This removes the former untyped
 `contains` duplicate and lets direct-call arity checking see the registry
 contract. The lowerer obtains result types and parser error requirements from
-the same row before selecting the existing IR opcode. Unknown names continue
-to use the legacy seed path until their richer signatures are migrated.
+the same row before selecting the existing IR opcode; the shared text-case
+helper also uses the registry result/opcode metadata for global and receiver
+forms. Unknown names continue to use the legacy seed path until their richer
+signatures are migrated.
 
 Run the compiler-free audits:
 
