@@ -97,6 +97,14 @@ sentinel, so a maximum-width text view cannot wrap while being validated.
 Environment names are validated before launch: they must be nonempty, contain no
 NUL byte, and contain no `=` separator; duplicate names are rejected as well.
 
+Programmatic aggregate fixtures use `differential_array_value` and
+`differential_map_value`. Both are typed fallible builders: they reject a
+pre-existing pool offset outside the serialized `u32` domain, reject append
+spans that would cross that domain, and reject odd map key/value input with
+`DifferentialRunnerError.Invalid` before extending storage. Callers should
+propagate that error rather than manufacturing a sentinel comparison value;
+this keeps malformed fixtures from being mistaken for a parity mismatch.
+
 For a native or adapter process, the materialization path should use the IR
 `capture_process_result(executable(target), arguments, stdin)` intrinsic. The
 explicit `executable` constructor gives a runtime target the same nominal type as an
