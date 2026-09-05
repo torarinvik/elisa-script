@@ -386,6 +386,11 @@ difference kind with both recorded engine identities, before ordinary output or
 return-value comparisons. This prevents a compatibility fallback from being
 mistaken for independent VM evidence while retaining flexible comparisons for
 external legacy references.
+For any non-`Ignore` requirement, the same gate rejects contradictory metadata:
+capability snapshots require a known engine, direct-bytecode identity requires
+`direct_supported`, and fallback identity requires it to be false. The default
+value comparator continues to ignore engine metadata so external references can
+remain unqualified compatibility inputs.
 
 ## Generation and shrinking
 
