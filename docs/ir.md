@@ -106,6 +106,12 @@ states. Branch selection is supplied by the value engine; this keeps control-flo
 ownership separate from effects and runtime values while the remaining opcode
 families are migrated.
 
+The `EsBytecode` namespace keeps preflight/execution cursors and direct opcode
+helpers private. `BytecodeControlCursor` and the small classification/offset
+inspection functions are public deliberately because tooling and conformance
+fixtures use them as stable structural inspection APIs; new consumers should use
+those APIs rather than reaching into VM state.
+
 `EsBytecode.execute_bytecode` selects the packed loop whenever all instructions
 belong to the direct subset, including guarded error recovery. It rebuilds the
 verified IR shape and delegates to `EsIr.interpret` only for modules that still
