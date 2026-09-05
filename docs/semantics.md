@@ -445,6 +445,16 @@ zero-width replacement there is terminal rather than manufacturing a
 `length + 1` cursor. This keeps matcher, capture, split, find, and replacement
 progress bounded for the full `usize` input domain.
 
+All regex operations apply the same input boundary before matching: the haystack
+is limited to 64 MiB and the pattern to 64 KiB. A violation raises the typed
+`InterpretError.OutputLimit` error in the reference interpreter and direct
+bytecode facade, before recursive matching or replacement begins. This is an
+input-size containment rule, not a proof that every accepted pattern has linear
+runtime; the recursive backtracking engine still requires a separate work-budget
+and adversarial-complexity qualification before regex support is considered
+complete. Replacement output remains subject to the general text-storage and
+output resource limits.
+
 For ports that keep a compiled pattern in a local, `pattern.search(text)` is a
 typed receiver spelling of `matches(text, pattern)`. `pattern.match(text)`
 anchors the match at the beginning while permitting a suffix, and
