@@ -887,6 +887,9 @@ becoming an unchecked host-memory access. Invalid indexing is a typed
 typed `StepLimitExceeded` failure. The private failure-to-error conversion is an
 exhaustive Elisa machine over `InterpretFailure`, so adding a new runtime failure
 cannot silently fall through to success or a generic result value.
+Both execution engines check `steps >= step_limit` before incrementing, so even a
+maximum-`u64` budget cannot wrap the counter; a budget of `N` still permits exactly
+`N` ticks and fails on the next one.
 
 The interpreter's opcode dispatcher is an Elisa `machine` over the closed
 `Opcode` enum. Every opcode is named explicitly—there is no wildcard arm—so
