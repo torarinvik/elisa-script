@@ -91,5 +91,8 @@ done
 The command intentionally reports paths rather than executing or parsing them.
 The next inventory increment should add a machine-readable manifest generated
 from this path set, classify vendored/generated content, and attach owners and
-fixtures. Until that exists, P1 remains open and no legacy file is eligible for
-deletion.
+fixtures. `scripts/inventory_candidates.sh` now supplies the read-only TSV
+generator and [`docs/migration-inventory-schema.md`](migration-inventory-schema.md)
+defines its fields. The generated output is intentionally not checked in until
+records have reviewed owners and acceptance evidence; P1 remains open and no
+legacy file is eligible for deletion.
