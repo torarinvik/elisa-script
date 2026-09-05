@@ -1501,6 +1501,10 @@ It also rejects source files larger than 4 MiB before allocating the parser aren
 keeping source-size arithmetic and compiler memory use bounded at the host
 boundary. Hosts that need to process generated code should split it into several
 modules and call the same loader for each file.
+The filename C-string used by that boundary is likewise bounded to 4 KiB before
+the `.elisascript` suffix check; unterminated or oversized host names become
+`ElisascriptSourceError.InvalidExtension` instead of triggering an unbounded
+scan.
 Hosts with an explicit in-memory byte span can use
 `lower_elisascript_source_bytes` (or its `_with_handlers` variant), which checks
 the supplied length for NUL bytes before constructing the terminated parser buffer.
