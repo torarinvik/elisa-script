@@ -95,8 +95,10 @@ values, 100,000 replay frames, and 100,000 resumptions per captured
 continuation, reporting `InvalidContinuation` on exhaustion,
 and reclaims call and callback snapshot suffixes as soon as they return. These
 limits are runtime resource guards, not implicit weakening of the static effect
-or ownership checks. Capture declarations must use unique non-empty names and
-non-void types before a handler can be verified. Stable multi-shot policies also
+or ownership checks. Capture declarations must use unique non-empty names,
+non-void types, and one of the declared ownership classes before a handler can
+be verified; unknown capture-class ordinals are rejected as malformed handler
+metadata. Stable multi-shot policies also
 require declared captures to be `Unrestricted`; other capture classes are
 rejected until their replay or clone protocol is explicit. Ordinary interpreter and
 direct-bytecode call entrypoints
