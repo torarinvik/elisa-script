@@ -822,7 +822,10 @@ separate runtime or weaker type contract.
 scan machine, copies each entry before the next transition, removes dot entries,
 and sorts owned names before materializing the runtime array. The current low-level
 entry layout bridge is isolated and Darwin-specific; other native targets must
-supply their platform `dirent` layout without changing this IR contract.
+supply their platform `dirent` layout without changing this IR contract. The
+interpreter rejects an entry length greater than the bridge's 1024-byte inline
+name buffer before copying it, reporting `DirectoryError` instead of reading
+beyond the ABI record.
 `IsDirectory` verifies as `Named(Path) -> Bool` with `Directory.Read` and
 `DirectoryError`. It has its own exhaustive dispatch arm and uses the same isolated
 directory bridge that recursive glob traversal builds upon. The `is_dir` scripting
