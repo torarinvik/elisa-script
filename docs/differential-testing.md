@@ -203,6 +203,8 @@ is interrupted it is retried through a bounded `EINTR` budget; if it still fails
 cleanup signals only the direct leader so a failed group setup can never
 target an unrelated process group. Group setup is best-effort on platforms
 without POSIX process groups and those adapters must report that limitation. The
+child's stdin/stdout/stderr `dup2` setup uses the same bounded retry before
+returning the typed process failure. The
 post-exit reader owns both temporary streams as a pair: if either stream fails
 or exceeds the ceiling, the sibling is closed before the typed failure is
 propagated, preventing descriptor leaks across repeated negative cases. Any
