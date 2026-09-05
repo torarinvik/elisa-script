@@ -6,6 +6,7 @@
 # to protect the host from a runaway compiler.
 
 set -u
+umask 077
 
 # Validation is disabled by default after repeated runaway compiler chains. A
 # caller must explicitly reauthorize a bounded run for this wrapper to launch

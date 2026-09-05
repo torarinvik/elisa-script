@@ -47,8 +47,10 @@ wrappers also serialize validation through an atomic lease directory under
 live owner with an untrusted or reused identity fails closed, while a dead owner
 can be reclaimed. A missing readiness marker is never removed automatically,
 which avoids racing a worker that is still publishing its identity. This lease
-prevents two bounded workers from competing for the host's memory, but it does
-not turn the polling RSS guard into an instantaneous OS-enforced cap.
+prevents two bounded workers from competing for the host's memory. Both
+wrappers set `umask 077` before creating lease metadata or temporary logs, and
+the lease does not turn the polling RSS guard into an instantaneous OS-enforced
+cap.
 
 Executable fixtures use the matching process-tree guard:
 
