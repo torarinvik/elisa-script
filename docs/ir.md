@@ -261,6 +261,10 @@ exist, and duplicate operation clauses are rejected. Terminal handlers cannot us
 this resuming clause form; nonterminal policies select whether the captured frame
 is consumed once (`Linear`/`Affine`) or remains available for repeated callback-local
 resumptions (`MultiReplay`/`MultiClone`).
+Coverage is operation-aware: a handler with one or more clauses handles only the
+exact `Family.Operation` pairs it declares, so an unmatched operation continues
+searching through outer handlers. A handler with an empty clause set is an
+intentional family mask and consumes every operation in each listed family.
 
 Source callbacks may spell a typed resumption as `return resume("echo", payload)`.
 The lowerer requires a compile-time string-literal handler name, a non-void callback
@@ -273,8 +277,9 @@ the escape hatch for captures, introduced effects, and explicit `error[...]` row
 
 Handler failures are stored in explicit error-set rows on handlers and functions.
 They are not represented as `Result` values and are not merged into effect rows.
-Installing a handler subtracts its handled families from the effects required at
-that program point. Effects introduced by running the handler and its explicit
+Installing a handler subtracts only the exact operation requirements covered at
+that program point (or the whole family for an explicit empty-clause mask).
+Effects introduced by running the handler and its explicit
 `error[...]` sets are propagated into the enclosing function's respective rows.
 The verifier checks both sides of this contract independently.
 Structured lowering emits explicit handler unwinding before `return`, `break`,
