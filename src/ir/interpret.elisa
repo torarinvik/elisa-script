@@ -317,6 +317,7 @@ extend EsIr:
         const INTERPRET_MAX_REGEX_PATTERN_BYTES: usize = 65536
         const INTERPRET_MAX_REGEX_TEXT_BYTES: usize = 67108864
         const INTERPRET_MAX_REGEX_OUTPUT_BYTES: usize = 67108864
+        const INTERPRET_MAX_TEXT_REPLACEMENT_BYTES: usize = 67108864
         # Recursive regex matching consumes one unit at every matcher state.
         # Keep the budget shared by one complete operation, including all
         # scanner positions and capture probes, so backtracking cannot reset it.
@@ -2972,23 +2973,31 @@ extend EsIr:
             return runtime_text(value)
 
 
-        def text_replace_snapshot(text: sview, old: sview, replacement: sview) -> sview can[Memory.Allocate, Abort.Panic]:
+        def append_text_replacement(machine: mutable Machine&, output: mutable dstr&, value: sview, start: usize, end: usize) -> bool:
+            if start > end or end > sview_len(value) or output.count > INTERPRET_MAX_TEXT_REPLACEMENT_BYTES or end - start > INTERPRET_MAX_TEXT_REPLACEMENT_BYTES - output.count:
+                machine.failure <- InterpretFailure.OutputLimit
+                return false
+            append_regex_text(output, value, start, end)
+            return true
+
+
+        def text_replace_snapshot(machine: mutable Machine&, text: sview, old: sview, replacement: sview) -> sview can[Memory.Allocate, Abort.Panic]:
             output: mutable dstr = []
             text_length: usize = sview_len(text)
             old_length: usize = sview_len(old)
             if old_length == 0:
-                append_regex_text(output, replacement, 0, sview_len(replacement))
-                for index in 0..<text_length |output, text, replacement|:
-                    append_regex_text(output, text, index, index + 1)
-                    append_regex_text(output, replacement, 0, sview_len(replacement))
+                return "" if not append_text_replacement(machine, output, replacement, 0, sview_len(replacement))
+                for index in 0..<text_length |machine, output, text, replacement|:
+                    return "" if not append_text_replacement(machine, output, text, index, index + 1)
+                    return "" if not append_text_replacement(machine, output, replacement, 0, sview_len(replacement))
             else:
                 cursor: mutable usize = 0
                 while cursor < text_length:
                     if cursor <= text_length and old_length <= text_length - cursor and text_matches_at(text, old, cursor):
-                        append_regex_text(output, replacement, 0, sview_len(replacement))
+                        return "" if not append_text_replacement(machine, output, replacement, 0, sview_len(replacement))
                         cursor <- cursor + old_length
                     else:
-                        append_regex_text(output, text, cursor, cursor + 1)
+                        return "" if not append_text_replacement(machine, output, text, cursor, cursor + 1)
                         cursor <- cursor + 1
             return "" if output.count == 0
             owned: mutable dstr = ctx_fstr_alloc(output.count)
@@ -3001,7 +3010,9 @@ extend EsIr:
             if text.kind != RuntimeValueKind.Text or old.kind != RuntimeValueKind.Text or replacement.kind != RuntimeValueKind.Text:
                 machine.failure <- InterpretFailure.TypeMismatch
                 return runtime_void()
-            return runtime_text(text_replace_snapshot(text.text, old.text, replacement.text))
+            value: sview = text_replace_snapshot(machine, text.text, old.text, replacement.text)
+            return runtime_void() if machine.failure != InterpretFailure.None
+            return runtime_text(value)
 
 
         def evaluate_regex_split(machine: mutable Machine&, storage: mutable darray[RuntimeValue]&, text: RuntimeValue, pattern: RuntimeValue) -> RuntimeValue:

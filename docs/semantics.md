@@ -268,6 +268,10 @@ literal, left-to-right, non-overlapping substitution. The `old` argument is not
 parsed as a regular expression, so regex metacharacters remain ordinary bytes;
 an empty `old` inserts the replacement at every input boundary, matching Python's
 string behavior. It is pure, deterministic, shadowable, and returns owned text.
+Both execution paths cap literal replacement output at 64 MiB, checking every
+append before growing the buffer. Exceeding the limit reports
+`InterpretError.OutputLimit` without publishing a partial result. Empty appends
+are allowed at the exact limit.
 
 The binary `+` operator concatenates two text values when both operands are
 exactly text-typed. The result is an owned text value, so chained expressions and

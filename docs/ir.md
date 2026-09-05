@@ -1217,6 +1217,9 @@ non-overlapping literal replacement without interpreting `old` as a regex. An
 empty `old` value follows Python's boundary rule (the replacement is emitted
 before, between, and after input bytes); all output is copied into permanent
 runtime storage for parity across interpreter and bytecode execution.
+`TextReplace` caps output at 64 MiB in both execution paths. Each append checks
+the remaining capacity before growing the buffer; exhaustion reports
+`InterpretError.OutputLimit` and does not publish a partial result.
 The compiler-known `strip(text)` and `trim(text)` aliases have type `Text -> Text`
 and lower to `TrimText` with mode 0. The Python-shaped `text.lstrip()` and
 `text.rstrip()` methods use the same opcode with modes 1 and 2 respectively.
