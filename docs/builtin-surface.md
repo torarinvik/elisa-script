@@ -66,7 +66,7 @@ bash scripts/check_builtin_registry.sh
 `check_builtin_surface.sh` still protects the complete legacy seed/lowerer
 surface, including temporary append-only seed spellings during migration.
 `check_builtin_registry.sh` verifies every registry row has a lowerer branch,
-an existing IR opcode, semantic metadata preservation, and a lowerer
+an existing IR opcode, verifier coverage, semantic metadata preservation, and a lowerer
 return/error consumer. It also verifies the receiver-aware `Text` method rows
 and their method-dispatch branches; boundary, replacement, and trim helpers
 now consume receiver-specific result/opcode and call-shape rows, while the

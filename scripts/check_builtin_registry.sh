@@ -14,8 +14,9 @@ receiver_semantic_file="$repo_root/vendor/elisa-compiler/src/semantic/check_ufcs
 inference_file="$repo_root/vendor/elisa-compiler/src/semantic/resolve_types_infer.elisa"
 lowerer_file="$repo_root/src/ir/lower_ast.elisa"
 opcode_file="$repo_root/src/ir/ir_model.elisa"
+verifier_file="$repo_root/src/ir/ir_verify.elisa"
 
-for required_file in "$registry_file" "$semantic_file" "$receiver_semantic_file" "$inference_file" "$lowerer_file" "$opcode_file"; do
+for required_file in "$registry_file" "$semantic_file" "$receiver_semantic_file" "$inference_file" "$lowerer_file" "$opcode_file" "$verifier_file"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'builtin registry audit: missing file: %s\n' "$required_file" >&2
         exit 2
@@ -49,6 +50,10 @@ for name in $registry_names; do
     opcode="$(sed -n "s/.*name: \"$name\".*opcode: \"\([A-Za-z0-9_]*\)\".*/\1/p" "$registry_file" | head -1)"
     if [[ -z "$opcode" ]] || ! rg -q "^[[:space:]]*$opcode$" "$opcode_file"; then
         printf 'builtin registry audit: %s has no declared IR opcode (%s)\n' "$name" "${opcode:-missing}" >&2
+        exit 1
+    fi
+    if [[ -z "$opcode" ]] || ! rg -q "Opcode\\.$opcode" "$verifier_file"; then
+        printf 'builtin registry audit: %s opcode is not verifier-covered (%s)\n' "$name" "${opcode:-missing}" >&2
         exit 1
     fi
     argument_types="$(sed -n "s/.*name: \"$name\".*argument_types: \"\([^\"]*\)\".*/\1/p" "$registry_file" | head -1)"
@@ -97,6 +102,11 @@ for name in $method_names; do
     fi
     if ! rg -q "method_name == \"$name\"" "$lowerer_file"; then
         printf 'builtin registry audit: lowerer has no Text method branch for %s\n' "$name" >&2
+        exit 1
+    fi
+    opcode="$(sed -n "s/.*name: \"$name\".*receiver: \"Text\".*opcode: \"\([A-Za-z0-9_]*\)\".*/\1/p" "$registry_file" | head -1)"
+    if [[ -z "$opcode" ]] || ! rg -q "Opcode\\.$opcode" "$verifier_file"; then
+        printf 'builtin registry audit: Text.%s opcode is not verifier-covered (%s)\n' "$name" "${opcode:-missing}" >&2
         exit 1
     fi
 done
