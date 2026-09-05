@@ -44,6 +44,11 @@ for name in $registry_names; do
         printf 'builtin registry audit: %s has no declared IR opcode (%s)\n' "$name" "${opcode:-missing}" >&2
         exit 1
     fi
+    argument_types="$(sed -n "s/.*name: \"$name\".*argument_types: \"\([^\"]*\)\".*/\1/p" "$registry_file" | head -1)"
+    if [[ -z "$argument_types" ]]; then
+        printf 'builtin registry audit: %s has no argument-type descriptor\n' "$name" >&2
+        exit 1
+    fi
 done
 
 if ! rg -q 'typed_builtin_spec\(builtin_name\)' "$semantic_file"; then
@@ -51,7 +56,8 @@ if ! rg -q 'typed_builtin_spec\(builtin_name\)' "$semantic_file"; then
     exit 1
 fi
 
-if ! rg -q 'effects: builtin_spec\.effects' "$semantic_file" || \
+if ! rg -q 'argument_types: builtin_spec\.argument_types' "$semantic_file" || \
+   ! rg -q 'effects: builtin_spec\.effects' "$semantic_file" || \
    ! rg -q 'errors: builtin_spec\.errors' "$semantic_file" || \
    ! rg -q 'opcode: builtin_spec\.opcode' "$semantic_file"; then
     printf 'builtin registry audit: semantic symbols do not preserve full builtin metadata\n' >&2
