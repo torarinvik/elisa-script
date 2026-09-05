@@ -727,7 +727,8 @@ implementation and reject negative or non-finite durations.
 `GetEnvironment`, `SetEnvironment`, and `UnsetEnvironment` operate on `Text`
 operands. Reads produce owned `Text` under `Environment.Read`; mutations produce
 `Bool` under `Environment.Write`. All three require `EnvironmentError`, reject C
-string truncation hazards, and execute through explicit exhaustive opcode arms.
+string truncation hazards and names containing `=`, and execute through explicit
+exhaustive opcode arms.
 The scripting-profile `get_environment_or(name, fallback)` lowers to the same
 `GetEnvironment` operation wrapped by `ErrorGuardPush`/`ErrorGuardPop` and a typed
 merge block, so a missing variable follows the fallback edge without evaluating the

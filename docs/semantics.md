@@ -1365,8 +1365,8 @@ the returned snapshot includes the child's status, stdout, and stderr, each stre
 bounded by the 64 MiB interpreter ceiling. Both streams are polled while the child
 runs; crossing the ceiling terminates its private process group and reports
 `InterpretError.OutputLimit` at the host boundary. Environment names must be
-non-empty text without NUL bytes; an invalid child `setenv` operation is reported
-as status `126`.
+non-empty text without NUL bytes or `=`; an invalid child `setenv` operation is
+reported as status `126`.
 
 `capture_process_result_in_directory_with_environment(executable: Executable,
 arguments: darray[sview], input: sview, directory: Path,
@@ -1501,9 +1501,11 @@ Environment access is explicit and typed rather than implicit global string magi
   can[Environment.Write]` removes the key and returns `true`, including when absent.
   Python-style `setenv` and `unsetenv` are typed aliases for these mutations.
 
-Names must be non-empty and neither names nor values may contain embedded NUL bytes.
-These mutations intentionally affect later child processes and therefore make the
-environment dependency visible in the inferred effect row.
+Names must be non-empty, must not contain `=`, and neither names nor values may
+contain embedded NUL bytes. The same rules apply to child-only overrides and to
+process-global reads and mutations. These mutations intentionally affect later
+child processes and therefore make the environment dependency visible in the
+inferred effect row.
 
 ## Directories and working directory
 
