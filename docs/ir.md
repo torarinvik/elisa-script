@@ -1750,10 +1750,12 @@ Parser and semantic source failures also retain their first typed kind and
 bounded source coordinates before the parser region is released: parser failures
 preserve `Ast::ParseErrorKind`, semantic failures preserve
 `Semantic::DiagnosticKind`, and both carry line/column/end-column data. The
-parser context token and semantic name/expected/actual text remain region-owned
-and are not copied into the launcher record; a deterministic FNV payload hash is
-retained for differential correlation. Human-readable source-span/caret
-rendering and structured text-payload transport remain follow-up work.
+parser context token and semantic name/expected/actual/detail text are copied
+through a 4 KiB-per-field permanent-storage bound; oversized fields set an
+explicit truncation flag. A deterministic FNV payload hash is retained for
+differential correlation, and the driver now renders semantic messages from the
+bounded owned fields. Human-readable source-span/caret rendering beyond the
+retained coordinates and exact diagnostic snapshots remain follow-up work.
 
 The reference command-line adapter lives in `src/driver/elisascript.elisa`. Its
 only raw host boundary is `main(argc, argv)`: it drops the executable name,

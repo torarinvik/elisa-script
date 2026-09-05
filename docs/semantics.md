@@ -1613,9 +1613,10 @@ Parser failures retain the first `Ast::ParseErrorKind`; semantic failures retain
 the first severity-1 `Semantic::DiagnosticKind` (with the Elisascript-specific
 negative-index exception preserved). Both records also retain line, column, and
 end-column coordinates before the parser arena is released. Context/name and
-expected/actual text remain region-owned; a deterministic payload hash is kept
-for differential correlation, so exact caret and text rendering is still an
-explicit follow-up rather than an unsafe borrowed view.
+expected/actual/detail text are copied through a 4 KiB-per-field permanent
+storage bound, with an explicit truncation flag; a deterministic payload hash is
+also kept for differential correlation. Semantic wording is rendered from the
+bounded owned fields, while exact caret/source snapshots remain follow-up work.
 Diagnostic writes use the same bounded short-progress policy as ordinary stdout:
 positive writes advance the borrowed message, `EINTR` is retried through a
 small budget that resets after progress, and zero, over-counted, or exhausted

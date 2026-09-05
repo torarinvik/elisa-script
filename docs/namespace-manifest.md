@@ -21,6 +21,10 @@ sections. It also checks that every public `IssueKind` variant appears in the
 driver's bytecode-diagnostic renderer, so verifier additions cannot silently
 fall back to an unknown diagnostic spelling, and applies the same exhaustiveness
 check to `LowerIssueKind` source-lowering diagnostics.
+Parser diagnostics are checked in the same way for every `Ast::ParseErrorKind`
+branch. Semantic wording remains delegated to the exhaustive vendored
+`Semantic::diagnostic_message` renderer; the launcher supplies it only a
+region-independent diagnostic kind and bounded coordinates.
 The vendored `Semantic` and standard-library namespaces are intentionally
 outside this check and remain governed by `vendor/elisa-compiler/SOURCE.md`.
 

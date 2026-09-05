@@ -73,6 +73,23 @@ for lower_issue_kind in $lower_issue_kinds; do
     fi
 done
 
+# Parser diagnostics are rendered by the host driver rather than flattened to
+# one generic parse failure. Keep this small frontend enum exhaustive so a new
+# parser failure category cannot silently lose its typed spelling.
+parser_tokens_file="$script_dir/../vendor/elisa-compiler/src/parser/parser_tokens.elisa"
+if [ ! -f "$parser_tokens_file" ]; then
+    echo "check_namespace_manifest: parser token source is missing: $parser_tokens_file" >&2
+    exit 1
+fi
+parse_error_kinds="$(sed -n '/^[[:space:]]*enum ParseErrorKind:/,/^[[:space:]]*struct ParseError:/p' "$parser_tokens_file" | sed -n 's/^[[:space:]]*\([A-Za-z_][A-Za-z0-9_]*\)[[:space:]]*$/\1/p')"
+parse_error_renderer="$(sed -n '/^[[:space:]]*def parse_error_detail/,/^[[:space:]]*def report_program_failure/p' "$source_root/driver/elisascript.elisa")"
+for parse_error_kind in $parse_error_kinds; do
+    if ! printf '%s\n' "$parse_error_renderer" | grep -F "ParseErrorKind.$parse_error_kind" >/dev/null 2>&1; then
+        echo "check_namespace_manifest: parse diagnostic renderer omits ParseErrorKind.$parse_error_kind" >&2
+        exit 1
+    fi
+done
+
 for expected in EsBytecode EsDifferential EsDriver EsIr EsIrArtifact EsRuntime; do
     if ! printf '%s\n' "$module_names" | grep -F -x "$expected" >/dev/null 2>&1; then
         echo "check_namespace_manifest: required module is missing: $expected" >&2
