@@ -822,7 +822,9 @@ and malformed entries still take the ordinary type path. The element-count budge
 pipeline stages before their reservation or child-spawn loops.
 Process waits use nonblocking `waitpid` polling and a 120-second deadline; a child
 that exceeds the deadline is killed and reported as `ProcessError` rather than
-blocking the host indefinitely. Negative-PID group signaling is attempted only
+blocking the host indefinitely. Interrupted waits and one-millisecond poll
+sleeps retry through bounded `EINTR` budgets before becoming `ProcessError`.
+Negative-PID group signaling is attempted only
 after the parent confirms `setpgid(child, child)` succeeded; if group setup
 fails, cleanup signals and reaps the direct child without risking an unrelated
 process group.
