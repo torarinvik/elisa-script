@@ -22,6 +22,15 @@ Removing a parser file would remove part of Elisa rather than merely remove
 compiler-product tooling. Driver and backend reduction therefore happens outside
 this directory.
 
+## Located parse failures
+
+`Ast::ParseError` retains its error kind, source line, offending token column,
+and token context. Token-backed errors also carry `end_line` and `end_column`,
+forming a precise half-open span for editor integrations and differential
+reproduction reports without reparsing the context string. Synthetic errors may
+leave the end coordinates at zero; callers must treat that as an unknown end,
+not as an empty source span.
+
 ## Canonical source loading
 
 File-based callers should use `EsIr.lower_elisascript_source` as the single
