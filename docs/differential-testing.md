@@ -204,7 +204,8 @@ cleanup signals only the direct leader so a failed group setup can never
 target an unrelated process group. Group setup is best-effort on platforms
 without POSIX process groups and those adapters must report that limitation. The
 child's stdin/stdout/stderr `dup2` setup uses the same bounded retry before
-returning the typed process failure. The
+returning the typed process failure. Child-side process-group admission also
+retries `EINTR` and exits before `execvp` if isolation cannot be established. The
 post-exit reader owns both temporary streams as a pair: if either stream fails
 or exceeds the ceiling, the sibling is closed before the typed failure is
 propagated, preventing descriptor leaks across repeated negative cases. Any
