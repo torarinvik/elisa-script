@@ -288,7 +288,10 @@ The bytecode adapter must additionally record `BytecodeCapabilityReport` before
 execution and the returned `Execution.engine` afterward. The report includes the
 direct/fallback decision and function, instruction, and global counts. A case that
 claims independent interpreter/VM evidence fails if the candidate reports
-`BytecodeInterpreterFallback`, even when the values happen to match.
+`BytecodeInterpreterFallback`, even when the values happen to match. In-process
+`DifferentialRun` values expose this as `engine_known` plus `engine`; external
+process runs leave `engine_known` false because their implementation engine is
+outside the Elisascript runtime.
 
 ## Generation and shrinking
 
