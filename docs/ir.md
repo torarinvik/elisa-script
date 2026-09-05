@@ -203,6 +203,12 @@ text or source formatting.
 `Observe` without defining a result. It provides a typed, backend-independent
 checkpoint for differential tests without depending on stdout or debug logging.
 
+The differential adapter copies runtime arrays into its owned comparison pool
+only after validating their half-open ranges with checked subtraction. Its
+comparator applies the same fail-closed rule to externally assembled snapshots,
+so a wrapped `u32` offset can produce a structured mismatch but can never become
+an unchecked host index.
+
 `assert(condition)` lowers to `Assert` with one boolean operand, a void result,
 and the containing function's `AssertionError` error row entry. The reference
 interpreter and direct bytecode path both evaluate the operand once, continue on
