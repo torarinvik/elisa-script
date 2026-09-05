@@ -41,7 +41,10 @@ Python/Perl/AWK/shell-family shebangs, and inline `python -c`, `perl -e`, or
 AWK command references. Signal rows are leads rather than dispositions: binary
 executables, vendored code, generated output, and comments can all produce a
 match and require maintainer review. The scanner never evaluates the matched
-file or embedded command.
+file or embedded command. To keep a broad root scan bounded, it skips `.git`,
+`node_modules`, virtualenvs, Python caches, `vendor`, and `third_party`; use the
+candidate manifest or a narrow explicit root when those trees themselves
+require review.
 
 Regenerate the signal report outside the repository:
 
