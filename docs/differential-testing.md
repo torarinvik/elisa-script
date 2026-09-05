@@ -215,7 +215,9 @@ poll resets that retry budget. The one-millisecond polling sleep also retries
 bounded `EINTR` interruptions and becomes `Process` only after the retry budget
 or host sleep contract is exhausted.
 Stdin staging also retries short temporary-file writes until the bounded payload
-is complete or a zero-progress failure is observed.
+is complete or a zero-progress failure is observed. Each host-returned write count
+must also fit the requested remaining span; impossible over-counts fail as
+`DifferentialRunnerError.Process` before the offset is advanced.
 Post-exit file sizes are also round-tripped through host `usize` before
 allocation; a stream size representable in `i64` but not on the target host is
 reported as `DifferentialRunnerError.Process` rather than truncated.

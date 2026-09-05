@@ -1629,8 +1629,11 @@ needed. The unsupported Python `file` control remains statically rejected:
   same contract for file descriptor 2.
 
 Writes retry partial progress through the explicit stream state machine, so a short
-POSIX write is never reported as successful completion. Neither operation parses or
-constructs a command string, keeping stream data independent from shell quoting.
+POSIX write is never reported as successful completion. Host-returned byte counts
+are also checked against the requested span: zero, negative, or impossible
+over-counts become `ConsoleError` instead of advancing a cursor beyond the owned
+buffer. Neither operation parses or constructs a command string, keeping stream data
+independent from shell quoting.
 
 ## Time and sleeping
 
