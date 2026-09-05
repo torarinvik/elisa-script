@@ -390,6 +390,10 @@ also use bounded machine pools (one million copied values and 100,000 frames).
 A dynamic handler that exceeds those limits fails with `InvalidContinuation`
 without retaining a partial snapshot; completed callbacks reclaim their private
 replay suffixes.
+Until deep storage cloning is available, the interpreter also rejects
+`MultiReplay` and `MultiClone` snapshots containing mutable array or map views.
+This prevents copied `RuntimeValue` descriptors from aliasing caller-owned flat
+storage across resumptions; the rejection is `InterpretError.InvalidContinuation`.
 
 The IR verifier rejects missing/duplicate trace sites, ungranted effects,
 undefined or duplicate SSA values, bad entry blocks, unknown branch targets, and

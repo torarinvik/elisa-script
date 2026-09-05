@@ -100,7 +100,10 @@ non-void types before a handler can be verified. Ordinary interpreter and
 direct-bytecode call entrypoints
 also reject an active-call or handler depth at 4,096 with the typed
 `InterpretError.OutputLimit`; this bounds host-stack recursion until the fully
-frame-based call protocol is complete.
+frame-based call protocol is complete. Multi-shot capture also fails closed
+with `InterpretError.InvalidContinuation` when a current or active caller
+snapshot contains a mutable array/map view; deep storage cloning is required
+before those values can be replayed independently.
 
 ## Module constants
 
