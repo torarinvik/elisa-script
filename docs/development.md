@@ -32,10 +32,12 @@ this repository after explicit reauthorization. It accepts one or more small
 fixtures, refuses any compiler path outside the pinned StructPy checkout, and
 uses a 524,288 KB RSS ceiling with a 120-second timeout by default. The limits
 can only be changed explicitly with
-`ELISASCRIPT_RSS_LIMIT_KB` and `ELISASCRIPT_TIME_LIMIT_SECONDS`.
-Both values must be positive decimal integers; malformed or zero values are
-rejected before any compiler process is created. Each fixture argument must be
-an existing `.elisascript` regular file. The wrapper installs signal/exit
+`ELISASCRIPT_RSS_LIMIT_KB`, `ELISASCRIPT_TIME_LIMIT_SECONDS`, and
+`ELISASCRIPT_LOG_LIMIT_BYTES`. All three values must be positive decimal
+integers; malformed or zero values are rejected before any compiler process is
+created. The log ceiling defaults to 64 MiB and bounds the temporary compiler
+diagnostic file using the same polling model as the RSS/time watchdog. Each
+fixture argument must be an existing `.elisascript` regular file. The wrapper installs signal/exit
 cleanup for its temporary log and owned compiler tree, and clears the child PID
 after `wait` so cleanup cannot act on a reused PID. The lowering and executable
 wrappers also serialize validation through an atomic lease directory under

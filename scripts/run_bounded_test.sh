@@ -42,8 +42,14 @@ case "${ELISASCRIPT_TIME_LIMIT_SECONDS:-120}" in
         exit 2
         ;;
 esac
-if [ "${ELISASCRIPT_RSS_LIMIT_KB:-524288}" -eq 0 ] || [ "${ELISASCRIPT_TIME_LIMIT_SECONDS:-120}" -eq 0 ]; then
-    echo "run_bounded_test: RSS and time limits must be positive" >&2
+case "${ELISASCRIPT_LOG_LIMIT_BYTES:-67108864}" in
+    ''|*[!0-9]*)
+        echo "run_bounded_test: ELISASCRIPT_LOG_LIMIT_BYTES must be a positive integer" >&2
+        exit 2
+        ;;
+esac
+if [ "${ELISASCRIPT_RSS_LIMIT_KB:-524288}" -eq 0 ] || [ "${ELISASCRIPT_TIME_LIMIT_SECONDS:-120}" -eq 0 ] || [ "${ELISASCRIPT_LOG_LIMIT_BYTES:-67108864}" -eq 0 ]; then
+    echo "run_bounded_test: RSS, time, and log limits must be positive" >&2
     exit 2
 fi
 
@@ -78,6 +84,7 @@ kill_process_tree() {
 
 rss_limit_kb="${ELISASCRIPT_RSS_LIMIT_KB:-524288}"
 time_limit_seconds="${ELISASCRIPT_TIME_LIMIT_SECONDS:-120}"
+log_limit_bytes="${ELISASCRIPT_LOG_LIMIT_BYTES:-67108864}"
 compiler_pid=""
 log_file=""
 validation_lease_dir="${TMPDIR:-/tmp}/elisascript-validation.lease"
@@ -185,12 +192,20 @@ for source_file in "$@"; do
     started_at="$(date +%s)"
     rss_guard=0
     timeout_guard=0
+    output_guard=0
     compiler_exit=0
 
     while kill -0 "$compiler_pid" 2>/dev/null; do
         rss_kb="$(process_tree_rss_kb "$compiler_pid")"
         if [ "$rss_kb" -gt "$rss_limit_kb" ]; then
             rss_guard=1
+            kill_process_tree "$compiler_pid"
+            break
+        fi
+
+        log_bytes="$(wc -c <"$log_file" | tr -d '[:space:]')"
+        if [ "$log_bytes" -gt "$log_limit_bytes" ]; then
+            output_guard=1
             kill_process_tree "$compiler_pid"
             break
         fi
@@ -208,8 +223,8 @@ for source_file in "$@"; do
     # The PID is no longer owned after wait; clear it before any diagnostic or
     # exit path so the EXIT trap cannot mistake a reused PID for our compiler.
     compiler_pid=""
-    echo "$source_file exit=$compiler_exit rss_guard=$rss_guard timeout_guard=$timeout_guard"
-    if [ "$compiler_exit" -ne 0 ] || [ "$rss_guard" -ne 0 ] || [ "$timeout_guard" -ne 0 ]; then
+    echo "$source_file exit=$compiler_exit rss_guard=$rss_guard timeout_guard=$timeout_guard output_guard=$output_guard"
+    if [ "$compiler_exit" -ne 0 ] || [ "$rss_guard" -ne 0 ] || [ "$timeout_guard" -ne 0 ] || [ "$output_guard" -ne 0 ]; then
         tail -80 "$log_file"
         rm -f -- "$log_file"
         exit 1
