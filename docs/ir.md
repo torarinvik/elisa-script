@@ -1238,7 +1238,10 @@ backend checks, and set descriptors are rejected.
 The `text.count(substring)` method has type `Text × Text -> usize` and lowers to
 `TextCount`. Matching is byte-oriented and non-overlapping; an empty substring
 returns one more than the input length, and both reference and direct bytecode
-paths use the same deterministic scan.
+paths use the same deterministic scan. The direct path checks that the host
+count (including the empty-needle `length + 1` case) is representable by its
+signed runtime result before publication and reports
+`InterpretError.IntegerOverflow` instead of wrapping.
 The `text.find(substring)` method has type `Text × Text -> Int(signed, 64)` and
 lowers to `TextFind`; it returns the first byte offset, zero for an empty needle,
 and `-1` for a miss.
