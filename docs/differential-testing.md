@@ -60,6 +60,13 @@ observations are compared exactly by default. Call
 to opt into explicit absolute/relative float tolerance; negative tolerances remain
 non-matching, and all non-float values stay exact.
 
+The owned comparison boundary has a closed value-kind admission check. Every
+pending pair, including recursively reached array and map members, must use one
+of the eight declared `DifferentialValueKind` cases; an unknown serialized enum
+ordinal is a deterministic mismatch rather than an implicit text value. This
+keeps future extensions from silently changing the meaning of malformed or
+stale differential artifacts.
+
 The owned pool conversion also checks that every newly materialized aggregate
 slice remains representable by its serialized `u32` offset domain before
 truncating a host `usize`. Map placeholders are appended one pair at a time,
