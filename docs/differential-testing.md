@@ -118,7 +118,10 @@ long-running child is terminated as soon as a stream crosses its ceiling. Each
 child creates a private process group before `execvp`; timeout and output-limit
 cleanup signal the group and then reap the leader, preventing descendants from
 surviving a failed differential case. Group setup is best-effort on platforms
-without POSIX process groups and those adapters must report that limitation.
+without POSIX process groups and those adapters must report that limitation. The
+post-exit reader owns both temporary streams as a pair: if either stream fails
+or exceeds the ceiling, the sibling is closed before the typed failure is
+propagated, preventing descriptor leaks across repeated negative cases.
 
 When a differential case needs both hermetic filesystem context and temporary
 environment values, use
