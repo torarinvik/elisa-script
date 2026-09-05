@@ -623,10 +623,11 @@ followed by `ProcessResultExitStatus`, composing both child-only controls.
 `CaptureProcessStdout` has the same operands, effect, and error row, with `Text` as
 its result. Its opcode is handled by the interpreter's exhaustive Elisa dispatch
 machine. Execution redirects only stdout into an anonymous temporary file, reaps
-the child, and returns owned length-delimited bytes. The interpreter checks the
-temporary-file size against its 64 MiB per-stream safety ceiling before allocation
-and raises `ProcessError` for an oversized capture. It does not reinterpret output
-as a C string or capture stderr.
+the child, and returns owned length-delimited bytes. The interpreter polls the
+temporary-file size against its 64 MiB per-stream safety ceiling while the child
+runs and before allocation; crossing it kills the private process group and
+reports `InterpretError.OutputLimit` at the host boundary. It does not reinterpret
+output as a C string or capture stderr.
 `CaptureProcessStderr` has the same verified signature and redirects descriptor 2
 instead; descriptor 1 remains inherited. The shared stream-capture implementation
 keeps byte ownership, wait behavior, and shell-free argument handling identical.
@@ -642,10 +643,11 @@ execution path as the stdout variant.
 `CaptureProcessResult` is the differential-testing primitive: it has the same typed
  executable, argument-vector, and stdin operands but returns nominal `ProcessCapture`
  data containing the exit status, stdout, and stderr from one child execution. The
- child redirects descriptors 0, 1, and 2 to separate temporary files; the parent
- waits before reading both streams, checking each against the interpreter's 64 MiB
- per-stream safety ceiling before allocation. An oversized capture raises
- `ProcessError`, so a reference process is never allowed to exhaust host memory.
+child redirects descriptors 0, 1, and 2 to separate temporary files; the parent
+polls both streams against the interpreter's 64 MiB per-stream safety ceiling while
+the child runs and before allocation. Crossing it kills the private process group
+and reports `InterpretError.OutputLimit`, so a reference process is never allowed
+to exhaust host memory.
  `process_exit_status`, `process_stdout`, and `process_stderr` are typed accessors
  over that value. The capture and accessor
  opcodes are separately verified and dispatched explicitly by the interpreter.

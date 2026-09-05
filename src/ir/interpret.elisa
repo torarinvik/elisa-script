@@ -12,6 +12,7 @@ error InterpretError:
     InvalidNumber
     FileIo
     Process
+    OutputLimit
     Environment
     Directory
     Console
@@ -41,6 +42,7 @@ extend EsIr:
             InvalidNumber
             FileIo
             Process
+            OutputLimit
             Environment
             Directory
             Console
@@ -246,6 +248,13 @@ extend EsIr:
             status: mutable int
             failed: mutable bool
             polls: mutable u64 = 0
+            # Optional temporary streams are sampled while the child is alive.
+            # Keeping these handles on the waiter makes the poll/kill protocol
+            # explicit instead of relying on a post-exit allocation check.
+            stdout_stream: mutable heap void&? = null
+            stderr_stream: mutable heap void&? = null
+            output_limit: u64 = 0
+            output_exceeded: mutable bool = false
 
 
         struct InstructionDispatch:
@@ -3922,7 +3931,7 @@ extend EsIr:
                     elisascript_posix_exit(127)
                     return runtime_void()
                 _ = elisascript_posix_setpgid(pid, pid)
-                waiter: mutable ProcessWaiter = ProcessWaiter{pid: pid, status: 0, failed: false}
+                waiter: mutable ProcessWaiter = ProcessWaiter{pid: pid, status: 0, failed: false, stdout_stream: stream, output_limit: machine.process_output_limit}
                 machine over process_wait_next(waiter):
                     state Wait
                     start Wait
@@ -3933,6 +3942,10 @@ extend EsIr:
                         break
                     Wait, ProcessWaitState.Error:
                         break
+                if waiter.output_exceeded:
+                    _ = fclose(stream)
+                    machine.failure <- InterpretFailure.OutputLimit
+                    return runtime_void()
                 if waiter.failed or fseek(stream, 0, FILEIO_SEEK_END) != 0:
                     _ = fclose(stream)
                     machine.failure <- InterpretFailure.Process
@@ -3957,12 +3970,43 @@ extend EsIr:
                 return ProcessInputState.Progress
 
 
+        def process_wait_stream_exceeded(waiter: mutable ProcessWaiter&, stream: heap void&) -> bool can[Blocking.IO]:
+            if waiter.output_limit == 0:
+                return false
+            if fseek(stream, 0, FILEIO_SEEK_END) != 0:
+                waiter.failed <- true
+                return false
+            size: i64 = ftell(stream)
+            if size < 0:
+                waiter.failed <- true
+                return false
+            if size.u64() <= waiter.output_limit:
+                return false
+            _ = elisascript_posix_kill(-waiter.pid, INTERPRET_PROCESS_WAIT_KILL)
+            _ = elisascript_posix_kill(waiter.pid, INTERPRET_PROCESS_WAIT_KILL)
+            _ = elisascript_posix_waitpid(waiter.pid, waiter.status, 0)
+            waiter.output_exceeded <- true
+            return true
+
+
+        def process_wait_output_exceeded(waiter: mutable ProcessWaiter&) -> bool can[Blocking.IO]:
+            return false if waiter.output_limit == 0
+            if waiter.stdout_stream != null:
+                stdout_stream: heap void& = waiter.stdout_stream
+                return true if process_wait_stream_exceeded(waiter, stdout_stream)
+            if waiter.stderr_stream != null:
+                stderr_stream: heap void& = waiter.stderr_stream
+                return true if process_wait_stream_exceeded(waiter, stderr_stream)
+            return false
+
+
         def process_wait_next(waiter: mutable ProcessWaiter&) -> ProcessWaitState can[Blocking.IO]:
             waited: int = elisascript_posix_waitpid(waiter.pid, waiter.status, INTERPRET_PROCESS_WAIT_NOHANG)
             if waited != waiter.pid:
                 if waited < 0:
                     waiter.failed <- true
                     return ProcessWaitState.Error
+                return ProcessWaitState.Error if process_wait_output_exceeded(waiter)
                 if waiter.polls >= INTERPRET_PROCESS_WAIT_MAX_POLLS:
                     _ = elisascript_posix_kill(-waiter.pid, INTERPRET_PROCESS_WAIT_KILL)
                     _ = elisascript_posix_kill(waiter.pid, INTERPRET_PROCESS_WAIT_KILL)
@@ -3988,7 +4032,7 @@ extend EsIr:
                 _ = fclose(stream)
                 return ""
             if size.u64() > machine.process_output_limit:
-                machine.failure <- InterpretFailure.Process
+                machine.failure <- InterpretFailure.OutputLimit
                 _ = fclose(stream)
                 return ""
             if fseek(stream, 0, FILEIO_SEEK_SET) != 0:
@@ -4197,7 +4241,7 @@ extend EsIr:
                     elisascript_posix_exit(127)
                     return runtime_void()
                 _ = elisascript_posix_setpgid(pid, pid)
-                waiter: mutable ProcessWaiter = ProcessWaiter{pid: pid, status: 0, failed: false}
+                waiter: mutable ProcessWaiter = ProcessWaiter{pid: pid, status: 0, failed: false, stdout_stream: stdout_stream, stderr_stream: stderr_stream, output_limit: machine.process_output_limit}
                 machine over process_wait_next(waiter):
                     state Wait
                     start Wait
@@ -4208,6 +4252,12 @@ extend EsIr:
                         break
                     Wait, ProcessWaitState.Error:
                         break
+                if waiter.output_exceeded:
+                    _ = fclose(input_stream)
+                    _ = fclose(stdout_stream)
+                    _ = fclose(stderr_stream)
+                    machine.failure <- InterpretFailure.OutputLimit
+                    return runtime_void()
                 input_close_status: int = fclose(input_stream)
                 if waiter.failed or input_close_status != 0:
                     _ = fclose(stdout_stream)
@@ -4329,7 +4379,7 @@ extend EsIr:
                     elisascript_posix_exit(127)
                     return runtime_void()
                 _ = elisascript_posix_setpgid(pid, pid)
-                waiter: mutable ProcessWaiter = ProcessWaiter{pid: pid, status: 0, failed: false}
+                waiter: mutable ProcessWaiter = ProcessWaiter{pid: pid, status: 0, failed: false, stdout_stream: output_stream, output_limit: machine.process_output_limit}
                 machine over process_wait_next(waiter):
                     state Wait
                     start Wait
@@ -4340,6 +4390,11 @@ extend EsIr:
                         break
                     Wait, ProcessWaitState.Error:
                         break
+                if waiter.output_exceeded:
+                    _ = fclose(input_stream)
+                    _ = fclose(output_stream)
+                    machine.failure <- InterpretFailure.OutputLimit
+                    return runtime_void()
                 input_close_status: int = fclose(input_stream)
                 if waiter.failed or input_close_status != 0 or fseek(output_stream, 0, FILEIO_SEEK_END) != 0:
                     _ = fclose(output_stream)
@@ -5267,7 +5322,7 @@ extend EsIr:
 
 
         def error_guard_recoverable(failure: InterpretFailure) -> bool:
-            return failure in {InterpretFailure.DivisionByZero, InterpretFailure.IntegerOverflow, InterpretFailure.InvalidNumber, InterpretFailure.FileIo, InterpretFailure.Process, InterpretFailure.Environment, InterpretFailure.Directory, InterpretFailure.Console, InterpretFailure.Time, InterpretFailure.RangeStepZero, InterpretFailure.InvalidShift, InterpretFailure.IndexOutOfBounds, InterpretFailure.Assertion, InterpretFailure.Raised}
+            return failure in {InterpretFailure.DivisionByZero, InterpretFailure.IntegerOverflow, InterpretFailure.InvalidNumber, InterpretFailure.FileIo, InterpretFailure.Process, InterpretFailure.OutputLimit, InterpretFailure.Environment, InterpretFailure.Directory, InterpretFailure.Console, InterpretFailure.Time, InterpretFailure.RangeStepZero, InterpretFailure.InvalidShift, InterpretFailure.IndexOutOfBounds, InterpretFailure.Assertion, InterpretFailure.Raised}
 
 
         def error_guard_matches(machine: Machine&, guard: ErrorGuard&) -> bool:
@@ -6234,6 +6289,9 @@ extend EsIr:
                     break
                 Dispatch, InterpretFailure.Process:
                     raise InterpretError.Process
+                    break
+                Dispatch, InterpretFailure.OutputLimit:
+                    raise InterpretError.OutputLimit
                     break
                 Dispatch, InterpretFailure.Environment:
                     raise InterpretError.Environment

@@ -1304,8 +1304,11 @@ be resolved, the child exits with status `127`.
 error[ProcessError] can[Process.Run]` uses the same shell-free argv contract and
 returns the bytes written to standard output, up to the interpreter's 64 MiB
 per-stream safety ceiling. Standard error remains inherited. The child redirects
-stdout to an anonymous temporary file, avoiding pipe backpressure deadlocks; an
-oversized capture raises `ProcessError` before allocation. Process creation,
+stdout to an anonymous temporary file, avoiding pipe backpressure deadlocks; the
+wait state machine polls that file and kills the private process group when the
+ceiling is crossed, before allocation. The host boundary reports that condition as
+`InterpretError.OutputLimit`; ordinary process setup failures remain `ProcessError`.
+Process creation,
 redirection, seek, read, close, and wait failures raise `ProcessError`. Exit status is deliberately
 orthogonal to captured bytes; a missing executable therefore yields empty output,
 while `run_process` exposes its status `127` when status is the required observation.
@@ -1329,7 +1332,8 @@ wildcards, spaces, and quotes in both arguments and input remain ordinary bytes.
 input: sview) -> sview error[ProcessError] can[Process.Run]` is the descriptor-2
 counterpart. It uses the same typed argv and temporary-file input staging, but returns
 the child's stderr snapshot under the same 64 MiB ceiling while stdout remains
-inherited.
+inherited. The stderr stream is polled and the child group is terminated at the
+ceiling with `InterpretError.OutputLimit` at the host boundary.
 
 `capture_process_result_in_directory(executable: Executable, arguments: darray[sview],
 input: sview, directory: Path) -> ProcessCapture error[ProcessError] can[Process.Run]`
@@ -1337,15 +1341,20 @@ is the differential-testing variant with an explicit child working directory. Th
 directory is changed after fork and before descriptor setup/exec, so the parent
 interpreter's current directory is never changed. It captures exit status, stdout,
 and stderr with the same one-shot semantics as `capture_process_result`; an invalid
-child directory is reported by the child as status `126`.
+child directory is reported by the child as status `126`. Both captured streams are
+polled while the child runs, and crossing the ceiling terminates its private group
+before the parent allocates a snapshot.
 
 `capture_process_result_with_environment(executable: Executable, arguments: darray[sview],
 input: sview, environment: dict[sview, sview]) -> ProcessCapture
 error[ProcessError] can[Process.Run]` applies the supplied name/value overrides only
 in the forked child before `exec`. The parent process environment is unchanged, and
 the returned snapshot includes the child's status, stdout, and stderr, each stream
-bounded by the 64 MiB interpreter ceiling. Environment names must be non-empty text
-without NUL bytes; an invalid child `setenv` operation is reported as status `126`.
+bounded by the 64 MiB interpreter ceiling. Both streams are polled while the child
+runs; crossing the ceiling terminates its private process group and reports
+`InterpretError.OutputLimit` at the host boundary. Environment names must be
+non-empty text without NUL bytes; an invalid child `setenv` operation is reported
+as status `126`.
 
 `capture_process_result_in_directory_with_environment(executable: Executable,
 arguments: darray[sview], input: sview, directory: Path,
