@@ -1028,6 +1028,9 @@ oversized exponent text cannot wrap or create unbounded scaling work; values
 past that bound have already rounded to zero or infinity in `f64`. The matching
 `format_float(value: f64) -> sview` uses Elisa's `%g`-style canonical
 runtime spelling and keeps the returned text in permanent storage.
+The interpreter and bytecode-facing format adapters bound the returned host
+C-string before exposing that view; an unterminated or overlong formatter result
+fails closed rather than using an unbounded length scan.
 `format_bool(value: bool) -> sview` returns canonical lowercase `true` or `false`.
 `format_char(value: char) -> sview` returns the character's byte-oriented text
 payload. These formatting helpers are compiler-known and shadowable by source
