@@ -1415,6 +1415,11 @@ array value to `main`, and returns the signed 64-bit result as the process statu
 `validate_elisascript_entrypoint` rejects a missing or differently typed `main`
 before lowering to bytecode; source and runtime failures continue to use their
 ordinary `error[...]` families.
+Launchers that need a host-facing message can use
+`execute_elisascript_program_file_diagnostic`. It runs the same canonical
+pipeline but records a stable phase (`source`, `entrypoint`, `bytecode`, or
+`runtime`) and detail in `ElisascriptProgramDiagnostic`; it does not weaken the
+typed error behavior of the ordinary runner APIs.
 
 The reference command-line adapter lives in `src/driver/elisascript.elisa`. Its
 only raw host boundary is `main(argc, argv)`: it drops the executable name,
@@ -1422,8 +1427,11 @@ constructs a `darray[sview]` without shell splitting or environment expansion,
 and sends that request through `parse_elisascript_cli`. The parser requires a
 `.elisascript` source path, rejects embedded NUL bytes, and preserves every
 remaining argv element—including spaces and empty strings—as one typed value.
-Usage failures return status `2`; allocation, source, and execution failures
-return status `1`; a successful script's signed `i64` result is returned
-unchanged. The adapter copies the borrowed source view into a NUL-terminated
+Usage failures return status `2`; allocation, source, entrypoint, bytecode, and
+execution failures return status `1`; a successful script's signed `i64` result
+is returned unchanged. Failure diagnostics include the source path and a phase
+(`source`, `entrypoint`, `bytecode`, or `runtime`) before a stable detail, while
+the underlying library APIs continue to propagate their typed `error[...]`
+families. The adapter copies the borrowed source view into a NUL-terminated
 buffer only at the file-I/O boundary, so the script itself never receives a
 raw C string or a command-string escape hatch.

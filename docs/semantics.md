@@ -1404,8 +1404,11 @@ The bundled driver (`src/driver/elisascript.elisa`) converts host `argv` into a
 typed `darray[sview]` request. It performs no shell quoting, splitting, globbing,
 or environment interpolation. `parse_elisascript_cli` requires the first value
 to name a `.elisascript` file, rejects embedded NUL bytes, and preserves all
-following values exactly; usage errors use process status `2`, while source or
-execution failures use status `1`.
+following values exactly; usage errors use process status `2`, while source,
+entrypoint, bytecode, and execution failures use status `1`. The driver includes
+the source path and failing phase in stderr diagnostics; the underlying runner
+still preserves its typed `error[...]` family for library and programmatic
+callers.
 
 Source loading rejects `.elisascript` inputs larger than 4 MiB before parser-arena
 allocation. This keeps the source boundary's size arithmetic bounded; generated

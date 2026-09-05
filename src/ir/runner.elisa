@@ -40,6 +40,23 @@ extend EsIr:
             state: mutable ElisascriptCliState
 
 
+        # A launcher-facing diagnostic keeps phase information without changing
+        # the programmatic runner's typed error rows. The driver can render the
+        # phase and detail, while callers that need ordinary propagation continue
+        # using `execute_elisascript_program_file` below.
+        struct ElisascriptProgramDiagnostic:
+            failed: mutable bool = false
+            phase: mutable sview = ""
+            detail: mutable sview = ""
+            execution: mutable Execution = Execution{value: runtime_void(), steps: 0}
+
+
+        def elisascript_program_diagnostic_failure(result: mutable ElisascriptProgramDiagnostic&, phase: sview, detail: sview) -> void:
+            result.failed <- true
+            result.phase <- phase
+            result.detail <- detail
+
+
         # Parse argv after the launcher name. No shell-like splitting or
         # environment expansion happens here: each incoming element remains one
         # typed text argument, which preserves spaces and empty values exactly.
@@ -131,6 +148,30 @@ extend EsIr:
 
                 Validate, ElisascriptEntrypointState.Done:
                     break
+
+
+        # Canonical file-backed program pipeline for launchers that need a
+        # phase-aware diagnostic instead of a generic propagated error. Every
+        # stage remains the same typed source/IR/bytecode path as the ordinary
+        # entrypoint; only the final host-facing error representation changes.
+        def execute_elisascript_program_file_diagnostic(filename: u8&, arguments: darray[sview]&, result: mutable ElisascriptProgramDiagnostic&) -> void can[Memory.Allocate, Abort.Panic, Blocking.IO, Console.Format, Console.Write, Memory.Release, Unsafe.PointerCast]:
+            result.failed <- false
+            result.phase <- ""
+            result.detail <- ""
+            region script_program_file_diagnostic(1048576):
+                module: Module = try lower_elisascript_file(filename, "elisascript-program") else return elisascript_program_diagnostic_failure(result, "source", "unable to load, parse, type-check, lower, or verify program")
+                try validate_elisascript_entrypoint(module) else return elisascript_program_diagnostic_failure(result, "entrypoint", "main must have signature main(arguments: darray[sview]) -> i64")
+                lowered: BytecodeLowerResult = lower_bytecode(module)
+                if lowered.issues.count != 0:
+                    return elisascript_program_diagnostic_failure(result, "bytecode", "verified bytecode lowering rejected the program")
+                observations: mutable darray[Observation] = []
+                storage: mutable darray[RuntimeValue] = []
+                argument_start: u32 = storage.count.u32()
+                for argument in arguments |storage|:
+                    storage.push(runtime_text(argument))
+                runtime_arguments: darray[RuntimeValue] = [runtime_array(argument_start, arguments.count.u32())]
+                execution: Execution = try execute_bytecode(lowered.module, "main", runtime_arguments, observations, storage) else return elisascript_program_diagnostic_failure(result, "runtime", "program execution failed")
+                result.execution <- execution
 
 
         # Compile and execute a standard program from source text with
