@@ -1491,6 +1491,11 @@ array value to `main`, and returns the signed 64-bit result as the process statu
 `validate_elisascript_entrypoint` rejects a missing or differently typed `main`
 before lowering to bytecode; source and runtime failures continue to use their
 ordinary `error[...]` families.
+The `EsIr` runner extension exposes request/diagnostic records and the canonical
+execution entrypoints from `public:` sections, while CLI/entrypoint cursors and
+diagnostic/signature helpers remain `private:` implementation state. This keeps
+the launcher ABI narrow without making state-machine details part of the module
+contract.
 Launchers that need a host-facing message can use
 `execute_elisascript_program_file_diagnostic`. It runs the same canonical
 pipeline but records a stable phase (`source`, `entrypoint`, `bytecode`, or
