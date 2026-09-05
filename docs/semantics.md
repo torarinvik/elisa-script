@@ -825,6 +825,9 @@ round-trips text under the explicit-separator rules. Like `split`, a source-defi
 function with the same name takes precedence. An all-empty join returns the
 canonical empty text without requesting a zero-byte host buffer; a failed
 non-empty snapshot allocation fails closed as empty text in both engines.
+Before allocation, both backends check separator multiplication and field-length
+addition for host-size wrap and report `InterpretError.IntegerOverflow` rather
+than constructing truncated text.
 
 Line-oriented file helpers build on those same deterministic text rules:
 
