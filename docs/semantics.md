@@ -86,6 +86,16 @@ user-defined operations without introducing a second AST or runtime representati
 Duplicate-operation diagnostics point at the later operation token when source
 coordinates are available.
 
+Dynamic handlers are installed through the checked handler descriptor API and
+are scoped to the dynamic call stack. `Linear` and `Affine` resumptions consume
+their continuation according to the declared policy; `MultiReplay` and
+`MultiClone` re-enter the suspended suffix with copied SSA values and handler
+names. The interpreter bounds those continuation pools at one million copied
+values and 100,000 replay frames, reports `InvalidContinuation` on exhaustion,
+and reclaims call and callback snapshot suffixes as soon as they return. These
+limits are runtime resource guards, not implicit weakening of the static effect
+or ownership checks.
+
 ## Module constants
 
 Immutable, initialized module-level constants are available from every function

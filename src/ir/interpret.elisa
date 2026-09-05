@@ -141,6 +141,12 @@ extend EsIr:
         const INTERPRET_DEFAULT_MAX_PROCESS_OUTPUT_BYTES: u64 = 67108864
         const INTERPRET_DEFAULT_MAX_FILE_INPUT_BYTES: u64 = 67108864
         const INTERPRET_DEFAULT_MAX_STDIN_BYTES: u64 = 67108864
+        # Continuation snapshots retain SSA ids, runtime values, and active
+        # handler names until their dynamic handler returns. Bound each pool so
+        # multi-shot replay cannot turn nested calls into unbounded retained
+        # state; exhaustion is reported as InvalidContinuation.
+        const INTERPRET_MAX_CONTINUATION_FRAMES: usize = 100000
+        const INTERPRET_MAX_CONTINUATION_VALUES: usize = 1000000
 
 
         struct Machine:
@@ -1287,6 +1293,11 @@ extend EsIr:
             return module.handlers.count
 
 
+        def continuation_pool_append_fits(current: usize, additional: usize, limit: usize) -> bool:
+            return false if current > limit
+            return additional <= limit - current
+
+
         def handler_covers(handler: Handler&, family: sview) -> bool:
             return any covered in handler.handles where covered == family
 
@@ -1443,6 +1454,9 @@ extend EsIr:
             call_arguments: mutable darray[RuntimeValue] = []
             for offset in 0..<instruction.operand_count.usize() |machine, fn, instruction, ids, values, call_arguments|:
                 call_arguments.push(frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + offset], machine))
+            if not continuation_pool_append_fits(machine.continuation_ids.count, ids.count, INTERPRET_MAX_CONTINUATION_VALUES) or not continuation_pool_append_fits(machine.continuation_values.count, values.count, INTERPRET_MAX_CONTINUATION_VALUES) or not continuation_pool_append_fits(machine.continuation_handlers.count, handler_stack.count, INTERPRET_MAX_CONTINUATION_VALUES) or not continuation_pool_append_fits(machine.active_calls.count, 1, INTERPRET_MAX_CONTINUATION_FRAMES):
+                machine.failure <- InterpretFailure.InvalidContinuation
+                return runtime_void()
             snapshot_start: usize = machine.continuation_ids.count
             handler_snapshot_start: usize = machine.continuation_handlers.count
             machine.continuation_ids.extend(ids)
@@ -1451,6 +1465,13 @@ extend EsIr:
             machine.active_calls.push(ContinuationCallFrame{function_index: function_index, resume_block: current_block, resume_instruction: instruction_index + 1, result_id: instruction.result, snapshot_start: snapshot_start, snapshot_count: ids.count, handler_snapshot_start: handler_snapshot_start, handler_snapshot_count: handler_stack.count})
             result: RuntimeValue = execute_function(machine, observations, storage, handler_stack, module, callee_index, call_arguments) if machine.failure == InterpretFailure.None else runtime_void()
             _ = machine.active_calls.pop()
+            # A completed direct call cannot be resumed unless it was captured
+            # by an enclosing effect. Any such enclosing callback has already
+            # finished before this call returns, so reclaim this call's suffix
+            # while preserving the outer caller's prefix.
+            machine.continuation_ids.truncate(snapshot_start)
+            machine.continuation_values.truncate(snapshot_start)
+            machine.continuation_handlers.truncate(handler_snapshot_start)
             return result
 
 
@@ -1459,6 +1480,13 @@ extend EsIr:
             for offset in 0..<instruction.operand_count.usize() |machine, fn, instruction, ids, values, arguments|:
                 arguments.push(frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + offset], machine))
             callback_index: usize = find_function(module, module.handlers[handler_index].clauses[clause_index].function)
+            if machine.active_calls.count >= INTERPRET_MAX_CONTINUATION_FRAMES:
+                machine.failure <- InterpretFailure.InvalidContinuation
+                return runtime_void()
+            replay_frames_needed: usize = machine.active_calls.count + 1
+            if not continuation_pool_append_fits(machine.continuation_ids.count, ids.count, INTERPRET_MAX_CONTINUATION_VALUES) or not continuation_pool_append_fits(machine.continuation_values.count, values.count, INTERPRET_MAX_CONTINUATION_VALUES) or not continuation_pool_append_fits(machine.continuation_handlers.count, handler_stack.count, INTERPRET_MAX_CONTINUATION_VALUES) or not continuation_pool_append_fits(machine.continuation_frames.count, replay_frames_needed, INTERPRET_MAX_CONTINUATION_FRAMES) or not continuation_pool_append_fits(machine.continuations.count, 1, INTERPRET_MAX_CONTINUATION_FRAMES):
+                machine.failure <- InterpretFailure.InvalidContinuation
+                return runtime_void()
             snapshot_start: usize = machine.continuation_ids.count
             handler_snapshot_start: usize = machine.continuation_handlers.count
             machine.continuation_ids.extend(ids)
@@ -1474,6 +1502,13 @@ extend EsIr:
             machine.continuations.push(ContinuationFrame{handler: module.handlers[handler_index].name, policy: module.handlers[handler_index].continuation, consumed: false, resumptions: 0, replay_start: replay_start, replay_count: replay_count})
             callback_value: RuntimeValue = execute_function(machine, observations, storage, handler_stack, module, callback_index, arguments)
             _ = machine.continuations.pop()
+            # No continuation can outlive the dynamic handler callback. Reclaim
+            # its replay frames and copied snapshots while preserving any outer
+            # call's prefix in the shared pools.
+            machine.continuation_frames.truncate(replay_start)
+            machine.continuation_ids.truncate(snapshot_start)
+            machine.continuation_values.truncate(snapshot_start)
+            machine.continuation_handlers.truncate(handler_snapshot_start)
             result: mutable RuntimeValue = callback_value
             if machine.resume_requested:
                 result <- machine.resume_value
