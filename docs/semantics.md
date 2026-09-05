@@ -402,6 +402,10 @@ Its initial runtime grammar supports literal characters, `.`, start/end anchors
 `^` and `$`, escaped literals, character classes and ranges (`[abc]`, `[a-z]`,
 `[^0-9]`), and the greedy quantifiers `*`, `+`, and `?`, plus bounded repetitions
 `{m}`, `{m,n}`, and `{m,}`. Bounds are decimal, non-negative, and non-decreasing;
+counts are independent of the pattern's byte length. Decimal accumulation is
+checked before multiplication and before conversion to the host index type.
+Unrepresentable bounds follow the current malformed-quantifier literal fallback;
+they are never silently reduced to a smaller repetition count.
 an omitted upper bound is greedy through the remaining input. The Perl-style shorthand
 classes `\d`, `\D`, `\w`, `\W`, `\s`, and `\S` work both as atoms and inside
 classes. Word-boundary atoms `\b` and `\B` are zero-width checks at ASCII word/non-word
