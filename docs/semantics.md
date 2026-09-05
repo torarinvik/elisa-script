@@ -488,6 +488,9 @@ matching and stops a single repeated atom after 8,192 recursive repetition
 states. Both guards report `InterpretError.OutputLimit`; they bound host-stack
 use independently of the shared work counter and apply equally to the
 reference interpreter and direct bytecode facade.
+Simple fixed-width atoms (literals, classes, dot, and non-boundary escapes)
+use an explicit greedy/backtracking loop, so large ordinary repetitions do not
+consume host stack or trigger the recursive-state guard.
 
 For ports that keep a compiled pattern in a local, `pattern.search(text)` is a
 typed receiver spelling of `matches(text, pattern)`. `pattern.match(text)`

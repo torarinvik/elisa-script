@@ -493,6 +493,9 @@ more than 1,024 nested groups and one repeated atom cannot descend through
 more than 8,192 recursive repetition states. These failures use the same
 typed `InterpretError.OutputLimit` as the other regex resource guards, and
 are checked consistently by the reference and direct-bytecode entrypoints.
+Literal, class, dot, and non-boundary escape repetitions take an explicit
+greedy/backtracking loop; only compound or zero-width atoms use the guarded
+recursive path.
 
 Compiled `Regex` values also expose `search(text)`, `match(text)`, and
 `fullmatch(text)`, plus `findall(text)` (with `find_all(text)` as a spelling
