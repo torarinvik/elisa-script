@@ -121,6 +121,8 @@ before `execvp`; its terminator is cleared with `size_of(uintptr)` so the argv
 slot is correct on both 32-bit and 64-bit targets. The timeout is a
 bounded wait-poll budget; an expired child is killed and raises
 `DifferentialRunnerError.Timeout`. A normal nonzero process status, including
+The poll counter checks the positive budget before incrementing, so a
+maximum-width timeout cannot wrap into an unbounded wait.
 the conventional `126`/`127` setup/exec statuses, remains ordinary
 `DifferentialRun.exit_status` data for comparison. Launch, wait, and capture
 failures use `DifferentialRunnerError.Process`. Each captured stream is checked
