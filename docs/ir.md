@@ -632,7 +632,11 @@ libc as though it were a C string.
 The shared terminated-buffer adapter rejects any payload at or above its 64 MiB
 host C-string ceiling before adding the terminator or allocating. This applies
 to filesystem paths, environment names/values, and process text in addition to
-their operation-specific aggregate budgets.
+their operation-specific aggregate budgets. C strings returned by libc-backed
+operations (`realpath`, `getenv`, and `getcwd`) and numeric formatting are
+scanned with the same bounded helper before copying or iteration; an
+unterminated or overlong host result becomes the operation's typed failure (or
+an empty formatting result) rather than an unbounded `strlen` walk.
 `IsFile` has the same verified `Named(Path) -> Bool` shape and `File.Read` effect,
 but tests the POSIX mode bits and returns `false` for missing or non-regular entries.
 The scripting `is_file(path)` alias and `Path.is_file()` method lower to this opcode.
