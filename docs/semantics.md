@@ -1315,6 +1315,10 @@ quotes, and other shell syntax in an argument remain ordinary argument bytes.
 The process adapters reject a host-size text length whose required NUL
 terminator would wrap before allocating the C-compatible argument string; this
 failure is reported through the existing typed process error path.
+The interpreter also bounds each process argument vector at one million entries
+before reserving argv pointers and owned C-string storage. Exceeding that
+runtime resource policy raises `ProcessError`; malformed element types continue
+to raise the ordinary type error before any child is forked.
 
 The `subprocess` namespace provides the same operations with Python-shaped
 qualified names while retaining Elisascript's stronger boundary types:
