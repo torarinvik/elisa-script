@@ -22,13 +22,18 @@ The current strict scalar/text slice contains these 23 spellings:
 | Numeric parsing/formatting | `parse_int`, `format_int`, `parse_float`, `format_float` | checked `i64`/`f64` conversions; parsers require `ParseError` |
 | Scalar formatting | `format_bool`, `format_char` | one scalar to `sview` |
 
+The receiver-aware `Text` rows currently cover `lower`, `upper`, `casefold`,
+`starts_with`/`startswith`, `ends_with`/`endswith`, `replace`, `strip`,
+`trim`, `lstrip`, and `rstrip`. Their arities exclude the receiver and are
+checked separately from the global spellings.
+
 Semantic builtin seeding consults `EsBuiltin::typed_builtin_spec` and stores
 the row's `arity_min`, `arity_max`, `return_type`, `effects`, `errors`, and
 `argument_types`, `effects`, `errors`, and `opcode` on the qualified semantic
 symbol. This removes the former untyped
 `contains` duplicate and lets direct-call arity checking see the registry
-contract. The lowerer obtains result types and parser error requirements from
-the same row before selecting the existing IR opcode; the shared text-case
+contract. The lowerer obtains arity/named-argument shape, result types, and
+parser error requirements from the same row before selecting the existing IR opcode; the shared text-case
 helper also uses the registry result/opcode metadata for global and receiver
 forms. Unknown names continue to use the legacy seed path until their richer
 signatures are migrated.
@@ -46,7 +51,7 @@ surface, including temporary append-only seed spellings during migration.
 an existing IR opcode, semantic metadata preservation, and a lowerer
 return/error consumer. It also verifies the receiver-aware `Text` method rows
 and their method-dispatch branches; boundary, replacement, and trim helpers
-now consume receiver-specific result/opcode rows. Both checks are static by design while
+now consume receiver-specific result/opcode and call-shape rows. Both checks are static by design while
 compiler execution remains suspended by the resource-safety gate.
 
 The remaining Q03 work is intentionally explicit: migrate aggregate and
