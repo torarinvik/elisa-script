@@ -1783,4 +1783,5 @@ over-counted, or exhausted writes terminate the diagnostic without silently
 advancing beyond its borrowed message.
 The driver rejects the stricter 4 KiB filename ceiling before allocating the
 terminated source path and suppresses echoing an overlong borrowed path in that
-failure diagnostic.
+failure diagnostic. The raw `argv` collector uses the same ceiling for the
+source slot, avoiding a long host-memory scan before rejection.
