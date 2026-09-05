@@ -12,6 +12,17 @@ extend EsIr:
             return any value in values where value == wanted
 
 
+        # Compute a pool slice end without allowing a hostile start/count pair
+        # to wrap the host `usize`. The verifier uses the returned saturated end
+        # for bounded iteration and the flag for the precise contract issue.
+        def bounded_slice_end(start: usize, count: usize, limit: usize, valid: mutable bool&) -> usize:
+            valid <- false
+            return limit if start > limit
+            return limit if count > limit - start
+            valid <- true
+            return start + count
+
+
         def effect_granted(effects: darray[sview]&, required: sview) -> bool:
             for effect in effects |required|:
                 true return if effect == required
@@ -231,8 +242,9 @@ extend EsIr:
             for target in fn.blocks |fn, source, target_id, argument_start, argument_count, defined, definition_blocks, definition_types, issues|:
                 if target.id == target_id:
                     issues.push(issue(IssueKind.EdgeArgumentArity, fn.name, source.id, 0, 0, "edge argument count does not match target block parameters")) if argument_count != target.parameter_count
-                    argument_end: usize = argument_start.usize() + argument_count.usize()
-                    if argument_end > fn.edge_arg_pool.count:
+                    argument_end_valid: mutable bool = false
+                    argument_end: usize = bounded_slice_end(argument_start.usize(), argument_count.usize(), fn.edge_arg_pool.count, argument_end_valid)
+                    if not argument_end_valid:
                         issues.push(issue(IssueKind.EdgeArgumentArity, fn.name, source.id, 0, 0, "edge argument slice is outside the function pool"))
                         return
                     paired: usize = argument_count.usize() if argument_count < target.parameter_count else target.parameter_count.usize()
@@ -244,7 +256,14 @@ extend EsIr:
                             def_block: u32 = definition_block(defined, definition_blocks, value)
                             issues.push(issue(IssueKind.NonDominatingValue, fn.name, source.id, value, 0, "edge argument definition does not dominate its source block")) if not block_dominates(fn, def_block, source.id)
                             actual: Type = definition_type(defined, definition_types, value)
-                            parameter_index: usize = target.parameter_start.usize() + offset
+                            parameter_index: mutable usize = target.parameter_start.usize()
+                            if parameter_index <= fn.block_parameter_pool.count:
+                                if offset <= fn.block_parameter_pool.count - parameter_index:
+                                    parameter_index <- parameter_index + offset
+                                else:
+                                    parameter_index <- fn.block_parameter_pool.count
+                            else:
+                                parameter_index <- fn.block_parameter_pool.count
                             issues.push(issue(IssueKind.EdgeArgumentType, fn.name, source.id, value, 0, "edge argument type does not match target block parameter")) if parameter_index >= fn.block_parameter_pool.count or not same_type(actual, fn.block_parameter_pool[parameter_index].type)
                     return
 
@@ -312,24 +331,30 @@ extend EsIr:
                 definition_blocks.push(fn.entry) if parameter.value != 0 and definition_blocks.count < defined.count
                 definition_types.push(parameter.type) if parameter.value != 0 and definition_types.count < defined.count
             for block in fn.blocks |defined, definition_blocks, definition_types, traces, block_ids, issues|:
-                parameter_end: usize = block.parameter_start.usize() + block.parameter_count.usize()
-                issues.push(issue(IssueKind.EdgeArgumentArity, fn.name, block.id, 0, 0, "block parameter slice is outside the function pool")) if parameter_end > fn.block_parameter_pool.count
+                parameter_end_valid: mutable bool = false
+                parameter_end: usize = bounded_slice_end(block.parameter_start.usize(), block.parameter_count.usize(), fn.block_parameter_pool.count, parameter_end_valid)
+                issues.push(issue(IssueKind.EdgeArgumentArity, fn.name, block.id, 0, 0, "block parameter slice is outside the function pool")) if not parameter_end_valid
+                safe_parameter_start: usize = block.parameter_start.usize() if block.parameter_start.usize() <= fn.block_parameter_pool.count else fn.block_parameter_pool.count
                 safe_parameter_end: usize = parameter_end if parameter_end <= fn.block_parameter_pool.count else fn.block_parameter_pool.count
-                for parameter_index in block.parameter_start.usize()..<safe_parameter_end |defined, definition_blocks, definition_types, issues, block, fn|:
+                for parameter_index in safe_parameter_start..<safe_parameter_end |defined, definition_blocks, definition_types, issues, block, fn|:
                     parameter: Parameter = fn.block_parameter_pool[parameter_index]
                     issues.push(issue(IssueKind.DuplicateValue, fn.name, block.id, parameter.value, 0, "block parameter SSA value is duplicated or zero")) if parameter.value == 0 or has_u32(defined, parameter.value)
                     defined.push(parameter.value) if parameter.value != 0 and not has_u32(defined, parameter.value)
                     definition_blocks.push(block.id) if parameter.value != 0 and definition_blocks.count < defined.count
                     definition_types.push(parameter.type) if parameter.value != 0 and definition_types.count < defined.count
-                instruction_end: usize = block.instruction_start.usize() + block.instruction_count.usize()
-                issues.push(issue(IssueKind.UndefinedValue, fn.name, block.id, 0, 0, "block instruction slice is outside the function pool")) if instruction_end > fn.instruction_pool.count
+                instruction_end_valid: mutable bool = false
+                instruction_end: usize = bounded_slice_end(block.instruction_start.usize(), block.instruction_count.usize(), fn.instruction_pool.count, instruction_end_valid)
+                issues.push(issue(IssueKind.UndefinedValue, fn.name, block.id, 0, 0, "block instruction slice is outside the function pool")) if not instruction_end_valid
+                safe_instruction_start: usize = block.instruction_start.usize() if block.instruction_start.usize() <= fn.instruction_pool.count else fn.instruction_pool.count
                 safe_instruction_end: usize = instruction_end if instruction_end <= fn.instruction_pool.count else fn.instruction_pool.count
-                for instruction_index in block.instruction_start.usize()..<safe_instruction_end |defined, traces, issues, block, fn, block_ids|:
+                for instruction_index in safe_instruction_start..<safe_instruction_end |defined, traces, issues, block, fn, block_ids|:
                     instruction: Instruction = fn.instruction_pool[instruction_index]
-                    operand_end: usize = instruction.operand_start.usize() + instruction.operand_count.usize()
-                    issues.push(issue(IssueKind.UndefinedValue, fn.name, block.id, 0, instruction.trace.id, "instruction operand slice is outside the function pool")) if operand_end > fn.operand_pool.count
+                    operand_end_valid: mutable bool = false
+                    operand_end: usize = bounded_slice_end(instruction.operand_start.usize(), instruction.operand_count.usize(), fn.operand_pool.count, operand_end_valid)
+                    issues.push(issue(IssueKind.UndefinedValue, fn.name, block.id, 0, instruction.trace.id, "instruction operand slice is outside the function pool")) if not operand_end_valid
+                    safe_operand_start: usize = instruction.operand_start.usize() if instruction.operand_start.usize() <= fn.operand_pool.count else fn.operand_pool.count
                     safe_end: usize = operand_end if operand_end <= fn.operand_pool.count else fn.operand_pool.count
-                    for operand_index in instruction.operand_start.usize()..<safe_end |defined, issues, block, instruction, fn|:
+                    for operand_index in safe_operand_start..<safe_end |defined, issues, block, instruction, fn|:
                         operand: u32 = fn.operand_pool[operand_index]
                         issues.push(issue(IssueKind.UndefinedValue, fn.name, block.id, operand, instruction.trace.id, "instruction uses an undefined SSA value")) if operand == 0 or not has_u32(defined, operand)
                         if operand != 0 and has_u32(defined, operand):

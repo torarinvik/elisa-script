@@ -459,6 +459,13 @@ conditions, conditional-expression arm agreement, returns, array indices, and
 direct-call arity and parameter types. Function signatures are predeclared, so
 forward calls receive the same checks as calls to earlier declarations.
 
+Verifier pool-bound checks use saturated `usize` arithmetic: malformed `u32`/`u16`
+slice starts and counts cannot wrap on a narrower host before the bounds issue is
+reported. Invalid slices are clamped for diagnostic iteration, so a hostile module
+cannot turn validation itself into an out-of-bounds access.
+The same rule applies to interned `TypeTable` child ranges before descriptor
+deduplication or recursive identity checks inspect a child id.
+
 Direct calls also preserve algebraic-effect and `error[...]` contracts. Lowering
 adds every unhandled callee effect to the caller effect row and propagates callee
 error sets independently. The verifier repeats this check from IR alone: a
