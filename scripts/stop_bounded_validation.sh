@@ -10,9 +10,20 @@ umask 077
 validation_lease_dir="${TMPDIR:-/tmp}/elisascript-validation.lease"
 validation_disabled_file="${TMPDIR:-/tmp}/elisascript-validation.disabled"
 
-if ! printf '%s\n' "emergency-stop requested by stop_bounded_validation.sh" >"$validation_disabled_file"; then
-    echo "stop_bounded_validation: unable to persist emergency-stop latch" >&2
+if [ -L "$validation_disabled_file" ] || { [ -e "$validation_disabled_file" ] && [ ! -d "$validation_disabled_file" ]; }; then
+    echo "stop_bounded_validation: emergency-stop latch path is not a private directory" >&2
+    exit 125
+fi
+if [ ! -d "$validation_disabled_file" ] && ! mkdir "$validation_disabled_file" 2>/dev/null; then
+    echo "stop_bounded_validation: unable to create emergency-stop latch" >&2
     exit 2
+fi
+if [ ! -d "$validation_disabled_file" ]; then
+    echo "stop_bounded_validation: emergency-stop latch path is not a directory" >&2
+    exit 125
+fi
+if [ ! -e "$validation_disabled_file/reason" ]; then
+    (set -C; printf '%s\n' "emergency-stop requested by stop_bounded_validation.sh" >"$validation_disabled_file/reason") 2>/dev/null || true
 fi
 
 if [ ! -d "$validation_lease_dir" ]; then

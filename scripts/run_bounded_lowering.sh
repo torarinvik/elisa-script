@@ -10,7 +10,7 @@ umask 077
 
 validation_disabled_file="${TMPDIR:-/tmp}/elisascript-validation.disabled"
 
-if [ -e "$validation_disabled_file" ]; then
+if [ -e "$validation_disabled_file" ] || [ -L "$validation_disabled_file" ]; then
     echo "run_bounded_lowering: validation emergency-stop latch is set; remove $validation_disabled_file only after review" >&2
     exit 125
 fi
@@ -103,9 +103,22 @@ validation_lease_acquired=0
 
 latch_validation_disabled() {
     latch_reason="$1"
-    if ! printf '%s\n' "$latch_reason" >"$validation_disabled_file"; then
-        echo "run_bounded_lowering: unable to persist emergency-stop latch" >&2
+    if [ -L "$validation_disabled_file" ] || { [ -e "$validation_disabled_file" ] && [ ! -d "$validation_disabled_file" ]; }; then
+        echo "run_bounded_lowering: emergency-stop latch path is not a private directory" >&2
+        return 1
     fi
+    if [ ! -d "$validation_disabled_file" ] && ! mkdir "$validation_disabled_file" 2>/dev/null; then
+        echo "run_bounded_lowering: unable to create emergency-stop latch" >&2
+        return 1
+    fi
+    if [ ! -d "$validation_disabled_file" ]; then
+        echo "run_bounded_lowering: emergency-stop latch path is not a directory" >&2
+        return 1
+    fi
+    if [ ! -e "$validation_disabled_file/reason" ]; then
+        (set -C; printf '%s\n' "$latch_reason" >"$validation_disabled_file/reason") 2>/dev/null || true
+    fi
+    return 0
 }
 
 acquire_validation_lease() {
@@ -215,7 +228,10 @@ for source_file in "$@"; do
         rss_kb="$(process_tree_rss_kb "$compiler_pid")"
         if [ "$rss_kb" -gt "$rss_limit_kb" ]; then
             rss_guard=1
-            latch_validation_disabled "run_bounded_lowering rss_guard pid=$compiler_pid rss_kb=$rss_kb limit_kb=$rss_limit_kb"
+            if ! latch_validation_disabled "run_bounded_lowering rss_guard pid=$compiler_pid rss_kb=$rss_kb limit_kb=$rss_limit_kb"; then
+                kill_process_tree "$compiler_pid"
+                exit 125
+            fi
             kill_process_tree "$compiler_pid"
             break
         fi
@@ -223,7 +239,10 @@ for source_file in "$@"; do
         log_bytes="$(wc -c <"$log_file" | tr -d '[:space:]')"
         if [ "$log_bytes" -gt "$log_limit_bytes" ]; then
             output_guard=1
-            latch_validation_disabled "run_bounded_lowering output_guard pid=$compiler_pid log_bytes=$log_bytes limit_bytes=$log_limit_bytes"
+            if ! latch_validation_disabled "run_bounded_lowering output_guard pid=$compiler_pid log_bytes=$log_bytes limit_bytes=$log_limit_bytes"; then
+                kill_process_tree "$compiler_pid"
+                exit 125
+            fi
             kill_process_tree "$compiler_pid"
             break
         fi
@@ -231,7 +250,10 @@ for source_file in "$@"; do
         now="$(date +%s)"
         if [ "$((now - started_at))" -gt "$time_limit_seconds" ]; then
             timeout_guard=1
-            latch_validation_disabled "run_bounded_lowering timeout_guard pid=$compiler_pid limit_seconds=$time_limit_seconds"
+            if ! latch_validation_disabled "run_bounded_lowering timeout_guard pid=$compiler_pid limit_seconds=$time_limit_seconds"; then
+                kill_process_tree "$compiler_pid"
+                exit 125
+            fi
             kill_process_tree "$compiler_pid"
             break
         fi
