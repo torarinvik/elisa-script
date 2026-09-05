@@ -1244,7 +1244,10 @@ value's static type.
 `ParseFloat` has type `Text -> Float(64)` and shares the `ParseError` row. Its
 validation machine requires a decimal mantissa and, when present, a complete
 exponent before invoking the shared decimal evaluator; malformed input therefore
-cannot silently become zero. `FormatFloat` has type `Float(32|64) -> Text` and copies
+cannot silently become zero. The evaluator saturates exponent accumulation and
+scaling at 4096 steps, which is beyond the useful range of an IEEE-754 `f64` and
+keeps hostile exponent text from wrapping or forcing an unbounded walk. `FormatFloat`
+has type `Float(32|64) -> Text` and copies
 the core `%g` spelling into permanent storage before returning its view. These
 opcodes are classified into the packed text dispatch family. `FormatBool` has
 type `Bool -> Text` and emits canonical lowercase `true` or `false`; it is

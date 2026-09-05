@@ -941,7 +941,10 @@ share exact behavior between the reference interpreter and packed bytecode.
 optional sign, fractional part, and `e`/`E` exponent (including an exponent sign);
 underscores may separate adjacent digits in each mantissa or exponent component.
 It rejects missing digits, trailing characters, and incomplete exponents. The
-matching `format_float(value: f64) -> sview` uses Elisa's `%g`-style canonical
+exponent accumulator is saturated at a 4096-step IEEE-754 scale bound, so
+oversized exponent text cannot wrap or create unbounded scaling work; values
+past that bound have already rounded to zero or infinity in `f64`. The matching
+`format_float(value: f64) -> sview` uses Elisa's `%g`-style canonical
 runtime spelling and keeps the returned text in permanent storage.
 `format_bool(value: bool) -> sview` returns canonical lowercase `true` or `false`.
 `format_char(value: char) -> sview` returns the character's byte-oriented text
