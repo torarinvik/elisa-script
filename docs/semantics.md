@@ -461,6 +461,10 @@ has linear runtime; adversarial-complexity qualification remains part of the
 regex completion gate. Replacement output is also capped at 64 MiB before its
 final owned buffer is allocated, and must not be treated as unlimited merely
 because its inputs fit.
+Output checks apply to emitted bytes: an empty capture expansion remains valid
+when the output already equals the limit. Replacement tokens and capture
+candidate probes consume the operation's work budget, including probes that
+produce no output; capture probing stops immediately on exhaustion.
 
 For ports that keep a compiled pattern in a local, `pattern.search(text)` is a
 typed receiver spelling of `matches(text, pattern)`. `pattern.match(text)`
