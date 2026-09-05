@@ -293,6 +293,15 @@ claims independent interpreter/VM evidence fails if the candidate reports
 process runs leave `engine_known` false because their implementation engine is
 outside the Elisascript runtime.
 
+The execution boundary now carries a backend-neutral `ExecutionCapability`
+snapshot alongside that engine identity. For bytecode runs,
+`capability_known` is true and the snapshot preserves `direct_supported`,
+`function_count`, `instruction_count`, and `global_count` from the preflight
+report. Differential adapters copy those fields into `DifferentialRun` so a
+serialized or later comparison record cannot lose the pre-run capability facts.
+Reference-interpreter and external-process runs deliberately leave the snapshot
+unknown; zero counts must not be interpreted as proof that a module was empty.
+
 ## Generation and shrinking
 
 Differential cases should integrate property-based generation and deterministic

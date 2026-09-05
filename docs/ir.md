@@ -118,6 +118,12 @@ interpreter calls, `DirectBytecode` for the packed state machine, and
 `BytecodeInterpreterFallback` when the compatibility entrypoint deliberately
 reuses the verified interpreter. Consumers must inspect this field before
 counting a run as independent backend evidence.
+Bytecode executions also carry a backend-neutral `ExecutionCapability` snapshot
+with a `capability_known` bit and the preflight's direct-support, function,
+instruction, and global counts. This keeps capability evidence attached to the
+value returned from the execution boundary, rather than relying on a caller to
+recompute or remember a separate report. Direct interpreter calls leave the bit
+false because they have no bytecode preflight.
 `EsBytecode.bytecode_capability_report` exposes the same decision before a run,
 along with function, instruction, and global counts. Record this report beside
 the execution artifact; counts are descriptive telemetry, while
