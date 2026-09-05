@@ -31,6 +31,10 @@ semantic_names() {
         tr -d '"'
     rg -o 'add_symbol\("[A-Za-z_][A-Za-z0-9_]*"' "$semantic_file" |
         sed 's/.*("//; s/"$//'
+    # Registry migration may append a spelling to the caller-owned seed array
+    # when editing the very long legacy literal would obscure the diff.
+    rg -o 'names <- names\.push\("[A-Za-z_][A-Za-z0-9_]*"' "$semantic_file" |
+        sed 's/.*push("//; s/"$//'
 }
 
 lowerer_names() {
