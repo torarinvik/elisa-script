@@ -13,10 +13,11 @@ Elisascript-owned implementation is divided into qualified namespaces:
 
 `scripts/check_namespace_manifest.sh` performs a compiler-free collision audit
 of the Elisascript-owned `src/` tree. It rejects duplicate top-level module
-declarations, requires the six expected qualified modules, and emits a TSV
-summary of their source files and explicit `public:`/`private:` sections. The
-vendored `Semantic` and standard-library namespaces are intentionally outside
-this check and remain governed by `vendor/elisa-compiler/SOURCE.md`.
+declarations, rejects `extend` blocks targeting undeclared modules, requires
+the six expected qualified modules, and emits a TSV summary of every module
+and extension file together with its explicit `public:`/`private:` sections.
+The vendored `Semantic` and standard-library namespaces are intentionally
+outside this check and remain governed by `vendor/elisa-compiler/SOURCE.md`.
 
 Every new public symbol must be added to its owning namespace deliberately and
 documented at the boundary. Tests should use public inspection APIs rather than
