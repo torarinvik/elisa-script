@@ -1516,8 +1516,9 @@ the supplied length for NUL bytes before constructing the terminated parser buff
 `execute_elisascript_program_source_bytes` expose the same length-delimited
 guarantee at the execution boundary.
 The `EsIr` source extension keeps its bounded C-string scan, extension cursor,
-and semantic-error predicate private; only the size constant, extension checks,
-and source-to-IR loader entrypoints are public. This keeps parser state out of
+and semantic-error predicate private; only the size constants, extension checks,
+the bounded `elisascript_source_filename_length` adapter, and source-to-IR loader
+entrypoints are public. This keeps parser state and unbounded lexer scans out of
 the cross-module API while preserving the `.elisascript` boundary.
 
 The launcher-facing ABI is `main(arguments: darray[sview]) -> i64`. The program
