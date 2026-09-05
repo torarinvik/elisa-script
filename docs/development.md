@@ -33,6 +33,11 @@ fixtures, refuses any compiler path outside the pinned StructPy checkout, and
 uses a 524,288 KB RSS ceiling with a 120-second timeout by default. The limits
 can only be changed explicitly with
 `ELISASCRIPT_RSS_LIMIT_KB` and `ELISASCRIPT_TIME_LIMIT_SECONDS`.
+Both values must be positive decimal integers; malformed or zero values are
+rejected before any compiler process is created. Each fixture argument must be
+an existing `.elisascript` regular file. The wrapper installs signal/exit
+cleanup for its temporary log and owned compiler tree, and clears the child PID
+after `wait` so cleanup cannot act on a reused PID.
 
 Executable fixtures use the matching process-tree guard:
 
