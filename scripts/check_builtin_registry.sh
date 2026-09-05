@@ -80,6 +80,13 @@ if ! rg -q 'ufm_check_text_builtin_arity' "$receiver_semantic_file" || \
     printf 'builtin registry audit: semantic receiver arity checking does not consume registry ranges\n' >&2
     exit 1
 fi
+if ! rg -q 'ufm_check_text_builtin_argument_types' "$receiver_semantic_file" || \
+   ! rg -q 'spec\.argument_types' "$receiver_semantic_file" || \
+   ! rg -q 'DiagnosticKind\.LiteralArgTypeMismatch' "$receiver_semantic_file" || \
+   ! rg -q 'DiagnosticKind\.FirmArgTypeMismatch' "$receiver_semantic_file"; then
+    printf 'builtin registry audit: semantic receiver argument checking does not consume registry types\n' >&2
+    exit 1
+fi
 
 for name in $method_names; do
     if ! rg -q "known: true, name: \"$name\", receiver: \"Text\"" "$registry_file"; then

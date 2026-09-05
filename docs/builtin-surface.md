@@ -50,7 +50,11 @@ receivers additionally use the row's receiver-excluded arity range at the
 semantic boundary and emit the same structured `ArityMismatch` form as direct
 calls; unknown receivers remain conservative and continue through ordinary
 UFCS resolution. Unknown names continue to use the legacy seed path until
-their richer signatures are migrated.
+their richer signatures are migrated. The same receiver check validates the
+registry's positional `text` argument slots for literal and firmly inferred
+values, emitting the existing literal/firm argument mismatch diagnostics;
+structural descriptors such as `darray[text]` remain deferred until their
+element IDs are available to inference.
 
 Run the compiler-free audits:
 
