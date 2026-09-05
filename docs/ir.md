@@ -143,7 +143,8 @@ returns a borrowed, typed metadata record without copying its strings;
 `bytecode_artifact_bytes_valid` is the allocation-free cache-boundary check: it
 requires the exact magic/version, backend tag, bounded length-prefixed fields,
 known engine ordinal, consistent direct/fallback flag, all capability counters,
-and no trailing bytes. `bytecode_artifact_metadata_valid` performs the same
+capability counters representable by the host `usize`, and no trailing bytes.
+`bytecode_artifact_metadata_valid` performs the same
 cross-field checks on a decoded record, while `bytecode_artifact_matches_module`
 still compares the fingerprint and recomputed capability report before execution.
 
