@@ -30,6 +30,10 @@ module EsDifferential:
     # bypasses runner preparation and invokes the low-level adapter directly.
     const DIFFERENTIAL_DEFAULT_MAX_ARGUMENTS: usize = 1048576
     const DIFFERENTIAL_DEFAULT_MAX_ENVIRONMENT_ENTRIES: usize = 1048576
+    # Bound the aggregate C-string payload and stdin staging allocation before
+    # a differential process duplicates caller-owned text into host buffers.
+    const DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES: usize = 67108864
+    const DIFFERENTIAL_DEFAULT_MAX_PROCESS_INPUT_BYTES: usize = 67108864
 
     public:
         const enum DifferentialValueKind of u8:
@@ -308,6 +312,8 @@ module EsDifferential:
             EmbeddedNul
             TooManyArguments
             TooManyEnvironmentEntries
+            TooManyProcessTextBytes
+            TooMuchProcessInput
 
 
         struct DifferentialRunnerCheck:
@@ -325,6 +331,7 @@ module EsDifferential:
             Arguments
             WorkingDirectory
             Environment
+            ProcessBounds
             Timeout
             OutputLimit
             Done
@@ -366,6 +373,32 @@ module EsDifferential:
         struct DifferentialPrepareCursor:
             state: mutable DifferentialPrepareState
             argument_index: mutable usize
+
+
+        def differential_process_text_bytes_add_fits(total: mutable usize&, value: sview, limit: usize) -> bool:
+            return false if total > limit
+            length: usize = sview_len(value)
+            # Every process-facing text value becomes a terminated C string.
+            # Use a strict comparison so `length + 1` cannot wrap or exceed
+            # the aggregate limit.
+            return false if length >= limit - total
+            total <- total + length + 1
+            return true
+
+
+        def differential_process_text_bytes_fits(executable: sview, entry: sview, arguments: darray[sview], working_directory: sview, environment: darray[DifferentialEnvironmentEntry]) -> bool:
+            total: mutable usize = 0
+            return false if not differential_process_text_bytes_add_fits(total, executable, DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES)
+            if entry != "":
+                return false if not differential_process_text_bytes_add_fits(total, entry, DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES)
+            if working_directory != "":
+                return false if not differential_process_text_bytes_add_fits(total, working_directory, DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES)
+            for argument in arguments:
+                return false if not differential_process_text_bytes_add_fits(total, argument, DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES)
+            for variable in environment:
+                return false if not differential_process_text_bytes_add_fits(total, variable.name, DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES)
+                return false if not differential_process_text_bytes_add_fits(total, variable.value, DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES)
+            return true
 
 
         def differential_sview_has_nul(value: sview) -> bool:
@@ -498,6 +531,22 @@ module EsDifferential:
                     cursor.state <- DifferentialRunnerCheckState.Done
                     -> Validate
                 Validate, DifferentialRunnerCheckState.Environment:
+                    cursor.state <- DifferentialRunnerCheckState.ProcessBounds
+                    -> Validate
+
+                Validate, DifferentialRunnerCheckState.ProcessBounds if not differential_process_text_bytes_fits(runner.target, runner.entry, runner.arguments, runner.working_directory, runner.environment):
+                    cursor.result.valid <- false
+                    cursor.result.issue <- DifferentialRunnerIssueKind.TooManyProcessTextBytes
+                    cursor.result.reason <- "runner process text exceeds the 64 MiB aggregate C-string budget"
+                    cursor.state <- DifferentialRunnerCheckState.Done
+                    -> Validate
+                Validate, DifferentialRunnerCheckState.ProcessBounds if sview_len(runner.stdin) > DIFFERENTIAL_DEFAULT_MAX_PROCESS_INPUT_BYTES:
+                    cursor.result.valid <- false
+                    cursor.result.issue <- DifferentialRunnerIssueKind.TooMuchProcessInput
+                    cursor.result.reason <- "runner stdin exceeds the 64 MiB process-input budget"
+                    cursor.state <- DifferentialRunnerCheckState.Done
+                    -> Validate
+                Validate, DifferentialRunnerCheckState.ProcessBounds:
                     cursor.state <- DifferentialRunnerCheckState.Timeout
                     -> Validate
 
@@ -666,6 +715,7 @@ module EsDifferential:
             # provide a positive output ceiling before any child is launched.
             raise DifferentialRunnerError.Invalid if invocation.executable == "" or differential_sview_has_nul(invocation.executable) or differential_sview_has_nul(invocation.entry) or differential_sview_has_nul(invocation.working_directory) or invocation.timeout_steps == 0 or invocation.max_output_bytes == 0
             raise DifferentialRunnerError.Invalid if invocation.arguments.count > DIFFERENTIAL_DEFAULT_MAX_ARGUMENTS or invocation.environment.count > DIFFERENTIAL_DEFAULT_MAX_ENVIRONMENT_ENTRIES
+            raise DifferentialRunnerError.Invalid if not differential_process_text_bytes_fits(invocation.executable, invocation.entry, invocation.arguments, invocation.working_directory, invocation.environment) or sview_len(invocation.stdin) > DIFFERENTIAL_DEFAULT_MAX_PROCESS_INPUT_BYTES
             for argument in invocation.arguments:
                 raise DifferentialRunnerError.Invalid if differential_sview_has_nul(argument)
             for entry in invocation.environment:

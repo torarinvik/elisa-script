@@ -133,6 +133,12 @@ the working directory, while stdin remains length-delimited so binary-compatible
 fixtures are possible. Child environment overrides are ordered typed
 `(name, value)` entries and are applied only after `fork`, so the parent
 runner's environment remains unchanged.
+The validator also caps the aggregate terminated C-string payload for the
+executable, adapter entry, arguments, working directory, and environment at
+64 MiB, and caps staged stdin at 64 MiB. The low-level invocation boundary
+repeats these byte checks before reserving or writing host buffers, so bypassing
+runner preparation cannot turn a large differential case into an unbounded
+allocation.
 NUL scanning records a dedicated found flag rather than using a `length + 1`
 sentinel, so a maximum-width text view cannot wrap while being validated.
 Environment names are validated before launch: they must be nonempty, contain no
@@ -175,8 +181,9 @@ bounded wait-poll budget; an expired child is killed and raises
 the conventional `126`/`127` setup/exec statuses, remains ordinary
 `DifferentialRun.exit_status` data for comparison. Argument vectors are bounded
 at one million entries before argv or owned C-string reservation, and environment
-override entries use the same bound. The validator reports these as explicit
-resource issues; the low-level invocation API repeats the check before launch.
+override entries use the same bound. The validator reports count and aggregate
+byte limits as explicit resource issues; the low-level invocation API repeats
+the check before launch.
 The poll counter checks the positive budget before incrementing, so a
 maximum-width timeout cannot wrap into an unbounded wait. Launch, wait, and capture
 failures use `DifferentialRunnerError.Process`. Each captured stream is checked
