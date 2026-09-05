@@ -60,6 +60,10 @@ if ! rg -q 'typed_builtin_method_spec\("Text", method_name\)' "$lowerer_file"; t
     printf 'builtin registry audit: lowerer has no receiver-method registry consumer\n' >&2
     exit 1
 fi
+if ! rg -q 'typed_builtin_method_call_shape\("Text", method_name' "$lowerer_file"; then
+    printf 'builtin registry audit: lowerer has no receiver-method shape consumer\n' >&2
+    exit 1
+fi
 
 for name in $method_names; do
     if ! rg -q "known: true, name: \"$name\", receiver: \"Text\"" "$registry_file"; then
@@ -97,4 +101,4 @@ if ! rg -q 'typed_builtin_spec\(callee_name\)\.errors' "$lowerer_file"; then
     exit 1
 fi
 
-printf 'builtin registry audit: %s typed scalar/text spellings share semantic and lowerer metadata\n' "$(printf '%s\n' "$registry_names" | awk 'NF {count += 1} END {print count + 0}')"
+printf 'builtin registry audit: %s global and %s Text receiver spellings share semantic and lowerer metadata\n' "$(printf '%s\n' "$registry_names" | awk 'NF {count += 1} END {print count + 0}')" "$(printf '%s\n' "$method_names" | awk 'NF {count += 1} END {print count + 0}')"
