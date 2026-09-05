@@ -242,6 +242,8 @@ capabilities as ordinary script execution.
 The in-process adapter rejects nonempty `working_directory`, `environment`,
 `stdin`, or `protocol` fields with `DifferentialRunnerError.UnsupportedConfiguration`;
 use a process runner when a candidate must execute in a separate configured world.
+Source targets also respect the source loader's 4 KiB filename ceiling and are
+rejected before terminated-buffer allocation when they reach that bound.
 
 For a runnable script that follows the launcher ABI, use `ElisascriptProgram` and
 omit `entry`; its `handlers` field has the same meaning. `run_differential_elisascript_program` invokes
