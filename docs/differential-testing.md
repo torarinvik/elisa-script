@@ -111,7 +111,8 @@ The standalone host boundary `execute_differential_process` consumes the same
 constructs an argv vector directly (never a shell command), feeds stdin through
 a temporary file, captures stdout and stderr independently, and applies an
 optional working directory and explicit environment overrides in the child just
-before `execvp`. The timeout is a
+before `execvp`; its terminator is cleared with `size_of(uintptr)` so the argv
+slot is correct on both 32-bit and 64-bit targets. The timeout is a
 bounded wait-poll budget; an expired child is killed and raises
 `DifferentialRunnerError.Timeout`. A normal nonzero process status, including
 the conventional `126`/`127` setup/exec statuses, remains ordinary

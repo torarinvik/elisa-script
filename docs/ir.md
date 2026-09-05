@@ -706,6 +706,8 @@ filesystem path as well as the reference interpreter.
 requires `Process.Run` plus `ProcessError`. The interpreter executes it directly as
 a POSIX `fork`/`execvp`/`waitpid` state transition with a NUL-terminated argv. No
 command string or shell expansion exists between typed IR and the operating system.
+The argv terminator is cleared using `size_of(uintptr)`, matching the target
+pointer width rather than assuming an 8-byte slot.
 Process waits use nonblocking `waitpid` polling and a 120-second deadline; a child
 that exceeds the deadline is killed and reported as `ProcessError` rather than
 blocking the host indefinitely.
