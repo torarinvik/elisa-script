@@ -122,6 +122,11 @@ decorators also copy callback-declared `can[...]` effects and `error[...]` famil
 into the derived handler descriptor, preserving the host descriptor contract and
 preventing capability/error rows from disappearing at the source-to-IR boundary.
 
+The interpreter and direct-bytecode adapters now consume one shared
+`ES_RUNTIME_DEFAULT_MAX_EXECUTION_CALL_DEPTH` limit for host-recursive calls and
+handler/error-stack depth, with a compiler-free audit and IR fixture preventing
+backend drift.
+
 ## Evidence record template
 
 Every future executed or differential-verified entry must append a dated record

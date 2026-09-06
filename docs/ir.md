@@ -178,6 +178,11 @@ instruction, and global counts. This keeps capability evidence attached to the
 value returned from the execution boundary, rather than relying on a caller to
 recompute or remember a separate report. Direct interpreter calls leave the bit
 false because they have no bytecode preflight.
+Both engines also consume the shared `ES_RUNTIME_DEFAULT_MAX_EXECUTION_CALL_DEPTH`
+contract (currently 4,096 active calls/handler depth) while ordinary calls still
+use host-recursive adapters. Hitting that boundary is a typed `OutputLimit`
+failure, not a fabricated return value; keeping the constant in the runtime model
+prevents backend-specific stack policies from drifting.
 `EsBytecode.bytecode_capability_report` exposes the same decision before a run,
 along with function, instruction, and global counts. Record this report beside
 the execution artifact; counts are descriptive telemetry, while
