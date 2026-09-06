@@ -115,7 +115,7 @@ Statement-form `signal` rejects a source-declared non-void result, preserving th
 distinction between fire-and-forget signals and value-producing `perform`
 (`93befcb`).
 The semantic metadata pass now rejects the same non-void `signal` contract before
-lowering, with a focused negative fixture (`pending`).
+lowering, with a focused negative fixture (`9d59c51`).
 
 ## Evidence record template
 
