@@ -149,7 +149,7 @@ for boundary in 'DifferentialOracleLanguage.Python' 'DifferentialOracleLanguage.
     fi
 done
 
-for boundary in 'make_differential_world_snapshot' 'validate_differential_world_snapshot' 'DifferentialWorldSnapshotIssue.FingerprintMismatch'; do
+for boundary in 'make_differential_world_snapshot' 'validate_differential_world_snapshot' 'DifferentialWorldSnapshotIssue.FingerprintMismatch' 'def differential_value_kind_byte_valid' 'unknown_value_kind[25] <- 255'; do
     if ! rg -Fq "$boundary" "$source_file" "$fixture_file"; then
         printf 'differential case audit: missing boundary coverage %s\n' "$boundary" >&2
         exit 1

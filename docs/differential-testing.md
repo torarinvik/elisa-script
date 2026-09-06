@@ -552,7 +552,10 @@ It records the run side, outcome/status, root value, flat array/map storage, and
 observation traces. Every value record carries its kind, checked u32 spans,
 length-delimited text/process fields, and the exact IEEE-754 bit pattern for
 floating-point values. The decoder allocates only after bounded count admission,
-then rejects malformed kinds/spans, truncated records, and trailing bytes.
+then rejects malformed kinds/spans, truncated records, and trailing bytes. Raw
+kind bytes use explicit membership admission rather than only a maximum ordinal,
+so reserved or non-contiguous future kinds fail closed instead of becoming
+`Void`.
 
 An `ESIX` artifact index binds the manifest, comparison report, both process
 streams, reproduction entry, and both value pools by fingerprint. Its explicit
