@@ -16,21 +16,21 @@ for required_file in "$source_file" "$fixture_file" "$docs_file"; do
     fi
 done
 
-for declaration in 'struct DifferentialWorldFile' 'struct DifferentialWorld' 'struct DifferentialCase' 'struct DifferentialArtifactManifest' 'const enum DifferentialArtifactPolicy' 'const enum DifferentialCaseIssueKind'; do
+for declaration in 'struct DifferentialWorldFile' 'struct DifferentialWorld' 'struct DifferentialCase' 'struct DifferentialArtifactManifest' 'struct DifferentialArtifactManifestDecode' 'const enum DifferentialArtifactPolicy' 'const enum DifferentialCaseIssueKind'; do
     if ! rg -q "$declaration" "$source_file"; then
         printf 'differential case audit: missing %s\n' "$declaration" >&2
         exit 1
     fi
 done
 
-for helper in differential_world_issue differential_artifact_policy_valid differential_engine_requirement_valid validate_differential_case make_differential_artifact_manifest differential_manifest_text_bytes_fits differential_artifact_manifest_valid canonical_differential_artifact_manifest_bytes differential_artifact_manifest_fingerprint; do
+for helper in differential_world_issue differential_artifact_policy_valid differential_engine_requirement_valid validate_differential_case make_differential_artifact_manifest differential_manifest_text_bytes_fits differential_artifact_manifest_valid canonical_differential_artifact_manifest_bytes differential_artifact_manifest_fingerprint differential_manifest_read_u64 differential_manifest_read_text_bounds differential_decode_artifact_manifest differential_artifact_manifest_bytes_valid decode_differential_artifact_manifest; do
     if ! rg -q "def $helper\(" "$source_file"; then
         printf 'differential case audit: missing helper %s\n' "$helper" >&2
         exit 1
     fi
 done
 
-for boundary in 'validate_differential_runner(case.reference)' 'validate_differential_runner(case.candidate)' 'DifferentialCaseIssueKind.DuplicateWorldPath' 'DifferentialArtifactPolicy.Always' 'make_differential_artifact_manifest' 'canonical_differential_artifact_manifest_bytes' 'differential_artifact_manifest_fingerprint'; do
+for boundary in 'validate_differential_runner(case.reference)' 'validate_differential_runner(case.candidate)' 'DifferentialCaseIssueKind.DuplicateWorldPath' 'DifferentialArtifactPolicy.Always' 'make_differential_artifact_manifest' 'canonical_differential_artifact_manifest_bytes' 'differential_artifact_manifest_fingerprint' 'decode_differential_artifact_manifest' 'differential_artifact_manifest_bytes_valid'; do
     if ! rg -Fq "$boundary" "$source_file" "$fixture_file"; then
         printf 'differential case audit: missing boundary coverage %s\n' "$boundary" >&2
         exit 1

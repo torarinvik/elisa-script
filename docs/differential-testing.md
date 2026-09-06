@@ -40,8 +40,10 @@ can produce a `DifferentialArtifactManifest` with case/runner identities, seeds,
 engine requirement, artifact policy, and optional verified-module fingerprint;
 `canonical_differential_artifact_manifest_bytes` emits a bounded versioned `ESDF`
 sidecar and `differential_artifact_manifest_fingerprint` provides a deterministic
-correlation key. Adapters remain responsible for materializing the separate worlds
-and writing the complete output artifact.
+correlation key. `decode_differential_artifact_manifest` validates magic, version,
+lengths, enum ordinals, and trailing bytes before exposing borrowed metadata;
+truncated or malformed sidecars fail closed. Adapters remain responsible for
+materializing the separate worlds and writing the complete output artifact.
 
 The first shared comparison primitive is `EsDifferential.compare_differential_runs`.
 It compares exit status, named error, stdout, stderr, the typed return value,
