@@ -18,6 +18,14 @@ that lacks an execution revision remains unqualified for release.
 
 ## Current entries
 
+The interpreter POSIX bridge now admits path operands through a private 4 KiB
+length-only check before embedded-NUL scanning, terminator allocation, or host
+filesystem calls. Filesystem source/destination, symlink, directory, and child
+working-directory paths use the bounded adapter while executable, argument, and
+environment text retain the broader shared C-string ceiling. The metadata-only
+oversized-path fixture and compiler-free audit are present; execution evidence
+remains suspended (`scripts/check_interpreter_paths.sh`).
+
 The current static slice also binds canonical SHA-256 digest words into
 differential ESDF version-4 manifests when a module identity is available;
 legacy version-1/2/3 manifests remain decode-compatible but are explicitly

@@ -923,6 +923,14 @@ an embedded NUL before entering the POSIX boundary. This check also applies to
 nominal `Path` values received from host calls or dynamic constructors; it keeps
 the length-delimited source representation from being silently truncated by the
 C-string adapter.
+The reference interpreter admits path operands through a stricter private
+4 KiB path envelope before scanning for NUL, allocating a terminator, or calling
+`stat`, `fopen`, `rename`, `opendir`, and the other POSIX adapters. Oversized
+paths therefore fail through the operation's existing typed file/directory or
+process error path without first walking or copying a hostile 64 MiB general
+C-string payload. Executable names, arguments, and environment values retain
+the broader shared C-string ceiling because they are not POSIX pathname
+operands.
 `ReadText` extends that contract to whole-file input with verified signature
 `Named(Path) -> Text`. Its function must carry both `File.Read` and `FileIoError`;
 lowering supplies both and the verifier rejects either omission. The interpreter
