@@ -2041,6 +2041,10 @@ for name in $array_method_names; do
         printf 'builtin registry audit: Array.index lowering fixture is missing\n' >&2
         exit 1
     fi
+    if [[ "$name" == "contains" ]] && ! rg -q 'array_present: bool = values\.contains\(1\)' "$semantic_test_file"; then
+        printf 'builtin registry audit: Array.contains semantic fixture is missing\n' >&2
+        exit 1
+    fi
     opcode="$(sed -n "s/.*name: \"$name\".*receiver: \"Array\".*opcode: \"\([A-Za-z0-9_]*\)\".*/\1/p" "$registry_file" | head -1)"
     if [[ -z "$opcode" ]] || ! rg -q "Opcode\\.$opcode" "$verifier_file"; then
         printf 'builtin registry audit: Array.%s opcode is not verifier-covered (%s)\n' "$name" "${opcode:-missing}" >&2
