@@ -93,10 +93,10 @@ shared type interner handles them. The one-positional-payload `perform` form use
 the same structural resolver, and both `perform("Family.Operation", payload...)`
 and `signal` bodies preserve source order across multiple declared parameters.
 Each known payload position is checked against its corresponding declaration;
-unsupported parameter syntax remains conservative. Lowering also enforces the
-declared payload arity for both `perform` and `signal`; source-declared operations are closed by
-`(family, operation)`, and a `signal` may target only a declared void-result
-operation. Value-producing declarations are dispatched through `perform`, while
+unsupported parameter syntax remains conservative. Semantic analysis and lowering
+also enforce the declared payload arity for both `perform` and `signal`; source-
+declared operations are closed by `(family, operation)`, and a `signal` may target
+only a declared void-result operation. Value-producing declarations are dispatched through `perform`, while
 builtin and permission-only families remain open to host-defined operation names.
 Dynamic handlers may therefore intercept
 user-defined operations without introducing a second runtime representation.

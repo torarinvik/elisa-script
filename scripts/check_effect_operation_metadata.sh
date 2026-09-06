@@ -60,6 +60,10 @@ for field in payload_signature result_signature; do
         exit 1
     fi
 done
+if ! rg -q 'DiagnosticKind.TypeMismatch.*expected: "void".*operation_info\.result_signature' "$semantic_file"; then
+    printf 'effect operation metadata audit: semantic signal checking does not reject non-void declarations\n' >&2
+    exit 1
+fi
 
 for helper in effect_operation_bare_result_spelling effect_operation_trim_type_spelling effect_operation_top_level_comma effect_operation_type_from_spelling effect_operation_result_type effect_operation_result_is_known effect_operation_declared effect_operation_declared_arity effect_operation_parameter_type effect_operation_payload_type effect_operation_single_payload_type effect_operation_payload_is_known; do
     if ! rg -q "def $helper\(" "$lowerer_file"; then

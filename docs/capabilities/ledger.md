@@ -114,6 +114,8 @@ with static lowering fixtures for matching and mismatched two-parameter effects
 Statement-form `signal` rejects a source-declared non-void result, preserving the
 distinction between fire-and-forget signals and value-producing `perform`
 (`93befcb`).
+The semantic metadata pass now rejects the same non-void `signal` contract before
+lowering, with a focused negative fixture (`pending`).
 
 ## Evidence record template
 
