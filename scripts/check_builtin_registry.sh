@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 
-# Compiler-free audit for the first shared typed-builtin registry slice. This
-# checks that the registry rows are complete and that semantic/lowering code
-# consumes the same metadata for every registered spelling.
+# Compiler-free audit for the shared typed-builtin registry surface. This
+# checks that public and private registry rows are complete and that
+# semantic/lowering code consumes the same metadata for every registered
+# spelling, including compiler-owned intrinsics.
 
 set -euo pipefail
 
