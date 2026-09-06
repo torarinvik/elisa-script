@@ -374,6 +374,8 @@ for name in $registry_names; do
                 ;;
             min|max)
                 if ! rg -q 'registry_spec\.known and registry_spec\.argument_types == "orderable\|array" and registry_spec\.opcode == "SortArray" and registry_spec\.lowering_steps == "SortArray,Index"' "$lowerer_file" || \
+                   ! rg -q 'registry_spec\.name == "max"' "$lowerer_file" || \
+                   rg -q 'callee_name == "max"' "$lowerer_file" || \
                    ! rg -q "name: \"$name\".*arity_min: 1.*arity_max: 4294967295.*argument_types: \"orderable\\|array\".*return_type: \"polymorphic\".*opcode: \"SortArray\".*lowering_steps: \"SortArray,Index\"" "$registry_file" || \
                    ! rg -q 'polymorphic_collection_builtins_preserve_known_element_types' "$semantic_test_file" || \
                    ! rg -q 'lowers_python_min_max_as_typed_extrema' "$lowering_test_file" || \
