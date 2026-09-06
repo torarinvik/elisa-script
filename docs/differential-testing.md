@@ -197,7 +197,11 @@ slot is correct on both 32-bit and 64-bit targets. The timeout is a
 bounded wait-poll budget; an expired child is killed and raises
 `DifferentialRunnerError.Timeout`. A normal nonzero process status, including
 the conventional `126`/`127` setup/exec statuses, remains ordinary
-`DifferentialRun.exit_status` data for comparison. Argument vectors are bounded
+`DifferentialRun.exit_status` data for comparison. The typed
+`DifferentialRun.outcome` additionally distinguishes completed execution from
+normal error, spawn failure, crash, timeout, output-limit, and compile-failure
+states; a signaled native child is classified as `Crash` before comparison.
+Argument vectors are bounded
 at one million entries before argv or owned C-string reservation, and environment
 override entries use the same bound. The validator reports count and aggregate
 byte limits as explicit resource issues; the low-level invocation API repeats
@@ -437,10 +441,10 @@ claims independent interpreter/VM evidence fails if the candidate reports
 process runs leave `engine_known` false because their implementation engine is
 outside the Elisascript runtime.
 
-The comparison layer also emits a bounded `ESCR` comparison-report sidecar.
+The comparison layer emits a bounded version-2 `ESCR` comparison-report sidecar.
 `make_differential_comparison_artifact` binds the report to the manifest
 fingerprint and records the first difference kind/index, both backend identities,
-the top-level value kinds, and length-delimited reason/stdout/stderr/error text.
+run outcomes, top-level value kinds, and length-delimited reason/stdout/stderr/error text.
 `canonical_differential_comparison_artifact_bytes` and
 `decode_differential_comparison_artifact` enforce the one-megabyte envelope,
 checked lengths, known enum ordinals, and trailing-byte rejection. Its compact
