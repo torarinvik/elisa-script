@@ -451,6 +451,12 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            input)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "text" and registry_spec\.opcode == "ReadStdinLine"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven input dispatch\n' >&2
+                    exit 1
+                fi
+                ;;
             list_directory|listdir|is_directory|isdir|is_dir)
                 if ! rg -q 'is_path_global_unary_spec\(registry_spec\)' "$lowerer_file"; then
                     printf 'builtin registry audit: lowerer has no registry-driven directory-path dispatch for %s\n' "$name" >&2
@@ -1155,6 +1161,13 @@ for stream_name in read_stdin read_stdin_line; do
         exit 1
     fi
 done
+if ! rg -q 'name: "input", receiver: "global".*arity_min: 0.*arity_max: 1.*argument_types: "text".*return_type: "sview".*effects: "Console.Read".*errors: "ConsoleError".*opcode: "ReadStdinLine"' "$registry_file" || \
+   ! rg -q 'input_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "text" and registry_spec\.opcode == "ReadStdinLine"' "$lowerer_file" || \
+   ! rg -q 'input_spec\.opcode == "ReadStdinLine"' "$lowerer_file"; then
+    printf 'builtin registry audit: input row/lowerer does not consume registry shape/result/opcode metadata\n' >&2
+    exit 1
+fi
 if ! rg -q 'name: "write_stdout", receiver: "global".*argument_types: "text".*return_type: "usize".*effects: "Console.Write".*errors: "ConsoleError".*opcode: "WriteStdout"' "$registry_file" || ! rg -q 'name: "write_stderr", receiver: "global".*argument_types: "text".*return_type: "usize".*effects: "Console.Write".*errors: "ConsoleError".*opcode: "WriteStderr"' "$registry_file" || ! rg -q 'name: "printf", receiver: "global".*argument_types: "text".*return_type: "usize".*effects: "Console.Write".*errors: "ConsoleError".*opcode: "WriteStdout"' "$registry_file"; then
     printf 'builtin registry audit: standard-stream write rows are incomplete\n' >&2
     exit 1
