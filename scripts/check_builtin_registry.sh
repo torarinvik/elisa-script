@@ -307,6 +307,26 @@ for filesystem_name in move_path mv rename; do
         exit 1
     fi
 done
+if ! rg -q 'name: "write_text", receiver: "global".*argument_types: "Path,text".*return_type: "usize".*effects: "File.Write".*errors: "FileIoError".*opcode: "WriteText"' "$registry_file" || ! rg -q 'name: "append_text", receiver: "global".*argument_types: "Path,text".*return_type: "usize".*effects: "File.Write".*errors: "FileIoError".*opcode: "AppendText"' "$registry_file"; then
+    printf 'builtin registry audit: text writer rows are incomplete\n' >&2
+    exit 1
+fi
+for filesystem_name in write_lines append_lines; do
+    opcode="WriteText"
+    [[ "$filesystem_name" == "append_lines" ]] && opcode="AppendText"
+    if ! rg -q "name: \"$filesystem_name\", receiver: \"global\".*argument_types: \"Path,darray\[text\]\".*return_type: \"usize\".*effects: \"File.Write\".*errors: \"FileIoError\".*opcode: \"$opcode\"" "$registry_file"; then
+        printf 'builtin registry audit: line writer row is incomplete: %s\n' "$filesystem_name" >&2
+        exit 1
+    fi
+done
+for filesystem_name in write_bytes write_binary append_bytes append_binary; do
+    opcode="WriteBytes"
+    [[ "$filesystem_name" == "append_bytes" || "$filesystem_name" == "append_binary" ]] && opcode="AppendBytes"
+    if ! rg -q "name: \"$filesystem_name\", receiver: \"global\".*argument_types: \"Path,darray\[u8\]\".*return_type: \"usize\".*effects: \"File.Write\".*errors: \"FileIoError\".*opcode: \"$opcode\"" "$registry_file"; then
+        printf 'builtin registry audit: byte writer row is incomplete: %s\n' "$filesystem_name" >&2
+        exit 1
+    fi
+done
 if ! rg -q 'spec\.argument_types == "Path,Path"' "$receiver_semantic_file"; then
     printf 'builtin registry audit: mixed Path/Path descriptor is not consumed by semantic checks\n' >&2
     exit 1
@@ -489,7 +509,11 @@ if ! rg -q 'lowers_typed_path_mutation_aliases_with_registry_contracts' "$repo_r
     printf 'builtin registry audit: path mutation rows lack lowering alias fixture\n' >&2
     exit 1
 fi
-if ! rg -q 'def registry_remove_path_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_move_path_checks_both_nominal_paths\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
+if ! rg -q 'lowers_nominal_text_append_with_file_effect_and_error' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_line_oriented_file_helpers_to_existing_text_ir' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_typed_binary_file_operations_with_exact_u8_arrays' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
+    printf 'builtin registry audit: text/line/byte writer rows lack lowering fixtures\n' >&2
+    exit 1
+fi
+if ! rg -q 'def registry_remove_path_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_move_path_checks_both_nominal_paths\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_write_text_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_write_lines_checks_text_array_elements\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_write_bytes_checks_unsigned_byte_elements\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
     printf 'builtin registry audit: path mutation rows lack semantic negative fixtures\n' >&2
     exit 1
 fi
@@ -536,6 +560,10 @@ done
 
 if ! rg -q 'typed_builtin_spec\(builtin_name\)' "$semantic_file"; then
     printf 'builtin registry audit: semantic seed table does not consume typed_builtin_spec\n' >&2
+    exit 1
+fi
+if ! rg -q 'EsBuiltin::typed_builtin_names\(\)' "$semantic_file" || ! rg -q 'registry_names: darray\[sview\]' "$semantic_file"; then
+    printf 'builtin registry audit: semantic seed table does not extend from typed_builtin_names\n' >&2
     exit 1
 fi
 

@@ -1294,6 +1294,13 @@ be constructed through a well-typed `u8` array; runtime values are still checked
 at the filesystem boundary. Empty or embedded-NUL paths are rejected before
 opening the target, and partial writes or close failures remain
 `FileIoError` errors after bounded short-write retries.
+The shared typed-builtin registry now owns the global write/append family:
+`write_text`/`append_text` use `Path,text -> usize`, line helpers use
+`Path,darray[text] -> usize`, and byte helpers use `Path,darray[u8] -> usize`.
+Every spelling carries `File.Write`/`FileIoError` and its canonical
+`WriteText`, `AppendText`, `WriteBytes`, or `AppendBytes` opcode metadata;
+semantic checking therefore rejects both non-`Path` operands and firmly known
+wrong array element types before lowering.
 
 `remove_path(path: Path) -> bool` removes a filesystem entry and contributes
 `File.Write`. It returns `true` only when removal succeeded; a missing or otherwise
