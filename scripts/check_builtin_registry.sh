@@ -434,12 +434,20 @@ if ! rg -q 'name: "capture_process_result", receiver: "global".*argument_types: 
     printf 'builtin registry audit: process-result capture row is incomplete\n' >&2
     exit 1
 fi
+if ! rg -q 'name: "capture_process_result_in_directory", receiver: "global".*argument_types: "Executable,darray\[text\],sview,Path".*return_type: "ProcessCapture".*effects: "Process.Run".*errors: "ProcessError".*opcode: "CaptureProcessResultInDirectory"' "$registry_file"; then
+    printf 'builtin registry audit: process directory-result capture row is incomplete\n' >&2
+    exit 1
+fi
 if ! rg -q 'name: "process_exit_status", receiver: "global".*argument_types: "ProcessCapture".*return_type: "i64".*effects: "".*errors: "".*opcode: "ProcessResultExitStatus"' "$registry_file" || ! rg -q 'name: "process_stdout", receiver: "global".*argument_types: "ProcessCapture".*return_type: "sview".*effects: "".*errors: "".*opcode: "ProcessResultStdout"' "$registry_file" || ! rg -q 'name: "process_stderr", receiver: "global".*argument_types: "ProcessCapture".*return_type: "sview".*effects: "".*errors: "".*opcode: "ProcessResultStderr"' "$registry_file"; then
     printf 'builtin registry audit: process-result accessor rows are incomplete\n' >&2
     exit 1
 fi
 if ! rg -q 'expected == "Executable"' "$receiver_semantic_file" || ! rg -q 'expected == "ProcessCapture"' "$receiver_semantic_file" || ! rg -q 'Executable,darray\[text\]' "$receiver_semantic_file" || ! rg -q 'Executable,darray\[text\],sview' "$receiver_semantic_file"; then
     printf 'builtin registry audit: process nominal argument descriptors are not consumed by semantic checks\n' >&2
+    exit 1
+fi
+if ! rg -q 'Executable,darray\[text\],sview,Path' "$receiver_semantic_file"; then
+    printf 'builtin registry audit: process directory-result descriptor is not consumed by semantic checks\n' >&2
     exit 1
 fi
 if ! rg -q 'spec\.argument_types == "Path,Path"' "$receiver_semantic_file"; then
@@ -652,6 +660,10 @@ if ! rg -q 'def registry_process_result_capture_requires_text_input\(' "$repo_ro
     printf 'builtin registry audit: process-result capture semantic coverage is missing\n' >&2
     exit 1
 fi
+if ! rg -q 'def registry_process_directory_capture_requires_a_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
+    printf 'builtin registry audit: process directory-result capture semantic coverage is missing\n' >&2
+    exit 1
+fi
 if ! rg -q 'lowers_python_directory_aliases_to_existing_typed_opcodes' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_typed_directory_lifecycle_and_working_directory_operations' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_deterministic_typed_directory_listing' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_native_typed_glob_expansion' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: directory registry rows lack lowering fixtures\n' >&2
     exit 1
@@ -670,6 +682,10 @@ if ! rg -q 'lowers_shell_free_process_stdout_capture_with_typed_stdin' "$repo_ro
 fi
 if ! rg -q 'lowers_typed_process_result_and_accessors' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: process-result capture lowering coverage is missing\n' >&2
+    exit 1
+fi
+if ! rg -q 'lowers_typed_process_result_in_directory' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
+    printf 'builtin registry audit: process directory-result capture lowering coverage is missing\n' >&2
     exit 1
 fi
 
