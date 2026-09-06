@@ -533,15 +533,20 @@ fingerprint and records the first difference kind/index, both backend identities
 run outcomes, top-level value kinds, and length-delimited reason/stdout/stderr/error text.
 `canonical_differential_comparison_artifact_bytes` and
 `decode_differential_comparison_artifact` enforce the one-megabyte envelope,
-checked lengths, known enum ordinals, and trailing-byte rejection. Its compact
-fingerprint is a correlation key, not a cryptographic digest; aggregate value
-pools and complete process streams remain separate artifact payloads.
+checked lengths, explicit membership for every serialized enum byte, and
+trailing-byte rejection. Its compact fingerprint is a correlation key, not a
+cryptographic digest; aggregate value pools and complete process streams remain
+separate artifact payloads. The same raw-byte predicates are shared by the
+manifest's engine/artifact/comparator policies and by the process, value-pool,
+and index sidecars, so reserved or non-contiguous future ordinals fail closed
+before they can default to the first constructor.
 
 Each side's complete bounded process-facing payload can be persisted separately
 as an `ESPS` process-stream artifact with `make_differential_process_stream_artifact`.
 It binds the reference/candidate side, terminal outcome, signed exit status, and
 length-delimited error/stdout/stderr channels to the manifest fingerprint. The
-versioned encoder and borrowed decoder reject unknown side/outcome ordinals,
+versioned encoder and borrowed decoder reject unknown side/outcome ordinals
+through explicit raw-byte membership checks,
 oversized channels, truncation, and trailing bytes; the compact fingerprint is a
 correlation key and not a cryptographic digest. Aggregate typed value pools remain
 a separate payload contract so large arrays/maps do not inflate either sidecar.
@@ -567,7 +572,8 @@ streams, reproduction entry, and both value pools by fingerprint. Its explicit
 `Prepared` and `Complete` publication states let an atomic writer stage a bundle
 without exposing a partial directory; `Complete` is rejected unless every
 required sidecar fingerprint is nonzero. The index itself is bounded,
-length-free, versioned, and rejects unknown states or trailing bytes.
+length-free, versioned, and rejects unknown publication bytes or trailing bytes
+through an explicit state-membership predicate.
 Before a replay adapter opens or launches anything, `validate_differential_artifact_bundle`
 runs a state-machine admission check over the complete in-memory bundle. It
 requires a valid `Complete` index, recomputes the manifest fingerprint, checks
