@@ -1537,6 +1537,17 @@ boundary. Their rows own the argument family, result type, and `WriteText`,
 existing join-with-newline lowering, while byte writers preserve exact unsigned
 byte element checking.
 
+The fixed mutation receivers `path.symlink_to(target: Path) -> bool`,
+`path.unlink() -> bool`, `path.rename(target: Path) -> bool`,
+`path.chmod(mode: u64) -> bool`, and `path.rmdir() -> bool` likewise use
+registry-owned nominal shapes and contracts. They lower to `SymlinkPath`,
+`RemovePath`, `MovePath`, `ChmodPath`, and `RemoveDirectory` respectively,
+with `File.Write`/`FileIoError` for file mutations and
+`Directory.Write`/`DirectoryError` for directory removal. Optional-control
+forms such as `path.touch(exist_ok: bool)` and `path.mkdir(...)` remain explicit
+until the registry can describe their named-control layout without erasing
+those defaults.
+
 `copy_path(source: Path, destination: Path) -> bool error[FileIoError]
 can[File.Read, File.Write]` copies one regular file by length-delimited bytes and
 replaces the destination. The source is subject to the interpreter's 64 MiB
