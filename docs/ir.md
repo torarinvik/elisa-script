@@ -139,7 +139,7 @@ revision, the compact fingerprint, and all four words of the canonical
 SHA-256 digest; the owned canonical byte stream is kept as the separate
 `canonical_module_bytes` value so its inferred region remains with the artifact
 writer. `artifact_metadata_valid` rejects version mismatches, an empty backend
-label, oversized backend/source-revision views, or any zero digest word before
+label, oversized backend/source-revision views, a zero compact fingerprint, or any zero digest word before
 `artifact_fingerprint_matches_module` correlates both identities with a module.
 `canonical_module_artifact_bytes` persists this metadata as a bounded version-2
 `ESIA` envelope, and `module_artifact_bytes_valid`/`decode_module_artifact`
@@ -353,7 +353,7 @@ field, the four non-zero digest words, and other bounded length-prefixed fields,
 known engine ordinal, consistent direct/fallback flag, all capability counters,
 capability counters representable by the host `usize`, and no trailing bytes.
 `bytecode_artifact_metadata_valid` performs the same
-cross-field checks on a decoded record, while `bytecode_artifact_matches_module`
+cross-field checks on a decoded record, including nonzero module identity, while `bytecode_artifact_matches_module`
 still compares the fingerprint and recomputed capability report before execution.
 
 `EsBytecode.execute_bytecode_direct_only` is the strict evidence entrypoint. It
