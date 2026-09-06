@@ -61,7 +61,7 @@ for field in payload_signature result_signature; do
     fi
 done
 
-for helper in effect_operation_bare_result_spelling effect_operation_result_type effect_operation_result_is_known effect_operation_declared effect_operation_declared_arity effect_operation_single_payload_type effect_operation_payload_is_known; do
+for helper in effect_operation_bare_result_spelling effect_operation_trim_type_spelling effect_operation_top_level_comma effect_operation_type_from_spelling effect_operation_result_type effect_operation_result_is_known effect_operation_declared effect_operation_declared_arity effect_operation_single_payload_type effect_operation_payload_is_known; do
     if ! rg -q "def $helper\(" "$lowerer_file"; then
         printf 'effect operation metadata audit: lowerer omits %s\n' "$helper" >&2
         exit 1
@@ -79,6 +79,12 @@ if ! rg -q 'effect_operation_single_payload_type\(state\.source_file, effect_fam
     printf 'effect operation metadata audit: signal lowering does not consult declared payload metadata\n' >&2
     exit 1
 fi
+for spelling in 'array_ir_type(element)' 'set_ir_type(element)' 'map_ir_type(key, value)' 'effect_operation_top_level_comma(inner)'; do
+    if ! rg -Fq "$spelling" "$lowerer_file"; then
+        printf 'effect operation metadata audit: structural type spelling support omits %s\n' "$spelling" >&2
+        exit 1
+    fi
+done
 if ! rg -q 'effect_operation_declared\(state\.source_file, family, operation\)' "$lowerer_file"; then
     printf 'effect operation metadata audit: perform lowering does not enforce source operation arity\n' >&2
     exit 1

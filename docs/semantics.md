@@ -82,15 +82,15 @@ leaving builtin and permission-only families open to host-defined operations.
 The spans are borrowed views into the source buffer, not a second AST, so the
 ordinary type resolver can intern the declaration types without losing generic,
 function-type, or refinement spelling. Overloads are not accepted in the initial
-ABI because dispatch identifies an operation by its family and name. Operation
-payload and resumption types remain governed by the ordinary typed handler callback
-and IR verifier until the resolver consumes these preserved spans, so declaration
-metadata cannot weaken static checking. As an initial enforcement slice, bare
-primitive/nominal result spellings are resolved during lowering and a value-producing
-`perform` is rejected when its contextual destination type disagrees; generic or
-structural result spans remain conservative until the shared type interner handles
-them. The one-positional-payload `perform` form likewise checks a bare declared
-payload type; multi-parameter, generic, and refined payload spans remain deferred.
+ABI because dispatch identifies an operation by its family and name. Resumption
+types remain governed by the ordinary typed handler callback and IR verifier, and
+declaration metadata cannot weaken static checking. The lowering bridge now resolves
+primitive and nominal names plus nested `array`/`darray`, `set`, and `dict`/`map` spellings
+from the borrowed span. A value-producing `perform` is rejected when its
+contextual destination type disagrees, including those supported structural rows;
+malformed, function-type, and refinement spellings remain conservative until the
+shared type interner handles them. The one-positional-payload `perform` form uses
+the same structural resolver, while multi-parameter payload lists remain deferred.
 The same narrow payload check applies to a source `signal` when its operation
 declaration is available. Lowering also enforces the declared payload arity for
 both `perform` and `signal`; source-declared operations are closed by

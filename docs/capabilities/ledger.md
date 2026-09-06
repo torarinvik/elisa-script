@@ -101,6 +101,11 @@ text/Regex contracts and aggregate/direct-call result inference (`37ba738`,
 `cd39dc9`, `7bb8828`); typed `regex(...)` constructors preserve nominal
 `Regex` inference for those checks (`a206d36`).
 
+The effect declaration bridge now resolves nested `array`/`darray`, `set`, and
+`dict`/`map` result and one-payload spellings from borrowed source spans, while
+leaving malformed, function-type, refinement, and multi-parameter signatures
+conservative (`pending`).
+
 ## Evidence record template
 
 Every future executed or differential-verified entry must append a dated record
