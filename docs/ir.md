@@ -380,6 +380,10 @@ Continuation-capture metadata is also checked before execution: names must be
 non-empty and unique, capture types cannot be `Void`, and the capture class must
 be one of the six declared ownership classes. Unknown enum ordinals are rejected
 as handler-contract issues rather than being treated as replay-safe by default.
+Multi-shot captures whose declared type is an array or map are rejected as
+`UnsafeMultiShot` at verification time until deep aggregate storage cloning is
+available; the runtime keeps the same fail-closed check for legacy hand-built
+descriptors.
 Malformed metadata is a handler-contract issue rather than permission to replay
 an untyped or unknown value.
 Coverage is operation-aware: a handler with one or more clauses handles only the

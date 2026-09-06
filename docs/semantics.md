@@ -144,6 +144,9 @@ that 4,096 bound across the reference and direct-bytecode engines. Multi-shot ca
 with `InterpretError.InvalidContinuation` when a current or active caller
 snapshot contains a mutable array/map view; deep storage cloning is required
 before those values can be replayed independently.
+The verifier now rejects a multi-shot capture whose declared type is an array or
+map with `UnsafeMultiShot` before execution; the runtime check remains for
+legacy descriptors assembled outside the source lowerer.
 Before a multi-shot resume indexes its saved suffix, the interpreter validates
 the replay-frame range and each saved SSA-id, runtime-value, and handler-name
 slice against the bounded continuation pools; malformed metadata reports
