@@ -82,7 +82,9 @@ ceiling because they are not filesystem path operands; an oversized working
 directory returns the existing typed `TooMuchProcessText` validation issue.
 The shared process-text field predicate also rejects argument and environment
 vectors above their one-million-entry caps before scanning or materializing any
-field, so callers cannot reuse it as a fail-open preflight.
+field, so callers cannot reuse it as a fail-open preflight. Runner validation
+checks those vector counts first, preserving the typed `TooManyArguments` and
+`TooManyEnvironmentEntries` diagnostics before field-length admission.
 
 The interpreter and direct-bytecode engine cap ordered `observe` events at one
 million per run. Crossing that shared budget raises `InterpretError.OutputLimit`
