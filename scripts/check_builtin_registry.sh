@@ -2097,6 +2097,10 @@ for name in $array_method_names; do
         printf 'builtin registry audit: Array.append lowering fixture is missing\n' >&2
         exit 1
     fi
+    if [[ "$name" == "clear" ]] && ! rg -q 'def lowers_mutable_array_clear_to_typed_empty_array\(' "$lowering_test_file"; then
+        printf 'builtin registry audit: Array.clear lowering fixture is missing\n' >&2
+        exit 1
+    fi
     if [[ "$name" == "reverse" || "$name" == "sort" ]] && ! rg -q 'def array_mutation_receiver_registry_shapes_are_static\(' "$semantic_test_file"; then
         printf 'builtin registry audit: Array mutation semantic fixture is missing\n' >&2
         exit 1
