@@ -170,7 +170,8 @@ ESBC classify the known version-1 records separately from malformed current
 metadata, while ESDF manifests report when a valid version-1--3 record still
 lacks the digest binding required by version 4. These predicates are advisory
 only; current readers remain fail-closed until a deliberate cache/manifest
-migration policy is implemented and exercised (`pending`).
+migration policy is implemented and exercised (`pending`). ESIA/ESBC metadata
+labels additionally reject embedded NUL bytes before a host string boundary.
 
 ## Evidence record template
 

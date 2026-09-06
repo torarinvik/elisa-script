@@ -136,7 +136,9 @@ reject legacy versions, malformed lengths, incomplete digests, and trailing
 bytes before exposing borrowed text views. `module_artifact_envelope_status`
 and `module_artifact_requires_migration` distinguish the known version-1
 envelope from malformed bytes so a future cache migration can be explicit
-without weakening current fail-closed admission.
+without weakening current fail-closed admission. Both metadata strings are
+also rejected when they contain an embedded NUL, preserving host C-string
+boundaries.
 
 ## Bytecode lowering
 
@@ -240,7 +242,9 @@ module fingerprint, all digest words, and the complete capability snapshot.
 Version 1 envelopes are intentionally rejected: cache migration must rewrite
 legacy unbound records before admission. `bytecode_artifact_envelope_status`
 and `bytecode_artifact_requires_migration` expose that legacy state separately
-from malformed current bytes. The writer applies the same version,
+from malformed current bytes. The reader and writer reject embedded NULs in
+the source-revision label before any host-string adapter sees it. The writer
+applies the same version,
 backend, digest-presence, revision-size, and engine/directness checks as the
 reader and returns the empty sentinel for metadata that would not be
 cache-admissible. `bytecode_artifact_fingerprint`
