@@ -347,6 +347,21 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            print|println|echo|eprint)
+                expected_opcode="WriteStdout"
+                if [[ "$name" == "eprint" ]]; then
+                    expected_opcode="WriteStderr"
+                fi
+                if ! rg -q 'registry_spec\.known and \(registry_spec\.opcode == "WriteStdout" or registry_spec\.opcode == "WriteStderr"\) and registry_spec\.argument_types == "print"' "$lowerer_file" || \
+                   ! rg -q "name: \"$name\".*arity_min: 0.*arity_max: 4294967295.*argument_types: \"print\".*return_type: \"usize\".*effects: \"Console.Write\".*errors: \"ConsoleError\".*opcode: \"$expected_opcode\"" "$registry_file" || \
+                   ! rg -q 'spec\.argument_types == "print"' "$receiver_semantic_file" || \
+                   ! rg -q 'source_print_declaration_takes_precedence_over_registry_console_builtin' "$semantic_test_file" || \
+                   ! rg -q 'invalid_print_control_source' "$semantic_test_file" || \
+                   ! rg -q 'shadowed-print' "$lowering_test_file"; then
+                    printf 'builtin registry audit: console registry/source-shadow/control coverage is missing for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
             split)
                 if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "Split"' "$lowerer_file"; then
                     printf 'builtin registry audit: lowerer has no registry-driven split dispatch\n' >&2
