@@ -1101,9 +1101,52 @@ if ! rg -q 'state\.required_errors\.push\(spec\.errors\)' "$lowerer_file" || \
     printf 'builtin registry audit: lowerer has no registry error-row consumer\n' >&2
     exit 1
 fi
-if ! rg -q 'trim_mode: i64 = 1 if callee_name == "lstrip"' "$lowerer_file" || \
-   ! rg -q 'callee_name == "rstrip" else 0' "$lowerer_file"; then
-    printf 'builtin registry audit: global trim aliases do not preserve left/right mode metadata\n' >&2
+# Fixed global text aliases must derive their result shape, opcode, and any
+# alias-specific mode from the same registry rows used by semantic checking.
+for text_name in starts_with startswith; do
+    if ! rg -q "name: \"$text_name\", receiver: \"global\".*argument_types: \"text,text\".*return_type: \"bool\".*effects: \"\".*errors: \"\".*opcode: \"StartsWith\"" "$registry_file"; then
+        printf 'builtin registry audit: starts-with row is incomplete: %s\n' "$text_name" >&2
+        exit 1
+    fi
+done
+for text_name in ends_with endswith; do
+    if ! rg -q "name: \"$text_name\", receiver: \"global\".*argument_types: \"text,text\".*return_type: \"bool\".*effects: \"\".*errors: \"\".*opcode: \"EndsWith\"" "$registry_file"; then
+        printf 'builtin registry audit: ends-with row is incomplete: %s\n' "$text_name" >&2
+        exit 1
+    fi
+done
+if ! rg -q 'name: "replace", receiver: "global".*argument_types: "text,text,text".*return_type: "sview".*effects: "".*errors: "".*opcode: "TextReplace"' "$registry_file" || \
+   ! rg -q 'name: "split_lines", receiver: "global".*argument_types: "text".*return_type: "darray\[text\]".*effects: "".*errors: "".*opcode: "SplitLines"' "$registry_file" || \
+   ! rg -q 'name: "splitlines", receiver: "global".*argument_types: "text".*return_type: "darray\[text\]".*effects: "".*errors: "".*opcode: "SplitLines"' "$registry_file" || \
+   ! rg -q 'name: "join", receiver: "global".*argument_types: "darray\[text\],text".*return_type: "sview".*effects: "".*errors: "".*opcode: "Join"' "$registry_file"; then
+    printf 'builtin registry audit: fixed global text operation rows are incomplete\n' >&2
+    exit 1
+fi
+if ! rg -q 'starts_with_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'starts_with_spec\.opcode == "StartsWith"' "$lowerer_file" || \
+   ! rg -q 'ends_with_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'ends_with_spec\.opcode == "EndsWith"' "$lowerer_file" || \
+   ! rg -q 'replace_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'replace_spec\.opcode == "TextReplace"' "$lowerer_file" || \
+   ! rg -q 'split_lines_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'split_lines_spec\.opcode == "SplitLines"' "$lowerer_file" || \
+   ! rg -q 'join_spec\.opcode == "Join"' "$lowerer_file"; then
+    printf 'builtin registry audit: fixed global text lowerers do not consume registry shape/result/opcode metadata\n' >&2
+    exit 1
+fi
+for trim_name in strip trim lstrip rstrip; do
+    if ! rg -q "name: \"$trim_name\", receiver: \"global\".*argument_types: \"text\".*return_type: \"sview\".*effects: \"\".*errors: \"\".*opcode: \"TrimText\".*lowering_mode:" "$registry_file"; then
+        printf 'builtin registry audit: trim row lacks lowering mode: %s\n' "$trim_name" >&2
+        exit 1
+    fi
+done
+if ! rg -q 'trim_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'trim_spec\.opcode == "TrimText"' "$lowerer_file" || \
+   ! rg -q 'trim_mode: i64 = trim_spec\.lowering_mode' "$lowerer_file" || \
+   ! rg -q 'case_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'case_spec\.opcode == "LowerText"' "$lowerer_file" || \
+   ! rg -q 'lower_text_case_value_with_spec\(text_value\.value, case_spec' "$lowerer_file"; then
+    printf 'builtin registry audit: global case/trim lowerers do not consume registry mode metadata\n' >&2
     exit 1
 fi
 if ! rg -q 'def typed_builtin_result_type' "$lowerer_file" || \

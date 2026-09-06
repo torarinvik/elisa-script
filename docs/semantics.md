@@ -343,6 +343,12 @@ name. The compact global aliases `startswith` and `endswith` are equivalent type
 spellings. Their dedicated IR operations are shared by the reference interpreter
 and the direct bytecode backend.
 
+These global text aliases are declared once in the shared typed-builtin
+registry. Semantic checking and lowering therefore agree on their exact
+`text,text` argument rows, boolean result, and `StartsWith`/`EndsWith` opcode;
+the lowerer does not infer the operation from an alias spelling after registry
+lookup.
+
 The compiler-known `replace(text, old, replacement) -> sview` operation performs
 literal, left-to-right, non-overlapping substitution. The `old` argument is not
 parsed as a regular expression, so regex metacharacters remain ordinary bytes;
@@ -377,6 +383,12 @@ from the right boundary only. All four operations preserve interior bytes and
 return a view into the existing text value. They are pure, deterministic, and
 shadowable by source functions.
 
+The registry also owns the trim direction as lowering metadata: `strip` and
+`trim` use mode `0`, `lstrip` uses mode `1`, and `rstrip` uses mode `2`. This
+keeps the shared `TrimText` opcode while making the left/right distinction
+visible to semantic and lowering audits rather than re-deriving it from the
+spelling in the IR lowerer.
+
 The compiler-known `lower(text) -> sview` and `upper(text) -> sview` operations,
 as well as the Python-shaped `text.lower()` and `text.upper()` method spellings,
 perform deterministic ASCII case conversion. ASCII letters are folded and all
@@ -386,11 +398,20 @@ dependence or malformed Unicode transformations. `casefold(text)` and
 they do not claim full Unicode case-folding. The operations are pure, shadowable
 (for the global spellings), and return owned text.
 
+Global case-conversion calls consume the registry-owned return shape and
+`LowerText`/`UpperText` opcode before entering the shared case-conversion
+lowerer. `casefold` intentionally retains the documented `LowerText` alias
+until a Unicode-aware fold opcode is added.
+
 The compiler-known `split_lines(text) -> darray[sview]` (also accepted as
 `splitlines(text)`) and the Python-shaped `text.splitlines()`/`text.split_lines()`
 methods split on LF, CR, and CRLF boundaries. Trailing line breaks do not add an
 extra empty field, while empty and consecutive lines remain observable. Empty
 input returns an empty array; the operation is deterministic and byte-oriented.
+The global aliases consume registry-owned `darray[text]` result and `SplitLines`
+opcode metadata. Likewise, `join(fields, separator)` consumes its registry
+`darray[text],text -> sview` row and `Join` opcode; the receiver method shares
+the same contract.
 
 Python-shaped text methods are available as statically typed aliases for the same
 operations: `text.startswith(prefix)`/`text.starts_with(prefix)` and
