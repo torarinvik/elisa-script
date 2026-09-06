@@ -307,6 +307,60 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            path_join)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path,text" and registry_spec\.opcode == "PathJoin"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven path-join dispatch\n' >&2
+                    exit 1
+                fi
+                ;;
+            path_parent|dirname)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and registry_spec\.opcode == "PathParent"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven path-parent dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
+            path_name|basename)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and registry_spec\.opcode == "PathName"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven path-name dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
+            path_extension|suffix|path_stem|stem)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and \(registry_spec\.opcode == "PathExtension" or registry_spec\.opcode == "PathStem"\)' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven path-component dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
+            path_is_absolute|is_absolute|isabs)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and registry_spec\.opcode == "PathIsAbsolute"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven absolute-path predicate dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
+            path_normalize|normalize_path|normpath)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and registry_spec\.opcode == "PathNormalize"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven path-normalize dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
+            path_absolute|absolute_path|abspath)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and registry_spec\.opcode == "PathAbsolute"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven absolute-path construction dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
+            path_relative|relative_path|relpath)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path,Path" and registry_spec\.opcode == "PathRelative"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven relative-path dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
+            path_real|realpath|resolve_path)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and registry_spec\.opcode == "PathReal"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven real-path dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
             *)
                 printf 'builtin registry audit: lowerer has no dispatch branch for %s\n' "$name" >&2
                 exit 1
@@ -1112,19 +1166,26 @@ for filesystem_name in path_normalize normalize_path normpath; do
         exit 1
     fi
 done
-if ! rg -q 'path_join_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+if ! rg -q 'path_join_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path,text" and registry_spec\.opcode == "PathJoin"' "$lowerer_file" || \
    ! rg -q 'path_join_spec\.opcode == "PathJoin"' "$lowerer_file" || \
-   ! rg -q 'path_parent_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'path_parent_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and registry_spec\.opcode == "PathParent"' "$lowerer_file" || \
    ! rg -q 'path_parent_spec\.opcode == "PathParent"' "$lowerer_file" || \
-   ! rg -q 'path_name_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'path_name_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and registry_spec\.opcode == "PathName"' "$lowerer_file" || \
    ! rg -q 'path_name_spec\.opcode == "PathName"' "$lowerer_file" || \
-   ! rg -q 'path_component_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'path_component_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and \(registry_spec\.opcode == "PathExtension" or registry_spec\.opcode == "PathStem"\)' "$lowerer_file" || \
    ! rg -q 'path_component_spec\.opcode == "PathExtension"' "$lowerer_file" || \
-   ! rg -q 'path_absolute_predicate_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'path_absolute_predicate_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and registry_spec\.opcode == "PathIsAbsolute"' "$lowerer_file" || \
    ! rg -q 'path_absolute_predicate_spec\.opcode == "PathIsAbsolute"' "$lowerer_file" || \
-   ! rg -q 'path_normalize_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'path_normalize_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and registry_spec\.opcode == "PathNormalize"' "$lowerer_file" || \
    ! rg -q 'path_normalize_spec\.opcode == "PathNormalize"' "$lowerer_file" || \
-   ! rg -q 'path_relative_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'path_relative_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path,Path" and registry_spec\.opcode == "PathRelative"' "$lowerer_file" || \
    ! rg -q 'path_relative_spec\.opcode == "PathRelative"' "$lowerer_file"; then
     printf 'builtin registry audit: pure path lowerers do not consume registry result/opcode metadata\n' >&2
     exit 1
@@ -1141,9 +1202,11 @@ for filesystem_name in path_real realpath resolve_path; do
         exit 1
     fi
 done
-if ! rg -q 'path_absolute_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+if ! rg -q 'path_absolute_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and registry_spec\.opcode == "PathAbsolute"' "$lowerer_file" || \
    ! rg -q 'path_absolute_spec\.opcode == "PathAbsolute"' "$lowerer_file" || \
-   ! rg -q 'path_real_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'path_real_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and registry_spec\.opcode == "PathReal"' "$lowerer_file" || \
    ! rg -q 'path_real_spec\.opcode == "PathReal"' "$lowerer_file"; then
     printf 'builtin registry audit: path-resolution lowerers do not consume registry result/opcode metadata\n' >&2
     exit 1
