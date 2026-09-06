@@ -32,6 +32,13 @@ scalar/text/regex core; filesystem, directory, process, environment, stream,
 and time families use the same row format and are covered by the registry
 audit.
 
+The registry also carries a visibility marker. Public rows are source-facing
+Elisascript contracts and are enumerated by `typed_builtin_names()`. Private
+rows are compiler-generated intrinsics; `__fstr` is the first such row, kept
+out of the public list while its seeded semantic symbol, `sview` result
+inference, variadic shape, and f-string lowerer all consume the same
+`visibility: "private"` contract.
+
 | Family | Spellings | Contract shape |
 |---|---|---|
 | Length and predicates | `len`, `contains`, `is_empty`, `isempty`, `is_nonempty`, `nonempty` | fixed arity; `usize` or `bool` result |
