@@ -85,6 +85,12 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            set_environment|setenv|unset_environment|unsetenv)
+                if ! rg -q 'registry_spec\.opcode == "SetEnvironment" or registry_spec\.opcode == "UnsetEnvironment"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven environment-mutation dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
             *)
                 printf 'builtin registry audit: lowerer has no dispatch branch for %s\n' "$name" >&2
                 exit 1
