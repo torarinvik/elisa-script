@@ -1994,7 +1994,10 @@ The shared typed-builtin registry owns the working-directory aliases
 also owns the directory mutation aliases `create_directory`/`mkdir`,
 `create_directories`/`makedirs`/`mkdir_p`, `remove_directory`/`rmdir`, and
 `change_directory`/`cd`/`chdir`; these retain `Path -> bool`,
-`Directory.Write`/`DirectoryError`, and their distinct directory opcodes.
+`Directory.Write`/`DirectoryError`, and their distinct directory opcodes. The
+directory-read lowerers consume the registry rows for call shape, result type,
+and opcode selection while retaining the bounded scanner and traversal state
+machines.
 
 ## Compile-time validation
 
