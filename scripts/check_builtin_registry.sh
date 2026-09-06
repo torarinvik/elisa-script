@@ -883,6 +883,11 @@ if ! rg -q 'def registry_touch_requires_a_nominal_path\(' "$repo_root/test/seman
     printf 'builtin registry audit: touch registry negative fixture is missing\n' >&2
     exit 1
 fi
+if ! rg -q 'def registry_path_touch_named_control_requires_bool\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || \
+   ! rg -q 'def registry_path_touch_named_control_rejects_unknown_names\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
+    printf 'builtin registry audit: Path.touch named-control semantic fixtures are missing\n' >&2
+    exit 1
+fi
 if ! rg -q 'def registry_chmod_checks_the_unsigned_mode_argument\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
     printf 'builtin registry audit: chmod mixed-argument fixture is missing\n' >&2
     exit 1
