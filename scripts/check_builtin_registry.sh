@@ -157,6 +157,7 @@ for name in $registry_names; do
             resume)
                 if ! rg -q 'registry_spec\.known and registry_spec\.opcode == "Resume"' "$lowerer_file" || \
                    rg -q 'callee_name == "resume"' "$lowerer_file" || \
+                   ! rg -q 'valid_shape: bool = builtin_call_shape\(registry_spec, arguments, argument_names\)' "$lowerer_file" || \
                    ! rg -q 'name: "resume".*arity_min: 2.*arity_max: 2.*argument_types: "text,any".*return_type: "polymorphic".*opcode: "Resume"' "$registry_file" || \
                    ! rg -q 'filesystem_alias_and_resume_intrinsics_are_known_to_the_source_semantic_pass' "$semantic_test_file" || \
                    ! rg -q 'registry_resume_requires_handler_name_and_payload' "$semantic_test_file" || \
