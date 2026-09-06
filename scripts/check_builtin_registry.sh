@@ -430,6 +430,10 @@ for process_name in capture_process_stdout_with_stdin capture_process_stderr_wit
         exit 1
     fi
 done
+if ! rg -q 'name: "capture_process_result", receiver: "global".*argument_types: "Executable,darray\[text\],sview".*return_type: "ProcessCapture".*effects: "Process.Run".*errors: "ProcessError".*opcode: "CaptureProcessResult"' "$registry_file"; then
+    printf 'builtin registry audit: process-result capture row is incomplete\n' >&2
+    exit 1
+fi
 if ! rg -q 'name: "process_exit_status", receiver: "global".*argument_types: "ProcessCapture".*return_type: "i64".*effects: "".*errors: "".*opcode: "ProcessResultExitStatus"' "$registry_file" || ! rg -q 'name: "process_stdout", receiver: "global".*argument_types: "ProcessCapture".*return_type: "sview".*effects: "".*errors: "".*opcode: "ProcessResultStdout"' "$registry_file" || ! rg -q 'name: "process_stderr", receiver: "global".*argument_types: "ProcessCapture".*return_type: "sview".*effects: "".*errors: "".*opcode: "ProcessResultStderr"' "$registry_file"; then
     printf 'builtin registry audit: process-result accessor rows are incomplete\n' >&2
     exit 1
@@ -644,6 +648,10 @@ if ! rg -q 'def registry_process_stdin_captures_require_text_input\(' "$repo_roo
     printf 'builtin registry audit: process stdin-capture rows lack semantic negative fixtures\n' >&2
     exit 1
 fi
+if ! rg -q 'def registry_process_result_capture_requires_text_input\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
+    printf 'builtin registry audit: process-result capture semantic coverage is missing\n' >&2
+    exit 1
+fi
 if ! rg -q 'lowers_python_directory_aliases_to_existing_typed_opcodes' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_typed_directory_lifecycle_and_working_directory_operations' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_deterministic_typed_directory_listing' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_native_typed_glob_expansion' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: directory registry rows lack lowering fixtures\n' >&2
     exit 1
@@ -658,6 +666,10 @@ if ! rg -q 'lowers_dynamic_executable_constructor' "$repo_root/test/ir/elisascri
 fi
 if ! rg -q 'lowers_shell_free_process_stdout_capture_with_typed_stdin' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_shell_free_process_stderr_capture_with_typed_stdin' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: process stdin-capture rows lack lowering fixtures\n' >&2
+    exit 1
+fi
+if ! rg -q 'lowers_typed_process_result_and_accessors' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
+    printf 'builtin registry audit: process-result capture lowering coverage is missing\n' >&2
     exit 1
 fi
 
