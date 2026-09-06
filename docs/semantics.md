@@ -1349,7 +1349,8 @@ applies the same normalization rules, while an already absolute path is simply
 normalized. The current directory is read once through the typed directory
 boundary; the parent process and filesystem are otherwise unchanged. The
 `absolute_path` and `abspath` aliases, plus `path.absolute()`, lower to the same
-typed operation.
+typed operation. The shared typed-builtin registry owns all three spellings with
+nominal `Path`, `Directory.Read`/`DirectoryError`, and `PathAbsolute` metadata.
 
 `path_relative(target: Path, base: Path) -> Path` computes a normalized lexical
 path from `base` to `target`, matching the common `os.path.relpath` porting shape
@@ -1367,7 +1368,9 @@ through the host filesystem, following symbolic links and returning the
 canonical absolute path. It matches the common `readlink -f`,
 `os.path.realpath`, and `Path.resolve()` porting shape; the `realpath` and
 `resolve_path` aliases are equivalent, and `path.realpath()`/`path.resolve()`
-are method forms. Unlike `path_normalize`, this operation consults the
+are method forms. The shared typed-builtin registry owns all three global
+spellings with nominal `Path`, `File.Read`/`FileIoError`, and `PathReal` metadata.
+Unlike `path_normalize`, this operation consults the
 filesystem and reports `FileIoError` when the input is empty, contains an
 embedded NUL, or cannot be resolved. The returned libc path is bounded by the
 shared 64 MiB host C-string ceiling before it is copied into an owned `Path`.

@@ -345,6 +345,18 @@ for filesystem_name in path_normalize normalize_path normpath; do
         exit 1
     fi
 done
+for filesystem_name in path_absolute absolute_path abspath; do
+    if ! rg -q "name: \"$filesystem_name\", receiver: \"global\".*argument_types: \"Path\".*return_type: \"Path\".*effects: \"Directory.Read\".*errors: \"DirectoryError\".*opcode: \"PathAbsolute\"" "$registry_file"; then
+        printf 'builtin registry audit: absolute-path construction row is incomplete: %s\n' "$filesystem_name" >&2
+        exit 1
+    fi
+done
+for filesystem_name in path_real realpath resolve_path; do
+    if ! rg -q "name: \"$filesystem_name\", receiver: \"global\".*argument_types: \"Path\".*return_type: \"Path\".*effects: \"File.Read\".*errors: \"FileIoError\".*opcode: \"PathReal\"" "$registry_file"; then
+        printf 'builtin registry audit: real-path row is incomplete: %s\n' "$filesystem_name" >&2
+        exit 1
+    fi
+done
 if ! rg -q 'lowers_nominal_path_existence_with_file_effect' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'any error_name in fn\.errors where error_name == "FileIoError"' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: filesystem existence row lacks lowering effect/error fixture\n' >&2
     exit 1
@@ -421,6 +433,10 @@ if ! rg -q 'def registry_path_join_checks_the_text_leaf\(' "$repo_root/test/sema
     printf 'builtin registry audit: path-join mixed-argument fixture is missing\n' >&2
     exit 1
 fi
+if ! rg -q 'def registry_path_absolute_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
+    printf 'builtin registry audit: absolute-path semantic fixture is missing\n' >&2
+    exit 1
+fi
 if ! rg -q 'lowers_typed_file_mode_with_file_read_effect_and_error' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: file-mode lowering fixture is missing\n' >&2
     exit 1
@@ -443,6 +459,10 @@ if ! rg -q 'lowers_pure_typed_path_composition_and_decomposition' "$repo_root/te
 fi
 if ! rg -q 'lowers_typed_path_normalization_without_filesystem_effects' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_typed_relative_paths_without_filesystem_effects' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: path normalization/relative lowering fixtures are missing\n' >&2
+    exit 1
+fi
+if ! rg -q 'lowers_typed_absolute_path_construction_with_directory_read' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_typed_real_paths_with_file_read_effect_and_error' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
+    printf 'builtin registry audit: absolute/real path lowering fixtures are missing\n' >&2
     exit 1
 fi
 if ! rg -q 'lowers_typed_touch_with_file_write_effect_and_error' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
