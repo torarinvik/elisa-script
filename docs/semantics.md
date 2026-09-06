@@ -103,7 +103,10 @@ user-defined operations without introducing a second runtime representation.
 Source `@handler` decorators for same-file effect declarations are checked at
 lowering time for callback arity, each known payload type, and resumed result type;
 open host families retain their extensible callback contract and are checked by the
-ordinary IR verifier when installed.
+ordinary IR verifier when installed. The callback's declared `can[...]` effects and
+`error[...]` families are copied into the derived handler descriptor, so a source
+decorator cannot hide capability or error requirements that host-provided handlers
+already expose through `introduces_effects` and `errors`.
 Duplicate-operation diagnostics point at the later operation token when source
 coordinates are available.
 

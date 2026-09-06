@@ -342,7 +342,10 @@ The callback is an ordinary call boundary for capability accounting as well: eve
 callback effect must be covered by an active operation-aware handler or the enclosing
 function's effect row, and every callback `error[...]` entry must appear in the
 enclosing function's error row. A clause cannot smuggle undeclared effects or errors
-past the handler's static contract.
+past the handler's static contract. Source `@handler` decorators materialize those
+callback rows into the derived handler descriptor before `with handler` lowering;
+the ordinary `introduces_effects`/`errors` propagation path therefore applies to
+source and host-supplied descriptors alike.
 Clause families must belong to the handler coverage set, callback symbols must
 exist, coverage entries must be non-empty and unique, and duplicate operation
 clauses are rejected. Terminal handlers cannot use

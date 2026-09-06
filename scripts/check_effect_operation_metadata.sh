@@ -75,6 +75,16 @@ if ! rg -q 'def source_handler_operation_conforms\(' "$lowerer_file"; then
     printf 'effect operation metadata audit: source handler conformance helper is missing\n' >&2
     exit 1
 fi
+if ! rg -q 'def source_handler_add_callback_contract' "$lowerer_file"; then
+    printf 'effect operation metadata audit: source handler callback contract propagation helper is missing\n' >&2
+    exit 1
+fi
+for callback_contract in 'handler.introduces_effects <- updated_effects' 'handler.errors <- updated_errors' 'source_handler_add_callback_contract\(file, function_line, effects, handler\)'; do
+    if ! rg -q "$callback_contract" "$lowerer_file"; then
+        printf 'effect operation metadata audit: source handler callback contract omits %s\n' "$callback_contract" >&2
+        exit 1
+    fi
+done
 for conformance in 'callback parameter count does not match the declared effect operation' 'callback parameter type does not match the declared effect operation payload' 'callback result type does not match the declared effect operation result'; do
     if ! rg -q "$conformance" "$lowerer_file"; then
         printf 'effect operation metadata audit: source handler conformance omits %s\n' "$conformance" >&2
