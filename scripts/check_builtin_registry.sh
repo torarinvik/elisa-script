@@ -91,6 +91,12 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            write_stdout|write_stderr|printf)
+                if ! rg -q 'registry_spec\.opcode == "WriteStdout" or registry_spec\.opcode == "WriteStderr"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven standard-stream dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
             *)
                 printf 'builtin registry audit: lowerer has no dispatch branch for %s\n' "$name" >&2
                 exit 1
@@ -750,7 +756,8 @@ if ! rg -q 'name: "write_stdout", receiver: "global".*argument_types: "text".*re
 fi
 if ! rg -q 'stdin_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
    ! rg -q 'stdin_line_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
-   ! rg -q 'stream_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'stream_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.opcode == "WriteStdout" or registry_spec\.opcode == "WriteStderr"' "$lowerer_file" || \
    ! rg -q 'typed_builtin_call_shape\(callee_name, arguments, argument_names\)' "$lowerer_file" || \
    ! rg -q 'stream_spec\.opcode == "WriteStderr"' "$lowerer_file"; then
     printf 'builtin registry audit: fixed console lowerers do not consume registry shape/result/opcode metadata\n' >&2
