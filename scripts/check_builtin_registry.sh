@@ -301,6 +301,19 @@ if ! rg -q 'name: "touch", receiver: "global".*argument_types: "Path".*return_ty
     printf 'builtin registry audit: touch row is incomplete\n' >&2
     exit 1
 fi
+if ! rg -q 'touch_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'chmod_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'symlink_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'remove_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'move_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'touch_spec\.opcode != "TouchPath"' "$lowerer_file" || \
+   ! rg -q 'chmod_spec\.opcode != "ChmodPath"' "$lowerer_file" || \
+   ! rg -q 'symlink_spec\.opcode != "SymlinkPath"' "$lowerer_file" || \
+   ! rg -q 'remove_spec\.opcode != "RemovePath"' "$lowerer_file" || \
+   ! rg -q 'move_spec\.opcode != "MovePath"' "$lowerer_file"; then
+    printf 'builtin registry audit: exact filesystem mutation lowerers do not consume registry result/opcode metadata\n' >&2
+    exit 1
+fi
 if ! rg -q 'name: "chmod", receiver: "global".*argument_types: "Path,u64".*return_type: "bool".*effects: "File.Write".*errors: "FileIoError".*opcode: "ChmodPath"' "$registry_file" || ! rg -q 'spec\.argument_types == "Path,u64"' "$receiver_semantic_file" || ! rg -q 'expected == "u64"' "$receiver_semantic_file"; then
     printf 'builtin registry audit: chmod mixed Path/u64 row is not fully consumed\n' >&2
     exit 1

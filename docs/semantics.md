@@ -1335,7 +1335,10 @@ Python's `os.remove` and `os.unlink` spellings are typed aliases with the same
 boolean result and `File.Write` effect.
 The shared typed-builtin registry owns `remove_path`, `rm`, `remove`, and `unlink`
 as separate nominal rows, all lowering to `RemovePath`; aliases therefore cannot
-silently widen the operand to arbitrary text or lose the write effect.
+silently widen the operand to arbitrary text or lose the write effect. The
+lowerer consumes registry call shapes, result types, and opcode metadata for
+the exact-arity touch/chmod/symlink/remove/move family while preserving the
+bounded filesystem state machines.
 
 Pure path-shape helpers keep path plumbing nominal without invoking the host OS:
 `path_join(base: Path, leaf: sview) -> Path` inserts one `/` separator and lets an
