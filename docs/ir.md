@@ -197,8 +197,9 @@ nested call or backend fallback has an explicit place to inherit the parent
 contract. `runtime_resource_usage_within_policy` uses subtraction-free
 comparisons and treats only the elapsed-time field's zero as "timer not
 attached"; a zero in every other field is an exact zero budget. The current
-interpreter and direct bytecode paths populate the step limit and returned usage
-snapshot while their existing host bridges continue enforcing their specialized
+interpreter and direct bytecode paths populate the step/retained-trace limits
+and returned usage snapshot, rejecting a trace pool that exceeds the caller's
+policy, while their existing host bridges continue enforcing their specialized
 ceilings. `interpret_with_resource_policy`,
 `execute_bytecode_with_resource_policy`, and
 `execute_bytecode_direct_only_with_resource_policy` make this boundary explicit;
