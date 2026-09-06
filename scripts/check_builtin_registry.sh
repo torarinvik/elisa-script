@@ -79,6 +79,12 @@ if ! rg -q 'typed_builtin_method_spec\("Text", method\)' "$inference_file"; then
     printf 'builtin registry audit: semantic receiver inference does not consume the Text registry\n' >&2
     exit 1
 fi
+if ! rg -q 'argument_names: sview' "$registry_file" || \
+   ! rg -q 'builtin_named_argument_allowed' "$lowerer_file" || \
+   ! rg -q 'ufm_text_named_argument_allowed' "$receiver_semantic_file"; then
+    printf 'builtin registry audit: named-argument metadata is not shared across registry, semantic, and lowerer layers\n' >&2
+    exit 1
+fi
 if ! rg -q 'ufm_check_text_builtin_arity' "$receiver_semantic_file" || \
    ! rg -q 'spec\.arity_min' "$receiver_semantic_file" || \
    ! rg -q 'DiagnosticKind\.ArityMismatch' "$receiver_semantic_file" || \
@@ -102,6 +108,10 @@ for name in $method_names; do
     fi
     if ! rg -q "method_name == \"$name\"" "$lowerer_file"; then
         printf 'builtin registry audit: lowerer has no Text method branch for %s\n' "$name" >&2
+        exit 1
+    fi
+    if ! rg -q "name: \"$name\", receiver: \"Text\".*argument_types:" "$registry_file"; then
+        printf 'builtin registry audit: Text.%s has no argument-type descriptor\n' "$name" >&2
         exit 1
     fi
     opcode="$(sed -n "s/.*name: \"$name\".*receiver: \"Text\".*opcode: \"\([A-Za-z0-9_]*\)\".*/\1/p" "$registry_file" | head -1)"
