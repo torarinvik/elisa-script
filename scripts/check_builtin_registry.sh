@@ -275,6 +275,10 @@ if ! rg -q 'name: "file_mode", receiver: "global".*argument_types: "Path".*retur
     printf 'builtin registry audit: file-mode row is incomplete\n' >&2
     exit 1
 fi
+if ! rg -q 'name: "touch", receiver: "global".*argument_types: "Path".*return_type: "bool".*effects: "File.Write".*errors: "FileIoError".*opcode: "TouchPath"' "$registry_file"; then
+    printf 'builtin registry audit: touch row is incomplete\n' >&2
+    exit 1
+fi
 if ! rg -q 'lowers_nominal_path_existence_with_file_effect' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'any error_name in fn\.errors where error_name == "FileIoError"' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: filesystem existence row lacks lowering effect/error fixture\n' >&2
     exit 1
@@ -327,8 +331,16 @@ if ! rg -q 'def registry_file_mode_requires_a_nominal_path\(' "$repo_root/test/s
     printf 'builtin registry audit: file-mode registry negative fixture is missing\n' >&2
     exit 1
 fi
+if ! rg -q 'def registry_touch_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
+    printf 'builtin registry audit: touch registry negative fixture is missing\n' >&2
+    exit 1
+fi
 if ! rg -q 'lowers_typed_file_mode_with_file_read_effect_and_error' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: file-mode lowering fixture is missing\n' >&2
+    exit 1
+fi
+if ! rg -q 'lowers_typed_touch_with_file_write_effect_and_error' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
+    printf 'builtin registry audit: touch lowering fixture is missing\n' >&2
     exit 1
 fi
 if ! rg -q 'lowers_typed_file_mtime_with_file_read_effect_and_error' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_python_path_access_and_change_time_aliases_to_existing_typed_opcodes' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then

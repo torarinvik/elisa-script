@@ -1164,7 +1164,10 @@ write, or execute) in the instruction payload.
 `touch(path: Path) -> bool error[FileIoError] can[File.Write]` creates an empty file
 when it is missing and updates its timestamps without truncating an existing file.
 It is the typed counterpart to shell `touch`; failures remain `FileIoError` values
-rather than being hidden behind a process invocation.
+rather than being hidden behind a process invocation. The shared typed-builtin
+registry owns the global `touch` spelling with nominal `Path`, `File.Write`/
+`FileIoError`, and `TouchPath` metadata; receiver forms additionally expose the
+Python-compatible `exist_ok` control.
 
 `temp_file(prefix: sview) -> Path error[FileIoError] can[File.Write]` and
 `temp_directory(prefix: sview) -> Path error[FileIoError] can[File.Write]` create
