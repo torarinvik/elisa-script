@@ -229,12 +229,22 @@ for filesystem_name in is_file isfile; do
         exit 1
     fi
 done
+for filesystem_name in is_directory isdir is_dir; do
+    if ! rg -q "name: \"$filesystem_name\", receiver: \"global\".*argument_types: \"Path\".*effects: \"Directory.Read\".*errors: \"DirectoryError\".*opcode: \"IsDirectory\"" "$registry_file"; then
+        printf 'builtin registry audit: directory-predicate row is incomplete: %s\n' "$filesystem_name" >&2
+        exit 1
+    fi
+done
 if ! rg -q 'lowers_nominal_path_existence_with_file_effect' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'any error_name in fn\.errors where error_name == "FileIoError"' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: filesystem existence row lacks lowering effect/error fixture\n' >&2
     exit 1
 fi
 if ! rg -q 'lowers_python_os_path_predicate_aliases_with_existing_typed_opcodes' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'any effect in lowered\.module\.functions\[1\]\.effects where effect == "File.Read"' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: regular-file row lacks lowering effect fixture\n' >&2
+    exit 1
+fi
+if ! rg -q 'any error_name in lowered\.module\.functions\[2\]\.errors where error_name == "DirectoryError"' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
+    printf 'builtin registry audit: directory-predicate row lacks lowering error fixture\n' >&2
     exit 1
 fi
 if ! rg -q 'spec\.argument_types == "Path"' "$receiver_semantic_file" || ! rg -q 'argument_type\.name == "Path" if expected == "Path"' "$receiver_semantic_file"; then
@@ -247,6 +257,10 @@ if ! rg -q 'def registry_path_exists_requires_a_nominal_path\(' "$repo_root/test
 fi
 if ! rg -q 'def registry_is_file_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
     printf 'builtin registry audit: regular-file registry negative fixture is missing\n' >&2
+    exit 1
+fi
+if ! rg -q 'def registry_is_directory_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
+    printf 'builtin registry audit: directory-predicate registry negative fixture is missing\n' >&2
     exit 1
 fi
 

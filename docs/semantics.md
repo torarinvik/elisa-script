@@ -1849,7 +1849,10 @@ The Python `listdir(path)` spelling is an equivalent typed alias.
 tests whether a path can be opened as a directory. Missing paths and ordinary files
 return `false`; successful opens are closed before returning `true`, and close
 failures remain errors. This predicate is also the traversal gate for native `**`
-glob expansion, preventing ordinary files from becoming recursive scan nodes.
+glob expansion, preventing ordinary files from becoming recursive scan nodes. The
+shared typed-builtin registry owns the `is_directory`, `isdir`, and `is_dir`
+spellings with the same nominal `Path`, `Directory.Read`, `DirectoryError`, and
+`IsDirectory` contract.
 
 `expand_glob(pattern: Glob) -> darray[sview] error[DirectoryError]
 can[Directory.Read]` expands path components with `*`, `?`, bracket classes and
