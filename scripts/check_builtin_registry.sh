@@ -301,6 +301,12 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            str)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "any" and registry_spec\.opcode == "FormatNominal"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven string-format dispatch\n' >&2
+                    exit 1
+                fi
+                ;;
             *)
                 printf 'builtin registry audit: lowerer has no dispatch branch for %s\n' "$name" >&2
                 exit 1
@@ -1631,7 +1637,8 @@ if ! rg -q 'name: "contains", receiver: "global".*argument_types: "collection,an
     exit 1
 fi
 if ! rg -q 'name: "str", receiver: "global".*argument_types: "any".*return_type: "sview".*effects: "".*errors: "".*opcode: "FormatNominal".*lowering_steps: "FormatChar|FormatNominal|FormatBool|FormatInt|FormatFloat|FormatAggregate"' "$registry_file" || \
-   ! rg -q 'str_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'str_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "any" and registry_spec\.opcode == "FormatNominal"' "$lowerer_file" || \
    ! rg -q 'str_spec\.opcode == "FormatNominal" and str_spec\.lowering_steps != ""' "$lowerer_file"; then
     printf 'builtin registry audit: str lowerer does not consume registry formatter metadata\n' >&2
     exit 1
