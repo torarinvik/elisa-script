@@ -1501,7 +1501,8 @@ calling the source-level constructor.
 The shared typed-builtin registry owns this constructor, the status runner,
 the basic stdout/stderr capture spellings, their typed-stdin variants, and the
 plain `capture_process_result` operation, its typed working-directory variant,
-plus the three `ProcessCapture` accessors. Their rows preserve the nominal
+the child-environment and working-directory-plus-environment variants, plus the
+three `ProcessCapture` accessors. Their rows preserve the nominal
 `Executable`/`ProcessCapture` argument types, exact `darray[text]` shapes,
 `i64`/`sview` results, `Process.Run` and `ProcessError` contracts where
 applicable, and the existing verifier-visible process opcodes. Status-with-
