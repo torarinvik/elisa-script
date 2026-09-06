@@ -151,6 +151,11 @@ if ! rg -q 'ufm_check_global_builtin_arity' "$receiver_semantic_file" || \
     printf 'builtin registry audit: global registry rows are not semantically checked with source shadowing\n' >&2
     exit 1
 fi
+if ! rg -q 'darray\[text\],text' "$registry_file" || \
+   ! rg -q 'ufm_text_array_argument_is_text\(expression, var_types, type_names, table\)' "$receiver_semantic_file"; then
+    printf 'builtin registry audit: global structural text-array descriptors are not checked through the type table\n' >&2
+    exit 1
+fi
 if ! rg -q 'ufm_check_text_builtin_argument_types' "$receiver_semantic_file" || \
    ! rg -q 'spec\.argument_types' "$receiver_semantic_file" || \
    ! rg -q 'DiagnosticKind\.LiteralArgTypeMismatch' "$receiver_semantic_file" || \
