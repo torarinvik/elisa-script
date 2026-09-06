@@ -563,11 +563,13 @@ the ordering and path contract now; actual directory creation, fsync policy, and
 crash-recovery testing remain execution work.
 
 `shrink_differential_case` provides the first bounded reduction layer for
-counterexamples. It walks world files, argv entries, environment entries, and
-stdin in a fixed order, removes one item per candidate, revalidates the complete
-case, and stops at the caller's budget (capped by a runtime default). Candidates
-carry a typed reduction kind and borrow the original runner/text payloads; an
-invalid source case yields no candidates and the source case is never mutated.
+counterexamples. It walks world files, binary payloads, argv entries, environment
+entries, and stdin in a fixed order, removes or clears one item per candidate,
+revalidates the complete case, and stops at the caller's budget (capped by a
+runtime default). Candidates carry a typed reduction kind and borrow the original
+runner/text payloads; an invalid source case yields no candidates and the source
+case is never mutated. Clearing a binary payload preserves its explicit byte-file
+kind, so the reducer never silently turns binary data into text.
 `shrink_differential_runs` adds the next bounded layer for already captured
 runs: it clears each side's stdout/stderr and removes each observation in a
 fixed order, retaining only candidates whose original first-difference kind

@@ -65,7 +65,7 @@ for boundary in 'DifferentialArtifactDirectoryState.Staging' 'DifferentialArtifa
     fi
 done
 
-for boundary in 'DifferentialShrinkKind.RemoveWorldFile' 'DifferentialShrinkKind.RemoveWorldArgument' 'DifferentialShrinkKind.RemoveWorldEnvironment' 'DifferentialShrinkKind.ClearWorldStdin' 'shrink_differential_case'; do
+for boundary in 'DifferentialShrinkKind.RemoveWorldFile' 'DifferentialShrinkKind.ClearWorldFileBytes' 'DifferentialShrinkKind.RemoveWorldArgument' 'DifferentialShrinkKind.RemoveWorldEnvironment' 'DifferentialShrinkKind.ClearWorldStdin' 'shrink_differential_case'; do
     if ! rg -Fq "$boundary" "$source_file" "$fixture_file"; then
         printf 'differential case audit: missing boundary coverage %s\n' "$boundary" >&2
         exit 1
