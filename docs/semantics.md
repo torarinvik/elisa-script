@@ -332,10 +332,11 @@ ordering remains unchanged, and mixed text/numeric operands are rejected rather
 than coerced.
 
 The compiler-known `strip(text) -> sview` and `trim(text) -> sview` names are
-equivalent byte-oriented boundary operations. They remove ASCII space, tab, line
-feed, vertical tab, form feed, and carriage return from the beginning and end,
-preserve interior bytes, and return a view into the existing text value. Both are
-pure, deterministic, and shadowable by source functions.
+equivalent byte-oriented boundary operations. `lstrip(text)` removes the same
+ASCII whitespace set from the left boundary only, and `rstrip(text)` removes it
+from the right boundary only. All four operations preserve interior bytes and
+return a view into the existing text value. They are pure, deterministic, and
+shadowable by source functions.
 
 The compiler-known `lower(text) -> sview` and `upper(text) -> sview` operations,
 as well as the Python-shaped `text.lower()` and `text.upper()` method spellings,

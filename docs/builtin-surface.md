@@ -24,14 +24,14 @@ The source-declaration test intentionally ignores line-zero registry seed rows;
 otherwise a seeded global such as `contains` would incorrectly suppress its
 receiver contract.
 
-The current strict scalar/text/regex global slice contains these 29 spellings:
+The current strict scalar/text/regex global slice contains these 31 spellings:
 
 | Family | Spellings | Contract shape |
 |---|---|---|
 | Length and predicates | `len`, `contains`, `is_empty`, `isempty`, `is_nonempty`, `nonempty` | fixed arity; `usize` or `bool` result |
 | Text conversion | `str` | one value to `sview` |
 | Text predicates | `starts_with`, `startswith`, `ends_with`, `endswith` | two text values to `bool` |
-| Text transforms | `replace`, `strip`, `trim`, `lower`, `upper`, `casefold` | text result; `casefold` currently reuses `LowerText` until a Unicode-aware opcode exists |
+| Text transforms | `replace`, `strip`, `trim`, `lstrip`, `rstrip`, `lower`, `upper`, `casefold` | text result; `casefold` currently reuses `LowerText` until a Unicode-aware opcode exists; trim aliases select both/left/right modes |
 | Numeric parsing/formatting | `parse_int`, `format_int`, `parse_float`, `format_float` | checked `i64`/`f64` conversions; parsers require `ParseError` |
 | Scalar formatting | `format_bool`, `format_char` | one scalar to `sview` |
 | Regex facades | `matches`, `replace_regex`, `split_regex`, `find_regex`, `capture_regex`, `captures_regex` | text/`Regex` operands; `bool`, `sview`, or `darray[sview]` result |
