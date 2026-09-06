@@ -491,6 +491,8 @@ byte-oriented comparison rules and is pure and deterministic.
 `text.rfind(substring) -> i64` returns the last byte offset, the input length for
 an empty substring, and `-1` for a miss. Both search methods require one
 positional text substring and expose no implicit Unicode or locale behavior.
+The `TextRFind` registry row supplies the reverse-search result type and opcode
+to the receiver lowerer rather than relying on a hard-coded spelling branch.
 `text.index(substring) -> i64` and `text.rindex(substring) -> i64` use the same
 byte offsets as `find`/`rfind`, but raise `IndexOutOfBounds` through the ordinary
 `error[...]` channel when the substring is absent. Empty needles still return

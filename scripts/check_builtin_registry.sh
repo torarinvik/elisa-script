@@ -1288,6 +1288,13 @@ if ! rg -q 'def lower_text_split_expression\(receiver_expression: Ast::Expr, met
     printf 'builtin registry audit: Text split lowerer does not consume registry direction metadata\n' >&2
     exit 1
 fi
+if ! rg -q 'name: "rfind", receiver: "Text".*argument_types: "text".*return_type: "i64".*effects: "".*errors: "".*opcode: "TextRFind"' "$registry_file" || \
+   ! rg -q 'def lower_text_rfind_expression\(receiver_expression: Ast::Expr, arguments:.*method_name: sview' "$lowerer_file" || \
+   ! rg -q 'method_spec\.known and method_spec\.opcode == "TextRFind"' "$lowerer_file" || \
+   ! rg -q 'typed_builtin_result_type\(method_spec\)' "$lowerer_file"; then
+    printf 'builtin registry audit: Text rfind lowerer does not consume registry result/opcode metadata\n' >&2
+    exit 1
+fi
 if ! rg -q 'def typed_builtin_result_type' "$lowerer_file" || \
    ! rg -q 'typed_builtin_result_type\([a-z_]+_spec\)' "$lowerer_file" || \
    ! rg -q 'typed_builtin_result_type\(method_spec\)' "$lowerer_file"; then
