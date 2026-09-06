@@ -24,7 +24,7 @@ The source-declaration test intentionally ignores line-zero registry seed rows;
 otherwise a seeded global such as `contains` would incorrectly suppress its
 receiver contract.
 
-The current strict scalar/text slice contains these 23 spellings:
+The current strict scalar/text/regex global slice contains these 29 spellings:
 
 | Family | Spellings | Contract shape |
 |---|---|---|
@@ -34,6 +34,13 @@ The current strict scalar/text slice contains these 23 spellings:
 | Text transforms | `replace`, `strip`, `trim`, `lower`, `upper`, `casefold` | text result; `casefold` currently reuses `LowerText` until a Unicode-aware opcode exists |
 | Numeric parsing/formatting | `parse_int`, `format_int`, `parse_float`, `format_float` | checked `i64`/`f64` conversions; parsers require `ParseError` |
 | Scalar formatting | `format_bool`, `format_char` | one scalar to `sview` |
+| Regex facades | `matches`, `replace_regex`, `split_regex`, `find_regex`, `capture_regex`, `captures_regex` | text/`Regex` operands; `bool`, `sview`, or `darray[sview]` result |
+
+The global regex facades `matches`, `replace_regex`, `split_regex`,
+`find_regex`, `capture_regex`, and `captures_regex` are registry-backed as
+well. Their descriptors distinguish text haystacks, nominal `Regex` patterns,
+and replacement text; the aggregate forms preserve a `darray[sview]` result
+through structural inference.
 
 The receiver-aware `Text` rows currently cover `lower`, `upper`, `casefold`,
 `starts_with`/`startswith`, `ends_with`/`endswith`, `replace`, `strip`,

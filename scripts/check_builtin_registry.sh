@@ -170,6 +170,10 @@ if ! rg -q 'regex_method_spec: EsBuiltin::BuiltinSpec' "$repo_root/vendor/elisa-
     printf 'builtin registry audit: structural Regex result inference does not consume receiver registry rows\n' >&2
     exit 1
 fi
+if ! rg -q 'global_registry_spec: EsBuiltin::BuiltinSpec' "$repo_root/vendor/elisa-compiler/src/semantic/resolve_types.elisa"; then
+    printf 'builtin registry audit: structural global result inference does not consume registry rows\n' >&2
+    exit 1
+fi
 
 for name in $method_names; do
     if ! rg -q "known: true, name: \"$name\", receiver: \"Text\"" "$registry_file"; then
