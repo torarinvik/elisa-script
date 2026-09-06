@@ -716,6 +716,26 @@ if ! rg -q 'lowers_typed_directory_lifecycle_and_working_directory_operations' "
     printf 'builtin registry audit: recursive-removal lowering coverage is missing\n' >&2
     exit 1
 fi
+if ! rg -q 'def registry_sleep_aliases_require_typed_durations\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
+    printf 'builtin registry audit: sleep registry rows lack semantic negative fixtures\n' >&2
+    exit 1
+fi
+for seconds_name in sleep sleep_seconds; do
+    if ! rg -q "name: \"$seconds_name\", receiver: \"global\", arity_min: 1, arity_max: 1, argument_types: \"i64|f64\", return_type: \"void\", effects: \"Time.Sleep\", errors: \"TimeError\", opcode: \"Sleep\"" "$registry_file"; then
+        printf 'builtin registry audit: seconds sleep row is incomplete for %s\n' "$seconds_name" >&2
+        exit 1
+    fi
+done
+for milliseconds_name in sleep_milliseconds sleep_ms; do
+    if ! rg -q "name: \"$milliseconds_name\", receiver: \"global\", arity_min: 1, arity_max: 1, argument_types: \"u64\", return_type: \"void\", effects: \"Time.Sleep\", errors: \"TimeError\", opcode: \"Sleep\"" "$registry_file"; then
+        printf 'builtin registry audit: millisecond sleep row is incomplete for %s\n' "$milliseconds_name" >&2
+        exit 1
+    fi
+done
+if ! rg -q 'lowers_typed_sleep_units_and_aliases' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
+    printf 'builtin registry audit: sleep lowering fixture is missing\n' >&2
+    exit 1
+fi
 if ! rg -q 'lowers_python_directory_aliases_to_existing_typed_opcodes' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_typed_directory_lifecycle_and_working_directory_operations' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_deterministic_typed_directory_listing' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_native_typed_glob_expansion' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: directory registry rows lack lowering fixtures\n' >&2
     exit 1

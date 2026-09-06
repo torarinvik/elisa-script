@@ -1858,6 +1858,10 @@ backends call the POSIX `usleep` bridge in bounded chunks, so long waits and
 fractional seconds have the same behavior without invoking a shell. Each chunk
 retries bounded `EINTR` interruptions before becoming `TimeError`, so a signal
 does not silently shorten a requested delay.
+The shared typed-builtin registry owns all four global spellings with their
+numeric duration descriptors, `void` result, `Time.Sleep`/`TimeError` contract,
+and `Sleep` opcode; the lowerer keeps the seconds-versus-milliseconds choice in
+the instruction's unit payload.
 
 ## Process environment
 
