@@ -422,11 +422,19 @@ for process_name in capture_process_stdout capture_process_stderr; do
         exit 1
     fi
 done
+for process_name in capture_process_stdout_with_stdin capture_process_stderr_with_stdin; do
+    opcode="CaptureProcessStdoutWithStdin"
+    [[ "$process_name" == "capture_process_stderr_with_stdin" ]] && opcode="CaptureProcessStderrWithStdin"
+    if ! rg -q "name: \"$process_name\", receiver: \"global\".*argument_types: \"Executable,darray\\[text\\],sview\".*return_type: \"sview\".*effects: \"Process.Run\".*errors: \"ProcessError\".*opcode: \"$opcode\"" "$registry_file"; then
+        printf 'builtin registry audit: process stdin-capture row is incomplete: %s\n' "$process_name" >&2
+        exit 1
+    fi
+done
 if ! rg -q 'name: "process_exit_status", receiver: "global".*argument_types: "ProcessCapture".*return_type: "i64".*effects: "".*errors: "".*opcode: "ProcessResultExitStatus"' "$registry_file" || ! rg -q 'name: "process_stdout", receiver: "global".*argument_types: "ProcessCapture".*return_type: "sview".*effects: "".*errors: "".*opcode: "ProcessResultStdout"' "$registry_file" || ! rg -q 'name: "process_stderr", receiver: "global".*argument_types: "ProcessCapture".*return_type: "sview".*effects: "".*errors: "".*opcode: "ProcessResultStderr"' "$registry_file"; then
     printf 'builtin registry audit: process-result accessor rows are incomplete\n' >&2
     exit 1
 fi
-if ! rg -q 'expected == "Executable"' "$receiver_semantic_file" || ! rg -q 'expected == "ProcessCapture"' "$receiver_semantic_file" || ! rg -q 'Executable,darray\[text\]' "$receiver_semantic_file"; then
+if ! rg -q 'expected == "Executable"' "$receiver_semantic_file" || ! rg -q 'expected == "ProcessCapture"' "$receiver_semantic_file" || ! rg -q 'Executable,darray\[text\]' "$receiver_semantic_file" || ! rg -q 'Executable,darray\[text\],sview' "$receiver_semantic_file"; then
     printf 'builtin registry audit: process nominal argument descriptors are not consumed by semantic checks\n' >&2
     exit 1
 fi
@@ -632,6 +640,10 @@ if ! rg -q 'def registry_process_construction_requires_text\(' "$repo_root/test/
     printf 'builtin registry audit: process registry rows lack semantic negative fixtures\n' >&2
     exit 1
 fi
+if ! rg -q 'def registry_process_stdin_captures_require_text_input\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
+    printf 'builtin registry audit: process stdin-capture rows lack semantic negative fixtures\n' >&2
+    exit 1
+fi
 if ! rg -q 'lowers_python_directory_aliases_to_existing_typed_opcodes' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_typed_directory_lifecycle_and_working_directory_operations' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_deterministic_typed_directory_listing' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_native_typed_glob_expansion' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: directory registry rows lack lowering fixtures\n' >&2
     exit 1
@@ -642,6 +654,10 @@ if ! rg -q 'lowers_typed_environment_operations_and_contracts' "$repo_root/test/
 fi
 if ! rg -q 'lowers_dynamic_executable_constructor' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_shell_free_process_execution_with_typed_arguments' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_shell_free_process_stdout_capture' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_typed_process_result_and_accessors' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: migrated process rows lack lowering fixtures\n' >&2
+    exit 1
+fi
+if ! rg -q 'lowers_shell_free_process_stdout_capture_with_typed_stdin' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_shell_free_process_stderr_capture_with_typed_stdin' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
+    printf 'builtin registry audit: process stdin-capture rows lack lowering fixtures\n' >&2
     exit 1
 fi
 
