@@ -239,6 +239,12 @@ if ! rg -q 'typed_builtin_spec\(callee_name\)\.errors' "$lowerer_file"; then
     printf 'builtin registry audit: lowerer has no registry error-row consumer\n' >&2
     exit 1
 fi
+if ! rg -q 'def typed_builtin_result_type' "$lowerer_file" || \
+   ! rg -q 'typed_builtin_result_type\(EsBuiltin::typed_builtin_spec\(callee_name\)\)' "$lowerer_file" || \
+   ! rg -q 'typed_builtin_result_type\(method_spec\)' "$lowerer_file"; then
+    printf 'builtin registry audit: aggregate registry rows do not share lowerer result-shape conversion\n' >&2
+    exit 1
+fi
 
 if ! rg -q 'scripting_registry_direct_return_type' "$inference_file" || \
    ! rg -q 'registry_return: InferType' "$inference_file"; then
