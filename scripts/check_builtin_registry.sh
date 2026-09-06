@@ -387,6 +387,24 @@ for filesystem_name in read_bytes read_binary; do
         exit 1
     fi
 done
+for lowerer_spec in read_lines_spec read_text_spec read_bytes_spec write_lines_spec append_lines_spec write_text_spec write_bytes_spec append_text_spec append_bytes_spec; do
+    if ! rg -q "${lowerer_spec}: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\\(callee_name\\)" "$lowerer_file"; then
+        printf 'builtin registry audit: file I/O lowerer does not consume registry metadata: %s\n' "$lowerer_spec" >&2
+        exit 1
+    fi
+done
+if ! rg -q 'read_lines_spec\.opcode == "ReadText"' "$lowerer_file" || \
+   ! rg -q 'read_text_spec\.opcode == "ReadText"' "$lowerer_file" || \
+   ! rg -q 'read_bytes_spec\.opcode == "ReadBytes"' "$lowerer_file" || \
+   ! rg -q 'write_lines_spec\.opcode == "WriteText"' "$lowerer_file" || \
+   ! rg -q 'append_lines_spec\.opcode == "AppendText"' "$lowerer_file" || \
+   ! rg -q 'write_text_spec\.opcode == "WriteText"' "$lowerer_file" || \
+   ! rg -q 'write_bytes_spec\.opcode == "WriteBytes"' "$lowerer_file" || \
+   ! rg -q 'append_text_spec\.opcode == "AppendText"' "$lowerer_file" || \
+   ! rg -q 'append_bytes_spec\.opcode == "AppendBytes"' "$lowerer_file"; then
+    printf 'builtin registry audit: file I/O lowerer does not consume registry opcode metadata\n' >&2
+    exit 1
+fi
 for filesystem_name in current_directory pwd getcwd; do
     if ! rg -q "name: \"$filesystem_name\", receiver: \"global\".*arity_min: 0.*arity_max: 0.*argument_types: \"\".*return_type: \"Path\".*effects: \"Directory.Read\".*errors: \"DirectoryError\".*opcode: \"CurrentDirectory\"" "$registry_file"; then
         printf 'builtin registry audit: working-directory row is incomplete: %s\n' "$filesystem_name" >&2

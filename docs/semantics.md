@@ -1310,6 +1310,9 @@ The shared typed-builtin registry owns `read_text`/`cat` as `Path -> sview`,
 `Path -> darray[u8]`; all rows carry `File.Read`/`FileIoError` and the existing
 read opcodes. Structural result inference preserves the interned text or `u8`
 element row when the surrounding declaration has made it available.
+The lowerer consumes those registry result shapes and read opcodes directly;
+`read_lines` still composes `ReadText` with the verified `Split` instruction
+without re-declaring the effect or error contract.
 
 `write_bytes(path: Path, bytes: darray[u8]) -> usize error[FileIoError]
 can[File.Write]` replaces or creates a file and returns the exact number of bytes
@@ -1326,6 +1329,9 @@ Every spelling carries `File.Write`/`FileIoError` and its canonical
 `WriteText`, `AppendText`, `WriteBytes`, or `AppendBytes` opcode metadata;
 semantic checking therefore rejects both non-`Path` operands and firmly known
 wrong array element types before lowering.
+The lowerer consumes the same result and opcode metadata for the global writer
+aliases; line helpers retain their bounded `Join` state machine before emitting
+the registry-selected text-write opcode.
 
 `remove_path(path: Path) -> bool` removes a filesystem entry and contributes
 `File.Write`. It returns `true` only when removal succeeded; a missing or otherwise
