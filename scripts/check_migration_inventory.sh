@@ -10,8 +10,9 @@ schema_file="$repo_root/docs/migration-inventory-schema.md"
 coordinator="$repo_root/scripts/inventory_project_roots.sh"
 review_file="$repo_root/docs/migration-review-current.tsv"
 review_audit="$repo_root/scripts/check_migration_review.sh"
+roots_audit="$repo_root/scripts/check_migration_roots.sh"
 
-for required_file in "$roots_file" "$schema_file" "$review_file" "$review_audit" "$coordinator" "$repo_root/scripts/inventory_candidates.sh" "$repo_root/scripts/inventory_signals.sh"; do
+for required_file in "$roots_file" "$schema_file" "$review_file" "$review_audit" "$roots_audit" "$coordinator" "$repo_root/scripts/inventory_candidates.sh" "$repo_root/scripts/inventory_signals.sh"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'migration inventory audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -20,6 +21,10 @@ done
 
 if [[ ! -x "$coordinator" ]]; then
     printf 'migration inventory audit: coordinator is not executable\n' >&2
+    exit 1
+fi
+if [[ ! -x "$roots_audit" ]]; then
+    printf 'migration inventory audit: root-manifest audit is not executable\n' >&2
     exit 1
 fi
 if ! rg -q '^# name[[:space:]]+relative_path[[:space:]]+owner[[:space:]]+review_status$' "$roots_file"; then
@@ -66,5 +71,9 @@ if ! rg -q 'inventory_candidates\.sh' "$schema_file" || ! rg -q 'inventory_signa
     exit 1
 fi
 
-bash -n "$coordinator" "$script_dir/inventory_candidates.sh" "$script_dir/inventory_signals.sh" "$review_audit"
+bash -n "$coordinator" "$script_dir/inventory_candidates.sh" "$script_dir/inventory_signals.sh" "$review_audit" "$roots_audit"
+if ! rg -q 'check_migration_roots\.sh' "$roots_audit" "$schema_file"; then
+    printf 'migration inventory audit: root ownership audit is not documented\n' >&2
+    exit 1
+fi
 printf 'migration inventory audit: partition manifest and bounded read-only scanners present\n'

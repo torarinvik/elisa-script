@@ -11,7 +11,9 @@ regular-file traversal and filename-search failures fail closed; split larger
 roots before generating a manifest.
 
 `docs/migration-project-roots.tsv` is the checked-in partition manifest for the
-declared project roots. `scripts/inventory_project_roots.sh` reads it and runs
+declared project roots. `scripts/check_migration_roots.sh` validates its shape,
+ownership, and directory boundaries before `scripts/inventory_project_roots.sh`
+reads it and runs
 both scanners once per root, adding `root_name` and `root_path` to every output
 row. A malformed row, missing root, or per-root budget failure terminates the
 coordinator; it never silently skips a declared project. Partitioning keeps

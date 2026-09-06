@@ -32,7 +32,7 @@ if ! awk -F '\t' '
     }
     END {
         for (path in paths) if (paths[path] != 1) bad = 1
-        if (rows != 20 || bad) exit 1
+        if (rows != 21 || bad) exit 1
     }
 ' "$review_file"; then
     printf 'migration review audit: rows are incomplete, duplicated, unreviewed, or use an unapproved disposition\n' >&2
@@ -44,7 +44,7 @@ for candidate in \
     check_validation_wrappers.sh stop_bounded_validation.sh run_bounded_test.sh \
     inventory_project_roots.sh check_serialization_bounds.sh check_continuation_policy.sh \
     check_diagnostic_snapshot.sh inventory_signals.sh inventory_candidates.sh \
-    check_migration_inventory.sh check_runtime_limits.sh check_builtin_registry.sh \
+    check_migration_inventory.sh check_migration_roots.sh check_runtime_limits.sh check_builtin_registry.sh \
     check_streaming_file.sh check_path_line_contract.sh check_resource_policy.sh \
     run_bounded_lowering.sh check_effect_operation_metadata.sh; do
     if ! rg -q -F "/scripts/${candidate}" "$review_file"; then
@@ -59,4 +59,4 @@ if ! rg -q '/scripts/(run_bounded_lowering|run_bounded_test|stop_bounded_validat
 fi
 
 bash -n "$script_dir/check_migration_review.sh"
-printf 'migration review audit: 20 current candidates have reviewed ownership, disposition, and acceptance metadata\n'
+printf 'migration review audit: 21 current candidates have reviewed ownership, disposition, and acceptance metadata\n'

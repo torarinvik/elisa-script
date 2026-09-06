@@ -20,7 +20,7 @@ of the entire `Elisa Projects` tree was stopped after `find` reached roughly
 
 | Artifact | Count |
 |---|---:|
-| Shell-family filename candidates | 9 |
+| Shell-family filename candidates | 10 |
 | Executable-file signals | 8 |
 | Legacy-shebang signals | 9 |
 | Inline Python/Perl/AWK signals | 7 |
@@ -59,6 +59,8 @@ their safety semantics even while compiler execution remains disabled.
   private temporary directory and removes it on exit. Both scanners also fail
   closed on traversal or search errors, and `scripts/check_migration_inventory.sh`
   audits the manifest/coordinator boundary without launching a compiler.
+  `scripts/check_migration_roots.sh` separately validates root ownership and
+  declared directory existence before a coordinator scan is authorized.
 - Review every emitted record for owner, callers, inputs/outputs, external
   dependencies, platform behavior, fixtures, and acceptance evidence.
 - Add owner, callers, inputs/outputs, external dependencies, platform behavior,
@@ -66,7 +68,7 @@ their safety semantics even while compiler execution remains disabled.
 - Keep generated/vendored files and safety wrappers explicitly classified before
   any port or removal decision.
 
-The current repository candidates have now received that review in
+The current repository candidates (now ten shell-family files) have now received that review in
 `docs/migration-review-current.tsv`. The reviewed manifest assigns the
 `elisascript-maintainers` owner role, records callers and I/O/dependency/platform
 notes, and classifies all four validation safety wrappers as
