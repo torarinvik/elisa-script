@@ -26,12 +26,16 @@ The source-declaration test intentionally ignores line-zero registry seed rows;
 otherwise a seeded global such as `contains` would incorrectly suppress its
 receiver contract.
 
-The current strict scalar/text/regex global slice contains these 37 spellings:
+The compact registry currently contains 182 global spellings, 42 Text receiver
+spellings, and 9 Regex receiver spellings. The table below names the strict
+scalar/text/regex core; filesystem, directory, process, environment, stream,
+and time families use the same row format and are covered by the registry
+audit.
 
 | Family | Spellings | Contract shape |
 |---|---|---|
 | Length and predicates | `len`, `contains`, `is_empty`, `isempty`, `is_nonempty`, `nonempty` | fixed arity; `usize` or `bool` result |
-| Text conversion | `str` | one value to `sview` |
+| Text and scalar conversion | `str`, `int`, `float`, `bool` | one value to `sview`, checked scalar parse, or exact identity |
 | Text predicates | `starts_with`, `startswith`, `ends_with`, `endswith` | two text values to `bool` |
 | Text transforms | `replace`, `strip`, `trim`, `lstrip`, `rstrip`, `lower`, `upper`, `casefold` | text result; `casefold` currently reuses `LowerText` until a Unicode-aware opcode exists; trim aliases select both/left/right modes |
 | Text aggregates | `partition`, `rpartition`, `split`, `split_lines`, `splitlines`, `join` | `darray[sview]` split/partition results and typed `join(darray[sview], text) -> sview`; split accepts an optional signed `i64` `maxsplit` at named slot 2 |

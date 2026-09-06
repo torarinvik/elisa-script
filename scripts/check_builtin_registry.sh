@@ -2162,7 +2162,8 @@ if ! rg -q 'name: "int", receiver: "global".*argument_types: "text\|i64".*return
 fi
 
 if ! rg -q 'scripting_registry_direct_return_type' "$inference_file" || \
-   ! rg -q 'registry_return: InferType' "$inference_file"; then
+   ! rg -q 'registry_return: InferType' "$inference_file" || \
+   ! rg -q 'spec\.known and spec\.return_type == "Path"' "$inference_file"; then
     printf 'builtin registry audit: direct-call inference has no registry return-type adapter\n' >&2
     exit 1
 fi
