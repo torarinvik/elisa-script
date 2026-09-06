@@ -289,6 +289,16 @@ for filesystem_name in readlink read_link; do
         exit 1
     fi
 done
+for filesystem_name in symlink create_symlink; do
+    if ! rg -q "name: \"$filesystem_name\", receiver: \"global\".*argument_types: \"Path,Path\".*return_type: \"bool\".*effects: \"File.Write\".*errors: \"FileIoError\".*opcode: \"SymlinkPath\"" "$registry_file"; then
+        printf 'builtin registry audit: symlink-creation row is incomplete: %s\n' "$filesystem_name" >&2
+        exit 1
+    fi
+done
+if ! rg -q 'spec\.argument_types == "Path,Path"' "$receiver_semantic_file"; then
+    printf 'builtin registry audit: mixed Path/Path descriptor is not consumed by semantic checks\n' >&2
+    exit 1
+fi
 if ! rg -q 'lowers_nominal_path_existence_with_file_effect' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'any error_name in fn\.errors where error_name == "FileIoError"' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: filesystem existence row lacks lowering effect/error fixture\n' >&2
     exit 1
@@ -353,6 +363,10 @@ if ! rg -q 'def registry_readlink_requires_a_nominal_path\(' "$repo_root/test/se
     printf 'builtin registry audit: readlink registry negative fixture is missing\n' >&2
     exit 1
 fi
+if ! rg -q 'def registry_symlink_checks_both_nominal_paths\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
+    printf 'builtin registry audit: symlink-creation registry fixture is missing\n' >&2
+    exit 1
+fi
 if ! rg -q 'lowers_typed_file_mode_with_file_read_effect_and_error' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: file-mode lowering fixture is missing\n' >&2
     exit 1
@@ -363,6 +377,10 @@ if ! rg -q 'lowers_typed_chmod_with_file_write_effect_and_error' "$repo_root/tes
 fi
 if ! rg -q 'lowers_typed_readlink_with_path_result_and_file_read_effect' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: readlink lowering fixture is missing\n' >&2
+    exit 1
+fi
+if ! rg -q 'lowers_typed_symlink_creation_with_file_write_effect_and_error' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
+    printf 'builtin registry audit: symlink-creation lowering fixture is missing\n' >&2
     exit 1
 fi
 if ! rg -q 'lowers_typed_touch_with_file_write_effect_and_error' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then

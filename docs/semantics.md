@@ -1243,7 +1243,9 @@ input/result, `File.Read`/`FileIoError`, and `ReadLink` metadata.
 `symlink(target: Path, link: Path) -> bool error[FileIoError] can[File.Write]`
 creates a symbolic link, matching shell `ln -s` and Python
 `Path.symlink_to(target)`. `create_symlink` is an equivalent explicit alias;
-the `link.symlink_to(target)` method uses the same typed operation.
+the `link.symlink_to(target)` method uses the same typed operation. The shared
+typed-builtin registry owns both global spellings with a mixed `Path,Path`
+descriptor, `File.Write`/`FileIoError`, and `SymlinkPath` metadata.
 
 `remove_tree(path: Path) -> bool error[FileIoError] can[File.Write]` recursively
 removes a file, symbolic link, or directory tree without following symlink
