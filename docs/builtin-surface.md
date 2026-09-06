@@ -26,7 +26,7 @@ The source-declaration test intentionally ignores line-zero registry seed rows;
 otherwise a seeded global such as `contains` would incorrectly suppress its
 receiver contract.
 
-The compact registry currently contains 186 global spellings, 42 Text receiver
+The compact registry currently contains 187 global spellings, 42 Text receiver
 spellings, and 9 Regex receiver spellings. The table below names the strict
 scalar/text/regex core; filesystem, directory, process, environment, stream,
 and time families use the same row format and are covered by the registry
@@ -42,6 +42,7 @@ audit.
 | Array order aggregates | `reversed`, `sorted` | one array input preserves the concrete element type; `sorted` accepts an optional positional or named `reverse: bool` and lowers through the checked array state machine |
 | Trace observation | `observe` | one `any` value to `void`; emits a backend-independent `Observe` instruction only when no source declaration shadows the spelling |
 | Runtime assertion | `assert` | one `bool` value to `void`; records the registry-declared `AssertionError` and emits the verified `Assert` instruction |
+| Panic control | `panic` | zero or one positional `any` message; records `Abort.Panic` and emits the non-recoverable `Panic` instruction |
 | Numeric parsing/formatting | `parse_int`, `format_int`, `parse_float`, `format_float` | checked `i64`/`f64` conversions; parsers require `ParseError` |
 | Scalar formatting | `format_bool`, `format_char` | one scalar to `sview` |
 | Regex facades | `matches`, `replace_regex`, `split_regex`, `find_regex`, `capture_regex`, `captures_regex` | text/`Regex` operands; `bool`, `sview`, or `darray[sview]` result |

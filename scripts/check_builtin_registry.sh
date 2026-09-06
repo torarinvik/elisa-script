@@ -338,6 +338,15 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            panic)
+                if ! rg -q 'registry_spec\.known and registry_spec\.opcode == "Panic"' "$lowerer_file" || \
+                   ! rg -q 'name: "panic".*arity_min: 0.*arity_max: 1.*argument_types: "any".*return_type: "void".*effects: "Abort\.Panic".*opcode: "Panic"' "$registry_file" || \
+                   ! rg -q 'source_panic_declaration_takes_precedence_over_registry_panic_builtin' "$semantic_test_file" || \
+                   ! rg -q 'shadowed-panic' "$lowering_test_file"; then
+                    printf 'builtin registry audit: panic registry/source-shadow coverage is missing\n' >&2
+                    exit 1
+                fi
+                ;;
             split)
                 if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "Split"' "$lowerer_file"; then
                     printf 'builtin registry audit: lowerer has no registry-driven split dispatch\n' >&2

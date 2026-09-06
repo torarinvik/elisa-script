@@ -24,7 +24,7 @@ legacy version-1/2/3 manifests remain decode-compatible but are explicitly
 unbound until migrated. This is recorded in commit `47466a4` and remains
 unqualified for executed replay evidence.
 
-The shared builtin registry snapshot now contains 186 global rows, 42 `Text`
+The shared builtin registry snapshot now contains 187 global rows, 42 `Text`
 receiver rows, and 9 `Regex` receiver rows. The global count includes the
 filesystem, process, environment, stream, scalar, text, and regex facades that
 have migrated to descriptor-backed semantic and lowering metadata; generic,
