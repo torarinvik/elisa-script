@@ -2021,12 +2021,24 @@ for name in $array_method_names; do
         printf 'builtin registry audit: Array.%s has no argument-type descriptor\n' "$name" >&2
         exit 1
     fi
-    if ! rg -q "scripting_array_builtin_available\(state, method_name\) and method_name == \"$name\"" "$lowerer_file"; then
+    if ! rg -q 'scripting_array_builtin_available\(state, method_name\)' "$lowerer_file" || ! rg -q "method_name == \"$name\"" "$lowerer_file"; then
         printf 'builtin registry audit: lowerer has no Array method branch for %s\n' "$name" >&2
         exit 1
     fi
     if [[ "$name" == "copy" ]] && ! rg -q 'values: darray\[i64\] = \[1, 2\].*return values\.copy\(\)' "$lowering_test_file"; then
         printf 'builtin registry audit: Array.copy lowering fixture is missing\n' >&2
+        exit 1
+    fi
+    if [[ "$name" == "count" ]] && ! rg -q 'count: usize = values\.count\(1\)' "$semantic_test_file"; then
+        printf 'builtin registry audit: Array.count semantic fixture is missing\n' >&2
+        exit 1
+    fi
+    if [[ "$name" == "find" ]] && ! rg -q 'found: i64 = values\.find\(1\)' "$semantic_test_file"; then
+        printf 'builtin registry audit: Array.find semantic fixture is missing\n' >&2
+        exit 1
+    fi
+    if [[ "$name" == "index" ]] && ! rg -q 'def lowers_python_array_index_method\(' "$lowering_test_file"; then
+        printf 'builtin registry audit: Array.index lowering fixture is missing\n' >&2
         exit 1
     fi
     opcode="$(sed -n "s/.*name: \"$name\".*receiver: \"Array\".*opcode: \"\([A-Za-z0-9_]*\)\".*/\1/p" "$registry_file" | head -1)"
