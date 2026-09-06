@@ -22,9 +22,12 @@ done
 for required_text in \
     'struct RuntimeResourcePolicy' \
     'struct RuntimeResourceUsage' \
+    'const enum RuntimeResourceCounter of u8' \
     'runtime_resource_policy_valid' \
     'runtime_resource_usage_within_policy' \
     'runtime_resource_policy_with_step_limit' \
+    'runtime_resource_acquire' \
+    'runtime_resource_release' \
     'steps' 'elapsed_micros' 'memory_bytes' 'open_handles' \
     'processes' 'output_bytes' 'regex_work' 'retained_traces' \
     'concurrent_tasks' \
@@ -50,6 +53,9 @@ rg -q 'policy.concurrent_tasks > ES_RUNTIME_DEFAULT_MAX_CONCURRENT_TASKS' "$runt
 rg -q 'handles_over' "$repo_root/test/ir/elisascript_ir_test.elisa"
 rg -q 'processes_over' "$repo_root/test/ir/elisascript_ir_test.elisa"
 rg -q 'tasks_over' "$repo_root/test/ir/elisascript_ir_test.elisa"
+rg -q 'RuntimeResourceCounter.OpenHandle' "$repo_root/test/ir/elisascript_ir_test.elisa"
+rg -q 'RuntimeResourceCounter.Process' "$repo_root/test/ir/elisascript_ir_test.elisa"
+rg -q 'RuntimeResourceCounter.ConcurrentTask' "$repo_root/test/ir/elisascript_ir_test.elisa"
 rg -q 'runtime_resource_policy_with_step_limit' "$bytecode"
 rg -q 'def execute_bytecode_with_resource_policy' "$bytecode"
 rg -q 'def execute_bytecode_direct_only_with_resource_policy' "$bytecode"
