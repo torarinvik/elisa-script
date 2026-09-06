@@ -117,7 +117,7 @@ distinction between fire-and-forget signals and value-producing `perform`
 The semantic metadata pass now rejects the same non-void `signal` contract before
 lowering, with a focused negative fixture (`9d59c51`).
 Same-file `@handler` decorators now check declared operation arity, payload types,
-and resumed result types before handler clauses enter the IR (`pending`).
+and resumed result types before handler clauses enter the IR (`88756ff`).
 
 ## Evidence record template
 
