@@ -2323,6 +2323,7 @@ if ! rg -q 'visibility: sview = "public"' "$registry_file" || \
    ! rg -q 'name: "__fstr", receiver: "global".*arity_min: 1.*arity_max: 4294967295.*argument_types: "any".*return_type: "sview".*opcode: "".*lowering_steps: "FString".*visibility: "private"' "$registry_file" || \
    ! rg -q 'registry_spec\.known and registry_spec\.visibility == "private" and registry_spec\.receiver == "global" and registry_spec\.lowering_steps == "FString"' "$lowerer_file" || \
    rg -q 'callee_name == "__fstr"' "$lowerer_file" || \
+   sed -n '/def typed_builtin_names/,/^        def /p' "$registry_file" | rg -q '"__fstr"' || \
    ! rg -q '"__fstr"' "$semantic_file" || \
    ! rg -q 'f-string' "$lowering_test_file"; then
     printf 'builtin registry audit: compiler-owned __fstr intrinsic is not registry-driven\n' >&2
