@@ -37,16 +37,18 @@ timezone, and seed. `validate_differential_case` validates both nested runners,
 rejects NULs, duplicate fixture paths, oversized world data, invalid engine or
 artifact policies, and preserves the nested runner issue kind. A validated case
 can produce a `DifferentialArtifactManifest` with case/runner identities, seeds,
-engine requirement, artifact policy, and optional verified-module fingerprint;
+engine requirement, artifact policy, a deterministic fingerprint of the complete
+validated world, and optional verified-module fingerprint;
 `canonical_differential_artifact_manifest_bytes` emits a bounded versioned `ESDF`
 sidecar and `differential_artifact_manifest_fingerprint` provides a deterministic
-correlation key. `decode_differential_artifact_manifest` validates magic, version,
-lengths, enum ordinals, and trailing bytes before exposing borrowed metadata;
-truncated or malformed sidecars fail closed. Adapters remain responsible for
-materializing the separate worlds and writing the complete output artifact.
+correlation key. Version 2 adds the world fingerprint while the borrowed decoder
+continues to admit version-1 manifests for compatibility. The decoder validates
+magic, version, lengths, enum ordinals, and trailing bytes before exposing borrowed
+metadata; truncated or malformed sidecars fail closed. Adapters remain responsible
+for materializing the separate worlds and writing the complete output artifact.
 
 The first shared comparison primitive is `EsDifferential.compare_differential_runs`.
-It compares exit status, named error, stdout, stderr, the typed return value,
+It compares run outcome, exit status, named error, stdout, stderr, the typed return value,
 observation count, and then each `(trace, value)` pair in that fixed order. It returns a typed
 `DifferentialComparison` describing the first difference, including the relevant
 text or values; identical runs return `DifferentialDifferenceKind.Equal`. The
