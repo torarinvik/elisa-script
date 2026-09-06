@@ -89,6 +89,9 @@ shadowing rule (`bf5fd4c`).
 Receiver return-type inference now applies the source-declaration guard to both
 registry rows and legacy Text fallback results (`90a1581`).
 
+Regex receiver lowering and return inference now apply the same source-callable
+shadowing guard (`working tree`).
+
 ## Evidence record template
 
 Every future executed or differential-verified entry must append a dated record

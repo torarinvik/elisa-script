@@ -71,6 +71,11 @@ if ! rg -q 'scripting_text_builtin_available\(state, method_name\)' "$lowerer_fi
     printf 'builtin registry audit: lowerer does not guard Text dispatch against source shadowing\n' >&2
     exit 1
 fi
+if ! rg -q 'scripting_source_method_available\(state, method_name\)' "$lowerer_file" || \
+   ! rg -q 'not scripting_has_source_function\(table, method_name\)' "$inference_file"; then
+    printf 'builtin registry audit: regex receiver dispatch/inference does not guard source shadowing\n' >&2
+    exit 1
+fi
 if ! rg -q 'lowered_function_index\(state, qualified_name\) == state\.function_names\.count' "$lowerer_file"; then
     printf 'builtin registry audit: qualified builtin dispatch does not guard source shadowing\n' >&2
     exit 1

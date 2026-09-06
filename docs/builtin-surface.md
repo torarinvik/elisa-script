@@ -85,6 +85,11 @@ Receiver return-type inference applies the same source guard, including its
 legacy Text fallback rows, so a shadowing source UFCS function cannot inherit a
 registry result type merely from its spelling.
 
+Regex receiver dispatch (`search`, `match`, `fullmatch`, find/capture aliases,
+`split`, and `sub`) now applies the same source-callable guard in lowering and
+return-type inference; a source function with one of those names is not silently
+rewritten as a regex operation.
+
 Run the compiler-free audits:
 
 ```sh
