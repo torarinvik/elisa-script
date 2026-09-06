@@ -397,6 +397,13 @@ if ! rg -q 'directory_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_sp
     printf 'builtin registry audit: directory-read lowerers do not consume registry shape/result/opcode metadata\n' >&2
     exit 1
 fi
+if ! rg -q 'directory_mutation_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'directory_mutation_spec\.argument_types == "Path"' "$lowerer_file" || \
+   ! rg -q 'directory_mutation_spec\.opcode == "CreateDirectory"' "$lowerer_file" || \
+   ! rg -q 'directory_mutation_spec\.opcode == "RemoveDirectory"' "$lowerer_file"; then
+    printf 'builtin registry audit: directory-mutation lowerers do not consume registry argument/opcode metadata\n' >&2
+    exit 1
+fi
 if ! rg -q 'name: "get_environment", receiver: "global".*arity_min: 1.*arity_max: 1.*argument_types: "text".*return_type: "sview".*effects: "Environment.Read".*errors: "EnvironmentError".*opcode: "GetEnvironment"' "$registry_file"; then
     printf 'builtin registry audit: canonical environment-read row is incomplete\n' >&2
     exit 1

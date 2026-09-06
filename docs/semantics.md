@@ -1997,7 +1997,9 @@ also owns the directory mutation aliases `create_directory`/`mkdir`,
 `Directory.Write`/`DirectoryError`, and their distinct directory opcodes. The
 directory-read lowerers consume the registry rows for call shape, result type,
 and opcode selection while retaining the bounded scanner and traversal state
-machines.
+machines. Directory mutation lowerers use the same registry fields, so aliases
+cannot drift from their `CreateDirectory`/`CreateDirectories`/`RemoveDirectory`
+or `ChangeDirectory` opcode contracts.
 
 ## Compile-time validation
 
