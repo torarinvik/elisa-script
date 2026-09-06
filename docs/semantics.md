@@ -1358,7 +1358,9 @@ remaining base component contributes `..`, and an otherwise empty result is `.`.
 Rooted and relative operands have different roots; for that case the normalized
 target is returned unchanged. The `relative_path` and `relpath` aliases, plus
 `target.relative_to(base)` as a scripting convenience, lower to the same pure
-typed operation.
+typed operation. The shared typed-builtin registry owns `path_join`, the three
+relative-path spellings, and the three normalization spellings with their
+nominal/mixed descriptors and `PathJoin`/`PathRelative`/`PathNormalize` opcodes.
 
 `path_real(path: Path) -> Path error[FileIoError] can[File.Read]` resolves a path
 through the host filesystem, following symbolic links and returning the
