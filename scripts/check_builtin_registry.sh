@@ -1270,6 +1270,22 @@ if ! rg -q 'def lower_text_partition_expression\(receiver_expression: Ast::Expr,
     printf 'builtin registry audit: Text partition lowerer does not consume registry mode metadata\n' >&2
     exit 1
 fi
+for split_pair in split:0 rsplit:2; do
+    split_name="${split_pair%%:*}"
+    split_mode="${split_pair##*:}"
+    if ! rg -q "name: \"$split_name\", receiver: \"Text\".*argument_types: \"text,i64\".*return_type: \"darray\[text\]\".*effects: \"\".*errors: \"\".*opcode: \"Split\".*lowering_mode: $split_mode" "$registry_file"; then
+        printf 'builtin registry audit: Text split row lacks mode metadata: %s\n' "$split_name" >&2
+        exit 1
+    fi
+done
+if ! rg -q 'def lower_text_split_expression\(receiver_expression: Ast::Expr, method_name: sview, arguments:' "$lowerer_file" || \
+   ! rg -q 'method_spec\.known and method_spec\.opcode == "Split"' "$lowerer_file" || \
+   ! rg -q 'mode: i64 = 1 if arguments\.count == 0 else method_spec\.lowering_mode' "$lowerer_file" || \
+   rg -q 'lower_text_split_expression\([^\n]*, (true|false),' "$lowerer_file" || \
+   rg -q '2 if reverse else 0' "$lowerer_file"; then
+    printf 'builtin registry audit: Text split lowerer does not consume registry direction metadata\n' >&2
+    exit 1
+fi
 if ! rg -q 'def typed_builtin_result_type' "$lowerer_file" || \
    ! rg -q 'typed_builtin_result_type\([a-z_]+_spec\)' "$lowerer_file" || \
    ! rg -q 'typed_builtin_result_type\(method_spec\)' "$lowerer_file"; then

@@ -523,6 +523,9 @@ Their `TextRemoveBoundary` registry rows carry modes 0 (`removeprefix`) and 1
 Likewise, `text.partition(separator)` and `text.rpartition(separator)` return
 the three-field text array described above; their `TextPartition` rows carry
 forward/reverse modes 0/1 consumed directly by the receiver lowerer.
+`text.split(separator?, maxsplit?)` and `text.rsplit(separator?, maxsplit?)`
+share the bounded `Split` opcode: an omitted separator uses the whitespace mode
+1, while explicit separators use registry direction modes 0/2.
 
 The first executable regex operation is the compiler-known, strongly typed search
 `matches(text, pattern) -> bool`, where `text` is `sview` and `pattern` is `Regex`:
