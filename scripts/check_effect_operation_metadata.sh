@@ -18,8 +18,9 @@ lowerer_file="$repo_root/src/ir/lower_ast.elisa"
 ir_model_file="$repo_root/src/ir/ir_model.elisa"
 ir_verify_file="$repo_root/src/ir/ir_verify.elisa"
 fixture_file="$repo_root/test/ir/elisascript_lowering_test.elisa"
+runtime_file="$repo_root/src/ir/interpret.elisa"
 
-for required_file in "$tokens_file" "$parser_file" "$capture_file" "$semantic_file" "$docs_file" "$lowerer_file" "$ir_model_file" "$ir_verify_file" "$fixture_file"; do
+for required_file in "$tokens_file" "$parser_file" "$capture_file" "$semantic_file" "$docs_file" "$lowerer_file" "$ir_model_file" "$ir_verify_file" "$fixture_file" "$runtime_file"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'effect operation metadata audit: missing file: %s\n' "$required_file" >&2
         exit 2
@@ -77,6 +78,14 @@ if ! rg -q 'operation_identity_matches\(' "$ir_verify_file" || ! rg -q 'handler 
 fi
 if ! rg -q 'operation_id == Ast::effect_operation_identity' "$fixture_file" || ! rg -q 'handler clause operation id does not match' "$fixture_file"; then
     printf 'effect operation metadata audit: lowering fixtures omit operation identity coverage\n' >&2
+    exit 1
+fi
+if ! rg -q 'failure_operation_id: mutable u64 = 0' "$runtime_file" || ! rg -q 'operation_id: u64 = 0' "$runtime_file"; then
+    printf 'effect operation metadata audit: runtime failure/guard ids are missing\n' >&2
+    exit 1
+fi
+if ! rg -q 'def runtime_operation_matches\(' "$runtime_file" || ! rg -q 'runtime_handler_covers_operation\([^)]*instruction\.operation_id' "$runtime_file"; then
+    printf 'effect operation metadata audit: runtime handler dispatch does not consume operation identities\n' >&2
     exit 1
 fi
 if ! rg -q 'DiagnosticKind.TypeMismatch.*expected: "void".*operation_info\.result_signature' "$semantic_file"; then

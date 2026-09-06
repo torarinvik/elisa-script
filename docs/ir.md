@@ -255,6 +255,9 @@ clauses, and lowered `Perform`/`Raise`/`Panic`/error-guard instructions share th
 same identity rule; the verifier preserves zero as a legacy-fixture escape hatch
 but rejects any populated id that disagrees with the readable names. Every perform
 also receives a stable source-derived trace identity.
+The interpreter now uses the identity when both the performed instruction and a
+handler clause provide it, while treating zero as a compatibility wildcard for
+older hand-authored modules; raised-error guards apply the same rule.
 
 Value-producing effect requests use the compiler-known
 `perform("Family.Operation", payload)` intrinsic in an expected-type position,

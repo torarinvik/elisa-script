@@ -102,6 +102,9 @@ Every captured `(family, operation)` pair also receives a stable FNV-1a operatio
 identity. The parser, semantic lookup, and lowered IR carry this `u64` alongside
 the readable names; the verifier accepts zero only for legacy hand-authored
 fixtures and rejects any populated identity that does not match its two names.
+The interpreter uses that identity for handler-clause and raised-error-guard
+matching whenever both sides provide it; zero remains a compatibility wildcard for
+older hand-authored modules.
 Dynamic handlers may therefore intercept
 user-defined operations without introducing a second runtime representation.
 Source `@handler` decorators for same-file effect declarations are checked at

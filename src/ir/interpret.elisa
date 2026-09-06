@@ -173,6 +173,7 @@ extend EsIr:
             # fields empty and continue to match only catch-all guards.
             failure_family: mutable sview = ""
             failure_operation: mutable sview = ""
+            failure_operation_id: mutable u64 = 0
             # Ordered payload values for the currently unwinding raised error.
             # Explicit catch arms consume this side channel through typed
             # ErrorPayload instructions; it remains private to the interpreter.
@@ -363,6 +364,7 @@ extend EsIr:
             # only the corresponding explicit raised error variant.
             effect_family: sview = ""
             effect_operation: sview = ""
+            operation_id: u64 = 0
 
 
         const enum TerminatorDispatchState of u8:
@@ -1196,6 +1198,7 @@ extend EsIr:
             machine.failure <- InterpretFailure.Raised
             machine.failure_family <- instruction.effect_family
             machine.failure_operation <- instruction.effect_operation
+            machine.failure_operation_id <- instruction.operation_id
 
 
         def evaluate_error_payload(machine: mutable Machine&, index: i64, result_type: Type&) -> RuntimeValue:
@@ -1451,10 +1454,16 @@ extend EsIr:
         # family. A handler that declares clauses, however, only handles the
         # exact operations named by those clauses; unmatched operations must
         # continue searching through outer dynamic handlers.
-        def runtime_handler_covers_operation(handler: Handler&, family: sview, operation: sview) -> bool:
+        def runtime_operation_matches(family: sview, operation: sview, operation_id: u64, clause: HandlerClause) -> bool:
+            return false if clause.effect_family != family or clause.effect_operation != operation
+            return true if clause.operation_id == 0 or operation_id == 0
+            return clause.operation_id == operation_id
+
+
+        def runtime_handler_covers_operation(handler: Handler&, family: sview, operation: sview, operation_id: u64) -> bool:
             return false if not handler_covers(handler, family)
             return true if handler.clauses.count == 0
-            return any clause in handler.clauses where clause.effect_family == family and clause.effect_operation == operation
+            return any clause in handler.clauses where runtime_operation_matches(family, operation, operation_id, clause)
 
 
         def continuation_decision(policy: ContinuationPolicy, consumed: bool) -> ContinuationDecisionKind:
@@ -1705,14 +1714,14 @@ extend EsIr:
                 Dispatch, PerformDispatchState.SearchHandler:
                     cursor.installed_index <- cursor.installed_index - 1
                     cursor.handler_index <- runtime_handler_index(module, handler_stack[cursor.installed_index])
-                    cursor.state <- PerformDispatchState.SearchClause if cursor.handler_index < module.handlers.count and runtime_handler_covers_operation(module.handlers[cursor.handler_index], instruction.effect_family, instruction.effect_operation) else PerformDispatchState.SearchHandler
+                    cursor.state <- PerformDispatchState.SearchClause if cursor.handler_index < module.handlers.count and runtime_handler_covers_operation(module.handlers[cursor.handler_index], instruction.effect_family, instruction.effect_operation, instruction.operation_id) else PerformDispatchState.SearchHandler
                     -> Dispatch
 
                 Dispatch, PerformDispatchState.SearchClause if cursor.clause_index >= module.handlers[cursor.handler_index].clauses.count:
                     note_unsupported(machine)
                     cursor.state <- PerformDispatchState.Done
                     -> Dispatch
-                Dispatch, PerformDispatchState.SearchClause if module.handlers[cursor.handler_index].clauses[cursor.clause_index].effect_family == instruction.effect_family and module.handlers[cursor.handler_index].clauses[cursor.clause_index].effect_operation == instruction.effect_operation:
+                Dispatch, PerformDispatchState.SearchClause if runtime_operation_matches(instruction.effect_family, instruction.effect_operation, instruction.operation_id, module.handlers[cursor.handler_index].clauses[cursor.clause_index]):
                     cursor.state <- PerformDispatchState.Invoke
                     -> Dispatch
                 Dispatch, PerformDispatchState.SearchClause:
@@ -6338,7 +6347,7 @@ extend EsIr:
 
         def error_guard_matches(machine: Machine&, guard: ErrorGuard&) -> bool:
             return true if guard.effect_family == "" and guard.effect_operation == ""
-            return machine.failure == InterpretFailure.Raised and machine.failure_family == guard.effect_family and machine.failure_operation == guard.effect_operation
+            return machine.failure == InterpretFailure.Raised and machine.failure_family == guard.effect_family and machine.failure_operation == guard.effect_operation and (guard.operation_id == 0 or machine.failure_operation_id == 0 or machine.failure_operation_id == guard.operation_id)
 
 
         def execute_function(machine: mutable Machine&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, handler_stack: mutable darray[sview]&, module: Module&, function_index: usize, arguments: darray[RuntimeValue]&, resume_block: u32 = 0, resume_instruction: usize = 0, initial_ids: darray[u32] = [], initial_values: darray[RuntimeValue] = []) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
@@ -7240,7 +7249,7 @@ extend EsIr:
                             machine.failure <- InterpretFailure.OutputLimit
                             guard_limit_failure <- true
                         else:
-                            error_guards.push(ErrorGuard{target: instruction.integer.u32(), handler_depth: handler_stack.count, effect_family: instruction.effect_family, effect_operation: instruction.effect_operation})
+                            error_guards.push(ErrorGuard{target: instruction.integer.u32(), handler_depth: handler_stack.count, effect_family: instruction.effect_family, effect_operation: instruction.effect_operation, operation_id: instruction.operation_id})
                     if instruction.opcode == Opcode.ErrorGuardPop:
                         machine.failure <- InterpretFailure.InvalidControlFlow if error_guards.count == 0
                         if error_guards.count > 0:
@@ -7254,6 +7263,7 @@ extend EsIr:
                             machine.failure <- InterpretFailure.None
                             machine.failure_family <- ""
                             machine.failure_operation <- ""
+                            machine.failure_operation_id <- 0
                             machine.failure_payloads.truncate(0) if not preserve_payloads
                             block.terminator <- Terminator{kind: TerminatorKind.Jump, target0: guard.target, target_count: 1, span: block.terminator.span}
                             break
