@@ -97,6 +97,12 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            create_directory|mkdir|create_directories|makedirs|mkdir_p|remove_directory|rmdir|change_directory|cd|chdir)
+                if ! rg -q 'directory_builtin: bool = registry_spec\.known and registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven directory-mutation dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
             *)
                 printf 'builtin registry audit: lowerer has no dispatch branch for %s\n' "$name" >&2
                 exit 1
@@ -641,7 +647,8 @@ if ! rg -q 'directory_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_sp
     printf 'builtin registry audit: directory-read lowerers do not consume registry shape/result/opcode metadata\n' >&2
     exit 1
 fi
-if ! rg -q 'directory_mutation_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+if ! rg -q 'directory_mutation_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'directory_builtin: bool = registry_spec\.known and registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path"' "$lowerer_file" || \
    ! rg -q 'directory_mutation_spec\.argument_types == "Path"' "$lowerer_file" || \
    ! rg -q 'directory_mutation_spec\.opcode == "CreateDirectory"' "$lowerer_file" || \
    ! rg -q 'directory_mutation_spec\.opcode == "RemoveDirectory"' "$lowerer_file"; then
