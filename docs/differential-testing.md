@@ -209,6 +209,11 @@ shell-free and keeps process failures in `error[ProcessError]`.
 The in-process adapter applies the same 64 MiB stdout/stderr ceiling before
 materializing a `DifferentialRun`; an oversized borrowed snapshot becomes an
 explicit `DifferentialRunOutcome.OutputLimit` instead of entering comparison.
+The comparison entry point repeats that boundary for directly assembled runs
+and value pools: each error/stdout/stderr channel and the aggregate text
+envelope are checked before `differential_text_equal` or structured value
+comparison can walk a borrowed view. Oversized input is rejected as a bounded
+comparison error rather than being treated as a parity mismatch.
 
 For Python-shaped adapters, the same snapshot can be read with typed fields:
 `capture.returncode`/`capture.exit_status`/`capture.status`, `capture.stdout`, and
