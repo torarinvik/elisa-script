@@ -1244,6 +1244,12 @@ the instruction payload without inferring it from the alias spelling. The
 receiver rows live in the separate `Path` method namespace with zero positional
 arity, the same result/opcode/mode contract, and source-UFCS shadowing checks.
 
+The pure shape methods `path.parent()`, `path.name()`, `path.suffix()`,
+`path.stem()`, and `path.is_absolute()` use the same receiver registry. Their
+declared `Path`/`sview`/`bool` result types and `PathParent`/`PathName`/
+`PathExtension`/`PathStem`/`PathIsAbsolute` opcodes are consumed directly by
+the lowerer, so no spelling-derived result table is needed for this family.
+
 `touch(path: Path) -> bool error[FileIoError] can[File.Write]` creates an empty file
 when it is missing and updates its timestamps without truncating an existing file.
 It is the typed counterpart to shell `touch`; failures remain `FileIoError` values

@@ -148,6 +148,11 @@ if ! rg -q 'typed_builtin_method_spec\("Regex", method\)' "$inference_file" || \
     exit 1
 fi
 if ! rg -q 'def typed_builtin_path_method_names\(\)' "$registry_file" || \
+   ! rg -q 'name: "parent", receiver: "Path".*argument_types: "".*return_type: "Path".*effects: "".*opcode: "PathParent"' "$registry_file" || \
+   ! rg -q 'name: "name", receiver: "Path".*argument_types: "".*return_type: "sview".*effects: "".*opcode: "PathName"' "$registry_file" || \
+   ! rg -q 'name: "suffix", receiver: "Path".*argument_types: "".*return_type: "sview".*effects: "".*opcode: "PathExtension"' "$registry_file" || \
+   ! rg -q 'name: "stem", receiver: "Path".*argument_types: "".*return_type: "sview".*effects: "".*opcode: "PathStem"' "$registry_file" || \
+   ! rg -q 'name: "is_absolute", receiver: "Path".*argument_types: "".*return_type: "bool".*effects: "".*opcode: "PathIsAbsolute"' "$registry_file" || \
    ! rg -q 'name: "is_readable", receiver: "Path".*argument_types: "".*return_type: "bool".*effects: "File.Read".*opcode: "PathAccess".*lowering_mode: 4' "$registry_file" || \
    ! rg -q 'name: "is_writable", receiver: "Path".*argument_types: "".*return_type: "bool".*effects: "File.Read".*opcode: "PathAccess".*lowering_mode: 2' "$registry_file" || \
    ! rg -q 'name: "is_executable", receiver: "Path".*argument_types: "".*return_type: "bool".*effects: "File.Read".*opcode: "PathAccess".*lowering_mode: 1' "$registry_file"; then
@@ -157,10 +162,12 @@ fi
 if ! rg -q 'typed_builtin_method_spec\("Path", method_name\)' "$lowerer_file" || \
    ! rg -q 'def scripting_path_builtin_available\(state: LowerState&, method_name: sview\)' "$lowerer_file" || \
    ! rg -q 'def is_path_receiver_expression\(expression: Ast::Expr, state: LowerState&\)' "$lowerer_file" || \
-   ! rg -q 'path_access_spec\.known and path_access_spec\.opcode == "PathAccess"' "$lowerer_file" || \
+   ! rg -q 'path_spec\.known and path_spec\.opcode == "PathParent"' "$lowerer_file" || \
+   ! rg -q 'path_spec\.known and path_spec\.opcode == "PathIsAbsolute"' "$lowerer_file" || \
+   ! rg -q 'path_spec\.known and path_spec\.opcode == "PathAccess"' "$lowerer_file" || \
    ! rg -q 'typed_builtin_method_call_shape\("Path", method_name' "$lowerer_file" || \
-   ! rg -q 'instruction_integer <- path_access_spec\.lowering_mode' "$lowerer_file"; then
-    printf 'builtin registry audit: Path access receiver lowering does not consume registry metadata\n' >&2
+   ! rg -q 'instruction_integer <- path_spec\.lowering_mode' "$lowerer_file"; then
+    printf 'builtin registry audit: Path receiver lowering does not consume registry metadata\n' >&2
     exit 1
 fi
 if ! rg -q 'typed_builtin_method_spec\("Path", method\)' "$receiver_semantic_file" || \
@@ -1130,15 +1137,15 @@ for name in $path_method_names; do
         printf 'builtin registry audit: Path.%s has no receiver-specific registry row\n' "$name" >&2
         exit 1
     fi
-    if ! rg -q "method_name == \"$name\"" "$lowerer_file"; then
-        printf 'builtin registry audit: lowerer has no Path method branch for %s\n' "$name" >&2
-        exit 1
-    fi
     if ! rg -q "name: \"$name\", receiver: \"Path\".*argument_types:" "$registry_file"; then
         printf 'builtin registry audit: Path.%s has no argument-type descriptor\n' "$name" >&2
         exit 1
     fi
     opcode="$(sed -n "s/.*name: \"$name\".*receiver: \"Path\".*opcode: \"\([A-Za-z0-9_]*\)\".*/\1/p" "$registry_file" | head -1)"
+    if [[ -z "$opcode" ]] || ! rg -q "path_spec\.known and path_spec\.opcode == \"$opcode\"" "$lowerer_file"; then
+        printf 'builtin registry audit: lowerer has no Path metadata branch for %s (%s)\n' "$name" "${opcode:-missing}" >&2
+        exit 1
+    fi
     if [[ -z "$opcode" ]] || ! rg -q "Opcode\\.$opcode" "$verifier_file"; then
         printf 'builtin registry audit: Path.%s opcode is not verifier-covered (%s)\n' "$name" "${opcode:-missing}" >&2
         exit 1
