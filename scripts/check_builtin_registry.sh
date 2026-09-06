@@ -1079,19 +1079,28 @@ if ! rg -q 'executable_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_f
    ! rg -q 'run_process_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
    ! rg -q 'registry_spec\.opcode == "RunProcess"' "$lowerer_file" || \
    ! rg -q 'run_process_spec\.opcode == "RunProcess"' "$lowerer_file" || \
-   ! rg -q 'process_stream_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'process_stream_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
    ! rg -q 'process_stream_spec\.opcode == "CaptureProcessStdout"' "$lowerer_file" || \
-   ! rg -q 'process_stream_stdin_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'process_stream_stdin_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
    ! rg -q 'process_stream_stdin_spec\.opcode == "CaptureProcessStdoutWithStdin"' "$lowerer_file" || \
-   ! rg -q 'capture_result_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'capture_result_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
    ! rg -q 'capture_result_spec\.opcode == "CaptureProcessResult"' "$lowerer_file" || \
-   ! rg -q 'capture_result_directory_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'capture_result_directory_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
    ! rg -q 'capture_result_directory_spec\.opcode == "CaptureProcessResultInDirectory"' "$lowerer_file" || \
-   ! rg -q 'capture_result_environment_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'capture_result_environment_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
    ! rg -q 'capture_result_environment_spec\.opcode == "CaptureProcessResultWithEnvironment"' "$lowerer_file" || \
-   ! rg -q 'capture_result_directory_environment_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'capture_result_directory_environment_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
    ! rg -q 'capture_result_directory_environment_spec\.opcode == "CaptureProcessResultInDirectoryWithEnvironment"' "$lowerer_file"; then
     printf 'builtin registry audit: simple process lowerers do not consume registry shape/result/opcode metadata\n' >&2
+    exit 1
+fi
+if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Executable,darray\[text\]" and \(registry_spec\.opcode == "CaptureProcessStdout" or registry_spec\.opcode == "CaptureProcessStderr"\)' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Executable,darray\[text\],text" and \(registry_spec\.opcode == "CaptureProcessStdoutWithStdin" or registry_spec\.opcode == "CaptureProcessStderrWithStdin"\)' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Executable,darray\[text\],text" and registry_spec\.opcode == "CaptureProcessResult"' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Executable,darray\[text\],text,Path" and registry_spec\.opcode == "CaptureProcessResultInDirectory"' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Executable,darray\[text\],text,dict\[sview,sview\]" and registry_spec\.opcode == "CaptureProcessResultWithEnvironment"' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Executable,darray\[text\],text,Path,dict\[sview,sview\]" and registry_spec\.opcode == "CaptureProcessResultInDirectoryWithEnvironment"' "$lowerer_file"; then
+    printf 'builtin registry audit: process capture lowerers do not consume registry receiver/argument metadata\n' >&2
     exit 1
 fi
 if ! rg -q 'name: "capture_process_result", receiver: "global".*argument_types: "Executable,darray\[text\],sview".*return_type: "ProcessCapture".*effects: "Process.Run".*errors: "ProcessError".*opcode: "CaptureProcessResult"' "$registry_file"; then
