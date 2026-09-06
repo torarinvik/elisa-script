@@ -62,4 +62,4 @@ if [[ -n "$missing" ]]; then
     exit 1
 fi
 
-printf 'builtin surface audit: lowerer global spellings are seeded; typed registry migration remains open\n'
+printf 'builtin surface audit: semantic seeds cover all direct global spellings; registry identity handles global lowering\n'
