@@ -652,7 +652,7 @@ if ! rg -q 'lowers_nominal_text_append_with_file_effect_and_error' "$repo_root/t
     printf 'builtin registry audit: text/line/byte writer rows lack lowering fixtures\n' >&2
     exit 1
 fi
-if ! rg -q 'def registry_remove_path_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_move_path_checks_both_nominal_paths\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_write_text_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_write_lines_checks_text_array_elements\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_write_bytes_checks_unsigned_byte_elements\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_read_text_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_read_bytes_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
+if ! rg -q 'def registry_remove_path_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_move_path_checks_both_nominal_paths\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_copy_path_checks_both_nominal_paths\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_write_text_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_write_lines_checks_text_array_elements\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_write_bytes_checks_unsigned_byte_elements\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_read_text_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_read_bytes_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
     printf 'builtin registry audit: filesystem registry rows lack semantic negative fixtures\n' >&2
     exit 1
 fi
@@ -734,6 +734,26 @@ for milliseconds_name in sleep_milliseconds sleep_ms; do
 done
 if ! rg -q 'lowers_typed_sleep_units_and_aliases' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: sleep lowering fixture is missing\n' >&2
+    exit 1
+fi
+for copy_name in copy_path cp copyfile; do
+    if ! rg -q "name: \"$copy_name\", receiver: \"global\", arity_min: 2, arity_max: 2, argument_types: \"Path,Path\", return_type: \"bool\", effects: \"File.Read\", effects_secondary: \"File.Write\", errors: \"FileIoError\", opcode: \"CopyPath\"" "$registry_file"; then
+        printf 'builtin registry audit: file-copy row is incomplete for %s\n' "$copy_name" >&2
+        exit 1
+    fi
+done
+for tree_copy_name in copy_tree copytree; do
+    if ! rg -q "name: \"$tree_copy_name\", receiver: \"global\", arity_min: 2, arity_max: 2, argument_types: \"Path,Path\", return_type: \"bool\", effects: \"File.Read\", effects_secondary: \"File.Write\", errors: \"FileIoError\", opcode: \"CopyTree\"" "$registry_file"; then
+        printf 'builtin registry audit: tree-copy row is incomplete for %s\n' "$tree_copy_name" >&2
+        exit 1
+    fi
+done
+if ! rg -q 'effects_secondary: sview' "$registry_file" || ! rg -q 'state\.required_effects\.push\(spec\.effects_secondary\)' "$lowerer_file"; then
+    printf 'builtin registry audit: secondary effect metadata is not propagated by lowering\n' >&2
+    exit 1
+fi
+if ! rg -q 'lowers_typed_path_mutation_aliases_with_registry_contracts' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_typed_directory_lifecycle_and_working_directory_operations' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
+    printf 'builtin registry audit: copy lowering coverage is missing\n' >&2
     exit 1
 fi
 if ! rg -q 'lowers_python_directory_aliases_to_existing_typed_opcodes' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_typed_directory_lifecycle_and_working_directory_operations' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_deterministic_typed_directory_listing' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_native_typed_glob_expansion' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then

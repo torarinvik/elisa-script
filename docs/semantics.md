@@ -1408,12 +1408,16 @@ filesystem. Both operations reject arbitrary text at compile time and report
 operating-system failures through `error[...]`; neither constructs a shell command.
 Python's `shutil.copyfile` and `os.rename` spellings are typed aliases for
 `copy_path` and `move_path`.
-The registry currently covers the single-effect `move_path`, `mv`, and `rename`
-rows (all `Path,Path -> bool`, `File.Write`, and `FileIoError`) and the lowering
-fixture keeps those aliases on the existing `MovePath` opcode. Copy aliases remain
-on the explicit lowerer path until the registry gains structured multi-effect rows,
-so `File.Read` plus `File.Write` cannot be represented as an ambiguous compact
-string.
+The shared typed-builtin registry owns all three copy spellings and all three
+move spellings. Copy rows carry `File.Read` as their primary effect and
+`File.Write` as a separate secondary effect, so the two permissions remain
+independently visible to semantic propagation and lowering; the aliases retain
+the existing `CopyPath`/`MovePath` opcodes.
+
+The recursive `copy_tree`/`copytree` aliases use the same two-effect registry
+contract and `CopyTree` opcode. Their source and destination roots are nominal
+`Path` values, and the registry does not erase the distinction between a
+read-only source permission and a write permission for the destination.
 
 `append_text(path: Path, text: sview) -> usize error[FileIoError]
 can[File.Write]` opens or creates the file in append mode and writes every supplied
