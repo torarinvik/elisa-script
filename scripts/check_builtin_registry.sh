@@ -67,12 +67,24 @@ if ! rg -q 'typed_builtin_method_spec\("Text", method_name\)' "$lowerer_file"; t
     printf 'builtin registry audit: lowerer has no receiver-method registry consumer\n' >&2
     exit 1
 fi
+if ! rg -q 'scripting_text_builtin_available\(state, method_name\)' "$lowerer_file"; then
+    printf 'builtin registry audit: lowerer does not guard Text dispatch against source shadowing\n' >&2
+    exit 1
+fi
+if ! rg -q 'lowered_function_index\(state, qualified_name\) == state\.function_names\.count' "$lowerer_file"; then
+    printf 'builtin registry audit: qualified builtin dispatch does not guard source shadowing\n' >&2
+    exit 1
+fi
 if ! rg -q 'typed_builtin_method_call_shape\("Text", method_name' "$lowerer_file"; then
     printf 'builtin registry audit: lowerer has no receiver-method shape consumer\n' >&2
     exit 1
 fi
 if ! rg -q 'typed_builtin_method_spec\("Text", method\)\.known' "$receiver_semantic_file"; then
     printf 'builtin registry audit: semantic receiver admission does not consume the Text registry\n' >&2
+    exit 1
+fi
+if ! rg -q 'direct_function_count\(table, method\) == 0' "$receiver_semantic_file"; then
+    printf 'builtin registry audit: semantic Text diagnostics do not guard source shadowing\n' >&2
     exit 1
 fi
 if ! rg -q 'typed_builtin_method_spec\("Text", method\)' "$inference_file"; then

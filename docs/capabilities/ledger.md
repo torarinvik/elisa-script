@@ -65,6 +65,11 @@ with lowerer result metadata preserved for collection and Path compatibility
 contracts, `Split` opcode metadata, and a declared `maxsplit` named-argument
 slot (`cd8ae26`).
 
+Registry receiver diagnostics and lowerer dispatch now give direct source
+functions precedence over matching Text spellings, while normalized qualified
+builtins apply the same source-name guard (`working tree`). Generic UFCS
+lowering for a shadowing source function remains open.
+
 ## Evidence record template
 
 Every future executed or differential-verified entry must append a dated record

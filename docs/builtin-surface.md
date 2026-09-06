@@ -12,6 +12,14 @@ first receiver-aware family is `Text`, covering case conversion, boundary
 predicates, replacement, joining, line splitting, text predicates, and all four
 trim modes.
 
+Source declarations take precedence over registry-backed Text spellings.
+Semantic receiver diagnostics and lowerer dispatch both require that no direct
+source function owns the method name, and qualified `os`, `os.path`, `shutil`,
+`subprocess`, and `re` normalization applies the same guard to the normalized
+callable name. This keeps local or module-qualified code from being silently
+rewritten into an unrelated builtin; generic UFCS lowering remains a separate
+migration item.
+
 The current strict scalar/text slice contains these 23 spellings:
 
 | Family | Spellings | Contract shape |
