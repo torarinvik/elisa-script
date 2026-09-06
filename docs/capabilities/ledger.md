@@ -205,8 +205,8 @@ counter edges), `614ad2e` (bounded additive resource edges), `cc418d6`
 (interpreter step accounting), `d23ffbd` (configured step ceiling), and `64986ef`
 (ESDF version-3 manifest fixture), `1313ba7` (directory fsync), and `957aa55`
 (POSIX writer locking), `c91d558` (durable cache arbitration notes), and the
-current lock-scoped publication and lock-transition increment. They remain
-compiler-free evidence while validation is paused.
+current lock-scoped publication, lock-transition, and checked elapsed-resource
+increment. They remain compiler-free evidence while validation is paused.
 
 ## Evidence record template
 

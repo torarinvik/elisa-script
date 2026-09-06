@@ -29,6 +29,7 @@ for required_text in \
     'runtime_resource_acquire' \
     'runtime_resource_release' \
     'runtime_resource_add_steps' \
+    'runtime_resource_add_elapsed' \
     'runtime_resource_add_memory' \
     'runtime_resource_add_output' \
     'runtime_resource_add_regex_work' \
