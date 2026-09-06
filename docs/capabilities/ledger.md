@@ -89,6 +89,11 @@ cover both ordinary dispatch and shadowing by a source `len` function.
 The semantic fixture now independently checks the inferred `usize` result and
 rejects both a mismatched destination and an extra method argument (`dbcce1f`).
 
+The IR verifier now enforces that every `Opcode.Length` result is the exact
+unsigned 64-bit `usize` representation rather than merely any integer kind;
+the static IR fixture keeps a valid `usize` instruction beside a rejected signed
+result. Compiler and runtime validation remain suspended.
+
 `Text.split` and `Text.rsplit` now use registry arity, `text,i64` argument
 contracts, `Split` opcode metadata, and a declared `maxsplit` named-argument
 slot (`cd8ae26`).
