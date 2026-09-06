@@ -2081,6 +2081,10 @@ for name in $array_method_names; do
         printf 'builtin registry audit: Array.insert lowering fixture is missing\n' >&2
         exit 1
     fi
+    if [[ "$name" == "remove" ]] && ! rg -q 'def lowers_python_array_remove_method\(' "$lowering_test_file"; then
+        printf 'builtin registry audit: Array.remove lowering fixture is missing\n' >&2
+        exit 1
+    fi
     if [[ "$name" == "reverse" || "$name" == "sort" ]] && ! rg -q 'def array_mutation_receiver_registry_shapes_are_static\(' "$semantic_test_file"; then
         printf 'builtin registry audit: Array mutation semantic fixture is missing\n' >&2
         exit 1
