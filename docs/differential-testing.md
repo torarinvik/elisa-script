@@ -504,6 +504,15 @@ and never mutates the plan on a rejected transition. The plan validator covers
 the ordering and path contract now; actual directory creation, fsync policy, and
 crash-recovery testing remain execution work.
 
+`shrink_differential_case` provides the first bounded reduction layer for
+counterexamples. It walks world files, argv entries, environment entries, and
+stdin in a fixed order, removes one item per candidate, revalidates the complete
+case, and stops at the caller's budget (capped by a runtime default). Candidates
+carry a typed reduction kind and borrow the original runner/text payloads; an
+invalid source case yields no candidates and the source case is never mutated.
+Value/observation and process-stream shrinkers remain separate follow-up layers
+because they must preserve aggregate offsets and terminal-output semantics.
+
 The execution boundary now carries a backend-neutral `ExecutionCapability`
 snapshot alongside that engine identity. For bytecode runs,
 `capability_known` is true and the snapshot preserves `direct_supported`,
