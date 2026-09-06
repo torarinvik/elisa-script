@@ -56,7 +56,9 @@ their safety semantics even while compiler execution remains disabled.
   `scripts/inventory_project_roots.sh` now scan each declared project root
   independently with bounded, read-only candidate and signal scanners. Missing,
   malformed, or unlisted roots fail closed; the coordinator writes only to a
-  private temporary directory and removes it on exit.
+  private temporary directory and removes it on exit. Both scanners also fail
+  closed on traversal or search errors, and `scripts/check_migration_inventory.sh`
+  audits the manifest/coordinator boundary without launching a compiler.
 - Review every emitted record for owner, callers, inputs/outputs, external
   dependencies, platform behavior, fixtures, and acceptance evidence.
 - Add owner, callers, inputs/outputs, external dependencies, platform behavior,
