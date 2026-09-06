@@ -26,7 +26,7 @@ The source-declaration test intentionally ignores line-zero registry seed rows;
 otherwise a seeded global such as `contains` would incorrectly suppress its
 receiver contract.
 
-The compact registry currently contains 198 global spellings, 42 Text receiver
+The compact registry currently contains 200 global spellings, 42 Text receiver
 spellings, and 9 Regex receiver spellings. The table below names the strict
 scalar/text/regex core; filesystem, directory, process, environment, stream,
 and time families use the same row format and are covered by the registry
@@ -48,6 +48,7 @@ audit.
 | Polymorphic extrema | `min`, `max` | one orderable array or two-or-more orderable values; registry rows select the verified `SortArray`/`Index` composition while inference preserves the element family |
 | Map projections | `keys`, `values` | one dictionary to a concrete key/value array; registry rows select `MapKeys` or `MapValues` while structural inference preserves descriptors |
 | Numeric folds | `sum`, `product` | one iterable/range plus optional typed `start`; registry rows select `Add` or `Multiply` inside the state-machine fold while polymorphic inference preserves the accumulator family |
+| Boolean quantifiers | `any`, `all` | one iterable/range with short-circuit state-machine lowering; registry rows select the `Equal` result primitive and preserve boolean output |
 | Numeric parsing/formatting | `parse_int`, `format_int`, `parse_float`, `format_float` | checked `i64`/`f64` conversions; parsers require `ParseError` |
 | Scalar formatting | `format_bool`, `format_char` | one scalar to `sview` |
 | Regex facades | `matches`, `replace_regex`, `split_regex`, `find_regex`, `capture_regex`, `captures_regex` | text/`Regex` operands; `bool`, `sview`, or `darray[sview]` result |

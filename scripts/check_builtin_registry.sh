@@ -410,6 +410,20 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            any|all)
+                expected_step="Comprehension,Any"
+                if [[ "$name" == "all" ]]; then
+                    expected_step="Comprehension,All"
+                fi
+                if ! rg -q 'registry_spec\.known and registry_spec\.argument_types == "iterable\|range" and registry_spec\.opcode == "Equal" and \(registry_spec\.lowering_steps == "Comprehension,Any" or registry_spec\.lowering_steps == "Comprehension,All"\)' "$lowerer_file" || \
+                   ! rg -q "name: \"$name\".*arity_min: 1.*arity_max: 1.*argument_types: \"iterable\\|range\".*return_type: \"bool\".*opcode: \"Equal\".*lowering_steps: \"$expected_step\"" "$registry_file" || \
+                   ! rg -q 'numeric_polymorphic_builtin_result_types_are_preserved' "$semantic_test_file" || \
+                   ! rg -q 'lowers_python_sum_product_any_all_as_state_machine_folds' "$lowering_test_file" || \
+                   ! rg -q 'shadowed-any-all' "$lowering_test_file"; then
+                    printf 'builtin registry audit: any/all registry/quantifier/source-shadow coverage is missing for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
             split)
                 if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "Split"' "$lowerer_file"; then
                     printf 'builtin registry audit: lowerer has no registry-driven split dispatch\n' >&2
