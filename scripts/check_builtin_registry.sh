@@ -67,6 +67,12 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            capture_process_pipeline)
+                if ! rg -q 'registry_spec\.opcode == "CaptureProcessPipeline"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven process pipeline dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
             *)
                 printf 'builtin registry audit: lowerer has no dispatch branch for %s\n' "$name" >&2
                 exit 1
@@ -707,7 +713,7 @@ if ! rg -q 'name: "capture_process_pipeline", receiver: "global".*argument_types
 fi
 if ! rg -q 'def lower_capture_process_pipeline\(arguments: darray\[Ast::Expr\].*spec: EsBuiltin::BuiltinSpec' "$lowerer_file" || \
    ! rg -q 'spec\.opcode == "CaptureProcessPipeline"' "$lowerer_file" || \
-   ! rg -q 'lower_capture_process_pipeline\(arguments, argument_names, EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file"; then
+   ! rg -q 'lower_capture_process_pipeline\(arguments, argument_names, registry_spec' "$lowerer_file"; then
     printf 'builtin registry audit: process-pipeline lowerer does not consume registry shape/result/opcode metadata\n' >&2
     exit 1
 fi
