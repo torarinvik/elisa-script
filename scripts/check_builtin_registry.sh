@@ -2004,6 +2004,22 @@ for name in $map_method_names; do
         printf 'builtin registry audit: Map.get semantic fixture is missing\n' >&2
         exit 1
     fi
+    if [[ "$name" == "pop" ]] && ! rg -Fq 'popped: i64 = mapping.pop(\"key\", 0)' "$semantic_test_file"; then
+        printf 'builtin registry audit: Map.pop semantic fixture is missing\n' >&2
+        exit 1
+    fi
+    if [[ "$name" == "setdefault" ]] && ! rg -Fq 'defaulted: i64 = mapping.setdefault(\"key\", 0)' "$semantic_test_file"; then
+        printf 'builtin registry audit: Map.setdefault semantic fixture is missing\n' >&2
+        exit 1
+    fi
+    if [[ "$name" == "pop" ]] && ! rg -q 'def lowers_python_dictionary_pop_with_optional_default\(' "$lowering_test_file"; then
+        printf 'builtin registry audit: Map.pop lowering fixture is missing\n' >&2
+        exit 1
+    fi
+    if [[ "$name" == "setdefault" ]] && ! rg -q 'def lowers_python_dictionary_setdefault_as_typed_value_and_rebinding\(' "$lowering_test_file"; then
+        printf 'builtin registry audit: Map.setdefault lowering fixture is missing\n' >&2
+        exit 1
+    fi
     opcode="$(sed -n "s/.*name: \"$name\".*receiver: \"Map\".*opcode: \"\([A-Za-z0-9_]*\)\".*/\1/p" "$registry_file" | head -1)"
     if [[ -z "$opcode" ]] || ! rg -q "Opcode\\.$opcode" "$verifier_file"; then
         printf 'builtin registry audit: Map.%s opcode is not verifier-covered (%s)\n' "$name" "${opcode:-missing}" >&2

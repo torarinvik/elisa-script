@@ -27,7 +27,7 @@ otherwise a seeded global such as `contains` would incorrectly suppress its
 receiver contract.
 
 The compact registry currently contains 202 global spellings, 42 Text receiver,
-9 Regex receiver, 4 Map receiver, and 5 Array receiver spellings. The table below names the strict
+9 Regex receiver, 6 Map receiver, and 5 Array receiver spellings. The table below names the strict
 scalar/text/regex core; filesystem, directory, process, environment, stream,
 and time families use the same row format and are covered by the registry
 audit.
@@ -135,12 +135,12 @@ Regex receiver dispatch (`search`, `match`, `fullmatch`, find/capture aliases,
 return-type inference; a source function with one of those names is not silently
 rewritten as a regex operation.
 
-Map receiver dispatch covers `keys()`, `values()`, `copy()`, and
-`get(key, default)`. The projections and copy take no arguments, while `get`
-uses the exact two-positional-argument lazy fallback shape; all preserve the
-dictionary's concrete descriptor in the lowerer. They emit the verified
-`MapKeys`/`MapValues`/`CopyMap`/`IndexValid` identities and retain source-function
-shadowing precedence.
+Map receiver dispatch covers `keys()`, `values()`, `copy()`, `get(key, default)`,
+`pop(key, default?)`, and `setdefault(key, default)`. The projections and copy
+take no arguments, while the mutating accessors use exact positional shapes and
+preserve the dictionary's concrete descriptor in the lowerer. They emit the
+verified `MapKeys`/`MapValues`/`CopyMap`/`IndexValid`/`PopMapValue`/
+`SetDefaultMapValue` identities and retain source-function shadowing precedence.
 
 Array receiver dispatch currently covers `copy()`, `count(value)`,
 `find(value)`, `index(value)`, and `contains(value)`. These rows preserve
