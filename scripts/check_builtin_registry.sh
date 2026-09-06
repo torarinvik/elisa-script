@@ -688,6 +688,20 @@ if ! rg -q 'def registry_standard_stream_writes_require_text\(' "$repo_root/test
     printf 'builtin registry audit: standard-stream registry rows lack semantic negative fixtures\n' >&2
     exit 1
 fi
+if ! rg -q 'def registry_temporary_paths_require_text_prefixes\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
+    printf 'builtin registry audit: temporary-path registry rows lack semantic negative fixtures\n' >&2
+    exit 1
+fi
+for temporary_name in temp_file mktemp temp_directory temp_dir mkdtemp; do
+    if ! rg -q "name: \"$temporary_name\", receiver: \"global\", arity_min: 0, arity_max: 1, argument_types: \"text\", return_type: \"Path\", effects: \"File.Write\", errors: \"FileIoError\", opcode: \"CreateTemporary\"" "$registry_file"; then
+        printf 'builtin registry audit: temporary-path row is incomplete for %s\n' "$temporary_name" >&2
+        exit 1
+    fi
+done
+if ! rg -q 'lowers_secure_temporary_file_and_directory_aliases' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
+    printf 'builtin registry audit: temporary-path lowering fixture is missing\n' >&2
+    exit 1
+fi
 if ! rg -q 'lowers_python_directory_aliases_to_existing_typed_opcodes' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_typed_directory_lifecycle_and_working_directory_operations' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_deterministic_typed_directory_listing' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_native_typed_glob_expansion' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: directory registry rows lack lowering fixtures\n' >&2
     exit 1

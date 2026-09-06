@@ -1179,6 +1179,11 @@ closed before the `Path` is returned; scripts explicitly remove it with
 `remove_path` (or remove the directory with `remove_directory`/`remove_tree`).
 Creation failures remain typed `FileIoError` values and never fall back to a
 stringly shell command.
+The shared typed-builtin registry owns all five global spellings with the
+optional `text` prefix descriptor, nominal `Path` result, `File.Write`/
+`FileIoError` contract, and `CreateTemporary` opcode. The lowerer retains the
+file-versus-directory choice as the instruction's integer payload, while a
+source-defined spelling still shadows the compiler-known operation.
 
 `chmod(path: Path, mode: u64) -> bool error[FileIoError] can[File.Write]` applies a
 numeric POSIX mode such as `0x180u64` (octal `0600`). It is the typed counterpart to
