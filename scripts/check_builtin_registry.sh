@@ -73,7 +73,8 @@ if ! rg -q 'typed_builtin_method_spec\("Text", method_name\)' "$lowerer_file"; t
     exit 1
 fi
 if ! rg -q 'typed_builtin_method_spec\("Regex", method_name\)' "$lowerer_file" || \
-   ! rg -q 'scripting_regex_builtin_available\(state, method_name\)' "$lowerer_file"; then
+   ! rg -q 'scripting_regex_builtin_available\(state, method_name\)' "$lowerer_file" || \
+   ! rg -q 'is_regex_receiver_expression\(receiver_expression, state\)' "$lowerer_file"; then
     printf 'builtin registry audit: lowerer has no Regex receiver registry consumer\n' >&2
     exit 1
 fi
