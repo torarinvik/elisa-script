@@ -1107,6 +1107,10 @@ fails closed rather than using an unbounded length scan.
 `format_char(value: char) -> sview` returns the character's byte-oriented text
 payload. These formatting helpers are compiler-known and shadowable by source
 declarations.
+The shared typed-builtin registry owns the result descriptors and ParseInt,
+FormatInt, ParseFloat, FormatFloat, FormatBool, and FormatChar opcodes; the
+lowerer consumes those rows directly while the call-boundary recorder carries
+the declared `ParseError` contract.
 The Python-compatible `str(value) -> sview` facade accepts text (identity),
 `char`, any integer width, `f32`/`f64`, `bool`, arrays, dictionaries, and the text-backed
 nominals `Path`, `Glob`, `Regex`, `Executable`, and `Url`, selecting the

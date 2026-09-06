@@ -1112,6 +1112,15 @@ if ! rg -q 'def typed_builtin_result_type' "$lowerer_file" || \
     printf 'builtin registry audit: aggregate registry rows do not share lowerer result-shape conversion\n' >&2
     exit 1
 fi
+if ! rg -q 'parse_spec\.opcode == "ParseInt"' "$lowerer_file" || \
+   ! rg -q 'parse_spec\.opcode == "ParseFloat"' "$lowerer_file" || \
+   ! rg -q 'format_int_spec\.opcode == "FormatInt"' "$lowerer_file" || \
+   ! rg -q 'format_float_spec\.opcode == "FormatFloat"' "$lowerer_file" || \
+   ! rg -q 'format_bool_spec\.opcode == "FormatBool"' "$lowerer_file" || \
+   ! rg -q 'format_char_spec\.opcode == "FormatChar"' "$lowerer_file"; then
+    printf 'builtin registry audit: scalar parse/format lowerers do not consume registry opcode metadata\n' >&2
+    exit 1
+fi
 
 if ! rg -q 'scripting_registry_direct_return_type' "$inference_file" || \
    ! rg -q 'registry_return: InferType' "$inference_file"; then
