@@ -185,6 +185,9 @@ fi
 if ! rg -q 'def record_builtin_contract' "$lowerer_file" || \
    ! rg -q 'record_builtin_contract\(registry_spec, state\)' "$lowerer_file" || \
    ! rg -q 'record_builtin_contract\(method_spec, state\)' "$lowerer_file" || \
+   ! rg -q 'def record_receiver_builtin_contract' "$lowerer_file" || \
+   ! rg -q 'is_text_receiver_expression' "$lowerer_file" || \
+   ! rg -q 'record_receiver_builtin_contract\(receiver_expression, method_name, state\)' "$lowerer_file" || \
    ! rg -q 'state\.required_effects\.push\(spec\.effects\)' "$lowerer_file" || \
    ! rg -q 'state\.required_errors\.push\(spec\.errors\)' "$lowerer_file"; then
     printf 'builtin registry audit: declared effect/error rows are not centrally recorded by lowering\n' >&2
