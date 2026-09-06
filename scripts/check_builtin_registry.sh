@@ -458,6 +458,14 @@ if ! rg -q 'name: "write_stdout", receiver: "global".*argument_types: "text".*re
     printf 'builtin registry audit: standard-stream write rows are incomplete\n' >&2
     exit 1
 fi
+if ! rg -q 'stdin_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'stdin_line_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'stream_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'typed_builtin_call_shape\(callee_name, arguments, argument_names\)' "$lowerer_file" || \
+   ! rg -q 'stream_spec\.opcode == "WriteStderr"' "$lowerer_file"; then
+    printf 'builtin registry audit: fixed console lowerers do not consume registry shape/result/opcode metadata\n' >&2
+    exit 1
+fi
 if ! rg -q 'name: "process_exit_status", receiver: "global".*argument_types: "ProcessCapture".*return_type: "i64".*effects: "".*errors: "".*opcode: "ProcessResultExitStatus"' "$registry_file" || ! rg -q 'name: "process_stdout", receiver: "global".*argument_types: "ProcessCapture".*return_type: "sview".*effects: "".*errors: "".*opcode: "ProcessResultStdout"' "$registry_file" || ! rg -q 'name: "process_stderr", receiver: "global".*argument_types: "ProcessCapture".*return_type: "sview".*effects: "".*errors: "".*opcode: "ProcessResultStderr"' "$registry_file"; then
     printf 'builtin registry audit: process-result accessor rows are incomplete\n' >&2
     exit 1

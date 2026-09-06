@@ -1858,9 +1858,11 @@ The shared typed-builtin registry owns the fixed-shape `read_stdin`,
 `read_stdin_line`, `write_stdout`, `write_stderr`, and `printf` spellings. Their
 rows preserve zero-argument versus one-text-argument arity, `sview`/`usize`
 results, `Console.Read`/`Console.Write`, `ConsoleError`, and the exact stdin or
-stream opcode. Variadic formatting (`print`, `println`, `echo`, `eprint`) and
-prompt-bearing `input` remain explicit lowerer contracts because their optional
-controls and effect combinations do not fit the compact row yet.
+stream opcode. The lowerer admits these calls through the registry shape,
+result-type, and opcode fields rather than a second arity or opcode table.
+Variadic formatting (`print`, `println`, `echo`, `eprint`) and prompt-bearing
+`input` remain explicit lowerer contracts because their optional controls and
+effect combinations do not fit the compact row yet.
 
 Writes retry partial progress through the explicit stream state machine, so a short
 POSIX write is never reported as successful completion. Host-returned byte counts
