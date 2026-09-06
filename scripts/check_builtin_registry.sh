@@ -1256,6 +1256,13 @@ if ! rg -q 'def lower_text_case_value_with_spec\(value: u32, method_spec: EsBuil
     printf 'builtin registry audit: Text case lowerer does not consume registry result/opcode metadata\n' >&2
     exit 1
 fi
+if ! rg -q 'name: "len", receiver: "Text".*argument_types: "".*return_type: "usize".*effects: "".*errors: "".*opcode: "Length"' "$registry_file" || \
+   ! rg -q 'def lower_text_length_expression\(receiver_expression: Ast::Expr, method_name: sview' "$lowerer_file" || \
+   ! rg -q 'method_spec\.known or method_spec\.opcode != "Length"' "$lowerer_file" || \
+   ! rg -q 'typed_builtin_result_type\(method_spec\)' "$lowerer_file"; then
+    printf 'builtin registry audit: Text length receiver lowerer does not consume registry result/opcode metadata\n' >&2
+    exit 1
+fi
 for predicate_pair in isdigit:0 isalpha:1 isalnum:2 isspace:3 islower:4 isupper:5 isascii:6 isdecimal:7 isnumeric:8 isprintable:9; do
     predicate_name="${predicate_pair%%:*}"
     predicate_mode="${predicate_pair##*:}"
