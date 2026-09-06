@@ -421,6 +421,30 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            read_lines|read_text|cat|read_bytes|read_binary)
+                if ! rg -q 'is_path_global_unary_spec\(registry_spec\)' "$lowerer_file" && ! rg -q 'is_path_global_array_io_spec\(registry_spec\)' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven path reader dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
+            write_lines|append_lines|write_text|append_text|write_bytes|write_binary|append_bytes|append_binary)
+                if ! rg -q 'is_path_global_binary_spec\(registry_spec\)' "$lowerer_file" && ! rg -q 'is_path_global_array_io_spec\(registry_spec\)' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven path writer dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
+            remove_path|rm|remove|unlink|remove_tree|rmtree)
+                if ! rg -q 'is_path_global_unary_spec\(registry_spec\)' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven path removal dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
+            copy_path|cp|copyfile|copy_tree|copytree|move_path|mv|rename)
+                if ! rg -q 'is_path_global_binary_spec\(registry_spec\)' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven path transfer dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
             *)
                 printf 'builtin registry audit: lowerer has no dispatch branch for %s\n' "$name" >&2
                 exit 1
@@ -820,8 +844,8 @@ if ! rg -q 'touch_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" 
    ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path,u64" and registry_spec\.opcode == "ChmodPath"' "$lowerer_file" || \
    ! rg -q 'symlink_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
    ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path,Path" and registry_spec\.opcode == "SymlinkPath"' "$lowerer_file" || \
-   ! rg -q 'remove_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
-   ! rg -q 'move_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'remove_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'move_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
    ! rg -q 'touch_spec\.opcode != "TouchPath"' "$lowerer_file" || \
    ! rg -q 'chmod_spec\.opcode != "ChmodPath"' "$lowerer_file" || \
    ! rg -q 'symlink_spec\.opcode != "SymlinkPath"' "$lowerer_file" || \
@@ -908,11 +932,23 @@ for filesystem_name in read_bytes read_binary; do
     fi
 done
 for lowerer_spec in read_lines_spec read_text_spec read_bytes_spec write_lines_spec append_lines_spec write_text_spec write_bytes_spec append_text_spec append_bytes_spec; do
-    if ! rg -q "${lowerer_spec}: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\\(callee_name\\)" "$lowerer_file"; then
+    if ! rg -q "${lowerer_spec}: EsBuiltin::BuiltinSpec = registry_spec" "$lowerer_file"; then
         printf 'builtin registry audit: file I/O lowerer does not consume registry metadata: %s\n' "$lowerer_spec" >&2
         exit 1
     fi
 done
+if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and registry_spec\.return_type == "darray\[text\]" and registry_spec\.opcode == "ReadText"' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and registry_spec\.return_type == "sview" and registry_spec\.opcode == "ReadText"' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and registry_spec\.return_type == "darray\[u8\]" and registry_spec\.opcode == "ReadBytes"' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path,darray\[text\]" and registry_spec\.opcode == "WriteText"' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path,darray\[text\]" and registry_spec\.opcode == "AppendText"' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path,text" and registry_spec\.opcode == "WriteText"' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path,darray\[u8\]" and registry_spec\.opcode == "WriteBytes"' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path,text" and registry_spec\.opcode == "AppendText"' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path,darray\[u8\]" and registry_spec\.opcode == "AppendBytes"' "$lowerer_file"; then
+    printf 'builtin registry audit: file I/O lowerers do not consume registry receiver/argument/result metadata\n' >&2
+    exit 1
+fi
 if ! rg -q 'read_lines_spec\.opcode == "ReadText"' "$lowerer_file" || \
    ! rg -q 'read_text_spec\.opcode == "ReadText"' "$lowerer_file" || \
    ! rg -q 'read_bytes_spec\.opcode == "ReadBytes"' "$lowerer_file" || \
@@ -1541,9 +1577,12 @@ for tree_copy_name in copy_tree copytree; do
         exit 1
     fi
 done
-if ! rg -q 'copy_path_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
-   ! rg -q 'remove_tree_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
-   ! rg -q 'copy_tree_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+if ! rg -q 'copy_path_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'remove_tree_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'copy_tree_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path,Path" and registry_spec\.opcode == "CopyPath"' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and registry_spec\.opcode == "RemoveTree"' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path,Path" and registry_spec\.opcode == "CopyTree"' "$lowerer_file" || \
    ! rg -q 'copy_path_spec\.opcode != "CopyPath"' "$lowerer_file" || \
    ! rg -q 'remove_tree_spec\.opcode != "RemoveTree"' "$lowerer_file" || \
    ! rg -q 'copy_tree_spec\.opcode != "CopyTree"' "$lowerer_file"; then
