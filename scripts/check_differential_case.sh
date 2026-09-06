@@ -64,6 +64,7 @@ for helper in differential_process_text_field_lengths_fit; do
         exit 1
     fi
 done
+rg -q 'return false if arguments\.count > DIFFERENTIAL_DEFAULT_MAX_ARGUMENTS or environment\.count > DIFFERENTIAL_DEFAULT_MAX_ENVIRONMENT_ENTRIES' "$source_file"
 
 for boundary in 'differential_world_payload_is_aggregate_bounded' 'oversized_environment' 'oversized_path' 'DIFFERENTIAL_DEFAULT_MAX_WORLD_BYTES' 'DIFFERENTIAL_DEFAULT_MAX_WORLD_PATH_BYTES' 'DIFFERENTIAL_DEFAULT_MAX_WORLD_METADATA_BYTES'; do
     if ! rg -Fq "$boundary" "$source_file" "$fixture_file"; then
