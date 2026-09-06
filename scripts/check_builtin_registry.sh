@@ -295,6 +295,18 @@ for filesystem_name in symlink create_symlink; do
         exit 1
     fi
 done
+for filesystem_name in remove_path rm remove unlink; do
+    if ! rg -q "name: \"$filesystem_name\", receiver: \"global\".*argument_types: \"Path\".*return_type: \"bool\".*effects: \"File.Write\".*errors: \"\".*opcode: \"RemovePath\"" "$registry_file"; then
+        printf 'builtin registry audit: path-removal row is incomplete: %s\n' "$filesystem_name" >&2
+        exit 1
+    fi
+done
+for filesystem_name in move_path mv rename; do
+    if ! rg -q "name: \"$filesystem_name\", receiver: \"global\".*argument_types: \"Path,Path\".*return_type: \"bool\".*effects: \"File.Write\".*errors: \"FileIoError\".*opcode: \"MovePath\"" "$registry_file"; then
+        printf 'builtin registry audit: path-move row is incomplete: %s\n' "$filesystem_name" >&2
+        exit 1
+    fi
+done
 if ! rg -q 'spec\.argument_types == "Path,Path"' "$receiver_semantic_file"; then
     printf 'builtin registry audit: mixed Path/Path descriptor is not consumed by semantic checks\n' >&2
     exit 1
@@ -471,6 +483,14 @@ if ! rg -q 'lowers_typed_touch_with_file_write_effect_and_error' "$repo_root/tes
 fi
 if ! rg -q 'lowers_typed_file_mtime_with_file_read_effect_and_error' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_python_path_access_and_change_time_aliases_to_existing_typed_opcodes' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: file-time lowering fixtures are missing\n' >&2
+    exit 1
+fi
+if ! rg -q 'lowers_typed_path_mutation_aliases_with_registry_contracts' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
+    printf 'builtin registry audit: path mutation rows lack lowering alias fixture\n' >&2
+    exit 1
+fi
+if ! rg -q 'def registry_remove_path_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_move_path_checks_both_nominal_paths\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
+    printf 'builtin registry audit: path mutation rows lack semantic negative fixtures\n' >&2
     exit 1
 fi
 

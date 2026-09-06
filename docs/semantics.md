@@ -1301,6 +1301,9 @@ unremovable path returns `false`, following the core Elisa `remove_file` contrac
 The nominal operand prevents accidental deletion through an arbitrary text value.
 Python's `os.remove` and `os.unlink` spellings are typed aliases with the same
 boolean result and `File.Write` effect.
+The shared typed-builtin registry owns `remove_path`, `rm`, `remove`, and `unlink`
+as separate nominal rows, all lowering to `RemovePath`; aliases therefore cannot
+silently widen the operand to arbitrary text or lose the write effect.
 
 Pure path-shape helpers keep path plumbing nominal without invoking the host OS:
 `path_join(base: Path, leaf: sview) -> Path` inserts one `/` separator and lets an
@@ -1385,6 +1388,12 @@ filesystem. Both operations reject arbitrary text at compile time and report
 operating-system failures through `error[...]`; neither constructs a shell command.
 Python's `shutil.copyfile` and `os.rename` spellings are typed aliases for
 `copy_path` and `move_path`.
+The registry currently covers the single-effect `move_path`, `mv`, and `rename`
+rows (all `Path,Path -> bool`, `File.Write`, and `FileIoError`) and the lowering
+fixture keeps those aliases on the existing `MovePath` opcode. Copy aliases remain
+on the explicit lowerer path until the registry gains structured multi-effect rows,
+so `File.Read` plus `File.Write` cannot be represented as an ambiguous compact
+string.
 
 `append_text(path: Path, text: sview) -> usize error[FileIoError]
 can[File.Write]` opens or creates the file in append mode and writes every supplied
