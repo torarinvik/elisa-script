@@ -445,6 +445,24 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            current_directory|pwd|getcwd|read_stdin|read_stdin_line)
+                if ! rg -q 'is_registry_zero_arg_spec\(registry_spec\)' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven zero-argument dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
+            list_directory|listdir|is_directory|isdir|is_dir)
+                if ! rg -q 'is_path_global_unary_spec\(registry_spec\)' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven directory-path dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
+            expand_glob)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Glob" and registry_spec\.opcode == "ExpandGlob"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven glob dispatch\n' >&2
+                    exit 1
+                fi
+                ;;
             *)
                 printf 'builtin registry audit: lowerer has no dispatch branch for %s\n' "$name" >&2
                 exit 1
@@ -1001,10 +1019,14 @@ for filesystem_name in change_directory cd chdir; do
         exit 1
     fi
 done
-if ! rg -q 'directory_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
-   ! rg -q 'directory_list_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
-   ! rg -q 'directory_predicate_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
-   ! rg -q 'glob_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+if ! rg -q 'directory_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'directory_list_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'directory_predicate_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'glob_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "" and registry_spec\.opcode == "CurrentDirectory"' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and registry_spec\.opcode == "ListDirectory"' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and registry_spec\.opcode == "IsDirectory"' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Glob" and registry_spec\.opcode == "ExpandGlob"' "$lowerer_file" || \
    ! rg -q 'directory_spec\.opcode != "CurrentDirectory"' "$lowerer_file" || \
    ! rg -q 'directory_list_spec\.opcode != "ListDirectory"' "$lowerer_file" || \
    ! rg -q 'directory_predicate_spec\.opcode != "IsDirectory"' "$lowerer_file" || \
@@ -1095,11 +1117,11 @@ if ! rg -q 'executable_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_f
     exit 1
 fi
 if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Executable,darray\[text\]" and \(registry_spec\.opcode == "CaptureProcessStdout" or registry_spec\.opcode == "CaptureProcessStderr"\)' "$lowerer_file" || \
-   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Executable,darray\[text\],text" and \(registry_spec\.opcode == "CaptureProcessStdoutWithStdin" or registry_spec\.opcode == "CaptureProcessStderrWithStdin"\)' "$lowerer_file" || \
-   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Executable,darray\[text\],text" and registry_spec\.opcode == "CaptureProcessResult"' "$lowerer_file" || \
-   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Executable,darray\[text\],text,Path" and registry_spec\.opcode == "CaptureProcessResultInDirectory"' "$lowerer_file" || \
-   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Executable,darray\[text\],text,dict\[sview,sview\]" and registry_spec\.opcode == "CaptureProcessResultWithEnvironment"' "$lowerer_file" || \
-   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Executable,darray\[text\],text,Path,dict\[sview,sview\]" and registry_spec\.opcode == "CaptureProcessResultInDirectoryWithEnvironment"' "$lowerer_file"; then
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Executable,darray\[text\],sview" and \(registry_spec\.opcode == "CaptureProcessStdoutWithStdin" or registry_spec\.opcode == "CaptureProcessStderrWithStdin"\)' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Executable,darray\[text\],sview" and registry_spec\.opcode == "CaptureProcessResult"' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Executable,darray\[text\],sview,Path" and registry_spec\.opcode == "CaptureProcessResultInDirectory"' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Executable,darray\[text\],sview,dict\[sview,sview\]" and registry_spec\.opcode == "CaptureProcessResultWithEnvironment"' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Executable,darray\[text\],sview,Path,dict\[sview,sview\]" and registry_spec\.opcode == "CaptureProcessResultInDirectoryWithEnvironment"' "$lowerer_file"; then
     printf 'builtin registry audit: process capture lowerers do not consume registry receiver/argument metadata\n' >&2
     exit 1
 fi
@@ -1137,8 +1159,8 @@ if ! rg -q 'name: "write_stdout", receiver: "global".*argument_types: "text".*re
     printf 'builtin registry audit: standard-stream write rows are incomplete\n' >&2
     exit 1
 fi
-if ! rg -q 'stdin_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
-   ! rg -q 'stdin_line_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+if ! rg -q 'stdin_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'stdin_line_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
    ! rg -q 'stream_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
    ! rg -q 'registry_spec\.opcode == "WriteStdout" or registry_spec\.opcode == "WriteStderr"' "$lowerer_file" || \
    ! rg -q 'typed_builtin_call_shape\(callee_name, arguments, argument_names\)' "$lowerer_file" || \
