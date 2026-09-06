@@ -283,6 +283,12 @@ if ! rg -q 'name: "chmod", receiver: "global".*argument_types: "Path,u64".*retur
     printf 'builtin registry audit: chmod mixed Path/u64 row is not fully consumed\n' >&2
     exit 1
 fi
+for filesystem_name in readlink read_link; do
+    if ! rg -q "name: \"$filesystem_name\", receiver: \"global\".*argument_types: \"Path\".*return_type: \"Path\".*effects: \"File.Read\".*errors: \"FileIoError\".*opcode: \"ReadLink\"" "$registry_file"; then
+        printf 'builtin registry audit: readlink row is incomplete: %s\n' "$filesystem_name" >&2
+        exit 1
+    fi
+done
 if ! rg -q 'lowers_nominal_path_existence_with_file_effect' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'any error_name in fn\.errors where error_name == "FileIoError"' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: filesystem existence row lacks lowering effect/error fixture\n' >&2
     exit 1
@@ -343,12 +349,20 @@ if ! rg -q 'def registry_chmod_checks_the_unsigned_mode_argument\(' "$repo_root/
     printf 'builtin registry audit: chmod mixed-argument fixture is missing\n' >&2
     exit 1
 fi
+if ! rg -q 'def registry_readlink_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
+    printf 'builtin registry audit: readlink registry negative fixture is missing\n' >&2
+    exit 1
+fi
 if ! rg -q 'lowers_typed_file_mode_with_file_read_effect_and_error' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: file-mode lowering fixture is missing\n' >&2
     exit 1
 fi
 if ! rg -q 'lowers_typed_chmod_with_file_write_effect_and_error' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: chmod lowering fixture is missing\n' >&2
+    exit 1
+fi
+if ! rg -q 'lowers_typed_readlink_with_path_result_and_file_read_effect' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
+    printf 'builtin registry audit: readlink lowering fixture is missing\n' >&2
     exit 1
 fi
 if ! rg -q 'lowers_typed_touch_with_file_write_effect_and_error' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then

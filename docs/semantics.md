@@ -1236,7 +1236,9 @@ registry owns both `is_symlink` and `islink` with the same nominal `Path`,
 `readlink(path: Path) -> Path error[FileIoError] can[File.Read]` returns the link
 target without following it, matching shell `readlink` and Python
 `Path.readlink()`. `read_link` is an equivalent snake-case alias, and both
-`path.readlink()` and `path.read_link()` lower to the same typed operation.
+`path.readlink()` and `path.read_link()` lower to the same typed operation. The
+shared typed-builtin registry owns both global spellings with nominal `Path`
+input/result, `File.Read`/`FileIoError`, and `ReadLink` metadata.
 
 `symlink(target: Path, link: Path) -> bool error[FileIoError] can[File.Write]`
 creates a symbolic link, matching shell `ln -s` and Python
