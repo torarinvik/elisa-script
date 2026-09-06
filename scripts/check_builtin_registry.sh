@@ -241,6 +241,18 @@ if ! rg -q 'typed_builtin_method_spec\("Path", method_name\)' "$lowerer_file" ||
     printf 'builtin registry audit: Path receiver lowering does not consume registry metadata\n' >&2
     exit 1
 fi
+if ! rg -q 'opcode <- Opcode\.TouchPath' "$lowerer_file" || \
+   ! rg -q 'opcode <- Opcode\.ReadBytes' "$lowerer_file" || \
+   ! rg -q 'opcode <- Opcode\.RemovePath' "$lowerer_file" || \
+   ! rg -q 'opcode <- Opcode\.RemoveTree' "$lowerer_file" || \
+   ! rg -q 'opcode <- Opcode\.CreateDirectory' "$lowerer_file" || \
+   ! rg -q 'opcode <- Opcode\.CreateDirectories' "$lowerer_file" || \
+   ! rg -q 'opcode <- Opcode\.RemoveDirectory' "$lowerer_file" || \
+   ! rg -q 'opcode <- Opcode\.ChangeDirectory' "$lowerer_file" || \
+   ! rg -q 'opcode <- Opcode\.ListDirectory' "$lowerer_file"; then
+    printf 'builtin registry audit: global Path unary opcode coverage is incomplete\n' >&2
+    exit 1
+fi
 if ! rg -q 'typed_builtin_method_spec\("Path", method\)' "$receiver_semantic_file" || \
    ! rg -q 'ufm_check_path_builtin_arity' "$receiver_semantic_file" || \
    ! rg -q 'ufm_check_path_builtin_argument_types' "$receiver_semantic_file" || \
