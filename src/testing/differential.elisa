@@ -377,6 +377,25 @@ module EsDifferential:
             seed: u64 = 0
 
 
+        struct DifferentialWorldSnapshot:
+            format_version: u8 = 1
+            world_fingerprint: u64 = 0
+            world: DifferentialWorld
+
+
+        const enum DifferentialWorldSnapshotIssue of u8:
+            None
+            InvalidWorld
+            InvalidSnapshot
+            FingerprintMismatch
+
+
+        struct DifferentialWorldSnapshotCheck:
+            valid: mutable bool
+            issue: mutable DifferentialWorldSnapshotIssue
+            reason: mutable sview = ""
+
+
         const enum DifferentialArtifactPolicy of u8:
             Never
             OnMismatch
@@ -3329,3 +3348,77 @@ module EsDifferential:
             oracle: DifferentialOracle = DifferentialOracle{name: name, language: language, runner: runner, version: version}
             raise DifferentialRunnerError.Invalid if not validate_differential_oracle(oracle).valid
             return oracle
+
+
+    private:
+        def differential_world_snapshot_valid(snapshot: DifferentialWorldSnapshot&) -> bool:
+            return false if snapshot.format_version != 1 or snapshot.world_fingerprint == 0
+            return false if differential_world_issue(snapshot.world) != DifferentialCaseIssueKind.None
+            return differential_world_fingerprint(snapshot.world) == snapshot.world_fingerprint
+
+
+        const enum DifferentialWorldSnapshotState of u8:
+            World
+            Snapshot
+            Fingerprint
+            Done
+
+
+        struct DifferentialWorldSnapshotCursor:
+            state: mutable DifferentialWorldSnapshotState
+            result: mutable DifferentialWorldSnapshotCheck
+
+
+        def differential_world_snapshot_failure(issue: DifferentialWorldSnapshotIssue, reason: sview) -> DifferentialWorldSnapshotCheck:
+            return DifferentialWorldSnapshotCheck{valid: false, issue: issue, reason: reason}
+
+
+    public:
+        # Capture a deterministic identity for a validated hermetic world. The
+        # snapshot retains the typed fixture/environment vectors so a host
+        # materializer can later restore the same contract without rebuilding a
+        # shell command or relying on ambient process state.
+        def make_differential_world_snapshot(world: DifferentialWorld&) -> DifferentialWorldSnapshot error[DifferentialRunnerError] can[Memory.Allocate, Abort.Panic]:
+            raise DifferentialRunnerError.Invalid if differential_world_issue(world) != DifferentialCaseIssueKind.None
+            fingerprint: u64 = differential_world_fingerprint(world)
+            raise DifferentialRunnerError.Invalid if fingerprint == 0
+            return DifferentialWorldSnapshot{world_fingerprint: fingerprint, world: world}
+
+
+        # Verify both the stored snapshot and the post-run world before a case
+        # is compared or replayed. A changed fixture, environment, argv, stdin,
+        # locale, timezone, or seed is a typed contamination failure.
+        def validate_differential_world_snapshot(world: DifferentialWorld&, snapshot: DifferentialWorldSnapshot&) -> DifferentialWorldSnapshotCheck:
+            cursor: mutable DifferentialWorldSnapshotCursor = DifferentialWorldSnapshotCursor{state: DifferentialWorldSnapshotState.World, result: DifferentialWorldSnapshotCheck{valid: true, issue: DifferentialWorldSnapshotIssue.None}}
+            machine over cursor.state:
+                state Validate
+                start Validate
+
+                Validate, DifferentialWorldSnapshotState.World if differential_world_issue(world) == DifferentialCaseIssueKind.None:
+                    cursor.state <- DifferentialWorldSnapshotState.Snapshot
+                    -> Validate
+                Validate, DifferentialWorldSnapshotState.World:
+                    cursor.result <- differential_world_snapshot_failure(DifferentialWorldSnapshotIssue.InvalidWorld, "restored differential world is invalid")
+                    cursor.state <- DifferentialWorldSnapshotState.Done
+                    -> Validate
+
+                Validate, DifferentialWorldSnapshotState.Snapshot if differential_world_snapshot_valid(snapshot):
+                    cursor.state <- DifferentialWorldSnapshotState.Fingerprint
+                    -> Validate
+                Validate, DifferentialWorldSnapshotState.Snapshot:
+                    cursor.result <- differential_world_snapshot_failure(DifferentialWorldSnapshotIssue.InvalidSnapshot, "differential world snapshot is invalid")
+                    cursor.state <- DifferentialWorldSnapshotState.Done
+                    -> Validate
+
+                Validate, DifferentialWorldSnapshotState.Fingerprint if differential_world_fingerprint(world) == snapshot.world_fingerprint:
+                    cursor.state <- DifferentialWorldSnapshotState.Done
+                    -> Validate
+                Validate, DifferentialWorldSnapshotState.Fingerprint:
+                    cursor.result <- differential_world_snapshot_failure(DifferentialWorldSnapshotIssue.FingerprintMismatch, "restored differential world differs from its snapshot")
+                    cursor.state <- DifferentialWorldSnapshotState.Done
+                    -> Validate
+
+                Validate, DifferentialWorldSnapshotState.Done:
+                    break
+
+            return cursor.result

@@ -490,6 +490,15 @@ sidecar fingerprints. Prepared, stale, mixed-side, malformed, or cross-manifest
 bundles return a typed `DifferentialArtifactReplayCheck` failure and are not
 eligible for replay; the validator itself never executes the reproduction entry.
 
+`DifferentialWorldSnapshot` captures the complete validated world contract and
+its deterministic fingerprint. `validate_differential_world_snapshot` checks
+the current world, the stored snapshot, and the post-run fingerprint in a fixed
+state-machine order, so changes to fixture bytes/metadata, cwd, environment,
+argv, stdin, locale, timezone, or seed become a typed contamination failure
+before comparison. This is the identity and reset boundary for future host
+materializers; it does not claim that filesystem creation/restoration has been
+executed yet.
+
 The directory publication protocol is modeled separately from the host I/O
 adapter by `DifferentialArtifactDirectoryPlan`. A plan has a bounded parent
 path and two single-component names: a private staging directory and a distinct
