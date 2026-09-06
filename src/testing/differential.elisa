@@ -344,6 +344,10 @@ module EsDifferential:
             working_directory: sview = ""
             environment: darray[DifferentialEnvironmentEntry] = []
             stdin: sview = ""
+            # Binary stdin is an owned byte payload, never a C string. The
+            # explicit mode bit makes mixed payloads fail closed.
+            stdin_bytes: mutable darray[u8] = []
+            stdin_binary: bool = false
             protocol: sview = ""
             timeout_steps: u64 = 1
             max_output_bytes: u64 = DIFFERENTIAL_DEFAULT_MAX_OUTPUT_BYTES
@@ -670,6 +674,7 @@ module EsDifferential:
             TooManyEnvironmentEntries
             TooManyProcessTextBytes
             TooMuchProcessInput
+            InvalidProcessInputPayload
 
 
         struct DifferentialRunnerCheck:
@@ -773,6 +778,8 @@ module EsDifferential:
             working_directory: sview = ""
             environment: darray[DifferentialEnvironmentEntry] = []
             stdin: sview = ""
+            stdin_bytes: mutable darray[u8] = []
+            stdin_binary: bool = false
             protocol: sview = ""
             timeout_steps: u64 = 1
             max_output_bytes: u64 = DIFFERENTIAL_DEFAULT_MAX_OUTPUT_BYTES
@@ -2038,6 +2045,24 @@ module EsDifferential:
                     cursor.result.reason <- "runner stdin exceeds the 64 MiB process-input budget"
                     cursor.state <- DifferentialRunnerCheckState.Done
                     -> Validate
+                Validate, DifferentialRunnerCheckState.ProcessBounds if runner.stdin_binary and runner.stdin != "":
+                    cursor.result.valid <- false
+                    cursor.result.issue <- DifferentialRunnerIssueKind.InvalidProcessInputPayload
+                    cursor.result.reason <- "binary stdin cannot carry a text payload"
+                    cursor.state <- DifferentialRunnerCheckState.Done
+                    -> Validate
+                Validate, DifferentialRunnerCheckState.ProcessBounds if not runner.stdin_binary and runner.stdin_bytes.count != 0:
+                    cursor.result.valid <- false
+                    cursor.result.issue <- DifferentialRunnerIssueKind.InvalidProcessInputPayload
+                    cursor.result.reason <- "text stdin cannot carry a binary payload"
+                    cursor.state <- DifferentialRunnerCheckState.Done
+                    -> Validate
+                Validate, DifferentialRunnerCheckState.ProcessBounds if runner.stdin_bytes.count > DIFFERENTIAL_DEFAULT_MAX_PROCESS_INPUT_BYTES:
+                    cursor.result.valid <- false
+                    cursor.result.issue <- DifferentialRunnerIssueKind.TooMuchProcessInput
+                    cursor.result.reason <- "binary stdin exceeds the 64 MiB process-input budget"
+                    cursor.state <- DifferentialRunnerCheckState.Done
+                    -> Validate
                 Validate, DifferentialRunnerCheckState.ProcessBounds:
                     cursor.state <- DifferentialRunnerCheckState.Timeout
                     -> Validate
@@ -2102,7 +2127,7 @@ module EsDifferential:
                     break
 
             entry: sview = runner.entry if runner.kind == DifferentialRunnerKind.PythonAdapter else ""
-            return DifferentialProcessInvocation{executable: runner.target, entry: entry, arguments: runner.arguments, working_directory: runner.working_directory, environment: runner.environment, stdin: runner.stdin, protocol: runner.protocol, timeout_steps: runner.timeout_steps, max_output_bytes: runner.max_output_bytes}
+            return DifferentialProcessInvocation{executable: runner.target, entry: entry, arguments: runner.arguments, working_directory: runner.working_directory, environment: runner.environment, stdin: runner.stdin, stdin_bytes: runner.stdin_bytes, stdin_binary: runner.stdin_binary, protocol: runner.protocol, timeout_steps: runner.timeout_steps, max_output_bytes: runner.max_output_bytes}
 
 
     private:
@@ -2302,7 +2327,9 @@ module EsDifferential:
             # provide a positive output ceiling before any child is launched.
             raise DifferentialRunnerError.Invalid if invocation.executable == "" or differential_sview_has_nul(invocation.executable) or differential_sview_has_nul(invocation.entry) or differential_sview_has_nul(invocation.working_directory) or invocation.timeout_steps == 0 or invocation.max_output_bytes == 0 or invocation.max_output_bytes > DIFFERENTIAL_DEFAULT_MAX_OUTPUT_BYTES
             raise DifferentialRunnerError.Invalid if invocation.arguments.count > DIFFERENTIAL_DEFAULT_MAX_ARGUMENTS or invocation.environment.count > DIFFERENTIAL_DEFAULT_MAX_ENVIRONMENT_ENTRIES
-            raise DifferentialRunnerError.Invalid if not differential_process_text_bytes_fits(invocation.executable, invocation.entry, invocation.arguments, invocation.working_directory, invocation.environment) or sview_len(invocation.stdin) > DIFFERENTIAL_DEFAULT_MAX_PROCESS_INPUT_BYTES
+            raise DifferentialRunnerError.Invalid if not differential_process_text_bytes_fits(invocation.executable, invocation.entry, invocation.arguments, invocation.working_directory, invocation.environment) or sview_len(invocation.stdin) > DIFFERENTIAL_DEFAULT_MAX_PROCESS_INPUT_BYTES or invocation.stdin_bytes.count > DIFFERENTIAL_DEFAULT_MAX_PROCESS_INPUT_BYTES
+            raise DifferentialRunnerError.Invalid if invocation.stdin_binary and invocation.stdin != ""
+            raise DifferentialRunnerError.Invalid if not invocation.stdin_binary and invocation.stdin_bytes.count != 0
             for argument in invocation.arguments:
                 raise DifferentialRunnerError.Invalid if differential_sview_has_nul(argument)
             for entry in invocation.environment:
@@ -2359,7 +2386,10 @@ module EsDifferential:
                 if input_handle == null:
                     raise DifferentialRunnerError.Process
                 input_stream: mutable heap void& = input_handle
-                if sview_len(invocation.stdin) > 0 and differential_write_stream_fully(input_stream, invocation.stdin.data, sview_len(invocation.stdin)) != sview_len(invocation.stdin):
+                if invocation.stdin_binary and invocation.stdin_bytes.count > 0 and differential_write_stream_fully(input_stream, (&invocation.stdin_bytes[0]).cast[mutable u8&], invocation.stdin_bytes.count) != invocation.stdin_bytes.count:
+                    _ = fclose(input_stream)
+                    raise DifferentialRunnerError.Process
+                if not invocation.stdin_binary and sview_len(invocation.stdin) > 0 and differential_write_stream_fully(input_stream, invocation.stdin.data, sview_len(invocation.stdin)) != sview_len(invocation.stdin):
                     _ = fclose(input_stream)
                     raise DifferentialRunnerError.Process
                 if fseek(input_stream, 0, FILEIO_SEEK_SET) != 0:

@@ -58,6 +58,13 @@ for boundary in 'DifferentialCaseIssueKind.InvalidWorldFileKind' 'DifferentialCa
     fi
 done
 
+for boundary in 'stdin_bytes: mutable darray[u8]' 'stdin_binary: bool' 'InvalidProcessInputPayload' 'differential_process_preparation_preserves_binary_stdin'; do
+    if ! rg -Fq "$boundary" "$source_file" "$fixture_file"; then
+        printf 'differential case audit: missing binary process-input coverage %s\n' "$boundary" >&2
+        exit 1
+    fi
+done
+
 for boundary in 'DifferentialArtifactDirectoryState.Staging' 'DifferentialArtifactDirectoryState.Ready' 'DifferentialArtifactDirectoryState.Published' 'DifferentialArtifactDirectoryIssue.InvalidPublicationState' 'DifferentialArtifactDirectoryIssue.InvalidTransition' 'make_differential_artifact_directory_plan' 'validate_differential_artifact_directory' 'advance_differential_artifact_directory'; do
     if ! rg -Fq "$boundary" "$source_file" "$fixture_file"; then
         printf 'differential case audit: missing boundary coverage %s\n' "$boundary" >&2

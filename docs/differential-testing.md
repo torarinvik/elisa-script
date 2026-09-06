@@ -63,6 +63,12 @@ text or values; identical runs return `DifferentialDifferenceKind.Equal`. The
 comparator is implemented as an explicit Elisa state machine, so it cannot skip a
 comparison phase or silently continue after a mismatch.
 
+Process invocations also distinguish text stdin from an owned binary stdin buffer.
+`stdin_binary` is required for byte payloads, mixed text/byte inputs are rejected,
+and the same 64 MiB input ceiling applies before a child is launched. The host
+adapter writes the bounded byte buffer by length, so embedded NULs and other
+binary values never pass through a C-string conversion.
+
 The interpreter and direct-bytecode engine cap ordered `observe` events at one
 million per run. Crossing that shared budget raises `InterpretError.OutputLimit`
 before the next event is appended; differential adapters therefore receive a
