@@ -19,6 +19,7 @@ for required_file in "$interpreter" "$fixture" "$docs" "$ledger" "$plan"; do
 done
 
 rg -q 'const INTERPRET_MAX_PATH_BYTES: usize = 4096' "$interpreter"
+rg -q 'const INTERPRET_MAX_TEMPORARY_PREFIX_BYTES: usize = INTERPRET_MAX_PATH_BYTES - 1 - 17 - 6' "$interpreter"
 rg -q 'def path_text_valid\(' "$interpreter"
 rg -q 'return false if length == 0 or length >= INTERPRET_MAX_PATH_BYTES' "$interpreter"
 rg -q 'return not text_has_nul\(value\)' "$interpreter"
@@ -29,6 +30,9 @@ rg -q 'c_source: dstr = nul_terminated_path\(' "$interpreter"
 rg -q 'c_target: dstr = nul_terminated_path\(' "$interpreter"
 rg -q 'working_directory_bytes <- nul_terminated_path\(' "$interpreter"
 rg -q 'not path_text_valid\(working_directory\.text\)' "$interpreter"
+rg -q 'sview_len\(prefix\.text\) > INTERPRET_MAX_TEMPORARY_PREFIX_BYTES' "$interpreter"
+rg -q 'interpreter_rejects_oversized_temporary_prefix_before_nul_scan' "$fixture"
+rg -q 'sview\("", 0, 4073\)' "$fixture"
 
 if rg -q 'c_(path|source|destination|target|link): dstr = nul_terminated_text\(' "$interpreter"; then
     printf 'interpreter path audit: a filesystem c-string still bypasses path admission\n' >&2

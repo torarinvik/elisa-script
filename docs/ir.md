@@ -914,6 +914,11 @@ interpreter calls POSIX `mkstemp`/`mkdtemp` under `/tmp`; `mkstemp`'s descriptor
 closed before returning the permanent generated path. `temp_file`, `mktemp`,
 `temp_directory`, `temp_dir`, and `mkdtemp` are lowering aliases, and the
 operation remains on the direct bytecode filesystem path.
+The interpreter admits the caller prefix by length before scanning for NUL or
+`/`; the fixed `/tmp/elisascript-` prefix and six placeholders leave a 4,072-byte
+maximum prefix so the complete template, including its terminator, stays inside
+the shared 4 KiB path envelope. Oversized prefixes fail through `FileIoError`
+without allocating or invoking `mkstemp`/`mkdtemp`.
 The shell-size predicate has no dedicated opcode: `is_nonempty`/`file_nonempty`
 lower to `FileSize` followed by a typed `Greater` comparison against zero. This
 keeps the existing `Named(Path) -> Int(unsigned, 64)` file-size contract while

@@ -32,6 +32,12 @@ entry, argv, and environment fields retain the 64 MiB process-text budget. The
 oversized working-directory fixture remains metadata-only and is covered by the
 differential compiler-free audit; process execution evidence remains gated.
 
+Temporary-file prefixes now reserve the fixed `/tmp/elisascript-` and six
+placeholder bytes inside the same 4 KiB path envelope, rejecting prefixes over
+4,072 bytes before NUL/slash scans or `mkstemp`/`mkdtemp` allocation. The
+oversized-prefix fixture is metadata-only; host execution evidence remains
+gated.
+
 The current static slice also binds canonical SHA-256 digest words into
 differential ESDF version-4 manifests when a module identity is available;
 legacy version-1/2/3 manifests remain decode-compatible but are explicitly
