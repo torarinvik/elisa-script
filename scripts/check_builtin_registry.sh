@@ -702,6 +702,20 @@ if ! rg -q 'lowers_secure_temporary_file_and_directory_aliases' "$repo_root/test
     printf 'builtin registry audit: temporary-path lowering fixture is missing\n' >&2
     exit 1
 fi
+if ! rg -q 'def registry_remove_tree_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
+    printf 'builtin registry audit: recursive-removal registry rows lack semantic negative fixtures\n' >&2
+    exit 1
+fi
+for recursive_name in remove_tree rmtree; do
+    if ! rg -q "name: \"$recursive_name\", receiver: \"global\", arity_min: 1, arity_max: 1, argument_types: \"Path\", return_type: \"bool\", effects: \"File.Write\", errors: \"FileIoError\", opcode: \"RemoveTree\"" "$registry_file"; then
+        printf 'builtin registry audit: recursive-removal row is incomplete for %s\n' "$recursive_name" >&2
+        exit 1
+    fi
+done
+if ! rg -q 'lowers_typed_directory_lifecycle_and_working_directory_operations' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
+    printf 'builtin registry audit: recursive-removal lowering coverage is missing\n' >&2
+    exit 1
+fi
 if ! rg -q 'lowers_python_directory_aliases_to_existing_typed_opcodes' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_typed_directory_lifecycle_and_working_directory_operations' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_deterministic_typed_directory_listing' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_native_typed_glob_expansion' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: directory registry rows lack lowering fixtures\n' >&2
     exit 1

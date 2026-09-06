@@ -1256,6 +1256,9 @@ descriptor, `File.Write`/`FileIoError`, and `SymlinkPath` metadata.
 removes a file, symbolic link, or directory tree without following symlink
 directories. `rmtree` is an equivalent shell/Python-oriented alias. Traversal is
 bounded to 128 levels and failures remain typed `FileIoError` values.
+The shared typed-builtin registry owns both spellings with the nominal `Path`,
+`File.Write`/`FileIoError`, and `RemoveTree` contract; source-defined functions
+continue to shadow the compiler-known operations.
 
 `copy_tree(source: Path, destination: Path) -> bool error[FileIoError]
 can[File.Read, File.Write]` recursively copies files, directories, and symbolic
