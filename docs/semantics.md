@@ -117,7 +117,12 @@ ordinary IR verifier when installed. The callback's declared `can[...]` effects 
 decorator cannot hide capability or error requirements that host-provided handlers
 already expose through `introduces_effects` and `errors`.
 Duplicate-operation diagnostics point at the later operation token when source
-coordinates are available.
+coordinates are available. For source-declared operations, semantic analysis also
+rejects an impossible direct literal at each payload position when the declaration
+uses a bare primitive type (`i8`–`i64`, unsigned integer, `f32`/`f64`, string, `bool`,
+or `char`). Identifier and computed-expression payloads, as well as structural,
+generic, function, and refinement types, remain conservative until ordinary type
+inference or lowering has the required context.
 
 Dynamic handlers are installed through the checked handler descriptor API and
 are scoped to the dynamic call stack. `Linear` and `Affine` resumptions consume

@@ -111,6 +111,26 @@ if ! rg -q 'DiagnosticKind.TypeMismatch.*expected: "void".*operation_info\.resul
     printf 'effect operation metadata audit: semantic signal checking does not reject non-void declarations\n' >&2
     exit 1
 fi
+for helper in sig_trim_effect_span sig_effect_payload_segment sig_effect_payload_type sig_effect_payload_type_at sig_check_effect_literal_payloads sig_check_signal_literal_payloads; do
+    if ! rg -q "def $helper\\(" "$semantic_file"; then
+        printf 'effect operation metadata audit: semantic literal-payload helper is missing: %s\n' "$helper" >&2
+        exit 1
+    fi
+done
+if ! rg -q 'literal_never_fits\(literal_kind, expected\)' "$semantic_file" || ! rg -q 'stage0_literal_spelling\(literal_kind\)' "$semantic_file"; then
+    printf 'effect operation metadata audit: semantic literal-payload check does not use the shared mismatch oracle\n' >&2
+    exit 1
+fi
+if ! rg -q 'sig_check_effect_literal_payloads\(arguments, 1, operation, operation_info\.payload_signature' "$semantic_file" || ! rg -q 'sig_check_signal_literal_payloads\(body, operation, operation_info\.payload_signature' "$semantic_file"; then
+    printf 'effect operation metadata audit: semantic perform/signal literal payload checks are not wired\n' >&2
+    exit 1
+fi
+for fixture in source_effect_signal_literal_payload_type_is_checked source_effect_perform_literal_payload_type_is_checked; do
+    if ! rg -q "def $fixture\(" "$fixture_file" "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
+        printf 'effect operation metadata audit: semantic literal-payload fixture is missing: %s\n' "$fixture" >&2
+        exit 1
+    fi
+done
 
 for helper in effect_operation_bare_result_spelling effect_operation_trim_type_spelling effect_operation_top_level_comma effect_operation_type_from_spelling effect_operation_result_type effect_operation_result_is_known effect_operation_declared effect_operation_declared_arity effect_operation_parameter_type effect_operation_payload_type effect_operation_single_payload_type effect_operation_payload_is_known; do
     if ! rg -q "def $helper\(" "$lowerer_file"; then

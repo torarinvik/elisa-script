@@ -78,6 +78,106 @@ extend Semantic:
                 return SigEffectOperation{known: false, arity: 0, enforce_arity: true, payload_signature: "", result_signature: "", operation_id: Ast::effect_operation_identity(family, operation)}
 
 
+        # The parser deliberately preserves an effect payload declaration as an opaque
+        # source span.  The semantic pass only needs the small, sound subset that can be
+        # checked without inventing a second type parser: top-level parameters whose
+        # type is a bare primitive name.  Nested/container/function types stay unknown and
+        # are left to the typed lowerer, which has the full type machinery.
+        def sig_trim_effect_span(span: sview) -> sview:
+            can Abort.Panic:
+                start: mutable usize = 0
+                finish: mutable usize = sview_len(span)
+                while start < finish and (sview_at(span, start) == 32 or sview_at(span, start) == 9 or sview_at(span, start) == 10 or sview_at(span, start) == 13) |start, span, finish|:
+                    start <- start + 1
+                while finish > start and (sview_at(span, finish - 1) == 32 or sview_at(span, finish - 1) == 9 or sview_at(span, finish - 1) == 10 or sview_at(span, finish - 1) == 13) |start, span, finish|:
+                    finish <- finish - 1
+                return span[start:finish]
+
+
+        def sig_effect_payload_segment(signature: sview, wanted: usize) -> sview:
+            can Abort.Panic:
+                return sview("", 0, 0) if sview_len(signature) < 2 or sview_at(signature, 0) != 40 or sview_at(signature, sview_len(signature) - 1) != 41
+                segment_start: mutable usize = 1
+                segment_index: mutable usize = 0
+                parens: mutable u32 = 0
+                brackets: mutable u32 = 0
+                braces: mutable u32 = 0
+                cursor: mutable usize = 1
+                while cursor + 1 < sview_len(signature) |cursor, segment_start, segment_index, parens, brackets, braces|:
+                    byte: u8 = sview_at(signature, cursor)
+                    parens <- parens + 1 if byte == 40
+                    parens <- parens - 1 if byte == 41 and parens > 0
+                    brackets <- brackets + 1 if byte == 91
+                    brackets <- brackets - 1 if byte == 93 and brackets > 0
+                    braces <- braces + 1 if byte == 123
+                    braces <- braces - 1 if byte == 125 and braces > 0
+                    if byte == 44 and parens == 0 and brackets == 0 and braces == 0:
+                        return sig_trim_effect_span(signature[segment_start:cursor]) if segment_index == wanted
+                        segment_index <- segment_index + 1
+                        segment_start <- cursor + 1
+                    cursor <- cursor + 1
+                return sig_trim_effect_span(signature[segment_start:sview_len(signature) - 1]) if segment_index == wanted
+                return sview("", 0, 0)
+
+
+        def sig_effect_payload_type(segment: sview) -> sview:
+            can Abort.Panic:
+                cleaned: sview = sig_trim_effect_span(segment)
+                colon: mutable usize = sview_len(cleaned)
+                parens: mutable u32 = 0
+                brackets: mutable u32 = 0
+                braces: mutable u32 = 0
+                cursor: mutable usize = 0
+                while cursor < sview_len(cleaned) |cursor, colon, parens, brackets, braces|:
+                    byte: u8 = sview_at(cleaned, cursor)
+                    parens <- parens + 1 if byte == 40
+                    parens <- parens - 1 if byte == 41 and parens > 0
+                    brackets <- brackets + 1 if byte == 91
+                    brackets <- brackets - 1 if byte == 93 and brackets > 0
+                    braces <- braces + 1 if byte == 123
+                    braces <- braces - 1 if byte == 125 and braces > 0
+                    colon <- cursor if colon == sview_len(cleaned) and byte == 58 and parens == 0 and brackets == 0 and braces == 0
+                    cursor <- cursor + 1
+                return sview("", 0, 0) if colon == sview_len(cleaned)
+                type_name: sview = sig_trim_effect_span(cleaned[colon + 1:sview_len(cleaned)])
+                if sview_len(type_name) >= 8 and type_name[0:8] == "mutable ":
+                    type_name <- sig_trim_effect_span(type_name[8:sview_len(type_name)])
+                return type_name if is_integer_type_name(type_name) or is_float_type_name(type_name) or is_string_type_name(type_name) or type_name == "bool" or type_name == "char"
+                return sview("", 0, 0)
+
+
+        def sig_effect_payload_type_at(signature: sview, wanted: usize) -> sview:
+            can Abort.Panic:
+                return sig_effect_payload_type(sig_effect_payload_segment(signature, wanted))
+
+
+        def sig_check_effect_literal_payloads(arguments: darray[Ast::Expr]&, start_index: usize, operation: sview, signature: sview, line: u32, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                return if start_index >= arguments.count
+                argument_index: mutable usize = start_index
+                payload_index: mutable usize = 0
+                while argument_index < arguments.count |argument_index, payload_index, arguments, operation, signature, line, table|:
+                    expected: sview = sig_effect_payload_type_at(signature, payload_index)
+                    literal_kind: sview = literal_kind_of(arguments[argument_index])
+                    table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.TypeMismatch, name: operation, line: line, expected: expected, actual: stage0_literal_spelling(literal_kind), expected_count: (payload_index + 1).u32()}) if expected != "" and literal_kind != "" and literal_never_fits(literal_kind, expected)
+                    argument_index <- argument_index + 1
+                    payload_index <- payload_index + 1
+
+
+        def sig_check_signal_literal_payloads(body: darray[Ast::Stmt]&, operation: sview, signature: sview, line: u32, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                payload_index: mutable usize = 0
+                for statement in body |payload_index, body, operation, signature, line, table|:
+                    expected: sview = sig_effect_payload_type_at(signature, payload_index)
+                    match statement:
+                        Stmt.Expr(expression, expression_line):
+                            literal_kind: sview = literal_kind_of(expression)
+                            table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.TypeMismatch, name: operation, line: line, expected: expected, actual: stage0_literal_spelling(literal_kind), expected_count: (payload_index + 1).u32()}) if expected != "" and literal_kind != "" and literal_never_fits(literal_kind, expected)
+                        _:
+                            pass
+                    payload_index <- payload_index + 1
+
+
         # Source effect operation names are closed within their family. Overloads are
         # deliberately not part of the first Elisascript effect ABI: dispatch identifies
         # an operation by `(family, name)`, and accepting two signatures with that identity
@@ -132,6 +232,7 @@ extend Semantic:
                         table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.UnknownPermissionMember, name: family, line: line, expected: "", actual: operation}) if known_family and not operation_info.known
                         payload_count: u32 = arguments.count.u32() - 1
                         table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.UnknownPermissionMember, name: family, line: line, expected: "", actual: operation}) if known_family and operation_info.known and operation_info.enforce_arity and payload_count != operation_info.arity
+                        table <- sig_check_effect_literal_payloads(arguments, 1, operation, operation_info.payload_signature, line, table) if known_family and operation_info.known and operation_info.enforce_arity and payload_count == operation_info.arity
                     _:
                         pass
 
@@ -254,6 +355,7 @@ extend Semantic:
                                 table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.UnknownPermissionMember, name: family, line: line.line, expected: "", actual: operation}) if known_family and not operation_info.known
                                 table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.UnknownPermissionMember, name: family, line: line.line, expected: "", actual: operation}) if known_family and operation_info.known and operation_info.enforce_arity and body.count.u32() != operation_info.arity
                                 table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.TypeMismatch, name: operation, line: line.line, expected: "void", actual: operation_info.result_signature}) if known_family and operation_info.known and operation_info.enforce_arity and operation_info.result_signature != "" and operation_info.result_signature != "void"
+                                table <- sig_check_signal_literal_payloads(body, operation, operation_info.payload_signature, line.line, table) if known_family and operation_info.known and operation_info.enforce_arity and body.count.u32() == operation_info.arity
                             table <- sig_walk_statements(body, user_perms, can_families, effect_declarations, effect_operations, table)
                         Stmt.Expr(expression, line):
                             table <- sig_scan_expression(expression, user_perms, can_families, effect_declarations, effect_operations, table)
