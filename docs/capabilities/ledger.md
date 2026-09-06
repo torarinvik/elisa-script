@@ -96,6 +96,9 @@ diagnostics, structural result inference, and lowerer call-shape validation all
 consume those rows, including bound Regex receiver classification for `split`,
 with compiler-free audit coverage (`a0337ec`, `73b15d4`).
 
+The six canonical global regex facades now use typed registry rows for
+text/Regex contracts and aggregate result inference (`37ba738`).
+
 ## Evidence record template
 
 Every future executed or differential-verified entry must append a dated record
