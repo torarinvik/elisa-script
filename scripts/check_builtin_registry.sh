@@ -818,6 +818,7 @@ if ! rg -q 'typed_builtin_method_spec\("Path", method_name\)' "$lowerer_file" ||
    ! rg -q 'path_spec\.known and \(path_spec\.opcode == "PathGlob" or path_spec\.opcode == "PathRGlob"\)' "$lowerer_file" || \
    ! rg -q 'opcode: Opcode = Opcode\.PathRGlob if path_spec\.opcode == "PathRGlob" else Opcode\.PathGlob' "$lowerer_file" || \
    ! rg -q 'path_spec\.known and path_spec\.opcode == "ReadText"' "$lowerer_file" || \
+   rg -q 'path_spec\.known and path_spec\.opcode == "ReadText" and .*method_name' "$lowerer_file" || \
    ! rg -q 'path_spec\.known and path_spec\.opcode == "ReadBytes"' "$lowerer_file" || \
    ! rg -q 'path_spec\.known and \(path_spec\.opcode == "WriteText" or path_spec\.opcode == "AppendText"\)' "$lowerer_file" || \
    ! rg -q 'path_spec\.known and \(path_spec\.opcode == "WriteBytes" or path_spec\.opcode == "AppendBytes"\)' "$lowerer_file" || \
