@@ -498,8 +498,10 @@ backslash, and NUL forms. Its state machine is `Staging`, `Ready`, then
 `Published`; staging accepts only a `Prepared` ESIX index, while the latter two
 states require `Complete`. The eventual POSIX adapter must create and populate
 the staging directory, write the complete index last, and rename the directory
-within the same parent without shell evaluation. The plan validator covers the
-ordering and path contract now; actual directory creation, fsync policy, and
+within the same parent without shell evaluation. `advance_differential_artifact_directory`
+allows only the single forward edges `Staging → Ready` and `Ready → Published`
+and never mutates the plan on a rejected transition. The plan validator covers
+the ordering and path contract now; actual directory creation, fsync policy, and
 crash-recovery testing remain execution work.
 
 The execution boundary now carries a backend-neutral `ExecutionCapability`
