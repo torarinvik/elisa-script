@@ -285,7 +285,8 @@ admission state machine (`Available → Held → Published/Aborted`) so stale or
 competing tokens fail closed before the host adapter mutates a staging path; it
 is deliberately not presented as an OS lock. Callers that provide the parent
 directory also get a typed `opendir → dirfd → fsync → closedir` durability edge
-after the rename; crash/restart recovery and platform-specific lock semantics
+after the rename; `DirectorySyncFailed` is propagated instead of being
+discarded; crash/restart recovery and platform-specific lock semantics
 remain open. POSIX hosts may additionally use `ArtifactCacheWriterLock`, which
 opens a bounded append-only lock stream and acquires `flock(LOCK_EX|LOCK_NB)`;
 the portable lease remains the source-level fallback and lock-file lifecycle
