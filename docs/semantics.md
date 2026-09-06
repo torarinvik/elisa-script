@@ -1131,7 +1131,10 @@ extension of the same contract boundary.
 The first executable filesystem primitive is
 `path_exists(path: Path) -> bool`. It accepts the nominal `Path` type rather than
 an arbitrary string and contributes `File.Read` to the enclosing function's effect
-row. The reference interpreter executes it through Elisa's own
+row and declares `FileIoError` in the enclosing function's error contract. The
+shared typed-builtin registry owns the `path_exists` and Python-compatible
+`exists` spellings, so semantic argument checking, lowering metadata, and the
+`PathExists` opcode use the same nominal-`Path` contract. The reference interpreter executes it through Elisa's own
 `elisacore_fileio.elisa` runtime; it does not invoke a shell or Python. A
 source-defined `path_exists` function shadows the compiler-known operation.
 Empty or embedded-NUL paths are treated as non-existent and never reach the

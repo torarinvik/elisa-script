@@ -217,6 +217,24 @@ if ! rg -q 'error_name in lowered\.module\.functions\[0\]\.errors where error_na
     printf 'builtin registry audit: fallible registry rows lack lowering fixtures\n' >&2
     exit 1
 fi
+for filesystem_name in path_exists exists; do
+    if ! rg -q "name: \"$filesystem_name\", receiver: \"global\".*argument_types: \"Path\".*effects: \"File.Read\".*errors: \"FileIoError\".*opcode: \"PathExists\"" "$registry_file"; then
+        printf 'builtin registry audit: filesystem existence row is incomplete: %s\n' "$filesystem_name" >&2
+        exit 1
+    fi
+done
+if ! rg -q 'lowers_nominal_path_existence_with_file_effect' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'any error_name in fn\.errors where error_name == "FileIoError"' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
+    printf 'builtin registry audit: filesystem existence row lacks lowering effect/error fixture\n' >&2
+    exit 1
+fi
+if ! rg -q 'spec\.argument_types == "Path"' "$receiver_semantic_file" || ! rg -q 'argument_type\.name == "Path" if expected == "Path"' "$receiver_semantic_file"; then
+    printf 'builtin registry audit: Path argument descriptor is not consumed by semantic global checks\n' >&2
+    exit 1
+fi
+if ! rg -q 'def registry_path_exists_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
+    printf 'builtin registry audit: Path registry negative fixture is missing\n' >&2
+    exit 1
+fi
 
 for name in $method_names; do
     if ! rg -q "known: true, name: \"$name\", receiver: \"Text\"" "$registry_file"; then
