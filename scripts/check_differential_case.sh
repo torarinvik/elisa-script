@@ -86,6 +86,13 @@ for boundary in 'DifferentialArtifactDirectoryState.Staging' 'DifferentialArtifa
     fi
 done
 
+for boundary in 'assert plan.state == DifferentialWorldMaterializationState.Running' 'duplicate_restore: DifferentialWorldMaterializationCheck' 'assert plan.state == DifferentialWorldMaterializationState.Restored' 'assert skipped.state == DifferentialArtifactDirectoryState.Staging' 'duplicate_publish: DifferentialArtifactDirectoryCheck' 'assert published.state == DifferentialArtifactDirectoryState.Published'; do
+    if ! rg -Fq "$boundary" "$fixture_file"; then
+        printf 'differential case audit: missing terminal state-preservation coverage %s\n' "$boundary" >&2
+        exit 1
+    fi
+done
+
 for boundary in 'DifferentialShrinkKind.RemoveWorldFile' 'DifferentialShrinkKind.ClearWorldFileBytes' 'DifferentialShrinkKind.RemoveWorldArgument' 'DifferentialShrinkKind.RemoveWorldEnvironment' 'DifferentialShrinkKind.ClearWorldStdin' 'DifferentialShrinkKind.ClearWorldStdinBytes' 'shrink_differential_case'; do
     if ! rg -Fq "$boundary" "$source_file" "$fixture_file"; then
         printf 'differential case audit: missing boundary coverage %s\n' "$boundary" >&2
