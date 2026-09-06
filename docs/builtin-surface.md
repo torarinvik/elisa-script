@@ -19,6 +19,9 @@ source function owns the method name, and qualified `os`, `os.path`, `shutil`,
 callable name. This keeps local or module-qualified code from being silently
 rewritten into an unrelated builtin; generic UFCS lowering remains a separate
 migration item.
+The source-declaration test intentionally ignores line-zero registry seed rows;
+otherwise a seeded global such as `contains` would incorrectly suppress its
+receiver contract.
 
 The current strict scalar/text slice contains these 23 spellings:
 

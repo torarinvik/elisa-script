@@ -78,6 +78,10 @@ Registry `darray[text]` result rows for Text split, line-split, and partition
 methods now flow through the structural type channel when the canonical
 `darray[sview]` row is interned (`69de436`).
 
+The source-shadowing guard now distinguishes line-zero registry seed symbols
+from actual source declarations, so seeded names such as `contains` retain their
+receiver contract (`working tree`).
+
 ## Evidence record template
 
 Every future executed or differential-verified entry must append a dated record

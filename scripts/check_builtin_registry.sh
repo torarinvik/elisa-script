@@ -83,7 +83,7 @@ if ! rg -q 'typed_builtin_method_spec\("Text", method\)\.known' "$receiver_seman
     printf 'builtin registry audit: semantic receiver admission does not consume the Text registry\n' >&2
     exit 1
 fi
-if ! rg -q 'direct_function_count\(table, method\) == 0' "$receiver_semantic_file"; then
+if ! rg -q 'ufm_has_source_function\(table, method\)' "$receiver_semantic_file"; then
     printf 'builtin registry audit: semantic Text diagnostics do not guard source shadowing\n' >&2
     exit 1
 fi
