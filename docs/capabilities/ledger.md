@@ -57,6 +57,10 @@ miss sentinel (`5f6b70a`).
 fixed text-separator contract while preserving their `darray[sview]` result
 shape (`881a636`).
 
+The receiver registry now also covers the zero-argument text emptiness aliases,
+with lowerer result metadata preserved for collection and Path compatibility
+(`a1f9bfb`).
+
 ## Evidence record template
 
 Every future executed or differential-verified entry must append a dated record
