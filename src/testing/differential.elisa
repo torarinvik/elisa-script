@@ -417,6 +417,38 @@ module EsDifferential:
             reason: mutable sview = ""
 
 
+        const enum DifferentialWorldMaterializationState of u8:
+            Planned
+            Materialized
+            Running
+            Restoring
+            Restored
+
+
+        struct DifferentialWorldMaterializationPlan:
+            format_version: u8 = 1
+            snapshot_fingerprint: u64 = 0
+            reference_root: sview = ""
+            candidate_root: sview = ""
+            state: DifferentialWorldMaterializationState = DifferentialWorldMaterializationState.Planned
+
+
+        const enum DifferentialWorldMaterializationIssue of u8:
+            None
+            InvalidPlan
+            InvalidSnapshot
+            SnapshotFingerprintMismatch
+            InvalidRoot
+            RootsCollide
+            InvalidTransition
+
+
+        struct DifferentialWorldMaterializationCheck:
+            valid: mutable bool
+            issue: mutable DifferentialWorldMaterializationIssue
+            reason: mutable sview = ""
+
+
         const enum DifferentialArtifactPolicy of u8:
             Never
             OnMismatch
@@ -3527,3 +3559,111 @@ module EsDifferential:
                     break
 
             return cursor.result
+
+
+    private:
+        const DIFFERENTIAL_MAX_WORLD_MATERIALIZATION_ROOT_BYTES: usize = 4096
+
+
+        def differential_world_materialization_state_valid(state: DifferentialWorldMaterializationState) -> bool:
+            return state in {DifferentialWorldMaterializationState.Planned, DifferentialWorldMaterializationState.Materialized, DifferentialWorldMaterializationState.Running, DifferentialWorldMaterializationState.Restoring, DifferentialWorldMaterializationState.Restored}
+
+
+        # Materializers receive absolute roots so neither side can accidentally
+        # inherit the adapter's ambient cwd. Empty, dot, parent, repeated, and
+        # trailing path components are rejected before mkdir or fixture writes.
+        def differential_world_materialization_root_valid(root: sview) -> bool:
+            length: usize = sview_len(root)
+            return false if length < 2 or length > DIFFERENTIAL_MAX_WORLD_MATERIALIZATION_ROOT_BYTES or differential_sview_has_nul(root) or sview_at(root, 0) != 47
+            segment_start: mutable usize = 1
+            index: mutable usize = 1
+            while index < length:
+                if sview_at(root, index) == 47:
+                    return false if not differential_world_path_segment_safe(root, segment_start, index)
+                    segment_start <- index + 1
+                index <- index + 1
+            return differential_world_path_segment_safe(root, segment_start, length)
+
+
+        def differential_world_materialization_plan_valid(plan: DifferentialWorldMaterializationPlan&) -> bool:
+            return false if plan.format_version != 1 or plan.snapshot_fingerprint == 0 or not differential_world_materialization_state_valid(plan.state)
+            return false if not differential_world_materialization_root_valid(plan.reference_root) or not differential_world_materialization_root_valid(plan.candidate_root)
+            return plan.reference_root != plan.candidate_root
+
+
+        def differential_world_materialization_failure(issue: DifferentialWorldMaterializationIssue, reason: sview) -> DifferentialWorldMaterializationCheck:
+            return DifferentialWorldMaterializationCheck{valid: false, issue: issue, reason: reason}
+
+
+        const enum DifferentialWorldMaterializationCheckState of u8:
+            Plan
+            Snapshot
+            Binding
+            Done
+
+
+        struct DifferentialWorldMaterializationCheckCursor:
+            state: mutable DifferentialWorldMaterializationCheckState
+            result: mutable DifferentialWorldMaterializationCheck
+
+
+    public:
+        # Describe the two isolated roots that a host adapter must prepare for
+        # one snapshot. Construction is identity-only; it never creates or
+        # removes a directory and therefore remains safe for compiler-free
+        # admission and replay planning.
+        def make_differential_world_materialization_plan(snapshot: DifferentialWorldSnapshot&, reference_root: sview, candidate_root: sview, state: DifferentialWorldMaterializationState = DifferentialWorldMaterializationState.Planned) -> DifferentialWorldMaterializationPlan error[DifferentialRunnerError] can[Memory.Allocate, Abort.Panic]:
+            raise DifferentialRunnerError.Invalid if not differential_world_snapshot_valid(snapshot) or not differential_world_materialization_state_valid(state)
+            plan: DifferentialWorldMaterializationPlan = DifferentialWorldMaterializationPlan{snapshot_fingerprint: snapshot.world_fingerprint, reference_root: reference_root, candidate_root: candidate_root, state: state}
+            raise DifferentialRunnerError.Invalid if not differential_world_materialization_plan_valid(plan)
+            return plan
+
+
+        # Validate the lifecycle identity before an adapter performs any host
+        # operation. A changed world or cross-boundary root is rejected without
+        # mutating the plan.
+        def validate_differential_world_materialization(plan: DifferentialWorldMaterializationPlan&, snapshot: DifferentialWorldSnapshot&, world: DifferentialWorld&) -> DifferentialWorldMaterializationCheck:
+            cursor: mutable DifferentialWorldMaterializationCheckCursor = DifferentialWorldMaterializationCheckCursor{state: DifferentialWorldMaterializationCheckState.Plan, result: DifferentialWorldMaterializationCheck{valid: true, issue: DifferentialWorldMaterializationIssue.None}}
+            machine over cursor.state:
+                state Validate
+                start Validate
+
+                Validate, DifferentialWorldMaterializationCheckState.Plan if differential_world_materialization_plan_valid(plan):
+                    cursor.state <- DifferentialWorldMaterializationCheckState.Snapshot
+                    -> Validate
+                Validate, DifferentialWorldMaterializationCheckState.Plan:
+                    cursor.result <- differential_world_materialization_failure(DifferentialWorldMaterializationIssue.InvalidPlan, "world materialization plan is invalid")
+                    cursor.state <- DifferentialWorldMaterializationCheckState.Done
+                    -> Validate
+
+                Validate, DifferentialWorldMaterializationCheckState.Snapshot if validate_differential_world_snapshot(world, snapshot).valid:
+                    cursor.state <- DifferentialWorldMaterializationCheckState.Binding
+                    -> Validate
+                Validate, DifferentialWorldMaterializationCheckState.Snapshot:
+                    cursor.result <- differential_world_materialization_failure(DifferentialWorldMaterializationIssue.InvalidSnapshot, "world snapshot is invalid")
+                    cursor.state <- DifferentialWorldMaterializationCheckState.Done
+                    -> Validate
+
+                Validate, DifferentialWorldMaterializationCheckState.Binding if plan.snapshot_fingerprint == snapshot.world_fingerprint:
+                    cursor.state <- DifferentialWorldMaterializationCheckState.Done
+                    -> Validate
+                Validate, DifferentialWorldMaterializationCheckState.Binding:
+                    cursor.result <- differential_world_materialization_failure(DifferentialWorldMaterializationIssue.SnapshotFingerprintMismatch, "materialization plan does not match the world snapshot")
+                    cursor.state <- DifferentialWorldMaterializationCheckState.Done
+                    -> Validate
+
+                Validate, DifferentialWorldMaterializationCheckState.Done:
+                    break
+
+            return cursor.result
+
+
+        # Advance exactly one host lifecycle edge. The host adapter performs
+        # mkdir/write/chdir/restore operations around these declarations; this
+        # function only authorizes the next state and never performs I/O.
+        def advance_differential_world_materialization(plan: mutable DifferentialWorldMaterializationPlan&, next_state: DifferentialWorldMaterializationState) -> DifferentialWorldMaterializationCheck:
+            return differential_world_materialization_failure(DifferentialWorldMaterializationIssue.InvalidPlan, "world materialization plan is invalid") if not differential_world_materialization_plan_valid(plan)
+            valid_edge: bool = (plan.state == DifferentialWorldMaterializationState.Planned and next_state == DifferentialWorldMaterializationState.Materialized) or (plan.state == DifferentialWorldMaterializationState.Materialized and next_state == DifferentialWorldMaterializationState.Running) or (plan.state == DifferentialWorldMaterializationState.Running and next_state == DifferentialWorldMaterializationState.Restoring) or (plan.state == DifferentialWorldMaterializationState.Restoring and next_state == DifferentialWorldMaterializationState.Restored)
+            return differential_world_materialization_failure(DifferentialWorldMaterializationIssue.InvalidTransition, "world materialization transition is not a single lifecycle edge") if not valid_edge
+            plan.state <- next_state
+            return DifferentialWorldMaterializationCheck{valid: true, issue: DifferentialWorldMaterializationIssue.None}

@@ -516,6 +516,15 @@ before comparison. This is the identity and reset boundary for future host
 materializers; it does not claim that filesystem creation/restoration has been
 executed yet.
 
+`DifferentialWorldMaterializationPlan` makes that host boundary explicit for
+two separate absolute roots. Its lifecycle is `Planned → Materialized → Running
+→ Restoring → Restored`; roots must be distinct, bounded, NUL-free, and free of
+empty, dot, or parent components. The validator binds both roots to a valid
+world snapshot, and the transition helper authorizes exactly one edge without
+performing I/O. A future adapter must perform fixture creation, cwd/environment
+setup, cleanup, and restoration around these states and must not report
+`Restored` until `validate_differential_world_snapshot` succeeds.
+
 The directory publication protocol is modeled separately from the host I/O
 adapter by `DifferentialArtifactDirectoryPlan`. A plan has a bounded parent
 path and two single-component names: a private staging directory and a distinct
