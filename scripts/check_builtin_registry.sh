@@ -901,6 +901,14 @@ for milliseconds_name in sleep_milliseconds sleep_ms; do
         exit 1
     fi
 done
+if ! rg -q 'name: "sleep_milliseconds".*opcode: "Sleep", lowering_mode: 1' "$registry_file" || \
+   ! rg -q 'name: "sleep_ms".*opcode: "Sleep", lowering_mode: 1' "$registry_file" || \
+   ! rg -q 'sleep_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'sleep_spec\.lowering_mode == 1' "$lowerer_file" || \
+   ! rg -q 'sleep_spec\.opcode == "Sleep"' "$lowerer_file"; then
+    printf 'builtin registry audit: sleep lowerer does not consume unit/opcode metadata\n' >&2
+    exit 1
+fi
 if ! rg -q 'lowers_typed_sleep_units_and_aliases' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: sleep lowering fixture is missing\n' >&2
     exit 1

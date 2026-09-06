@@ -1918,8 +1918,9 @@ retries bounded `EINTR` interruptions before becoming `TimeError`, so a signal
 does not silently shorten a requested delay.
 The shared typed-builtin registry owns all four global spellings with their
 numeric duration descriptors, `void` result, `Time.Sleep`/`TimeError` contract,
-and `Sleep` opcode; the lowerer keeps the seconds-versus-milliseconds choice in
-the instruction's unit payload.
+and `Sleep` opcode. Its `lowering_mode` metadata carries the
+seconds-versus-milliseconds choice into the instruction's unit payload, so the
+lowerer does not infer units from alias spellings.
 
 ## Process environment
 
