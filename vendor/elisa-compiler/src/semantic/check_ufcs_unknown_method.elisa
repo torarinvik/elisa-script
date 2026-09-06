@@ -22,7 +22,7 @@ extend Semantic:
         # receiver-aware lowering; the remaining collection/path rows stay in
         # this compatibility list until their structural descriptors migrate.
         def ufm_is_elisascript_builtin_method(method: sview) -> bool:
-            return EsBuiltin::typed_builtin_method_spec("Text", method).known or method == "split" or method == "keys" or method == "values" or method == "contains" or method == "count" or method == "find" or method == "index" or method == "rfind" or method == "rindex" or method == "partition" or method == "rpartition" or method == "copy" or method == "reverse" or method == "setdefault" or method == "joinpath" or method == "exists" or method == "is_file" or method == "is_symlink" or method == "readlink" or method == "read_link" or method == "symlink_to" or method == "is_dir"
+            return EsBuiltin::typed_builtin_method_spec("Text", method).known or EsBuiltin::typed_builtin_method_spec("Regex", method).known or method == "split" or method == "keys" or method == "values" or method == "contains" or method == "count" or method == "find" or method == "index" or method == "rfind" or method == "rindex" or method == "partition" or method == "rpartition" or method == "copy" or method == "reverse" or method == "setdefault" or method == "joinpath" or method == "exists" or method == "is_file" or method == "is_symlink" or method == "readlink" or method == "read_link" or method == "symlink_to" or method == "is_dir"
 
         def ufm_has_source_function(table: SymbolTable&, method: sview) -> bool:
             can Abort.Panic:
@@ -97,6 +97,39 @@ extend Semantic:
                     table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.FirmArgTypeMismatch, name: method, pos: method_line, line: method_line.line, expected: expected_type, actual: argument_family, expected_count: (argument_index + 1).u32()}) if firm_bad
                     argument_index <- argument_index + 1
 
+        # Regex receiver rows currently accept only positional text values. Keep
+        # this checker deliberately narrow: unknown expressions remain unknown,
+        # while literals and firmly inferred scalar values receive precise
+        # diagnostics before lowering.
+        def ufm_check_regex_builtin_arity(method: sview, argument_count: usize, argument_names: darray[sview]&, method_line: Ast::Pos, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_method_spec("Regex", method)
+                actual: u32 = argument_count.u32()
+                mismatch: bool = spec.known and (actual < spec.arity_min or actual > spec.arity_max)
+                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.ArityMismatch, name: method, pos: method_line, line: method_line.line, expected: "n", actual: "", expected_count: spec.arity_min, actual_count: actual}) if mismatch and spec.arity_min == spec.arity_max
+                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.ArityMismatch, name: method, pos: method_line, line: method_line.line, expected: "", actual: ""}) if mismatch and spec.arity_min != spec.arity_max
+                while argument_index < argument_names.count |argument_index: usize = 0|:
+                    table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.CallArgumentError, name: method, pos: method_line, line: method_line.line, expected: "no_names", actual: ""}) if argument_names[argument_index] != ""
+                    argument_index <- argument_index + 1
+
+        def ufm_check_regex_builtin_argument_types(method: sview, arguments: darray[Ast::Expr]&, argument_names: darray[sview]&, var_types: darray[sview]&, type_names: darray[sview]&, method_line: Ast::Pos, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_method_spec("Regex", method)
+                while argument_index < arguments.count |argument_index: usize = 0|:
+                    argument_name: sview = argument_names[argument_index] if argument_index < argument_names.count else ""
+                    expected_text: bool = (spec.argument_types == "text" and argument_index == 0) or (spec.argument_types == "text,text" and argument_index < 2)
+                    expected_type: sview = "text" if expected_text else ""
+                    literal_kind: sview = literal_kind_of(arguments[argument_index])
+                    argument_type: InferType = infer_expression_type(arguments[argument_index], var_types, type_names, table)
+                    argument_family: sview = stage0_value_spelling(argument_type)
+                    literal_fits: bool = expected_text and literal_kind == "string"
+                    firm_fits: bool = expected_text and argument_type.kind == SemTypeKind.String
+                    literal_bad: bool = expected_type != "" and argument_name == "" and literal_kind != "" and not literal_fits
+                    firm_bad: bool = expected_type != "" and argument_name == "" and literal_kind == "" and argument_type.kind != SemTypeKind.Unknown and not firm_fits
+                    table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.LiteralArgTypeMismatch, name: method, pos: method_line, line: method_line.line, expected: expected_type, actual: stage0_literal_spelling(literal_kind), expected_count: (argument_index + 1).u32()}) if literal_bad
+                    table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.FirmArgTypeMismatch, name: method, pos: method_line, line: method_line.line, expected: expected_type, actual: argument_family, expected_count: (argument_index + 1).u32()}) if firm_bad
+                    argument_index <- argument_index + 1
+
         def ufm_global_argument_expected(spec: EsBuiltin::BuiltinSpec, index: usize) -> sview:
             return "collection" if spec.argument_types == "collection|text" and index == 0
             return "collection_path" if spec.argument_types == "collection|text|Path" and index == 0
@@ -163,6 +196,9 @@ extend Semantic:
                                 text_builtin_available: bool = receiver_type.kind == SemTypeKind.String and not ufm_has_source_function(table, method) and EsBuiltin::typed_builtin_method_spec("Text", method).known
                                 ufm_check_text_builtin_arity(method, arguments.count, argument_names, method_line, table) if text_builtin_available
                                 ufm_check_text_builtin_argument_types(method, arguments, argument_names, var_types, type_names, method_line, table) if text_builtin_available
+                                regex_builtin_available: bool = receiver_type.kind == SemTypeKind.Named and receiver_type.name == "Regex" and not ufm_has_source_function(table, method) and EsBuiltin::typed_builtin_method_spec("Regex", method).known
+                                ufm_check_regex_builtin_arity(method, arguments.count, argument_names, method_line, table) if regex_builtin_available
+                                ufm_check_regex_builtin_argument_types(method, arguments, argument_names, var_types, type_names, method_line, table) if regex_builtin_available
                                 struct_name: sview = receiver_type.name
                                 unknown: bool = receiver_type.kind == SemTypeKind.Named and struct_is_registered(table, struct_name) and not struct_has_field(table, struct_name, method) and direct_function_count(table, method) == 0 and not ufm_is_default_method(annotations, method) and not ufm_is_elisascript_builtin_method(method)
                                 table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.UnknownFieldAccess, name: method, pos: method_line, line: method_line.line, expected: struct_name, actual: ""}) if unknown

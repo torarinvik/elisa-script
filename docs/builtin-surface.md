@@ -8,9 +8,10 @@ opcode name. The registry is namespaced
 as `EsBuiltin` and exposes only its contract type and lookup functions; helper
 implementation details remain private to the module as the registry grows.
 Receiver methods use the same record through `typed_builtin_method_spec`; the
-first receiver-aware family is `Text`, covering case conversion, boundary
-predicates, replacement, joining, line splitting, text predicates, and all four
-trim modes.
+receiver-aware families are `Text` and `Regex`, covering case conversion,
+boundary predicates, replacement, joining, line splitting, text predicates,
+all four trim modes, and reusable Python/Perl-shaped regex matching,
+capturing, splitting, and replacement.
 
 Source declarations take precedence over registry-backed Text spellings.
 Semantic receiver diagnostics and lowerer dispatch both require that no direct
@@ -50,17 +51,25 @@ three-element `darray[sview]`; `is_empty`/`isempty` and
 `is_nonempty`/`nonempty` are zero-argument boolean predicates; `split` and
 `rsplit` accept an optional text separator and signed `i64` `maxsplit`, with
 `maxsplit:` permitted only for the second argument.
-spellings; `join` requires one `darray[sview]` argument and returns `sview`,
+`join` requires one `darray[sview]` argument and returns `sview`,
 while both line-splitting aliases take no arguments and return `darray[sview]`.
+
+The receiver-aware `Regex` rows cover `search`, `match`, `fullmatch`,
+`findall`/`find_all`, `capture`/`captures`, `split`, and `sub`. Matching,
+finding, capturing, and splitting take one positional text haystack and return
+`bool` or `darray[sview]` as declared; `sub` takes positional replacement and
+haystack text and returns `sview`. Regex rows exclude the receiver from arity,
+reject named arguments, reuse the existing `RegexSearch`, `RegexFind`,
+`RegexCapture`, `RegexSplit`, and `RegexReplace` opcodes, and preserve the same
+source-declaration precedence in semantic checking, inference, and lowering.
 
 Semantic builtin seeding consults `EsBuiltin::typed_builtin_spec` and stores
 the row's `arity_min`, `arity_max`, `return_type`, `effects`, `errors`, and
 `argument_types`, `effects`, `errors`, and `opcode` on the qualified semantic
 symbol. This removes the former untyped
 `contains` duplicate and lets direct-call arity checking see the registry
-contract. Receiver unknown-method admission and the text-method return-type
-inference adapter also consult
-`EsBuiltin::typed_builtin_method_spec("Text", method)`, while legacy
+contract. Receiver unknown-method admission and the text/regex method return-type
+inference adapters also consult `EsBuiltin::typed_builtin_method_spec`, while legacy
 collection/path names remain in a compatibility list until their structural
 descriptors migrate. The lowerer obtains arity/named-argument shape, result
 types, and parser error requirements from the same row before selecting the
@@ -73,8 +82,9 @@ UFCS resolution. Unknown names continue to use the legacy seed path until
 their richer signatures are migrated. The same receiver check validates the
 registry's positional `text` argument slots for literal and firmly inferred
 values, emitting the existing literal/firm argument mismatch diagnostics;
-structural descriptors such as `darray[text]` remain deferred until their
-element IDs are available to inference.
+Regex receiver checks apply the same literal and firm text contract to haystacks
+and replacement arguments, while structural descriptors such as `darray[text]`
+remain deferred until their element IDs are available to inference.
 
 Global registry rows now also receive semantic arity, named-argument, and
 conservative scalar/text/collection descriptor checks before lowering. The
@@ -102,7 +112,7 @@ surface, including temporary append-only seed spellings during migration.
 `check_builtin_registry.sh` verifies every registry row has a lowerer branch,
 an existing IR opcode, verifier coverage, semantic metadata preservation, and a lowerer
 return/error consumer. It also verifies the receiver-aware `Text` method rows
-and their method-dispatch branches; boundary, replacement, and trim helpers
+and their method-dispatch branches; boundary, replacement, trim, and regex helpers
 now consume receiver-specific result/opcode and call-shape rows, while the
 receiver semantic checker consumes the registry arity range and rejects named
 arguments for rows that intentionally expose no parameter names. Both checks are static by design while

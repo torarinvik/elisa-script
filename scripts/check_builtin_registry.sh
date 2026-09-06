@@ -24,13 +24,18 @@ for required_file in "$registry_file" "$semantic_file" "$receiver_semantic_file"
 done
 
 registry_names="$(sed -n '/def typed_builtin_names/,/^        def /p' "$registry_file" | rg -o '"[a-z_][a-z0-9_]*"' | tr -d '"' | sort -u)"
-method_names="$(sed -n '/def typed_builtin_method_names/,$p' "$registry_file" | rg -o '"[a-z_][a-z0-9_]*"' | tr -d '"' | sort -u)"
+method_names="$(sed -n '/def typed_builtin_method_names/,/^        def typed_builtin_regex_method_names/p' "$registry_file" | rg -o '"[a-z_][a-z0-9_]*"' | tr -d '"' | sort -u)"
+regex_method_names="$(sed -n '/def typed_builtin_regex_method_names/,$p' "$registry_file" | rg -o '"[a-z_][a-z0-9_]*"' | tr -d '"' | sort -u)"
 if [[ -z "$registry_names" ]]; then
     printf 'builtin registry audit: typed_builtin_names is empty\n' >&2
     exit 1
 fi
 if [[ -z "$method_names" ]]; then
     printf 'builtin registry audit: typed_builtin_method_names is empty\n' >&2
+    exit 1
+fi
+if [[ -z "$regex_method_names" ]]; then
+    printf 'builtin registry audit: typed_builtin_regex_method_names is empty\n' >&2
     exit 1
 fi
 
@@ -67,12 +72,17 @@ if ! rg -q 'typed_builtin_method_spec\("Text", method_name\)' "$lowerer_file"; t
     printf 'builtin registry audit: lowerer has no receiver-method registry consumer\n' >&2
     exit 1
 fi
+if ! rg -q 'typed_builtin_method_spec\("Regex", method_name\)' "$lowerer_file" || \
+   ! rg -q 'scripting_regex_builtin_available\(state, method_name\)' "$lowerer_file"; then
+    printf 'builtin registry audit: lowerer has no Regex receiver registry consumer\n' >&2
+    exit 1
+fi
 if ! rg -q 'scripting_text_builtin_available\(state, method_name\)' "$lowerer_file"; then
     printf 'builtin registry audit: lowerer does not guard Text dispatch against source shadowing\n' >&2
     exit 1
 fi
-if ! rg -q 'scripting_source_method_available\(state, method_name\)' "$lowerer_file" || \
-   ! rg -q 'not scripting_has_source_function\(table, method_name\)' "$inference_file"; then
+if ! rg -q 'scripting_regex_builtin_available\(state, method_name\)' "$lowerer_file" || \
+   ! rg -q 'scripting_regex_method_available\(table, method_name\)' "$inference_file"; then
     printf 'builtin registry audit: regex receiver dispatch/inference does not guard source shadowing\n' >&2
     exit 1
 fi
@@ -86,6 +96,12 @@ if ! rg -q 'typed_builtin_method_call_shape\("Text", method_name' "$lowerer_file
 fi
 if ! rg -q 'typed_builtin_method_spec\("Text", method\)\.known' "$receiver_semantic_file"; then
     printf 'builtin registry audit: semantic receiver admission does not consume the Text registry\n' >&2
+    exit 1
+fi
+if ! rg -q 'typed_builtin_method_spec\("Regex", method\)\.known' "$receiver_semantic_file" || \
+   ! rg -q 'ufm_check_regex_builtin_arity' "$receiver_semantic_file" || \
+   ! rg -q 'ufm_check_regex_builtin_argument_types' "$receiver_semantic_file"; then
+    printf 'builtin registry audit: semantic Regex receiver checking does not consume the registry\n' >&2
     exit 1
 fi
 if ! rg -q 'ufm_has_source_function\(table, method\)' "$receiver_semantic_file"; then
@@ -103,6 +119,11 @@ if ! rg -q 'typed_builtin_method_spec\("Text", method\)' "$inference_file"; then
 fi
 if ! rg -q 'scripting_text_method_available\(table, method_name\)' "$inference_file"; then
     printf 'builtin registry audit: semantic receiver inference does not guard source shadowing\n' >&2
+    exit 1
+fi
+if ! rg -q 'typed_builtin_method_spec\("Regex", method\)' "$inference_file" || \
+   ! rg -q 'scripting_regex_method_available\(table, method_name\)' "$inference_file"; then
+    printf 'builtin registry audit: semantic Regex receiver inference does not consume the registry\n' >&2
     exit 1
 fi
 if ! rg -q 'argument_names: sview' "$registry_file" || \
@@ -144,6 +165,10 @@ if ! rg -q 'text_method_spec: EsBuiltin::BuiltinSpec' "$inference_file" 2>/dev/n
     printf 'builtin registry audit: structural Text result inference does not consume receiver registry rows\n' >&2
     exit 1
 fi
+if ! rg -q 'regex_method_spec: EsBuiltin::BuiltinSpec' "$repo_root/vendor/elisa-compiler/src/semantic/resolve_types.elisa"; then
+    printf 'builtin registry audit: structural Regex result inference does not consume receiver registry rows\n' >&2
+    exit 1
+fi
 
 for name in $method_names; do
     if ! rg -q "known: true, name: \"$name\", receiver: \"Text\"" "$registry_file"; then
@@ -161,6 +186,26 @@ for name in $method_names; do
     opcode="$(sed -n "s/.*name: \"$name\".*receiver: \"Text\".*opcode: \"\([A-Za-z0-9_]*\)\".*/\1/p" "$registry_file" | head -1)"
     if [[ -z "$opcode" ]] || ! rg -q "Opcode\\.$opcode" "$verifier_file"; then
         printf 'builtin registry audit: Text.%s opcode is not verifier-covered (%s)\n' "$name" "${opcode:-missing}" >&2
+        exit 1
+    fi
+done
+
+for name in $regex_method_names; do
+    if ! rg -q "known: true, name: \"$name\", receiver: \"Regex\"" "$registry_file"; then
+        printf 'builtin registry audit: Regex.%s has no receiver-specific registry row\n' "$name" >&2
+        exit 1
+    fi
+    if ! rg -q "method_name == \"$name\"" "$lowerer_file"; then
+        printf 'builtin registry audit: lowerer has no Regex method branch for %s\n' "$name" >&2
+        exit 1
+    fi
+    if ! rg -q "name: \"$name\", receiver: \"Regex\".*argument_types:" "$registry_file"; then
+        printf 'builtin registry audit: Regex.%s has no argument-type descriptor\n' "$name" >&2
+        exit 1
+    fi
+    opcode="$(sed -n "s/.*name: \"$name\".*receiver: \"Regex\".*opcode: \"\([A-Za-z0-9_]*\)\".*/\1/p" "$registry_file" | head -1)"
+    if [[ -z "$opcode" ]] || ! rg -q "Opcode\\.$opcode" "$verifier_file"; then
+        printf 'builtin registry audit: Regex.%s opcode is not verifier-covered (%s)\n' "$name" "${opcode:-missing}" >&2
         exit 1
     fi
 done
@@ -190,4 +235,4 @@ if ! rg -q 'typed_builtin_spec\(callee_name\)\.errors' "$lowerer_file"; then
     exit 1
 fi
 
-printf 'builtin registry audit: %s global and %s Text receiver spellings share semantic and lowerer metadata\n' "$(printf '%s\n' "$registry_names" | awk 'NF {count += 1} END {print count + 0}')" "$(printf '%s\n' "$method_names" | awk 'NF {count += 1} END {print count + 0}')"
+printf 'builtin registry audit: %s global, %s Text, and %s Regex receiver spellings share semantic and lowerer metadata\n' "$(printf '%s\n' "$registry_names" | awk 'NF {count += 1} END {print count + 0}')" "$(printf '%s\n' "$method_names" | awk 'NF {count += 1} END {print count + 0}')" "$(printf '%s\n' "$regex_method_names" | awk 'NF {count += 1} END {print count + 0}')"

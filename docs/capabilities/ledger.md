@@ -90,7 +90,11 @@ Receiver return-type inference now applies the source-declaration guard to both
 registry rows and legacy Text fallback results (`90a1581`).
 
 Regex receiver lowering and return inference now apply the same source-callable
-shadowing guard (`84f3064`).
+shadowing guard (`84f3064`). The nine Regex receiver spellings now share typed
+registry rows for arity, text arguments, result shape, and opcode; semantic
+diagnostics, structural result inference, and lowerer call-shape validation all
+consume those rows, with compiler-free audit coverage (`WORKTREE`, pending
+commit).
 
 ## Evidence record template
 
