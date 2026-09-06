@@ -72,7 +72,7 @@ for boundary in 'differential_world_payload_is_aggregate_bounded' 'oversized_env
     fi
 done
 
-for boundary in 'differential_runner_validation_rejects_oversized_text_before_scan' 'TooMuchProcessText' 'runner process text exceeds the 64 MiB field budget'; do
+for boundary in 'differential_runner_validation_rejects_oversized_text_before_scan' 'TooMuchProcessText' 'runner process text or working-directory path exceeds its field budget' 'DIFFERENTIAL_DEFAULT_MAX_PROCESS_PATH_BYTES' 'working_directory: sview("x", 0, 4096)'; do
     if ! rg -Fq "$boundary" "$fixture_file" "$source_file"; then
         printf 'differential case audit: missing process text admission coverage %s\n' "$boundary" >&2
         exit 1

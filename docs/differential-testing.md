@@ -74,6 +74,12 @@ Process invocations also distinguish text stdin from an owned binary stdin buffe
 and the same 64 MiB input ceiling applies before a child is launched. The host
 adapter writes the bounded byte buffer by length, so embedded NULs and other
 binary values never pass through a C-string conversion.
+The runner's optional `working_directory` is admitted separately as a POSIX
+pathname: non-empty values must fit the shared 4 KiB path envelope before any
+NUL scan, aggregate C-string accounting, or child-side `chdir`. Executable,
+entry, argv, and environment text retain the broader 64 MiB process-text
+ceiling because they are not filesystem path operands; an oversized working
+directory returns the existing typed `TooMuchProcessText` validation issue.
 
 The interpreter and direct-bytecode engine cap ordered `observe` events at one
 million per run. Crossing that shared budget raises `InterpretError.OutputLimit`
