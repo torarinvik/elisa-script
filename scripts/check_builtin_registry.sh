@@ -162,6 +162,9 @@ if ! rg -q 'def typed_builtin_path_method_names\(\)' "$registry_file" || \
    ! rg -q 'name: "iterdir", receiver: "Path".*argument_types: "".*return_type: "darray\[text\]".*effects: "Directory.Read".*errors: "DirectoryError".*opcode: "PathIterDir"' "$registry_file" || \
    ! rg -q 'name: "glob", receiver: "Path".*argument_types: "text".*return_type: "darray\[text\]".*effects: "Directory.Read".*errors: "DirectoryError".*opcode: "PathGlob"' "$registry_file" || \
    ! rg -q 'name: "rglob", receiver: "Path".*argument_types: "text".*return_type: "darray\[text\]".*effects: "Directory.Read".*errors: "DirectoryError".*opcode: "PathRGlob"' "$registry_file" || \
+   ! rg -q 'name: "read_text", receiver: "Path".*argument_types: "".*return_type: "sview".*effects: "File.Read".*errors: "FileIoError".*opcode: "ReadText"' "$registry_file" || \
+   ! rg -q 'name: "read_lines", receiver: "Path".*argument_types: "".*return_type: "darray\[text\]".*effects: "File.Read".*errors: "FileIoError".*opcode: "ReadText"' "$registry_file" || \
+   ! rg -q 'name: "read_bytes", receiver: "Path".*argument_types: "".*return_type: "darray\[u8\]".*effects: "File.Read".*errors: "FileIoError".*opcode: "ReadBytes"' "$registry_file" || \
    ! rg -q 'name: "is_readable", receiver: "Path".*argument_types: "".*return_type: "bool".*effects: "File.Read".*opcode: "PathAccess".*lowering_mode: 4' "$registry_file" || \
    ! rg -q 'name: "is_writable", receiver: "Path".*argument_types: "".*return_type: "bool".*effects: "File.Read".*opcode: "PathAccess".*lowering_mode: 2' "$registry_file" || \
    ! rg -q 'name: "is_executable", receiver: "Path".*argument_types: "".*return_type: "bool".*effects: "File.Read".*opcode: "PathAccess".*lowering_mode: 1' "$registry_file"; then
@@ -180,7 +183,9 @@ if ! rg -q 'typed_builtin_method_spec\("Path", method_name\)' "$lowerer_file" ||
    ! rg -q 'path_spec\.known and path_spec\.opcode == "PathRelative"' "$lowerer_file" || \
    ! rg -q 'path_spec\.known and path_spec\.opcode == "PathIterDir"' "$lowerer_file" || \
    ! rg -q 'path_spec\.known and \(path_spec\.opcode == "PathGlob" or path_spec\.opcode == "PathRGlob"\)' "$lowerer_file" || \
-   ! rg -q 'opcode: Opcode\.PathRGlob if path_spec\.opcode == "PathRGlob" else Opcode\.PathGlob' "$lowerer_file" || \
+   ! rg -q 'opcode: Opcode = Opcode\.PathRGlob if path_spec\.opcode == "PathRGlob" else Opcode\.PathGlob' "$lowerer_file" || \
+   ! rg -q 'path_spec\.known and path_spec\.opcode == "ReadText"' "$lowerer_file" || \
+   ! rg -q 'path_spec\.known and path_spec\.opcode == "ReadBytes"' "$lowerer_file" || \
    ! rg -q 'path_spec\.known and path_spec\.opcode == "PathAccess"' "$lowerer_file" || \
    ! rg -q 'typed_builtin_method_call_shape\("Path", method_name' "$lowerer_file" || \
    ! rg -q 'instruction_integer <- path_spec\.lowering_mode' "$lowerer_file"; then
@@ -1160,7 +1165,11 @@ for name in $path_method_names; do
         exit 1
     fi
     opcode="$(sed -n "s/.*name: \"$name\".*receiver: \"Path\".*opcode: \"\([A-Za-z0-9_]*\)\".*/\1/p" "$registry_file" | head -1)"
-    if [[ -z "$opcode" ]] || ! rg -q "path_spec\.known and path_spec\.opcode == \"$opcode\"" "$lowerer_file"; then
+    path_opcode_pattern="path_spec\\.known and path_spec\\.opcode == \"$opcode\""
+    if [[ "$opcode" == "PathGlob" || "$opcode" == "PathRGlob" ]]; then
+        path_opcode_pattern='path_spec\\.known and \\(path_spec\\.opcode == "PathGlob" or path_spec\\.opcode == "PathRGlob"\\)'
+    fi
+    if [[ -z "$opcode" ]] || ! rg -q "$path_opcode_pattern" "$lowerer_file"; then
         printf 'builtin registry audit: lowerer has no Path metadata branch for %s (%s)\n' "$name" "${opcode:-missing}" >&2
         exit 1
     fi

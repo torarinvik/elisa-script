@@ -1519,6 +1519,15 @@ filesystem and reports `FileIoError` when the input is empty, contains an
 embedded NUL, or cannot be resolved. The returned libc path is bounded by the
 shared 64 MiB host C-string ceiling before it is copied into an owned `Path`.
 
+The receiver forms `path.read_text() -> sview error[FileIoError] can[File.Read]`,
+`path.read_lines() -> darray[sview] error[FileIoError] can[File.Read]`, and
+`path.read_bytes() -> darray[u8] error[FileIoError] can[File.Read]` use the same
+nominal receiver boundary as their global counterparts. Their registry rows own
+the zero-argument shapes, typed result descriptors, and `ReadText`/`ReadBytes`
+opcode admission. `read_lines` intentionally lowers to one typed text read
+followed by the existing newline split state machine, so line materialization
+does not introduce a second filesystem effect or error family.
+
 `copy_path(source: Path, destination: Path) -> bool error[FileIoError]
 can[File.Read, File.Write]` copies one regular file by length-delimited bytes and
 replaces the destination. The source is subject to the interpreter's 64 MiB
