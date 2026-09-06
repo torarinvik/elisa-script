@@ -11,12 +11,15 @@ repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 registry_file="$repo_root/vendor/elisa-compiler/src/semantic/builtin_registry.elisa"
 semantic_file="$repo_root/vendor/elisa-compiler/src/semantic/symbols.elisa"
 receiver_semantic_file="$repo_root/vendor/elisa-compiler/src/semantic/check_ufcs_unknown_method.elisa"
+firm_argument_file="$repo_root/vendor/elisa-compiler/src/semantic/check_firm_arg_type_mismatch.elisa"
+literal_argument_file="$repo_root/vendor/elisa-compiler/src/semantic/check_literal_arg_type_mismatch.elisa"
 inference_file="$repo_root/vendor/elisa-compiler/src/semantic/resolve_types_infer.elisa"
+structural_inference_file="$repo_root/vendor/elisa-compiler/src/semantic/resolve_types.elisa"
 lowerer_file="$repo_root/src/ir/lower_ast.elisa"
 opcode_file="$repo_root/src/ir/ir_model.elisa"
 verifier_file="$repo_root/src/ir/ir_verify.elisa"
 
-for required_file in "$registry_file" "$semantic_file" "$receiver_semantic_file" "$inference_file" "$lowerer_file" "$opcode_file" "$verifier_file"; do
+for required_file in "$registry_file" "$semantic_file" "$receiver_semantic_file" "$firm_argument_file" "$literal_argument_file" "$inference_file" "$structural_inference_file" "$lowerer_file" "$opcode_file" "$verifier_file"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'builtin registry audit: missing file: %s\n' "$required_file" >&2
         exit 2
@@ -112,6 +115,16 @@ fi
 if ! rg -q 'symbol\.line != 0' "$receiver_semantic_file" || \
    ! rg -q 'symbol\.line != 0' "$inference_file"; then
     printf 'builtin registry audit: source-shadowing guards do not exclude line-zero builtin seeds\n' >&2
+    exit 1
+fi
+if ! rg -q 'def scripting_has_unique_source_function' "$inference_file" || \
+   ! rg -q 'def scripting_source_function_return_type' "$inference_file" || \
+   ! rg -q 'def scripting_source_function_return_type_id' "$inference_file" || \
+   ! rg -q 'scripting_has_unique_source_function\(table, method_name\)' "$inference_file" || \
+   ! rg -q 'scripting_source_function_return_type_id\(table, method_name\)' "$structural_inference_file" || \
+   ! rg -q 'Expr\.Field\(receiver, fn_name' "$firm_argument_file" || \
+   ! rg -q 'Expr\.Field\(receiver, fn_name' "$literal_argument_file"; then
+    printf 'builtin registry audit: source-owned UFCS calls lack unique-source inference or argument checks\n' >&2
     exit 1
 fi
 if ! rg -q 'typed_builtin_method_spec\("Text", method\)' "$inference_file"; then

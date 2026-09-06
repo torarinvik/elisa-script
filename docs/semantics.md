@@ -244,6 +244,10 @@ second length representation.
 If that source `len` function is called through `value.len()`, UFCS lowering
 forwards `value` as the first typed argument instead of selecting the registry
 method, preserving direct-call defaults, effects, and `error[...]` propagation.
+Semantic inference likewise uses the unique non-seeded source declaration for
+the return row and checks its receiver/argument literals and firm scalar
+families; ambiguous source overloads remain conservative until full UFCS
+overload resolution is available.
 
 The compiler-known `is_empty(value) -> bool` (also `isempty`) and the matching
 `value.is_empty()`/`value.isempty()` methods accept the same array, dictionary, or
