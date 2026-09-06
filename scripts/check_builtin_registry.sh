@@ -343,6 +343,7 @@ for name in $registry_names; do
                 ;;
             observe)
                 if ! rg -q 'registry_spec\.known and registry_spec\.opcode == "Observe"' "$lowerer_file" || \
+                   ! rg -q 'result_type: Type = typed_builtin_result_type\(registry_spec\)' "$lowerer_file" || \
                    ! rg -q 'name: "observe".*argument_types: "any".*return_type: "void".*opcode: "Observe"' "$registry_file" || \
                    ! rg -q 'source_observe_declaration_takes_precedence_over_registry_trace_builtin' "$semantic_test_file" || \
                    ! rg -q 'shadowed-observe' "$lowering_test_file"; then
