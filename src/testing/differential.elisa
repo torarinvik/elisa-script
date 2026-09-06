@@ -700,6 +700,27 @@ module EsDifferential:
             candidates: darray[DifferentialShrinkCandidate]
 
 
+        const enum DifferentialRunShrinkKind of u8:
+            ClearReferenceStdout
+            ClearCandidateStdout
+            ClearReferenceStderr
+            ClearCandidateStderr
+            RemoveReferenceObservation
+            RemoveCandidateObservation
+
+
+        struct DifferentialRunShrinkCandidate:
+            kind: DifferentialRunShrinkKind
+            reference: DifferentialRun
+            candidate: DifferentialRun
+
+
+        struct DifferentialRunShrinkResult:
+            valid: bool
+            original_kind: DifferentialDifferenceKind
+            candidates: darray[DifferentialRunShrinkCandidate]
+
+
     private:
         const enum DifferentialRunnerCheckState of u8:
             Name
@@ -3390,6 +3411,144 @@ module EsDifferential:
                     -> Shrink
 
                 Shrink, DifferentialShrinkState.Done:
+                    break
+
+            return cursor.result
+
+
+    private:
+        const enum DifferentialRunShrinkState of u8:
+            ReferenceStdout
+            CandidateStdout
+            ReferenceStderr
+            CandidateStderr
+            ReferenceObservation
+            CandidateObservation
+            Done
+
+
+        struct DifferentialRunShrinkCursor:
+            state: mutable DifferentialRunShrinkState
+            index: mutable usize
+            result: mutable DifferentialRunShrinkResult
+
+
+        def differential_run_shrink_input_valid(run: DifferentialRun&) -> bool:
+            return false if run.observations.count > ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS or run.values.count > DIFFERENTIAL_DEFAULT_MAX_VALUES
+            for observation in run.observations:
+                return false if not differential_value_kind_valid(observation.value.kind)
+            return true
+
+
+        def differential_append_run_shrink_candidate(result: mutable DifferentialRunShrinkResult&, reference: DifferentialRun, candidate: DifferentialRun, kind: DifferentialRunShrinkKind, original_kind: DifferentialDifferenceKind, limit: usize) -> void:
+            return if result.candidates.count >= limit
+            comparison: DifferentialComparison = compare_differential_runs(reference, candidate)
+            if not comparison.equal and comparison.kind == original_kind:
+                result.candidates.push(DifferentialRunShrinkCandidate{kind: kind, reference: reference, candidate: candidate})
+
+
+    public:
+        # Shrink bounded run evidence without rerunning either side. A
+        # candidate is retained only when the original first-difference kind
+        # survives, so clearing a stream cannot accidentally turn a stdout
+        # mismatch into an unrelated observation mismatch or an apparent pass.
+        # Candidate order is fixed and the input runs are never mutated.
+        def shrink_differential_runs(reference: DifferentialRun&, candidate: DifferentialRun&, max_candidates: usize = DIFFERENTIAL_DEFAULT_MAX_SHRINK_CANDIDATES) -> DifferentialRunShrinkResult can[Memory.Allocate, Abort.Panic]:
+            return DifferentialRunShrinkResult{valid: false, original_kind: DifferentialDifferenceKind.Equal, candidates: []} if not differential_run_shrink_input_valid(reference) or not differential_run_shrink_input_valid(candidate)
+            original: DifferentialComparison = compare_differential_runs(reference, candidate)
+            return DifferentialRunShrinkResult{valid: true, original_kind: original.kind, candidates: []} if original.equal or max_candidates == 0
+            limit: usize = max_candidates if max_candidates <= DIFFERENTIAL_DEFAULT_MAX_SHRINK_CANDIDATES else DIFFERENTIAL_DEFAULT_MAX_SHRINK_CANDIDATES
+            cursor: mutable DifferentialRunShrinkCursor = DifferentialRunShrinkCursor{state: DifferentialRunShrinkState.ReferenceStdout, index: 0, result: DifferentialRunShrinkResult{valid: true, original_kind: original.kind, candidates: []}}
+            machine over cursor.state:
+                state Shrink
+                start Shrink
+
+                Shrink, DifferentialRunShrinkState.ReferenceStdout if cursor.result.candidates.count >= limit:
+                    cursor.state <- DifferentialRunShrinkState.Done
+                    -> Shrink
+                Shrink, DifferentialRunShrinkState.ReferenceStdout if reference.stdout != "":
+                    reduced_reference: mutable DifferentialRun = reference
+                    reduced_reference.stdout <- ""
+                    differential_append_run_shrink_candidate(cursor.result, reduced_reference, candidate, DifferentialRunShrinkKind.ClearReferenceStdout, original.kind, limit)
+                    cursor.state <- DifferentialRunShrinkState.CandidateStdout
+                    -> Shrink
+                Shrink, DifferentialRunShrinkState.ReferenceStdout:
+                    cursor.state <- DifferentialRunShrinkState.CandidateStdout
+                    -> Shrink
+
+                Shrink, DifferentialRunShrinkState.CandidateStdout if cursor.result.candidates.count >= limit:
+                    cursor.state <- DifferentialRunShrinkState.Done
+                    -> Shrink
+                Shrink, DifferentialRunShrinkState.CandidateStdout if candidate.stdout != "":
+                    reduced_candidate: mutable DifferentialRun = candidate
+                    reduced_candidate.stdout <- ""
+                    differential_append_run_shrink_candidate(cursor.result, reference, reduced_candidate, DifferentialRunShrinkKind.ClearCandidateStdout, original.kind, limit)
+                    cursor.state <- DifferentialRunShrinkState.ReferenceStderr
+                    -> Shrink
+                Shrink, DifferentialRunShrinkState.CandidateStdout:
+                    cursor.state <- DifferentialRunShrinkState.ReferenceStderr
+                    -> Shrink
+
+                Shrink, DifferentialRunShrinkState.ReferenceStderr if cursor.result.candidates.count >= limit:
+                    cursor.state <- DifferentialRunShrinkState.Done
+                    -> Shrink
+                Shrink, DifferentialRunShrinkState.ReferenceStderr if reference.stderr != "":
+                    reduced_reference: mutable DifferentialRun = reference
+                    reduced_reference.stderr <- ""
+                    differential_append_run_shrink_candidate(cursor.result, reduced_reference, candidate, DifferentialRunShrinkKind.ClearReferenceStderr, original.kind, limit)
+                    cursor.state <- DifferentialRunShrinkState.CandidateStderr
+                    -> Shrink
+                Shrink, DifferentialRunShrinkState.ReferenceStderr:
+                    cursor.state <- DifferentialRunShrinkState.CandidateStderr
+                    -> Shrink
+
+                Shrink, DifferentialRunShrinkState.CandidateStderr if cursor.result.candidates.count >= limit:
+                    cursor.state <- DifferentialRunShrinkState.Done
+                    -> Shrink
+                Shrink, DifferentialRunShrinkState.CandidateStderr if candidate.stderr != "":
+                    reduced_candidate: mutable DifferentialRun = candidate
+                    reduced_candidate.stderr <- ""
+                    differential_append_run_shrink_candidate(cursor.result, reference, reduced_candidate, DifferentialRunShrinkKind.ClearCandidateStderr, original.kind, limit)
+                    cursor.state <- DifferentialRunShrinkState.ReferenceObservation
+                    -> Shrink
+                Shrink, DifferentialRunShrinkState.CandidateStderr:
+                    cursor.state <- DifferentialRunShrinkState.ReferenceObservation
+                    -> Shrink
+
+                Shrink, DifferentialRunShrinkState.ReferenceObservation if cursor.result.candidates.count >= limit:
+                    cursor.state <- DifferentialRunShrinkState.Done
+                    -> Shrink
+                Shrink, DifferentialRunShrinkState.ReferenceObservation if cursor.index < reference.observations.count:
+                    reduced_reference: mutable DifferentialRun = reference
+                    reduced_reference.observations <- []
+                    for offset in 0..<reference.observations.count |reduced_reference, reference, cursor|:
+                        if offset != cursor.index:
+                            reduced_reference.observations.push(reference.observations[offset])
+                    differential_append_run_shrink_candidate(cursor.result, reduced_reference, candidate, DifferentialRunShrinkKind.RemoveReferenceObservation, original.kind, limit)
+                    cursor.index <- cursor.index + 1
+                    -> Shrink
+                Shrink, DifferentialRunShrinkState.ReferenceObservation:
+                    cursor.state <- DifferentialRunShrinkState.CandidateObservation
+                    cursor.index <- 0
+                    -> Shrink
+
+                Shrink, DifferentialRunShrinkState.CandidateObservation if cursor.result.candidates.count >= limit:
+                    cursor.state <- DifferentialRunShrinkState.Done
+                    -> Shrink
+                Shrink, DifferentialRunShrinkState.CandidateObservation if cursor.index < candidate.observations.count:
+                    reduced_candidate: mutable DifferentialRun = candidate
+                    reduced_candidate.observations <- []
+                    for offset in 0..<candidate.observations.count |reduced_candidate, candidate, cursor|:
+                        if offset != cursor.index:
+                            reduced_candidate.observations.push(candidate.observations[offset])
+                    differential_append_run_shrink_candidate(cursor.result, reference, reduced_candidate, DifferentialRunShrinkKind.RemoveCandidateObservation, original.kind, limit)
+                    cursor.index <- cursor.index + 1
+                    -> Shrink
+                Shrink, DifferentialRunShrinkState.CandidateObservation:
+                    cursor.state <- DifferentialRunShrinkState.Done
+                    -> Shrink
+
+                Shrink, DifferentialRunShrinkState.Done:
                     break
 
             return cursor.result

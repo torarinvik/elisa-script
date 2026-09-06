@@ -545,8 +545,13 @@ stdin in a fixed order, removes one item per candidate, revalidates the complete
 case, and stops at the caller's budget (capped by a runtime default). Candidates
 carry a typed reduction kind and borrow the original runner/text payloads; an
 invalid source case yields no candidates and the source case is never mutated.
-Value/observation and process-stream shrinkers remain separate follow-up layers
-because they must preserve aggregate offsets and terminal-output semantics.
+`shrink_differential_runs` adds the next bounded layer for already captured
+runs: it clears each side's stdout/stderr and removes each observation in a
+fixed order, retaining only candidates whose original first-difference kind
+survives. It never mutates the input pools or launches either side, and caps
+candidate count at the same runtime default. Aggregate-value simplification,
+process termination/timeout shrinking, and replaying candidates against the
+original world remain separate follow-up layers.
 
 Independent references use `DifferentialOracle`, which pairs a closed source
 language identity with a validated external runner. Python requires the typed
