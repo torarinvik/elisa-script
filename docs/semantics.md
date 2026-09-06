@@ -1153,7 +1153,8 @@ same typed operation, and a source-defined `is_file` shadows the compiler-known
 operation. The shared typed-builtin registry owns both `is_file` and the
 Python-compatible `isfile` spelling, including the nominal `Path` argument and
 `IsFile` opcode metadata. A source-defined `is_file` shadows the compiler-known
-operation.
+operation. The lowerer consumes the registry row for call shape, result type,
+and opcode selection for both regular-file aliases.
 
 `is_readable(path: Path)`, `is_writable(path: Path)`, and
 `is_executable(path: Path)` are typed counterparts to shell `test -r/-w/-x` and
@@ -1163,8 +1164,9 @@ The equivalent `path.is_readable()`, `path.is_writable()`, and
 `path.is_executable()` methods lower to the same checked `PathAccess` operation
 and preserve the exact effect and error contract. The shared typed-builtin
 registry owns the three global spellings with nominal `Path`, `File.Read`, and
-`PathAccess` metadata; the lowerer retains the explicit POSIX mode (read,
-write, or execute) in the instruction payload.
+`PathAccess` metadata. Each row carries the POSIX access mode (read, write, or
+execute) as registry lowering metadata, and the lowerer copies that mode into
+the instruction payload without inferring it from the alias spelling.
 
 `touch(path: Path) -> bool error[FileIoError] can[File.Write]` creates an empty file
 when it is missing and updates its timestamps without truncating an existing file.

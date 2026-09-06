@@ -252,6 +252,23 @@ for filesystem_name in is_readable is_writable is_executable; do
         exit 1
     fi
 done
+if ! rg -q 'name: "is_readable", receiver: "global".*opcode: "PathAccess", lowering_mode: 4' "$registry_file" || \
+   ! rg -q 'name: "is_writable", receiver: "global".*opcode: "PathAccess", lowering_mode: 2' "$registry_file" || \
+   ! rg -q 'name: "is_executable", receiver: "global".*opcode: "PathAccess", lowering_mode: 1' "$registry_file" || \
+   ! rg -q 'access_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'integer: access_spec\.lowering_mode' "$lowerer_file"; then
+    printf 'builtin registry audit: path-access aliases do not preserve registry POSIX modes\n' >&2
+    exit 1
+fi
+if ! rg -q 'exists_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'file_predicate_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'symlink_predicate_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'exists_spec\.opcode != "PathExists"' "$lowerer_file" || \
+   ! rg -q 'file_predicate_spec\.opcode != "IsFile"' "$lowerer_file" || \
+   ! rg -q 'symlink_predicate_spec\.opcode != "IsSymlink"' "$lowerer_file"; then
+    printf 'builtin registry audit: filesystem predicates do not consume registry result/opcode metadata\n' >&2
+    exit 1
+fi
 for filesystem_name in file_size getsize; do
     if ! rg -q "name: \"$filesystem_name\", receiver: \"global\".*argument_types: \"Path\".*return_type: \"usize\".*effects: \"File.Read\".*errors: \"FileIoError\".*opcode: \"FileSize\"" "$registry_file"; then
         printf 'builtin registry audit: file-size row is incomplete: %s\n' "$filesystem_name" >&2
