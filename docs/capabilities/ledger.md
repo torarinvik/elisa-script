@@ -90,7 +90,7 @@ Receiver return-type inference now applies the source-declaration guard to both
 registry rows and legacy Text fallback results (`90a1581`).
 
 Regex receiver lowering and return inference now apply the same source-callable
-shadowing guard (`working tree`).
+shadowing guard (`84f3064`).
 
 ## Evidence record template
 
