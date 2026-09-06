@@ -90,8 +90,9 @@ from the borrowed span. A value-producing `perform` is rejected when its
 contextual destination type disagrees, including those supported structural rows;
 malformed, function-type, and refinement spellings remain conservative until the
 shared type interner handles them. The `perform("Family.Operation", payload...)`
-form uses the same structural resolver, and both `perform` and `signal` bodies
-preserve source order across multiple declared parameters.
+form uses the same structural resolver, requires positional payloads, and both
+`perform` and `signal` bodies preserve source order across multiple declared
+parameters.
 Each known payload position is checked against its corresponding declaration;
 unsupported parameter syntax remains conservative. Semantic analysis and lowering
 also enforce the declared payload arity for both `perform` and `signal`; source-
