@@ -320,6 +320,15 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            observe)
+                if ! rg -q 'registry_spec\.known and registry_spec\.opcode == "Observe"' "$lowerer_file" || \
+                   ! rg -q 'name: "observe".*argument_types: "any".*return_type: "void".*opcode: "Observe"' "$registry_file" || \
+                   ! rg -q 'source_observe_declaration_takes_precedence_over_registry_trace_builtin' "$semantic_test_file" || \
+                   ! rg -q 'shadowed-observe' "$lowering_test_file"; then
+                    printf 'builtin registry audit: observe registry/source-shadow coverage is missing\n' >&2
+                    exit 1
+                fi
+                ;;
             split)
                 if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "Split"' "$lowerer_file"; then
                     printf 'builtin registry audit: lowerer has no registry-driven split dispatch\n' >&2
