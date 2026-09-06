@@ -571,7 +571,7 @@ crash-recovery testing remain execution work.
 
 `shrink_differential_case` provides the first bounded reduction layer for
 counterexamples. It walks world files, binary payloads, argv entries, environment
-entries, and stdin in a fixed order, removes or clears one item per candidate,
+entries, and text or binary stdin in a fixed order, removes or clears one item per candidate,
 revalidates the complete case, and stops at the caller's budget (capped by a
 runtime default). Candidates carry a typed reduction kind and borrow the original
 runner/text payloads; an invalid source case yields no candidates and the source
