@@ -174,7 +174,10 @@ migration policy is implemented and exercised (`pending`). ESIA/ESBC metadata
 labels additionally reject embedded NUL bytes before a host string boundary.
 In-memory ESIA/ESBC migration helpers now recompute digest identity from the
 verified module and reject stale legacy fingerprints or capability snapshots;
-on-disk cache rewrite/restart evidence remains pending.
+on-disk cache rewrite/restart evidence remains pending. `EsArtifactCache` now
+provides the bounded current/migration/invalid admission classifier and an
+explicit staged/committed/aborted/restart publication state machine for the
+future host adapter.
 
 ## Evidence record template
 

@@ -256,6 +256,13 @@ sentinel. `bytecode_artifact_fingerprint`
 returns zero for that invalid metadata and otherwise hashes the exact envelope
 for cache keys or diagnostic correlation; it is intentionally not a substitute
 for validating the artifact against the verified module.
+
+`EsArtifactCache` keeps the I/O adapter separate from these typed records. Its
+admission classifier distinguishes current, migratable, and invalid ESIA/ESBC
+bytes, while its publication state machine requires `Empty → Staged →
+Committed` and treats aborts or restart-before-commit as non-committed. Atomic
+file writes, fsync, rename, and crash-recovery tests still belong to the host
+cache adapter.
 `decode_bytecode_artifact` first applies that allocation-free validation and then
 returns a borrowed, typed metadata record without copying its strings;
 all length-delimited metadata readers use the public

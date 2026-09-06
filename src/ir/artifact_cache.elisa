@@ -1,0 +1,101 @@
+# Bounded cache-boundary decisions for persisted IR and bytecode metadata.
+#
+# This module deliberately stops at typed admission and publication state.  It
+# does not perform filesystem I/O: cache backends can implement atomic write,
+# restart recovery, and fsync policy around this contract without duplicating
+# envelope-version or migration rules.
+
+module EsArtifactCache:
+    using EsIrArtifact
+    using EsBytecode
+
+    private:
+        const ARTIFACT_CACHE_MAX_BYTES: usize = 65536
+
+    public:
+        const enum ArtifactCacheKind of u8:
+            IrMetadata
+            BytecodeMetadata
+
+
+        const enum ArtifactCacheAdmission of u8:
+            Current
+            NeedsMigration
+            Invalid
+
+
+        struct ArtifactCacheDecision:
+            kind: ArtifactCacheKind
+            admission: ArtifactCacheAdmission
+            fingerprint: u64 = 0
+
+
+        const enum ArtifactCacheLifecycle of u8:
+            Empty
+            Staged
+            Committed
+            Rejected
+
+
+        const enum ArtifactCacheEvent of u8:
+            Stage
+            Commit
+            Abort
+            Restart
+
+
+        struct ArtifactCachePublication:
+            state: ArtifactCacheLifecycle
+            bytes_count: usize = 0
+            fingerprint: u64 = 0
+
+
+        def classify_module_artifact_cache(bytes: darray[u8]&) -> ArtifactCacheDecision:
+            status: ModuleArtifactEnvelopeStatus = module_artifact_envelope_status(bytes)
+            return ArtifactCacheDecision{kind: ArtifactCacheKind.IrMetadata, admission: ArtifactCacheAdmission.NeedsMigration} if status == ModuleArtifactEnvelopeStatus.Legacy
+            return ArtifactCacheDecision{kind: ArtifactCacheKind.IrMetadata, admission: ArtifactCacheAdmission.Invalid} if status == ModuleArtifactEnvelopeStatus.Invalid
+            decoded: ModuleArtifactDecode = decode_module_artifact(bytes)
+            return ArtifactCacheDecision{kind: ArtifactCacheKind.IrMetadata, admission: ArtifactCacheAdmission.Invalid} if not decoded.valid
+            return ArtifactCacheDecision{kind: ArtifactCacheKind.IrMetadata, admission: ArtifactCacheAdmission.Current, fingerprint: decoded.artifact.fingerprint}
+
+
+        def classify_bytecode_artifact_cache(bytes: darray[u8]&) -> ArtifactCacheDecision:
+            status: BytecodeArtifactEnvelopeStatus = bytecode_artifact_envelope_status(bytes)
+            return ArtifactCacheDecision{kind: ArtifactCacheKind.BytecodeMetadata, admission: ArtifactCacheAdmission.NeedsMigration} if status == BytecodeArtifactEnvelopeStatus.Legacy
+            return ArtifactCacheDecision{kind: ArtifactCacheKind.BytecodeMetadata, admission: ArtifactCacheAdmission.Invalid} if status == BytecodeArtifactEnvelopeStatus.Invalid
+            decoded: BytecodeArtifactDecode = decode_bytecode_artifact(bytes)
+            return ArtifactCacheDecision{kind: ArtifactCacheKind.BytecodeMetadata, admission: ArtifactCacheAdmission.Invalid} if not decoded.valid
+            return ArtifactCacheDecision{kind: ArtifactCacheKind.BytecodeMetadata, admission: ArtifactCacheAdmission.Current, fingerprint: decoded.artifact.module_fingerprint}
+
+
+        def artifact_cache_decision_valid(decision: ArtifactCacheDecision&) -> bool:
+            return decision.admission in {ArtifactCacheAdmission.Current, ArtifactCacheAdmission.NeedsMigration} and decision.kind in {ArtifactCacheKind.IrMetadata, ArtifactCacheKind.BytecodeMetadata}
+
+
+        # A cache publication is a small state machine.  Invalid transitions
+        # fail closed to Rejected; a restart never turns staged bytes into a
+        # committed entry without an observed commit marker.
+        def artifact_cache_lifecycle_transition(state: ArtifactCacheLifecycle, event: ArtifactCacheEvent) -> ArtifactCacheLifecycle:
+            return ArtifactCacheLifecycle.Staged if state == ArtifactCacheLifecycle.Empty and event == ArtifactCacheEvent.Stage
+            return ArtifactCacheLifecycle.Committed if state == ArtifactCacheLifecycle.Staged and event == ArtifactCacheEvent.Commit
+            return ArtifactCacheLifecycle.Rejected if state == ArtifactCacheLifecycle.Staged and event == ArtifactCacheEvent.Abort
+            return ArtifactCacheLifecycle.Committed if state == ArtifactCacheLifecycle.Committed and event == ArtifactCacheEvent.Restart
+            return ArtifactCacheLifecycle.Empty if state == ArtifactCacheLifecycle.Empty and event == ArtifactCacheEvent.Restart
+            return ArtifactCacheLifecycle.Rejected
+
+
+        def artifact_cache_stage(decision: ArtifactCacheDecision&, bytes_count: usize) -> ArtifactCachePublication:
+            return ArtifactCachePublication{state: ArtifactCacheLifecycle.Rejected, bytes_count: bytes_count, fingerprint: decision.fingerprint} if not artifact_cache_decision_valid(decision) or decision.admission != ArtifactCacheAdmission.Current or bytes_count == 0 or bytes_count > ARTIFACT_CACHE_MAX_BYTES
+            return ArtifactCachePublication{state: ArtifactCacheLifecycle.Staged, bytes_count: bytes_count, fingerprint: decision.fingerprint}
+
+
+        def artifact_cache_commit(publication: ArtifactCachePublication&) -> ArtifactCachePublication:
+            return ArtifactCachePublication{state: artifact_cache_lifecycle_transition(publication.state, ArtifactCacheEvent.Commit), bytes_count: publication.bytes_count, fingerprint: publication.fingerprint}
+
+
+        def artifact_cache_abort(publication: ArtifactCachePublication&) -> ArtifactCachePublication:
+            return ArtifactCachePublication{state: artifact_cache_lifecycle_transition(publication.state, ArtifactCacheEvent.Abort), bytes_count: publication.bytes_count, fingerprint: publication.fingerprint}
+
+
+        def artifact_cache_restart(publication: ArtifactCachePublication&) -> ArtifactCachePublication:
+            return ArtifactCachePublication{state: artifact_cache_lifecycle_transition(publication.state, ArtifactCacheEvent.Restart), bytes_count: publication.bytes_count, fingerprint: publication.fingerprint}

@@ -124,7 +124,7 @@ for parse_error_kind in $parse_error_kinds; do
     fi
 done
 
-for expected in EsBytecode EsDifferential EsDriver EsIr EsIrArtifact EsRuntime; do
+for expected in EsArtifactCache EsBytecode EsDifferential EsDriver EsIr EsIrArtifact EsRuntime; do
     if ! printf '%s\n' "$module_names" | grep -F -x "$expected" >/dev/null 2>&1; then
         echo "check_namespace_manifest: required module is missing: $expected" >&2
         exit 1
