@@ -498,6 +498,8 @@ byte offsets as `find`/`rfind`, but raise `IndexOutOfBounds` through the ordinar
 `error[...]` channel when the substring is absent. Empty needles still return
 the start or end boundary respectively. Array `.index(element)` follows the
 same checked error behavior, while `.find(element)` remains the `-1` search form.
+The shared collection lowerer accepts array indexing, but Text receiver opcode
+and reverse-only admission are sourced from the `TextIndex`/`TextRIndex` rows.
 
 Text classification methods `text.isdigit()`, `text.isdecimal()`,
 `text.isnumeric()`, `text.isalpha()`, `text.isalnum()`, `text.isspace()`,

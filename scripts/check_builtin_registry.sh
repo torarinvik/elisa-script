@@ -1295,6 +1295,16 @@ if ! rg -q 'name: "rfind", receiver: "Text".*argument_types: "text".*return_type
     printf 'builtin registry audit: Text rfind lowerer does not consume registry result/opcode metadata\n' >&2
     exit 1
 fi
+if ! rg -q 'name: "index", receiver: "Text".*argument_types: "text".*return_type: "i64".*effects: "".*errors: "IndexOutOfBounds".*opcode: "TextIndex"' "$registry_file" || \
+   ! rg -q 'name: "rindex", receiver: "Text".*argument_types: "text".*return_type: "i64".*effects: "".*errors: "IndexOutOfBounds".*opcode: "TextRIndex"' "$registry_file" || \
+   ! rg -q 'def lower_collection_index_expression\(receiver_expression: Ast::Expr, arguments:.*method_name: sview\)' "$lowerer_file" || \
+   ! rg -q 'method_spec\.known and \(method_spec\.opcode == "TextIndex" or method_spec\.opcode == "TextRIndex"\)' "$lowerer_file" || \
+   ! rg -q 'method_spec\.opcode == "TextRIndex" and collection\.type\.kind != TypeKind\.Text' "$lowerer_file" || \
+   rg -q 'lower_collection_index_expression\([^\n]*, (true|false)\)' "$lowerer_file" || \
+   rg -q 'method_name: sview, reverse: bool' "$lowerer_file"; then
+    printf 'builtin registry audit: Text index/rindex lowerer does not consume registry opcode metadata\n' >&2
+    exit 1
+fi
 if ! rg -q 'def typed_builtin_result_type' "$lowerer_file" || \
    ! rg -q 'typed_builtin_result_type\([a-z_]+_spec\)' "$lowerer_file" || \
    ! rg -q 'typed_builtin_result_type\(method_spec\)' "$lowerer_file"; then
