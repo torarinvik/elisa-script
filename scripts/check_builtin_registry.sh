@@ -1225,6 +1225,19 @@ if ! rg -q 'def lower_text_trim_expression\(receiver_expression: Ast::Expr.*stat
     printf 'builtin registry audit: Text trim receiver lowerers do not consume registry mode metadata\n' >&2
     exit 1
 fi
+for predicate_pair in isdigit:0 isalpha:1 isalnum:2 isspace:3 islower:4 isupper:5 isascii:6 isdecimal:7 isnumeric:8 isprintable:9; do
+    predicate_name="${predicate_pair%%:*}"
+    predicate_mode="${predicate_pair##*:}"
+    if ! rg -q "name: \"$predicate_name\", receiver: \"Text\".*argument_types: \"\".*return_type: \"bool\".*effects: \"\".*errors: \"\".*opcode: \"TextPredicate\".*lowering_mode: $predicate_mode" "$registry_file"; then
+        printf 'builtin registry audit: Text predicate row lacks mode metadata: %s\n' "$predicate_name" >&2
+        exit 1
+    fi
+done
+if ! rg -q 'method_spec\.opcode != "TextPredicate"' "$lowerer_file" || \
+   ! rg -q 'mode: i64 = method_spec\.lowering_mode' "$lowerer_file"; then
+    printf 'builtin registry audit: Text predicate lowerer does not consume registry mode metadata\n' >&2
+    exit 1
+fi
 if ! rg -q 'def typed_builtin_result_type' "$lowerer_file" || \
    ! rg -q 'typed_builtin_result_type\([a-z_]+_spec\)' "$lowerer_file" || \
    ! rg -q 'typed_builtin_result_type\(method_spec\)' "$lowerer_file"; then

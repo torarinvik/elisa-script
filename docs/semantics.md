@@ -509,6 +509,10 @@ to have the requested case. `isprintable` accepts visible ASCII bytes `0x20`
 through `0x7e` only. Empty text returns `false` for every predicate except
 `isascii()`, which returns `true` because the empty string contains no
 non-ASCII bytes.
+Each predicate's registry row carries its `TextPredicate` mode (`isdigit` 0,
+`isalpha` 1, `isalnum` 2, `isspace` 3, `islower` 4, `isupper` 5, `isascii` 6,
+`isdecimal` 7, `isnumeric` 8, and `isprintable` 9); receiver lowering consumes
+that mode instead of reconstructing it from the method spelling.
 
 Text boundary-removal methods `text.removeprefix(prefix)` and
 `text.removesuffix(suffix)` take one positional text boundary and return the
