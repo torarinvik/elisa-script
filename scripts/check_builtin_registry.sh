@@ -684,6 +684,10 @@ if ! rg -q 'def registry_process_environment_capture_requires_text_input\(' "$re
     printf 'builtin registry audit: process environment-result capture semantic coverage is missing\n' >&2
     exit 1
 fi
+if ! rg -q 'def registry_process_status_facades_check_typed_controls\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
+    printf 'builtin registry audit: process status-facade rows lack semantic negative fixtures\n' >&2
+    exit 1
+fi
 if ! rg -q 'def registry_standard_stream_writes_require_text\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_standard_stream_reads_are_argument_free\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
     printf 'builtin registry audit: standard-stream registry rows lack semantic negative fixtures\n' >&2
     exit 1
@@ -782,6 +786,20 @@ if ! rg -q 'lowers_typed_process_result_in_directory' "$repo_root/test/ir/elisas
 fi
 if ! rg -q 'lowers_typed_process_result_with_environment' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_typed_process_result_in_directory_with_environment' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: process environment-result capture lowering coverage is missing\n' >&2
+    exit 1
+fi
+for status_name in run_process_with_stdin run_process_in_directory run_process_with_environment run_process_in_directory_with_environment; do
+    if ! rg -q "name: \"$status_name\", receiver: \"global\".*lowering_steps: \".*ProcessResultExitStatus\"" "$registry_file"; then
+        printf 'builtin registry audit: composed status-facade row lacks lowering steps for %s\n' "$status_name" >&2
+        exit 1
+    fi
+done
+if ! rg -q 'lowering_steps: sview' "$registry_file" || ! rg -q 'Opcode\.ProcessResultExitStatus' "$verifier_file"; then
+    printf 'builtin registry audit: composed process lowering metadata is not verifier-covered\n' >&2
+    exit 1
+fi
+if ! rg -q 'typed_builtin_spec\(callee_name\)\.lowering_steps' "$lowerer_file"; then
+    printf 'builtin registry audit: lowerer does not consume composed process lowering metadata\n' >&2
     exit 1
 fi
 if ! rg -q 'lowers_python_print_to_typed_stdout_state' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_console_print_aliases_to_explicit_stream_opcodes' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then

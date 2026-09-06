@@ -1614,6 +1614,14 @@ error[ProcessError] can[Process.Run]` composes both controls. The child changes
 directory and applies overrides after `fork`; the parent world is unchanged and
 setup failures retain the explicit capture API's status behavior.
 
+The shared typed-builtin registry owns all four status-facade spellings with
+the exact executable, argument-array, path/map descriptors and `i64` result.
+Each row records a composed lowering sequence ending in
+`ProcessResultExitStatus`; this keeps the intermediate capture operation
+explicit instead of hiding it behind an untyped process call. Semantic checking
+and lowering therefore preserve the same `Process.Run`/`ProcessError` contract
+as the direct capture forms.
+
 The return value is the process exit status. Normal exits produce `0` through `255`;
 signal termination produces `128 + signal`. Failure to create or wait for the process
 raises `ProcessError`; waits poll without blocking indefinitely and terminate the
