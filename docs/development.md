@@ -63,6 +63,16 @@ trip also sets this latch. Both validation wrappers refuse to relaunch while
 the latch exists; remove it manually only after reviewing the failure and
 deciding to reauthorize a smaller bounded run.
 
+Run the compiler-free wrapper audit before reviewing a validation change:
+
+```sh
+scripts/check_validation_wrappers.sh
+```
+
+This checks the disabled-by-default gate, StructPy compiler pin, process-tree
+RSS guard, identity-bound lease, and emergency-stop ownership without launching
+a compiler.
+
 Executable fixtures use the matching process-tree guard:
 
 ```sh
