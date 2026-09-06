@@ -636,6 +636,13 @@ the `Regex,text` or `Regex,text,text` descriptors, and the three search modes
 are carried as registry metadata rather than duplicated literals in the
 lowerer. A source declaration with the same name still shadows the builtin.
 
+The pattern-first global facades `matches`, `replace_regex`, `split_regex`,
+`find_regex`, `capture_regex`, and `captures_regex` consume the same registry
+result shapes and `RegexSearch`/`RegexReplace`/`RegexSplit`/`RegexFind`/
+`RegexCapture` opcode rows. Their lowerer branches therefore reject a drifted
+registry opcode before emitting an instruction, while preserving the existing
+typed argument checks and deterministic matcher behavior.
+
 `capture_regex(text, pattern) -> darray[sview]` returns the first match and its
 proven capture groups. Element `0` is the complete match; elements `1` onward
 follow positional group order, and an unmatched proven group is represented by an

@@ -611,6 +611,19 @@ if ! rg -q 'def lowers_registry_regex_namespace_aliases_with_modes\(' "$repo_roo
     printf 'builtin registry audit: regex namespace lowering/inference coverage is missing\n' >&2
     exit 1
 fi
+if ! rg -q 'matches_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'matches_spec\.opcode == "RegexSearch"' "$lowerer_file" || \
+   ! rg -q 'replace_regex_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'replace_regex_spec\.opcode == "RegexReplace"' "$lowerer_file" || \
+   ! rg -q 'split_regex_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'split_regex_spec\.opcode == "RegexSplit"' "$lowerer_file" || \
+   ! rg -q 'find_regex_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'find_regex_spec\.opcode == "RegexFind"' "$lowerer_file" || \
+   ! rg -q 'capture_regex_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'capture_regex_spec\.opcode == "RegexCapture"' "$lowerer_file"; then
+    printf 'builtin registry audit: pattern-first regex lowerers do not consume registry shape/result/opcode metadata\n' >&2
+    exit 1
+fi
 if ! rg -q 'expected == "Executable"' "$receiver_semantic_file" || ! rg -q 'expected == "ProcessCapture"' "$receiver_semantic_file" || ! rg -q 'Executable,darray\[text\]' "$receiver_semantic_file" || ! rg -q 'Executable,darray\[text\],sview' "$receiver_semantic_file"; then
     printf 'builtin registry audit: process nominal argument descriptors are not consumed by semantic checks\n' >&2
     exit 1
@@ -1150,7 +1163,7 @@ if ! rg -q 'trim_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(c
     exit 1
 fi
 if ! rg -q 'def typed_builtin_result_type' "$lowerer_file" || \
-   ! rg -q 'typed_builtin_result_type\(EsBuiltin::typed_builtin_spec\(callee_name\)\)' "$lowerer_file" || \
+   ! rg -q 'typed_builtin_result_type\([a-z_]+_spec\)' "$lowerer_file" || \
    ! rg -q 'typed_builtin_result_type\(method_spec\)' "$lowerer_file"; then
     printf 'builtin registry audit: aggregate registry rows do not share lowerer result-shape conversion\n' >&2
     exit 1
