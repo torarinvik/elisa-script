@@ -513,6 +513,15 @@ invalid source case yields no candidates and the source case is never mutated.
 Value/observation and process-stream shrinkers remain separate follow-up layers
 because they must preserve aggregate offsets and terminal-output semantics.
 
+Independent references use `DifferentialOracle`, which pairs a closed source
+language identity with a validated external runner. Python requires the typed
+`PythonAdapter`; Perl, AWK, and shell references use the shell-free
+`NativeProcess` argv boundary; C/C++ may use a native process or `CAbiFunction`;
+and generic native references may use a native process, ABI function, Wasm
+module, or service. Elisascript and in-process runners are rejected as oracles,
+and invalid names, versions, language ordinals, runner contracts, or language/
+adapter combinations fail before any adapter launch.
+
 The execution boundary now carries a backend-neutral `ExecutionCapability`
 snapshot alongside that engine identity. For bytecode runs,
 `capability_known` is true and the snapshot preserves `direct_supported`,

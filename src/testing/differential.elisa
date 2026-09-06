@@ -323,6 +323,38 @@ module EsDifferential:
             required_errors: darray[sview] = []
 
 
+        const enum DifferentialOracleLanguage of u8:
+            Python
+            Perl
+            Awk
+            Shell
+            C
+            Cpp
+            Native
+
+
+        struct DifferentialOracle:
+            name: sview
+            language: DifferentialOracleLanguage
+            runner: DifferentialRunner
+            version: sview = ""
+
+
+        const enum DifferentialOracleIssue of u8:
+            None
+            MissingName
+            InvalidLanguage
+            InvalidVersion
+            InvalidRunner
+            NotIndependent
+
+
+        struct DifferentialOracleCheck:
+            valid: mutable bool
+            issue: mutable DifferentialOracleIssue
+            reason: mutable sview = ""
+
+
         # A hermetic world is part of the differential contract rather than an
         # ambient process setting. The first implementation keeps fixture files
         # text-backed; a future binary-file extension can add an owned byte pool
@@ -3205,3 +3237,95 @@ module EsDifferential:
                     break
 
             return cursor.result
+
+
+    private:
+        def differential_oracle_language_valid(language: DifferentialOracleLanguage) -> bool:
+            return language in {DifferentialOracleLanguage.Python, DifferentialOracleLanguage.Perl, DifferentialOracleLanguage.Awk, DifferentialOracleLanguage.Shell, DifferentialOracleLanguage.C, DifferentialOracleLanguage.Cpp, DifferentialOracleLanguage.Native}
+
+
+        def differential_oracle_runner_independent(language: DifferentialOracleLanguage, kind: DifferentialRunnerKind) -> bool:
+            return kind == DifferentialRunnerKind.PythonAdapter if language == DifferentialOracleLanguage.Python
+            return kind == DifferentialRunnerKind.NativeProcess if language == DifferentialOracleLanguage.Perl or language == DifferentialOracleLanguage.Awk or language == DifferentialOracleLanguage.Shell
+            return kind == DifferentialRunnerKind.NativeProcess or kind == DifferentialRunnerKind.CAbiFunction if language == DifferentialOracleLanguage.C or language == DifferentialOracleLanguage.Cpp
+            return kind == DifferentialRunnerKind.NativeProcess or kind == DifferentialRunnerKind.CAbiFunction or kind == DifferentialRunnerKind.WasmModule or kind == DifferentialRunnerKind.Service
+
+
+        const enum DifferentialOracleCheckState of u8:
+            Name
+            Language
+            Version
+            Runner
+            Independence
+            Done
+
+
+        struct DifferentialOracleCheckCursor:
+            state: mutable DifferentialOracleCheckState
+            result: mutable DifferentialOracleCheck
+
+
+        def differential_oracle_failure(issue: DifferentialOracleIssue, reason: sview) -> DifferentialOracleCheck:
+            return DifferentialOracleCheck{valid: false, issue: issue, reason: reason}
+
+
+    public:
+        # Validate an independent reference without conflating its language or
+        # process adapter with the Elisascript candidate. The external adapter
+        # still uses the same typed argv/cwd/environment contract as any runner.
+        def validate_differential_oracle(oracle: DifferentialOracle&) -> DifferentialOracleCheck:
+            cursor: mutable DifferentialOracleCheckCursor = DifferentialOracleCheckCursor{state: DifferentialOracleCheckState.Name, result: DifferentialOracleCheck{valid: true, issue: DifferentialOracleIssue.None}}
+            machine over cursor.state:
+                state Validate
+                start Validate
+
+                Validate, DifferentialOracleCheckState.Name if oracle.name != "" and not differential_sview_has_nul(oracle.name):
+                    cursor.state <- DifferentialOracleCheckState.Language
+                    -> Validate
+                Validate, DifferentialOracleCheckState.Name:
+                    cursor.result <- differential_oracle_failure(DifferentialOracleIssue.MissingName, "oracle name is required and must not contain NUL")
+                    cursor.state <- DifferentialOracleCheckState.Done
+                    -> Validate
+
+                Validate, DifferentialOracleCheckState.Language if differential_oracle_language_valid(oracle.language):
+                    cursor.state <- DifferentialOracleCheckState.Version
+                    -> Validate
+                Validate, DifferentialOracleCheckState.Language:
+                    cursor.result <- differential_oracle_failure(DifferentialOracleIssue.InvalidLanguage, "oracle language ordinal is unknown")
+                    cursor.state <- DifferentialOracleCheckState.Done
+                    -> Validate
+
+                Validate, DifferentialOracleCheckState.Version if sview_len(oracle.version) <= 128 and not differential_sview_has_nul(oracle.version):
+                    cursor.state <- DifferentialOracleCheckState.Runner
+                    -> Validate
+                Validate, DifferentialOracleCheckState.Version:
+                    cursor.result <- differential_oracle_failure(DifferentialOracleIssue.InvalidVersion, "oracle version is oversized or contains NUL")
+                    cursor.state <- DifferentialOracleCheckState.Done
+                    -> Validate
+
+                Validate, DifferentialOracleCheckState.Runner if validate_differential_runner(oracle.runner).valid:
+                    cursor.state <- DifferentialOracleCheckState.Independence
+                    -> Validate
+                Validate, DifferentialOracleCheckState.Runner:
+                    cursor.result <- differential_oracle_failure(DifferentialOracleIssue.InvalidRunner, "oracle runner is invalid")
+                    cursor.state <- DifferentialOracleCheckState.Done
+                    -> Validate
+
+                Validate, DifferentialOracleCheckState.Independence if differential_oracle_runner_independent(oracle.language, oracle.runner.kind):
+                    cursor.state <- DifferentialOracleCheckState.Done
+                    -> Validate
+                Validate, DifferentialOracleCheckState.Independence:
+                    cursor.result <- differential_oracle_failure(DifferentialOracleIssue.NotIndependent, "oracle runner does not match its independent source language")
+                    cursor.state <- DifferentialOracleCheckState.Done
+                    -> Validate
+
+                Validate, DifferentialOracleCheckState.Done:
+                    break
+
+            return cursor.result
+
+
+        def make_differential_oracle(language: DifferentialOracleLanguage, name: sview, runner: DifferentialRunner, version: sview = "") -> DifferentialOracle error[DifferentialRunnerError] can[Memory.Allocate, Abort.Panic]:
+            oracle: DifferentialOracle = DifferentialOracle{name: name, language: language, runner: runner, version: version}
+            raise DifferentialRunnerError.Invalid if not validate_differential_oracle(oracle).valid
+            return oracle
