@@ -86,7 +86,7 @@ for boundary in 'stdin_bytes: mutable darray[u8]' 'stdin_binary: bool' 'InvalidP
     fi
 done
 
-for boundary in 'differential_comparison_rejects_oversized_run_text' 'differential_comparison_rejects_oversized_value_pool_text' 'run text exceeds differential budget' 'owned value text exceeds differential budget' 'differential_process_capture_adapter_rejects_oversized_inputs' 'process capture inputs exceed differential budget' 'differential_process_capture_adapter_rejects_malformed_inputs' 'process capture inputs are structurally invalid' 'differential_runtime_adapter_rejects_oversized_process_snapshots'; do
+for boundary in 'differential_comparison_rejects_oversized_run_text' 'differential_comparison_rejects_oversized_value_pool_text' 'run text exceeds differential budget' 'owned value text exceeds differential budget' 'differential_process_capture_adapter_rejects_oversized_inputs' 'process capture inputs exceed differential budget' 'differential_process_capture_adapter_rejects_malformed_inputs' 'process capture inputs are structurally invalid' 'differential_runtime_adapter_rejects_oversized_process_snapshots' 'differential_runtime_adapter_rejects_oversized_text_snapshots'; do
     if ! rg -Fq "$boundary" "$fixture_file"; then
         printf 'differential case audit: missing comparison-bound coverage %s\n' "$boundary" >&2
         exit 1
