@@ -253,6 +253,24 @@ for filesystem_name in file_size getsize; do
         exit 1
     fi
 done
+for filesystem_name in file_mtime getmtime; do
+    if ! rg -q "name: \"$filesystem_name\", receiver: \"global\".*argument_types: \"Path\".*return_type: \"i64\".*effects: \"File.Read\".*errors: \"FileIoError\".*opcode: \"FileMTime\"" "$registry_file"; then
+        printf 'builtin registry audit: modification-time row is incomplete: %s\n' "$filesystem_name" >&2
+        exit 1
+    fi
+done
+for filesystem_name in file_atime getatime; do
+    if ! rg -q "name: \"$filesystem_name\", receiver: \"global\".*argument_types: \"Path\".*return_type: \"i64\".*effects: \"File.Read\".*errors: \"FileIoError\".*opcode: \"FileATime\"" "$registry_file"; then
+        printf 'builtin registry audit: access-time row is incomplete: %s\n' "$filesystem_name" >&2
+        exit 1
+    fi
+done
+for filesystem_name in file_ctime getctime; do
+    if ! rg -q "name: \"$filesystem_name\", receiver: \"global\".*argument_types: \"Path\".*return_type: \"i64\".*effects: \"File.Read\".*errors: \"FileIoError\".*opcode: \"FileCTime\"" "$registry_file"; then
+        printf 'builtin registry audit: change-time row is incomplete: %s\n' "$filesystem_name" >&2
+        exit 1
+    fi
+done
 if ! rg -q 'lowers_nominal_path_existence_with_file_effect' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'any error_name in fn\.errors where error_name == "FileIoError"' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: filesystem existence row lacks lowering effect/error fixture\n' >&2
     exit 1
@@ -295,6 +313,14 @@ if ! rg -q 'def registry_is_readable_requires_a_nominal_path\(' "$repo_root/test
 fi
 if ! rg -q 'def registry_file_size_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
     printf 'builtin registry audit: file-size registry negative fixture is missing\n' >&2
+    exit 1
+fi
+if ! rg -q 'def registry_file_mtime_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
+    printf 'builtin registry audit: file-time registry negative fixture is missing\n' >&2
+    exit 1
+fi
+if ! rg -q 'lowers_typed_file_mtime_with_file_read_effect_and_error' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_python_path_access_and_change_time_aliases_to_existing_typed_opcodes' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
+    printf 'builtin registry audit: file-time lowering fixtures are missing\n' >&2
     exit 1
 fi
 

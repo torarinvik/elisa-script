@@ -1200,6 +1200,9 @@ typed alias. `file_ctime(path: Path) -> i64 error[FileIoError] can[File.Read]`
 returns the POSIX inode-change timestamp (`st_ctime` on POSIX), and
 `os.path.getctime` is its typed alias. Both remain distinct from modification
 time while preserving the signed `i64`/`File.Read`/`FileIoError` contract.
+The shared typed-builtin registry owns all six canonical and Python-compatible
+timestamp spellings with their nominal `Path`, signed `i64`, effect/error, and
+`FileMTime`/`FileATime`/`FileCTime` opcode contracts.
 
 `is_nonempty(path: Path) -> bool error[FileIoError] can[File.Read]` (also available
 as `path.is_nonempty()`) is the typed
