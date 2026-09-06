@@ -9,6 +9,14 @@ patterns into a private temporary path list, and reads that list through an
 explicit bounded state machine rather than a global de-duplication buffer;
 split larger roots before generating a manifest.
 
+`docs/migration-project-roots.tsv` is the checked-in partition manifest for the
+declared project roots. `scripts/inventory_project_roots.sh` reads it and runs
+both scanners once per root, adding `root_name` and `root_path` to every output
+row. A malformed row, missing root, or per-root budget failure terminates the
+coordinator; it never silently skips a declared project. Partitioning keeps
+discovery within the measured resource envelope after a broad traversal proved
+too expensive.
+
 The first row is the exact header. Every later row has these fields:
 
 | Field | Meaning |
@@ -36,6 +44,18 @@ dependencies, semantics, fixtures, and acceptance evidence have been reviewed.
 The inventory snapshot in `docs/migration-inventory.md` remains the source of
 the declared roots and raw counts; this schema supplies the per-file record
 shape needed before any deletion or migration claim.
+
+Generate the partitioned combined stream outside the repository:
+
+```sh
+scripts/inventory_project_roots.sh \
+  "/Users/torarinvikbjarko/Documents/Coding Projects" \
+  "docs/migration-project-roots.tsv" \
+  > /tmp/elisascript-migration-roots.tsv
+```
+
+The coordinator is read-only with respect to project roots; its only writes are
+private temporary scanner outputs, removed on exit.
 
 ## Discovery signals
 
