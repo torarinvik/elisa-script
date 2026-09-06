@@ -287,7 +287,9 @@ cleanup is still host-qualified. The `_locked` publication wrappers hold that
 lock across staging, file sync, rename, and optional parent-directory sync, and
 release it on both success and publication failure; a successful release failure
 is reported as a typed lock error while the original publication error remains
-the failure reported after best-effort cleanup.
+the failure reported after best-effort cleanup. The lock itself uses an explicit
+`Available → Held → Released` transition table, including reacquisition from
+`Released`; invalid events leave the state unchanged.
 
 `EsRuntime::FileStream` is the first typed large-file vertical slice. A handle
 is opened with an explicit read/text/binary/write/append mode and a byte budget

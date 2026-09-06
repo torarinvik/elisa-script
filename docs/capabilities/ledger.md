@@ -186,7 +186,9 @@ perform a typed `dirfd`/`fsync`/`closedir` edge after rename; platform lock and
 restart evidence remain open. POSIX `_locked` publication wrappers now hold the
 advisory lock across staging, file sync, rename, and optional directory sync,
 with release on both success and failure; a successful release failure is typed
-as a lock error while publication failures retain their original cause.
+as a lock error while publication failures retain their original cause. The
+lock's `Available → Held → Released` transition table is explicit and permits
+reacquisition only from `Released`; invalid events remain inert.
 
 The first large-file vertical slice is now a typed `EsRuntime::FileStream`
 contract with explicit modes, bounded chunk read/write, an error-safe line
@@ -203,8 +205,8 @@ counter edges), `614ad2e` (bounded additive resource edges), `cc418d6`
 (interpreter step accounting), `d23ffbd` (configured step ceiling), and `64986ef`
 (ESDF version-3 manifest fixture), `1313ba7` (directory fsync), and `957aa55`
 (POSIX writer locking), `c91d558` (durable cache arbitration notes), and the
-current lock-scoped publication increment. They remain compiler-free evidence
-while validation is paused.
+current lock-scoped publication and lock-transition increment. They remain
+compiler-free evidence while validation is paused.
 
 ## Evidence record template
 
