@@ -61,6 +61,10 @@ The receiver registry now also covers the zero-argument text emptiness aliases,
 with lowerer result metadata preserved for collection and Path compatibility
 (`a1f9bfb`).
 
+`Text.split` and `Text.rsplit` now use registry arity, `text,i64` argument
+contracts, `Split` opcode metadata, and a declared `maxsplit` named-argument
+slot (`cd8ae26`).
+
 ## Evidence record template
 
 Every future executed or differential-verified entry must append a dated record

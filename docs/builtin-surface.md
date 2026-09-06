@@ -36,7 +36,9 @@ one text needle and return `i64` with `-1` for a miss; `index` and `rindex`
 also accept one text needle, return `i64`, and require `IndexOutOfBounds` on a
 miss; `partition` and `rpartition` accept one text separator and return a
 three-element `darray[sview]`; `is_empty`/`isempty` and
-`is_nonempty`/`nonempty` are zero-argument boolean predicates.
+`is_nonempty`/`nonempty` are zero-argument boolean predicates; `split` and
+`rsplit` accept an optional text separator and signed `i64` `maxsplit`, with
+`maxsplit:` permitted only for the second argument.
 spellings; `join` requires one `darray[sview]` argument and returns `sview`,
 while both line-splitting aliases take no arguments and return `darray[sview]`.
 
