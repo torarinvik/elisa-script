@@ -461,6 +461,8 @@ replay bundle is opened.
 Use `make_differential_artifact_manifest_for_module` when the verified module is
 in hand; it derives both the compact fingerprint and all digest words in one
 typed constructor so callers cannot accidentally omit the cryptographic bind.
+It fails with `DifferentialRunnerError.Invalid` if canonical digest production
+returns an unavailable/oversized sentinel instead of downgrading to ESDF v3.
 The bytecode adapter must additionally record `BytecodeCapabilityReport` before
 execution and the returned `Execution.engine` afterward. The report includes the
 direct/fallback decision and function, instruction, and global counts. A case that
