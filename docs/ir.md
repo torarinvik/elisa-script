@@ -248,7 +248,9 @@ the bytecode loop receives the retained-trace limit before each `Observe`
 append, so a custom zero/one/boundary policy cannot allocate the default trace
 pool first;
 the legacy entrypoints remain compatibility wrappers that construct the default
-policy with a caller-supplied step limit. Full cross-bridge accounting,
+policy with a caller-supplied step limit, but reject a limit above the shared
+`ES_RUNTIME_DEFAULT_MAX_STEPS` ceiling before entering the packed loop
+(`WORKTREE`). Full cross-bridge accounting,
 wall-clock enforcement, and adverse-resource evidence remain an open P6
 qualification item.
 `EsBytecode.bytecode_capability_report` exposes the same decision before a run,
