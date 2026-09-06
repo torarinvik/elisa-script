@@ -63,19 +63,29 @@ adapter also rejects externally supplied observation snapshots above the same
 budget before converting any element into its owned comparison pools.
 
 Observation and return values include `Void`, `Bool`, `Int`, exact `Float`, `Text`, recursive
-`Array`, order-insensitive `Map`, and structured `ProcessCapture` kinds. Arrays
+`Array`, `Map`, and structured `ProcessCapture` kinds. Arrays
 use a flat, owned value pool (`DifferentialRun.values`) with `(array_start,
 array_count)` slices; maps use interleaved `(key, value)` pairs with
 `(map_start, map_count)`, so nested observations remain deterministic without
 borrowing an interpreter's runtime storage. `append_differential_observations_from_runtime`
 performs that conversion and rejects out-of-bounds snapshots through
-`DifferentialRunnerError`. Map comparison is order-insensitive but one-to-one:
+`DifferentialRunnerError`. Map comparison is order-insensitive by default but
+one-to-one:
 each candidate pair can satisfy at most one reference pair, including when an
 adapter supplies malformed duplicate entries. Float
 observations are compared exactly by default. Call
 `compare_differential_runs(reference, candidate, DifferentialFloatTolerance{...})`
 to opt into explicit absolute/relative float tolerance; negative tolerances remain
-non-matching, and all non-float values stay exact.
+non-matching, and all non-float values stay exact. For a complete explicit policy,
+call `compare_differential_runs_with_policy` with a
+`DifferentialComparatorPolicy`: `DifferentialTextComparison.TrimFinalNewline`
+removes one final LF (and its preceding CR) from text and process streams, while
+`DifferentialMapComparison.Ordered` compares map pairs in source order. The
+default policy is exact text, unordered maps, and zero float tolerance; policy
+validation rejects unknown enum values and invalid tolerances. The case boundary
+also validates its comparator policy, but manifest serialization does not yet
+persist the policy fields, so replay must retain the originating case until that
+schema extension lands.
 
 The owned comparison boundary has a closed value-kind admission check. Every
 pending pair, including recursively reached array and map members, must use one
@@ -369,6 +379,11 @@ Float comparison is exact by default. Explicit absolute and relative tolerances
 must be finite and nonnegative; case validation rejects NaN and infinity before
 launch. NaN never equals anything, equal infinities compare equal, and an
 infinity cannot match a finite value through relative scaling.
+
+The implemented policy surface is intentionally narrower than the eventual
+normalization catalog: path rewriting, timestamp normalization, ignored fields,
+unordered arrays, and flaky/nondeterminism policies remain future explicit
+extensions rather than implicit transformations.
 
 ## Deterministic worlds
 

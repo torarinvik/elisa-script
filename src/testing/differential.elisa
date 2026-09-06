@@ -120,6 +120,27 @@ module EsDifferential:
             relative: f64 = 0.0
 
 
+        const enum DifferentialTextComparison of u8:
+            Exact
+            TrimFinalNewline
+
+
+        const enum DifferentialMapComparison of u8:
+            Unordered
+            Ordered
+
+
+        # Comparison policy is explicit data rather than an adapter-side
+        # convention.  Exact text, unordered maps, and zero float tolerance
+        # preserve the historical default; every relaxed comparison must be
+        # selected by the case author and can therefore be recorded later in
+        # an artifact manifest without guessing intent.
+        struct DifferentialComparatorPolicy:
+            float_tolerance: DifferentialFloatTolerance = DifferentialFloatTolerance{}
+            text: DifferentialTextComparison = DifferentialTextComparison.Exact
+            maps: DifferentialMapComparison = DifferentialMapComparison.Unordered
+
+
         struct DifferentialObservation:
             trace: u64
             value: DifferentialValue
@@ -417,6 +438,7 @@ module EsDifferential:
             reference: DifferentialRunner
             candidate: DifferentialRunner
             world: DifferentialWorld = DifferentialWorld{}
+            comparator: DifferentialComparatorPolicy = DifferentialComparatorPolicy{}
             tolerance: DifferentialFloatTolerance = DifferentialFloatTolerance{}
             engine_requirement: DifferentialEngineRequirement = DifferentialEngineRequirement.Ignore
             timeout_steps: u64 = 0
@@ -617,6 +639,7 @@ module EsDifferential:
             InvalidArtifactPolicy
             InvalidEngineRequirement
             InvalidTolerance
+            InvalidComparator
             InvalidLimit
 
 
@@ -801,6 +824,12 @@ module EsDifferential:
             return true
 
 
+        def differential_comparator_policy_valid(policy: DifferentialComparatorPolicy) -> bool:
+            return false if not differential_float_tolerance_valid(policy.float_tolerance)
+            return false if policy.text != DifferentialTextComparison.Exact and policy.text != DifferentialTextComparison.TrimFinalNewline
+            return policy.maps == DifferentialMapComparison.Unordered or policy.maps == DifferentialMapComparison.Ordered
+
+
     public:
         # Validate the complete case envelope before either runner is handed to
         # an adapter. Nested runner failures retain their original issue kind so a
@@ -852,12 +881,12 @@ module EsDifferential:
                         cursor.result.reason <- "differential world is invalid"
                     -> Validate
 
-                Validate, DifferentialCaseCheckState.Limits if (case.max_output_bytes == 0 or case.max_output_bytes <= DIFFERENTIAL_DEFAULT_MAX_OUTPUT_BYTES) and differential_artifact_policy_valid(case.artifact_policy) and differential_engine_requirement_valid(case.engine_requirement) and differential_float_tolerance_valid(case.tolerance):
+                Validate, DifferentialCaseCheckState.Limits if (case.max_output_bytes == 0 or case.max_output_bytes <= DIFFERENTIAL_DEFAULT_MAX_OUTPUT_BYTES) and differential_artifact_policy_valid(case.artifact_policy) and differential_engine_requirement_valid(case.engine_requirement) and differential_float_tolerance_valid(case.tolerance) and differential_comparator_policy_valid(case.comparator):
                     cursor.state <- DifferentialCaseCheckState.Done
                     -> Validate
                 Validate, DifferentialCaseCheckState.Limits:
                     cursor.result.valid <- false
-                    cursor.result.issue <- DifferentialCaseIssueKind.InvalidArtifactPolicy if not differential_artifact_policy_valid(case.artifact_policy) else DifferentialCaseIssueKind.InvalidEngineRequirement if not differential_engine_requirement_valid(case.engine_requirement) else DifferentialCaseIssueKind.InvalidTolerance if not differential_float_tolerance_valid(case.tolerance) else DifferentialCaseIssueKind.InvalidLimit
+                    cursor.result.issue <- DifferentialCaseIssueKind.InvalidArtifactPolicy if not differential_artifact_policy_valid(case.artifact_policy) else DifferentialCaseIssueKind.InvalidEngineRequirement if not differential_engine_requirement_valid(case.engine_requirement) else DifferentialCaseIssueKind.InvalidTolerance if not differential_float_tolerance_valid(case.tolerance) else DifferentialCaseIssueKind.InvalidComparator if not differential_comparator_policy_valid(case.comparator) else DifferentialCaseIssueKind.InvalidLimit
                     cursor.result.reason <- "differential case policy or limit is invalid"
                     -> Validate
 
@@ -2477,7 +2506,7 @@ module EsDifferential:
             state: mutable DifferentialCompareState
             index: mutable usize
             result: mutable DifferentialComparison
-            tolerance: DifferentialFloatTolerance
+            policy: DifferentialComparatorPolicy
 
 
         const enum DifferentialValueEqualState of u8:
@@ -2502,7 +2531,7 @@ module EsDifferential:
             pending: mutable darray[DifferentialValueEqualPair]
             equal: mutable bool
             comparisons: mutable usize
-            tolerance: DifferentialFloatTolerance
+            policy: DifferentialComparatorPolicy
 
 
         # Equality uses an explicit pair stack rather than recursive array calls.
@@ -2528,10 +2557,31 @@ module EsDifferential:
             return difference <= tolerance.absolute + tolerance.relative * scale
 
 
-        def differential_values_equal(left_storage: darray[DifferentialValue]&, left: DifferentialValue, right_storage: darray[DifferentialValue]&, right: DifferentialValue, tolerance: DifferentialFloatTolerance = DifferentialFloatTolerance{}, depth: usize = 0) -> bool can[Memory.Allocate, Abort.Panic]:
+        def differential_text_length(value: sview, comparison: DifferentialTextComparison) -> usize:
+            length: mutable usize = sview_len(value)
+            return length if comparison == DifferentialTextComparison.Exact or length == 0
+            if sview_at(value, length - 1) == 10:
+                length <- length - 1
+                length <- length - 1 if length > 0 and sview_at(value, length - 1) == 13
+            return length
+
+
+        def differential_text_equal(left: sview, right: sview, comparison: DifferentialTextComparison) -> bool:
+            left_length: usize = differential_text_length(left, comparison)
+            right_length: usize = differential_text_length(right, comparison)
+            return false if left_length != right_length
+            index: mutable usize = 0
+            while index < left_length:
+                return false if sview_at(left, index) != sview_at(right, index)
+                index <- index + 1
+            return true
+
+
+        def differential_values_equal(left_storage: darray[DifferentialValue]&, left: DifferentialValue, right_storage: darray[DifferentialValue]&, right: DifferentialValue, policy: DifferentialComparatorPolicy = DifferentialComparatorPolicy{}, depth: usize = 0) -> bool can[Memory.Allocate, Abort.Panic]:
             return false if left_storage.count > DIFFERENTIAL_DEFAULT_MAX_VALUES or right_storage.count > DIFFERENTIAL_DEFAULT_MAX_VALUES
             return false if depth > DIFFERENTIAL_DEFAULT_MAX_VALUE_DEPTH
-            cursor: mutable DifferentialValueEqualCursor = DifferentialValueEqualCursor{state: DifferentialValueEqualState.Select, index: 0, current: DifferentialValueEqualPair{left: left, right: right, depth: depth}, pending: [DifferentialValueEqualPair{left: left, right: right, depth: depth}], equal: true, comparisons: 0, tolerance: tolerance}
+            return false if not differential_comparator_policy_valid(policy)
+            cursor: mutable DifferentialValueEqualCursor = DifferentialValueEqualCursor{state: DifferentialValueEqualState.Select, index: 0, current: DifferentialValueEqualPair{left: left, right: right, depth: depth}, pending: [DifferentialValueEqualPair{left: left, right: right, depth: depth}], equal: true, comparisons: 0, policy: policy}
             machine over cursor.state while cursor.equal:
                 state Compare
                 start Compare
@@ -2572,15 +2622,15 @@ module EsDifferential:
                     cursor.state <- DifferentialValueEqualState.Select if cursor.equal else DifferentialValueEqualState.Done
                     -> Compare
                 Compare, DifferentialValueEqualState.Scalar if cursor.current.left.kind == DifferentialValueKind.Float:
-                    cursor.equal <- differential_float_equal(cursor.current.left.decimal, cursor.current.right.decimal, cursor.tolerance)
+                    cursor.equal <- differential_float_equal(cursor.current.left.decimal, cursor.current.right.decimal, cursor.policy.float_tolerance)
                     cursor.state <- DifferentialValueEqualState.Select if cursor.equal else DifferentialValueEqualState.Done
                     -> Compare
                 Compare, DifferentialValueEqualState.Scalar if cursor.current.left.kind == DifferentialValueKind.ProcessCapture:
-                    cursor.equal <- cursor.current.left.process_exit_status == cursor.current.right.process_exit_status and cursor.current.left.process_stdout == cursor.current.right.process_stdout and cursor.current.left.process_stderr == cursor.current.right.process_stderr
+                    cursor.equal <- cursor.current.left.process_exit_status == cursor.current.right.process_exit_status and differential_text_equal(cursor.current.left.process_stdout, cursor.current.right.process_stdout, cursor.policy.text) and differential_text_equal(cursor.current.left.process_stderr, cursor.current.right.process_stderr, cursor.policy.text)
                     cursor.state <- DifferentialValueEqualState.Select if cursor.equal else DifferentialValueEqualState.Done
                     -> Compare
                 Compare, DifferentialValueEqualState.Scalar:
-                    cursor.equal <- cursor.current.left.text == cursor.current.right.text
+                    cursor.equal <- differential_text_equal(cursor.current.left.text, cursor.current.right.text, cursor.policy.text)
                     cursor.state <- DifferentialValueEqualState.Select if cursor.equal else DifferentialValueEqualState.Done
                     -> Compare
 
@@ -2610,7 +2660,7 @@ module EsDifferential:
                     -> Compare
 
                 Compare, DifferentialValueEqualState.MapValidate:
-                    cursor.equal <- differential_map_values_equal(left_storage, cursor.current.left, right_storage, cursor.current.right, cursor.tolerance, cursor.current.depth)
+                    cursor.equal <- differential_map_values_equal(left_storage, cursor.current.left, right_storage, cursor.current.right, cursor.policy, cursor.current.depth)
                     cursor.state <- DifferentialValueEqualState.Select if cursor.equal else DifferentialValueEqualState.Done
                     -> Compare
 
@@ -2623,13 +2673,20 @@ module EsDifferential:
         # Map snapshots use the same order-insensitive key/value semantics as the
         # interpreter.  A key/value pair is considered present when both members
         # compare equal; duplicate entries therefore remain deterministic data.
-        def differential_map_values_equal(left_storage: darray[DifferentialValue]&, left: DifferentialValue, right_storage: darray[DifferentialValue]&, right: DifferentialValue, tolerance: DifferentialFloatTolerance = DifferentialFloatTolerance{}, depth: usize = 0) -> bool can[Memory.Allocate, Abort.Panic]:
+        def differential_map_values_equal(left_storage: darray[DifferentialValue]&, left: DifferentialValue, right_storage: darray[DifferentialValue]&, right: DifferentialValue, policy: DifferentialComparatorPolicy = DifferentialComparatorPolicy{}, depth: usize = 0) -> bool can[Memory.Allocate, Abort.Panic]:
             return false if depth > DIFFERENTIAL_DEFAULT_MAX_VALUE_DEPTH
             false return if left.kind != DifferentialValueKind.Map or right.kind != DifferentialValueKind.Map
             false return if left.map_count != right.map_count
             false return if left_storage.count > DIFFERENTIAL_DEFAULT_MAX_VALUES or right_storage.count > DIFFERENTIAL_DEFAULT_MAX_VALUES
             false return if left.map_count.usize() > DIFFERENTIAL_DEFAULT_MAX_VALUES / 2 or right.map_count.usize() > DIFFERENTIAL_DEFAULT_MAX_VALUES / 2
             false return if not differential_map_value_range_valid(left_storage, left) or not differential_map_value_range_valid(right_storage, right)
+            if policy.maps == DifferentialMapComparison.Ordered:
+                for offset in 0..<left.map_count.usize() |left_storage, right_storage, left, right, policy|:
+                    left_pair: usize = left.map_start.usize() + offset * 2
+                    right_pair: usize = right.map_start.usize() + offset * 2
+                    return false if not differential_values_equal(left_storage, left_storage[left_pair], right_storage, right_storage[right_pair], policy, depth + 1)
+                    return false if not differential_values_equal(left_storage, left_storage[left_pair + 1], right_storage, right_storage[right_pair + 1], policy, depth + 1)
+                return true
             # Matching is a bijection, even for malformed snapshots that contain
             # duplicate pairs. Without ownership tracking, one right-hand pair
             # could satisfy several left-hand entries and hide a real difference.
@@ -2645,7 +2702,7 @@ module EsDifferential:
                     right_pair: usize = right.map_start.usize() + right_offset * 2
                     right_key: DifferentialValue = right_storage[right_pair]
                     right_value: DifferentialValue = right_storage[right_pair + 1]
-                    if not matched[right_offset] and differential_values_equal(left_storage, left_key, right_storage, right_key, tolerance, depth + 1) and differential_values_equal(left_storage, left_value, right_storage, right_value, tolerance, depth + 1):
+                    if not matched[right_offset] and differential_values_equal(left_storage, left_key, right_storage, right_key, policy, depth + 1) and differential_values_equal(left_storage, left_value, right_storage, right_value, policy, depth + 1):
                         found <- true
                         matched[right_offset] <- true
                 false return if not found
@@ -2685,19 +2742,30 @@ module EsDifferential:
         # reported. The returned comparison carries both engine identities so a
         # machine-readable artifact can explain why a parity claim was refused.
     public:
-        def compare_differential_runs_with_engine_requirement(reference: DifferentialRun&, candidate: DifferentialRun&, requirement: DifferentialEngineRequirement, tolerance: DifferentialFloatTolerance = DifferentialFloatTolerance{}) -> DifferentialComparison:
+        def compare_differential_runs_with_engine_requirement_policy(reference: DifferentialRun&, candidate: DifferentialRun&, requirement: DifferentialEngineRequirement, policy: DifferentialComparatorPolicy = DifferentialComparatorPolicy{}) -> DifferentialComparison:
+            if not differential_comparator_policy_valid(policy):
+                return differential_comparison(DifferentialDifferenceKind.ReturnValue, 0, "comparison policy is invalid")
             if not differential_engine_requirement_satisfied(reference, candidate, requirement):
                 mismatch: mutable DifferentialComparison = differential_comparison(DifferentialDifferenceKind.Engine, 0, "engine requirement not satisfied")
                 mismatch.reference_engine <- reference.engine
                 mismatch.candidate_engine <- candidate.engine
                 return mismatch
-            return compare_differential_runs(reference, candidate, tolerance)
+            return compare_differential_runs_with_policy(reference, candidate, policy)
 
 
-        def compare_differential_runs(reference: DifferentialRun&, candidate: DifferentialRun&, tolerance: DifferentialFloatTolerance = DifferentialFloatTolerance{}) -> DifferentialComparison:
+        def compare_differential_runs_with_engine_requirement(reference: DifferentialRun&, candidate: DifferentialRun&, requirement: DifferentialEngineRequirement, tolerance: DifferentialFloatTolerance = DifferentialFloatTolerance{}) -> DifferentialComparison:
+            return compare_differential_runs_with_engine_requirement_policy(reference, candidate, requirement, DifferentialComparatorPolicy{float_tolerance: tolerance})
+
+
+        # The policy-aware entry point is the only comparison path that can
+        # opt into text normalization or ordered maps.  The legacy tolerance
+        # wrapper below remains source-compatible and selects exact text plus
+        # unordered maps.
+        def compare_differential_runs_with_policy(reference: DifferentialRun&, candidate: DifferentialRun&, policy: DifferentialComparatorPolicy = DifferentialComparatorPolicy{}) -> DifferentialComparison:
+            return differential_comparison(DifferentialDifferenceKind.ReturnValue, 0, "comparison policy is invalid") if not differential_comparator_policy_valid(policy)
             return differential_comparison(DifferentialDifferenceKind.ObservationCount, 0, "observation count exceeds differential budget") if reference.observations.count > ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS or candidate.observations.count > ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS
             return differential_comparison(DifferentialDifferenceKind.ReturnValue, 0, "owned value pool exceeds differential budget") if reference.values.count > DIFFERENTIAL_DEFAULT_MAX_VALUES or candidate.values.count > DIFFERENTIAL_DEFAULT_MAX_VALUES
-            cursor: mutable DifferentialCompareCursor = DifferentialCompareCursor{state: DifferentialCompareState.Outcome, index: 0, result: DifferentialComparison{equal: true, kind: DifferentialDifferenceKind.Equal}, tolerance: tolerance}
+            cursor: mutable DifferentialCompareCursor = DifferentialCompareCursor{state: DifferentialCompareState.Outcome, index: 0, result: DifferentialComparison{equal: true, kind: DifferentialDifferenceKind.Equal}, policy: policy}
             machine over cursor.state while cursor.result.equal:
                 state Compare
                 start Compare
@@ -2720,7 +2788,7 @@ module EsDifferential:
                     cursor.state <- DifferentialCompareState.Done
                     -> Compare
 
-                Compare, DifferentialCompareState.Error if reference.error_text == candidate.error_text:
+                Compare, DifferentialCompareState.Error if differential_text_equal(reference.error_text, candidate.error_text, cursor.policy.text):
                     cursor.state <- DifferentialCompareState.Stdout
                     -> Compare
                 Compare, DifferentialCompareState.Error:
@@ -2730,7 +2798,7 @@ module EsDifferential:
                     cursor.state <- DifferentialCompareState.Done
                     -> Compare
 
-                Compare, DifferentialCompareState.Stdout if reference.stdout == candidate.stdout:
+                Compare, DifferentialCompareState.Stdout if differential_text_equal(reference.stdout, candidate.stdout, cursor.policy.text):
                     cursor.state <- DifferentialCompareState.Stderr
                     -> Compare
                 Compare, DifferentialCompareState.Stdout:
@@ -2740,7 +2808,7 @@ module EsDifferential:
                     cursor.state <- DifferentialCompareState.Done
                     -> Compare
 
-                Compare, DifferentialCompareState.Stderr if reference.stderr == candidate.stderr:
+                Compare, DifferentialCompareState.Stderr if differential_text_equal(reference.stderr, candidate.stderr, cursor.policy.text):
                     cursor.state <- DifferentialCompareState.ReturnValue
                     -> Compare
                 Compare, DifferentialCompareState.Stderr:
@@ -2750,7 +2818,7 @@ module EsDifferential:
                     cursor.state <- DifferentialCompareState.Done
                     -> Compare
 
-                Compare, DifferentialCompareState.ReturnValue if differential_values_equal(reference.values, reference.return_value, candidate.values, candidate.return_value, cursor.tolerance):
+                Compare, DifferentialCompareState.ReturnValue if differential_values_equal(reference.values, reference.return_value, candidate.values, candidate.return_value, cursor.policy):
                     cursor.state <- DifferentialCompareState.ObservationCount
                     -> Compare
                 Compare, DifferentialCompareState.ReturnValue:
@@ -2772,7 +2840,7 @@ module EsDifferential:
                 Compare, DifferentialCompareState.Observation if cursor.index >= reference.observations.count:
                     cursor.state <- DifferentialCompareState.Done
                     -> Compare
-                Compare, DifferentialCompareState.Observation if reference.observations[cursor.index].trace == candidate.observations[cursor.index].trace and differential_values_equal(reference.values, reference.observations[cursor.index].value, candidate.values, candidate.observations[cursor.index].value, cursor.tolerance):
+                Compare, DifferentialCompareState.Observation if reference.observations[cursor.index].trace == candidate.observations[cursor.index].trace and differential_values_equal(reference.values, reference.observations[cursor.index].value, candidate.values, candidate.observations[cursor.index].value, cursor.policy):
                     cursor.index <- cursor.index + 1
                     -> Compare
                 Compare, DifferentialCompareState.Observation if reference.observations[cursor.index].trace != candidate.observations[cursor.index].trace:
@@ -2790,6 +2858,10 @@ module EsDifferential:
                     break
 
             return cursor.result
+
+
+        def compare_differential_runs(reference: DifferentialRun&, candidate: DifferentialRun&, tolerance: DifferentialFloatTolerance = DifferentialFloatTolerance{}) -> DifferentialComparison:
+            return compare_differential_runs_with_policy(reference, candidate, DifferentialComparatorPolicy{float_tolerance: tolerance})
 
 
     private:
