@@ -58,6 +58,13 @@ for boundary in 'DifferentialCaseIssueKind.InvalidWorldFileKind' 'DifferentialCa
     fi
 done
 
+for boundary in 'unknown_manifest_version' 'trailing_manifest'; do
+    if ! rg -Fq "$boundary" "$fixture_file"; then
+        printf 'differential case audit: missing manifest corruption coverage %s\n' "$boundary" >&2
+        exit 1
+    fi
+done
+
 for boundary in 'stdin_bytes: mutable darray[u8]' 'stdin_binary: bool' 'InvalidProcessInputPayload' 'differential_process_preparation_preserves_binary_stdin' 'differential_world_binary_stdin_is_bounded_and_fingerprinted'; do
     if ! rg -Fq "$boundary" "$source_file" "$fixture_file"; then
         printf 'differential case audit: missing binary process-input coverage %s\n' "$boundary" >&2
