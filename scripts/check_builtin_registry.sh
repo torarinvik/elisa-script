@@ -685,6 +685,16 @@ if ! rg -q 'typed_builtin_method_spec\("Map", method_name\)' "$lowerer_file" || 
     printf 'builtin registry audit: Map receiver dispatch, semantic checking, or inference is not registry-backed\n' >&2
     exit 1
 fi
+if ! rg -q 'typed_builtin_method_spec\("Set", method_name\)' "$lowerer_file" || \
+   ! rg -q 'scripting_set_builtin_available\(state, method_name\)' "$lowerer_file" || \
+   ! rg -q 'is_set_receiver_expression\(receiver_expression, state\)' "$lowerer_file" || \
+   ! rg -q 'typed_builtin_method_spec\("Set", method\)\.known' "$receiver_semantic_file" || \
+   ! rg -q 'ufm_check_set_builtin_arity' "$receiver_semantic_file" || \
+   ! rg -q 'typed_builtin_method_spec\("Set", method\)' "$inference_file" || \
+   ! rg -q 'scripting_set_method_available\(table, method_name\)' "$inference_file"; then
+    printf 'builtin registry audit: Set receiver dispatch, semantic checking, or inference is not registry-backed\n' >&2
+    exit 1
+fi
 if ! rg -q 'typed_builtin_method_spec\("Array", method_name\)' "$lowerer_file" || \
    ! rg -q 'scripting_array_builtin_available\(state, method_name\)' "$lowerer_file" || \
    ! rg -q 'is_array_receiver_expression\(receiver_expression, state\)' "$lowerer_file" || \
@@ -1970,7 +1980,7 @@ for name in $path_method_names; do
     fi
 done
 
-map_method_names="$(sed -n '/def typed_builtin_map_method_names/,/^        def typed_builtin_array_method_names/p' "$registry_file" | rg -o '"[a-z_][a-z0-9_]*"' | tr -d '"' | sort -u)"
+map_method_names="$(sed -n '/def typed_builtin_map_method_names/,/^        def typed_builtin_set_method_names/p' "$registry_file" | rg -o '"[a-z_][a-z0-9_]*"' | tr -d '"' | sort -u)"
 if [[ -z "$map_method_names" ]]; then
     printf 'builtin registry audit: typed_builtin_map_method_names is empty\n' >&2
     exit 1
@@ -2043,6 +2053,47 @@ for name in $map_method_names; do
     opcode="$(sed -n "s/.*name: \"$name\".*receiver: \"Map\".*opcode: \"\([A-Za-z0-9_]*\)\".*/\1/p" "$registry_file" | head -1)"
     if [[ -z "$opcode" ]] || ! rg -q "Opcode\\.$opcode" "$verifier_file"; then
         printf 'builtin registry audit: Map.%s opcode is not verifier-covered (%s)\n' "$name" "${opcode:-missing}" >&2
+        exit 1
+    fi
+done
+
+set_method_names="$(sed -n '/def typed_builtin_set_method_names/,/^        def typed_builtin_array_method_names/p' "$registry_file" | rg -o '"[a-z_][a-z0-9_]*"' | tr -d '"' | sort -u)"
+if [[ -z "$set_method_names" ]]; then
+    printf 'builtin registry audit: typed_builtin_set_method_names is empty\n' >&2
+    exit 1
+fi
+for name in $set_method_names; do
+    if ! rg -q "known: true, name: \"$name\", receiver: \"Set\"" "$registry_file"; then
+        printf 'builtin registry audit: Set.%s has no receiver-specific registry row\n' "$name" >&2
+        exit 1
+    fi
+    if ! rg -q "name: \"$name\", receiver: \"Set\".*argument_types:" "$registry_file"; then
+        printf 'builtin registry audit: Set.%s has no argument-type descriptor\n' "$name" >&2
+        exit 1
+    fi
+    if ! rg -q "scripting_set_builtin_available\(state, method_name\) and method_name == \"$name\"" "$lowerer_file"; then
+        printf 'builtin registry audit: lowerer has no Set method branch for %s\n' "$name" >&2
+        exit 1
+    fi
+    if [[ "$name" == "add" ]] && ! rg -q 'def lowers_set_mutations_through_branch_merge\(' "$lowering_test_file"; then
+        printf 'builtin registry audit: Set.add lowering fixture is missing\n' >&2
+        exit 1
+    fi
+    if [[ "$name" == "remove" ]] && ! rg -q 'def lowers_mutable_set_remove_to_typed_delete\(' "$lowering_test_file"; then
+        printf 'builtin registry audit: Set.remove lowering fixture is missing\n' >&2
+        exit 1
+    fi
+    if [[ "$name" == "clear" ]] && ! rg -q 'def lowers_mutable_set_clear_to_typed_empty_map\(' "$lowering_test_file"; then
+        printf 'builtin registry audit: Set.clear lowering fixture is missing\n' >&2
+        exit 1
+    fi
+    if ! rg -q 'def set_mutation_receiver_registry_shapes_are_static\(' "$semantic_test_file"; then
+        printf 'builtin registry audit: Set.%s semantic fixture is missing\n' "$name" >&2
+        exit 1
+    fi
+    opcode="$(sed -n "s/.*name: \"$name\".*receiver: \"Set\".*opcode: \"\([A-Za-z0-9_]*\)\".*/\1/p" "$registry_file" | head -1)"
+    if [[ -z "$opcode" ]] || ! rg -q "Opcode\\.$opcode" "$verifier_file"; then
+        printf 'builtin registry audit: Set.%s opcode is not verifier-covered (%s)\n' "$name" "${opcode:-missing}" >&2
         exit 1
     fi
 done
@@ -2527,6 +2578,7 @@ global_count="$(printf '%s\n' "$registry_names" | awk 'NF {count += 1} END {prin
 text_count="$(printf '%s\n' "$method_names" | awk 'NF {count += 1} END {print count + 0}')"
 regex_count="$(printf '%s\n' "$regex_method_names" | awk 'NF {count += 1} END {print count + 0}')"
 map_count="$(printf '%s\n' "$map_method_names" | awk 'NF {count += 1} END {print count + 0}')"
+set_count="$(printf '%s\n' "$set_method_names" | awk 'NF {count += 1} END {print count + 0}')"
 array_count="$(printf '%s\n' "$array_method_names" | awk 'NF {count += 1} END {print count + 0}')"
 if ! rg -q "${global_count} global spellings" "$surface_doc" || \
    ! rg -q "${global_count} global rows" "$ledger_doc" || \
@@ -2534,6 +2586,8 @@ if ! rg -q "${global_count} global spellings" "$surface_doc" || \
    ! rg -q "${regex_count} Regex receiver" "$surface_doc" || \
    ! rg -q "${map_count} Map receiver" "$surface_doc" || \
    ! rg -q "${map_count} Map receiver" "$ledger_doc" || \
+   ! rg -q "${set_count} Set receiver" "$surface_doc" || \
+   ! rg -q "${set_count} Set receiver" "$ledger_doc" || \
    ! rg -q "${array_count} Array receiver" "$surface_doc" || \
    ! rg -q "${array_count} Array receiver" "$ledger_doc"; then
     printf 'builtin registry audit: documentation counts do not match registry rows\n' >&2
@@ -2552,4 +2606,4 @@ if ! rg -q 'polymorphic_collection_builtins_preserve_known_element_types' "$sema
     exit 1
 fi
 
-printf 'builtin registry audit: %s global, %s Text, %s Regex, %s Map, and %s Array receiver spellings share semantic and lowerer metadata\n' "$global_count" "$text_count" "$regex_count" "$map_count" "$array_count"
+printf 'builtin registry audit: %s global, %s Text, %s Regex, %s Map, %s Set, and %s Array receiver spellings share semantic and lowerer metadata\n' "$global_count" "$text_count" "$regex_count" "$map_count" "$set_count" "$array_count"

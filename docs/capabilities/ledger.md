@@ -25,7 +25,7 @@ unbound until migrated. This is recorded in commit `47466a4` and remains
 unqualified for executed replay evidence.
 
 The shared builtin registry snapshot now contains 202 global rows, 42 `Text`
-receiver rows, 9 `Regex` receiver rows, 9 Map receiver rows, and 14 Array receiver rows. The global count includes the
+receiver rows, 9 `Regex` receiver rows, 9 Map receiver rows, 3 Set receiver rows, and 14 Array receiver rows. The global count includes the
 filesystem, process, environment, stream, scalar, text, and regex facades that
 have migrated to descriptor-backed semantic and lowering metadata; generic,
 variadic, and aggregate-polymorphic families remain explicitly open below.
@@ -50,6 +50,12 @@ receiver shapes consume the same
 `Concat`/`DeleteIndex`/`MakeMap` metadata;
 concrete key/value descriptors remain owned by the structural map type while
 recursive generic descriptors remain open.
+
+Set receiver operations now share the registry as `Set.add(value)`,
+`Set.remove(value)`, and `Set.clear()` rows. The lowerer keeps the dedicated
+`__elisascript_set` marker and the existing `discard(value)` compatibility alias,
+while semantic arity, source-shadowing, inference, and verifier coverage use the
+same `SetIndex`/`DeleteIndex`/`MakeMap` identities.
 
 The existing array `copy()`/`pop()`/`reverse()`/`sort()`/`insert()`/`remove()`/`push()`/`append()`/`extend()`/`clear()`/`count()`/`find()`/`index()`/`contains()` operations now have
 parallel Array receiver rows with registry arity/opcode identity,
