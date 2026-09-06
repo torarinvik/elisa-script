@@ -73,6 +73,12 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            sleep|sleep_seconds|sleep_milliseconds|sleep_ms)
+                if ! rg -q 'registry_spec\.opcode == "Sleep"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven sleep dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
             *)
                 printf 'builtin registry audit: lowerer has no dispatch branch for %s\n' "$name" >&2
                 exit 1
@@ -1140,7 +1146,7 @@ for milliseconds_name in sleep_milliseconds sleep_ms; do
 done
 if ! rg -q 'name: "sleep_milliseconds".*opcode: "Sleep", lowering_mode: 1' "$registry_file" || \
    ! rg -q 'name: "sleep_ms".*opcode: "Sleep", lowering_mode: 1' "$registry_file" || \
-   ! rg -q 'sleep_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'sleep_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
    ! rg -q 'sleep_spec\.lowering_mode == 1' "$lowerer_file" || \
    ! rg -q 'sleep_spec\.opcode == "Sleep"' "$lowerer_file"; then
     printf 'builtin registry audit: sleep lowerer does not consume unit/opcode metadata\n' >&2
