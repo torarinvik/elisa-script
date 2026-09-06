@@ -859,8 +859,9 @@ lower to the corresponding distinct opcode.
 `lstat` mode bits so the predicate observes the link itself rather than its target.
 `ReadLink` verifies as `Named(Path) -> Named(Path)` with `File.Read` and
 `FileIoError`; it returns the raw link target through POSIX `readlink` without
-following the link. The `readlink` and `read_link` builtins and path methods use
-this opcode.
+following the link. The returned target must fit the same non-empty 4 KiB Path
+envelope before it is copied into owned storage. The `readlink` and `read_link`
+builtins and path methods use this opcode.
 `SymlinkPath` verifies as `Named(Path) × Named(Path) -> Bool` with `File.Write`
 and `FileIoError`; its operands are target then link, and execution calls POSIX
 `symlink` directly. The `symlink`, `create_symlink`, and `Path.symlink_to`
@@ -909,7 +910,8 @@ consult the filesystem, and is eligible for direct bytecode execution. The
 convenience `Path.relative_to()` lower to this operation.
 `PathReal` verifies `Named(Path) -> Named(Path)` and requires `File.Read` plus
 `FileIoError`; it follows symbolic links through the host filesystem and returns
-an owned canonical absolute path. The `path_real`, `realpath`, and `resolve_path`
+an owned canonical absolute path bounded by the same non-empty 4 KiB Path
+envelope. The `path_real`, `realpath`, and `resolve_path`
 builtins plus `Path.realpath()`/`Path.resolve()` lower to this operation. It is
 eligible for direct bytecode execution and is distinct from the pure lexical
 `PathNormalize` operation and the non-following `ReadLink` operation.

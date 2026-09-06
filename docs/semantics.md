@@ -1523,7 +1523,7 @@ aliases.
 Unlike `path_normalize`, this operation consults the
 filesystem and reports `FileIoError` when the input is empty, contains an
 embedded NUL, or cannot be resolved. The returned libc path is bounded by the
-shared 64 MiB host C-string ceiling before it is copied into an owned `Path`.
+shared non-empty 4 KiB Path envelope before it is copied into an owned `Path`.
 
 The receiver forms `path.read_text() -> sview error[FileIoError] can[File.Read]`,
 `path.read_lines() -> darray[sview] error[FileIoError] can[File.Read]`, and
@@ -2128,9 +2128,9 @@ owned nominal snapshot, so a later directory change cannot mutate the saved path
 the host cannot allocate the returned snapshot, the operation reports
 `DirectoryError` and does not expose a partial path.
 Empty paths and embedded NUL bytes are rejected before entering the POSIX boundary.
-The `getcwd` result is scanned against the shared 64 MiB host C-string ceiling
-before it becomes the owned `Path`; an unterminated or overlong result reports
-`DirectoryError`.
+The `getcwd` result is scanned against the shared non-empty 4 KiB Path envelope
+before it becomes the owned `Path`; an empty, unterminated, or overlong result
+reports `DirectoryError`.
 `create_directories` (also `makedirs` and `mkdir_p`) creates missing parents like
 shell `mkdir -p` or Python `os.makedirs`, succeeds when each existing component is
 a directory, and reports a typed error when a component is not one.
