@@ -1528,6 +1528,15 @@ opcode admission. `read_lines` intentionally lowers to one typed text read
 followed by the existing newline split state machine, so line materialization
 does not introduce a second filesystem effect or error family.
 
+The receiver writers `path.write_text(text: sview) -> usize`,
+`path.write_lines(lines: darray[sview]) -> usize`, `path.write_bytes(bytes:
+darray[u8]) -> usize`, and the corresponding `append_text`, `append_lines`, and
+`append_bytes` forms carry `File.Write`/`FileIoError` through the same registry
+boundary. Their rows own the argument family, result type, and `WriteText`,
+`AppendText`, `WriteBytes`, or `AppendBytes` opcode. Line writers retain the
+existing join-with-newline lowering, while byte writers preserve exact unsigned
+byte element checking.
+
 `copy_path(source: Path, destination: Path) -> bool error[FileIoError]
 can[File.Read, File.Write]` copies one regular file by length-delimited bytes and
 replaces the destination. The source is subject to the interpreter's 64 MiB
