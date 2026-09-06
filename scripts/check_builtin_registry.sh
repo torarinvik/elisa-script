@@ -1254,6 +1254,22 @@ if ! rg -q 'def lower_text_remove_boundary_expression\(receiver_expression: Ast:
     printf 'builtin registry audit: Text boundary-removal lowerer does not consume registry mode metadata\n' >&2
     exit 1
 fi
+for partition_pair in partition:0 rpartition:1; do
+    partition_name="${partition_pair%%:*}"
+    partition_mode="${partition_pair##*:}"
+    if ! rg -q "name: \"$partition_name\", receiver: \"Text\".*argument_types: \"text\".*return_type: \"darray\[text\]\".*effects: \"\".*errors: \"\".*opcode: \"TextPartition\".*lowering_mode: $partition_mode" "$registry_file"; then
+        printf 'builtin registry audit: Text partition row lacks mode metadata: %s\n' "$partition_name" >&2
+        exit 1
+    fi
+done
+if ! rg -q 'def lower_text_partition_expression\(receiver_expression: Ast::Expr, method_name: sview, arguments:' "$lowerer_file" || \
+   ! rg -q 'method_spec\.known and method_spec\.opcode == "TextPartition"' "$lowerer_file" || \
+   ! rg -q 'integer: method_spec\.lowering_mode' "$lowerer_file" || \
+   rg -q 'lower_text_partition_expression\([^\n]*, (true|false),' "$lowerer_file" || \
+   rg -q '1 if reverse else 0' "$lowerer_file"; then
+    printf 'builtin registry audit: Text partition lowerer does not consume registry mode metadata\n' >&2
+    exit 1
+fi
 if ! rg -q 'def typed_builtin_result_type' "$lowerer_file" || \
    ! rg -q 'typed_builtin_result_type\([a-z_]+_spec\)' "$lowerer_file" || \
    ! rg -q 'typed_builtin_result_type\(method_spec\)' "$lowerer_file"; then

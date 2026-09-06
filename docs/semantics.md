@@ -520,6 +520,9 @@ original text unchanged when it does not match. A matching boundary is removed
 by byte offset; an empty boundary is a no-op. They are pure and deterministic.
 Their `TextRemoveBoundary` registry rows carry modes 0 (`removeprefix`) and 1
 (`removesuffix`), which the receiver lowerer forwards to the shared IR opcode.
+Likewise, `text.partition(separator)` and `text.rpartition(separator)` return
+the three-field text array described above; their `TextPartition` rows carry
+forward/reverse modes 0/1 consumed directly by the receiver lowerer.
 
 The first executable regex operation is the compiler-known, strongly typed search
 `matches(text, pattern) -> bool`, where `text` is `sview` and `pattern` is `Regex`:
