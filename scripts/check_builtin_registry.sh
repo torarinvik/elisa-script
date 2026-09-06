@@ -2032,6 +2032,14 @@ for name in $map_method_names; do
         printf 'builtin registry audit: Map.%s semantic fixture is missing\n' "$name" >&2
         exit 1
     fi
+    if [[ "$name" == "remove" || "$name" == "clear" ]] && ! rg -q 'def source_collection_mutation_declarations_take_precedence_over_registry_rows\(' "$semantic_test_file"; then
+        printf 'builtin registry audit: Map.%s source-shadow semantic fixture is missing\n' "$name" >&2
+        exit 1
+    fi
+    if [[ "$name" == "remove" || "$name" == "clear" ]] && ! rg -q 'def lowers_collection_mutation_source_functions_before_registry_rows\(' "$lowering_test_file"; then
+        printf 'builtin registry audit: Map.%s source-shadow lowering fixture is missing\n' "$name" >&2
+        exit 1
+    fi
     opcode="$(sed -n "s/.*name: \"$name\".*receiver: \"Map\".*opcode: \"\([A-Za-z0-9_]*\)\".*/\1/p" "$registry_file" | head -1)"
     if [[ -z "$opcode" ]] || ! rg -q "Opcode\\.$opcode" "$verifier_file"; then
         printf 'builtin registry audit: Map.%s opcode is not verifier-covered (%s)\n' "$name" "${opcode:-missing}" >&2
@@ -2111,6 +2119,14 @@ for name in $array_method_names; do
     fi
     if [[ "$name" == "reverse" || "$name" == "sort" ]] && ! rg -q 'def array_mutation_receiver_registry_shapes_are_static\(' "$semantic_test_file"; then
         printf 'builtin registry audit: Array mutation semantic fixture is missing\n' >&2
+        exit 1
+    fi
+    if [[ "$name" == "reverse" || "$name" == "sort" ]] && ! rg -q 'def source_collection_mutation_declarations_take_precedence_over_registry_rows\(' "$semantic_test_file"; then
+        printf 'builtin registry audit: Array.%s source-shadow semantic fixture is missing\n' "$name" >&2
+        exit 1
+    fi
+    if [[ "$name" == "reverse" || "$name" == "sort" ]] && ! rg -q 'def lowers_collection_mutation_source_functions_before_registry_rows\(' "$lowering_test_file"; then
+        printf 'builtin registry audit: Array.%s source-shadow lowering fixture is missing\n' "$name" >&2
         exit 1
     fi
     opcode="$(sed -n "s/.*name: \"$name\".*receiver: \"Array\".*opcode: \"\([A-Za-z0-9_]*\)\".*/\1/p" "$registry_file" | head -1)"
