@@ -1593,6 +1593,64 @@ extend EsIr:
             return LoweredValue{valid: true, value: result, type: result_type}
 
 
+        def is_path_global_array_io_spec(spec: EsBuiltin::BuiltinSpec) -> bool:
+            return spec.known and spec.receiver == "global" and ((spec.argument_types == "Path" and spec.opcode == "ReadText" and spec.return_type == "darray[text]") or (spec.argument_types == "Path,darray[text]" and (spec.opcode == "WriteText" or spec.opcode == "AppendText")) or (spec.argument_types == "Path,darray[u8]" and (spec.opcode == "WriteBytes" or spec.opcode == "AppendBytes")))
+
+
+        def lower_path_global_array_io(callee_name: sview, arguments: darray[Ast::Expr]&, argument_names: darray[sview]&, pos: Ast::Pos&, spec: EsBuiltin::BuiltinSpec, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+            result_type: Type = typed_builtin_result_type(spec)
+            invalid: LoweredValue = LoweredValue{valid: false, value: 0, type: result_type}
+            if not typed_builtin_call_shape(callee_name, arguments, argument_names):
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "Path file operation has an invalid argument shape")
+                return invalid
+            path_value: LoweredValue = lower_expression(arguments[0], state)
+            if not path_value.valid or path_value.type.kind != TypeKind.Named or path_value.type.name != "Path":
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "Path file operation requires a nominal Path operand")
+                return invalid
+            record_builtin_contract(spec, state)
+            if spec.argument_types == "Path" and spec.return_type == "darray[text]":
+                text_result: u32 = fresh_value(state)
+                read_operand_start: u32 = state.operand_pool.count.u32()
+                state.operand_pool.push(path_value.value)
+                state.instructions.push(Instruction{opcode: Opcode.ReadText, result: text_result, result_type: type_from_name("sview"), operand_start: read_operand_start, operand_count: 1, span: ir_span(pos)})
+                separator: LoweredValue = emit_constant(state, type_from_name("sview"), 0, "", "\n", false, ir_span(pos))
+                split_operand_start: u32 = state.operand_pool.count.u32()
+                state.operand_pool.push(text_result)
+                state.operand_pool.push(separator.value)
+                result: u32 = fresh_value(state)
+                state.instructions.push(Instruction{opcode: Opcode.Split, result: result, result_type: result_type, integer: 0, operand_start: split_operand_start, operand_count: 2, span: ir_span(pos)})
+                return LoweredValue{valid: true, value: result, type: result_type}
+            payload: mutable LoweredValue = invalid
+            if spec.argument_types == "Path,darray[text]":
+                lines_type: Type = array_ir_type(type_from_name("sview"))
+                lines_value: LoweredValue = lower_expression_expected(arguments[1], lines_type, state)
+                if not lines_value.valid or lines_value.type.kind != TypeKind.Array or lines_value.type.element_kind != TypeKind.Text:
+                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "Path line writer requires a darray[sview] value")
+                    return invalid
+                separator: LoweredValue = emit_constant(state, type_from_name("sview"), 0, "", "\n", false, ir_span(pos))
+                join_operand_start: u32 = state.operand_pool.count.u32()
+                state.operand_pool.push(lines_value.value)
+                state.operand_pool.push(separator.value)
+                joined: u32 = fresh_value(state)
+                state.instructions.push(Instruction{opcode: Opcode.Join, result: joined, result_type: type_from_name("sview"), operand_start: join_operand_start, operand_count: 2, span: ir_span(pos)})
+                payload <- LoweredValue{valid: true, value: joined, type: type_from_name("sview")}
+            else:
+                bytes_value: LoweredValue = lower_expression(arguments[1], state)
+                byte_type: Type = type_from_name("u8")
+                byte_element_type: Type = array_element_type(bytes_value.type) if bytes_value.type.kind == TypeKind.Array else type_from_name("void")
+                if not bytes_value.valid or bytes_value.type.kind != TypeKind.Array or not same_type(byte_element_type, byte_type):
+                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "Path byte writer requires a darray[u8] value")
+                    return invalid
+                payload <- bytes_value
+            operand_start: u32 = state.operand_pool.count.u32()
+            state.operand_pool.push(path_value.value)
+            state.operand_pool.push(payload.value)
+            result: u32 = fresh_value(state)
+            opcode: Opcode = Opcode.WriteText if spec.opcode == "WriteText" else Opcode.AppendText if spec.opcode == "AppendText" else Opcode.WriteBytes if spec.opcode == "WriteBytes" else Opcode.AppendBytes
+            state.instructions.push(Instruction{opcode: opcode, result: result, result_type: result_type, operand_start: operand_start, operand_count: 2, span: ir_span(pos)})
+            return LoweredValue{valid: true, value: result, type: result_type}
+
+
         # Python ports commonly keep filesystem operations under `os.path` and
         # `shutil`.  The IR has one canonical, strongly typed operation for each
         # of those calls, so normalize the dotted spelling before ordinary call
@@ -4854,6 +4912,8 @@ extend EsIr:
                         return lower_path_global_unary(callee_name, arguments, argument_names, pos, registry_spec, state)
                     if callee_index == state.function_names.count and is_path_global_binary_spec(registry_spec):
                         return lower_path_global_binary(callee_name, arguments, argument_names, pos, registry_spec, state)
+                    if callee_index == state.function_names.count and is_path_global_array_io_spec(registry_spec):
+                        return lower_path_global_array_io(callee_name, arguments, argument_names, pos, registry_spec, state)
                     # Source callbacks use an explicit handler name so the
                     # continuation identity remains static and verifier-visible:
                     # `resume("echo", payload)`.  The callback's return type is

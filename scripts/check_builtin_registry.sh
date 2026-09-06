@@ -212,6 +212,9 @@ if ! rg -q 'typed_builtin_method_spec\("Path", method_name\)' "$lowerer_file" ||
    ! rg -q 'opcode <- Opcode\.AppendText' "$lowerer_file" || \
    ! rg -q 'opcode <- Opcode\.ChmodPath' "$lowerer_file" || \
    ! rg -q 'opcode <- Opcode\.ReadText' "$lowerer_file" || \
+   ! rg -q 'def is_path_global_array_io_spec\(spec: EsBuiltin::BuiltinSpec\)' "$lowerer_file" || \
+   ! rg -q 'def lower_path_global_array_io\(callee_name: sview' "$lowerer_file" || \
+   ! rg -q 'is_path_global_array_io_spec\(registry_spec\)' "$lowerer_file" || \
    ! rg -q 'def is_path_receiver_expression\(expression: Ast::Expr, state: LowerState&\)' "$lowerer_file" || \
    ! rg -q 'scripting_path_builtin_available\(state, method_name\) or method_name == "mkdir"' "$lowerer_file" || \
    ! rg -q 'path_spec\.known and path_spec\.opcode == "PathParent"' "$lowerer_file" || \
