@@ -2069,6 +2069,18 @@ for name in $array_method_names; do
         printf 'builtin registry audit: Array.pop lowering fixture is missing\n' >&2
         exit 1
     fi
+    if [[ "$name" == "reverse" ]] && ! rg -q 'def lowers_python_reverse_as_typed_array_rebinding\(' "$lowering_test_file"; then
+        printf 'builtin registry audit: Array.reverse lowering fixture is missing\n' >&2
+        exit 1
+    fi
+    if [[ "$name" == "sort" ]] && ! rg -q 'def lowers_python_array_sort_method\(' "$lowering_test_file"; then
+        printf 'builtin registry audit: Array.sort lowering fixture is missing\n' >&2
+        exit 1
+    fi
+    if [[ "$name" == "reverse" || "$name" == "sort" ]] && ! rg -q 'def array_mutation_receiver_registry_shapes_are_static\(' "$semantic_test_file"; then
+        printf 'builtin registry audit: Array mutation semantic fixture is missing\n' >&2
+        exit 1
+    fi
     opcode="$(sed -n "s/.*name: \"$name\".*receiver: \"Array\".*opcode: \"\([A-Za-z0-9_]*\)\".*/\1/p" "$registry_file" | head -1)"
     if [[ -z "$opcode" ]] || ! rg -q "Opcode\\.$opcode" "$verifier_file"; then
         printf 'builtin registry audit: Array.%s opcode is not verifier-covered (%s)\n' "$name" "${opcode:-missing}" >&2
