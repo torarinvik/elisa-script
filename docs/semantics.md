@@ -1240,7 +1240,9 @@ and preserve the exact effect and error contract. The shared typed-builtin
 registry owns the three global spellings with nominal `Path`, `File.Read`, and
 `PathAccess` metadata. Each row carries the POSIX access mode (read, write, or
 execute) as registry lowering metadata, and the lowerer copies that mode into
-the instruction payload without inferring it from the alias spelling.
+the instruction payload without inferring it from the alias spelling. The
+receiver rows live in the separate `Path` method namespace with zero positional
+arity, the same result/opcode/mode contract, and source-UFCS shadowing checks.
 
 `touch(path: Path) -> bool error[FileIoError] can[File.Write]` creates an empty file
 when it is missing and updates its timestamps without truncating an existing file.

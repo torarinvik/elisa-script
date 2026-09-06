@@ -28,7 +28,7 @@ done
 
 registry_names="$(sed -n '/def typed_builtin_names/,/^        def /p' "$registry_file" | rg -o '"[a-z_][a-z0-9_]*"' | tr -d '"' | sort -u)"
 method_names="$(sed -n '/def typed_builtin_method_names/,/^        def typed_builtin_regex_method_names/p' "$registry_file" | rg -o '"[a-z_][a-z0-9_]*"' | tr -d '"' | sort -u)"
-regex_method_names="$(sed -n '/def typed_builtin_regex_method_names/,$p' "$registry_file" | rg -o '"[a-z_][a-z0-9_]*"' | tr -d '"' | sort -u)"
+regex_method_names="$(sed -n '/def typed_builtin_regex_method_names/,/^        def typed_builtin_path_method_names/p' "$registry_file" | rg -o '"[a-z_][a-z0-9_]*"' | tr -d '"' | sort -u)"
 if [[ -z "$registry_names" ]]; then
     printf 'builtin registry audit: typed_builtin_names is empty\n' >&2
     exit 1
@@ -145,6 +145,29 @@ fi
 if ! rg -q 'typed_builtin_method_spec\("Regex", method\)' "$inference_file" || \
    ! rg -q 'scripting_regex_method_available\(table, method_name\)' "$inference_file"; then
     printf 'builtin registry audit: semantic Regex receiver inference does not consume the registry\n' >&2
+    exit 1
+fi
+if ! rg -q 'def typed_builtin_path_method_names\(\)' "$registry_file" || \
+   ! rg -q 'name: "is_readable", receiver: "Path".*argument_types: "".*return_type: "bool".*effects: "File.Read".*opcode: "PathAccess".*lowering_mode: 4' "$registry_file" || \
+   ! rg -q 'name: "is_writable", receiver: "Path".*argument_types: "".*return_type: "bool".*effects: "File.Read".*opcode: "PathAccess".*lowering_mode: 2' "$registry_file" || \
+   ! rg -q 'name: "is_executable", receiver: "Path".*argument_types: "".*return_type: "bool".*effects: "File.Read".*opcode: "PathAccess".*lowering_mode: 1' "$registry_file"; then
+    printf 'builtin registry audit: Path access receiver rows are incomplete\n' >&2
+    exit 1
+fi
+if ! rg -q 'typed_builtin_method_spec\("Path", method_name\)' "$lowerer_file" || \
+   ! rg -q 'def scripting_path_builtin_available\(state: LowerState&, method_name: sview\)' "$lowerer_file" || \
+   ! rg -q 'def is_path_receiver_expression\(expression: Ast::Expr, state: LowerState&\)' "$lowerer_file" || \
+   ! rg -q 'path_access_spec\.known and path_access_spec\.opcode == "PathAccess"' "$lowerer_file" || \
+   ! rg -q 'typed_builtin_method_call_shape\("Path", method_name' "$lowerer_file" || \
+   ! rg -q 'instruction_integer <- path_access_spec\.lowering_mode' "$lowerer_file"; then
+    printf 'builtin registry audit: Path access receiver lowering does not consume registry metadata\n' >&2
+    exit 1
+fi
+if ! rg -q 'typed_builtin_method_spec\("Path", method\)' "$receiver_semantic_file" || \
+   ! rg -q 'ufm_check_path_builtin_arity' "$receiver_semantic_file" || \
+   ! rg -q 'scripting_path_registry_return_type' "$inference_file" || \
+   ! rg -q 'scripting_path_method_available\(table, method_name\)' "$inference_file"; then
+    printf 'builtin registry audit: Path access receiver semantic consumers are incomplete\n' >&2
     exit 1
 fi
 if ! rg -q 'argument_names: sview' "$registry_file" || \
@@ -769,6 +792,11 @@ if ! rg -q 'def registry_is_readable_requires_a_nominal_path\(' "$repo_root/test
     printf 'builtin registry audit: path-access registry negative fixture is missing\n' >&2
     exit 1
 fi
+if ! rg -q 'lowers_typed_path_access_predicates_with_file_read_effect' "$repo_root/test/ir/elisascript_lowering_test.elisa" || \
+   ! rg -q 'methods_source: static u8&' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
+    printf 'builtin registry audit: Path access receiver lowering fixture is missing\n' >&2
+    exit 1
+fi
 if ! rg -q 'def registry_file_size_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
     printf 'builtin registry audit: file-size registry negative fixture is missing\n' >&2
     exit 1
@@ -1088,6 +1116,31 @@ for name in $regex_method_names; do
     opcode="$(sed -n "s/.*name: \"$name\".*receiver: \"Regex\".*opcode: \"\([A-Za-z0-9_]*\)\".*/\1/p" "$registry_file" | head -1)"
     if [[ -z "$opcode" ]] || ! rg -q "Opcode\\.$opcode" "$verifier_file"; then
         printf 'builtin registry audit: Regex.%s opcode is not verifier-covered (%s)\n' "$name" "${opcode:-missing}" >&2
+        exit 1
+    fi
+done
+
+path_method_names="$(sed -n '/def typed_builtin_path_method_names/,$p' "$registry_file" | rg -o '"[a-z_][a-z0-9_]*"' | tr -d '"' | sort -u)"
+if [[ -z "$path_method_names" ]]; then
+    printf 'builtin registry audit: typed_builtin_path_method_names is empty\n' >&2
+    exit 1
+fi
+for name in $path_method_names; do
+    if ! rg -q "known: true, name: \"$name\", receiver: \"Path\"" "$registry_file"; then
+        printf 'builtin registry audit: Path.%s has no receiver-specific registry row\n' "$name" >&2
+        exit 1
+    fi
+    if ! rg -q "method_name == \"$name\"" "$lowerer_file"; then
+        printf 'builtin registry audit: lowerer has no Path method branch for %s\n' "$name" >&2
+        exit 1
+    fi
+    if ! rg -q "name: \"$name\", receiver: \"Path\".*argument_types:" "$registry_file"; then
+        printf 'builtin registry audit: Path.%s has no argument-type descriptor\n' "$name" >&2
+        exit 1
+    fi
+    opcode="$(sed -n "s/.*name: \"$name\".*receiver: \"Path\".*opcode: \"\([A-Za-z0-9_]*\)\".*/\1/p" "$registry_file" | head -1)"
+    if [[ -z "$opcode" ]] || ! rg -q "Opcode\\.$opcode" "$verifier_file"; then
+        printf 'builtin registry audit: Path.%s opcode is not verifier-covered (%s)\n' "$name" "${opcode:-missing}" >&2
         exit 1
     fi
 done

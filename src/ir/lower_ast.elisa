@@ -1407,6 +1407,9 @@ extend EsIr:
         def scripting_regex_builtin_available(state: LowerState&, method_name: sview) -> bool:
             return EsBuiltin::typed_builtin_method_spec("Regex", method_name).known and scripting_source_method_available(state, method_name)
 
+        def scripting_path_builtin_available(state: LowerState&, method_name: sview) -> bool:
+            return EsBuiltin::typed_builtin_method_spec("Path", method_name).known and scripting_source_method_available(state, method_name)
+
 
         # A source-level UFCS function receives the receiver as its first
         # positional argument. Build the ordinary direct-call AST shape so the
@@ -1438,12 +1441,30 @@ extend EsIr:
                     return false
 
 
+        def is_path_receiver_expression(expression: Ast::Expr, state: LowerState&) -> bool:
+            match expression:
+                Expr.Ident(receiver_name, _):
+                    receiver_binding: usize = binding_index(state, receiver_name)
+                    return receiver_binding < state.names.count and state.types[receiver_binding].kind == TypeKind.Named and state.types[receiver_binding].name == "Path"
+                Expr.Call(callee, arguments, argument_names, _):
+                    match callee:
+                        Expr.Ident(name, _):
+                            return name == "path" and arguments.count == 1 and (argument_names.count == 0 or (argument_names.count == 1 and argument_names[0] == ""))
+                        _:
+                            return false
+                _:
+                    return false
+
+
         def record_receiver_builtin_contract(receiver_expression: Ast::Expr, method_name: sview, state: mutable LowerState&) -> void can[Memory.Allocate, Abort.Panic]:
             if is_regex_receiver_expression(receiver_expression, state) and scripting_regex_builtin_available(state, method_name):
                 record_builtin_contract(EsBuiltin::typed_builtin_method_spec("Regex", method_name), state)
                 return
             if is_text_receiver_expression(receiver_expression, state) and scripting_text_builtin_available(state, method_name):
                 record_builtin_contract(EsBuiltin::typed_builtin_method_spec("Text", method_name), state)
+                return
+            if is_path_receiver_expression(receiver_expression, state) and scripting_path_builtin_available(state, method_name):
+                record_builtin_contract(EsBuiltin::typed_builtin_method_spec("Path", method_name), state)
 
 
         # Python ports commonly keep filesystem operations under `os.path` and
@@ -8113,7 +8134,8 @@ extend EsIr:
                 result: u32 = fresh_value(state)
                 state.instructions.push(Instruction{opcode: Opcode.RemoveDirectory, result: result, result_type: result_type, operand_start: operand_start, operand_count: 1, span: ir_span(pos)})
                 return LoweredValue{valid: true, value: result, type: result_type}
-            result_type: mutable Type = type_from_name("bool") if method_name == "exists" or method_name == "is_dir" or method_name == "is_file" or method_name == "is_symlink" or method_name == "is_absolute" or method_name == "is_readable" or method_name == "is_writable" or method_name == "is_executable" else (Type{kind: TypeKind.Named, name: "Path"} if method_name == "readlink" or method_name == "read_link" or method_name == "normalize" or method_name == "absolute" or method_name == "realpath" or method_name == "resolve" else type_from_name("sview"))
+            path_access_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_method_spec("Path", method_name)
+            result_type: mutable Type = typed_builtin_result_type(path_access_spec) if path_access_spec.known else (type_from_name("bool") if method_name == "exists" or method_name == "is_dir" or method_name == "is_file" or method_name == "is_symlink" or method_name == "is_absolute" else (Type{kind: TypeKind.Named, name: "Path"} if method_name == "readlink" or method_name == "read_link" or method_name == "normalize" or method_name == "absolute" or method_name == "realpath" or method_name == "resolve" else type_from_name("sview")))
             if arguments.count != 0 or argument_names.count != 0:
                 add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "path shape methods require no arguments")
                 return invalid
@@ -8146,13 +8168,16 @@ extend EsIr:
                 opcode <- Opcode.IsDirectory
             elif method_name == "is_absolute":
                 opcode <- Opcode.PathIsAbsolute
-            elif method_name == "is_readable" or method_name == "is_writable" or method_name == "is_executable":
+            elif path_access_spec.known and path_access_spec.opcode == "PathAccess":
+                if not typed_builtin_method_call_shape("Path", method_name, arguments, argument_names):
+                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "Path access predicate requires no arguments")
+                    return invalid
+                record_builtin_contract(path_access_spec, state)
                 state.required_effects.push("File.Read") if not has_text(state.required_effects, "File.Read")
-                access_mode: i64 = 4 if method_name == "is_readable" else 2 if method_name == "is_writable" else 1
                 opcode <- Opcode.PathAccess
                 # PathAccess carries the POSIX mode in the instruction payload;
                 # the verifier accepts only the three explicit access bits.
-                instruction_integer <- access_mode
+                instruction_integer <- path_access_spec.lowering_mode
             elif method_name == "normalize":
                 result_type <- Type{kind: TypeKind.Named, name: "Path"}
                 opcode <- Opcode.PathNormalize
