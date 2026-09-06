@@ -499,6 +499,38 @@ module EsDifferential:
             reason: mutable sview = ""
 
 
+        const enum DifferentialArtifactDirectoryState of u8:
+            Staging
+            Ready
+            Published
+
+
+        struct DifferentialArtifactDirectoryPlan:
+            format_version: u8 = 1
+            manifest_fingerprint: u64 = 0
+            parent: sview = ""
+            staging_name: sview = ""
+            final_name: sview = ""
+            state: DifferentialArtifactDirectoryState = DifferentialArtifactDirectoryState.Staging
+
+
+        const enum DifferentialArtifactDirectoryIssue of u8:
+            None
+            InvalidPlan
+            InvalidIndex
+            InvalidParent
+            InvalidComponent
+            NameCollision
+            ManifestFingerprintMismatch
+            InvalidPublicationState
+
+
+        struct DifferentialArtifactDirectoryCheck:
+            valid: mutable bool
+            issue: mutable DifferentialArtifactDirectoryIssue
+            reason: mutable sview = ""
+
+
         const enum DifferentialRunnerIssueKind of u8:
             None
             MissingName
@@ -1430,6 +1462,116 @@ module EsDifferential:
 
         def decode_differential_artifact_index(bytes: darray[u8]&) -> DifferentialArtifactIndexDecode can[Unsafe.PointerCast]:
             return differential_decode_artifact_index(bytes)
+
+
+    private:
+        const DIFFERENTIAL_MAX_ARTIFACT_DIRECTORY_PARENT_BYTES: usize = 4096
+        const DIFFERENTIAL_MAX_ARTIFACT_DIRECTORY_COMPONENT_BYTES: usize = 128
+
+
+        def differential_artifact_directory_state_valid(state: DifferentialArtifactDirectoryState) -> bool:
+            return state in {DifferentialArtifactDirectoryState.Staging, DifferentialArtifactDirectoryState.Ready, DifferentialArtifactDirectoryState.Published}
+
+
+        def differential_artifact_directory_component_valid(value: sview) -> bool:
+            length: usize = sview_len(value)
+            return false if length == 0 or length > DIFFERENTIAL_MAX_ARTIFACT_DIRECTORY_COMPONENT_BYTES or differential_sview_has_nul(value)
+            return false if value == "." or value == ".."
+            index: mutable usize = 0
+            while index < length:
+                byte: u8 = sview_at(value, index)
+                return false if byte == 47 or byte == 92
+                index <- index + 1
+            return true
+
+
+        def differential_artifact_directory_plan_valid(plan: DifferentialArtifactDirectoryPlan&) -> bool:
+            return false if plan.format_version != 1 or plan.manifest_fingerprint == 0 or not differential_artifact_directory_state_valid(plan.state)
+            return false if sview_len(plan.parent) == 0 or sview_len(plan.parent) > DIFFERENTIAL_MAX_ARTIFACT_DIRECTORY_PARENT_BYTES or differential_sview_has_nul(plan.parent)
+            return false if not differential_artifact_directory_component_valid(plan.staging_name) or not differential_artifact_directory_component_valid(plan.final_name)
+            return plan.staging_name != plan.final_name
+
+
+        const enum DifferentialArtifactDirectoryCheckState of u8:
+            Plan
+            Index
+            Binding
+            Publication
+            Done
+
+
+        struct DifferentialArtifactDirectoryCheckCursor:
+            state: mutable DifferentialArtifactDirectoryCheckState
+            result: mutable DifferentialArtifactDirectoryCheck
+
+
+        def differential_artifact_directory_failure(issue: DifferentialArtifactDirectoryIssue, reason: sview) -> DifferentialArtifactDirectoryCheck:
+            return DifferentialArtifactDirectoryCheck{valid: false, issue: issue, reason: reason}
+
+
+    public:
+        # Describe an atomic artifact directory without constructing a shell
+        # command or exposing a path with an interpolated component. The later
+        # filesystem adapter creates `staging_name`, writes sidecars and a
+        # Prepared index, replaces it with a Complete index, then renames the
+        # directory to `final_name`.
+        def make_differential_artifact_directory_plan(manifest: DifferentialArtifactManifest&, parent: sview, staging_name: sview, final_name: sview, state: DifferentialArtifactDirectoryState = DifferentialArtifactDirectoryState.Staging) -> DifferentialArtifactDirectoryPlan error[DifferentialRunnerError] can[Memory.Allocate, Abort.Panic]:
+            raise DifferentialRunnerError.Invalid if not differential_artifact_manifest_valid(manifest) or not differential_artifact_directory_state_valid(state)
+            manifest_fingerprint: u64 = differential_artifact_manifest_fingerprint(manifest)
+            raise DifferentialRunnerError.Invalid if manifest_fingerprint == 0
+            plan: DifferentialArtifactDirectoryPlan = DifferentialArtifactDirectoryPlan{manifest_fingerprint: manifest_fingerprint, parent: parent, staging_name: staging_name, final_name: final_name, state: state}
+            raise DifferentialRunnerError.Invalid if not differential_artifact_directory_plan_valid(plan)
+            return plan
+
+
+        # Validate the publication step before any host filesystem mutation.
+        # Staging is paired only with a Prepared index; Ready and Published
+        # require Complete so a final directory can never name a partial bundle.
+        def validate_differential_artifact_directory(plan: DifferentialArtifactDirectoryPlan&, index: DifferentialArtifactIndex&) -> DifferentialArtifactDirectoryCheck:
+            cursor: mutable DifferentialArtifactDirectoryCheckCursor = DifferentialArtifactDirectoryCheckCursor{state: DifferentialArtifactDirectoryCheckState.Plan, result: DifferentialArtifactDirectoryCheck{valid: true, issue: DifferentialArtifactDirectoryIssue.None}}
+            machine over cursor.state:
+                state Validate
+                start Validate
+
+                Validate, DifferentialArtifactDirectoryCheckState.Plan if differential_artifact_directory_plan_valid(plan):
+                    cursor.state <- DifferentialArtifactDirectoryCheckState.Index
+                    -> Validate
+                Validate, DifferentialArtifactDirectoryCheckState.Plan:
+                    cursor.result <- differential_artifact_directory_failure(DifferentialArtifactDirectoryIssue.InvalidPlan, "artifact directory plan is invalid")
+                    cursor.state <- DifferentialArtifactDirectoryCheckState.Done
+                    -> Validate
+
+                Validate, DifferentialArtifactDirectoryCheckState.Index if differential_artifact_index_valid(index):
+                    cursor.state <- DifferentialArtifactDirectoryCheckState.Binding
+                    -> Validate
+                Validate, DifferentialArtifactDirectoryCheckState.Index:
+                    cursor.result <- differential_artifact_directory_failure(DifferentialArtifactDirectoryIssue.InvalidIndex, "artifact directory index is invalid")
+                    cursor.state <- DifferentialArtifactDirectoryCheckState.Done
+                    -> Validate
+
+                Validate, DifferentialArtifactDirectoryCheckState.Binding if plan.manifest_fingerprint == index.manifest_fingerprint:
+                    cursor.state <- DifferentialArtifactDirectoryCheckState.Publication
+                    -> Validate
+                Validate, DifferentialArtifactDirectoryCheckState.Binding:
+                    cursor.result <- differential_artifact_directory_failure(DifferentialArtifactDirectoryIssue.ManifestFingerprintMismatch, "artifact directory and index use different manifests")
+                    cursor.state <- DifferentialArtifactDirectoryCheckState.Done
+                    -> Validate
+
+                Validate, DifferentialArtifactDirectoryCheckState.Publication if plan.state == DifferentialArtifactDirectoryState.Staging and index.publication == DifferentialArtifactPublicationState.Prepared:
+                    cursor.state <- DifferentialArtifactDirectoryCheckState.Done
+                    -> Validate
+                Validate, DifferentialArtifactDirectoryCheckState.Publication if plan.state != DifferentialArtifactDirectoryState.Staging and index.publication == DifferentialArtifactPublicationState.Complete:
+                    cursor.state <- DifferentialArtifactDirectoryCheckState.Done
+                    -> Validate
+                Validate, DifferentialArtifactDirectoryCheckState.Publication:
+                    cursor.result <- differential_artifact_directory_failure(DifferentialArtifactDirectoryIssue.InvalidPublicationState, "artifact directory state and index publication state are incompatible")
+                    cursor.state <- DifferentialArtifactDirectoryCheckState.Done
+                    -> Validate
+
+                Validate, DifferentialArtifactDirectoryCheckState.Done:
+                    break
+
+            return cursor.result
 
 
         const DIFFERENTIAL_WAIT_NOHANG: int = 1

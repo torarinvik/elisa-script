@@ -490,6 +490,18 @@ sidecar fingerprints. Prepared, stale, mixed-side, malformed, or cross-manifest
 bundles return a typed `DifferentialArtifactReplayCheck` failure and are not
 eligible for replay; the validator itself never executes the reproduction entry.
 
+The directory publication protocol is modeled separately from the host I/O
+adapter by `DifferentialArtifactDirectoryPlan`. A plan has a bounded parent
+path and two single-component names: a private staging directory and a distinct
+published directory. Component names reject empty, dot, parent, slash,
+backslash, and NUL forms. Its state machine is `Staging`, `Ready`, then
+`Published`; staging accepts only a `Prepared` ESIX index, while the latter two
+states require `Complete`. The eventual POSIX adapter must create and populate
+the staging directory, write the complete index last, and rename the directory
+within the same parent without shell evaluation. The plan validator covers the
+ordering and path contract now; actual directory creation, fsync policy, and
+crash-recovery testing remain execution work.
+
 The execution boundary now carries a backend-neutral `ExecutionCapability`
 snapshot alongside that engine identity. For bytecode runs,
 `capability_known` is true and the snapshot preserves `direct_supported`,
