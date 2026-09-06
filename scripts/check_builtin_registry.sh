@@ -133,6 +133,30 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            len)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "Length"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven length dispatch\n' >&2
+                    exit 1
+                fi
+                ;;
+            contains)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "Contains"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven contains dispatch\n' >&2
+                    exit 1
+                fi
+                ;;
+            is_empty|isempty)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "Equal" and registry_spec\.lowering_steps == "Length,Equal"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven empty predicate dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
+            is_nonempty|nonempty|file_nonempty)
+                if ! rg -q 'registry_spec\.receiver == "global" and \(\(registry_spec\.opcode == "Greater" and registry_spec\.lowering_steps == "Length,Greater"\) or \(registry_spec\.opcode == "FileSize" and registry_spec\.lowering_steps == "FileSize,Greater"\)\)' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven nonempty dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
             *)
                 printf 'builtin registry audit: lowerer has no dispatch branch for %s\n' "$name" >&2
                 exit 1
@@ -1442,13 +1466,15 @@ fi
 # Fixed global text aliases must derive their result shape, opcode, and any
 # alias-specific mode from the same registry rows used by semantic checking.
 if ! rg -q 'name: "len", receiver: "global".*argument_types: "collection\|text".*return_type: "usize".*effects: "".*errors: "".*opcode: "Length"' "$registry_file" || \
-   ! rg -q 'len_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'len_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "Length"' "$lowerer_file" || \
    ! rg -q 'len_spec\.opcode == "Length"' "$lowerer_file"; then
     printf 'builtin registry audit: global len lowerer does not consume registry shape/result/opcode metadata\n' >&2
     exit 1
 fi
 if ! rg -q 'name: "contains", receiver: "global".*argument_types: "collection,any".*return_type: "bool".*effects: "".*errors: "".*opcode: "Contains"' "$registry_file" || \
-   ! rg -q 'contains_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'contains_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "Contains"' "$lowerer_file" || \
    ! rg -q 'contains_spec\.opcode == "Contains"' "$lowerer_file" || \
    ! rg -q 'def lower_collection_contains_expression\(collection_expression: Ast::Expr.*spec: EsBuiltin::BuiltinSpec' "$lowerer_file" || \
    ! rg -q 'opcode: Opcode = Opcode.Contains if spec\.opcode == "Contains"' "$lowerer_file"; then
@@ -1468,7 +1494,8 @@ for empty_name in is_empty isempty; do
         exit 1
     fi
 done
-if ! rg -q 'empty_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+if ! rg -q 'empty_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "Equal" and registry_spec\.lowering_steps == "Length,Equal"' "$lowerer_file" || \
    ! rg -q 'empty_spec\.lowering_steps == "Length,Equal"' "$lowerer_file" || \
    ! rg -q 'def lower_collection_is_empty_expression\(receiver_expression: Ast::Expr.*spec: EsBuiltin::BuiltinSpec' "$lowerer_file" || \
    ! rg -q 'spec\.opcode != "Equal" or spec\.lowering_steps != "Length,Equal"' "$lowerer_file"; then
@@ -1482,7 +1509,8 @@ for nonempty_name in is_nonempty nonempty; do
         exit 1
     fi
 done
-if ! rg -q 'nonempty_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+if ! rg -q 'nonempty_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and \(\(registry_spec\.opcode == "Greater" and registry_spec\.lowering_steps == "Length,Greater"\) or \(registry_spec\.opcode == "FileSize" and registry_spec\.lowering_steps == "FileSize,Greater"\)\)' "$lowerer_file" || \
    ! rg -q 'def lower_collection_nonempty_expression\(receiver_expression: Ast::Expr.*spec: EsBuiltin::BuiltinSpec' "$lowerer_file" || \
    ! rg -q 'spec\.opcode != "Greater" and spec\.opcode != "FileSize"' "$lowerer_file"; then
     printf 'builtin registry audit: is-nonempty lowerers do not consume registry opcode metadata\n' >&2
