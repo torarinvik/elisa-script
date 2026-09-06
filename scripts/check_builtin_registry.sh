@@ -1191,6 +1191,8 @@ if ! rg -q 'starts_with_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_
    ! rg -q 'replace_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
    ! rg -q 'replace_spec\.opcode == "TextReplace"' "$lowerer_file" || \
    ! rg -q 'split_spec\.opcode == "Split"' "$lowerer_file" || \
+   ! rg -q 'name: "split", receiver: "global".*opcode: "Split", lowering_mode: 0' "$registry_file" || \
+   ! rg -q 'integer: split_spec\.lowering_mode' "$lowerer_file" || \
    ! rg -q 'spec\.opcode == "TextPartition" and typed_builtin_call_shape\(spec\.name' "$lowerer_file" || \
    ! rg -q 'integer: spec\.lowering_mode' "$lowerer_file" || \
    ! rg -q 'split_lines_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
