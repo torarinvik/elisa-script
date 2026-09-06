@@ -1235,6 +1235,21 @@ if ! rg -q 'name: "replace", receiver: "Text".*argument_types: "text,text".*retu
     printf 'builtin registry audit: Text replace receiver lowerer does not consume registry result/opcode metadata\n' >&2
     exit 1
 fi
+if ! rg -q 'name: "join", receiver: "Text".*argument_types: "darray\[text\]".*return_type: "sview".*effects: "".*errors: "".*opcode: "Join"' "$registry_file" || \
+   ! rg -q 'def lower_text_join_expression\(receiver_expression: Ast::Expr, method_name: sview' "$lowerer_file" || \
+   ! rg -q 'method_spec\.known and method_spec\.opcode == "Join"' "$lowerer_file" || \
+   ! rg -q 'opcode: Opcode = Opcode\.Join if method_spec\.opcode == "Join"' "$lowerer_file"; then
+    printf 'builtin registry audit: Text join receiver lowerer does not consume registry result/opcode metadata\n' >&2
+    exit 1
+fi
+if ! rg -q 'name: "splitlines", receiver: "Text".*argument_types: "".*return_type: "darray\[text\]".*effects: "".*errors: "".*opcode: "SplitLines"' "$registry_file" || \
+   ! rg -q 'def lower_text_split_lines_expression\(receiver_expression: Ast::Expr, method_name: sview' "$lowerer_file" || \
+   ! rg -q 'method_spec\.known or method_spec\.opcode != "SplitLines"' "$lowerer_file" || \
+   ! rg -q 'def lower_text_split_lines_value\(value: u32, method_spec: EsBuiltin::BuiltinSpec' "$lowerer_file" || \
+   ! rg -q 'result_type: Type = typed_builtin_result_type\(method_spec\)' "$lowerer_file"; then
+    printf 'builtin registry audit: Text splitlines receiver lowerer does not consume registry result/opcode metadata\n' >&2
+    exit 1
+fi
 for predicate_pair in isdigit:0 isalpha:1 isalnum:2 isspace:3 islower:4 isupper:5 isascii:6 isdecimal:7 isnumeric:8 isprintable:9; do
     predicate_name="${predicate_pair%%:*}"
     predicate_mode="${predicate_pair##*:}"
