@@ -241,6 +241,42 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            parse_int)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "text" and registry_spec\.opcode == "ParseInt"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven integer parse dispatch\n' >&2
+                    exit 1
+                fi
+                ;;
+            parse_float)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "text" and registry_spec\.opcode == "ParseFloat"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven float parse dispatch\n' >&2
+                    exit 1
+                fi
+                ;;
+            format_int)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "i64" and registry_spec\.opcode == "FormatInt"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven integer format dispatch\n' >&2
+                    exit 1
+                fi
+                ;;
+            format_float)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "f64" and registry_spec\.opcode == "FormatFloat"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven float format dispatch\n' >&2
+                    exit 1
+                fi
+                ;;
+            format_bool)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "bool" and registry_spec\.opcode == "FormatBool"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven bool format dispatch\n' >&2
+                    exit 1
+                fi
+                ;;
+            format_char)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "char" and registry_spec\.opcode == "FormatChar"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven char format dispatch\n' >&2
+                    exit 1
+                fi
+                ;;
             *)
                 printf 'builtin registry audit: lowerer has no dispatch branch for %s\n' "$name" >&2
                 exit 1
@@ -1823,7 +1859,13 @@ if ! rg -q 'def typed_builtin_result_type' "$lowerer_file" || \
     printf 'builtin registry audit: aggregate registry rows do not share lowerer result-shape conversion\n' >&2
     exit 1
 fi
-if ! rg -q 'parse_spec\.opcode == "ParseInt"' "$lowerer_file" || \
+if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "text" and registry_spec\.opcode == "ParseInt"' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "text" and registry_spec\.opcode == "ParseFloat"' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "i64" and registry_spec\.opcode == "FormatInt"' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "f64" and registry_spec\.opcode == "FormatFloat"' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "bool" and registry_spec\.opcode == "FormatBool"' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "char" and registry_spec\.opcode == "FormatChar"' "$lowerer_file" || \
+   ! rg -q 'parse_spec\.opcode == "ParseInt"' "$lowerer_file" || \
    ! rg -q 'parse_spec\.opcode == "ParseFloat"' "$lowerer_file" || \
    ! rg -q 'format_int_spec\.opcode == "FormatInt"' "$lowerer_file" || \
    ! rg -q 'format_float_spec\.opcode == "FormatFloat"' "$lowerer_file" || \
