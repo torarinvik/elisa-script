@@ -158,6 +158,8 @@ if ! rg -q 'def typed_builtin_path_method_names\(\)' "$registry_file" || \
    ! rg -q 'name: "realpath", receiver: "Path".*argument_types: "".*return_type: "Path".*effects: "File.Read".*errors: "FileIoError".*opcode: "PathReal"' "$registry_file" || \
    ! rg -q 'name: "resolve", receiver: "Path".*argument_types: "".*return_type: "Path".*effects: "File.Read".*errors: "FileIoError".*opcode: "PathReal"' "$registry_file" || \
    ! rg -q 'name: "joinpath", receiver: "Path".*argument_types: "text".*return_type: "Path".*effects: "".*opcode: "PathJoin"' "$registry_file" || \
+   ! rg -q 'name: "with_name", receiver: "Path".*argument_types: "text".*return_type: "Path".*effects: "".*opcode: "PathJoin".*lowering_steps: "PathParent,PathJoin"' "$registry_file" || \
+   ! rg -q 'name: "with_suffix", receiver: "Path".*argument_types: "text".*return_type: "Path".*effects: "".*opcode: "PathJoin".*lowering_steps: "PathParent,PathStem,Concat,PathJoin"' "$registry_file" || \
    ! rg -q 'name: "relative_to", receiver: "Path".*argument_types: "Path".*return_type: "Path".*effects: "".*opcode: "PathRelative"' "$registry_file" || \
    ! rg -q 'name: "iterdir", receiver: "Path".*argument_types: "".*return_type: "darray\[text\]".*effects: "Directory.Read".*errors: "DirectoryError".*opcode: "PathIterDir"' "$registry_file" || \
    ! rg -q 'name: "glob", receiver: "Path".*argument_types: "text".*return_type: "darray\[text\]".*effects: "Directory.Read".*errors: "DirectoryError".*opcode: "PathGlob"' "$registry_file" || \
@@ -191,6 +193,8 @@ if ! rg -q 'typed_builtin_method_spec\("Path", method_name\)' "$lowerer_file" ||
    ! rg -q 'path_spec\.known and path_spec\.opcode == "PathReal"' "$lowerer_file" || \
    ! rg -q 'path_spec\.known and path_spec\.opcode == "PathAbsolute"' "$lowerer_file" || \
    ! rg -q 'path_spec\.known and path_spec\.opcode == "PathJoin"' "$lowerer_file" || \
+   ! rg -q 'path_spec\.known and path_spec\.opcode == "PathJoin" and path_spec\.lowering_steps == "PathParent,PathJoin"' "$lowerer_file" || \
+   ! rg -q 'path_spec\.known and path_spec\.opcode == "PathJoin" and path_spec\.lowering_steps == "PathParent,PathStem,Concat,PathJoin"' "$lowerer_file" || \
    ! rg -q 'path_spec\.known and path_spec\.opcode == "PathRelative"' "$lowerer_file" || \
    ! rg -q 'path_spec\.known and path_spec\.opcode == "PathIterDir"' "$lowerer_file" || \
    ! rg -q 'path_spec\.known and \(path_spec\.opcode == "PathGlob" or path_spec\.opcode == "PathRGlob"\)' "$lowerer_file" || \
