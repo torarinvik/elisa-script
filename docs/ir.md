@@ -261,9 +261,10 @@ for validating the artifact against the verified module.
 load helpers reject files larger than the 64 KiB envelope before allocation and
 return both borrowed bytes and a current/migratable/invalid decision. Its
 publication helpers write through `FileStream` to a staging path, close the
-handle, remove the staging file on a write/close failure, and publish only with
-one `rename` edge after `Empty → Staged → Committed` admission. Restart-before-
-commit remains non-committed. Directory fsync, crash recovery, concurrent
+handle, sync the file descriptor, remove the staging file on a write/sync/close
+failure, and publish only with one `rename` edge after `Empty → Staged →
+Committed` admission. Restart-before-commit remains non-committed. Directory
+fsync, crash recovery, concurrent
 writer arbitration, and corruption-repair execution evidence remain open host
 qualification work.
 
