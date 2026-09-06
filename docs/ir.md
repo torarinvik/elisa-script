@@ -219,8 +219,9 @@ comparisons and treats only the elapsed-time field's zero as "timer not
 attached"; a zero in every other field is an exact zero budget. The current
 `runtime_resource_acquire`/`runtime_resource_release` counter edges provide
 typed overflow/underflow-safe admission for handles, child processes, and
-concurrent tasks; host bridges still need to thread those edges through every
-nested path.
+concurrent tasks. The corresponding `runtime_resource_add_*` helpers apply the
+same checked-subtraction rule to steps, memory, output, regex work, and retained
+traces; host bridges still need to thread these edges through every nested path.
 interpreter and direct bytecode paths populate the step/retained-trace limits
 and returned usage snapshot, rejecting a trace pool that exceeds the caller's
 policy, while their existing host bridges continue enforcing their specialized

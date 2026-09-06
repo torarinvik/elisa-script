@@ -28,6 +28,11 @@ for required_text in \
     'runtime_resource_policy_with_step_limit' \
     'runtime_resource_acquire' \
     'runtime_resource_release' \
+    'runtime_resource_add_steps' \
+    'runtime_resource_add_memory' \
+    'runtime_resource_add_output' \
+    'runtime_resource_add_regex_work' \
+    'runtime_resource_add_retained_traces' \
     'steps' 'elapsed_micros' 'memory_bytes' 'open_handles' \
     'processes' 'output_bytes' 'regex_work' 'retained_traces' \
     'concurrent_tasks' \
@@ -56,6 +61,11 @@ rg -q 'tasks_over' "$repo_root/test/ir/elisascript_ir_test.elisa"
 rg -q 'RuntimeResourceCounter.OpenHandle' "$repo_root/test/ir/elisascript_ir_test.elisa"
 rg -q 'RuntimeResourceCounter.Process' "$repo_root/test/ir/elisascript_ir_test.elisa"
 rg -q 'RuntimeResourceCounter.ConcurrentTask' "$repo_root/test/ir/elisascript_ir_test.elisa"
+rg -q 'runtime_resource_add_steps' "$repo_root/test/ir/elisascript_ir_test.elisa"
+rg -q 'runtime_resource_add_memory' "$repo_root/test/ir/elisascript_ir_test.elisa"
+rg -q 'runtime_resource_add_output' "$repo_root/test/ir/elisascript_ir_test.elisa"
+rg -q 'runtime_resource_add_regex_work' "$repo_root/test/ir/elisascript_ir_test.elisa"
+rg -q 'runtime_resource_add_retained_traces' "$repo_root/test/ir/elisascript_ir_test.elisa"
 rg -q 'runtime_resource_policy_with_step_limit' "$bytecode"
 rg -q 'def execute_bytecode_with_resource_policy' "$bytecode"
 rg -q 'def execute_bytecode_direct_only_with_resource_policy' "$bytecode"
