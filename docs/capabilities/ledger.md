@@ -128,6 +128,9 @@ handler/error-stack depth, with a compiler-free audit and IR fixture preventing
 backend drift. The aggregate equality recursion ceiling is centralized there as
 well, so interpreter and direct bytecode share the 128-level malformed/cyclic
 storage boundary.
+Recoverable error-guard nesting is centralized under the same runtime model as a
+separate 4,096-entry ceiling, preventing malformed control-flow recovery from
+receiving a backend-specific budget.
 
 ## Evidence record template
 

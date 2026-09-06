@@ -186,6 +186,9 @@ prevents backend-specific stack policies from drifting.
 The same runtime model owns the 128-level aggregate equality recursion boundary;
 both engines fail closed on cyclic or hostile nested storage at that limit instead
 of allowing a backend-specific host-stack exhaustion.
+Recoverable error-guard nesting is likewise governed by the shared
+`ES_RUNTIME_DEFAULT_MAX_ERROR_GUARD_DEPTH` ceiling (4,096), rather than treating
+the bytecode and interpreter guard stacks as unrelated resource policies.
 `EsBytecode.bytecode_capability_report` exposes the same decision before a run,
 along with function, instruction, and global counts. Record this report beside
 the execution artifact; counts are descriptive telemetry, while
