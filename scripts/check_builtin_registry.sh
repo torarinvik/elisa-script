@@ -2065,6 +2065,10 @@ for name in $array_method_names; do
         printf 'builtin registry audit: Array.contains semantic fixture is missing\n' >&2
         exit 1
     fi
+    if [[ "$name" == "pop" ]] && ! rg -q 'def lowers_python_pop_as_typed_array_value_and_rebinding\(' "$lowering_test_file"; then
+        printf 'builtin registry audit: Array.pop lowering fixture is missing\n' >&2
+        exit 1
+    fi
     opcode="$(sed -n "s/.*name: \"$name\".*receiver: \"Array\".*opcode: \"\([A-Za-z0-9_]*\)\".*/\1/p" "$registry_file" | head -1)"
     if [[ -z "$opcode" ]] || ! rg -q "Opcode\\.$opcode" "$verifier_file"; then
         printf 'builtin registry audit: Array.%s opcode is not verifier-covered (%s)\n' "$name" "${opcode:-missing}" >&2
