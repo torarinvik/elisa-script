@@ -196,6 +196,11 @@ if ! rg -q 'typed_builtin_method_spec\("Path", method_name\)' "$lowerer_file" ||
    ! rg -q 'def is_path_global_unary_spec\(spec: EsBuiltin::BuiltinSpec\)' "$lowerer_file" || \
    ! rg -q 'def lower_path_global_unary\(callee_name: sview' "$lowerer_file" || \
    ! rg -q 'is_path_global_unary_spec\(registry_spec\)' "$lowerer_file" || \
+   ! rg -q 'opcode <- Opcode\.FileSize' "$lowerer_file" || \
+   ! rg -q 'opcode <- Opcode\.FileMTime' "$lowerer_file" || \
+   ! rg -q 'opcode <- Opcode\.FileATime' "$lowerer_file" || \
+   ! rg -q 'opcode <- Opcode\.FileCTime' "$lowerer_file" || \
+   ! rg -q 'opcode <- Opcode\.FileMode' "$lowerer_file" || \
    ! rg -q 'def is_path_global_binary_spec\(spec: EsBuiltin::BuiltinSpec\)' "$lowerer_file" || \
    ! rg -q 'def lower_path_global_binary\(callee_name: sview' "$lowerer_file" || \
    ! rg -q 'is_path_global_binary_spec\(registry_spec\)' "$lowerer_file" || \
