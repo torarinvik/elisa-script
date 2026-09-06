@@ -1726,6 +1726,11 @@ receiver; semantic inference preserves the integer/string result shape of every
 alias so assignments and downstream operators remain statically checked. An
 unknown field is rejected statically.
 
+The shared builtin registry owns the three global accessor spellings with their
+`ProcessCapture` argument, result type, and verifier-visible opcode. The
+lowerer consumes those fields for arity, result typing, and opcode selection;
+field aliases remain receiver-directed and do not bypass the nominal boundary.
+
 The builtin registry owns `capture_process_pipeline` as a nested structural
 contract (`darray[Executable]`, `darray[darray[text]]`, `sview`). Semantic
 checking validates both collection shells and their nominal/text leaves before

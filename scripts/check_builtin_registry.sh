@@ -470,6 +470,12 @@ if ! rg -q 'name: "process_exit_status", receiver: "global".*argument_types: "Pr
     printf 'builtin registry audit: process-result accessor rows are incomplete\n' >&2
     exit 1
 fi
+if ! rg -q 'accessor_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'accessor_spec\.argument_types == "ProcessCapture"' "$lowerer_file" || \
+   ! rg -q 'accessor_spec\.opcode == "ProcessResultExitStatus"' "$lowerer_file"; then
+    printf 'builtin registry audit: process-result accessors do not consume registry argument/result/opcode metadata\n' >&2
+    exit 1
+fi
 if ! rg -q 'name: "file_nonempty", receiver: "global".*argument_types: "Path".*return_type: "bool".*effects: "File.Read".*errors: "FileIoError".*opcode: "FileSize".*lowering_steps: "FileSize,Greater"' "$registry_file" || ! rg -q 'file_nonempty' "$lowerer_file" || ! rg -q 'def registry_file_nonempty_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
     printf 'builtin registry audit: file-nonempty alias contract is incomplete\n' >&2
     exit 1
