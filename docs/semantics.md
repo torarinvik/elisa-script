@@ -1213,7 +1213,9 @@ metadata parser.
 `is_symlink(path: Path) -> bool` is the shell `test -L` and Python
 `Path.is_symlink()` predicate. It uses `lstat` rather than following the target,
 contributes `File.Read`, and returns `false` for missing or non-symlink entries.
-Python's `os.path.islink` spelling is a typed alias.
+Python's `os.path.islink` spelling is a typed alias. The shared typed-builtin
+registry owns both `is_symlink` and `islink` with the same nominal `Path`,
+`File.Read`, and `IsSymlink` contract.
 
 `readlink(path: Path) -> Path error[FileIoError] can[File.Read]` returns the link
 target without following it, matching shell `readlink` and Python

@@ -10,9 +10,10 @@ set -euo pipefail
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 semantic_file="$repo_root/vendor/elisa-compiler/src/semantic/symbols.elisa"
+registry_file="$repo_root/vendor/elisa-compiler/src/semantic/builtin_registry.elisa"
 lowerer_file="$repo_root/src/ir/lower_ast.elisa"
 
-for required_file in "$semantic_file" "$lowerer_file"; do
+for required_file in "$semantic_file" "$registry_file" "$lowerer_file"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'builtin surface: missing source file: %s\n' "$required_file" >&2
         exit 2
@@ -35,6 +36,11 @@ semantic_names() {
     # when editing the very long legacy literal would obscure the diff.
     rg -o 'names <- names\.push\("[A-Za-z_][A-Za-z0-9_]*"' "$semantic_file" |
         sed 's/.*push("//; s/"$//'
+    # Registry-backed global spellings are seeded by the typed loop rather
+    # than individual add_symbol calls; include that authoritative list here.
+    sed -n '/def typed_builtin_names/,/^        def /p' "$registry_file" |
+        rg -o '"[A-Za-z_][A-Za-z0-9_]*"' |
+        tr -d '"'
 }
 
 lowerer_names() {
