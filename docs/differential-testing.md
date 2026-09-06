@@ -453,6 +453,15 @@ checked lengths, known enum ordinals, and trailing-byte rejection. Its compact
 fingerprint is a correlation key, not a cryptographic digest; aggregate value
 pools and complete process streams remain separate artifact payloads.
 
+Each side's complete bounded process-facing payload can be persisted separately
+as an `ESPS` process-stream artifact with `make_differential_process_stream_artifact`.
+It binds the reference/candidate side, terminal outcome, signed exit status, and
+length-delimited error/stdout/stderr channels to the manifest fingerprint. The
+versioned encoder and borrowed decoder reject unknown side/outcome ordinals,
+oversized channels, truncation, and trailing bytes; the compact fingerprint is a
+correlation key and not a cryptographic digest. Aggregate typed value pools remain
+a separate payload contract so large arrays/maps do not inflate either sidecar.
+
 The execution boundary now carries a backend-neutral `ExecutionCapability`
 snapshot alongside that engine identity. For bytecode runs,
 `capability_known` is true and the snapshot preserves `direct_supported`,

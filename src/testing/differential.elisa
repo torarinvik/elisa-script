@@ -392,6 +392,31 @@ module EsDifferential:
             manifest: DifferentialArtifactManifest
 
 
+        const enum DifferentialArtifactSide of u8:
+            Reference
+            Candidate
+
+
+        # A process-stream payload is kept separate from the compact ESCR
+        # comparison report. It preserves the complete bounded text channels
+        # and terminal status for one side without forcing large captures into
+        # the manifest or first-difference envelope.
+        struct DifferentialProcessStreamArtifact:
+            format_version: u8 = 1
+            manifest_fingerprint: u64 = 0
+            side: DifferentialArtifactSide = DifferentialArtifactSide.Reference
+            outcome: DifferentialRunOutcome = DifferentialRunOutcome.Completed
+            exit_status: i64 = 0
+            error_text: sview = ""
+            stdout: sview = ""
+            stderr: sview = ""
+
+
+        struct DifferentialProcessStreamArtifactDecode:
+            valid: bool
+            artifact: DifferentialProcessStreamArtifact
+
+
         const enum DifferentialRunnerIssueKind of u8:
             None
             MissingName
@@ -735,6 +760,13 @@ module EsDifferential:
             return true
 
 
+        def differential_manifest_read_i64(bytes: darray[u8]&, offset: mutable usize&, value: mutable i64&) -> bool:
+            bits: mutable u64 = 0
+            return false if not differential_manifest_read_u64(bytes, offset, bits)
+            value <- bits.i64()
+            return true
+
+
         def differential_manifest_read_text_bounds(bytes: darray[u8]&, offset: mutable usize&, start: mutable usize&, end: mutable usize&) -> bool:
             length: mutable u64 = 0
             return false if not differential_manifest_read_u64(bytes, offset, length)
@@ -799,6 +831,126 @@ module EsDifferential:
 
         def decode_differential_artifact_manifest(bytes: darray[u8]&) -> DifferentialArtifactManifestDecode can[Unsafe.PointerCast]:
             return differential_decode_artifact_manifest(bytes)
+
+
+    private:
+        const DIFFERENTIAL_MAX_PROCESS_STREAM_ARTIFACT_BYTES: usize = 201326592
+        const DIFFERENTIAL_MAX_PROCESS_STREAM_ARTIFACT_TEXT_BYTES: usize = 201326528
+
+
+        def differential_artifact_side_valid(side: DifferentialArtifactSide) -> bool:
+            return side in {DifferentialArtifactSide.Reference, DifferentialArtifactSide.Candidate}
+
+
+        def differential_process_stream_artifact_text_bytes_fits(artifact: DifferentialProcessStreamArtifact&) -> bool:
+            return false if sview_len(artifact.error_text) > DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES
+            return false if sview_len(artifact.stdout) > DIFFERENTIAL_DEFAULT_MAX_OUTPUT_BYTES
+            return false if sview_len(artifact.stderr) > DIFFERENTIAL_DEFAULT_MAX_OUTPUT_BYTES
+            total: mutable usize = 0
+            length: usize = sview_len(artifact.error_text)
+            return false if length > DIFFERENTIAL_MAX_PROCESS_STREAM_ARTIFACT_TEXT_BYTES - total
+            total <- total + length
+            length <- sview_len(artifact.stdout)
+            return false if length > DIFFERENTIAL_MAX_PROCESS_STREAM_ARTIFACT_TEXT_BYTES - total
+            total <- total + length
+            length <- sview_len(artifact.stderr)
+            return false if length > DIFFERENTIAL_MAX_PROCESS_STREAM_ARTIFACT_TEXT_BYTES - total
+            total <- total + length
+            return total <= DIFFERENTIAL_MAX_PROCESS_STREAM_ARTIFACT_TEXT_BYTES
+
+
+        def differential_process_stream_artifact_valid(artifact: DifferentialProcessStreamArtifact&) -> bool:
+            return false if artifact.format_version != 1
+            return false if artifact.manifest_fingerprint == 0
+            return false if not differential_artifact_side_valid(artifact.side)
+            return false if not differential_run_outcome_valid(artifact.outcome)
+            return differential_process_stream_artifact_text_bytes_fits(artifact)
+
+
+    public:
+        # Capture one complete bounded process-facing run payload. The
+        # side identity keeps reference and candidate streams distinct
+        # even when they happen to contain identical bytes.
+        def make_differential_process_stream_artifact(manifest: DifferentialArtifactManifest&, side: DifferentialArtifactSide, run: DifferentialRun&) -> DifferentialProcessStreamArtifact error[DifferentialRunnerError] can[Memory.Allocate, Abort.Panic]:
+            raise DifferentialRunnerError.Invalid if not differential_artifact_manifest_valid(manifest) or not differential_artifact_side_valid(side) or not differential_run_outcome_valid(run.outcome)
+            manifest_fingerprint: u64 = differential_artifact_manifest_fingerprint(manifest)
+            raise DifferentialRunnerError.Invalid if manifest_fingerprint == 0
+            artifact: DifferentialProcessStreamArtifact = DifferentialProcessStreamArtifact{manifest_fingerprint: manifest_fingerprint, side: side, outcome: run.outcome, exit_status: run.exit_status, error_text: run.error_text, stdout: run.stdout, stderr: run.stderr}
+            raise DifferentialRunnerError.OutputLimit if not differential_process_stream_artifact_text_bytes_fits(artifact)
+            return artifact
+
+
+        def canonical_differential_process_stream_artifact_bytes(artifact: DifferentialProcessStreamArtifact) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+            return [] if not differential_process_stream_artifact_valid(artifact)
+            output: mutable darray[u8] = []
+            EsIr::canonical_artifact_emit_byte(output, 69)
+            EsIr::canonical_artifact_emit_byte(output, 83)
+            EsIr::canonical_artifact_emit_byte(output, 80)
+            EsIr::canonical_artifact_emit_byte(output, 83)
+            EsIr::canonical_artifact_emit_byte(output, artifact.format_version)
+            EsIr::canonical_artifact_emit_u64(output, artifact.manifest_fingerprint)
+            EsIr::canonical_artifact_emit_byte(output, artifact.side.u8())
+            EsIr::canonical_artifact_emit_byte(output, artifact.outcome.u8())
+            EsIr::canonical_artifact_emit_i64(output, artifact.exit_status)
+            EsIr::canonical_artifact_emit_text(output, artifact.error_text)
+            EsIr::canonical_artifact_emit_text(output, artifact.stdout)
+            EsIr::canonical_artifact_emit_text(output, artifact.stderr)
+            return [] if output.count > DIFFERENTIAL_MAX_PROCESS_STREAM_ARTIFACT_BYTES
+            return output
+
+
+        def differential_process_stream_artifact_fingerprint(artifact: DifferentialProcessStreamArtifact) -> u64 can[Memory.Allocate, Abort.Panic]:
+            encoded: darray[u8] = canonical_differential_process_stream_artifact_bytes(artifact)
+            return 0 if encoded.count == 0
+            fingerprint: mutable u64 = 14695981039346656037
+            for byte in encoded |fingerprint|:
+                fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, byte)
+            return fingerprint
+
+
+    private:
+        def differential_decode_process_stream_artifact(bytes: darray[u8]&) -> DifferentialProcessStreamArtifactDecode can[Unsafe.PointerCast]:
+            invalid: DifferentialProcessStreamArtifact = DifferentialProcessStreamArtifact{}
+            return DifferentialProcessStreamArtifactDecode{valid: false, artifact: invalid} if bytes.count < 5 or bytes.count > DIFFERENTIAL_MAX_PROCESS_STREAM_ARTIFACT_BYTES
+            return DifferentialProcessStreamArtifactDecode{valid: false, artifact: invalid} if bytes[0] != 69 or bytes[1] != 83 or bytes[2] != 80 or bytes[3] != 83 or bytes[4] != 1
+            offset: mutable usize = 5
+            manifest_fingerprint: mutable u64 = 0
+            return DifferentialProcessStreamArtifactDecode{valid: false, artifact: invalid} if not differential_manifest_read_u64(bytes, offset, manifest_fingerprint)
+            return DifferentialProcessStreamArtifactDecode{valid: false, artifact: invalid} if offset + 2 > bytes.count
+            side_byte: u8 = bytes[offset]
+            outcome_byte: u8 = bytes[offset + 1]
+            offset <- offset + 2
+            return DifferentialProcessStreamArtifactDecode{valid: false, artifact: invalid} if side_byte > DifferentialArtifactSide.Candidate.u8() or outcome_byte > DifferentialRunOutcome.CompileFailure.u8()
+            exit_status: mutable i64 = 0
+            return DifferentialProcessStreamArtifactDecode{valid: false, artifact: invalid} if not differential_manifest_read_i64(bytes, offset, exit_status)
+            error_start: mutable usize = 0
+            error_end: mutable usize = 0
+            stdout_start: mutable usize = 0
+            stdout_end: mutable usize = 0
+            stderr_start: mutable usize = 0
+            stderr_end: mutable usize = 0
+            return DifferentialProcessStreamArtifactDecode{valid: false, artifact: invalid} if not differential_manifest_read_text_bounds(bytes, offset, error_start, error_end) or not differential_manifest_read_text_bounds(bytes, offset, stdout_start, stdout_end) or not differential_manifest_read_text_bounds(bytes, offset, stderr_start, stderr_end) or offset != bytes.count
+            side: DifferentialArtifactSide = DifferentialArtifactSide.Reference
+            side <- DifferentialArtifactSide.Candidate if side_byte == DifferentialArtifactSide.Candidate.u8()
+            outcome: DifferentialRunOutcome = DifferentialRunOutcome.Completed
+            outcome <- DifferentialRunOutcome.NormalError if outcome_byte == DifferentialRunOutcome.NormalError.u8()
+            outcome <- DifferentialRunOutcome.SpawnFailure if outcome_byte == DifferentialRunOutcome.SpawnFailure.u8()
+            outcome <- DifferentialRunOutcome.Crash if outcome_byte == DifferentialRunOutcome.Crash.u8()
+            outcome <- DifferentialRunOutcome.Timeout if outcome_byte == DifferentialRunOutcome.Timeout.u8()
+            outcome <- DifferentialRunOutcome.OutputLimit if outcome_byte == DifferentialRunOutcome.OutputLimit.u8()
+            outcome <- DifferentialRunOutcome.CompileFailure if outcome_byte == DifferentialRunOutcome.CompileFailure.u8()
+            artifact: DifferentialProcessStreamArtifact = DifferentialProcessStreamArtifact{manifest_fingerprint: manifest_fingerprint, side: side, outcome: outcome, exit_status: exit_status, error_text: differential_manifest_text_view(bytes, error_start, error_end), stdout: differential_manifest_text_view(bytes, stdout_start, stdout_end), stderr: differential_manifest_text_view(bytes, stderr_start, stderr_end)}
+            return DifferentialProcessStreamArtifactDecode{valid: false, artifact: invalid} if not differential_process_stream_artifact_valid(artifact)
+            return DifferentialProcessStreamArtifactDecode{valid: true, artifact: artifact}
+
+
+    public:
+        def differential_process_stream_artifact_bytes_valid(bytes: darray[u8]&) -> bool can[Unsafe.PointerCast]:
+            return differential_decode_process_stream_artifact(bytes).valid
+
+
+        def decode_differential_process_stream_artifact(bytes: darray[u8]&) -> DifferentialProcessStreamArtifactDecode can[Unsafe.PointerCast]:
+            return differential_decode_process_stream_artifact(bytes)
 
 
         const DIFFERENTIAL_WAIT_NOHANG: int = 1
