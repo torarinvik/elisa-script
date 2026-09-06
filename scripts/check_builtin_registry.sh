@@ -182,6 +182,19 @@ if ! rg -q 'global_registry_spec: EsBuiltin::BuiltinSpec' "$repo_root/vendor/eli
     printf 'builtin registry audit: structural global result inference does not consume registry rows\n' >&2
     exit 1
 fi
+if ! rg -q 'def record_builtin_contract' "$lowerer_file" || \
+   ! rg -q 'record_builtin_contract\(parse_spec, state\)' "$lowerer_file" || \
+   ! rg -q 'record_builtin_contract\(method_spec, state\)' "$lowerer_file" || \
+   ! rg -q 'state\.required_effects\.push\(spec\.effects\)' "$lowerer_file" || \
+   ! rg -q 'state\.required_errors\.push\(spec\.errors\)' "$lowerer_file"; then
+    printf 'builtin registry audit: declared effect/error rows are not centrally recorded by lowering\n' >&2
+    exit 1
+fi
+if ! rg -q 'error_name in lowered\.module\.functions\[0\]\.errors where error_name == "ParseError"' "$repo_root/test/ir/elisascript_lowering_test.elisa" || \
+   ! rg -q 'has_text\(lowered\.module\.functions\[0\]\.errors, "IndexOutOfBounds"\)' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
+    printf 'builtin registry audit: fallible registry rows lack lowering fixtures\n' >&2
+    exit 1
+fi
 
 for name in $method_names; do
     if ! rg -q "known: true, name: \"$name\", receiver: \"Text\"" "$registry_file"; then
@@ -243,7 +256,8 @@ if ! rg -q "typed_builtin_spec\(callee_name\)\.return_type" "$lowerer_file"; the
     exit 1
 fi
 
-if ! rg -q 'typed_builtin_spec\(callee_name\)\.errors' "$lowerer_file"; then
+if ! rg -q 'state\.required_errors\.push\(spec\.errors\)' "$lowerer_file" || \
+   ! rg -q 'record_builtin_contract\(parse_spec, state\)' "$lowerer_file"; then
     printf 'builtin registry audit: lowerer has no registry error-row consumer\n' >&2
     exit 1
 fi

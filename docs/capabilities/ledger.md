@@ -53,6 +53,11 @@ miss sentinel (`5f6b70a`).
 `Text.index` and `Text.rindex` now carry receiver-specific `TextIndex`/
 `TextRIndex` opcodes and the `IndexOutOfBounds` error row (`36b6684`).
 
+Registry-declared effect/error metadata is now recorded through one lowerer
+contract helper for fallible rows, covering `ParseError` conversions and
+checked text indexing while preserving future effect rows without another
+operation-specific push path (static increment, compiler validation suspended).
+
 `Text.partition` and `Text.rpartition` now carry the `TextPartition` opcode and
 fixed text-separator contract while preserving their `darray[sview]` result
 shape (`881a636`).
