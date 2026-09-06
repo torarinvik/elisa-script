@@ -1547,6 +1547,9 @@ multi-opcode structures without losing information.
 The lowerer consumes the constructor, status, and simple capture rows directly
 for arity, result, and opcode selection; the shared call-boundary recorder
 supplies their process effect/error contracts.
+The plain `capture_process_result` and working-directory result forms use the
+same registry-owned result and opcode metadata while retaining their explicit
+capture operand layouts.
 
 Assertions are typed runtime checks rather than a result wrapper:
 `assert(condition) -> void error[AssertionError]`. The condition must be exactly

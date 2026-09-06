@@ -522,7 +522,11 @@ if ! rg -q 'executable_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_s
    ! rg -q 'process_stream_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
    ! rg -q 'process_stream_spec\.opcode == "CaptureProcessStdout"' "$lowerer_file" || \
    ! rg -q 'process_stream_stdin_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
-   ! rg -q 'process_stream_stdin_spec\.opcode == "CaptureProcessStdoutWithStdin"' "$lowerer_file"; then
+   ! rg -q 'process_stream_stdin_spec\.opcode == "CaptureProcessStdoutWithStdin"' "$lowerer_file" || \
+   ! rg -q 'capture_result_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'capture_result_spec\.opcode == "CaptureProcessResult"' "$lowerer_file" || \
+   ! rg -q 'capture_result_directory_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'capture_result_directory_spec\.opcode == "CaptureProcessResultInDirectory"' "$lowerer_file"; then
     printf 'builtin registry audit: simple process lowerers do not consume registry shape/result/opcode metadata\n' >&2
     exit 1
 fi
