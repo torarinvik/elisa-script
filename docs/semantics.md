@@ -1311,6 +1311,10 @@ returns the final suffix including its dot (or empty text), while `path_stem`
 returns the final component without that suffix. Their results are views over
 permanent or input-owned bytes and are identical in the interpreter and packed
 bytecode.
+The shared typed-builtin registry owns these decomposition spellings and the
+absolute-path aliases with nominal `Path` descriptors and their canonical
+`PathParent`, `PathName`, `PathExtension`, `PathStem`, and `PathIsAbsolute`
+opcodes; none contributes an effect or error row.
 
 `Path.with_name(name: sview) -> Path` and `Path.with_suffix(suffix: sview) -> Path`
 are pure pathlib-shaped rewrites built from those same operations. `with_name`
