@@ -826,6 +826,11 @@ The corresponding `Path.is_readable()`, `Path.is_writable()`, and
 pattern (`PathRGlob` prefixes `**/`) and delegate to the same bounded,
 symlink-safe glob walker as `ExpandGlob`, keeping Python `Path.glob` and
 `Path.rglob` deterministic across interpreter and bytecode execution.
+The interpreter rejects an empty, NUL-containing, or 4 KiB-and-longer path or
+pattern before glob expansion scans it. Each joined directory/entry path is
+also capped by the same envelope before allocation, so recursive traversal
+cannot retain an oversized host pathname even when a directory entry is
+hostile.
 `PathIterDir` verifies as `Named(Path) -> Array[Text]` with
 `Directory.Read` and `DirectoryError`. It performs one unfiltered direct scan,
 includes hidden entries, skips only `.` and `..`, sorts by unsigned byte order,

@@ -38,6 +38,11 @@ placeholder bytes inside the same 4 KiB path envelope, rejecting prefixes over
 oversized-prefix fixture is metadata-only; host execution evidence remains
 gated.
 
+Interpreter glob expansion now rejects oversized path/pattern views before NUL
+scans and caps every joined directory/entry path at the same 4 KiB envelope;
+the metadata-only oversized-glob fixture is covered by the path audit. Actual
+filesystem traversal and platform evidence remain gated.
+
 The current static slice also binds canonical SHA-256 digest words into
 differential ESDF version-4 manifests when a module identity is available;
 legacy version-1/2/3 manifests remain decode-compatible but are explicitly

@@ -33,6 +33,10 @@ rg -q 'not path_text_valid\(working_directory\.text\)' "$interpreter"
 rg -q 'sview_len\(prefix\.text\) > INTERPRET_MAX_TEMPORARY_PREFIX_BYTES' "$interpreter"
 rg -q 'interpreter_rejects_oversized_temporary_prefix_before_nul_scan' "$fixture"
 rg -q 'sview\("", 0, 4073\)' "$fixture"
+rg -q 'return \[\] if total >= INTERPRET_MAX_PATH_BYTES' "$interpreter"
+rg -q 'if not path_text_valid\(pattern\.text\)' "$interpreter"
+rg -q 'interpreter_rejects_oversized_glob_before_scan' "$fixture"
+rg -q 'sview\("", 0, 4096\)' "$fixture"
 
 if rg -q 'c_(path|source|destination|target|link): dstr = nul_terminated_text\(' "$interpreter"; then
     printf 'interpreter path audit: a filesystem c-string still bypasses path admission\n' >&2
