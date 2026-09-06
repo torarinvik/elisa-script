@@ -453,6 +453,11 @@ digest words and rejects legacy version-1 records until they are migrated. Its
 `bytecode_artifact_fingerprint` is a deterministic cache/correlation key only;
 the artifact still must satisfy `bytecode_artifact_matches_module` against the
 exact verified module and capability report before execution.
+`canonical_differential_artifact_manifest_bytes` uses the same four-word binding
+when a module digest is available, emitting ESDF version 4; older version-1/2/3
+manifests remain decodable for compatibility but are explicitly unbound. A
+version-4 manifest with an all-zero or incomplete digest is rejected before a
+replay bundle is opened.
 The bytecode adapter must additionally record `BytecodeCapabilityReport` before
 execution and the returned `Execution.engine` afterward. The report includes the
 direct/fallback decision and function, instruction, and global counts. A case that
