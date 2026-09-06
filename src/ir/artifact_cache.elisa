@@ -10,6 +10,7 @@ error ArtifactCacheIoError:
     StagingWriteFailed(path: cstr)
     PublishFailed(path: cstr)
     DirectorySyncFailed(path: cstr)
+    LockFailed(path: cstr)
 
 
 module EsArtifactCache:
@@ -79,6 +80,19 @@ module EsArtifactCache:
         struct ArtifactCacheWriterLease:
             state: ArtifactCacheWriterState = ArtifactCacheWriterState.Available
             owner_token: u64 = 0
+
+
+        const enum ArtifactCacheWriterLockState of u8:
+            Available
+            Held
+            Released
+
+
+        struct ArtifactCacheWriterLock:
+            state: ArtifactCacheWriterLockState = ArtifactCacheWriterLockState.Available
+            owner_token: u64 = 0
+            path: cstr = ""
+            stream: FileStream = FileStream{handle: null, path: "", mode: FileStreamMode.AppendBinary, state: FileStreamState.Closed, byte_budget: 1}
 
 
     private:
@@ -220,6 +234,36 @@ module EsArtifactCache:
             lease.state <- artifact_cache_writer_transition(lease.state, ArtifactCacheWriterEvent.Abort)
             lease.owner_token <- 0
             return true
+
+
+        # POSIX hosts may opt into an actual nonblocking advisory lock. The
+        # portable owner-token lease remains the admission contract; this edge
+        # supplies host arbitration without exposing flock or FILE* to callers.
+        def artifact_cache_writer_lock_acquire(lock: mutable ArtifactCacheWriterLock&, path: cstr, owner_token: u64) -> bool error[ArtifactCacheIoError, FileStreamError] can[Blocking.IO, Memory.Allocate, Memory.Release]:
+            raise ArtifactCacheIoError.LockFailed(path) if owner_token == 0 or (lock.state != ArtifactCacheWriterLockState.Available and lock.state != ArtifactCacheWriterLockState.Released)
+            lock.stream <- try file_stream_open(path, FileStreamMode.AppendBinary, 1)
+            handle: mutable heap void& = lock.stream.handle
+            descriptor: int = elisascript_posix_fileno(handle)
+            if descriptor < 0 or elisascript_posix_flock(descriptor, ELISASCRIPT_POSIX_LOCK_EXCLUSIVE + ELISASCRIPT_POSIX_LOCK_NONBLOCK) != 0:
+                _ = file_stream_close(lock.stream)
+                raise ArtifactCacheIoError.LockFailed(path)
+            lock.state <- ArtifactCacheWriterLockState.Held
+            lock.owner_token <- owner_token
+            lock.path <- path
+            return true
+
+
+        def artifact_cache_writer_lock_release(lock: mutable ArtifactCacheWriterLock&, owner_token: u64) -> bool error[FileStreamError] can[Blocking.IO, Memory.Release]:
+            return false if owner_token == 0 or lock.state != ArtifactCacheWriterLockState.Held or lock.owner_token != owner_token
+            catch file_stream_close(lock.stream):
+                ok:
+                    lock.state <- ArtifactCacheWriterLockState.Released
+                    lock.owner_token <- 0
+                    return true
+                error failure:
+                    lock.state <- ArtifactCacheWriterLockState.Released
+                    lock.owner_token <- 0
+                    raise failure
 
 
         def artifact_cache_decision_valid(decision: ArtifactCacheDecision&) -> bool:

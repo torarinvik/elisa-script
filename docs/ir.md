@@ -280,7 +280,10 @@ competing tokens fail closed before the host adapter mutates a staging path; it
 is deliberately not presented as an OS lock. Callers that provide the parent
 directory also get a typed `opendir → dirfd → fsync → closedir` durability edge
 after the rename; crash/restart recovery and platform-specific lock semantics
-remain open.
+remain open. POSIX hosts may additionally use `ArtifactCacheWriterLock`, which
+opens a bounded append-only lock stream and acquires `flock(LOCK_EX|LOCK_NB)`;
+the portable lease remains the source-level fallback and lock-file lifecycle
+cleanup is still host-qualified.
 
 `EsRuntime::FileStream` is the first typed large-file vertical slice. A handle
 is opened with an explicit read/text/binary/write/append mode and a byte budget
