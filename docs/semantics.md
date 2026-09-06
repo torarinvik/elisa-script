@@ -1541,9 +1541,10 @@ three `ProcessCapture` accessors. Their rows preserve the nominal
 `Executable`/`ProcessCapture` argument types, exact `darray[text]` shapes,
 `i64`/`sview` results, `Process.Run` and `ProcessError` contracts where
 applicable, and the existing verifier-visible process opcodes. Status-with-
-stdin status, environment, pipeline, and multi-stream result forms remain
-explicit lowerer rows until the registry can represent their composed
-multi-opcode structures without losing information.
+stdin status, environment, and multi-stream result forms remain explicit
+lowerer rows until the registry can represent their composed multi-opcode
+structures without losing information; the pipeline row is registry-backed
+but still lowers through its bounded multi-stage helper.
 The lowerer consumes the constructor, status, and simple capture rows directly
 for arity, result, and opcode selection; the shared call-boundary recorder
 supplies their process effect/error contracts.

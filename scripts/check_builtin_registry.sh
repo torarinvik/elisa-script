@@ -550,6 +550,12 @@ if ! rg -q 'name: "capture_process_pipeline", receiver: "global".*argument_types
     printf 'builtin registry audit: process-pipeline row is incomplete\n' >&2
     exit 1
 fi
+if ! rg -q 'def lower_capture_process_pipeline\(arguments: darray\[Ast::Expr\].*spec: EsBuiltin::BuiltinSpec' "$lowerer_file" || \
+   ! rg -q 'spec\.opcode == "CaptureProcessPipeline"' "$lowerer_file" || \
+   ! rg -q 'lower_capture_process_pipeline\(arguments, argument_names, EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file"; then
+    printf 'builtin registry audit: process-pipeline lowerer does not consume registry shape/result/opcode metadata\n' >&2
+    exit 1
+fi
 for stream_name in read_stdin read_stdin_line; do
     opcode="ReadStdin"
     [[ "$stream_name" == "read_stdin_line" ]] && opcode="ReadStdinLine"
