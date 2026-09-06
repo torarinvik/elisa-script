@@ -283,7 +283,11 @@ after the rename; crash/restart recovery and platform-specific lock semantics
 remain open. POSIX hosts may additionally use `ArtifactCacheWriterLock`, which
 opens a bounded append-only lock stream and acquires `flock(LOCK_EX|LOCK_NB)`;
 the portable lease remains the source-level fallback and lock-file lifecycle
-cleanup is still host-qualified.
+cleanup is still host-qualified. The `_locked` publication wrappers hold that
+lock across staging, file sync, rename, and optional parent-directory sync, and
+release it on both success and publication failure; a successful release failure
+is reported as a typed lock error while the original publication error remains
+the failure reported after best-effort cleanup.
 
 `EsRuntime::FileStream` is the first typed large-file vertical slice. A handle
 is opened with an explicit read/text/binary/write/append mode and a byte budget
