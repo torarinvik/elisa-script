@@ -1432,7 +1432,9 @@ the existing `CopyPath`/`MovePath` opcodes.
 The recursive `copy_tree`/`copytree` aliases use the same two-effect registry
 contract and `CopyTree` opcode. Their source and destination roots are nominal
 `Path` values, and the registry does not erase the distinction between a
-read-only source permission and a write permission for the destination.
+read-only source permission and a write permission for the destination. The
+lowerer consumes the registry shapes, result types, two-effect contract, and
+copy/remove opcode metadata for `copy_path`, `copy_tree`, and `remove_tree`.
 
 `append_text(path: Path, text: sview) -> usize error[FileIoError]
 can[File.Write]` opens or creates the file in append mode and writes every supplied

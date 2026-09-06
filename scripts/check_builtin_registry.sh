@@ -874,6 +874,15 @@ for tree_copy_name in copy_tree copytree; do
         exit 1
     fi
 done
+if ! rg -q 'copy_path_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'remove_tree_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'copy_tree_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'copy_path_spec\.opcode != "CopyPath"' "$lowerer_file" || \
+   ! rg -q 'remove_tree_spec\.opcode != "RemoveTree"' "$lowerer_file" || \
+   ! rg -q 'copy_tree_spec\.opcode != "CopyTree"' "$lowerer_file"; then
+    printf 'builtin registry audit: copy/remove-tree lowerers do not consume registry result/opcode metadata\n' >&2
+    exit 1
+fi
 if ! rg -q 'effects_secondary: sview' "$registry_file" || ! rg -q 'state\.required_effects\.push\(spec\.effects_secondary\)' "$lowerer_file"; then
     printf 'builtin registry audit: secondary effect metadata is not propagated by lowering\n' >&2
     exit 1
