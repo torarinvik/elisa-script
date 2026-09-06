@@ -251,5 +251,10 @@ if ! rg -q 'scripting_registry_direct_return_type' "$inference_file" || \
     printf 'builtin registry audit: direct-call inference has no registry return-type adapter\n' >&2
     exit 1
 fi
+if ! rg -q 'name == "regex"' "$inference_file" || \
+   ! rg -q 'name: "Regex"' "$inference_file"; then
+    printf 'builtin registry audit: regex typed-literal inference is not nominally preserved\n' >&2
+    exit 1
+fi
 
 printf 'builtin registry audit: %s global, %s Text, and %s Regex receiver spellings share semantic and lowerer metadata\n' "$(printf '%s\n' "$registry_names" | awk 'NF {count += 1} END {print count + 0}')" "$(printf '%s\n' "$method_names" | awk 'NF {count += 1} END {print count + 0}')" "$(printf '%s\n' "$regex_method_names" | awk 'NF {count += 1} END {print count + 0}')"
