@@ -468,6 +468,13 @@ they identify an Elisascript launcher target without storing an opaque shell
 command. Empty, NUL-containing, oversized, unknown-version, truncated, or
 trailing-byte payloads are rejected before a replay adapter can use them.
 
+Typed aggregate results are persisted in a bounded `ESVP` value-pool sidecar.
+It records the run side, outcome/status, root value, flat array/map storage, and
+observation traces. Every value record carries its kind, checked u32 spans,
+length-delimited text/process fields, and the exact IEEE-754 bit pattern for
+floating-point values. The decoder allocates only after bounded count admission,
+then rejects malformed kinds/spans, truncated records, and trailing bytes.
+
 The execution boundary now carries a backend-neutral `ExecutionCapability`
 snapshot alongside that engine identity. For bytecode runs,
 `capability_known` is true and the snapshot preserves `direct_supported`,
