@@ -442,6 +442,18 @@ if ! rg -q 'name: "capture_process_result_with_environment", receiver: "global".
     printf 'builtin registry audit: process environment-result capture rows are incomplete\n' >&2
     exit 1
 fi
+for stream_name in read_stdin read_stdin_line; do
+    opcode="ReadStdin"
+    [[ "$stream_name" == "read_stdin_line" ]] && opcode="ReadStdinLine"
+    if ! rg -q "name: \"$stream_name\", receiver: \"global\".*arity_min: 0.*arity_max: 0.*argument_types: \"\".*return_type: \"sview\".*effects: \"Console.Read\".*errors: \"ConsoleError\".*opcode: \"$opcode\"" "$registry_file"; then
+        printf 'builtin registry audit: stdin-read row is incomplete: %s\n' "$stream_name" >&2
+        exit 1
+    fi
+done
+if ! rg -q 'name: "write_stdout", receiver: "global".*argument_types: "text".*return_type: "usize".*effects: "Console.Write".*errors: "ConsoleError".*opcode: "WriteStdout"' "$registry_file" || ! rg -q 'name: "write_stderr", receiver: "global".*argument_types: "text".*return_type: "usize".*effects: "Console.Write".*errors: "ConsoleError".*opcode: "WriteStderr"' "$registry_file" || ! rg -q 'name: "printf", receiver: "global".*argument_types: "text".*return_type: "usize".*effects: "Console.Write".*errors: "ConsoleError".*opcode: "WriteStdout"' "$registry_file"; then
+    printf 'builtin registry audit: standard-stream write rows are incomplete\n' >&2
+    exit 1
+fi
 if ! rg -q 'name: "process_exit_status", receiver: "global".*argument_types: "ProcessCapture".*return_type: "i64".*effects: "".*errors: "".*opcode: "ProcessResultExitStatus"' "$registry_file" || ! rg -q 'name: "process_stdout", receiver: "global".*argument_types: "ProcessCapture".*return_type: "sview".*effects: "".*errors: "".*opcode: "ProcessResultStdout"' "$registry_file" || ! rg -q 'name: "process_stderr", receiver: "global".*argument_types: "ProcessCapture".*return_type: "sview".*effects: "".*errors: "".*opcode: "ProcessResultStderr"' "$registry_file"; then
     printf 'builtin registry audit: process-result accessor rows are incomplete\n' >&2
     exit 1
@@ -672,6 +684,10 @@ if ! rg -q 'def registry_process_environment_capture_requires_text_input\(' "$re
     printf 'builtin registry audit: process environment-result capture semantic coverage is missing\n' >&2
     exit 1
 fi
+if ! rg -q 'def registry_standard_stream_writes_require_text\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_standard_stream_reads_are_argument_free\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
+    printf 'builtin registry audit: standard-stream registry rows lack semantic negative fixtures\n' >&2
+    exit 1
+fi
 if ! rg -q 'lowers_python_directory_aliases_to_existing_typed_opcodes' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_typed_directory_lifecycle_and_working_directory_operations' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_deterministic_typed_directory_listing' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_native_typed_glob_expansion' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: directory registry rows lack lowering fixtures\n' >&2
     exit 1
@@ -698,6 +714,10 @@ if ! rg -q 'lowers_typed_process_result_in_directory' "$repo_root/test/ir/elisas
 fi
 if ! rg -q 'lowers_typed_process_result_with_environment' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_typed_process_result_in_directory_with_environment' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: process environment-result capture lowering coverage is missing\n' >&2
+    exit 1
+fi
+if ! rg -q 'lowers_python_print_to_typed_stdout_state' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_console_print_aliases_to_explicit_stream_opcodes' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
+    printf 'builtin registry audit: standard-stream registry rows lack lowering fixtures\n' >&2
     exit 1
 fi
 
