@@ -1186,7 +1186,9 @@ errors and no shell command is assembled.
 length reported by POSIX `stat`, including regular files and directory entries.
 Missing paths and invalid names raise `FileIoError`; the result is an unsigned,
 64-bit byte count suitable for direct comparisons and differential tests. Python's
-`os.path.getsize` spelling is a typed alias for this operation.
+`os.path.getsize` spelling is a typed alias for this operation. The shared
+typed-builtin registry owns `file_size` and `getsize` with the nominal `Path`,
+`File.Read`/`FileIoError`, and `FileSize` contract.
 
 `file_mtime(path: Path) -> i64 error[FileIoError] can[File.Read]` returns the
 POSIX modification timestamp from `stat`; Python's `os.path.getmtime` spelling

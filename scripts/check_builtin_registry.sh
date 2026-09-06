@@ -247,6 +247,12 @@ for filesystem_name in is_readable is_writable is_executable; do
         exit 1
     fi
 done
+for filesystem_name in file_size getsize; do
+    if ! rg -q "name: \"$filesystem_name\", receiver: \"global\".*argument_types: \"Path\".*return_type: \"usize\".*effects: \"File.Read\".*errors: \"FileIoError\".*opcode: \"FileSize\"" "$registry_file"; then
+        printf 'builtin registry audit: file-size row is incomplete: %s\n' "$filesystem_name" >&2
+        exit 1
+    fi
+done
 if ! rg -q 'lowers_nominal_path_existence_with_file_effect' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'any error_name in fn\.errors where error_name == "FileIoError"' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: filesystem existence row lacks lowering effect/error fixture\n' >&2
     exit 1
@@ -285,6 +291,10 @@ if ! rg -q 'def registry_is_symlink_requires_a_nominal_path\(' "$repo_root/test/
 fi
 if ! rg -q 'def registry_is_readable_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
     printf 'builtin registry audit: path-access registry negative fixture is missing\n' >&2
+    exit 1
+fi
+if ! rg -q 'def registry_file_size_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
+    printf 'builtin registry audit: file-size registry negative fixture is missing\n' >&2
     exit 1
 fi
 
