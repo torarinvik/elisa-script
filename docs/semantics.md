@@ -104,7 +104,9 @@ the readable names; the verifier accepts zero only for legacy hand-authored
 fixtures and rejects any populated identity that does not match its two names.
 The interpreter uses that identity for handler-clause and raised-error-guard
 matching whenever both sides provide it; zero remains a compatibility wildcard for
-older hand-authored modules.
+older hand-authored modules. `Resume` instructions carry a separate stable token
+derived from the handler symbol, and the interpreter rejects a populated token that
+does not match the captured continuation.
 Dynamic handlers may therefore intercept
 user-defined operations without introducing a second runtime representation.
 Source `@handler` decorators for same-file effect declarations are checked at

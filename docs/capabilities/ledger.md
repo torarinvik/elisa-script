@@ -134,8 +134,9 @@ operation-bearing instruction preserve the identity; verification accepts zero o
 for legacy fixtures and rejects populated ids that disagree with their readable
 family/operation names. Runtime dispatch still compares names for compatibility;
 the interpreter now prefers matching populated operation IDs for handler clauses and
-raised-error guards, with zero as a legacy wildcard; typed continuation IDs remain a
-later migration step.
+raised-error guards, with zero as a legacy wildcard. `Resume` instructions and
+captured continuation frames now carry a handler-derived resumption token and reject
+populated mismatches; richer continuation provenance remains a later migration step.
 
 The interpreter and direct-bytecode adapters now consume one shared
 `ES_RUNTIME_DEFAULT_MAX_EXECUTION_CALL_DEPTH` limit for host-recursive calls and

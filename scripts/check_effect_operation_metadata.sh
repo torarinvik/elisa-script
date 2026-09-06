@@ -72,6 +72,10 @@ if ! rg -q 'operation_id: u64 = 0' "$ir_model_file" || ! rg -q 'def effect_opera
     printf 'effect operation metadata audit: IR operation identity fields/helper are missing\n' >&2
     exit 1
 fi
+if ! rg -q 'resumption_id: u64 = 0' "$ir_model_file" || ! rg -q 'resumption_id: Ast::effect_operation_identity\("Resume"' "$lowerer_file"; then
+    printf 'effect operation metadata audit: IR/lowering resumption identity fields are missing\n' >&2
+    exit 1
+fi
 if ! rg -q 'operation_identity_matches\(' "$ir_verify_file" || ! rg -q 'handler clause operation id does not match' "$ir_verify_file"; then
     printf 'effect operation metadata audit: verifier does not validate populated operation identities\n' >&2
     exit 1
@@ -80,8 +84,16 @@ if ! rg -q 'operation_id == Ast::effect_operation_identity' "$fixture_file" || !
     printf 'effect operation metadata audit: lowering fixtures omit operation identity coverage\n' >&2
     exit 1
 fi
+if ! rg -q 'resume id does not match its handler symbol' "$ir_verify_file" || ! rg -q 'resumption_id == Ast::effect_operation_identity\("Resume"' "$fixture_file"; then
+    printf 'effect operation metadata audit: verifier/fixture resumption identity coverage is missing\n' >&2
+    exit 1
+fi
 if ! rg -q 'failure_operation_id: mutable u64 = 0' "$runtime_file" || ! rg -q 'operation_id: u64 = 0' "$runtime_file"; then
     printf 'effect operation metadata audit: runtime failure/guard ids are missing\n' >&2
+    exit 1
+fi
+if ! rg -q 'resumption_id: u64 = 0' "$runtime_file" || ! rg -q 'continuation\.resumption_id' "$runtime_file"; then
+    printf 'effect operation metadata audit: runtime continuation identity matching is missing\n' >&2
     exit 1
 fi
 if ! rg -q 'def runtime_operation_matches\(' "$runtime_file" || ! rg -q 'runtime_handler_covers_operation\([^)]*instruction\.operation_id' "$runtime_file"; then

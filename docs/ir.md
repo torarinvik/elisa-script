@@ -257,7 +257,9 @@ but rejects any populated id that disagrees with the readable names. Every perfo
 also receives a stable source-derived trace identity.
 The interpreter now uses the identity when both the performed instruction and a
 handler clause provide it, while treating zero as a compatibility wildcard for
-older hand-authored modules; raised-error guards apply the same rule.
+older hand-authored modules; raised-error guards apply the same rule. `Resume`
+instructions likewise carry a stable resumption token derived from their handler
+symbol, and the captured continuation rejects a populated token mismatch.
 
 Value-producing effect requests use the compiler-known
 `perform("Family.Operation", payload)` intrinsic in an expected-type position,
