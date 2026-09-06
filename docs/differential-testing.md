@@ -209,6 +209,9 @@ shell-free and keeps process failures in `error[ProcessError]`.
 The in-process adapter applies the same 64 MiB stdout/stderr ceiling before
 materializing a `DifferentialRun`; an oversized borrowed snapshot becomes an
 explicit `DifferentialRunOutcome.OutputLimit` instead of entering comparison.
+The adapter also bounds caller-supplied observation and value-pool snapshots at
+that boundary, so oversized borrowed `ProcessCapture` fields cannot be carried
+forward for a later comparison.
 The comparison entry point repeats that boundary for directly assembled runs
 and value pools: each error/stdout/stderr channel and the aggregate text
 envelope are checked before `differential_text_equal` or structured value
