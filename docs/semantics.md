@@ -1719,6 +1719,12 @@ receiver; semantic inference preserves the integer/string result shape of every
 alias so assignments and downstream operators remain statically checked. An
 unknown field is rejected statically.
 
+The builtin registry owns `capture_process_pipeline` as a nested structural
+contract (`darray[Executable]`, `darray[darray[text]]`, `sview`). Semantic
+checking validates both collection shells and their nominal/text leaves before
+the lowerer emits the dedicated `CaptureProcessPipeline` opcode; source-level
+shadowing still takes precedence over this compiler-known spelling.
+
 ## Program entry point
 
 The launcher-facing program ABI is deliberately strict: a runnable script must

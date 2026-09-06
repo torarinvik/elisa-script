@@ -442,6 +442,10 @@ if ! rg -q 'name: "capture_process_result_with_environment", receiver: "global".
     printf 'builtin registry audit: process environment-result capture rows are incomplete\n' >&2
     exit 1
 fi
+if ! rg -q 'name: "capture_process_pipeline", receiver: "global".*argument_types: "darray\[Executable\],darray\[darray\[text\]\],sview.*return_type: "ProcessCapture".*effects: "Process.Run".*errors: "ProcessError".*opcode: "CaptureProcessPipeline"' "$registry_file"; then
+    printf 'builtin registry audit: process-pipeline row is incomplete\n' >&2
+    exit 1
+fi
 for stream_name in read_stdin read_stdin_line; do
     opcode="ReadStdin"
     [[ "$stream_name" == "read_stdin_line" ]] && opcode="ReadStdinLine"
@@ -464,6 +468,10 @@ if ! rg -q 'expected == "Executable"' "$receiver_semantic_file" || ! rg -q 'expe
 fi
 if ! rg -q 'Executable,darray\[text\],sview,Path' "$receiver_semantic_file" || ! rg -q 'Executable,darray\[text\],sview,dict\[sview,sview\]' "$receiver_semantic_file" || ! rg -q 'ufm_dictionary_argument_is_text_text' "$receiver_semantic_file"; then
     printf 'builtin registry audit: process directory-result descriptor is not consumed by semantic checks\n' >&2
+    exit 1
+fi
+if ! rg -q 'darray\[Executable\],darray\[darray\[text\]\],sview' "$receiver_semantic_file" || ! rg -q 'ufm_executable_array_argument_is_executable' "$receiver_semantic_file" || ! rg -q 'ufm_nested_text_array_argument_is_text' "$receiver_semantic_file"; then
+    printf 'builtin registry audit: process-pipeline nested descriptors are not consumed by semantic checks\n' >&2
     exit 1
 fi
 if ! rg -q 'spec\.argument_types == "Path,Path"' "$receiver_semantic_file"; then
@@ -686,6 +694,14 @@ if ! rg -q 'def registry_process_environment_capture_requires_text_input\(' "$re
 fi
 if ! rg -q 'def registry_process_status_facades_check_typed_controls\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
     printf 'builtin registry audit: process status-facade rows lack semantic negative fixtures\n' >&2
+    exit 1
+fi
+if ! rg -q 'def registry_process_pipeline_checks_nested_argument_shapes\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
+    printf 'builtin registry audit: process-pipeline row lacks semantic negative fixture\n' >&2
+    exit 1
+fi
+if ! rg -q 'def lowers_shell_free_process_pipeline\(' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
+    printf 'builtin registry audit: process-pipeline lowering fixture is missing\n' >&2
     exit 1
 fi
 if ! rg -q 'def registry_standard_stream_writes_require_text\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_standard_stream_reads_are_argument_free\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
