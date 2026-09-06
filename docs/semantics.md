@@ -237,6 +237,11 @@ Elisa's byte-oriented `sview` contract. A source function named `len` shadows
 the builtin like any other direct call, so ports can introduce a local helper
 without changing resolution rules.
 
+Text receivers also expose `value.len() -> usize` as a zero-argument registry
+method. It is source-shadowable by a direct `len` function and lowers to the
+same `Length` operation, keeping Python-shaped ports explicit without adding a
+second length representation.
+
 The compiler-known `is_empty(value) -> bool` (also `isempty`) and the matching
 `value.is_empty()`/`value.isempty()` methods accept the same array, dictionary, or
 text families. They compare the exact typed `Length` result with zero, making the

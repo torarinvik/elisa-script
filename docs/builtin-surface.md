@@ -43,7 +43,7 @@ well. Their descriptors distinguish text haystacks, nominal `Regex` patterns,
 and replacement text; the aggregate forms preserve a `darray[sview]` result
 through structural inference.
 
-The receiver-aware `Text` rows currently cover `lower`, `upper`, `casefold`,
+The receiver-aware `Text` rows currently cover `len`, `lower`, `upper`, `casefold`,
 `starts_with`/`startswith`, `ends_with`/`endswith`, `replace`, `strip`,
 `trim`, `lstrip`, `rstrip`, `join`, `splitlines`/`split_lines`, and the
 zero-argument character-class predicates `isdigit`, `isdecimal`, `isnumeric`,
@@ -56,7 +56,9 @@ one text needle and return `i64` with `-1` for a miss; `index` and `rindex`
 also accept one text needle, return `i64`, and require `IndexOutOfBounds` on a
 miss; `partition` and `rpartition` accept one text separator and return a
 three-element `darray[sview]`; `is_empty`/`isempty` and
-`is_nonempty`/`nonempty` are zero-argument boolean predicates; `split` and
+`is_nonempty`/`nonempty` are zero-argument boolean predicates; `len()` is a
+zero-argument text-length method returning `usize` and lowers to the same
+verified `Length` operation as global `len(text)`; `split` and
 `rsplit` accept an optional text separator and signed `i64` `maxsplit`, with
 `maxsplit:` permitted only for the second argument.
 `join` requires one `darray[sview]` argument and returns `sview`,
