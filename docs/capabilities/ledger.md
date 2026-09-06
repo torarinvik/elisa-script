@@ -72,7 +72,7 @@ lowering for a shadowing source function remains open.
 
 The `Text.join` `darray[text]` descriptor now consults the interned container
 type table for firm annotated arrays, rejecting known non-text element rows while
-leaving unknown expressions conservative (`working tree`).
+leaving unknown expressions conservative (`9ee7cd2`).
 
 ## Evidence record template
 
