@@ -27,7 +27,7 @@ otherwise a seeded global such as `contains` would incorrectly suppress its
 receiver contract.
 
 The compact registry currently contains 202 global spellings, 42 Text receiver,
-9 Regex receiver, 6 Map receiver, and 10 Array receiver spellings. The table below names the strict
+9 Regex receiver, 6 Map receiver, and 13 Array receiver spellings. The table below names the strict
 scalar/text/regex core; filesystem, directory, process, environment, stream,
 and time families use the same row format and are covered by the registry
 audit.
@@ -144,9 +144,11 @@ verified `MapKeys`/`MapValues`/`CopyMap`/`IndexValid`/`PopMapValue`/
 
 Array receiver dispatch currently covers `copy()`, `pop(index?)`, `reverse()`,
 `sort(reverse?)`, `insert(index, value)`, `remove(value)`, `count(value)`,
-`find(value)`, `index(value)`, and `contains(value)`. These rows preserve
+`find(value)`, `index(value)`, and `contains(value)`, plus `push(value)`,
+`append(value)`, and `extend(array)`. These rows preserve
 source shadowing and element-typed checking while selecting the verified
-`CopyArray`, `PopArrayValue`, `ReverseArray`, `SortArray`, `InsertArray`, `RemoveArray`, `ArrayCount`,
+`CopyArray`, `PopArrayValue`, `ReverseArray`, `SortArray`, `InsertArray`, `RemoveArray`,
+`Concat`, `ArrayCount`,
 `ArrayFind`, `ArrayIndex`, and `Contains` paths;
 recursive element descriptors remain in the existing lowerer type wall.
 

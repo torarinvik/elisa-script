@@ -25,7 +25,7 @@ unbound until migrated. This is recorded in commit `47466a4` and remains
 unqualified for executed replay evidence.
 
 The shared builtin registry snapshot now contains 202 global rows, 42 `Text`
-receiver rows, 9 `Regex` receiver rows, 6 Map receiver rows, and 10 Array receiver rows. The global count includes the
+receiver rows, 9 `Regex` receiver rows, 6 Map receiver rows, and 13 Array receiver rows. The global count includes the
 filesystem, process, environment, stream, scalar, text, and regex facades that
 have migrated to descriptor-backed semantic and lowering metadata; generic,
 variadic, and aggregate-polymorphic families remain explicitly open below.
@@ -48,10 +48,10 @@ receiver shapes consume the same
 concrete key/value descriptors remain owned by the structural map type while
 recursive generic descriptors remain open.
 
-The existing array `copy()`/`pop()`/`reverse()`/`sort()`/`insert()`/`remove()`/`count()`/`find()`/`index()`/`contains()` operations now have
+The existing array `copy()`/`pop()`/`reverse()`/`sort()`/`insert()`/`remove()`/`push()`/`append()`/`extend()`/`count()`/`find()`/`index()`/`contains()` operations now have
 parallel Array receiver rows with registry arity/opcode identity,
 source-shadowing precedence, structural array inference, and `CopyArray`,
-`PopArrayValue`, `ReverseArray`, `SortArray`, `InsertArray`, `RemoveArray`, `ArrayCount`, `ArrayFind`, `ArrayIndex`, and `Contains` verifier coverage;
+`PopArrayValue`, `ReverseArray`, `SortArray`, `InsertArray`, `RemoveArray`, `Concat`, `ArrayCount`, `ArrayFind`, `ArrayIndex`, and `Contains` verifier coverage;
 recursive generic array descriptors remain open.
 
 Differential artifact text and fixed-width lookahead readers now share the

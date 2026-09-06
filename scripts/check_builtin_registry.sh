@@ -2085,6 +2085,14 @@ for name in $array_method_names; do
         printf 'builtin registry audit: Array.remove lowering fixture is missing\n' >&2
         exit 1
     fi
+    if [[ "$name" == "push" || "$name" == "extend" ]] && ! rg -q 'def lowers_array_push_and_extend_as_control_flow_visible_ssa_rebinding\(' "$lowering_test_file"; then
+        printf 'builtin registry audit: Array.%s lowering fixture is missing\n' "$name" >&2
+        exit 1
+    fi
+    if [[ "$name" == "append" ]] && ! rg -q 'def lowers_python_append_as_typed_array_growth\(' "$lowering_test_file"; then
+        printf 'builtin registry audit: Array.append lowering fixture is missing\n' >&2
+        exit 1
+    fi
     if [[ "$name" == "reverse" || "$name" == "sort" ]] && ! rg -q 'def array_mutation_receiver_registry_shapes_are_static\(' "$semantic_test_file"; then
         printf 'builtin registry audit: Array mutation semantic fixture is missing\n' >&2
         exit 1
