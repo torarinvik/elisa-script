@@ -1144,6 +1144,19 @@ if ! rg -q 'empty_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(
     printf 'builtin registry audit: is-empty lowerers do not consume registry sequence metadata\n' >&2
     exit 1
 fi
+for nonempty_name in is_nonempty nonempty; do
+    if ! rg -q "name: \"$nonempty_name\", receiver: \"global\".*argument_types: \"collection\\|text\\|Path\".*return_type: \"bool\".*effects: \"\".*errors: \"\".*opcode: \"Greater\".*lowering_steps: \"Length,Greater\"" "$registry_file" || \
+       ! rg -q "name: \"$nonempty_name\", receiver: \"Text\".*argument_types: \"\".*return_type: \"bool\".*effects: \"\".*errors: \"\".*opcode: \"Greater\".*lowering_steps: \"Length,Greater\"" "$registry_file"; then
+        printf 'builtin registry audit: is-nonempty row lacks Length,Greater lowering sequence: %s\n' "$nonempty_name" >&2
+        exit 1
+    fi
+done
+if ! rg -q 'nonempty_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'def lower_collection_nonempty_expression\(receiver_expression: Ast::Expr.*spec: EsBuiltin::BuiltinSpec' "$lowerer_file" || \
+   ! rg -q 'spec\.opcode != "Greater" and spec\.opcode != "FileSize"' "$lowerer_file"; then
+    printf 'builtin registry audit: is-nonempty lowerers do not consume registry opcode metadata\n' >&2
+    exit 1
+fi
 for text_name in starts_with startswith; do
     if ! rg -q "name: \"$text_name\", receiver: \"global\".*argument_types: \"text,text\".*return_type: \"bool\".*effects: \"\".*errors: \"\".*opcode: \"StartsWith\"" "$registry_file"; then
         printf 'builtin registry audit: starts-with row is incomplete: %s\n' "$text_name" >&2

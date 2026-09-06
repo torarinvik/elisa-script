@@ -272,6 +272,9 @@ methods lower to the same check followed by typed boolean negation for arrays,
 dictionaries, and text, corresponding to shell `test -n`. A nominal `Path`
 argument selects the filesystem form described below (`FileSize > 0`) while
 retaining the exact `File.Read`/`FileIoError` contract.
+The registry records the collection/text `Length,Greater` sequence and
+`Greater` result opcode for these aliases and receiver rows; the filesystem
+`file_nonempty` alias retains its `FileSize,Greater` sequence.
 
 The source semantic pass also carries the declared result shape of the direct
 scripting intrinsics into initializer and operator checks. This covers the
