@@ -79,6 +79,12 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            get_environment|getenv|get_environment_or|getenv_or)
+                if ! rg -q 'registry_spec\.opcode == "GetEnvironment"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven environment-read dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
             *)
                 printf 'builtin registry audit: lowerer has no dispatch branch for %s\n' "$name" >&2
                 exit 1
@@ -650,7 +656,8 @@ for environment_name in unset_environment unsetenv; do
         exit 1
     fi
 done
-if ! rg -q 'environment_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+if ! rg -q 'environment_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.opcode == "GetEnvironment"' "$lowerer_file" || \
    ! rg -q 'lower_environment_or\(arguments, argument_names, environment_spec' "$lowerer_file" || \
    ! rg -q 'lower_environment_read\(arguments\[0\], environment_spec' "$lowerer_file" || \
    ! rg -q 'environment_spec\.opcode == "SetEnvironment"' "$lowerer_file" || \
