@@ -1250,6 +1250,12 @@ if ! rg -q 'name: "splitlines", receiver: "Text".*argument_types: "".*return_typ
     printf 'builtin registry audit: Text splitlines receiver lowerer does not consume registry result/opcode metadata\n' >&2
     exit 1
 fi
+if ! rg -q 'def lower_text_case_value_with_spec\(value: u32, method_spec: EsBuiltin::BuiltinSpec' "$lowerer_file" || \
+   ! rg -q 'method_spec\.known or \(method_spec\.opcode != "LowerText" and method_spec\.opcode != "UpperText"\)' "$lowerer_file" || \
+   ! rg -q 'result_type: Type = typed_builtin_result_type\(method_spec\)' "$lowerer_file"; then
+    printf 'builtin registry audit: Text case lowerer does not consume registry result/opcode metadata\n' >&2
+    exit 1
+fi
 for predicate_pair in isdigit:0 isalpha:1 isalnum:2 isspace:3 islower:4 isupper:5 isascii:6 isdecimal:7 isnumeric:8 isprintable:9; do
     predicate_name="${predicate_pair%%:*}"
     predicate_mode="${predicate_pair##*:}"
