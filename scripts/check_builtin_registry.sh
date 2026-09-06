@@ -157,7 +157,9 @@ for name in $registry_names; do
                    rg -q 'callee_name == "resume"' "$lowerer_file" || \
                    ! rg -q 'name: "resume".*arity_min: 2.*arity_max: 2.*argument_types: "text,any".*return_type: "polymorphic".*opcode: "Resume"' "$registry_file" || \
                    ! rg -q 'filesystem_alias_and_resume_intrinsics_are_known_to_the_source_semantic_pass' "$semantic_test_file" || \
-                   ! rg -q 'registry_resume_requires_handler_name_and_payload' "$semantic_test_file"; then
+                   ! rg -q 'registry_resume_requires_handler_name_and_payload' "$semantic_test_file" || \
+                   ! rg -q 'registry_resume_requires_text_handler_name' "$semantic_test_file" || \
+                   ! rg -q 'spec\.argument_types == "text,any"' "$receiver_semantic_file"; then
                     printf 'builtin registry audit: lowerer has no registry-driven resume dispatch\n' >&2
                     exit 1
                 fi
