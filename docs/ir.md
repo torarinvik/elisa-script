@@ -305,7 +305,11 @@ return typed progress records, and reject closed handles, wrong directions,
 short host counts with errors, and budget overflow. `file_stream_read_line`
 uses an explicit state machine, strips only the LF delimiter, preserves CR,
 and rejects a line before its destination grows past the caller's maximum.
-`file_stream_close` is idempotent, transitions the handle to `Closed` before
+`file_stream_close` is idempotent only for a self-consistent terminal state:
+`Closed` must carry a null handle, while an `Open` stream must carry a live
+handle. Split-brain handles assembled outside the adapter fail with the typed
+`FileStreamError.CleanupStateInvalid` row rather than being silently accepted.
+For a valid open handle, close transitions the stream to `Closed` before
 reporting a host close failure, and prevents use-after-close through the typed
 `FileStreamError.Closed` row. The path is borrowed for the handle lifetime and
 the opaque POSIX value is owned by the stream module. `FileStreamCleanupGuard`
