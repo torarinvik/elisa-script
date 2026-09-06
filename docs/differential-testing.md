@@ -38,8 +38,10 @@ rejects NULs, duplicate fixture paths, oversized world data, invalid engine or
 artifact policies, and preserves the nested runner issue kind. A validated case
 can produce a `DifferentialArtifactManifest` with case/runner identities, seeds,
 engine requirement, artifact policy, and optional verified-module fingerprint;
-adapters remain responsible for materializing the separate worlds and writing
-the complete output artifact.
+`canonical_differential_artifact_manifest_bytes` emits a bounded versioned `ESDF`
+sidecar and `differential_artifact_manifest_fingerprint` provides a deterministic
+correlation key. Adapters remain responsible for materializing the separate worlds
+and writing the complete output artifact.
 
 The first shared comparison primitive is `EsDifferential.compare_differential_runs`.
 It compares exit status, named error, stdout, stderr, the typed return value,

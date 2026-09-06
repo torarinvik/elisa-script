@@ -23,14 +23,14 @@ for declaration in 'struct DifferentialWorldFile' 'struct DifferentialWorld' 'st
     fi
 done
 
-for helper in differential_world_issue differential_artifact_policy_valid differential_engine_requirement_valid validate_differential_case make_differential_artifact_manifest; do
+for helper in differential_world_issue differential_artifact_policy_valid differential_engine_requirement_valid validate_differential_case make_differential_artifact_manifest differential_manifest_text_bytes_fits differential_artifact_manifest_valid canonical_differential_artifact_manifest_bytes differential_artifact_manifest_fingerprint; do
     if ! rg -q "def $helper\(" "$source_file"; then
         printf 'differential case audit: missing helper %s\n' "$helper" >&2
         exit 1
     fi
 done
 
-for boundary in 'validate_differential_runner(case.reference)' 'validate_differential_runner(case.candidate)' 'DifferentialCaseIssueKind.DuplicateWorldPath' 'DifferentialArtifactPolicy.Always' 'make_differential_artifact_manifest'; do
+for boundary in 'validate_differential_runner(case.reference)' 'validate_differential_runner(case.candidate)' 'DifferentialCaseIssueKind.DuplicateWorldPath' 'DifferentialArtifactPolicy.Always' 'make_differential_artifact_manifest' 'canonical_differential_artifact_manifest_bytes' 'differential_artifact_manifest_fingerprint'; do
     if ! rg -Fq "$boundary" "$source_file" "$fixture_file"; then
         printf 'differential case audit: missing boundary coverage %s\n' "$boundary" >&2
         exit 1
