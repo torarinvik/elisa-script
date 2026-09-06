@@ -327,9 +327,9 @@ For a valid open handle, close transitions the stream to `Closed` before
 reporting a host close failure, and prevents use-after-close through the typed
 `FileStreamError.Closed` row. The path is borrowed for the handle lifetime and
 the opaque POSIX value is owned by the stream module. The host-facing `cstr`
-path is admitted by a private bounded 4 KiB terminator scan before `fopen`; an
-unterminated path returns `FileStreamError.PathTooLong` without crossing the
-libc boundary. `FileStreamCleanupGuard`
+path is admitted by a private bounded 4 KiB non-empty terminator scan before
+`fopen`; an empty or unterminated path returns `FileStreamError.PathTooLong`
+without crossing the libc boundary. `FileStreamCleanupGuard`
 is an explicit one-shot token: a successful commit closes the stream and marks
 the guard closed, while abort closes it and marks the guard aborted; repeated or
 cross-state cleanup fails with a typed error. Compiler-enforced lexical drop and
