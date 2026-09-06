@@ -481,6 +481,14 @@ streams, reproduction entry, and both value pools by fingerprint. Its explicit
 without exposing a partial directory; `Complete` is rejected unless every
 required sidecar fingerprint is nonzero. The index itself is bounded,
 length-free, versioned, and rejects unknown states or trailing bytes.
+Before a replay adapter opens or launches anything, `validate_differential_artifact_bundle`
+runs a state-machine admission check over the complete in-memory bundle. It
+requires a valid `Complete` index, recomputes the manifest fingerprint, checks
+each sidecar's validity and manifest binding, enforces reference/candidate side
+identity for process streams and value pools, and compares all six recorded
+sidecar fingerprints. Prepared, stale, mixed-side, malformed, or cross-manifest
+bundles return a typed `DifferentialArtifactReplayCheck` failure and are not
+eligible for replay; the validator itself never executes the reproduction entry.
 
 The execution boundary now carries a backend-neutral `ExecutionCapability`
 snapshot alongside that engine identity. For bytecode runs,

@@ -477,6 +477,28 @@ module EsDifferential:
             index: DifferentialArtifactIndex
 
 
+        const enum DifferentialArtifactReplayIssue of u8:
+            None
+            InvalidManifest
+            InvalidIndex
+            Incomplete
+            ManifestFingerprintMismatch
+            ComparisonInvalid
+            ReferenceProcessInvalid
+            CandidateProcessInvalid
+            ReproductionInvalid
+            ReferenceValuePoolInvalid
+            CandidateValuePoolInvalid
+            SideMismatch
+            FingerprintMismatch
+
+
+        struct DifferentialArtifactReplayCheck:
+            valid: mutable bool
+            issue: mutable DifferentialArtifactReplayIssue
+            reason: mutable sview = ""
+
+
         const enum DifferentialRunnerIssueKind of u8:
             None
             MissingName
@@ -2733,3 +2755,171 @@ module EsDifferential:
 
         def decode_differential_comparison_artifact(bytes: darray[u8]&) -> DifferentialComparisonArtifactDecode can[Unsafe.PointerCast]:
             return differential_decode_comparison_artifact(bytes)
+
+
+    private:
+        const enum DifferentialArtifactReplayState of u8:
+            Manifest
+            Index
+            ManifestBinding
+            Comparison
+            ReferenceProcess
+            CandidateProcess
+            Reproduction
+            ReferenceValuePool
+            CandidateValuePool
+            Fingerprints
+            Done
+
+
+        struct DifferentialArtifactReplayCursor:
+            state: mutable DifferentialArtifactReplayState
+            result: mutable DifferentialArtifactReplayCheck
+            manifest_fingerprint: mutable u64 = 0
+
+
+        def differential_artifact_replay_failure(issue: DifferentialArtifactReplayIssue, reason: sview) -> DifferentialArtifactReplayCheck:
+            return DifferentialArtifactReplayCheck{valid: false, issue: issue, reason: reason}
+
+
+    public:
+        # Admit only a self-consistent, complete artifact bundle. This is a
+        # pre-replay boundary: it does not execute the reproduction entry or
+        # trust any sidecar merely because its bytes are individually valid.
+        # The state machine keeps the order explicit so a prepared, mixed, or
+        # stale directory fails before a replay adapter can launch anything.
+        def validate_differential_artifact_bundle(manifest: DifferentialArtifactManifest&, index: DifferentialArtifactIndex&, comparison: DifferentialComparisonArtifact&, reference_process: DifferentialProcessStreamArtifact&, candidate_process: DifferentialProcessStreamArtifact&, reproduction: DifferentialReproductionArtifact&, reference_values: DifferentialValuePoolArtifact&, candidate_values: DifferentialValuePoolArtifact&) -> DifferentialArtifactReplayCheck can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            cursor: mutable DifferentialArtifactReplayCursor = DifferentialArtifactReplayCursor{state: DifferentialArtifactReplayState.Manifest, result: DifferentialArtifactReplayCheck{valid: true, issue: DifferentialArtifactReplayIssue.None}}
+            machine over cursor.state:
+                state Validate
+                start Validate
+
+                Validate, DifferentialArtifactReplayState.Manifest if differential_artifact_manifest_valid(manifest):
+                    cursor.manifest_fingerprint <- differential_artifact_manifest_fingerprint(manifest)
+                    cursor.state <- DifferentialArtifactReplayState.Index
+                    -> Validate
+                Validate, DifferentialArtifactReplayState.Manifest:
+                    cursor.result <- differential_artifact_replay_failure(DifferentialArtifactReplayIssue.InvalidManifest, "artifact replay manifest is invalid")
+                    cursor.state <- DifferentialArtifactReplayState.Done
+                    -> Validate
+
+                Validate, DifferentialArtifactReplayState.Index if differential_artifact_index_valid(index):
+                    cursor.state <- DifferentialArtifactReplayState.ManifestBinding
+                    -> Validate
+                Validate, DifferentialArtifactReplayState.Index:
+                    cursor.result <- differential_artifact_replay_failure(DifferentialArtifactReplayIssue.InvalidIndex, "artifact replay index is invalid")
+                    cursor.state <- DifferentialArtifactReplayState.Done
+                    -> Validate
+
+                Validate, DifferentialArtifactReplayState.ManifestBinding if index.publication == DifferentialArtifactPublicationState.Complete and index.manifest_fingerprint == cursor.manifest_fingerprint:
+                    cursor.state <- DifferentialArtifactReplayState.Comparison
+                    -> Validate
+                Validate, DifferentialArtifactReplayState.ManifestBinding if index.publication != DifferentialArtifactPublicationState.Complete:
+                    cursor.result <- differential_artifact_replay_failure(DifferentialArtifactReplayIssue.Incomplete, "artifact replay index is not complete")
+                    cursor.state <- DifferentialArtifactReplayState.Done
+                    -> Validate
+                Validate, DifferentialArtifactReplayState.ManifestBinding:
+                    cursor.result <- differential_artifact_replay_failure(DifferentialArtifactReplayIssue.ManifestFingerprintMismatch, "artifact replay index is bound to another manifest")
+                    cursor.state <- DifferentialArtifactReplayState.Done
+                    -> Validate
+
+                Validate, DifferentialArtifactReplayState.Comparison if differential_comparison_artifact_valid(comparison) and comparison.manifest_fingerprint == cursor.manifest_fingerprint:
+                    cursor.state <- DifferentialArtifactReplayState.ReferenceProcess
+                    -> Validate
+                Validate, DifferentialArtifactReplayState.Comparison if not differential_comparison_artifact_valid(comparison):
+                    cursor.result <- differential_artifact_replay_failure(DifferentialArtifactReplayIssue.ComparisonInvalid, "comparison sidecar is invalid")
+                    cursor.state <- DifferentialArtifactReplayState.Done
+                    -> Validate
+                Validate, DifferentialArtifactReplayState.Comparison:
+                    cursor.result <- differential_artifact_replay_failure(DifferentialArtifactReplayIssue.ManifestFingerprintMismatch, "comparison sidecar is bound to another manifest")
+                    cursor.state <- DifferentialArtifactReplayState.Done
+                    -> Validate
+
+                Validate, DifferentialArtifactReplayState.ReferenceProcess if differential_process_stream_artifact_valid(reference_process) and reference_process.manifest_fingerprint == cursor.manifest_fingerprint and reference_process.side == DifferentialArtifactSide.Reference:
+                    cursor.state <- DifferentialArtifactReplayState.CandidateProcess
+                    -> Validate
+                Validate, DifferentialArtifactReplayState.ReferenceProcess if not differential_process_stream_artifact_valid(reference_process):
+                    cursor.result <- differential_artifact_replay_failure(DifferentialArtifactReplayIssue.ReferenceProcessInvalid, "reference process sidecar is invalid")
+                    cursor.state <- DifferentialArtifactReplayState.Done
+                    -> Validate
+                Validate, DifferentialArtifactReplayState.ReferenceProcess if reference_process.manifest_fingerprint != cursor.manifest_fingerprint:
+                    cursor.result <- differential_artifact_replay_failure(DifferentialArtifactReplayIssue.ManifestFingerprintMismatch, "reference process sidecar is bound to another manifest")
+                    cursor.state <- DifferentialArtifactReplayState.Done
+                    -> Validate
+                Validate, DifferentialArtifactReplayState.ReferenceProcess:
+                    cursor.result <- differential_artifact_replay_failure(DifferentialArtifactReplayIssue.SideMismatch, "reference process sidecar has candidate side identity")
+                    cursor.state <- DifferentialArtifactReplayState.Done
+                    -> Validate
+
+                Validate, DifferentialArtifactReplayState.CandidateProcess if differential_process_stream_artifact_valid(candidate_process) and candidate_process.manifest_fingerprint == cursor.manifest_fingerprint and candidate_process.side == DifferentialArtifactSide.Candidate:
+                    cursor.state <- DifferentialArtifactReplayState.Reproduction
+                    -> Validate
+                Validate, DifferentialArtifactReplayState.CandidateProcess if not differential_process_stream_artifact_valid(candidate_process):
+                    cursor.result <- differential_artifact_replay_failure(DifferentialArtifactReplayIssue.CandidateProcessInvalid, "candidate process sidecar is invalid")
+                    cursor.state <- DifferentialArtifactReplayState.Done
+                    -> Validate
+                Validate, DifferentialArtifactReplayState.CandidateProcess if candidate_process.manifest_fingerprint != cursor.manifest_fingerprint:
+                    cursor.result <- differential_artifact_replay_failure(DifferentialArtifactReplayIssue.ManifestFingerprintMismatch, "candidate process sidecar is bound to another manifest")
+                    cursor.state <- DifferentialArtifactReplayState.Done
+                    -> Validate
+                Validate, DifferentialArtifactReplayState.CandidateProcess:
+                    cursor.result <- differential_artifact_replay_failure(DifferentialArtifactReplayIssue.SideMismatch, "candidate process sidecar has reference side identity")
+                    cursor.state <- DifferentialArtifactReplayState.Done
+                    -> Validate
+
+                Validate, DifferentialArtifactReplayState.Reproduction if differential_reproduction_artifact_valid(reproduction) and reproduction.manifest_fingerprint == cursor.manifest_fingerprint:
+                    cursor.state <- DifferentialArtifactReplayState.ReferenceValuePool
+                    -> Validate
+                Validate, DifferentialArtifactReplayState.Reproduction if not differential_reproduction_artifact_valid(reproduction):
+                    cursor.result <- differential_artifact_replay_failure(DifferentialArtifactReplayIssue.ReproductionInvalid, "reproduction sidecar is invalid")
+                    cursor.state <- DifferentialArtifactReplayState.Done
+                    -> Validate
+                Validate, DifferentialArtifactReplayState.Reproduction:
+                    cursor.result <- differential_artifact_replay_failure(DifferentialArtifactReplayIssue.ManifestFingerprintMismatch, "reproduction sidecar is bound to another manifest")
+                    cursor.state <- DifferentialArtifactReplayState.Done
+                    -> Validate
+
+                Validate, DifferentialArtifactReplayState.ReferenceValuePool if differential_value_pool_artifact_valid(reference_values) and reference_values.manifest_fingerprint == cursor.manifest_fingerprint and reference_values.side == DifferentialArtifactSide.Reference:
+                    cursor.state <- DifferentialArtifactReplayState.CandidateValuePool
+                    -> Validate
+                Validate, DifferentialArtifactReplayState.ReferenceValuePool if not differential_value_pool_artifact_valid(reference_values):
+                    cursor.result <- differential_artifact_replay_failure(DifferentialArtifactReplayIssue.ReferenceValuePoolInvalid, "reference value-pool sidecar is invalid")
+                    cursor.state <- DifferentialArtifactReplayState.Done
+                    -> Validate
+                Validate, DifferentialArtifactReplayState.ReferenceValuePool if reference_values.manifest_fingerprint != cursor.manifest_fingerprint:
+                    cursor.result <- differential_artifact_replay_failure(DifferentialArtifactReplayIssue.ManifestFingerprintMismatch, "reference value-pool sidecar is bound to another manifest")
+                    cursor.state <- DifferentialArtifactReplayState.Done
+                    -> Validate
+                Validate, DifferentialArtifactReplayState.ReferenceValuePool:
+                    cursor.result <- differential_artifact_replay_failure(DifferentialArtifactReplayIssue.SideMismatch, "reference value-pool sidecar has candidate side identity")
+                    cursor.state <- DifferentialArtifactReplayState.Done
+                    -> Validate
+
+                Validate, DifferentialArtifactReplayState.CandidateValuePool if differential_value_pool_artifact_valid(candidate_values) and candidate_values.manifest_fingerprint == cursor.manifest_fingerprint and candidate_values.side == DifferentialArtifactSide.Candidate:
+                    cursor.state <- DifferentialArtifactReplayState.Fingerprints
+                    -> Validate
+                Validate, DifferentialArtifactReplayState.CandidateValuePool if not differential_value_pool_artifact_valid(candidate_values):
+                    cursor.result <- differential_artifact_replay_failure(DifferentialArtifactReplayIssue.CandidateValuePoolInvalid, "candidate value-pool sidecar is invalid")
+                    cursor.state <- DifferentialArtifactReplayState.Done
+                    -> Validate
+                Validate, DifferentialArtifactReplayState.CandidateValuePool if candidate_values.manifest_fingerprint != cursor.manifest_fingerprint:
+                    cursor.result <- differential_artifact_replay_failure(DifferentialArtifactReplayIssue.ManifestFingerprintMismatch, "candidate value-pool sidecar is bound to another manifest")
+                    cursor.state <- DifferentialArtifactReplayState.Done
+                    -> Validate
+                Validate, DifferentialArtifactReplayState.CandidateValuePool:
+                    cursor.result <- differential_artifact_replay_failure(DifferentialArtifactReplayIssue.SideMismatch, "candidate value-pool sidecar has reference side identity")
+                    cursor.state <- DifferentialArtifactReplayState.Done
+                    -> Validate
+
+                Validate, DifferentialArtifactReplayState.Fingerprints if index.comparison_fingerprint == differential_comparison_artifact_fingerprint(comparison) and index.reference_process_fingerprint == differential_process_stream_artifact_fingerprint(reference_process) and index.candidate_process_fingerprint == differential_process_stream_artifact_fingerprint(candidate_process) and index.reproduction_fingerprint == differential_reproduction_artifact_fingerprint(reproduction) and index.reference_value_pool_fingerprint == differential_value_pool_artifact_fingerprint(reference_values) and index.candidate_value_pool_fingerprint == differential_value_pool_artifact_fingerprint(candidate_values):
+                    cursor.state <- DifferentialArtifactReplayState.Done
+                    -> Validate
+                Validate, DifferentialArtifactReplayState.Fingerprints:
+                    cursor.result <- differential_artifact_replay_failure(DifferentialArtifactReplayIssue.FingerprintMismatch, "artifact index does not match one or more sidecars")
+                    cursor.state <- DifferentialArtifactReplayState.Done
+                    -> Validate
+
+                Validate, DifferentialArtifactReplayState.Done:
+                    break
+
+            return cursor.result
