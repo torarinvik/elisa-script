@@ -25,6 +25,32 @@ if ! rg -q '^# name[[:space:]]+relative_path[[:space:]]+owner[[:space:]]+review_
     exit 1
 fi
 
+# Validate the complete manifest shape without touching any declared project
+# root. Duplicate names/paths would make a combined report ambiguous, and an
+# unknown review state would be impossible for downstream migration tooling to
+# interpret deterministically.
+if ! awk -F '\t' '
+    NR == 1 { next }
+    NF == 0 { next }
+    {
+        if (NF != 4) { bad = 1; next }
+        if ($1 == "" || $2 == "" || $3 == "" || $4 == "") bad = 1
+        if ($2 ~ /^\// || $2 ~ /(^|\/)\.\.(\/|$)/ || $2 ~ /^\.\//) bad = 1
+        if ($4 !~ /^(pending|reviewed|blocked)$/) bad = 1
+        names[$1]++
+        paths[$2]++
+        rows++
+    }
+    END {
+        for (name in names) if (names[name] != 1) bad = 1
+        for (path in paths) if (paths[path] != 1) bad = 1
+        if (rows == 0 || bad) exit 1
+    }
+' "$roots_file"; then
+    printf 'migration inventory audit: manifest rows are malformed, unsafe, duplicated, or use an unknown review state\n' >&2
+    exit 1
+fi
+
 tab="$(printf '\t')"
 for root_name in 'C++ projects' 'Elisa Projects' 'FSharpProjects' 'Go projects' 'Haskell Projects' 'Java Projects' 'Lean Projects' 'Ocaml Projects' 'Python Projects' 'Rust Projects' 'Swift Projects'; do
     if ! rg -Fq "${root_name}${tab}" "$roots_file"; then

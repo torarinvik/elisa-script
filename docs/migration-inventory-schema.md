@@ -24,6 +24,7 @@ The first row is the exact header. Every later row has these fields:
 | `path` | Absolute candidate path as discovered by `rg --files` |
 | `kind` | `python`, `perl`, `awk`, `shell`, `makefile`, or `unknown` |
 | `owner` | Maintainer identity; starts as `unassigned` |
+| `review_status` | Manifest review state: `pending`, `reviewed`, or `blocked` |
 | `entrypoint` | Direct executable, imported module, build recipe, CI hook, generated output, or `unknown` |
 | `disposition` | `classify`, `classify-generated`, `retain-external`, `port`, `wrap-temporarily`, `archive`, or `remove-after-acceptance` |
 | `risk` | `test`, `build`, `release`, or `unknown` discovery hint; replace with the reviewed risk class |
