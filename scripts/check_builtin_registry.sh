@@ -1085,6 +1085,22 @@ for name in $regex_method_names; do
     fi
 done
 
+for regex_search_pair in search:0 match:1 fullmatch:2; do
+    regex_search_name="${regex_search_pair%%:*}"
+    regex_search_mode="${regex_search_pair##*:}"
+    if ! rg -q "name: \"$regex_search_name\", receiver: \"Regex\".*argument_types: \"text\".*return_type: \"bool\".*effects: \"\".*errors: \"\".*opcode: \"RegexSearch\".*lowering_mode: $regex_search_mode" "$registry_file"; then
+        printf 'builtin registry audit: Regex search row lacks mode metadata: %s\n' "$regex_search_name" >&2
+        exit 1
+    fi
+done
+if ! rg -q 'def lower_regex_method\(receiver_expression: Ast::Expr, method_name: sview, arguments:' "$lowerer_file" || \
+   ! rg -q 'method_spec\.known and \(method_spec\.opcode == "RegexSearch" or method_spec\.opcode == "RegexFind" or method_spec\.opcode == "RegexCapture"\)' "$lowerer_file" || \
+   ! rg -q 'mode: i64 = method_spec\.lowering_mode' "$lowerer_file" || \
+   rg -q '1 if method_name == "match"' "$lowerer_file"; then
+    printf 'builtin registry audit: Regex receiver search lowerer does not consume registry mode metadata\n' >&2
+    exit 1
+fi
+
 if ! rg -q 'typed_builtin_spec\(builtin_name\)' "$semantic_file"; then
     printf 'builtin registry audit: semantic seed table does not consume typed_builtin_spec\n' >&2
     exit 1
