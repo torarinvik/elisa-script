@@ -191,6 +191,11 @@ shared byte-budget admission and state-machine syntax; compiler-enforced lexical
 cleanup/lifetime, platform adapters, and executed large-file evidence remain
 open.
 
+Recent static increments are committed as `72f3325` (Path line semantics audit),
+`0739d4c` (typed cleanup guard), `b0ecf06` (cache cleanup integration),
+`9873d8c` (all resource-policy ceiling admission), and `64986ef` (ESDF version-3
+manifest fixture). They remain compiler-free evidence while validation is paused.
+
 ## Evidence record template
 
 Every future executed or differential-verified entry must append a dated record
