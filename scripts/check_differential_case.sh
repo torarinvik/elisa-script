@@ -51,7 +51,7 @@ for helper in differential_run_text_bytes_fits differential_value_pool_compariso
     fi
 done
 
-for helper in differential_world_payload_add_fits differential_world_payload_text_fits differential_world_payload_bytes_fits differential_world_payload_fits differential_world_text_field_lengths_valid differential_case_name_valid differential_oracle_name_valid; do
+for helper in differential_world_payload_add_fits differential_world_payload_text_fits differential_world_payload_bytes_fits differential_world_payload_fits differential_world_text_field_lengths_valid differential_case_name_valid differential_runner_name_valid differential_oracle_name_valid; do
     if ! rg -q "def $helper\(" "$source_file"; then
         printf 'differential case audit: missing world payload helper %s\n' "$helper" >&2
         exit 1
