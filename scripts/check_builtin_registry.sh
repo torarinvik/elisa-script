@@ -187,6 +187,60 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            regex_search|regex_match|regex_fullmatch)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Regex,text" and registry_spec\.opcode == "RegexSearch"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven regex search dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
+            regex_findall)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Regex,text" and registry_spec\.opcode == "RegexFind"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven regex find dispatch\n' >&2
+                    exit 1
+                fi
+                ;;
+            regex_split)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Regex,text" and registry_spec\.opcode == "RegexSplit"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven regex split dispatch\n' >&2
+                    exit 1
+                fi
+                ;;
+            regex_sub)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Regex,text,text" and registry_spec\.opcode == "RegexReplace"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven regex substitution dispatch\n' >&2
+                    exit 1
+                fi
+                ;;
+            matches)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "text,Regex" and registry_spec\.opcode == "RegexSearch"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven pattern-first match dispatch\n' >&2
+                    exit 1
+                fi
+                ;;
+            replace_regex)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "text,Regex,text" and registry_spec\.opcode == "RegexReplace"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven pattern-first replacement dispatch\n' >&2
+                    exit 1
+                fi
+                ;;
+            split_regex)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "text,Regex" and registry_spec\.opcode == "RegexSplit"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven pattern-first split dispatch\n' >&2
+                    exit 1
+                fi
+                ;;
+            find_regex)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "text,Regex" and registry_spec\.opcode == "RegexFind"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven pattern-first find dispatch\n' >&2
+                    exit 1
+                fi
+                ;;
+            capture_regex|captures_regex)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "text,Regex" and registry_spec\.opcode == "RegexCapture"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven pattern-first capture dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
             *)
                 printf 'builtin registry audit: lowerer has no dispatch branch for %s\n' "$name" >&2
                 exit 1
@@ -912,15 +966,20 @@ if ! rg -q 'def lowers_registry_regex_namespace_aliases_with_modes\(' "$repo_roo
     printf 'builtin registry audit: regex namespace lowering/inference coverage is missing\n' >&2
     exit 1
 fi
-if ! rg -q 'matches_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+if ! rg -q 'matches_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "text,Regex" and registry_spec\.opcode == "RegexSearch"' "$lowerer_file" || \
    ! rg -q 'matches_spec\.opcode == "RegexSearch"' "$lowerer_file" || \
-   ! rg -q 'replace_regex_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'replace_regex_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "text,Regex,text" and registry_spec\.opcode == "RegexReplace"' "$lowerer_file" || \
    ! rg -q 'replace_regex_spec\.opcode == "RegexReplace"' "$lowerer_file" || \
-   ! rg -q 'split_regex_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'split_regex_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "text,Regex" and registry_spec\.opcode == "RegexSplit"' "$lowerer_file" || \
    ! rg -q 'split_regex_spec\.opcode == "RegexSplit"' "$lowerer_file" || \
-   ! rg -q 'find_regex_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'find_regex_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "text,Regex" and registry_spec\.opcode == "RegexFind"' "$lowerer_file" || \
    ! rg -q 'find_regex_spec\.opcode == "RegexFind"' "$lowerer_file" || \
-   ! rg -q 'capture_regex_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'capture_regex_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "text,Regex" and registry_spec\.opcode == "RegexCapture"' "$lowerer_file" || \
    ! rg -q 'capture_regex_spec\.opcode == "RegexCapture"' "$lowerer_file"; then
     printf 'builtin registry audit: pattern-first regex lowerers do not consume registry shape/result/opcode metadata\n' >&2
     exit 1
