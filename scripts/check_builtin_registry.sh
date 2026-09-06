@@ -277,6 +277,24 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            join)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "darray\[text\],text" and registry_spec\.opcode == "Join"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven join dispatch\n' >&2
+                    exit 1
+                fi
+                ;;
+            split)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "Split"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven split dispatch\n' >&2
+                    exit 1
+                fi
+                ;;
+            split_lines|splitlines)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "SplitLines"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven split-lines dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
             *)
                 printf 'builtin registry audit: lowerer has no dispatch branch for %s\n' "$name" >&2
                 exit 1
@@ -1671,13 +1689,18 @@ if ! rg -q 'starts_with_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_
    ! rg -q 'replace_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
    ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "TextReplace"' "$lowerer_file" || \
    ! rg -q 'replace_spec\.opcode == "TextReplace"' "$lowerer_file" || \
+   ! rg -q 'split_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "Split"' "$lowerer_file" || \
    ! rg -q 'split_spec\.opcode == "Split"' "$lowerer_file" || \
    ! rg -q 'name: "split", receiver: "global".*opcode: "Split", lowering_mode: 0' "$registry_file" || \
    ! rg -q 'integer: split_spec\.lowering_mode' "$lowerer_file" || \
    ! rg -q 'spec\.opcode == "TextPartition" and typed_builtin_call_shape\(spec\.name' "$lowerer_file" || \
    ! rg -q 'integer: spec\.lowering_mode' "$lowerer_file" || \
-   ! rg -q 'split_lines_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'split_lines_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "SplitLines"' "$lowerer_file" || \
    ! rg -q 'split_lines_spec\.opcode == "SplitLines"' "$lowerer_file" || \
+   ! rg -q 'join_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "darray\[text\],text" and registry_spec\.opcode == "Join"' "$lowerer_file" || \
    ! rg -q 'join_spec\.opcode == "Join"' "$lowerer_file"; then
     printf 'builtin registry audit: fixed global text lowerers do not consume registry shape/result/opcode metadata\n' >&2
     exit 1
