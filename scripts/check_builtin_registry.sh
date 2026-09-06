@@ -112,6 +112,12 @@ if ! rg -q 'ufm_check_text_builtin_argument_types' "$receiver_semantic_file" || 
     printf 'builtin registry audit: semantic receiver argument checking does not consume registry types\n' >&2
     exit 1
 fi
+if ! rg -q 'darray\[text\]' "$receiver_semantic_file" || \
+   ! rg -q 'structural_type_id_of' "$receiver_semantic_file" || \
+   ! rg -q 'interned_elem\(' "$receiver_semantic_file"; then
+    printf 'builtin registry audit: structural Text argument descriptors are not checked through the type table\n' >&2
+    exit 1
+fi
 
 for name in $method_names; do
     if ! rg -q "known: true, name: \"$name\", receiver: \"Text\"" "$registry_file"; then

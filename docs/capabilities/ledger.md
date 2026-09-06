@@ -70,6 +70,10 @@ functions precedence over matching Text spellings, while normalized qualified
 builtins apply the same source-name guard (`430cf38`). Generic UFCS
 lowering for a shadowing source function remains open.
 
+The `Text.join` `darray[text]` descriptor now consults the interned container
+type table for firm annotated arrays, rejecting known non-text element rows while
+leaving unknown expressions conservative (`working tree`).
+
 ## Evidence record template
 
 Every future executed or differential-verified entry must append a dated record

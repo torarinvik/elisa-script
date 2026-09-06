@@ -91,6 +91,11 @@ receiver semantic checker consumes the registry arity range and rejects named
 arguments for rows that intentionally expose no parameter names. Both checks are static by design while
 compiler execution remains suspended by the resource-safety gate.
 
+The `Text.join` `darray[text]` argument is now checked against the interned
+container element row when the argument has a firm annotated array type. Unknown
+expressions and untyped array literals remain conservative until recursive
+container inference can preserve their element descriptors.
+
 The remaining Q03 work is intentionally explicit: migrate aggregate and
 variadic signatures, receiver method families, generic/container result
 descriptors, effect and error sets with structured IDs, and verifier-side

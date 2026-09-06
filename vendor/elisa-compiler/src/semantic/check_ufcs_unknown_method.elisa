@@ -48,10 +48,24 @@ extend Semantic:
                 table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.ArityMismatch, name: method, pos: method_line, line: method_line.line, expected: "", actual: ""}) if mismatch and spec.arity_min != spec.arity_max
                 table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.CallArgumentError, name: method, pos: method_line, line: method_line.line, expected: "no_names", actual: ""}) if spec.known and ufm_text_has_invalid_named_arguments(spec, argument_names)
 
-        # The first registry rows with positional text arguments all use the compact
-        # `text`/`text,text` descriptor. Check only those slots here; a structural
-        # `darray[text]` argument (currently `join`) remains Unknown in inference and is
-        # intentionally deferred until container element IDs are available at this boundary.
+        # The first registry rows with positional text arguments use the compact
+        # `text`/`text,text` descriptor. `join` additionally has a structural
+        # `darray[text]` argument; validate it when the existing interned type table
+        # gives us a firm container element ID, while keeping unknown expressions
+        # conservative.
+        def ufm_text_array_argument_is_text(expression: Ast::Expr, var_types: darray[sview]&, type_names: darray[sview]&, table: SymbolTable&) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                argument_id: u32 = structural_type_id_of(expression, var_types, type_names, table)
+                return false if argument_id == 0 or interned_kind(argument_id, table) != SemTypeKind.Container
+                head: sview = interned_name(argument_id, table)
+                return false if head != "darray" and head != "array"
+                return false if interned_elem_count(argument_id, table) != 1
+                element_id: u32 = interned_elem(argument_id, 0, table)
+                return interned_kind(element_id, table) == SemTypeKind.String
+
+        def ufm_text_array_argument_is_known(expression: Ast::Expr, var_types: darray[sview]&, type_names: darray[sview]&, table: SymbolTable&) -> bool:
+            return structural_type_id_of(expression, var_types, type_names, table) != 0
+
         def ufm_check_text_builtin_argument_types(method: sview, arguments: darray[Ast::Expr]&, argument_names: darray[sview]&, var_types: darray[sview]&, type_names: darray[sview]&, method_line: Ast::Pos, table: lmut SymbolTable) -> void:
             can Memory.Allocate, Abort.Panic:
                 spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_method_spec("Text", method)
@@ -61,14 +75,18 @@ extend Semantic:
                     named_allowed: bool = ufm_text_named_argument_allowed(spec, argument_index, argument_name)
                     expected_text: bool = (spec.argument_types == "text" and argument_index == 0) or (spec.argument_types == "text,text" and argument_index < 2) or (spec.argument_types == "text,i64" and argument_index == 0)
                     expected_integer: bool = spec.argument_types == "text,i64" and argument_index == 1
-                    expected_type: sview = "text" if expected_text else ("i64" if expected_integer else "")
+                    expected_array_text: bool = spec.argument_types == "darray[text]" and argument_index == 0
+                    expected_type: sview = "text" if expected_text else ("i64" if expected_integer else ("darray[text]" if expected_array_text else ""))
                     literal_kind: sview = literal_kind_of(arguments[argument_index])
                     argument_type: InferType = infer_expression_type(arguments[argument_index], var_types, type_names, table)
                     argument_family: sview = stage0_value_spelling(argument_type)
                     literal_fits: bool = (expected_text and literal_kind == "string") or (expected_integer and literal_kind == "int")
                     firm_fits: bool = (expected_text and argument_type.kind == SemTypeKind.String) or (expected_integer and argument_type.kind == SemTypeKind.Int)
+                    structural_known: bool = expected_array_text and ufm_text_array_argument_is_known(arguments[argument_index], var_types, type_names, table)
+                    structural_fits: bool = expected_array_text and ufm_text_array_argument_is_text(arguments[argument_index], var_types, type_names, table)
                     literal_bad: bool = expected_type != "" and named_allowed and literal_kind != "" and not literal_fits
-                    firm_bad: bool = expected_type != "" and named_allowed and literal_kind == "" and argument_type.kind != SemTypeKind.Unknown and not firm_fits
+                    firm_scalar_bad: bool = (expected_text or expected_integer) and argument_type.kind != SemTypeKind.Unknown and not firm_fits
+                    firm_bad: bool = expected_type != "" and named_allowed and literal_kind == "" and (firm_scalar_bad or (structural_known and not structural_fits))
                     table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.LiteralArgTypeMismatch, name: method, pos: method_line, line: method_line.line, expected: expected_type, actual: stage0_literal_spelling(literal_kind), expected_count: (argument_index + 1).u32()}) if literal_bad
                     table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.FirmArgTypeMismatch, name: method, pos: method_line, line: method_line.line, expected: expected_type, actual: argument_family, expected_count: (argument_index + 1).u32()}) if firm_bad
                     argument_index <- argument_index + 1
