@@ -361,6 +361,66 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            path_exists|exists)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and registry_spec\.opcode == "PathExists"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven existence dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
+            is_file|isfile)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and registry_spec\.opcode == "IsFile"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven file-predicate dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
+            touch)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and registry_spec\.opcode == "TouchPath"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven touch dispatch\n' >&2
+                    exit 1
+                fi
+                ;;
+            chmod)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path,u64" and registry_spec\.opcode == "ChmodPath"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven chmod dispatch\n' >&2
+                    exit 1
+                fi
+                ;;
+            file_size|getsize)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and registry_spec\.opcode == "FileSize"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven file-size dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
+            file_mode)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and registry_spec\.opcode == "FileMode"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven file-mode dispatch\n' >&2
+                    exit 1
+                fi
+                ;;
+            file_mtime|getmtime|file_atime|getatime|file_ctime|getctime)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and \(registry_spec\.opcode == "FileMTime" or registry_spec\.opcode == "FileATime" or registry_spec\.opcode == "FileCTime"\)' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven file-time dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
+            is_symlink|islink)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and registry_spec\.opcode == "IsSymlink"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven symlink-predicate dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
+            readlink|read_link)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and registry_spec\.opcode == "ReadLink"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven link-read dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
+            symlink|create_symlink)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path,Path" and registry_spec\.opcode == "SymlinkPath"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven symlink creation dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
             *)
                 printf 'builtin registry audit: lowerer has no dispatch branch for %s\n' "$name" >&2
                 exit 1
@@ -710,9 +770,12 @@ if ! rg -q 'name: "is_readable", receiver: "global".*opcode: "PathAccess", lower
     printf 'builtin registry audit: path-access aliases do not preserve registry POSIX modes\n' >&2
     exit 1
 fi
-if ! rg -q 'exists_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
-   ! rg -q 'file_predicate_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
-   ! rg -q 'symlink_predicate_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+if ! rg -q 'exists_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and registry_spec\.opcode == "PathExists"' "$lowerer_file" || \
+   ! rg -q 'file_predicate_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and registry_spec\.opcode == "IsFile"' "$lowerer_file" || \
+   ! rg -q 'symlink_predicate_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and registry_spec\.opcode == "IsSymlink"' "$lowerer_file" || \
    ! rg -q 'exists_spec\.opcode != "PathExists"' "$lowerer_file" || \
    ! rg -q 'file_predicate_spec\.opcode != "IsFile"' "$lowerer_file" || \
    ! rg -q 'symlink_predicate_spec\.opcode != "IsSymlink"' "$lowerer_file"; then
@@ -751,9 +814,12 @@ if ! rg -q 'name: "touch", receiver: "global".*argument_types: "Path".*return_ty
     printf 'builtin registry audit: touch row is incomplete\n' >&2
     exit 1
 fi
-if ! rg -q 'touch_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
-   ! rg -q 'chmod_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
-   ! rg -q 'symlink_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+if ! rg -q 'touch_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and registry_spec\.opcode == "TouchPath"' "$lowerer_file" || \
+   ! rg -q 'chmod_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path,u64" and registry_spec\.opcode == "ChmodPath"' "$lowerer_file" || \
+   ! rg -q 'symlink_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path,Path" and registry_spec\.opcode == "SymlinkPath"' "$lowerer_file" || \
    ! rg -q 'remove_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
    ! rg -q 'move_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
    ! rg -q 'touch_spec\.opcode != "TouchPath"' "$lowerer_file" || \
@@ -768,10 +834,14 @@ if ! rg -q 'name: "chmod", receiver: "global".*argument_types: "Path,u64".*retur
     printf 'builtin registry audit: chmod mixed Path/u64 row is not fully consumed\n' >&2
     exit 1
 fi
-if ! rg -q 'file_size_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
-   ! rg -q 'file_mode_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
-   ! rg -q 'file_time_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
-   ! rg -q 'readlink_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+if ! rg -q 'file_size_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and registry_spec\.opcode == "FileSize"' "$lowerer_file" || \
+   ! rg -q 'file_mode_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and registry_spec\.opcode == "FileMode"' "$lowerer_file" || \
+   ! rg -q 'file_time_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and \(registry_spec\.opcode == "FileMTime" or registry_spec\.opcode == "FileATime" or registry_spec\.opcode == "FileCTime"\)' "$lowerer_file" || \
+   ! rg -q 'readlink_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and registry_spec\.opcode == "ReadLink"' "$lowerer_file" || \
    ! rg -q 'file_size_spec\.opcode != "FileSize"' "$lowerer_file" || \
    ! rg -q 'file_mode_spec\.opcode != "FileMode"' "$lowerer_file" || \
    ! rg -q 'file_time_spec\.opcode == "FileMTime"' "$lowerer_file" || \
