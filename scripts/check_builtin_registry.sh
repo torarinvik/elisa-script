@@ -309,6 +309,13 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            sorted)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "SortArray"' "$lowerer_file" || \
+                   ! rg -q 'argument_types: "array,bool".*argument_names: "reverse".*return_type: "array".*opcode: "SortArray"' "$registry_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven sorted dispatch\n' >&2
+                    exit 1
+                fi
+                ;;
             split)
                 if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "Split"' "$lowerer_file"; then
                     printf 'builtin registry audit: lowerer has no registry-driven split dispatch\n' >&2

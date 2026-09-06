@@ -26,7 +26,7 @@ The source-declaration test intentionally ignores line-zero registry seed rows;
 otherwise a seeded global such as `contains` would incorrectly suppress its
 receiver contract.
 
-The compact registry currently contains 183 global spellings, 42 Text receiver
+The compact registry currently contains 184 global spellings, 42 Text receiver
 spellings, and 9 Regex receiver spellings. The table below names the strict
 scalar/text/regex core; filesystem, directory, process, environment, stream,
 and time families use the same row format and are covered by the registry
