@@ -27,7 +27,7 @@ otherwise a seeded global such as `contains` would incorrectly suppress its
 receiver contract.
 
 The compact registry currently contains 202 global spellings, 42 Text receiver,
-9 Regex receiver, and 3 Map receiver spellings. The table below names the strict
+9 Regex receiver, 3 Map receiver, and 1 Array receiver spelling. The table below names the strict
 scalar/text/regex core; filesystem, directory, process, environment, stream,
 and time families use the same row format and are covered by the registry
 audit.
@@ -141,6 +141,10 @@ descriptor in the lowerer; projections emit the verified `MapKeys`/`MapValues`
 opcode and `copy()` emits `CopyMap`. Their source-function shadowing guard is
 shared with Text, Regex, and Path receiver methods, so user-defined `keys`,
 `values`, or `copy` UFCS functions retain ordinary source-call precedence.
+
+Array receiver dispatch currently covers `copy()`. It is a zero-argument,
+source-shadowable row whose `array` result remains structurally typed by the
+existing `CopyArray` lowerer and verifier path.
 
 Run the compiler-free audits:
 

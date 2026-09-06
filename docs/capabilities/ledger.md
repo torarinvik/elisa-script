@@ -25,7 +25,7 @@ unbound until migrated. This is recorded in commit `47466a4` and remains
 unqualified for executed replay evidence.
 
 The shared builtin registry snapshot now contains 202 global rows, 42 `Text`
-receiver rows, 9 `Regex` receiver rows, and 3 Map receiver rows. The global count includes the
+receiver rows, 9 `Regex` receiver rows, 3 Map receiver rows, and 1 Array receiver row. The global count includes the
 filesystem, process, environment, stream, scalar, text, and regex facades that
 have migrated to descriptor-backed semantic and lowering metadata; generic,
 variadic, and aggregate-polymorphic families remain explicitly open below.
@@ -44,6 +44,11 @@ source-shadowing precedence, receiver return inference, and both lowerer
 receiver shapes consume the same `MapKeys`/`MapValues`/`CopyMap` metadata;
 concrete key/value descriptors remain owned by the structural map type while
 recursive generic descriptors remain open.
+
+The existing array `copy()` operation now has the parallel `Array.copy()`
+receiver row with zero-argument checking, source-shadowing precedence, structural
+array inference, and `CopyArray` verifier identity; generic array method families
+remain open.
 
 Differential artifact text and fixed-width lookahead readers now share the
 subtraction-safe serialized-slice admission used by ESBC (`1d96bfa`); malformed
