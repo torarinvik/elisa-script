@@ -196,6 +196,9 @@ if ! rg -q 'typed_builtin_method_spec\("Path", method_name\)' "$lowerer_file" ||
    ! rg -q 'def is_path_global_unary_spec\(spec: EsBuiltin::BuiltinSpec\)' "$lowerer_file" || \
    ! rg -q 'def lower_path_global_unary\(callee_name: sview' "$lowerer_file" || \
    ! rg -q 'is_path_global_unary_spec\(registry_spec\)' "$lowerer_file" || \
+   ! rg -q 'def is_path_global_binary_spec\(spec: EsBuiltin::BuiltinSpec\)' "$lowerer_file" || \
+   ! rg -q 'def lower_path_global_binary\(callee_name: sview' "$lowerer_file" || \
+   ! rg -q 'is_path_global_binary_spec\(registry_spec\)' "$lowerer_file" || \
    ! rg -q 'def is_path_receiver_expression\(expression: Ast::Expr, state: LowerState&\)' "$lowerer_file" || \
    ! rg -q 'scripting_path_builtin_available\(state, method_name\) or method_name == "mkdir"' "$lowerer_file" || \
    ! rg -q 'path_spec\.known and path_spec\.opcode == "PathParent"' "$lowerer_file" || \
