@@ -1189,8 +1189,9 @@ stringly shell command.
 The shared typed-builtin registry owns all five global spellings with the
 optional `text` prefix descriptor, nominal `Path` result, `File.Write`/
 `FileIoError` contract, and `CreateTemporary` opcode. The lowerer retains the
-file-versus-directory choice as the instruction's integer payload, while a
-source-defined spelling still shadows the compiler-known operation.
+file-versus-directory choice from registry `lowering_mode` in the instruction's
+integer payload, while a source-defined spelling still shadows the compiler-
+known operation.
 
 `chmod(path: Path, mode: u64) -> bool error[FileIoError] can[File.Write]` applies a
 numeric POSIX mode such as `0x180u64` (octal `0600`). It is the typed counterpart to
@@ -1395,6 +1396,7 @@ boundary; the parent process and filesystem are otherwise unchanged. The
 `absolute_path` and `abspath` aliases, plus `path.absolute()`, lower to the same
 typed operation. The shared typed-builtin registry owns all three spellings with
 nominal `Path`, `Directory.Read`/`DirectoryError`, and `PathAbsolute` metadata.
+The lowerer consumes that result and opcode metadata directly.
 
 `path_relative(target: Path, base: Path) -> Path` computes a normalized lexical
 path from `base` to `target`, matching the common `os.path.relpath` porting shape
@@ -1414,6 +1416,8 @@ canonical absolute path. It matches the common `readlink -f`,
 `resolve_path` aliases are equivalent, and `path.realpath()`/`path.resolve()`
 are method forms. The shared typed-builtin registry owns all three global
 spellings with nominal `Path`, `File.Read`/`FileIoError`, and `PathReal` metadata.
+The lowerer consumes the shared result and opcode row directly for all three
+aliases.
 Unlike `path_normalize`, this operation consults the
 filesystem and reports `FileIoError` when the input is empty, contains an
 embedded NUL, or cannot be resolved. The returned libc path is bounded by the

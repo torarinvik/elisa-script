@@ -685,6 +685,13 @@ for filesystem_name in path_real realpath resolve_path; do
         exit 1
     fi
 done
+if ! rg -q 'path_absolute_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'path_absolute_spec\.opcode == "PathAbsolute"' "$lowerer_file" || \
+   ! rg -q 'path_real_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'path_real_spec\.opcode == "PathReal"' "$lowerer_file"; then
+    printf 'builtin registry audit: path-resolution lowerers do not consume registry result/opcode metadata\n' >&2
+    exit 1
+fi
 if ! rg -q 'lowers_nominal_path_existence_with_file_effect' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'any error_name in fn\.errors where error_name == "FileIoError"' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: filesystem existence row lacks lowering effect/error fixture\n' >&2
     exit 1
@@ -867,6 +874,15 @@ for temporary_name in temp_file mktemp temp_directory temp_dir mkdtemp; do
         exit 1
     fi
 done
+if ! rg -q 'name: "temp_directory".*opcode: "CreateTemporary", lowering_mode: 1' "$registry_file" || \
+   ! rg -q 'name: "temp_dir".*opcode: "CreateTemporary", lowering_mode: 1' "$registry_file" || \
+   ! rg -q 'name: "mkdtemp".*opcode: "CreateTemporary", lowering_mode: 1' "$registry_file" || \
+   ! rg -q 'temporary_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'temporary_spec\.opcode == "CreateTemporary"' "$lowerer_file" || \
+   ! rg -q 'temporary_kind: i64 = temporary_spec\.lowering_mode' "$lowerer_file"; then
+    printf 'builtin registry audit: temporary-path lowerer does not consume registry kind/opcode metadata\n' >&2
+    exit 1
+fi
 if ! rg -q 'lowers_secure_temporary_file_and_directory_aliases' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: temporary-path lowering fixture is missing\n' >&2
     exit 1
