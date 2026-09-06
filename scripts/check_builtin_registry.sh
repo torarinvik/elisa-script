@@ -1100,6 +1100,20 @@ if ! rg -q 'def lower_regex_method\(receiver_expression: Ast::Expr, method_name:
     printf 'builtin registry audit: Regex receiver search lowerer does not consume registry mode metadata\n' >&2
     exit 1
 fi
+if ! rg -q 'name: "sub", receiver: "Regex".*argument_types: "text,text".*return_type: "sview".*effects: "".*errors: "".*opcode: "RegexReplace"' "$registry_file" || \
+   ! rg -q 'def lower_regex_sub_method\(receiver_expression: Ast::Expr' "$lowerer_file" || \
+   ! rg -q 'method_spec\.known and method_spec\.opcode == "RegexReplace"' "$lowerer_file" || \
+   ! rg -q 'opcode: Opcode = Opcode\.RegexReplace if method_spec\.opcode == "RegexReplace"' "$lowerer_file" || \
+   ! rg -q 'typed_builtin_result_type\(method_spec\)' "$lowerer_file"; then
+    printf 'builtin registry audit: Regex sub receiver lowerer does not consume registry result/opcode metadata\n' >&2
+    exit 1
+fi
+if ! rg -q 'name: "split", receiver: "Regex".*argument_types: "text".*return_type: "darray\[text\]".*effects: "".*errors: "".*opcode: "RegexSplit"' "$registry_file" || \
+   ! rg -q 'def lower_regex_split_method\(receiver_expression: Ast::Expr' "$lowerer_file" || \
+   ! rg -q 'method_spec\.known and method_spec\.opcode == "RegexSplit"' "$lowerer_file"; then
+    printf 'builtin registry audit: Regex split receiver lowerer does not consume registry opcode metadata\n' >&2
+    exit 1
+fi
 
 if ! rg -q 'typed_builtin_spec\(builtin_name\)' "$semantic_file"; then
     printf 'builtin registry audit: semantic seed table does not consume typed_builtin_spec\n' >&2
