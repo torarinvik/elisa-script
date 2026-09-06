@@ -1238,7 +1238,10 @@ POSIX `st_mode` bits reported by `stat`, including the file-kind and permission
 bits. It is the typed counterpart to shell `stat` mode queries and Python
 `Path.stat().st_mode`, and pairs with `chmod` without requiring a stringly
 metadata parser. The shared typed-builtin registry owns its nominal `Path`,
-`u64`, `File.Read`/`FileIoError`, and `FileMode` contract.
+`u64`, `File.Read`/`FileIoError`, and `FileMode` contract. The lowerer uses the
+same exact `Path` shape, result type, and metadata opcode for file size, mode,
+timestamps, and link-target reads; aliases cannot silently select a different
+stat operation.
 
 `is_symlink(path: Path) -> bool` is the shell `test -L` and Python
 `Path.is_symlink()` predicate. It uses `lstat` rather than following the target,

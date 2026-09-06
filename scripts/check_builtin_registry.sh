@@ -305,6 +305,17 @@ if ! rg -q 'name: "chmod", receiver: "global".*argument_types: "Path,u64".*retur
     printf 'builtin registry audit: chmod mixed Path/u64 row is not fully consumed\n' >&2
     exit 1
 fi
+if ! rg -q 'file_size_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'file_mode_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'file_time_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'readlink_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'file_size_spec\.opcode != "FileSize"' "$lowerer_file" || \
+   ! rg -q 'file_mode_spec\.opcode != "FileMode"' "$lowerer_file" || \
+   ! rg -q 'file_time_spec\.opcode == "FileMTime"' "$lowerer_file" || \
+   ! rg -q 'readlink_spec\.opcode != "ReadLink"' "$lowerer_file"; then
+    printf 'builtin registry audit: filesystem metadata lowerers do not consume registry result/opcode metadata\n' >&2
+    exit 1
+fi
 for filesystem_name in readlink read_link; do
     if ! rg -q "name: \"$filesystem_name\", receiver: \"global\".*argument_types: \"Path\".*return_type: \"Path\".*effects: \"File.Read\".*errors: \"FileIoError\".*opcode: \"ReadLink\"" "$registry_file"; then
         printf 'builtin registry audit: readlink row is incomplete: %s\n' "$filesystem_name" >&2
