@@ -312,6 +312,69 @@ module EsDifferential:
             required_errors: darray[sview] = []
 
 
+        # A hermetic world is part of the differential contract rather than an
+        # ambient process setting. The first implementation keeps fixture files
+        # text-backed; a future binary-file extension can add an owned byte pool
+        # without changing the case/runner boundary.
+        struct DifferentialWorldFile:
+            path: sview
+            contents: sview = ""
+            mode: u32 = 0
+            executable: bool = false
+
+
+        struct DifferentialWorld:
+            working_directory: sview = ""
+            files: darray[DifferentialWorldFile] = []
+            environment: darray[DifferentialEnvironmentEntry] = []
+            argv: darray[sview] = []
+            stdin: sview = ""
+            locale: sview = ""
+            timezone: sview = ""
+            seed: u64 = 0
+
+
+        const enum DifferentialArtifactPolicy of u8:
+            Never
+            OnMismatch
+            Always
+
+
+        const enum DifferentialEngineRequirement of u8:
+            Ignore
+            RequireKnown
+            RequireDistinct
+            RequireDirectBytecodeCandidate
+
+
+        # A typed case binds two runners to one world, comparison policy, and
+        # artifact decision. It is deliberately non-executable data: adapters
+        # must validate it before launching either side.
+        struct DifferentialCase:
+            name: sview
+            reference: DifferentialRunner
+            candidate: DifferentialRunner
+            world: DifferentialWorld = DifferentialWorld{}
+            tolerance: DifferentialFloatTolerance = DifferentialFloatTolerance{}
+            engine_requirement: DifferentialEngineRequirement = DifferentialEngineRequirement.Ignore
+            timeout_steps: u64 = 0
+            max_output_bytes: u64 = 0
+            seed: u64 = 0
+            artifact_policy: DifferentialArtifactPolicy = DifferentialArtifactPolicy.OnMismatch
+
+
+        struct DifferentialArtifactManifest:
+            format_version: u8 = 1
+            case_name: sview
+            reference_name: sview
+            candidate_name: sview
+            world_seed: u64 = 0
+            case_seed: u64 = 0
+            engine_requirement: DifferentialEngineRequirement = DifferentialEngineRequirement.Ignore
+            artifact_policy: DifferentialArtifactPolicy = DifferentialArtifactPolicy.OnMismatch
+            module_fingerprint: u64 = 0
+
+
         const enum DifferentialRunnerIssueKind of u8:
             None
             MissingName
@@ -333,6 +396,26 @@ module EsDifferential:
             argument_index: mutable u32 = 0
             valid: mutable bool
             issue: mutable DifferentialRunnerIssueKind
+
+
+        const enum DifferentialCaseIssueKind of u8:
+            None
+            MissingName
+            InvalidReferenceRunner
+            InvalidCandidateRunner
+            EmbeddedNul
+            DuplicateWorldPath
+            InvalidWorldPath
+            InvalidArtifactPolicy
+            InvalidEngineRequirement
+            InvalidLimit
+
+
+        struct DifferentialCaseCheck:
+            reason: mutable sview = ""
+            valid: mutable bool
+            issue: mutable DifferentialCaseIssueKind
+            runner_issue: mutable DifferentialRunnerIssueKind = DifferentialRunnerIssueKind.None
 
 
     private:
@@ -372,6 +455,115 @@ module EsDifferential:
 
 
     private:
+        const enum DifferentialCaseCheckState of u8:
+            Name
+            Reference
+            Candidate
+            World
+            Limits
+            Done
+
+
+        struct DifferentialCaseCheckCursor:
+            state: mutable DifferentialCaseCheckState
+            result: mutable DifferentialCaseCheck
+
+
+        def differential_world_issue(world: DifferentialWorld&) -> DifferentialCaseIssueKind:
+            return DifferentialCaseIssueKind.EmbeddedNul if differential_sview_has_nul(world.working_directory) or differential_sview_has_nul(world.locale) or differential_sview_has_nul(world.timezone)
+            return DifferentialCaseIssueKind.InvalidLimit if sview_len(world.stdin) > DIFFERENTIAL_DEFAULT_MAX_PROCESS_INPUT_BYTES or world.files.count > DIFFERENTIAL_DEFAULT_MAX_ARGUMENTS
+            return DifferentialCaseIssueKind.EmbeddedNul if not differential_environment_valid(world.environment)
+            for argument in world.argv:
+                return DifferentialCaseIssueKind.EmbeddedNul if differential_sview_has_nul(argument)
+            for index in 0..<world.files.count |world|:
+                fixture: DifferentialWorldFile = world.files[index]
+                return DifferentialCaseIssueKind.InvalidWorldPath if fixture.path == "" or differential_sview_has_nul(fixture.path)
+                return DifferentialCaseIssueKind.InvalidLimit if sview_len(fixture.contents) > DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES
+                for earlier in 0..<index |world, fixture|:
+                    return DifferentialCaseIssueKind.DuplicateWorldPath if world.files[earlier].path == fixture.path
+            return DifferentialCaseIssueKind.None
+
+
+        def differential_artifact_policy_valid(policy: DifferentialArtifactPolicy) -> bool:
+            return policy in {DifferentialArtifactPolicy.Never, DifferentialArtifactPolicy.OnMismatch, DifferentialArtifactPolicy.Always}
+
+
+        def differential_engine_requirement_valid(requirement: DifferentialEngineRequirement) -> bool:
+            return requirement in {DifferentialEngineRequirement.Ignore, DifferentialEngineRequirement.RequireKnown, DifferentialEngineRequirement.RequireDistinct, DifferentialEngineRequirement.RequireDirectBytecodeCandidate}
+
+
+    public:
+        # Validate the complete case envelope before either runner is handed to
+        # an adapter. Nested runner failures retain their original issue kind so a
+        # malformed reference cannot be misreported as candidate behavior.
+        def validate_differential_case(case: DifferentialCase&) -> DifferentialCaseCheck:
+            cursor: mutable DifferentialCaseCheckCursor = DifferentialCaseCheckCursor{state: DifferentialCaseCheckState.Name, result: DifferentialCaseCheck{valid: true, issue: DifferentialCaseIssueKind.None}}
+            machine over cursor.state while cursor.result.valid:
+                state Validate
+                start Validate
+
+                Validate, DifferentialCaseCheckState.Name if case.name != "" and not differential_sview_has_nul(case.name):
+                    cursor.state <- DifferentialCaseCheckState.Reference
+                    -> Validate
+                Validate, DifferentialCaseCheckState.Name:
+                    cursor.result.valid <- false
+                    cursor.result.issue <- DifferentialCaseIssueKind.MissingName
+                    cursor.result.reason <- "differential case name is required and must not contain NUL"
+                    -> Validate
+
+                Validate, DifferentialCaseCheckState.Reference:
+                    nested: DifferentialRunnerCheck = validate_differential_runner(case.reference)
+                    if nested.valid:
+                        cursor.state <- DifferentialCaseCheckState.Candidate
+                    else:
+                        cursor.result.valid <- false
+                        cursor.result.issue <- DifferentialCaseIssueKind.InvalidReferenceRunner
+                        cursor.result.runner_issue <- nested.issue
+                        cursor.result.reason <- "reference runner is invalid"
+                    -> Validate
+
+                Validate, DifferentialCaseCheckState.Candidate:
+                    nested: DifferentialRunnerCheck = validate_differential_runner(case.candidate)
+                    if nested.valid:
+                        cursor.state <- DifferentialCaseCheckState.World
+                    else:
+                        cursor.result.valid <- false
+                        cursor.result.issue <- DifferentialCaseIssueKind.InvalidCandidateRunner
+                        cursor.result.runner_issue <- nested.issue
+                        cursor.result.reason <- "candidate runner is invalid"
+                    -> Validate
+
+                Validate, DifferentialCaseCheckState.World:
+                    world_issue: DifferentialCaseIssueKind = differential_world_issue(case.world)
+                    if world_issue == DifferentialCaseIssueKind.None:
+                        cursor.state <- DifferentialCaseCheckState.Limits
+                    else:
+                        cursor.result.valid <- false
+                        cursor.result.issue <- world_issue
+                        cursor.result.reason <- "differential world is invalid"
+                    -> Validate
+
+                Validate, DifferentialCaseCheckState.Limits if (case.max_output_bytes == 0 or case.max_output_bytes <= DIFFERENTIAL_DEFAULT_MAX_OUTPUT_BYTES) and differential_artifact_policy_valid(case.artifact_policy) and differential_engine_requirement_valid(case.engine_requirement):
+                    cursor.state <- DifferentialCaseCheckState.Done
+                    -> Validate
+                Validate, DifferentialCaseCheckState.Limits:
+                    cursor.result.valid <- false
+                    cursor.result.issue <- DifferentialCaseIssueKind.InvalidArtifactPolicy if not differential_artifact_policy_valid(case.artifact_policy) else DifferentialCaseIssueKind.InvalidEngineRequirement if not differential_engine_requirement_valid(case.engine_requirement) else DifferentialCaseIssueKind.InvalidLimit
+                    cursor.result.reason <- "differential case policy or limit is invalid"
+                    -> Validate
+
+                Validate, DifferentialCaseCheckState.Done:
+                    break
+
+            return cursor.result
+
+
+        def make_differential_artifact_manifest(case: DifferentialCase&, module_fingerprint: u64 = 0) -> DifferentialArtifactManifest error[DifferentialRunnerError] can[Memory.Allocate, Abort.Panic]:
+            check: DifferentialCaseCheck = validate_differential_case(case)
+            raise DifferentialRunnerError.Invalid if not check.valid
+            return DifferentialArtifactManifest{case_name: case.name, reference_name: case.reference.name, candidate_name: case.candidate.name, world_seed: case.world.seed, case_seed: case.seed, engine_requirement: case.engine_requirement, artifact_policy: case.artifact_policy, module_fingerprint: module_fingerprint}
+
+
         const DIFFERENTIAL_WAIT_NOHANG: int = 1
         const DIFFERENTIAL_SIGNAL_KILL: int = 9
         const DIFFERENTIAL_MAX_EINTR_RETRIES: usize = 8
@@ -1140,18 +1332,6 @@ module EsDifferential:
             candidate_value: mutable DifferentialValue = DifferentialValue{kind: DifferentialValueKind.Void}
             reference_engine: mutable EsIr::ExecutionEngine = EsIr::ExecutionEngine.ReferenceInterpreter
             candidate_engine: mutable EsIr::ExecutionEngine = EsIr::ExecutionEngine.ReferenceInterpreter
-
-
-        # Value parity and backend parity are separate acceptance policies. The
-        # default comparator intentionally ignores engine metadata so a legacy
-        # process can still be compared with an in-process candidate. Callers
-        # proving independent Elisascript backends must opt into one of these
-        # requirements explicitly.
-        const enum DifferentialEngineRequirement of u8:
-            Ignore
-            RequireKnown
-            RequireDistinct
-            RequireDirectBytecodeCandidate
 
 
     private:

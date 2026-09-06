@@ -30,6 +30,17 @@ def z80_step_matches_original() -> DifferentialCase[CpuInput, CpuObservation]:
 The framework runs both sides from the same generated or recorded input and
 compares structured observations.
 
+The concrete first case boundary is `EsDifferential.DifferentialCase`. It binds a
+reference runner and candidate runner to a `DifferentialWorld` containing the
+working directory, fixture files, ordered environment, argv, stdin, locale,
+timezone, and seed. `validate_differential_case` validates both nested runners,
+rejects NULs, duplicate fixture paths, oversized world data, invalid engine or
+artifact policies, and preserves the nested runner issue kind. A validated case
+can produce a `DifferentialArtifactManifest` with case/runner identities, seeds,
+engine requirement, artifact policy, and optional verified-module fingerprint;
+adapters remain responsible for materializing the separate worlds and writing
+the complete output artifact.
+
 The first shared comparison primitive is `EsDifferential.compare_differential_runs`.
 It compares exit status, named error, stdout, stderr, the typed return value,
 observation count, and then each `(trace, value)` pair in that fixed order. It returns a typed
