@@ -108,7 +108,9 @@ if ! rg -q 'typed_builtin_method_spec\("Regex", method\)\.known' "$receiver_sema
     printf 'builtin registry audit: semantic Regex receiver checking does not consume the registry\n' >&2
     exit 1
 fi
-if ! rg -q 'ufm_has_source_function\(table, method\)' "$receiver_semantic_file"; then
+if ! rg -q 'source_ufcs_owned: bool = ufm_has_source_function\(table, method\)' "$receiver_semantic_file" || \
+   ! rg -q 'source_ufcs_available: bool = scripting_has_unique_source_function\(table, method\)' "$receiver_semantic_file" || \
+   ! rg -q 'not source_ufcs_owned' "$receiver_semantic_file"; then
     printf 'builtin registry audit: semantic Text diagnostics do not guard source shadowing\n' >&2
     exit 1
 fi
@@ -122,6 +124,8 @@ if ! rg -q 'def scripting_has_unique_source_function' "$inference_file" || \
    ! rg -q 'def scripting_source_function_return_type_id' "$inference_file" || \
    ! rg -q 'scripting_has_unique_source_function\(table, method_name\)' "$inference_file" || \
    ! rg -q 'scripting_source_function_return_type_id\(table, method_name\)' "$structural_inference_file" || \
+   ! rg -q 'def check_source_ufcs_arity' "$repo_root/vendor/elisa-compiler/src/semantic/resolve_expr.elisa" || \
+   ! rg -q 'check_source_ufcs_arity\(table, method, arguments.count \+ 1' "$receiver_semantic_file" || \
    ! rg -q 'Expr\.Field\(receiver, fn_name' "$firm_argument_file" || \
    ! rg -q 'Expr\.Field\(receiver, fn_name' "$literal_argument_file"; then
     printf 'builtin registry audit: source-owned UFCS calls lack unique-source inference or argument checks\n' >&2

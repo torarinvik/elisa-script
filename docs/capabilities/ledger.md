@@ -104,7 +104,7 @@ Registry receiver diagnostics and lowerer dispatch now give direct source
 functions precedence over matching Text spellings, while normalized qualified
 builtins apply the same source-name guard (`430cf38`). Generic UFCS lowering
 now forwards a shadowing receiver through the ordinary typed direct-call path,
-and semantic inference plus literal/firm argument checks use the unique
+and semantic inference plus arity/literal/firm argument checks use the unique
 non-seeded source declaration for the same precedence boundary, with static
 semantic/lowering fixtures covering valid return rows and rejected receiver or
 argument shapes.
