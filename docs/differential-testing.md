@@ -462,6 +462,12 @@ oversized channels, truncation, and trailing bytes; the compact fingerprint is a
 correlation key and not a cryptographic digest. Aggregate typed value pools remain
 a separate payload contract so large arrays/maps do not inflate either sidecar.
 
+The reproduction entry point is a separate `ESRP` sidecar. Its typed target and
+entry fields are length-delimited and bound to the same manifest fingerprint;
+they identify an Elisascript launcher target without storing an opaque shell
+command. Empty, NUL-containing, oversized, unknown-version, truncated, or
+trailing-byte payloads are rejected before a replay adapter can use them.
+
 The execution boundary now carries a backend-neutral `ExecutionCapability`
 snapshot alongside that engine identity. For bytecode runs,
 `capability_known` is true and the snapshot preserves `direct_supported`,
