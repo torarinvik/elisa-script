@@ -305,6 +305,11 @@ is reported as a typed lock error while the original publication error remains
 the failure reported after best-effort cleanup. The lock itself uses an explicit
 `Available → Held → Released` transition table, including reacquisition from
 `Released`; invalid events leave the state unchanged.
+All borrowed cache paths now pass a private bounded 4 KiB terminator admission
+before file-size reads, staging, rename, directory sync, or advisory lock
+operations; an unterminated path returns `ArtifactCacheIoError.PathTooLong`
+(or the typed read failure at the load boundary) before any POSIX helper scans
+it.
 
 `EsRuntime::FileStream` is the first typed large-file vertical slice. A handle
 is opened with an explicit read/text/binary/write/append mode and a byte budget
