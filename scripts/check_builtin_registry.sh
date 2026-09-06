@@ -1305,6 +1305,13 @@ if ! rg -q 'name: "index", receiver: "Text".*argument_types: "text".*return_type
     printf 'builtin registry audit: Text index/rindex lowerer does not consume registry opcode metadata\n' >&2
     exit 1
 fi
+if ! rg -q 'name: "count", receiver: "Text".*argument_types: "text".*return_type: "usize".*effects: "".*errors: "".*opcode: "TextCount"' "$registry_file" || \
+   ! rg -q 'def lower_collection_count_expression\(receiver_expression: Ast::Expr' "$lowerer_file" || \
+   ! rg -q 'method_spec\.known and method_spec\.opcode == "TextCount" and typed_builtin_method_call_shape\("Text", "count"' "$lowerer_file" || \
+   ! rg -q 'typed_builtin_result_type\(method_spec\)' "$lowerer_file"; then
+    printf 'builtin registry audit: Text/array count lowerer does not consume registry result/opcode metadata\n' >&2
+    exit 1
+fi
 if ! rg -q 'def typed_builtin_result_type' "$lowerer_file" || \
    ! rg -q 'typed_builtin_result_type\([a-z_]+_spec\)' "$lowerer_file" || \
    ! rg -q 'typed_builtin_result_type\(method_spec\)' "$lowerer_file"; then
