@@ -116,6 +116,32 @@ extend EsRuntime:
         const FILE_STREAM_MAX_PATH_BYTES: usize = 4096
 
 
+        const enum FileStreamLineReadState of u8:
+            Progress
+            Done
+            End
+            Limit
+            LineTooLong
+            Error
+
+
+        def file_stream_read_line_next(stream: mutable FileStream&, line: mutable darray[u8]&, max_line_bytes: usize, byte: mutable u8&) -> FileStreamLineReadState can[Blocking.IO]:
+            # The budget check belongs immediately before the host probe. A
+            # line may consume the final permitted byte without a delimiter;
+            # the next state transition must fail closed instead of probing
+            # EOF after the stream is exhausted.
+            return FileStreamLineReadState.Limit if stream.bytes_read >= stream.byte_budget
+            handle: mutable heap void& = stream.handle
+            amount: usize = fread((&byte).cast[mutable void&], 1, 1, handle)
+            return FileStreamLineReadState.Error if amount > 1 or amount == 0 and ferror(handle) != 0
+            return FileStreamLineReadState.End if amount == 0
+            stream.bytes_read <- stream.bytes_read + 1
+            return FileStreamLineReadState.Done if byte == 10
+            return FileStreamLineReadState.LineTooLong if line.count >= max_line_bytes
+            line.push(byte)
+            return FileStreamLineReadState.Progress
+
+
         # `file_stream_open` accepts an already-terminated host pointer for
         # compatibility with the POSIX ABI. Admit it with a bounded scan before
         # passing the pointer to libc; an empty or unterminated path must never
@@ -193,25 +219,27 @@ extend EsRuntime:
             raise FileStreamError.WrongMode(stream.path) if stream.mode != FileStreamMode.ReadText and stream.mode != FileStreamMode.ReadBinary
             raise FileStreamError.LineTooLong(stream.path) if max_line_bytes == 0
             line.truncate(0)
-            handle: mutable heap void& = stream.handle
             byte: mutable u8 = 0
-            # Do not probe the host after the byte budget is exhausted.  The
-            # budget is an admission boundary, not merely a destination-size
-            # check; even the one-byte EOF probe must be rejected first.
-            raise FileStreamError.LimitExceeded(stream.path) if stream.bytes_read >= stream.byte_budget
-            machine over fread((&byte).cast[mutable void&], 1, 1, handle) while true:
+            result: mutable FileStreamRead = FileStreamRead{count: 0, eof: false}
+            machine over file_stream_read_line_next(stream, line, max_line_bytes, byte) while true:
                 state Read
                 start Read
 
-                Read, 0:
-                    raise FileStreamError.ReadFailed(stream.path) if ferror(handle) != 0
-                    return FileStreamRead{count: line.count, eof: true}
-                Read, 1:
-                    stream.bytes_read <- stream.bytes_read + 1
-                    break if byte == 10
-                    raise FileStreamError.LineTooLong(stream.path) if line.count >= max_line_bytes
-                    line.push(byte)
+                Read, FileStreamLineReadState.Progress:
                     -> Read
+                Read, FileStreamLineReadState.Done:
+                    result <- FileStreamRead{count: line.count, eof: false}
+                    break
+                Read, FileStreamLineReadState.End:
+                    result <- FileStreamRead{count: line.count, eof: true}
+                    break
+                Read, FileStreamLineReadState.Limit:
+                    raise FileStreamError.LimitExceeded(stream.path)
+                Read, FileStreamLineReadState.LineTooLong:
+                    raise FileStreamError.LineTooLong(stream.path)
+                Read, FileStreamLineReadState.Error:
+                    raise FileStreamError.ReadFailed(stream.path)
+            return result
 
 
         def file_stream_close(stream: mutable FileStream&) -> bool error[FileStreamError] can[Blocking.IO, Memory.Release]:

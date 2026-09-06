@@ -319,9 +319,10 @@ bounded by the shared runtime memory ceiling. `file_stream_read_chunk` and
 `file_stream_write_chunk` admit each request with subtraction-before-addition,
 return typed progress records, and reject closed handles, wrong directions,
 short host counts with errors, and budget overflow. `file_stream_read_line`
-uses an explicit state machine, rejects the byte budget before even probing the
-host for another byte, strips only the LF delimiter, preserves CR, and rejects
-a line before its destination grows past the caller's maximum.
+uses an explicit state machine whose private transition checks the byte budget
+immediately before every host `fread`, rejects exhaustion without an extra EOF
+probe, strips only the LF delimiter, preserves CR, and rejects a line before its
+destination grows past the caller's maximum.
 `file_stream_close` is idempotent only for a self-consistent terminal state:
 `Closed` must carry a null handle, while an `Open` stream must carry a live
 handle. Split-brain handles assembled outside the adapter fail with the typed
