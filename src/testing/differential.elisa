@@ -1467,6 +1467,30 @@ module EsDifferential:
             candidate_engine: mutable EsIr::ExecutionEngine = EsIr::ExecutionEngine.ReferenceInterpreter
 
 
+        # A comparison report is the bounded, machine-readable portion of a
+        # differential artifact. Large aggregate values remain in separate
+        # payload files; this sidecar still identifies the first mismatch and
+        # preserves enough typed metadata to reject an ambiguous parity claim.
+        struct DifferentialComparisonArtifact:
+            format_version: u8 = 1
+            manifest_fingerprint: u64 = 0
+            equal: bool = false
+            kind: DifferentialDifferenceKind
+            index: u32 = 0
+            reference_engine: EsIr::ExecutionEngine = EsIr::ExecutionEngine.ReferenceInterpreter
+            candidate_engine: EsIr::ExecutionEngine = EsIr::ExecutionEngine.ReferenceInterpreter
+            reference_value_kind: DifferentialValueKind = DifferentialValueKind.Void
+            candidate_value_kind: DifferentialValueKind = DifferentialValueKind.Void
+            reason: sview = ""
+            reference_text: sview = ""
+            candidate_text: sview = ""
+
+
+        struct DifferentialComparisonArtifactDecode:
+            valid: bool
+            artifact: DifferentialComparisonArtifact
+
+
     private:
         const enum DifferentialCompareState of u8:
             ExitStatus
@@ -1786,3 +1810,166 @@ module EsDifferential:
                     break
 
             return cursor.result
+
+
+    private:
+        const DIFFERENTIAL_MAX_COMPARISON_ARTIFACT_BYTES: usize = 1048576
+        const DIFFERENTIAL_MAX_COMPARISON_TEXT_BYTES: usize = 1048512
+
+
+        def differential_difference_kind_valid(kind: DifferentialDifferenceKind) -> bool:
+            return kind in {DifferentialDifferenceKind.Equal, DifferentialDifferenceKind.Engine, DifferentialDifferenceKind.ExitStatus, DifferentialDifferenceKind.Error, DifferentialDifferenceKind.Stdout, DifferentialDifferenceKind.Stderr, DifferentialDifferenceKind.ReturnValue, DifferentialDifferenceKind.ObservationCount, DifferentialDifferenceKind.ObservationTrace, DifferentialDifferenceKind.ObservationValue}
+
+
+        def differential_execution_engine_valid(engine: EsIr::ExecutionEngine) -> bool:
+            return engine in {EsIr::ExecutionEngine.ReferenceInterpreter, EsIr::ExecutionEngine.DirectBytecode, EsIr::ExecutionEngine.BytecodeInterpreterFallback}
+
+
+        def differential_comparison_artifact_text_bytes_fits(artifact: DifferentialComparisonArtifact&) -> bool:
+            total: mutable usize = 0
+            length: usize = sview_len(artifact.reason)
+            return false if length > DIFFERENTIAL_MAX_COMPARISON_TEXT_BYTES - total
+            total <- total + length
+            length <- sview_len(artifact.reference_text)
+            return false if length > DIFFERENTIAL_MAX_COMPARISON_TEXT_BYTES - total
+            total <- total + length
+            length <- sview_len(artifact.candidate_text)
+            return false if length > DIFFERENTIAL_MAX_COMPARISON_TEXT_BYTES - total
+            total <- total + length
+            return total <= DIFFERENTIAL_MAX_COMPARISON_TEXT_BYTES
+
+
+        def differential_comparison_artifact_valid(artifact: DifferentialComparisonArtifact&) -> bool:
+            return false if artifact.format_version != 1
+            return false if artifact.manifest_fingerprint == 0
+            return false if artifact.equal and artifact.kind != DifferentialDifferenceKind.Equal
+            return false if not artifact.equal and artifact.kind == DifferentialDifferenceKind.Equal
+            return false if not differential_difference_kind_valid(artifact.kind)
+            return false if not differential_execution_engine_valid(artifact.reference_engine) or not differential_execution_engine_valid(artifact.candidate_engine)
+            return false if not differential_value_kind_valid(artifact.reference_value_kind) or not differential_value_kind_valid(artifact.candidate_value_kind)
+            return differential_comparison_artifact_text_bytes_fits(artifact)
+
+
+    public:
+        # Materialize only the bounded comparison evidence. The manifest
+        # fingerprint binds this report to the case/world identity; callers can
+        # store larger value pools and process streams in separate files.
+        def make_differential_comparison_artifact(manifest: DifferentialArtifactManifest&, comparison: DifferentialComparison&) -> DifferentialComparisonArtifact error[DifferentialRunnerError] can[Memory.Allocate, Abort.Panic]:
+            raise DifferentialRunnerError.Invalid if not differential_artifact_manifest_valid(manifest)
+            artifact: DifferentialComparisonArtifact = DifferentialComparisonArtifact{manifest_fingerprint: differential_artifact_manifest_fingerprint(manifest), equal: comparison.equal, kind: comparison.kind, index: comparison.index, reference_engine: comparison.reference_engine, candidate_engine: comparison.candidate_engine, reference_value_kind: comparison.reference_value.kind, candidate_value_kind: comparison.candidate_value.kind, reason: comparison.reason, reference_text: comparison.reference_text, candidate_text: comparison.candidate_text}
+            raise DifferentialRunnerError.Invalid if artifact.manifest_fingerprint == 0 or not differential_difference_kind_valid(artifact.kind)
+            raise DifferentialRunnerError.OutputLimit if not differential_comparison_artifact_text_bytes_fits(artifact)
+            return artifact
+
+
+        # ESCR is a versioned, length-delimited report envelope. Text is not
+        # treated as C strings, so embedded process-output bytes remain intact.
+        def canonical_differential_comparison_artifact_bytes(artifact: DifferentialComparisonArtifact) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+            return [] if not differential_comparison_artifact_valid(artifact)
+            output: mutable darray[u8] = []
+            EsIr::canonical_artifact_emit_byte(output, 69)
+            EsIr::canonical_artifact_emit_byte(output, 83)
+            EsIr::canonical_artifact_emit_byte(output, 67)
+            EsIr::canonical_artifact_emit_byte(output, 82)
+            EsIr::canonical_artifact_emit_byte(output, artifact.format_version)
+            EsIr::canonical_artifact_emit_u64(output, artifact.manifest_fingerprint)
+            EsIr::canonical_artifact_emit_byte(output, 1 if artifact.equal else 0)
+            EsIr::canonical_artifact_emit_byte(output, artifact.kind.u8())
+            EsIr::canonical_artifact_emit_u64(output, artifact.index.u64())
+            EsIr::canonical_artifact_emit_byte(output, artifact.reference_engine.u8())
+            EsIr::canonical_artifact_emit_byte(output, artifact.candidate_engine.u8())
+            EsIr::canonical_artifact_emit_byte(output, artifact.reference_value_kind.u8())
+            EsIr::canonical_artifact_emit_byte(output, artifact.candidate_value_kind.u8())
+            EsIr::canonical_artifact_emit_text(output, artifact.reason)
+            EsIr::canonical_artifact_emit_text(output, artifact.reference_text)
+            EsIr::canonical_artifact_emit_text(output, artifact.candidate_text)
+            return [] if output.count > DIFFERENTIAL_MAX_COMPARISON_ARTIFACT_BYTES
+            return output
+
+
+        def differential_comparison_artifact_fingerprint(artifact: DifferentialComparisonArtifact) -> u64 can[Memory.Allocate, Abort.Panic]:
+            encoded: darray[u8] = canonical_differential_comparison_artifact_bytes(artifact)
+            return 0 if encoded.count == 0
+            fingerprint: mutable u64 = 14695981039346656037
+            for byte in encoded |fingerprint|:
+                fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, byte)
+            return fingerprint
+
+
+    private:
+        def differential_decode_comparison_artifact(bytes: darray[u8]&) -> DifferentialComparisonArtifactDecode can[Unsafe.PointerCast]:
+            invalid: DifferentialComparisonArtifact = DifferentialComparisonArtifact{}
+            return DifferentialComparisonArtifactDecode{valid: false, artifact: invalid} if bytes.count < 5 or bytes.count > DIFFERENTIAL_MAX_COMPARISON_ARTIFACT_BYTES
+            return DifferentialComparisonArtifactDecode{valid: false, artifact: invalid} if bytes[0] != 69 or bytes[1] != 83 or bytes[2] != 67 or bytes[3] != 82 or bytes[4] != 1
+            offset: mutable usize = 5
+            manifest_fingerprint: mutable u64 = 0
+            return DifferentialComparisonArtifactDecode{valid: false, artifact: invalid} if not differential_manifest_read_u64(bytes, offset, manifest_fingerprint)
+            return DifferentialComparisonArtifactDecode{valid: false, artifact: invalid} if offset >= bytes.count
+            equal_byte: u8 = bytes[offset]
+            offset <- offset + 1
+            return DifferentialComparisonArtifactDecode{valid: false, artifact: invalid} if equal_byte > 1
+            return DifferentialComparisonArtifactDecode{valid: false, artifact: invalid} if offset >= bytes.count
+            kind_byte: u8 = bytes[offset]
+            offset <- offset + 1
+            return DifferentialComparisonArtifactDecode{valid: false, artifact: invalid} if kind_byte > DifferentialDifferenceKind.ObservationValue.u8()
+            index_value: mutable u64 = 0
+            return DifferentialComparisonArtifactDecode{valid: false, artifact: invalid} if not differential_manifest_read_u64(bytes, offset, index_value) or index_value > 4294967295
+            return DifferentialComparisonArtifactDecode{valid: false, artifact: invalid} if offset + 4 > bytes.count
+            reference_engine_byte: u8 = bytes[offset]
+            candidate_engine_byte: u8 = bytes[offset + 1]
+            reference_value_kind_byte: u8 = bytes[offset + 2]
+            candidate_value_kind_byte: u8 = bytes[offset + 3]
+            offset <- offset + 4
+            return DifferentialComparisonArtifactDecode{valid: false, artifact: invalid} if reference_engine_byte > EsIr::ExecutionEngine.BytecodeInterpreterFallback.u8() or candidate_engine_byte > EsIr::ExecutionEngine.BytecodeInterpreterFallback.u8()
+            return DifferentialComparisonArtifactDecode{valid: false, artifact: invalid} if reference_value_kind_byte > DifferentialValueKind.ProcessCapture.u8() or candidate_value_kind_byte > DifferentialValueKind.ProcessCapture.u8()
+            reason_start: mutable usize = 0
+            reason_end: mutable usize = 0
+            reference_start: mutable usize = 0
+            reference_end: mutable usize = 0
+            candidate_start: mutable usize = 0
+            candidate_end: mutable usize = 0
+            return DifferentialComparisonArtifactDecode{valid: false, artifact: invalid} if not differential_manifest_read_text_bounds(bytes, offset, reason_start, reason_end) or not differential_manifest_read_text_bounds(bytes, offset, reference_start, reference_end) or not differential_manifest_read_text_bounds(bytes, offset, candidate_start, candidate_end) or offset != bytes.count
+            kind: DifferentialDifferenceKind = DifferentialDifferenceKind.Equal
+            kind <- DifferentialDifferenceKind.Engine if kind_byte == DifferentialDifferenceKind.Engine.u8()
+            kind <- DifferentialDifferenceKind.ExitStatus if kind_byte == DifferentialDifferenceKind.ExitStatus.u8()
+            kind <- DifferentialDifferenceKind.Error if kind_byte == DifferentialDifferenceKind.Error.u8()
+            kind <- DifferentialDifferenceKind.Stdout if kind_byte == DifferentialDifferenceKind.Stdout.u8()
+            kind <- DifferentialDifferenceKind.Stderr if kind_byte == DifferentialDifferenceKind.Stderr.u8()
+            kind <- DifferentialDifferenceKind.ReturnValue if kind_byte == DifferentialDifferenceKind.ReturnValue.u8()
+            kind <- DifferentialDifferenceKind.ObservationCount if kind_byte == DifferentialDifferenceKind.ObservationCount.u8()
+            kind <- DifferentialDifferenceKind.ObservationTrace if kind_byte == DifferentialDifferenceKind.ObservationTrace.u8()
+            kind <- DifferentialDifferenceKind.ObservationValue if kind_byte == DifferentialDifferenceKind.ObservationValue.u8()
+            reference_engine: EsIr::ExecutionEngine = EsIr::ExecutionEngine.ReferenceInterpreter
+            reference_engine <- EsIr::ExecutionEngine.DirectBytecode if reference_engine_byte == EsIr::ExecutionEngine.DirectBytecode.u8()
+            reference_engine <- EsIr::ExecutionEngine.BytecodeInterpreterFallback if reference_engine_byte == EsIr::ExecutionEngine.BytecodeInterpreterFallback.u8()
+            candidate_engine: EsIr::ExecutionEngine = EsIr::ExecutionEngine.ReferenceInterpreter
+            candidate_engine <- EsIr::ExecutionEngine.DirectBytecode if candidate_engine_byte == EsIr::ExecutionEngine.DirectBytecode.u8()
+            candidate_engine <- EsIr::ExecutionEngine.BytecodeInterpreterFallback if candidate_engine_byte == EsIr::ExecutionEngine.BytecodeInterpreterFallback.u8()
+            reference_value_kind: DifferentialValueKind = DifferentialValueKind.Void
+            reference_value_kind <- DifferentialValueKind.Bool if reference_value_kind_byte == DifferentialValueKind.Bool.u8()
+            reference_value_kind <- DifferentialValueKind.Int if reference_value_kind_byte == DifferentialValueKind.Int.u8()
+            reference_value_kind <- DifferentialValueKind.Float if reference_value_kind_byte == DifferentialValueKind.Float.u8()
+            reference_value_kind <- DifferentialValueKind.Array if reference_value_kind_byte == DifferentialValueKind.Array.u8()
+            reference_value_kind <- DifferentialValueKind.Map if reference_value_kind_byte == DifferentialValueKind.Map.u8()
+            reference_value_kind <- DifferentialValueKind.Text if reference_value_kind_byte == DifferentialValueKind.Text.u8()
+            reference_value_kind <- DifferentialValueKind.ProcessCapture if reference_value_kind_byte == DifferentialValueKind.ProcessCapture.u8()
+            candidate_value_kind: DifferentialValueKind = DifferentialValueKind.Void
+            candidate_value_kind <- DifferentialValueKind.Bool if candidate_value_kind_byte == DifferentialValueKind.Bool.u8()
+            candidate_value_kind <- DifferentialValueKind.Int if candidate_value_kind_byte == DifferentialValueKind.Int.u8()
+            candidate_value_kind <- DifferentialValueKind.Float if candidate_value_kind_byte == DifferentialValueKind.Float.u8()
+            candidate_value_kind <- DifferentialValueKind.Array if candidate_value_kind_byte == DifferentialValueKind.Array.u8()
+            candidate_value_kind <- DifferentialValueKind.Map if candidate_value_kind_byte == DifferentialValueKind.Map.u8()
+            candidate_value_kind <- DifferentialValueKind.Text if candidate_value_kind_byte == DifferentialValueKind.Text.u8()
+            candidate_value_kind <- DifferentialValueKind.ProcessCapture if candidate_value_kind_byte == DifferentialValueKind.ProcessCapture.u8()
+            artifact: DifferentialComparisonArtifact = DifferentialComparisonArtifact{manifest_fingerprint: manifest_fingerprint, equal: equal_byte == 1, kind: kind, index: index_value.u32(), reference_engine: reference_engine, candidate_engine: candidate_engine, reference_value_kind: reference_value_kind, candidate_value_kind: candidate_value_kind, reason: differential_manifest_text_view(bytes, reason_start, reason_end), reference_text: differential_manifest_text_view(bytes, reference_start, reference_end), candidate_text: differential_manifest_text_view(bytes, candidate_start, candidate_end)}
+            return DifferentialComparisonArtifactDecode{valid: false, artifact: invalid} if not differential_comparison_artifact_valid(artifact)
+            return DifferentialComparisonArtifactDecode{valid: true, artifact: artifact}
+
+
+    public:
+        def differential_comparison_artifact_bytes_valid(bytes: darray[u8]&) -> bool can[Unsafe.PointerCast]:
+            return differential_decode_comparison_artifact(bytes).valid
+
+
+        def decode_differential_comparison_artifact(bytes: darray[u8]&) -> DifferentialComparisonArtifactDecode can[Unsafe.PointerCast]:
+            return differential_decode_comparison_artifact(bytes)

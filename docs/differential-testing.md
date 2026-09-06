@@ -429,6 +429,16 @@ claims independent interpreter/VM evidence fails if the candidate reports
 process runs leave `engine_known` false because their implementation engine is
 outside the Elisascript runtime.
 
+The comparison layer also emits a bounded `ESCR` comparison-report sidecar.
+`make_differential_comparison_artifact` binds the report to the manifest
+fingerprint and records the first difference kind/index, both backend identities,
+the top-level value kinds, and length-delimited reason/stdout/stderr/error text.
+`canonical_differential_comparison_artifact_bytes` and
+`decode_differential_comparison_artifact` enforce the one-megabyte envelope,
+checked lengths, known enum ordinals, and trailing-byte rejection. Its compact
+fingerprint is a correlation key, not a cryptographic digest; aggregate value
+pools and complete process streams remain separate artifact payloads.
+
 The execution boundary now carries a backend-neutral `ExecutionCapability`
 snapshot alongside that engine identity. For bytecode runs,
 `capability_known` is true and the snapshot preserves `direct_supported`,
