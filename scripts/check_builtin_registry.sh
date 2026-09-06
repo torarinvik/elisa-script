@@ -87,6 +87,11 @@ if ! rg -q 'ufm_has_source_function\(table, method\)' "$receiver_semantic_file";
     printf 'builtin registry audit: semantic Text diagnostics do not guard source shadowing\n' >&2
     exit 1
 fi
+if ! rg -q 'symbol\.line != 0' "$receiver_semantic_file" || \
+   ! rg -q 'symbol\.line != 0' "$inference_file"; then
+    printf 'builtin registry audit: source-shadowing guards do not exclude line-zero builtin seeds\n' >&2
+    exit 1
+fi
 if ! rg -q 'typed_builtin_method_spec\("Text", method\)' "$inference_file"; then
     printf 'builtin registry audit: semantic receiver inference does not consume the Text registry\n' >&2
     exit 1
@@ -103,6 +108,13 @@ if ! rg -q 'ufm_check_text_builtin_arity' "$receiver_semantic_file" || \
    ! rg -q 'DiagnosticKind\.CallArgumentError' "$receiver_semantic_file" || \
    ! rg -q '"no_names"' "$receiver_semantic_file"; then
     printf 'builtin registry audit: semantic receiver arity/named-argument checking does not consume registry ranges\n' >&2
+    exit 1
+fi
+if ! rg -q 'ufm_check_global_builtin_arity' "$receiver_semantic_file" || \
+   ! rg -q 'ufm_check_global_builtin_argument_types' "$receiver_semantic_file" || \
+   ! rg -q 'ufm_global_argument_expected' "$receiver_semantic_file" || \
+   ! rg -q 'not ufm_has_source_function' "$receiver_semantic_file"; then
+    printf 'builtin registry audit: global registry rows are not semantically checked with source shadowing\n' >&2
     exit 1
 fi
 if ! rg -q 'ufm_check_text_builtin_argument_types' "$receiver_semantic_file" || \

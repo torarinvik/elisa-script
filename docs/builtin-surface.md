@@ -76,6 +76,11 @@ values, emitting the existing literal/firm argument mismatch diagnostics;
 structural descriptors such as `darray[text]` remain deferred until their
 element IDs are available to inference.
 
+Global registry rows now also receive semantic arity, named-argument, and
+conservative scalar/text/collection descriptor checks before lowering. The
+checker ignores unknown expressions and line-zero seed symbols, and source
+functions with the same spelling retain precedence.
+
 Run the compiler-free audits:
 
 ```sh

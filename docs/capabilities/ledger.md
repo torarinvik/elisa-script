@@ -82,6 +82,10 @@ The source-shadowing guard now distinguishes line-zero registry seed symbols
 from actual source declarations, so seeded names such as `contains` retain their
 receiver contract (`f69d678`).
 
+Global registry rows now receive semantic arity, named-argument, and
+scalar/text/collection descriptor checks with the same source-declaration
+shadowing rule (`working tree`).
+
 ## Evidence record template
 
 Every future executed or differential-verified entry must append a dated record
