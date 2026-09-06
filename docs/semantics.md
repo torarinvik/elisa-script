@@ -436,6 +436,11 @@ return `[text, "", ""]` (or `["", "", text]` for `rpartition`). This ordinary
 array shape can be destructured with Elisa's checked multi-binding assignment.
 The global `partition(text, separator)` and `rpartition(text, separator)`
 spellings are equivalent.
+Their shared registry rows carry the `TextPartition` opcode and explicit mode
+metadata (`0` for first occurrence, `1` for last occurrence), so the lowerer
+does not reconstruct the direction from the source spelling. The optional
+global `split` limit likewise consumes its registry `Split` opcode and named
+`maxsplit` slot.
 Receivers and arguments must be text values, and method arity is checked during
 lowering.
 The zero-argument form splits on runs of ASCII whitespace, drops leading and

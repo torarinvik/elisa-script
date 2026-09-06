@@ -1129,6 +1129,8 @@ for text_name in ends_with endswith; do
     fi
 done
 if ! rg -q 'name: "replace", receiver: "global".*argument_types: "text,text,text".*return_type: "sview".*effects: "".*errors: "".*opcode: "TextReplace"' "$registry_file" || \
+   ! rg -q 'name: "partition", receiver: "global".*argument_types: "text,text".*return_type: "darray\[text\]".*effects: "".*errors: "".*opcode: "TextPartition".*lowering_mode: 0' "$registry_file" || \
+   ! rg -q 'name: "rpartition", receiver: "global".*argument_types: "text,text".*return_type: "darray\[text\]".*effects: "".*errors: "".*opcode: "TextPartition".*lowering_mode: 1' "$registry_file" || \
    ! rg -q 'name: "split_lines", receiver: "global".*argument_types: "text".*return_type: "darray\[text\]".*effects: "".*errors: "".*opcode: "SplitLines"' "$registry_file" || \
    ! rg -q 'name: "splitlines", receiver: "global".*argument_types: "text".*return_type: "darray\[text\]".*effects: "".*errors: "".*opcode: "SplitLines"' "$registry_file" || \
    ! rg -q 'name: "join", receiver: "global".*argument_types: "darray\[text\],text".*return_type: "sview".*effects: "".*errors: "".*opcode: "Join"' "$registry_file"; then
@@ -1141,6 +1143,9 @@ if ! rg -q 'starts_with_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_
    ! rg -q 'ends_with_spec\.opcode == "EndsWith"' "$lowerer_file" || \
    ! rg -q 'replace_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
    ! rg -q 'replace_spec\.opcode == "TextReplace"' "$lowerer_file" || \
+   ! rg -q 'split_spec\.opcode == "Split"' "$lowerer_file" || \
+   ! rg -q 'spec\.opcode == "TextPartition" and typed_builtin_call_shape\(spec\.name' "$lowerer_file" || \
+   ! rg -q 'integer: spec\.lowering_mode' "$lowerer_file" || \
    ! rg -q 'split_lines_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
    ! rg -q 'split_lines_spec\.opcode == "SplitLines"' "$lowerer_file" || \
    ! rg -q 'join_spec\.opcode == "Join"' "$lowerer_file"; then
