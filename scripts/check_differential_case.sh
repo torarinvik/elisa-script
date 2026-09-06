@@ -58,9 +58,23 @@ for helper in differential_world_payload_add_fits differential_world_payload_tex
     fi
 done
 
+for helper in differential_process_text_field_lengths_fit; do
+    if ! rg -q "def $helper\(" "$source_file"; then
+        printf 'differential case audit: missing process text helper %s\n' "$helper" >&2
+        exit 1
+    fi
+done
+
 for boundary in 'differential_world_payload_is_aggregate_bounded' 'oversized_environment' 'oversized_path' 'DIFFERENTIAL_DEFAULT_MAX_WORLD_BYTES' 'DIFFERENTIAL_DEFAULT_MAX_WORLD_PATH_BYTES' 'DIFFERENTIAL_DEFAULT_MAX_WORLD_METADATA_BYTES'; do
     if ! rg -Fq "$boundary" "$source_file" "$fixture_file"; then
         printf 'differential case audit: missing world payload boundary %s\n' "$boundary" >&2
+        exit 1
+    fi
+done
+
+for boundary in 'differential_runner_validation_rejects_oversized_text_before_scan' 'TooMuchProcessText' 'runner process text exceeds the 64 MiB field budget'; do
+    if ! rg -Fq "$boundary" "$fixture_file" "$source_file"; then
+        printf 'differential case audit: missing process text admission coverage %s\n' "$boundary" >&2
         exit 1
     fi
 done

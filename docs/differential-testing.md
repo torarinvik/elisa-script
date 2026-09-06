@@ -188,6 +188,9 @@ executable, adapter entry, arguments, working directory, and environment at
 repeats these byte checks before reserving or writing host buffers, so bypassing
 runner preparation cannot turn a large differential case into an unbounded
 allocation.
+Length-only field admission runs before NUL scanning, so oversized borrowed
+target, argument, working-directory, or environment views are rejected without
+walking their bytes.
 NUL scanning records a dedicated found flag rather than using a `length + 1`
 sentinel, so a maximum-width text view cannot wrap while being validated.
 Environment names are validated before launch: they must be nonempty, contain no
