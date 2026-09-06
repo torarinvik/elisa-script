@@ -379,6 +379,13 @@ External reference executables cannot always share in-process handlers. Their
 runner should materialize the same environment, working directory, fixture tree,
 arguments, stdin, resource limits, and random seed before launch.
 
+Fixture file names are relative to the materialized world root. Case validation
+rejects absolute names, empty path components, `.` and `..` components, NULs,
+and duplicate paths before any filesystem operation. The world working directory
+is still an adapter-owned location; adapters must create it inside the case's
+isolated root rather than treating a caller-provided path as permission to
+escape the fixture tree.
+
 ## Reproducible failures
 
 Every mismatch produces a self-contained artifact directory:
