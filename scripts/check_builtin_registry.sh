@@ -599,8 +599,15 @@ if ! rg -q 'name: "regex_search", receiver: "global".*argument_types: "Regex,tex
     printf 'builtin registry audit: regex namespace alias rows are incomplete\n' >&2
     exit 1
 fi
-if ! rg -q 'lowering_mode: i64' "$registry_file" || ! rg -q 'lower_regex_namespace_search\(arguments, argument_names, pos, state, EsBuiltin::typed_builtin_spec\(callee_name\)\.lowering_mode\)' "$lowerer_file"; then
-    printf 'builtin registry audit: regex namespace search modes are not registry-owned\n' >&2
+if ! rg -q 'lowering_mode: i64' "$registry_file" || \
+   ! rg -q 'def lower_regex_namespace_search\(arguments: darray\[Ast::Expr\].*spec: EsBuiltin::BuiltinSpec\)' "$lowerer_file" || \
+   ! rg -q 'def lower_regex_namespace_find\(arguments: darray\[Ast::Expr\].*spec: EsBuiltin::BuiltinSpec\)' "$lowerer_file" || \
+   ! rg -q 'def lower_regex_namespace_split\(arguments: darray\[Ast::Expr\].*spec: EsBuiltin::BuiltinSpec\)' "$lowerer_file" || \
+   ! rg -q 'def lower_regex_namespace_sub\(arguments: darray\[Ast::Expr\].*spec: EsBuiltin::BuiltinSpec\)' "$lowerer_file" || \
+   ! rg -q 'typed_builtin_result_type\(spec\)' "$lowerer_file" || \
+   ! rg -q 'typed_builtin_call_shape\(spec\.name, arguments, argument_names\)' "$lowerer_file" || \
+   ! rg -q 'integer: spec\.lowering_mode' "$lowerer_file"; then
+    printf 'builtin registry audit: regex namespace aliases do not consume registry result/shape/mode metadata\n' >&2
     exit 1
 fi
 if ! rg -q 'Regex,text' "$receiver_semantic_file" || ! rg -q 'Regex,text,text' "$receiver_semantic_file" || ! rg -q 'def registry_regex_namespace_aliases_check_pattern_first_shapes\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then

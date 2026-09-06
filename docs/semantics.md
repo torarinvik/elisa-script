@@ -669,7 +669,10 @@ implicit string compilation is introduced. `re.findall` also accepts the
 These namespace aliases are registry-owned contracts: semantic checking uses
 the `Regex,text` or `Regex,text,text` descriptors, and the three search modes
 are carried as registry metadata rather than duplicated literals in the
-lowerer. A source declaration with the same name still shadows the builtin.
+lowerer. The namespace lowerers also consume each descriptor's declared result
+shape, positional call shape, and opcode admission, so `regex_findall`,
+`regex_split`, and `regex_sub` cannot silently drift from their registry rows.
+A source declaration with the same name still shadows the builtin.
 
 The pattern-first global facades `matches`, `replace_regex`, `split_regex`,
 `find_regex`, `capture_regex`, and `captures_regex` consume the same registry
