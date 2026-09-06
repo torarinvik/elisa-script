@@ -462,6 +462,27 @@ if ! rg -q 'name: "process_exit_status", receiver: "global".*argument_types: "Pr
     printf 'builtin registry audit: process-result accessor rows are incomplete\n' >&2
     exit 1
 fi
+if ! rg -q 'name: "regex_search", receiver: "global".*argument_types: "Regex,text".*return_type: "bool".*opcode: "RegexSearch".*lowering_mode: 0' "$registry_file" || \
+   ! rg -q 'name: "regex_match", receiver: "global".*argument_types: "Regex,text".*return_type: "bool".*opcode: "RegexSearch".*lowering_mode: 1' "$registry_file" || \
+   ! rg -q 'name: "regex_fullmatch", receiver: "global".*argument_types: "Regex,text".*return_type: "bool".*opcode: "RegexSearch".*lowering_mode: 2' "$registry_file" || \
+   ! rg -q 'name: "regex_findall", receiver: "global".*argument_types: "Regex,text".*return_type: "darray\[text\]".*opcode: "RegexFind"' "$registry_file" || \
+   ! rg -q 'name: "regex_split", receiver: "global".*argument_types: "Regex,text".*return_type: "darray\[text\]".*opcode: "RegexSplit"' "$registry_file" || \
+   ! rg -q 'name: "regex_sub", receiver: "global".*argument_types: "Regex,text,text".*return_type: "sview".*opcode: "RegexReplace"' "$registry_file"; then
+    printf 'builtin registry audit: regex namespace alias rows are incomplete\n' >&2
+    exit 1
+fi
+if ! rg -q 'lowering_mode: i64' "$registry_file" || ! rg -q 'lower_regex_namespace_search\(arguments, argument_names, pos, state, EsBuiltin::typed_builtin_spec\(callee_name\)\.lowering_mode\)' "$lowerer_file"; then
+    printf 'builtin registry audit: regex namespace search modes are not registry-owned\n' >&2
+    exit 1
+fi
+if ! rg -q 'Regex,text' "$receiver_semantic_file" || ! rg -q 'Regex,text,text' "$receiver_semantic_file" || ! rg -q 'def registry_regex_namespace_aliases_check_pattern_first_shapes\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
+    printf 'builtin registry audit: regex namespace descriptors lack semantic coverage\n' >&2
+    exit 1
+fi
+if ! rg -q 'def lowers_registry_regex_namespace_aliases_with_modes\(' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'regex_findall' "$inference_file" || ! rg -q 'regex_split' "$inference_file" || ! rg -q 'regex_sub' "$inference_file"; then
+    printf 'builtin registry audit: regex namespace lowering/inference coverage is missing\n' >&2
+    exit 1
+fi
 if ! rg -q 'expected == "Executable"' "$receiver_semantic_file" || ! rg -q 'expected == "ProcessCapture"' "$receiver_semantic_file" || ! rg -q 'Executable,darray\[text\]' "$receiver_semantic_file" || ! rg -q 'Executable,darray\[text\],sview' "$receiver_semantic_file"; then
     printf 'builtin registry audit: process nominal argument descriptors are not consumed by semantic checks\n' >&2
     exit 1

@@ -610,6 +610,11 @@ text and replacement values must be `sview`, and no dynamic regex object or
 implicit string compilation is introduced. `re.findall` also accepts the
 `find_all` spelling for consistency with the receiver method.
 
+These namespace aliases are registry-owned contracts: semantic checking uses
+the `Regex,text` or `Regex,text,text` descriptors, and the three search modes
+are carried as registry metadata rather than duplicated literals in the
+lowerer. A source declaration with the same name still shadows the builtin.
+
 `capture_regex(text, pattern) -> darray[sview]` returns the first match and its
 proven capture groups. Element `0` is the complete match; elements `1` onward
 follow positional group order, and an unmatched proven group is represented by an
