@@ -2326,6 +2326,7 @@ if ! rg -q 'visibility: sview = "public"' "$registry_file" || \
    rg -q 'callee_name == "__fstr"' "$lowerer_file" || \
    sed -n '/def typed_builtin_names/,/^        def /p' "$registry_file" | rg -q '"__fstr"' || \
    ! rg -q '"__fstr"' "$semantic_file" || \
+   ! rg -q 'compiler_owned_fstring_intrinsic_is_semantically_text_typed' "$semantic_test_file" || \
    ! rg -q 'f-string' "$lowering_test_file"; then
     printf 'builtin registry audit: compiler-owned __fstr intrinsic is not registry-driven\n' >&2
     exit 1
