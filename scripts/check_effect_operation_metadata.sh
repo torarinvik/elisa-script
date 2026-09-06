@@ -77,7 +77,7 @@ if ! rg -q 'resumption_id: u64 = 0' "$ir_model_file" || ! rg -q 'resumption_id: 
     printf 'effect operation metadata audit: IR/lowering resumption identity fields are missing\n' >&2
     exit 1
 fi
-if ! rg -q 'operation_identity_matches\(' "$ir_verify_file" || ! rg -q 'handler clause operation id does not match' "$ir_verify_file"; then
+if ! rg -q 'operation_identity_matches\(' "$ir_verify_file" || ! rg -q 'verify_clause_matches\(' "$ir_verify_file" || ! rg -q 'verify_handler_covers_operation\([^)]*instruction\.operation_id' "$ir_verify_file" || ! rg -q 'handler clause operation id does not match' "$ir_verify_file"; then
     printf 'effect operation metadata audit: verifier does not validate populated operation identities\n' >&2
     exit 1
 fi
