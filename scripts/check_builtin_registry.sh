@@ -1171,6 +1171,10 @@ for trim_name in strip trim lstrip rstrip; do
         printf 'builtin registry audit: trim row lacks lowering mode: %s\n' "$trim_name" >&2
         exit 1
     fi
+    if ! rg -q "name: \"$trim_name\", receiver: \"Text\".*argument_types: \"\".*return_type: \"sview\".*effects: \"\".*errors: \"\".*opcode: \"TrimText\".*lowering_mode:" "$registry_file"; then
+        printf 'builtin registry audit: Text trim row lacks lowering mode: %s\n' "$trim_name" >&2
+        exit 1
+    fi
 done
 if ! rg -q 'trim_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
    ! rg -q 'trim_spec\.opcode == "TrimText"' "$lowerer_file" || \
@@ -1179,6 +1183,13 @@ if ! rg -q 'trim_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(c
    ! rg -q 'case_spec\.opcode == "LowerText"' "$lowerer_file" || \
    ! rg -q 'lower_text_case_value_with_spec\(text_value\.value, case_spec' "$lowerer_file"; then
     printf 'builtin registry audit: global case/trim lowerers do not consume registry mode metadata\n' >&2
+    exit 1
+fi
+if ! rg -q 'def lower_text_trim_expression\(receiver_expression: Ast::Expr.*state: mutable LowerState&\)' "$lowerer_file" || \
+   ! rg -q 'method_spec\.opcode == "TrimText"' "$lowerer_file" || \
+   ! rg -q 'integer: method_spec\.lowering_mode' "$lowerer_file" || \
+   rg -q 'trim_mode: i64 = 1 if method_name == "lstrip"' "$lowerer_file"; then
+    printf 'builtin registry audit: Text trim receiver lowerers do not consume registry mode metadata\n' >&2
     exit 1
 fi
 if ! rg -q 'def typed_builtin_result_type' "$lowerer_file" || \

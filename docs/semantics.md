@@ -393,6 +393,9 @@ The registry also owns the trim direction as lowering metadata: `strip` and
 keeps the shared `TrimText` opcode while making the left/right distinction
 visible to semantic and lowering audits rather than re-deriving it from the
 spelling in the IR lowerer.
+The corresponding `Text` receiver rows carry the same mode values, so
+`text.strip()`, `text.trim()`, `text.lstrip()`, and `text.rstrip()` do not need
+a second spelling-based dispatch rule.
 
 The compiler-known `lower(text) -> sview` and `upper(text) -> sview` operations,
 as well as the Python-shaped `text.lower()` and `text.upper()` method spellings,
