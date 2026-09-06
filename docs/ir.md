@@ -55,7 +55,10 @@ traversal rather than being interpreted as a backend-specific type. The same
 closed-vocabulary check applies to legacy inline type fields even when a module
 has no interned table. Inline-shape matching also has a 128-level recursion
 guard, so cyclic or hostile descriptor graphs fail as `InvalidTypeTable` before
-host-stack exhaustion.
+host-stack exhaustion. Current rows additionally require array/map child arities
+and canonical child-before-parent ordering; forward or self references are
+rejected until a future recursive descriptor kind defines an explicit cycle
+representation and verifier policy.
 
 The vocabulary intentionally contains no LLVM values, native registers, pointer
 sizes, bytecode slots, or host ABI facts. Those belong to target-specific lowering.
