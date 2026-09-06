@@ -1166,6 +1166,10 @@ deterministic bracketed rendering as f-strings and `print`; integer widths remai
 exact and are not implicitly widened. Nominal conversion is explicit at the
 `str(...)` boundary; no other operation gains an implicit nominal-to-text
 coercion. A source function named `str` shadows this compiler-known operation.
+The registry records `FormatNominal` as the primary row plus the explicit
+`FormatChar|FormatNominal|FormatBool|FormatInt|FormatFloat|FormatAggregate`
+selection set; lowering validates that descriptor before choosing the concrete
+static formatter.
 The scalar constructors `int(value) -> i64` and `float(value) -> f64` accept
 their exact target scalar as an identity or parse `sview` through the checked
 `ParseError` path. `bool(value) -> bool` is likewise an exact-type identity.

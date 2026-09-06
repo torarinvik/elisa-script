@@ -1104,7 +1104,7 @@ fi
 
 # The strict scalar/text rows must source their result types from the registry;
 # this prevents a lowerer branch from silently drifting from semantic metadata.
-if ! rg -q "typed_builtin_spec\(callee_name\)\.return_type" "$lowerer_file"; then
+if ! rg -q 'typed_builtin_result_type\([a-z_]+_spec\)' "$lowerer_file"; then
     printf 'builtin registry audit: lowerer has no registry return-type consumer\n' >&2
     exit 1
 fi
@@ -1128,6 +1128,12 @@ if ! rg -q 'name: "contains", receiver: "global".*argument_types: "collection,an
    ! rg -q 'def lower_collection_contains_expression\(collection_expression: Ast::Expr.*spec: EsBuiltin::BuiltinSpec' "$lowerer_file" || \
    ! rg -q 'opcode: Opcode = Opcode.Contains if spec\.opcode == "Contains"' "$lowerer_file"; then
     printf 'builtin registry audit: global/receiver contains lowerers do not consume registry shape/result/opcode metadata\n' >&2
+    exit 1
+fi
+if ! rg -q 'name: "str", receiver: "global".*argument_types: "any".*return_type: "sview".*effects: "".*errors: "".*opcode: "FormatNominal".*lowering_steps: "FormatChar|FormatNominal|FormatBool|FormatInt|FormatFloat|FormatAggregate"' "$registry_file" || \
+   ! rg -q 'str_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'str_spec\.opcode == "FormatNominal" and str_spec\.lowering_steps != ""' "$lowerer_file"; then
+    printf 'builtin registry audit: str lowerer does not consume registry formatter metadata\n' >&2
     exit 1
 fi
 for empty_name in is_empty isempty; do
