@@ -2091,6 +2091,14 @@ for name in $set_method_names; do
         printf 'builtin registry audit: Set.%s semantic fixture is missing\n' "$name" >&2
         exit 1
     fi
+    if ! rg -q 'def source_set_mutation_declarations_take_precedence_over_registry_rows\(' "$semantic_test_file"; then
+        printf 'builtin registry audit: Set.%s source-shadow semantic fixture is missing\n' "$name" >&2
+        exit 1
+    fi
+    if ! rg -q 'def lowers_set_source_functions_before_registry_rows\(' "$lowering_test_file"; then
+        printf 'builtin registry audit: Set.%s source-shadow lowering fixture is missing\n' "$name" >&2
+        exit 1
+    fi
     opcode="$(sed -n "s/.*name: \"$name\".*receiver: \"Set\".*opcode: \"\([A-Za-z0-9_]*\)\".*/\1/p" "$registry_file" | head -1)"
     if [[ -z "$opcode" ]] || ! rg -q "Opcode\\.$opcode" "$verifier_file"; then
         printf 'builtin registry audit: Set.%s opcode is not verifier-covered (%s)\n' "$name" "${opcode:-missing}" >&2
