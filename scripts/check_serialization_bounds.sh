@@ -21,7 +21,10 @@ done
 rg -q 'def runtime_bounded_slice_end' "$runtime_model"
 rg -q 'return false if length > bound - start' "$runtime_model"
 rg -q 'runtime_bounded_slice_end\(offset, length_host, bytes.count, end\)' "$bytecode"
+rg -q 'runtime_bounded_slice_end\(offset, length_host, bytes.count, end\)' "$repo_root/src/testing/differential.elisa"
 rg -q 'length\.usize\(\)\.u64\(\) != length' "$bytecode"
+rg -q 'length\.usize\(\)\.u64\(\) != length' "$repo_root/src/testing/differential.elisa"
+! rg -q 'offset \+ 2 > bytes.count|offset \+ 4 > bytes.count|length > \(bytes.count - offset\)' "$repo_root/src/testing/differential.elisa"
 rg -q 'bytecode_artifact_bytes_valid' "$bytecode"
 rg -q 'bytecode_block_layout_valid' "$bytecode"
 rg -q 'saturat|saturated|range' "$verifier"
@@ -42,5 +45,6 @@ rg -q 'def make_differential_artifact_manifest_for_module' "$repo_root/src/testi
 rg -q 'manifest.format_version != 4' "$repo_root/src/testing/differential.elisa"
 rg -q 'bytes\[4\] != 4' "$repo_root/src/testing/differential.elisa" || rg -q 'bytes\[4\] != 1 and bytes\[4\] != 2 and bytes\[4\] != 3 and bytes\[4\] != 4' "$repo_root/src/testing/differential.elisa"
 rg -q 'digest_manifest' "$repo_root/test/differential/elisascript_differential_test.elisa"
+rg -q 'malformed_manifest_length' "$repo_root/test/differential/elisascript_differential_test.elisa"
 rg -q 'Q02a:' "$plan"
 printf 'serialization bounds audit: shared slice admission, bytecode reader, verifier, and fixture present\n'
