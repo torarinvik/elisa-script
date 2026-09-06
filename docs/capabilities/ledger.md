@@ -25,7 +25,7 @@ unbound until migrated. This is recorded in commit `47466a4` and remains
 unqualified for executed replay evidence.
 
 The shared builtin registry snapshot now contains 202 global rows, 42 `Text`
-receiver rows, 9 `Regex` receiver rows, 6 Map receiver rows, and 13 Array receiver rows. The global count includes the
+receiver rows, 9 `Regex` receiver rows, 7 Map receiver rows, and 13 Array receiver rows. The global count includes the
 filesystem, process, environment, stream, scalar, text, and regex facades that
 have migrated to descriptor-backed semantic and lowering metadata; generic,
 variadic, and aggregate-polymorphic families remain explicitly open below.
@@ -40,11 +40,12 @@ empty set as the intended invariant (`a185cb8`, `fc864a5`).
 
 Dictionary receiver operations now share the registry as `Map.keys()`,
 `Map.values()`, `Map.copy()`, `Map.get(key, default)`, `Map.pop(key, default?)`,
-and `Map.setdefault(key, default)` rows. Semantic zero-/two-argument checking
-and optional-pop arity checking,
+`Map.setdefault(key, default)`, and `Map.update(other)` rows. Semantic
+zero-/two-argument checking, optional-pop arity checking, and update shape
+checking,
 source-shadowing precedence, receiver return inference, and both lowerer
 receiver shapes consume the same
-`MapKeys`/`MapValues`/`CopyMap`/`IndexValid`/`PopMapValue`/`SetDefaultMapValue` metadata;
+`MapKeys`/`MapValues`/`CopyMap`/`IndexValid`/`PopMapValue`/`SetDefaultMapValue`/`Concat` metadata;
 concrete key/value descriptors remain owned by the structural map type while
 recursive generic descriptors remain open.
 

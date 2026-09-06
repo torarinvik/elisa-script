@@ -2012,6 +2012,10 @@ for name in $map_method_names; do
         printf 'builtin registry audit: Map.setdefault semantic fixture is missing\n' >&2
         exit 1
     fi
+    if [[ "$name" == "update" ]] && ! rg -q 'def lowers_python_dictionary_update_as_owned_rebinding\(' "$lowering_test_file"; then
+        printf 'builtin registry audit: Map.update lowering fixture is missing\n' >&2
+        exit 1
+    fi
     if [[ "$name" == "pop" ]] && ! rg -q 'def lowers_python_dictionary_pop_with_optional_default\(' "$lowering_test_file"; then
         printf 'builtin registry audit: Map.pop lowering fixture is missing\n' >&2
         exit 1
