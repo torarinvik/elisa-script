@@ -1130,6 +1130,20 @@ if ! rg -q 'name: "contains", receiver: "global".*argument_types: "collection,an
     printf 'builtin registry audit: global/receiver contains lowerers do not consume registry shape/result/opcode metadata\n' >&2
     exit 1
 fi
+for empty_name in is_empty isempty; do
+    if ! rg -q "name: \"$empty_name\", receiver: \"global\".*argument_types: \"collection\\|text\".*return_type: \"bool\".*effects: \"\".*errors: \"\".*opcode: \"Equal\".*lowering_steps: \"Length,Equal\"" "$registry_file" || \
+       ! rg -q "name: \"$empty_name\", receiver: \"Text\".*argument_types: \"\".*return_type: \"bool\".*effects: \"\".*errors: \"\".*opcode: \"Equal\".*lowering_steps: \"Length,Equal\"" "$registry_file"; then
+        printf 'builtin registry audit: is-empty row lacks Length,Equal lowering sequence: %s\n' "$empty_name" >&2
+        exit 1
+    fi
+done
+if ! rg -q 'empty_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'empty_spec\.lowering_steps == "Length,Equal"' "$lowerer_file" || \
+   ! rg -q 'def lower_collection_is_empty_expression\(receiver_expression: Ast::Expr.*spec: EsBuiltin::BuiltinSpec' "$lowerer_file" || \
+   ! rg -q 'spec\.opcode != "Equal" or spec\.lowering_steps != "Length,Equal"' "$lowerer_file"; then
+    printf 'builtin registry audit: is-empty lowerers do not consume registry sequence metadata\n' >&2
+    exit 1
+fi
 for text_name in starts_with startswith; do
     if ! rg -q "name: \"$text_name\", receiver: \"global\".*argument_types: \"text,text\".*return_type: \"bool\".*effects: \"\".*errors: \"\".*opcode: \"StartsWith\"" "$registry_file"; then
         printf 'builtin registry audit: starts-with row is incomplete: %s\n' "$text_name" >&2

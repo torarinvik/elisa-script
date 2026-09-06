@@ -264,6 +264,9 @@ The compiler-known `is_empty(value) -> bool` (also `isempty`) and the matching
 text families. They compare the exact typed `Length` result with zero, making the
 shell `test -z` and Python emptiness check explicit without introducing general
 truthiness coercions.
+The shared registry records the composed `Length,Equal` sequence and `Equal`
+result opcode for both global spellings and the Text receiver rows; lowering
+validates that sequence before emitting the existing comparison state machine.
 The complementary `is_nonempty(value)`/`nonempty(value)` spellings and receiver
 methods lower to the same check followed by typed boolean negation for arrays,
 dictionaries, and text, corresponding to shell `test -n`. A nominal `Path`
