@@ -97,7 +97,8 @@ consume those rows, including bound Regex receiver classification for `split`,
 with compiler-free audit coverage (`a0337ec`, `73b15d4`).
 
 The six canonical global regex facades now use typed registry rows for
-text/Regex contracts and aggregate result inference (`37ba738`).
+text/Regex contracts and aggregate/direct-call result inference (`37ba738`,
+`cd39dc9`).
 
 ## Evidence record template
 
