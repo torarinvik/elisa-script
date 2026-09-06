@@ -46,6 +46,9 @@ working-directory/locale metadata, stdin, argv, environment, fixture paths, and
 fixture bytes/text; length-only admission runs before NUL/duplicate/path scans,
 and fixture paths have an explicit host-safe length ceiling before hashing or
 filesystem materialization.
+Case names, oracle names, and serialized manifest identity fields repeat their
+own metadata-length admission before any NUL scan. This keeps direct helper
+calls fail-closed even when they bypass the ordered top-level case validator.
 A validated case can produce a `DifferentialArtifactManifest` with case/runner
 identities, seeds, engine requirement, artifact policy, a deterministic
 fingerprint of the complete validated world (including fixture kind, bytes, mode,

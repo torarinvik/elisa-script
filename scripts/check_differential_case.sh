@@ -51,7 +51,7 @@ for helper in differential_run_text_bytes_fits differential_value_pool_compariso
     fi
 done
 
-for helper in differential_world_payload_add_fits differential_world_payload_text_fits differential_world_payload_bytes_fits differential_world_payload_fits differential_world_text_field_lengths_valid; do
+for helper in differential_world_payload_add_fits differential_world_payload_text_fits differential_world_payload_bytes_fits differential_world_payload_fits differential_world_text_field_lengths_valid differential_case_name_valid differential_oracle_name_valid; do
     if ! rg -q "def $helper\(" "$source_file"; then
         printf 'differential case audit: missing world payload helper %s\n' "$helper" >&2
         exit 1
@@ -60,6 +60,7 @@ done
 
 rg -q 'return false if length == 0 or length > DIFFERENTIAL_DEFAULT_MAX_WORLD_PATH_BYTES' "$source_file"
 rg -q 'sview_len\(entry\.name\) > DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES or sview_len\(entry\.value\) > DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES' "$source_file"
+rg -q 'return false if not differential_manifest_text_bytes_fits\(manifest\)' "$source_file"
 
 for helper in differential_process_text_field_lengths_fit; do
     if ! rg -q "def $helper\(" "$source_file"; then
@@ -71,7 +72,7 @@ rg -q 'return false if arguments\.count > DIFFERENTIAL_DEFAULT_MAX_ARGUMENTS or 
 rg -q 'Validate, DifferentialRunnerCheckState\.Target if runner\.arguments\.count > DIFFERENTIAL_DEFAULT_MAX_ARGUMENTS' "$source_file"
 rg -q 'Validate, DifferentialRunnerCheckState\.Target if runner\.environment\.count > DIFFERENTIAL_DEFAULT_MAX_ENVIRONMENT_ENTRIES' "$source_file"
 
-for boundary in 'differential_world_payload_is_aggregate_bounded' 'oversized_environment' 'oversized_path' 'DIFFERENTIAL_DEFAULT_MAX_WORLD_BYTES' 'DIFFERENTIAL_DEFAULT_MAX_WORLD_PATH_BYTES' 'DIFFERENTIAL_DEFAULT_MAX_WORLD_METADATA_BYTES'; do
+for boundary in 'differential_world_payload_is_aggregate_bounded' 'oversized_environment' 'oversized_path' 'oversized_name' 'oversized_manifest' 'DIFFERENTIAL_DEFAULT_MAX_WORLD_BYTES' 'DIFFERENTIAL_DEFAULT_MAX_WORLD_PATH_BYTES' 'DIFFERENTIAL_DEFAULT_MAX_WORLD_METADATA_BYTES'; do
     if ! rg -Fq "$boundary" "$source_file" "$fixture_file"; then
         printf 'differential case audit: missing world payload boundary %s\n' "$boundary" >&2
         exit 1
