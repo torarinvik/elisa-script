@@ -145,6 +145,13 @@ for fixture in \
     fi
 done
 
+for boundary in 'if not group_ready:' 'differential_terminate_process(pid, false, status)' 'raise DifferentialRunnerError.Process'; do
+    if ! rg -Fq "$boundary" "$source_file"; then
+        printf 'differential case audit: missing process-group admission guard %s\n' "$boundary" >&2
+        exit 1
+    fi
+done
+
 if ! rg -q 'Define a Case|DifferentialCase|artifact manifest|artifact' "$docs_file"; then
     printf 'differential case audit: documentation omits the case/artifact contract\n' >&2
     exit 1

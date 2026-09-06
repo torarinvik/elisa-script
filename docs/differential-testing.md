@@ -247,9 +247,11 @@ child creates a private process group before `execvp`; timeout and output-limit
 cleanup signal that confirmed group and then reap the leader, preventing
 descendants from surviving a failed differential case. If parent-side `setpgid`
 is interrupted it is retried through a bounded `EINTR` budget; if it still fails,
-cleanup signals only the direct leader so a failed group setup can never
-target an unrelated process group. Group setup is best-effort on platforms
-without POSIX process groups and those adapters must report that limitation. The
+the adapter terminates/reaps the direct leader, closes all temporary streams,
+and returns `DifferentialRunnerError.Process` before continuing. It never runs
+with a direct-PID-only cleanup policy that could leak descendants. Group setup is
+therefore fail-closed on POSIX; adapters on platforms without process groups
+must report that limitation before launching a case. The
 child's stdin/stdout/stderr `dup2` setup uses the same bounded retry before
 returning the typed process failure. Child-side process-group admission also
 retries `EINTR` and exits before `execvp` if isolation cannot be established. The
