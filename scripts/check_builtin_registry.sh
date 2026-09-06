@@ -103,6 +103,24 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            executable)
+                if ! rg -q 'registry_spec\.opcode == "MakeExecutable"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven executable dispatch\n' >&2
+                    exit 1
+                fi
+                ;;
+            run_process)
+                if ! rg -q 'registry_spec\.opcode == "RunProcess"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven process-run dispatch\n' >&2
+                    exit 1
+                fi
+                ;;
+            run_process_with_stdin|run_process_in_directory|run_process_with_environment|run_process_in_directory_with_environment)
+                if ! rg -q 'registry_spec\.opcode == "ProcessResultExitStatus" and registry_spec\.lowering_steps != ""' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven composed process dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
             *)
                 printf 'builtin registry audit: lowerer has no dispatch branch for %s\n' "$name" >&2
                 exit 1
@@ -708,9 +726,11 @@ for process_name in capture_process_stdout_with_stdin capture_process_stderr_wit
         exit 1
     fi
 done
-if ! rg -q 'executable_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+if ! rg -q 'executable_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.opcode == "MakeExecutable"' "$lowerer_file" || \
    ! rg -q 'executable_spec\.opcode == "MakeExecutable"' "$lowerer_file" || \
-   ! rg -q 'run_process_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'run_process_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.opcode == "RunProcess"' "$lowerer_file" || \
    ! rg -q 'run_process_spec\.opcode == "RunProcess"' "$lowerer_file" || \
    ! rg -q 'process_stream_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
    ! rg -q 'process_stream_spec\.opcode == "CaptureProcessStdout"' "$lowerer_file" || \
@@ -1250,7 +1270,11 @@ if ! rg -q 'lowering_steps: sview' "$registry_file" || ! rg -q 'Opcode\.ProcessR
     printf 'builtin registry audit: composed process lowering metadata is not verifier-covered\n' >&2
     exit 1
 fi
-if ! rg -q 'typed_builtin_spec\(callee_name\)\.lowering_steps' "$lowerer_file"; then
+if ! rg -q 'registry_spec\.opcode == "ProcessResultExitStatus" and registry_spec\.lowering_steps != ""' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.lowering_steps == "CaptureProcessResult,ProcessResultExitStatus"' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.lowering_steps == "CaptureProcessResultInDirectory,ProcessResultExitStatus"' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.lowering_steps == "CaptureProcessResultWithEnvironment,ProcessResultExitStatus"' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.lowering_steps == "CaptureProcessResultInDirectoryWithEnvironment,ProcessResultExitStatus"' "$lowerer_file"; then
     printf 'builtin registry audit: lowerer does not consume composed process lowering metadata\n' >&2
     exit 1
 fi
