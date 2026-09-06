@@ -1164,7 +1164,8 @@ done
 if ! rg -q 'name: "input", receiver: "global".*arity_min: 0.*arity_max: 1.*argument_types: "text".*return_type: "sview".*effects: "Console.Read".*errors: "ConsoleError".*opcode: "ReadStdinLine"' "$registry_file" || \
    ! rg -q 'input_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
    ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "text" and registry_spec\.opcode == "ReadStdinLine"' "$lowerer_file" || \
-   ! rg -q 'input_spec\.opcode == "ReadStdinLine"' "$lowerer_file"; then
+   ! rg -q 'input_spec\.opcode == "ReadStdinLine"' "$lowerer_file" || \
+   ! rg -q 'def registry_input_optional_prompt_requires_text\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
     printf 'builtin registry audit: input row/lowerer does not consume registry shape/result/opcode metadata\n' >&2
     exit 1
 fi
