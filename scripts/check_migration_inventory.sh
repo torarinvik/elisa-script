@@ -8,8 +8,10 @@ repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 roots_file="$repo_root/docs/migration-project-roots.tsv"
 schema_file="$repo_root/docs/migration-inventory-schema.md"
 coordinator="$repo_root/scripts/inventory_project_roots.sh"
+review_file="$repo_root/docs/migration-review-current.tsv"
+review_audit="$repo_root/scripts/check_migration_review.sh"
 
-for required_file in "$roots_file" "$schema_file" "$coordinator" "$repo_root/scripts/inventory_candidates.sh" "$repo_root/scripts/inventory_signals.sh"; do
+for required_file in "$roots_file" "$schema_file" "$review_file" "$review_audit" "$coordinator" "$repo_root/scripts/inventory_candidates.sh" "$repo_root/scripts/inventory_signals.sh"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'migration inventory audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -64,5 +66,5 @@ if ! rg -q 'inventory_candidates\.sh' "$schema_file" || ! rg -q 'inventory_signa
     exit 1
 fi
 
-bash -n "$coordinator" "$script_dir/inventory_candidates.sh" "$script_dir/inventory_signals.sh"
+bash -n "$coordinator" "$script_dir/inventory_candidates.sh" "$script_dir/inventory_signals.sh" "$review_audit"
 printf 'migration inventory audit: partition manifest and bounded read-only scanners present\n'

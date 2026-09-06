@@ -65,3 +65,11 @@ their safety semantics even while compiler execution remains disabled.
   fixtures, and acceptance evidence to every candidate record.
 - Keep generated/vendored files and safety wrappers explicitly classified before
   any port or removal decision.
+
+The current repository candidates have now received that review in
+`docs/migration-review-current.tsv`. The reviewed manifest assigns the
+`elisascript-maintainers` owner role, records callers and I/O/dependency/platform
+notes, and classifies all four validation safety wrappers as
+`retain-external`. `scripts/check_migration_review.sh` audits that every current
+candidate is present exactly once, reviewed, non-placeholder-owned, and carries
+an approved `port` or `retain-external` disposition without executing any row.
