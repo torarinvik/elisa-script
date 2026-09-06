@@ -100,6 +100,10 @@ only a declared void-result operation. Value-producing declarations are dispatch
 builtin and permission-only families remain open to host-defined operation names.
 Dynamic handlers may therefore intercept
 user-defined operations without introducing a second runtime representation.
+Source `@handler` decorators for same-file effect declarations are checked at
+lowering time for callback arity, each known payload type, and resumed result type;
+open host families retain their extensible callback contract and are checked by the
+ordinary IR verifier when installed.
 Duplicate-operation diagnostics point at the later operation token when source
 coordinates are available.
 

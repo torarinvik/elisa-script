@@ -71,6 +71,16 @@ for helper in effect_operation_bare_result_spelling effect_operation_trim_type_s
         exit 1
     fi
 done
+if ! rg -q 'def source_handler_operation_conforms\(' "$lowerer_file"; then
+    printf 'effect operation metadata audit: source handler conformance helper is missing\n' >&2
+    exit 1
+fi
+for conformance in 'callback parameter count does not match the declared effect operation' 'callback parameter type does not match the declared effect operation payload' 'callback result type does not match the declared effect operation result'; do
+    if ! rg -q "$conformance" "$lowerer_file"; then
+        printf 'effect operation metadata audit: source handler conformance omits %s\n' "$conformance" >&2
+        exit 1
+    fi
+done
 if ! rg -q 'effect_operation_result_type\(state\.source_file, family, operation\)' "$lowerer_file"; then
     printf 'effect operation metadata audit: perform lowering does not consult declared result metadata\n' >&2
     exit 1
