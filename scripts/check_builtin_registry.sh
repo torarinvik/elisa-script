@@ -295,6 +295,12 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            partition|rpartition)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "TextPartition"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven partition dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
             *)
                 printf 'builtin registry audit: lowerer has no dispatch branch for %s\n' "$name" >&2
                 exit 1
@@ -1694,6 +1700,8 @@ if ! rg -q 'starts_with_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_
    ! rg -q 'split_spec\.opcode == "Split"' "$lowerer_file" || \
    ! rg -q 'name: "split", receiver: "global".*opcode: "Split", lowering_mode: 0' "$registry_file" || \
    ! rg -q 'integer: split_spec\.lowering_mode' "$lowerer_file" || \
+   ! rg -q 'lower_text_partition_builtin\(arguments, argument_names, registry_spec' "$lowerer_file" || \
+   ! rg -q 'def lower_text_partition_builtin\(arguments: darray\[Ast::Expr\].*spec: EsBuiltin::BuiltinSpec' "$lowerer_file" || \
    ! rg -q 'spec\.opcode == "TextPartition" and typed_builtin_call_shape\(spec\.name' "$lowerer_file" || \
    ! rg -q 'integer: spec\.lowering_mode' "$lowerer_file" || \
    ! rg -q 'split_lines_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
