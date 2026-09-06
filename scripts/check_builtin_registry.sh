@@ -152,7 +152,8 @@ for name in $registry_names; do
                 fi
                 ;;
             is_nonempty|nonempty|file_nonempty)
-                if ! rg -q 'registry_spec\.receiver == "global" and \(\(registry_spec\.opcode == "Greater" and registry_spec\.lowering_steps == "Length,Greater"\) or \(registry_spec\.opcode == "FileSize" and registry_spec\.lowering_steps == "FileSize,Greater"\)\)' "$lowerer_file"; then
+                if ! rg -q 'registry_spec\.receiver == "global" and \(\(registry_spec\.opcode == "Greater" and registry_spec\.lowering_steps == "Length,Greater"\) or \(registry_spec\.opcode == "FileSize" and registry_spec\.lowering_steps == "FileSize,Greater"\)\)' "$lowerer_file" || \
+                   rg -q 'callee_name == "file_nonempty"' "$lowerer_file"; then
                     printf 'builtin registry audit: lowerer has no registry-driven nonempty dispatch for %s\n' "$name" >&2
                     exit 1
                 fi
@@ -1223,7 +1224,9 @@ if ! rg -q 'def is_registry_process_result_capture_spec\(spec: EsBuiltin::Builti
     printf 'builtin registry audit: process result captures do not consume shared registry dispatch\n' >&2
     exit 1
 fi
-if ! rg -q 'name: "file_nonempty", receiver: "global".*argument_types: "Path".*return_type: "bool".*effects: "File.Read".*errors: "FileIoError".*opcode: "FileSize".*lowering_steps: "FileSize,Greater"' "$registry_file" || ! rg -q 'file_nonempty' "$lowerer_file" || ! rg -q 'def registry_file_nonempty_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
+if ! rg -q 'name: "file_nonempty", receiver: "global".*argument_types: "Path".*return_type: "bool".*effects: "File.Read".*errors: "FileIoError".*opcode: "FileSize".*lowering_steps: "FileSize,Greater"' "$registry_file" || \
+   ! rg -q 'nonempty_spec\.opcode == "FileSize"' "$lowerer_file" || \
+   ! rg -q 'def registry_file_nonempty_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
     printf 'builtin registry audit: file-nonempty alias contract is incomplete\n' >&2
     exit 1
 fi
