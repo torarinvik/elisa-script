@@ -73,6 +73,12 @@ This checks the disabled-by-default gate, StructPy compiler pin, process-tree
 RSS guard, identity-bound lease, and emergency-stop ownership without launching
 a compiler.
 
+Run `scripts/check_resource_policy.sh` alongside the wrapper audit when changing
+runtime limits. It is also compiler-free: it checks that the shared policy and
+usage records cover every declared budget dimension and that both interpreter
+and direct-bytecode execution return the inherited step policy without starting
+either backend.
+
 Executable fixtures use the matching process-tree guard:
 
 ```sh
