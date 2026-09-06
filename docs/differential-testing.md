@@ -457,7 +457,9 @@ exact verified module and capability report before execution.
 when a module digest is available, emitting ESDF version 4; older version-1/2/3
 manifests remain decodable for compatibility but are explicitly unbound. A
 version-4 manifest with an all-zero or incomplete digest is rejected before a
-replay bundle is opened.
+replay bundle is opened. `differential_artifact_manifest_requires_migration`
+reports when a valid legacy manifest needs an explicit digest-upgrade step;
+malformed bytes remain invalid rather than being mislabeled as migratable.
 Use `make_differential_artifact_manifest_for_module` when the verified module is
 in hand; it derives both the compact fingerprint and all digest words in one
 typed constructor so callers cannot accidentally omit the cryptographic bind.

@@ -133,7 +133,10 @@ label, oversized backend/source-revision views, or any zero digest word before
 `canonical_module_artifact_bytes` persists this metadata as a bounded version-2
 `ESIA` envelope, and `module_artifact_bytes_valid`/`decode_module_artifact`
 reject legacy versions, malformed lengths, incomplete digests, and trailing
-bytes before exposing borrowed text views.
+bytes before exposing borrowed text views. `module_artifact_envelope_status`
+and `module_artifact_requires_migration` distinguish the known version-1
+envelope from malformed bytes so a future cache migration can be explicit
+without weakening current fail-closed admission.
 
 ## Bytecode lowering
 
@@ -235,7 +238,9 @@ revision string was left unchanged. `canonical_bytecode_artifact_bytes` emits
 version-2 `ESBC` metadata with length-prefixed backend/revision strings, the
 module fingerprint, all digest words, and the complete capability snapshot.
 Version 1 envelopes are intentionally rejected: cache migration must rewrite
-legacy unbound records before admission. The writer applies the same version,
+legacy unbound records before admission. `bytecode_artifact_envelope_status`
+and `bytecode_artifact_requires_migration` expose that legacy state separately
+from malformed current bytes. The writer applies the same version,
 backend, digest-presence, revision-size, and engine/directness checks as the
 reader and returns the empty sentinel for metadata that would not be
 cache-admissible. `bytecode_artifact_fingerprint`

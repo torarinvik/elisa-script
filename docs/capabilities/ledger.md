@@ -165,6 +165,13 @@ Recoverable error-guard nesting is centralized under the same runtime model as a
 separate 4,096-entry ceiling, preventing malformed control-flow recovery from
 receiving a backend-specific budget.
 
+Persisted artifact envelopes now expose explicit migration signals: ESIA and
+ESBC classify the known version-1 records separately from malformed current
+metadata, while ESDF manifests report when a valid version-1--3 record still
+lacks the digest binding required by version 4. These predicates are advisory
+only; current readers remain fail-closed until a deliberate cache/manifest
+migration policy is implemented and exercised (`pending`).
+
 ## Evidence record template
 
 Every future executed or differential-verified entry must append a dated record
