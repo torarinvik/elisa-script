@@ -157,6 +157,8 @@ if ! rg -q 'def typed_builtin_path_method_names\(\)' "$registry_file" || \
    ! rg -q 'name: "absolute", receiver: "Path".*argument_types: "".*return_type: "Path".*effects: "Directory.Read".*errors: "DirectoryError".*opcode: "PathAbsolute"' "$registry_file" || \
    ! rg -q 'name: "realpath", receiver: "Path".*argument_types: "".*return_type: "Path".*effects: "File.Read".*errors: "FileIoError".*opcode: "PathReal"' "$registry_file" || \
    ! rg -q 'name: "resolve", receiver: "Path".*argument_types: "".*return_type: "Path".*effects: "File.Read".*errors: "FileIoError".*opcode: "PathReal"' "$registry_file" || \
+   ! rg -q 'name: "joinpath", receiver: "Path".*argument_types: "text".*return_type: "Path".*effects: "".*opcode: "PathJoin"' "$registry_file" || \
+   ! rg -q 'name: "relative_to", receiver: "Path".*argument_types: "Path".*return_type: "Path".*effects: "".*opcode: "PathRelative"' "$registry_file" || \
    ! rg -q 'name: "is_readable", receiver: "Path".*argument_types: "".*return_type: "bool".*effects: "File.Read".*opcode: "PathAccess".*lowering_mode: 4' "$registry_file" || \
    ! rg -q 'name: "is_writable", receiver: "Path".*argument_types: "".*return_type: "bool".*effects: "File.Read".*opcode: "PathAccess".*lowering_mode: 2' "$registry_file" || \
    ! rg -q 'name: "is_executable", receiver: "Path".*argument_types: "".*return_type: "bool".*effects: "File.Read".*opcode: "PathAccess".*lowering_mode: 1' "$registry_file"; then
@@ -171,6 +173,8 @@ if ! rg -q 'typed_builtin_method_spec\("Path", method_name\)' "$lowerer_file" ||
    ! rg -q 'path_spec\.known and path_spec\.opcode == "PathNormalize"' "$lowerer_file" || \
    ! rg -q 'path_spec\.known and path_spec\.opcode == "PathReal"' "$lowerer_file" || \
    ! rg -q 'path_spec\.known and path_spec\.opcode == "PathAbsolute"' "$lowerer_file" || \
+   ! rg -q 'path_spec\.known and path_spec\.opcode == "PathJoin"' "$lowerer_file" || \
+   ! rg -q 'path_spec\.known and path_spec\.opcode == "PathRelative"' "$lowerer_file" || \
    ! rg -q 'path_spec\.known and path_spec\.opcode == "PathAccess"' "$lowerer_file" || \
    ! rg -q 'typed_builtin_method_call_shape\("Path", method_name' "$lowerer_file" || \
    ! rg -q 'instruction_integer <- path_spec\.lowering_mode' "$lowerer_file"; then
@@ -179,6 +183,7 @@ if ! rg -q 'typed_builtin_method_spec\("Path", method_name\)' "$lowerer_file" ||
 fi
 if ! rg -q 'typed_builtin_method_spec\("Path", method\)' "$receiver_semantic_file" || \
    ! rg -q 'ufm_check_path_builtin_arity' "$receiver_semantic_file" || \
+   ! rg -q 'ufm_check_path_builtin_argument_types' "$receiver_semantic_file" || \
    ! rg -q 'scripting_path_registry_return_type' "$inference_file" || \
    ! rg -q 'scripting_path_method_available\(table, method_name\)' "$inference_file"; then
     printf 'builtin registry audit: Path access receiver semantic consumers are incomplete\n' >&2

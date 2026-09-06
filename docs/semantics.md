@@ -1254,6 +1254,9 @@ The no-argument `path.normalize()`, `path.absolute()`, `path.realpath()`, and
 `PathNormalize`, `PathAbsolute`, and `PathReal` opcodes; their `Directory.Read`/
 `DirectoryError` or `File.Read`/`FileIoError` requirements are propagated from
 the receiver rows rather than reconstructed in the method spelling branch.
+The argument-bearing `path.joinpath(text)` and `path.relative_to(Path)` methods
+also use receiver rows for arity and argument-family checking before emitting
+`PathJoin` or `PathRelative`.
 
 `touch(path: Path) -> bool error[FileIoError] can[File.Write]` creates an empty file
 when it is missing and updates its timestamps without truncating an existing file.
