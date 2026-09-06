@@ -1553,6 +1553,13 @@ those defaults. `path.touch()` is the exception: its single optional
 `exist_ok` control is now represented directly by the receiver row, including
 the named-argument descriptor and the default-preserving `TouchPath` lowering.
 
+The receiver predicates `path.exists()`, `path.is_file()`, `path.is_symlink()`,
+and `path.is_dir()`, together with `path.readlink()`/`path.read_link()`, also
+use exact zero-argument rows. Their rows provide the nominal result, the
+File.Read or Directory.Read contract, and the `PathExists`, `IsFile`,
+`IsSymlink`, `IsDirectory`, or `ReadLink` opcode, so receiver spelling no longer
+selects these host operations or their error behavior.
+
 `copy_path(source: Path, destination: Path) -> bool error[FileIoError]
 can[File.Read, File.Write]` copies one regular file by length-delimited bytes and
 replaces the destination. The source is subject to the interpreter's 64 MiB

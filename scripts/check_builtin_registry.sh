@@ -179,6 +179,12 @@ if ! rg -q 'def typed_builtin_path_method_names\(\)' "$registry_file" || \
    ! rg -q 'name: "chmod", receiver: "Path".*argument_types: "u64".*return_type: "bool".*effects: "File.Write".*errors: "FileIoError".*opcode: "ChmodPath"' "$registry_file" || \
    ! rg -q 'name: "rmdir", receiver: "Path".*argument_types: "".*return_type: "bool".*effects: "Directory.Write".*errors: "DirectoryError".*opcode: "RemoveDirectory"' "$registry_file" || \
    ! rg -q 'name: "touch", receiver: "Path".*argument_types: "bool".*return_type: "bool".*effects: "File.Write".*errors: "FileIoError".*opcode: "TouchPath".*argument_names: "exist_ok".*named_argument_index: 0' "$registry_file" || \
+   ! rg -q 'name: "exists", receiver: "Path".*argument_types: "".*return_type: "bool".*effects: "File.Read".*errors: "".*opcode: "PathExists"' "$registry_file" || \
+   ! rg -q 'name: "is_file", receiver: "Path".*argument_types: "".*return_type: "bool".*effects: "File.Read".*errors: "".*opcode: "IsFile"' "$registry_file" || \
+   ! rg -q 'name: "is_symlink", receiver: "Path".*argument_types: "".*return_type: "bool".*effects: "File.Read".*errors: "".*opcode: "IsSymlink"' "$registry_file" || \
+   ! rg -q 'name: "is_dir", receiver: "Path".*argument_types: "".*return_type: "bool".*effects: "Directory.Read".*errors: "DirectoryError".*opcode: "IsDirectory"' "$registry_file" || \
+   ! rg -q 'name: "readlink", receiver: "Path".*argument_types: "".*return_type: "Path".*effects: "File.Read".*errors: "FileIoError".*opcode: "ReadLink"' "$registry_file" || \
+   ! rg -q 'name: "read_link", receiver: "Path".*argument_types: "".*return_type: "Path".*effects: "File.Read".*errors: "FileIoError".*opcode: "ReadLink"' "$registry_file" || \
    ! rg -q 'name: "is_readable", receiver: "Path".*argument_types: "".*return_type: "bool".*effects: "File.Read".*opcode: "PathAccess".*lowering_mode: 4' "$registry_file" || \
    ! rg -q 'name: "is_writable", receiver: "Path".*argument_types: "".*return_type: "bool".*effects: "File.Read".*opcode: "PathAccess".*lowering_mode: 2' "$registry_file" || \
    ! rg -q 'name: "is_executable", receiver: "Path".*argument_types: "".*return_type: "bool".*effects: "File.Read".*opcode: "PathAccess".*lowering_mode: 1' "$registry_file"; then
@@ -212,6 +218,11 @@ if ! rg -q 'typed_builtin_method_spec\("Path", method_name\)' "$lowerer_file" ||
    ! rg -q 'path_spec\.known and path_spec\.opcode == "ChmodPath"' "$lowerer_file" || \
    ! rg -q 'path_spec\.known and path_spec\.opcode == "RemoveDirectory"' "$lowerer_file" || \
    ! rg -q 'path_spec\.known and path_spec\.opcode == "TouchPath"' "$lowerer_file" || \
+   ! rg -q 'path_spec\.known and path_spec\.opcode == "PathExists"' "$lowerer_file" || \
+   ! rg -q 'path_spec\.known and path_spec\.opcode == "IsFile"' "$lowerer_file" || \
+   ! rg -q 'path_spec\.known and path_spec\.opcode == "IsSymlink"' "$lowerer_file" || \
+   ! rg -q 'path_spec\.known and path_spec\.opcode == "ReadLink"' "$lowerer_file" || \
+   ! rg -q 'path_spec\.known and path_spec\.opcode == "IsDirectory"' "$lowerer_file" || \
    ! rg -q 'path_spec\.known and path_spec\.opcode == "PathAccess"' "$lowerer_file" || \
    ! rg -q 'typed_builtin_method_call_shape\("Path", method_name' "$lowerer_file" || \
    ! rg -q 'instruction_integer <- path_spec\.lowering_mode' "$lowerer_file"; then
