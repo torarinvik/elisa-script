@@ -127,6 +127,12 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            is_readable|is_writable|is_executable)
+                if ! rg -q 'access_builtin: bool = registry_spec\.known and registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and registry_spec\.opcode == "PathAccess"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven path-access dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
             *)
                 printf 'builtin registry audit: lowerer has no dispatch branch for %s\n' "$name" >&2
                 exit 1
@@ -470,7 +476,8 @@ done
 if ! rg -q 'name: "is_readable", receiver: "global".*opcode: "PathAccess", lowering_mode: 4' "$registry_file" || \
    ! rg -q 'name: "is_writable", receiver: "global".*opcode: "PathAccess", lowering_mode: 2' "$registry_file" || \
    ! rg -q 'name: "is_executable", receiver: "global".*opcode: "PathAccess", lowering_mode: 1' "$registry_file" || \
-   ! rg -q 'access_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'access_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'access_builtin: bool = registry_spec\.known and registry_spec\.receiver == "global" and registry_spec\.argument_types == "Path" and registry_spec\.opcode == "PathAccess"' "$lowerer_file" || \
    ! rg -q 'integer: access_spec\.lowering_mode' "$lowerer_file"; then
     printf 'builtin registry audit: path-access aliases do not preserve registry POSIX modes\n' >&2
     exit 1
