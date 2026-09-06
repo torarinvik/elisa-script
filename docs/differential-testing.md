@@ -475,6 +475,13 @@ length-delimited text/process fields, and the exact IEEE-754 bit pattern for
 floating-point values. The decoder allocates only after bounded count admission,
 then rejects malformed kinds/spans, truncated records, and trailing bytes.
 
+An `ESIX` artifact index binds the manifest, comparison report, both process
+streams, reproduction entry, and both value pools by fingerprint. Its explicit
+`Prepared` and `Complete` publication states let an atomic writer stage a bundle
+without exposing a partial directory; `Complete` is rejected unless every
+required sidecar fingerprint is nonzero. The index itself is bounded,
+length-free, versioned, and rejects unknown states or trailing bytes.
+
 The execution boundary now carries a backend-neutral `ExecutionCapability`
 snapshot alongside that engine identity. For bytecode runs,
 `capability_known` is true and the snapshot preserves `direct_supported`,

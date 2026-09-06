@@ -451,6 +451,32 @@ module EsDifferential:
             artifact: DifferentialValuePoolArtifact
 
 
+        const enum DifferentialArtifactPublicationState of u8:
+            Prepared
+            Complete
+
+
+        # ESIX is the bounded publication index for one artifact directory.
+        # Prepared indexes may be written while sidecars are staged; Complete
+        # is admitted only when every required sidecar fingerprint is present,
+        # preventing a partial or mixed directory from being replayed.
+        struct DifferentialArtifactIndex:
+            format_version: u8 = 1
+            manifest_fingerprint: u64 = 0
+            publication: DifferentialArtifactPublicationState = DifferentialArtifactPublicationState.Prepared
+            comparison_fingerprint: u64 = 0
+            reference_process_fingerprint: u64 = 0
+            candidate_process_fingerprint: u64 = 0
+            reproduction_fingerprint: u64 = 0
+            reference_value_pool_fingerprint: u64 = 0
+            candidate_value_pool_fingerprint: u64 = 0
+
+
+        struct DifferentialArtifactIndexDecode:
+            valid: bool
+            index: DifferentialArtifactIndex
+
+
         const enum DifferentialRunnerIssueKind of u8:
             None
             MissingName
@@ -1295,6 +1321,93 @@ module EsDifferential:
 
         def decode_differential_value_pool_artifact(bytes: darray[u8]&) -> DifferentialValuePoolArtifactDecode can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
             return differential_decode_value_pool_artifact(bytes)
+
+
+    private:
+        const DIFFERENTIAL_MAX_ARTIFACT_INDEX_BYTES: usize = 256
+
+
+        def differential_artifact_publication_state_valid(state: DifferentialArtifactPublicationState) -> bool:
+            return state in {DifferentialArtifactPublicationState.Prepared, DifferentialArtifactPublicationState.Complete}
+
+
+        def differential_artifact_index_valid(index: DifferentialArtifactIndex&) -> bool:
+            return false if index.format_version != 1 or index.manifest_fingerprint == 0 or not differential_artifact_publication_state_valid(index.publication)
+            return true if index.publication == DifferentialArtifactPublicationState.Prepared
+            return index.comparison_fingerprint != 0 and index.reference_process_fingerprint != 0 and index.candidate_process_fingerprint != 0 and index.reproduction_fingerprint != 0 and index.reference_value_pool_fingerprint != 0 and index.candidate_value_pool_fingerprint != 0
+
+
+    public:
+        def make_differential_artifact_index(manifest: DifferentialArtifactManifest&, publication: DifferentialArtifactPublicationState, comparison_fingerprint: u64 = 0, reference_process_fingerprint: u64 = 0, candidate_process_fingerprint: u64 = 0, reproduction_fingerprint: u64 = 0, reference_value_pool_fingerprint: u64 = 0, candidate_value_pool_fingerprint: u64 = 0) -> DifferentialArtifactIndex error[DifferentialRunnerError] can[Memory.Allocate, Abort.Panic]:
+            raise DifferentialRunnerError.Invalid if not differential_artifact_manifest_valid(manifest) or not differential_artifact_publication_state_valid(publication)
+            manifest_fingerprint: u64 = differential_artifact_manifest_fingerprint(manifest)
+            raise DifferentialRunnerError.Invalid if manifest_fingerprint == 0
+            index: DifferentialArtifactIndex = DifferentialArtifactIndex{manifest_fingerprint: manifest_fingerprint, publication: publication, comparison_fingerprint: comparison_fingerprint, reference_process_fingerprint: reference_process_fingerprint, candidate_process_fingerprint: candidate_process_fingerprint, reproduction_fingerprint: reproduction_fingerprint, reference_value_pool_fingerprint: reference_value_pool_fingerprint, candidate_value_pool_fingerprint: candidate_value_pool_fingerprint}
+            raise DifferentialRunnerError.Invalid if not differential_artifact_index_valid(index)
+            return index
+
+
+        def canonical_differential_artifact_index_bytes(index: DifferentialArtifactIndex) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+            return [] if not differential_artifact_index_valid(index)
+            output: mutable darray[u8] = []
+            EsIr::canonical_artifact_emit_byte(output, 69)
+            EsIr::canonical_artifact_emit_byte(output, 83)
+            EsIr::canonical_artifact_emit_byte(output, 73)
+            EsIr::canonical_artifact_emit_byte(output, 88)
+            EsIr::canonical_artifact_emit_byte(output, index.format_version)
+            EsIr::canonical_artifact_emit_u64(output, index.manifest_fingerprint)
+            EsIr::canonical_artifact_emit_byte(output, index.publication.u8())
+            EsIr::canonical_artifact_emit_u64(output, index.comparison_fingerprint)
+            EsIr::canonical_artifact_emit_u64(output, index.reference_process_fingerprint)
+            EsIr::canonical_artifact_emit_u64(output, index.candidate_process_fingerprint)
+            EsIr::canonical_artifact_emit_u64(output, index.reproduction_fingerprint)
+            EsIr::canonical_artifact_emit_u64(output, index.reference_value_pool_fingerprint)
+            EsIr::canonical_artifact_emit_u64(output, index.candidate_value_pool_fingerprint)
+            return [] if output.count > DIFFERENTIAL_MAX_ARTIFACT_INDEX_BYTES
+            return output
+
+
+        def differential_artifact_index_fingerprint(index: DifferentialArtifactIndex) -> u64 can[Memory.Allocate, Abort.Panic]:
+            encoded: darray[u8] = canonical_differential_artifact_index_bytes(index)
+            return 0 if encoded.count == 0
+            fingerprint: mutable u64 = 14695981039346656037
+            for byte in encoded |fingerprint|:
+                fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, byte)
+            return fingerprint
+
+
+    private:
+        def differential_decode_artifact_index(bytes: darray[u8]&) -> DifferentialArtifactIndexDecode can[Unsafe.PointerCast]:
+            invalid: DifferentialArtifactIndex = DifferentialArtifactIndex{}
+            return DifferentialArtifactIndexDecode{valid: false, index: invalid} if bytes.count < 5 or bytes.count > DIFFERENTIAL_MAX_ARTIFACT_INDEX_BYTES
+            return DifferentialArtifactIndexDecode{valid: false, index: invalid} if bytes[0] != 69 or bytes[1] != 83 or bytes[2] != 73 or bytes[3] != 88 or bytes[4] != 1
+            offset: mutable usize = 5
+            manifest_fingerprint: mutable u64 = 0
+            return DifferentialArtifactIndexDecode{valid: false, index: invalid} if not differential_manifest_read_u64(bytes, offset, manifest_fingerprint) or offset >= bytes.count
+            publication_byte: u8 = bytes[offset]
+            offset <- offset + 1
+            return DifferentialArtifactIndexDecode{valid: false, index: invalid} if publication_byte > DifferentialArtifactPublicationState.Complete.u8()
+            comparison_fingerprint: mutable u64 = 0
+            reference_process_fingerprint: mutable u64 = 0
+            candidate_process_fingerprint: mutable u64 = 0
+            reproduction_fingerprint: mutable u64 = 0
+            reference_value_pool_fingerprint: mutable u64 = 0
+            candidate_value_pool_fingerprint: mutable u64 = 0
+            return DifferentialArtifactIndexDecode{valid: false, index: invalid} if not differential_manifest_read_u64(bytes, offset, comparison_fingerprint) or not differential_manifest_read_u64(bytes, offset, reference_process_fingerprint) or not differential_manifest_read_u64(bytes, offset, candidate_process_fingerprint) or not differential_manifest_read_u64(bytes, offset, reproduction_fingerprint) or not differential_manifest_read_u64(bytes, offset, reference_value_pool_fingerprint) or not differential_manifest_read_u64(bytes, offset, candidate_value_pool_fingerprint) or offset != bytes.count
+            publication: DifferentialArtifactPublicationState = DifferentialArtifactPublicationState.Prepared
+            publication <- DifferentialArtifactPublicationState.Complete if publication_byte == DifferentialArtifactPublicationState.Complete.u8()
+            index: DifferentialArtifactIndex = DifferentialArtifactIndex{manifest_fingerprint: manifest_fingerprint, publication: publication, comparison_fingerprint: comparison_fingerprint, reference_process_fingerprint: reference_process_fingerprint, candidate_process_fingerprint: candidate_process_fingerprint, reproduction_fingerprint: reproduction_fingerprint, reference_value_pool_fingerprint: reference_value_pool_fingerprint, candidate_value_pool_fingerprint: candidate_value_pool_fingerprint}
+            return DifferentialArtifactIndexDecode{valid: false, index: invalid} if not differential_artifact_index_valid(index)
+            return DifferentialArtifactIndexDecode{valid: true, index: index}
+
+
+    public:
+        def differential_artifact_index_bytes_valid(bytes: darray[u8]&) -> bool can[Unsafe.PointerCast]:
+            return differential_decode_artifact_index(bytes).valid
+
+
+        def decode_differential_artifact_index(bytes: darray[u8]&) -> DifferentialArtifactIndexDecode can[Unsafe.PointerCast]:
+            return differential_decode_artifact_index(bytes)
 
 
         const DIFFERENTIAL_WAIT_NOHANG: int = 1
