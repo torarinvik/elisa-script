@@ -108,7 +108,7 @@ conservative (`c12c4f8`).
 
 The effect lowerer now parses top-level operation parameter spans and checks every
 ordered payload for multi-parameter `perform` and `signal` operations; the existing
-IR and handler callback ABI already carry arbitrary operand counts (`pending`).
+IR and handler callback ABI already carry arbitrary operand counts (`dc122b3`).
 
 ## Evidence record template
 
