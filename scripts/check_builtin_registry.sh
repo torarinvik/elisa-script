@@ -302,6 +302,13 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            reversed)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "ReverseArray"' "$lowerer_file" || \
+                   ! rg -q 'argument_types: "array".*return_type: "array".*opcode: "ReverseArray"' "$registry_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven reversed dispatch\n' >&2
+                    exit 1
+                fi
+                ;;
             split)
                 if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "Split"' "$lowerer_file"; then
                     printf 'builtin registry audit: lowerer has no registry-driven split dispatch\n' >&2
