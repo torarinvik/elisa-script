@@ -406,6 +406,14 @@ for environment_name in unset_environment unsetenv; do
         exit 1
     fi
 done
+if ! rg -q 'environment_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'lower_environment_or\(arguments, argument_names, environment_spec' "$lowerer_file" || \
+   ! rg -q 'lower_environment_read\(arguments\[0\], environment_spec' "$lowerer_file" || \
+   ! rg -q 'environment_spec\.opcode == "SetEnvironment"' "$lowerer_file" || \
+   ! rg -q 'expected_count: usize = environment_spec\.arity_min\.usize\(\)' "$lowerer_file"; then
+    printf 'builtin registry audit: environment lowerers do not consume registry shape/result/opcode metadata\n' >&2
+    exit 1
+fi
 if ! rg -q 'name: "executable", receiver: "global".*argument_types: "sview".*return_type: "Executable".*effects: "".*errors: "ProcessError".*opcode: "MakeExecutable"' "$registry_file"; then
     printf 'builtin registry audit: executable process-constructor row is incomplete\n' >&2
     exit 1

@@ -1930,7 +1930,9 @@ exact `text`/`text,text` arity descriptors, `sview`/`bool` results,
 `Environment.Read` or `Environment.Write` effects, `EnvironmentError`, and
 `GetEnvironment`/`SetEnvironment`/`UnsetEnvironment` opcodes. `getenv` keeps
 its one-argument fallible form and two-argument lazy-fallback form under the
-same registry row.
+same registry row. The lowerer consumes those rows for call shape, result type,
+and opcode selection; the fallback helper keeps its state-machine error guard
+and lazy evaluation semantics.
 
 ## Directories and working directory
 

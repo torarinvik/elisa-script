@@ -3752,8 +3752,11 @@ extend EsIr:
         # lets `get_environment` and the scripting-profile `get_environment_or`
         # share exactly the same effect and error row while the latter wraps
         # the lookup in a lexical error guard.
-        def lower_environment_read(name_expression: Ast::Expr, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
-            result_type: Type = type_from_name("sview")
+        def lower_environment_read(name_expression: Ast::Expr, spec: EsBuiltin::BuiltinSpec, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+            result_type: Type = typed_builtin_result_type(spec)
+            if spec.opcode != "GetEnvironment":
+                add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "environment read registry row has no GetEnvironment opcode")
+                return LoweredValue{valid: false, value: 0, type: result_type}
             text_type: Type = type_from_name("sview")
             name_value: LoweredValue = lower_expression_expected(name_expression, text_type, state)
             if not name_value.valid or name_value.type.kind != TypeKind.Text:
@@ -3772,16 +3775,16 @@ extend EsIr:
         # ports: a missing variable is ordinary control flow rather than a
         # process-level failure.  The fallback is evaluated only on the error
         # edge, preserving the same lazy semantics as `try ... else ...`.
-        def lower_environment_or(arguments: darray[Ast::Expr]&, argument_names: darray[sview]&, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
-            result_type: Type = type_from_name("sview")
-            valid_shape: bool = arguments.count == 2 and (argument_names.count == 0 or (argument_names.count == 2 and argument_names[0] == "" and argument_names[1] == ""))
+        def lower_environment_or(arguments: darray[Ast::Expr]&, argument_names: darray[sview]&, spec: EsBuiltin::BuiltinSpec, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+            result_type: Type = typed_builtin_result_type(spec)
+            valid_shape: bool = spec.opcode == "GetEnvironment" and typed_builtin_call_shape(spec.name, arguments, argument_names)
             if not valid_shape:
                 add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "get_environment_or requires two positional sview values")
                 return LoweredValue{valid: false, value: 0, type: result_type}
             fallback_block: u32 = fresh_block(state)
             merge_block: u32 = fresh_block(state)
             state.instructions.push(Instruction{opcode: Opcode.ErrorGuardPush, result: 0, result_type: void_ir_type(), integer: fallback_block.i64(), span: ir_span(pos)})
-            guarded: LoweredValue = lower_environment_read(arguments[0], pos, state)
+            guarded: LoweredValue = lower_environment_read(arguments[0], spec, pos, state)
             if not guarded.valid:
                 return LoweredValue{valid: false, value: 0, type: result_type}
             state.instructions.push(Instruction{opcode: Opcode.ErrorGuardPop, result: 0, result_type: void_ir_type(), span: ir_span(pos)})
@@ -6423,16 +6426,16 @@ extend EsIr:
                         state.instructions.push(Instruction{opcode: opcode, result: result, result_type: result_type, operand_start: operand_start, operand_count: 1, span: ir_span(pos)})
                         return LoweredValue{valid: true, value: result, type: result_type}
                     if (callee_name == "get_environment" or callee_name == "getenv") and callee_index == state.function_names.count:
+                        environment_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec(callee_name)
                         if callee_name == "getenv" and arguments.count == 2:
-                            return lower_environment_or(arguments, argument_names, pos, state)
-                        result_type: Type = type_from_name("sview")
-                        valid_shape: bool = arguments.count == 1 and (argument_names.count == 0 or argument_names[0] == "")
-                        if not valid_shape:
+                            return lower_environment_or(arguments, argument_names, environment_spec, pos, state)
+                        result_type: Type = typed_builtin_result_type(environment_spec)
+                        if not typed_builtin_call_shape(callee_name, arguments, argument_names):
                             add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "get_environment requires one positional sview name")
                             return LoweredValue{valid: false, value: 0, type: result_type}
-                        return lower_environment_read(arguments[0], pos, state)
+                        return lower_environment_read(arguments[0], environment_spec, pos, state)
                     if (callee_name == "get_environment_or" or callee_name == "getenv_or") and callee_index == state.function_names.count:
-                        return lower_environment_or(arguments, argument_names, pos, state)
+                        return lower_environment_or(arguments, argument_names, EsBuiltin::typed_builtin_spec(callee_name), pos, state)
                     # `sleep` mirrors Python's seconds-based API while the
                     # explicit millisecond spelling is useful for shell ports
                     # that already carry integer durations. Both lower to one
@@ -6456,11 +6459,11 @@ extend EsIr:
                         state.instructions.push(Instruction{opcode: Opcode.Sleep, result: 0, result_type: void_ir_type(), operand_start: operand_start, operand_count: 1, integer: 1 if milliseconds else 0, span: ir_span(pos)})
                         return LoweredValue{valid: true, value: 0, type: void_ir_type()}
                     if (callee_name == "set_environment" or callee_name == "setenv" or callee_name == "unset_environment" or callee_name == "unsetenv") and callee_index == state.function_names.count:
-                        result_type: Type = type_from_name("bool")
+                        environment_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec(callee_name)
+                        result_type: Type = typed_builtin_result_type(environment_spec)
                         text_type: Type = type_from_name("sview")
-                        expected_count: usize = 2 if callee_name == "set_environment" or callee_name == "setenv" else 1
-                        valid_shape: bool = arguments.count == expected_count and (argument_names.count == 0 or (argument_names[0] == "" and (expected_count == 1 or argument_names[1] == "")))
-                        if not valid_shape:
+                        expected_count: usize = environment_spec.arity_min.usize()
+                        if not typed_builtin_call_shape(callee_name, arguments, argument_names):
                             add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "environment mutation requires positional sview name and optional value")
                             return LoweredValue{valid: false, value: 0, type: result_type}
                         name_value: LoweredValue = lower_expression_expected(arguments[0], text_type, state)
@@ -6469,13 +6472,11 @@ extend EsIr:
                         if not name_value.valid or name_value.type.kind != TypeKind.Text or not value_value.valid or value_value.type.kind != TypeKind.Text:
                             add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "environment mutation requires sview operands")
                             return LoweredValue{valid: false, value: 0, type: result_type}
-                        state.required_effects.push("Environment.Write") if not has_text(state.required_effects, "Environment.Write")
-                        state.required_errors.push("EnvironmentError") if not has_text(state.required_errors, "EnvironmentError")
                         operand_start: u32 = state.operand_pool.count.u32()
                         state.operand_pool.push(name_value.value)
                         state.operand_pool.push(value_value.value) if expected_count == 2
                         result: u32 = fresh_value(state)
-                        opcode: Opcode = Opcode.SetEnvironment if expected_count == 2 else Opcode.UnsetEnvironment
+                        opcode: Opcode = Opcode.SetEnvironment if environment_spec.opcode == "SetEnvironment" else Opcode.UnsetEnvironment
                         state.instructions.push(Instruction{opcode: opcode, result: result, result_type: result_type, operand_start: operand_start, operand_count: expected_count.u32(), span: ir_span(pos)})
                         return LoweredValue{valid: true, value: result, type: result_type}
                     if (callee_name == "current_directory" or callee_name == "pwd" or callee_name == "getcwd") and callee_index == state.function_names.count:
