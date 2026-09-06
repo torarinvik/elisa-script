@@ -515,6 +515,17 @@ for process_name in capture_process_stdout_with_stdin capture_process_stderr_wit
         exit 1
     fi
 done
+if ! rg -q 'executable_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'executable_spec\.opcode == "MakeExecutable"' "$lowerer_file" || \
+   ! rg -q 'run_process_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'run_process_spec\.opcode == "RunProcess"' "$lowerer_file" || \
+   ! rg -q 'process_stream_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'process_stream_spec\.opcode == "CaptureProcessStdout"' "$lowerer_file" || \
+   ! rg -q 'process_stream_stdin_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'process_stream_stdin_spec\.opcode == "CaptureProcessStdoutWithStdin"' "$lowerer_file"; then
+    printf 'builtin registry audit: simple process lowerers do not consume registry shape/result/opcode metadata\n' >&2
+    exit 1
+fi
 if ! rg -q 'name: "capture_process_result", receiver: "global".*argument_types: "Executable,darray\[text\],sview".*return_type: "ProcessCapture".*effects: "Process.Run".*errors: "ProcessError".*opcode: "CaptureProcessResult"' "$registry_file"; then
     printf 'builtin registry audit: process-result capture row is incomplete\n' >&2
     exit 1

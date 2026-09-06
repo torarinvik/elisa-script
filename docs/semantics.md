@@ -1544,6 +1544,9 @@ applicable, and the existing verifier-visible process opcodes. Status-with-
 stdin status, environment, pipeline, and multi-stream result forms remain
 explicit lowerer rows until the registry can represent their composed
 multi-opcode structures without losing information.
+The lowerer consumes the constructor, status, and simple capture rows directly
+for arity, result, and opcode selection; the shared call-boundary recorder
+supplies their process effect/error contracts.
 
 Assertions are typed runtime checks rather than a result wrapper:
 `assert(condition) -> void error[AssertionError]`. The condition must be exactly
