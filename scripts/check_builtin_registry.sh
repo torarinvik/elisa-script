@@ -61,6 +61,12 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            capture_process_result|capture_process_result_in_directory|capture_process_result_with_environment|capture_process_result_in_directory_with_environment)
+                if ! rg -q 'is_registry_process_result_capture_spec\(registry_spec\)' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven process result dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
             *)
                 printf 'builtin registry audit: lowerer has no dispatch branch for %s\n' "$name" >&2
                 exit 1
@@ -740,6 +746,12 @@ if ! rg -q 'def is_registry_process_stream_capture_spec\(spec: EsBuiltin::Builti
    ! rg -q 'def lower_registry_process_stream_capture\(callee_name: sview' "$lowerer_file" || \
    ! rg -q 'is_registry_process_stream_capture_spec\(registry_spec\)' "$lowerer_file"; then
     printf 'builtin registry audit: process stream captures do not consume shared registry dispatch\n' >&2
+    exit 1
+fi
+if ! rg -q 'def is_registry_process_result_capture_spec\(spec: EsBuiltin::BuiltinSpec\)' "$lowerer_file" || \
+   ! rg -q 'def lower_registry_process_result_capture\(callee_name: sview' "$lowerer_file" || \
+   ! rg -q 'is_registry_process_result_capture_spec\(registry_spec\)' "$lowerer_file"; then
+    printf 'builtin registry audit: process result captures do not consume shared registry dispatch\n' >&2
     exit 1
 fi
 if ! rg -q 'name: "file_nonempty", receiver: "global".*argument_types: "Path".*return_type: "bool".*effects: "File.Read".*errors: "FileIoError".*opcode: "FileSize".*lowering_steps: "FileSize,Greater"' "$registry_file" || ! rg -q 'file_nonempty' "$lowerer_file" || ! rg -q 'def registry_file_nonempty_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
