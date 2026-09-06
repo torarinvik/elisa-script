@@ -368,31 +368,69 @@ extend EsIr:
             return 0
 
 
-        # Resolve a single payload type from the borrowed `(name: Type)` declaration
-        # span. `perform` currently admits at most one positional payload, so
-        # multi-parameter operations deliberately remain unknown here until
-        # operation parameter lists have their own interned representation.
-        def effect_operation_single_payload_type(file: Ast::File&, family: sview, operation: sview) -> Type:
+        def effect_operation_parameter_type(spelling: sview) -> Type:
+            paren_depth: mutable usize = 0
+            bracket_depth: mutable usize = 0
+            colon: mutable usize = sview_len(spelling)
+            for index in 0..<sview_len(spelling) |spelling, paren_depth, bracket_depth, colon|:
+                code: u8 = sview_at(spelling, index)
+                paren_depth <- paren_depth + 1 if code == 40
+                if code == 41 and paren_depth > 0:
+                    paren_depth <- paren_depth - 1
+                bracket_depth <- bracket_depth + 1 if code == 91
+                if code == 93 and bracket_depth > 0:
+                    bracket_depth <- bracket_depth - 1
+                if code == 58 and paren_depth == 0 and bracket_depth == 0:
+                    colon <- index
+                    break
+            return unknown_ir_type() if colon >= sview_len(spelling)
+            return effect_operation_type_from_spelling(spelling[colon + 1:sview_len(spelling)])
+
+
+        # Resolve one positional payload type from the borrowed parenthesized
+        # parameter list. Commas inside nested generic/function syntax do not
+        # split the outer operation parameters. This keeps multi-parameter
+        # operations allocation-free while preserving unknown-on-malformed input.
+        def effect_operation_payload_type(file: Ast::File&, family: sview, operation: sview, index: usize) -> Type:
             for candidate in file.effect_operations:
-                continue if candidate.family != family or candidate.name != operation or candidate.arity != 1
+                continue if candidate.family != family or candidate.name != operation
+                return unknown_ir_type() if index >= candidate.arity.usize()
                 text: sview = candidate.payload_signature
-                colon: mutable usize = 0
-                found_colon: mutable bool = false
-                for index in 0..<sview_len(text) |text, colon, found_colon|:
-                    if sview_at(text, index) == 58:
-                        colon <- index
-                        found_colon <- true
+                open: mutable usize = sview_len(text)
+                for cursor in 0..<sview_len(text) |text, open|:
+                    if sview_at(text, cursor) == 40:
+                        open <- cursor
                         break
-                return unknown_ir_type() if not found_colon
-                start: mutable usize = colon + 1
-                finish: mutable usize = sview_len(text)
-                while start < finish and (sview_at(text, start) == 32 or sview_at(text, start) == 9) |text, start, finish|:
-                    start <- start + 1
-                while finish > start and (sview_at(text, finish - 1) == 32 or sview_at(text, finish - 1) == 9 or sview_at(text, finish - 1) == 41) |text, start, finish|:
-                    finish <- finish - 1
-                type_text: sview = text[start:finish]
-                return effect_operation_type_from_spelling(type_text)
+                return unknown_ir_type() if open >= sview_len(text)
+                parameter_start: mutable usize = open + 1
+                parameter_index: mutable usize = 0
+                paren_depth: mutable usize = 1
+                bracket_depth: mutable usize = 0
+                cursor: mutable usize = open + 1
+                while cursor < sview_len(text) |text, index, parameter_start, parameter_index, paren_depth, bracket_depth, cursor|:
+                    code: u8 = sview_at(text, cursor)
+                    if code == 40:
+                        paren_depth <- paren_depth + 1
+                    elif code == 41 and paren_depth > 1:
+                        paren_depth <- paren_depth - 1
+                    elif code == 41 and paren_depth == 1:
+                        return effect_operation_parameter_type(text[parameter_start:cursor]) if parameter_index == index
+                        return unknown_ir_type()
+                    elif code == 91:
+                        bracket_depth <- bracket_depth + 1
+                    elif code == 93 and bracket_depth > 0:
+                        bracket_depth <- bracket_depth - 1
+                    elif code == 44 and paren_depth == 1 and bracket_depth == 0:
+                        return effect_operation_parameter_type(text[parameter_start:cursor]) if parameter_index == index
+                        parameter_index <- parameter_index + 1
+                        parameter_start <- cursor + 1
+                    cursor <- cursor + 1
+                return unknown_ir_type()
             return unknown_ir_type()
+
+
+        def effect_operation_single_payload_type(file: Ast::File&, family: sview, operation: sview) -> Type:
+            return effect_operation_payload_type(file, family, operation, 0)
 
 
         def effect_operation_payload_is_known(payload_type: Type) -> bool:
@@ -6590,19 +6628,19 @@ extend EsIr:
                     return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
 
 
-        # `perform("Family.Operation", payload)` is the value-producing sibling
-        # of the Elisa `signal` statement.  The expected destination type supplies
-        # the operation result type, while the effect reference and payload remain
-        # explicit and statically checked.  Keeping this intrinsic in the
+        # `perform("Family.Operation", payload...)` is the value-producing sibling
+        # of the Elisa `signal` statement. The expected destination type supplies
+        # the operation result type, while the effect reference and ordered payloads
+        # remain explicit and statically checked. Keeping this intrinsic in the
         # expected-type path prevents an untyped result from leaking into ordinary
         # expression lowering.
         def lower_perform_expression(arguments: darray[Ast::Expr]&, argument_names: darray[sview]&, expected: Type, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
             if expected.kind == TypeKind.Void:
                 add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "perform requires a non-void destination type")
                 return LoweredValue{valid: false, value: 0, type: expected}
-            valid_shape: bool = (arguments.count == 1 or arguments.count == 2) and (argument_names.count == 0 or all name in argument_names where name == "")
+            valid_shape: bool = arguments.count >= 1 and (argument_names.count == 0 or all name in argument_names where name == "")
             if not valid_shape:
-                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "perform requires an effect reference and at most one positional payload")
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "perform requires an effect reference followed by positional payloads")
                 return LoweredValue{valid: false, value: 0, type: expected}
             reference: mutable sview = ""
             match arguments[0]:
@@ -6623,24 +6661,26 @@ extend EsIr:
             if effect_operation_result_is_known(declared_result) and not same_type(declared_result, expected):
                 add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "perform result type does not match the declared effect operation result")
                 return LoweredValue{valid: false, value: 0, type: expected}
-            payload: mutable LoweredValue = LoweredValue{valid: true, value: 0, type: void_ir_type()}
-            if arguments.count == 2:
-                payload <- lower_expression(arguments[1], state)
-                if not payload.valid:
-                    return LoweredValue{valid: false, value: 0, type: expected}
-                declared_payload: Type = effect_operation_single_payload_type(state.source_file, family, operation)
-                if effect_operation_payload_is_known(declared_payload) and not same_type(declared_payload, payload.type):
-                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "perform payload type does not match the declared effect operation payload")
-                    return LoweredValue{valid: false, value: 0, type: expected}
+            payloads: mutable darray[LoweredValue] = []
+            valid_payloads: mutable bool = true
+            if arguments.count > 1:
+                for argument_index in 1..<arguments.count |arguments, argument_index, state, payloads, valid_payloads, family, operation, pos|:
+                    payload: LoweredValue = lower_expression(arguments[argument_index], state)
+                    valid_payloads <- false if not payload.valid
+                    if payload.valid:
+                        payloads.push(payload)
+                        declared_payload: Type = effect_operation_payload_type(state.source_file, family, operation, argument_index - 1)
+                        if effect_operation_payload_is_known(declared_payload) and not same_type(declared_payload, payload.type):
+                            add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "perform payload type does not match the declared effect operation payload")
+                            valid_payloads <- false
+            return LoweredValue{valid: false, value: 0, type: expected} if not valid_payloads
             if not active_handler_covers(state.active_handlers, state.handlers, family, operation) and not effect_granted(state.required_effects, reference):
                 state.required_effects.push(reference)
             operand_start: u32 = state.operand_pool.count.u32()
-            operand_count: mutable u16 = 0
-            if arguments.count == 2:
+            for payload in payloads |state|:
                 state.operand_pool.push(payload.value)
-                operand_count <- 1
             result: u32 = fresh_value(state)
-            state.instructions.push(Instruction{opcode: Opcode.Perform, result: result, result_type: expected, operand_start: operand_start, operand_count: operand_count, effect_family: family, effect_operation: operation, trace: trace_site(state, reference, pos), span: ir_span(pos)})
+            state.instructions.push(Instruction{opcode: Opcode.Perform, result: result, result_type: expected, operand_start: operand_start, operand_count: payloads.count.u16(), effect_family: family, effect_operation: operation, trace: trace_site(state, reference, pos), span: ir_span(pos)})
             return LoweredValue{valid: true, value: result, type: expected}
 
 
@@ -10581,11 +10621,12 @@ extend EsIr:
                             if valid and effect_operation_declared(state.source_file, effect_family(reference), effect_operation(reference)) and operands.count != effect_operation_declared_arity(state.source_file, effect_family(reference), effect_operation(reference)):
                                 add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "signal payload arity does not match the declared effect operation")
                                 valid <- false
-                            if valid and operand_types.count == 1:
-                                declared_payload: Type = effect_operation_single_payload_type(state.source_file, effect_family(reference), effect_operation(reference))
-                                if effect_operation_payload_is_known(declared_payload) and not same_type(declared_payload, operand_types[0]):
-                                    add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "signal payload type does not match the declared effect operation payload")
-                                    valid <- false
+                            if valid and operand_types.count > 0:
+                                for payload_index in 0..<operand_types.count |state, reference, operand_types, payload_index, valid, pos|:
+                                    declared_payload: Type = effect_operation_payload_type(state.source_file, effect_family(reference), effect_operation(reference), payload_index)
+                                    if effect_operation_payload_is_known(declared_payload) and not same_type(declared_payload, operand_types[payload_index]):
+                                        add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "signal payload type does not match the declared effect operation payload")
+                                        valid <- false
                             if valid:
                                 operand_start: u32 = state.operand_pool.count.u32()
                                 state.operand_pool.extend(operands)

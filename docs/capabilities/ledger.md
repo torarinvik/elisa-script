@@ -106,6 +106,10 @@ The effect declaration bridge now resolves nested `array`/`darray`, `set`, and
 leaving malformed, function-type, refinement, and multi-parameter signatures
 conservative (`c12c4f8`).
 
+The effect lowerer now parses top-level operation parameter spans and checks every
+ordered payload for multi-parameter `perform` and `signal` operations; the existing
+IR and handler callback ABI already carry arbitrary operand counts (`pending`).
+
 ## Evidence record template
 
 Every future executed or differential-verified entry must append a dated record
