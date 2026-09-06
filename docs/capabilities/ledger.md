@@ -80,7 +80,7 @@ methods now flow through the structural type channel when the canonical
 
 The source-shadowing guard now distinguishes line-zero registry seed symbols
 from actual source declarations, so seeded names such as `contains` retain their
-receiver contract (`working tree`).
+receiver contract (`f69d678`).
 
 ## Evidence record template
 
