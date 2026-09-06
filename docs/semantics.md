@@ -1249,6 +1249,11 @@ The pure shape methods `path.parent()`, `path.name()`, `path.suffix()`,
 declared `Path`/`sview`/`bool` result types and `PathParent`/`PathName`/
 `PathExtension`/`PathStem`/`PathIsAbsolute` opcodes are consumed directly by
 the lowerer, so no spelling-derived result table is needed for this family.
+The no-argument `path.normalize()`, `path.absolute()`, `path.realpath()`, and
+`path.resolve()` methods extend the same metadata contract with their declared
+`PathNormalize`, `PathAbsolute`, and `PathReal` opcodes; their `Directory.Read`/
+`DirectoryError` or `File.Read`/`FileIoError` requirements are propagated from
+the receiver rows rather than reconstructed in the method spelling branch.
 
 `touch(path: Path) -> bool error[FileIoError] can[File.Write]` creates an empty file
 when it is missing and updates its timestamps without truncating an existing file.

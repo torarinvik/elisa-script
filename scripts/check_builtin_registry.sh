@@ -153,6 +153,10 @@ if ! rg -q 'def typed_builtin_path_method_names\(\)' "$registry_file" || \
    ! rg -q 'name: "suffix", receiver: "Path".*argument_types: "".*return_type: "sview".*effects: "".*opcode: "PathExtension"' "$registry_file" || \
    ! rg -q 'name: "stem", receiver: "Path".*argument_types: "".*return_type: "sview".*effects: "".*opcode: "PathStem"' "$registry_file" || \
    ! rg -q 'name: "is_absolute", receiver: "Path".*argument_types: "".*return_type: "bool".*effects: "".*opcode: "PathIsAbsolute"' "$registry_file" || \
+   ! rg -q 'name: "normalize", receiver: "Path".*argument_types: "".*return_type: "Path".*effects: "".*opcode: "PathNormalize"' "$registry_file" || \
+   ! rg -q 'name: "absolute", receiver: "Path".*argument_types: "".*return_type: "Path".*effects: "Directory.Read".*errors: "DirectoryError".*opcode: "PathAbsolute"' "$registry_file" || \
+   ! rg -q 'name: "realpath", receiver: "Path".*argument_types: "".*return_type: "Path".*effects: "File.Read".*errors: "FileIoError".*opcode: "PathReal"' "$registry_file" || \
+   ! rg -q 'name: "resolve", receiver: "Path".*argument_types: "".*return_type: "Path".*effects: "File.Read".*errors: "FileIoError".*opcode: "PathReal"' "$registry_file" || \
    ! rg -q 'name: "is_readable", receiver: "Path".*argument_types: "".*return_type: "bool".*effects: "File.Read".*opcode: "PathAccess".*lowering_mode: 4' "$registry_file" || \
    ! rg -q 'name: "is_writable", receiver: "Path".*argument_types: "".*return_type: "bool".*effects: "File.Read".*opcode: "PathAccess".*lowering_mode: 2' "$registry_file" || \
    ! rg -q 'name: "is_executable", receiver: "Path".*argument_types: "".*return_type: "bool".*effects: "File.Read".*opcode: "PathAccess".*lowering_mode: 1' "$registry_file"; then
@@ -164,6 +168,9 @@ if ! rg -q 'typed_builtin_method_spec\("Path", method_name\)' "$lowerer_file" ||
    ! rg -q 'def is_path_receiver_expression\(expression: Ast::Expr, state: LowerState&\)' "$lowerer_file" || \
    ! rg -q 'path_spec\.known and path_spec\.opcode == "PathParent"' "$lowerer_file" || \
    ! rg -q 'path_spec\.known and path_spec\.opcode == "PathIsAbsolute"' "$lowerer_file" || \
+   ! rg -q 'path_spec\.known and path_spec\.opcode == "PathNormalize"' "$lowerer_file" || \
+   ! rg -q 'path_spec\.known and path_spec\.opcode == "PathReal"' "$lowerer_file" || \
+   ! rg -q 'path_spec\.known and path_spec\.opcode == "PathAbsolute"' "$lowerer_file" || \
    ! rg -q 'path_spec\.known and path_spec\.opcode == "PathAccess"' "$lowerer_file" || \
    ! rg -q 'typed_builtin_method_call_shape\("Path", method_name' "$lowerer_file" || \
    ! rg -q 'instruction_integer <- path_spec\.lowering_mode' "$lowerer_file"; then
