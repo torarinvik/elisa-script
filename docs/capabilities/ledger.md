@@ -172,6 +172,9 @@ lacks the digest binding required by version 4. These predicates are advisory
 only; current readers remain fail-closed until a deliberate cache/manifest
 migration policy is implemented and exercised (`pending`). ESIA/ESBC metadata
 labels additionally reject embedded NUL bytes before a host string boundary.
+In-memory ESIA/ESBC migration helpers now recompute digest identity from the
+verified module and reject stale legacy fingerprints or capability snapshots;
+on-disk cache rewrite/restart evidence remains pending.
 
 ## Evidence record template
 

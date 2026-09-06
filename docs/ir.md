@@ -138,7 +138,9 @@ and `module_artifact_requires_migration` distinguish the known version-1
 envelope from malformed bytes so a future cache migration can be explicit
 without weakening current fail-closed admission. Both metadata strings are
 also rejected when they contain an embedded NUL, preserving host C-string
-boundaries.
+boundaries. `migrate_module_artifact` can upgrade an in-memory legacy record,
+but only after matching its fingerprint to the verified module and recomputing
+all digest words; stale or unavailable records return an invalid sentinel.
 
 ## Bytecode lowering
 
@@ -247,7 +249,10 @@ the source-revision label before any host-string adapter sees it. The writer
 applies the same version,
 backend, digest-presence, revision-size, and engine/directness checks as the
 reader and returns the empty sentinel for metadata that would not be
-cache-admissible. `bytecode_artifact_fingerprint`
+cache-admissible. `migrate_bytecode_artifact` upgrades an in-memory legacy
+record only after recomputing the digest and matching the stored capability
+snapshot against the verified bytecode; stale records return an invalid
+sentinel. `bytecode_artifact_fingerprint`
 returns zero for that invalid metadata and otherwise hashes the exact envelope
 for cache keys or diagnostic correlation; it is intentionally not a substitute
 for validating the artifact against the verified module.
