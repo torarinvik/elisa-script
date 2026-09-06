@@ -48,7 +48,7 @@ lowerer_names() {
     # deliberately stay out of this comparison: they are type-directed and do
     # not need to be seeded as bare identifiers by semantic analysis.
     rg -o 'callee_name == "[A-Za-z_][A-Za-z0-9_]*"' "$lowerer_file" |
-        sed 's/.*== "//; s/"$//'
+        sed 's/.*== "//; s/"$//' || true
 }
 
 semantic_sorted="$(semantic_names | sort -u)"
