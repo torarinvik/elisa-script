@@ -98,6 +98,12 @@ encoding. This makes the bytes and their deterministic
 non-cryptographic `u64` fingerprint suitable for backend and differential-test
 artifact correlation; neither is a security identity or a replacement for IR
 verification.
+`canonical_bytes_sha256` and `canonical_module_digest` now provide a portable
+32-byte SHA-256 digest over that exact stream, with a bounded 256 MiB input
+contract and an empty sentinel for unavailable/oversized streams. The digest
+is the candidate trust/cache identity; the existing `u64` fingerprint remains
+only a compact correlation key. Binding the digest into every persisted module
+and bytecode artifact envelope, including cache migration, is still open.
 Before either operation, `canonical_module_counts_valid` checks every collection
 whose length is encoded as u32, including nested globals, handlers, and function
 pools. An unrepresentable host count therefore returns the empty byte sentinel
