@@ -1549,7 +1549,9 @@ with `File.Write`/`FileIoError` for file mutations and
 `Directory.Write`/`DirectoryError` for directory removal. Optional-control
 forms such as `path.touch(exist_ok: bool)` and `path.mkdir(...)` remain explicit
 until the registry can describe their named-control layout without erasing
-those defaults.
+those defaults. `path.touch()` is the exception: its single optional
+`exist_ok` control is now represented directly by the receiver row, including
+the named-argument descriptor and the default-preserving `TouchPath` lowering.
 
 `copy_path(source: Path, destination: Path) -> bool error[FileIoError]
 can[File.Read, File.Write]` copies one regular file by length-delimited bytes and
