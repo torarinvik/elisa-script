@@ -19,8 +19,9 @@ ir_model_file="$repo_root/src/ir/ir_model.elisa"
 ir_verify_file="$repo_root/src/ir/ir_verify.elisa"
 fixture_file="$repo_root/test/ir/elisascript_lowering_test.elisa"
 runtime_file="$repo_root/src/ir/interpret.elisa"
+serialize_file="$repo_root/src/ir/serialize.elisa"
 
-for required_file in "$tokens_file" "$parser_file" "$capture_file" "$semantic_file" "$docs_file" "$lowerer_file" "$ir_model_file" "$ir_verify_file" "$fixture_file" "$runtime_file"; do
+for required_file in "$tokens_file" "$parser_file" "$capture_file" "$semantic_file" "$docs_file" "$lowerer_file" "$ir_model_file" "$ir_verify_file" "$fixture_file" "$runtime_file" "$serialize_file"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'effect operation metadata audit: missing file: %s\n' "$required_file" >&2
         exit 2
@@ -96,6 +97,12 @@ if ! rg -q 'resumption_id: u64 = 0' "$runtime_file" || ! rg -q 'continuation\.re
     printf 'effect operation metadata audit: runtime continuation identity matching is missing\n' >&2
     exit 1
 fi
+for serialized_id in 'value.operation_id' 'value.resumption_id'; do
+    if ! rg -q "canonical_emit_u64\(output, $serialized_id\)" "$serialize_file" || ! rg -q "canonical_hash_u64\(result, $serialized_id\)" "$serialize_file"; then
+        printf 'effect operation metadata audit: canonical serialization omits %s\n' "$serialized_id" >&2
+        exit 1
+    fi
+done
 if ! rg -q 'def runtime_operation_matches\(' "$runtime_file" || ! rg -q 'runtime_handler_covers_operation\([^)]*instruction\.operation_id' "$runtime_file"; then
     printf 'effect operation metadata audit: runtime handler dispatch does not consume operation identities\n' >&2
     exit 1

@@ -260,6 +260,8 @@ handler clause provide it, while treating zero as a compatibility wildcard for
 older hand-authored modules; raised-error guards apply the same rule. `Resume`
 instructions likewise carry a stable resumption token derived from their handler
 symbol, and the captured continuation rejects a populated token mismatch.
+Canonical IR emission and hashing include both IDs (and handler-clause operation
+IDs), so artifact fingerprints cannot silently discard typed dispatch metadata.
 
 Value-producing effect requests use the compiler-known
 `perform("Family.Operation", payload)` intrinsic in an expected-type position,

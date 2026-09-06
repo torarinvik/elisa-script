@@ -137,6 +137,8 @@ the interpreter now prefers matching populated operation IDs for handler clauses
 raised-error guards, with zero as a legacy wildcard. `Resume` instructions and
 captured continuation frames now carry a handler-derived resumption token and reject
 populated mismatches; richer continuation provenance remains a later migration step.
+Canonical IR emission and hashing now include the operation and resumption IDs, so
+artifact fingerprints preserve typed dispatch metadata.
 
 The interpreter and direct-bytecode adapters now consume one shared
 `ES_RUNTIME_DEFAULT_MAX_EXECUTION_CALL_DEPTH` limit for host-recursive calls and
