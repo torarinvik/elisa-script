@@ -26,7 +26,7 @@ The source-declaration test intentionally ignores line-zero registry seed rows;
 otherwise a seeded global such as `contains` would incorrectly suppress its
 receiver contract.
 
-The compact registry currently contains 192 global spellings, 42 Text receiver
+The compact registry currently contains 194 global spellings, 42 Text receiver
 spellings, and 9 Regex receiver spellings. The table below names the strict
 scalar/text/regex core; filesystem, directory, process, environment, stream,
 and time families use the same row format and are covered by the registry
@@ -45,6 +45,7 @@ audit.
 | Panic control | `panic` | zero or one positional `any` message; records `Abort.Panic` and emits the non-recoverable `Panic` instruction |
 | Console output | `print`, `println`, `echo`, `eprint` | variadic typed values with `sep: sview`, `end: sview`, and `flush: bool` controls; registry rows select `WriteStdout` or `WriteStderr` and the shared `Console.Write`/`ConsoleError` contract |
 | Numeric absolute value | `abs` | one signed integer or float to the same exact numeric family; registry identity is the verified `Negate` primitive with `Compare,Negate,Select` lowering, while polymorphic inference preserves the operand type |
+| Polymorphic extrema | `min`, `max` | one orderable array or two-or-more orderable values; registry rows select the verified `SortArray`/`Index` composition while inference preserves the element family |
 | Numeric parsing/formatting | `parse_int`, `format_int`, `parse_float`, `format_float` | checked `i64`/`f64` conversions; parsers require `ParseError` |
 | Scalar formatting | `format_bool`, `format_char` | one scalar to `sview` |
 | Regex facades | `matches`, `replace_regex`, `split_regex`, `find_regex`, `capture_regex`, `captures_regex` | text/`Regex` operands; `bool`, `sview`, or `darray[sview]` result |

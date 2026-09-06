@@ -372,6 +372,16 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            min|max)
+                if ! rg -q 'registry_spec\.known and registry_spec\.argument_types == "orderable\|array" and registry_spec\.opcode == "SortArray" and registry_spec\.lowering_steps == "SortArray,Index"' "$lowerer_file" || \
+                   ! rg -q "name: \"$name\".*arity_min: 1.*arity_max: 4294967295.*argument_types: \"orderable\\|array\".*return_type: \"polymorphic\".*opcode: \"SortArray\".*lowering_steps: \"SortArray,Index\"" "$registry_file" || \
+                   ! rg -q 'polymorphic_collection_builtins_preserve_known_element_types' "$semantic_test_file" || \
+                   ! rg -q 'lowers_python_min_max_as_typed_extrema' "$lowering_test_file" || \
+                   ! rg -q 'shadowed-min-max' "$lowering_test_file"; then
+                    printf 'builtin registry audit: min/max registry/polymorphic/source-shadow coverage is missing for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
             split)
                 if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "Split"' "$lowerer_file"; then
                     printf 'builtin registry audit: lowerer has no registry-driven split dispatch\n' >&2
