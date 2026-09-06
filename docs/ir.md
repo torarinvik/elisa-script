@@ -102,8 +102,9 @@ verification.
 32-byte SHA-256 digest over that exact stream, with a bounded 256 MiB input
 contract and an empty sentinel for unavailable/oversized streams. The digest
 is the candidate trust/cache identity; the existing `u64` fingerprint remains
-only a compact correlation key. Binding the digest into every persisted module
-and bytecode artifact envelope, including cache migration, is still open.
+only a compact correlation key. `canonical_digest_word` and
+`canonical_module_digest_word` expose the fixed four-word representation used
+by artifact metadata without changing the canonical stream.
 Before either operation, `canonical_module_counts_valid` checks every collection
 whose length is encoded as u32, including nested globals, handlers, and function
 pools. An unrepresentable host count therefore returns the empty byte sentinel
@@ -121,13 +122,14 @@ both rows and children empty are omitted so hand-built legacy modules retain the
 original version-1 encoding; any non-empty child pool is serialized and fingerprinted
 even when malformed, while verifier admission rejects an orphaned pool.
 
-`EsIrArtifact.ModuleArtifact` is the small typed metadata envelope used by
+`EsIrArtifact.ModuleArtifact` is the small version-2 typed metadata envelope used by
 differential reports today. It records format version, backend label, source
-revision, and fingerprint; the owned canonical byte stream is kept as the
-separate `canonical_module_bytes` value so its inferred region remains with the
-artifact writer. `artifact_metadata_valid` rejects version mismatches, an empty
-backend label, and backend/source-revision views above 4 KiB before
-`artifact_fingerprint_matches_module` correlates the metadata with a module.
+revision, the compact fingerprint, and all four words of the canonical
+SHA-256 digest; the owned canonical byte stream is kept as the separate
+`canonical_module_bytes` value so its inferred region remains with the artifact
+writer. `artifact_metadata_valid` rejects version mismatches, an empty backend
+label, oversized backend/source-revision views, or an all-zero digest before
+`artifact_fingerprint_matches_module` correlates both identities with a module.
 
 ## Bytecode lowering
 
@@ -221,15 +223,18 @@ along with function, instruction, and global counts. Record this report beside
 the execution artifact; counts are descriptive telemetry, while
 `direct_supported` and `engine` are the authoritative backend-selection facts.
 `EsBytecode.make_bytecode_artifact` provides the typed pairing for that record:
-it stores the canonical module fingerprint, source revision, backend tag, and
-capability report together. `bytecode_artifact_matches_module` recomputes both
-the fingerprint and capability counts/decision, so stale metadata cannot be
-accepted merely because the source revision string was left unchanged.
-`canonical_bytecode_artifact_bytes` emits a versioned `ESBC` metadata envelope
-with length-prefixed backend/revision strings, the module fingerprint, and the
-complete capability snapshot. The writer applies the same version, backend,
-revision-size, and engine/directness checks as the reader and returns the empty
-sentinel for metadata that would not be cache-admissible. `bytecode_artifact_fingerprint`
+it stores the canonical module fingerprint, all four canonical SHA-256 digest
+words, source revision, backend tag, and capability report together.
+`bytecode_artifact_matches_module` recomputes both identities and capability
+counts/decision, so stale metadata cannot be accepted merely because the source
+revision string was left unchanged. `canonical_bytecode_artifact_bytes` emits
+version-2 `ESBC` metadata with length-prefixed backend/revision strings, the
+module fingerprint, all digest words, and the complete capability snapshot.
+Version 1 envelopes are intentionally rejected: cache migration must rewrite
+legacy unbound records before admission. The writer applies the same version,
+backend, digest-presence, revision-size, and engine/directness checks as the
+reader and returns the empty sentinel for metadata that would not be
+cache-admissible. `bytecode_artifact_fingerprint`
 returns zero for that invalid metadata and otherwise hashes the exact envelope
 for cache keys or diagnostic correlation; it is intentionally not a substitute
 for validating the artifact against the verified module.
@@ -245,7 +250,7 @@ launching the compiler.
 `bytecode_artifact_bytes_valid` is the allocation-free cache-boundary check: it
 rejects records above the 64 KiB envelope ceiling, then requires the exact
 magic/version, backend tag, a bounded 4 KiB source-revision
-field and other bounded length-prefixed fields,
+field, the four non-zero digest words, and other bounded length-prefixed fields,
 known engine ordinal, consistent direct/fallback flag, all capability counters,
 capability counters representable by the host `usize`, and no trailing bytes.
 `bytecode_artifact_metadata_valid` performs the same

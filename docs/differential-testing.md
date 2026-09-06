@@ -439,15 +439,17 @@ es diff reproduce artifacts/differential/z80-step/.../case.elisadiff
 ```
 
 When either side is an Elisascript module, the artifact also records its verified
-IR `canonical_module_bytes` and `module_fingerprint`. The bytes are a field-wise,
-order-sensitive encoding, and the `u64` fingerprint is their stable hash across
-the interpreter, bytecode, JIT, native, and Wasm lowerings. A report can therefore
-prove that all engines ran the same typed module without depending on host
-pointers or backend instruction numbering. The fingerprint is a correlation key
-rather than a cryptographic digest; the canonical bytes, verified module, and
-source revision remain part of the reproducible artifact.
+IR `canonical_module_bytes`, `module_fingerprint`, and canonical SHA-256 digest.
+The bytes are a field-wise, order-sensitive encoding, the `u64` fingerprint is
+their compact stable correlation key across the interpreter, bytecode, JIT,
+native, and Wasm lowerings, and the digest is the cryptographic identity used
+for cache/artifact binding. A report can therefore prove that all engines ran
+the same typed module without depending on host pointers or backend instruction
+numbering. The canonical bytes, verified module, digest, and source revision
+remain part of the reproducible artifact.
 Persisted metadata should use `canonical_bytecode_artifact_bytes`, the
-versioned length-prefixed `ESBC` envelope. Its
+version-2 length-prefixed `ESBC` envelope, which carries the four fixed-width
+digest words and rejects legacy version-1 records until they are migrated. Its
 `bytecode_artifact_fingerprint` is a deterministic cache/correlation key only;
 the artifact still must satisfy `bytecode_artifact_matches_module` against the
 exact verified module and capability report before execution.
