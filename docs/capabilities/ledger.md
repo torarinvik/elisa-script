@@ -86,6 +86,9 @@ The receiver registry now also covers `Text.len() -> usize`; its zero-argument
 lowerer emits the existing verified `Length` operation, and static fixtures
 cover both ordinary dispatch and shadowing by a source `len` function.
 
+The semantic fixture now independently checks the inferred `usize` result and
+rejects both a mismatched destination and an extra method argument (`dbcce1f`).
+
 `Text.split` and `Text.rsplit` now use registry arity, `text,i64` argument
 contracts, `Split` opcode metadata, and a declared `maxsplit` named-argument
 slot (`cd8ae26`).
