@@ -463,6 +463,10 @@ in hand; it derives both the compact fingerprint and all digest words in one
 typed constructor so callers cannot accidentally omit the cryptographic bind.
 It fails with `DifferentialRunnerError.Invalid` if canonical digest production
 returns an unavailable/oversized sentinel instead of downgrading to ESDF v3.
+All ESDF, ESPS, ESRP, ESVP, and ESCR borrowed text fields now use the shared
+`runtime_bounded_slice_end` subtraction guard; fixed-width lookahead admission
+also checks remaining bytes before indexing, so malformed sidecars fail before
+pointer construction.
 The bytecode adapter must additionally record `BytecodeCapabilityReport` before
 execution and the returned `Execution.engine` afterward. The report includes the
 direct/fallback decision and function, instruction, and global counts. A case that
