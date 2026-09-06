@@ -203,6 +203,9 @@ policy, while their existing host bridges continue enforcing their specialized
 ceilings. `interpret_with_resource_policy`,
 `execute_bytecode_with_resource_policy`, and
 `execute_bytecode_direct_only_with_resource_policy` make this boundary explicit;
+the bytecode loop receives the retained-trace limit before each `Observe`
+append, so a custom zero/one/boundary policy cannot allocate the default trace
+pool first;
 the legacy entrypoints remain compatibility wrappers that construct the default
 policy with a caller-supplied step limit. Full cross-bridge accounting,
 wall-clock enforcement, and adverse-resource evidence remain an open P6
