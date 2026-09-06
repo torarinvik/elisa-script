@@ -143,6 +143,14 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            raise)
+                if ! rg -q 'registry_spec\.known and registry_spec\.opcode == "Raise"' "$lowerer_file" || \
+                   rg -q 'callee_name == "raise"' "$lowerer_file" || \
+                   ! rg -q 'name: "raise".*arity_min: 1.*arity_max: 1.*argument_types: "error".*return_type: "void".*opcode: "Raise"' "$registry_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven raise dispatch\n' >&2
+                    exit 1
+                fi
+                ;;
             contains)
                 if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "Contains"' "$lowerer_file"; then
                     printf 'builtin registry audit: lowerer has no registry-driven contains dispatch\n' >&2
