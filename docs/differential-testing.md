@@ -206,6 +206,9 @@ typed `ProcessCapture` snapshot, whose `process_exit_status`, `process_stdout`, 
 single execution is important for nondeterministic tools: separate stdout, stderr,
 and status calls would observe three different runs. The intrinsic remains
 shell-free and keeps process failures in `error[ProcessError]`.
+The in-process adapter applies the same 64 MiB stdout/stderr ceiling before
+materializing a `DifferentialRun`; an oversized borrowed snapshot becomes an
+explicit `DifferentialRunOutcome.OutputLimit` instead of entering comparison.
 
 For Python-shaped adapters, the same snapshot can be read with typed fields:
 `capture.returncode`/`capture.exit_status`/`capture.status`, `capture.stdout`, and
