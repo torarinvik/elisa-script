@@ -458,6 +458,9 @@ when a module digest is available, emitting ESDF version 4; older version-1/2/3
 manifests remain decodable for compatibility but are explicitly unbound. A
 version-4 manifest with an all-zero or incomplete digest is rejected before a
 replay bundle is opened.
+Use `make_differential_artifact_manifest_for_module` when the verified module is
+in hand; it derives both the compact fingerprint and all digest words in one
+typed constructor so callers cannot accidentally omit the cryptographic bind.
 The bytecode adapter must additionally record `BytecodeCapabilityReport` before
 execution and the returned `Execution.engine` afterward. The report includes the
 direct/fallback decision and function, instruction, and global counts. A case that
