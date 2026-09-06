@@ -26,8 +26,8 @@ The source-declaration test intentionally ignores line-zero registry seed rows;
 otherwise a seeded global such as `contains` would incorrectly suppress its
 receiver contract.
 
-The compact registry currently contains 202 global spellings, 42 Text receiver
-spellings, and 9 Regex receiver spellings. The table below names the strict
+The compact registry currently contains 202 global spellings, 42 Text receiver,
+9 Regex receiver, and 2 Map receiver spellings. The table below names the strict
 scalar/text/regex core; filesystem, directory, process, environment, stream,
 and time families use the same row format and are covered by the registry
 audit.
@@ -134,6 +134,13 @@ Regex receiver dispatch (`search`, `match`, `fullmatch`, find/capture aliases,
 `split`, and `sub`) now applies the same source-callable guard in lowering and
 return-type inference; a source function with one of those names is not silently
 rewritten as a regex operation.
+
+Map receiver dispatch covers `keys()` and `values()`. Both take no arguments,
+reject set payloads, preserve the dictionary's concrete key/value descriptor in
+the lowerer, and emit the verified `MapKeys`/`MapValues` opcode. Their
+source-function shadowing guard is shared with Text, Regex, and Path receiver
+methods, so a user-defined `keys` or `values` UFCS function retains ordinary
+source-call precedence.
 
 Run the compiler-free audits:
 
