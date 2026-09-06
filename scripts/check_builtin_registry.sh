@@ -396,6 +396,20 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            sum|product)
+                expected_opcode="Add"
+                if [[ "$name" == "product" ]]; then
+                    expected_opcode="Multiply"
+                fi
+                if ! rg -q 'registry_spec\.known and registry_spec\.argument_types == "iterable\|range,i64" and \(registry_spec\.opcode == "Add" or registry_spec\.opcode == "Multiply"\) and registry_spec\.lowering_steps == "Comprehension,Fold"' "$lowerer_file" || \
+                   ! rg -q "name: \"$name\".*arity_min: 1.*arity_max: 2.*argument_types: \"iterable\\|range,i64\".*return_type: \"polymorphic\".*opcode: \"$expected_opcode\".*lowering_steps: \"Comprehension,Fold\".*argument_names: \"start\".*named_argument_index: 1" "$registry_file" || \
+                   ! rg -q 'polymorphic_collection_builtins_preserve_known_element_types' "$semantic_test_file" || \
+                   ! rg -q 'lowers_python_sum_product_any_all_as_state_machine_folds' "$lowering_test_file" || \
+                   ! rg -q 'shadowed-sum-product' "$lowering_test_file"; then
+                    printf 'builtin registry audit: sum/product registry/fold/source-shadow coverage is missing for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
             split)
                 if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "Split"' "$lowerer_file"; then
                     printf 'builtin registry audit: lowerer has no registry-driven split dispatch\n' >&2
