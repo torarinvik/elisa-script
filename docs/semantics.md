@@ -1914,6 +1914,14 @@ equal to `**` recursively traverses directories to a bounded depth of 128, does 
 follow symlink directories, and can match files at the terminal position. Results
 are relative or absolute in the same form as the pattern, sorted by unsigned byte
 order, deduplicated, and empty when there are no matches.
+The shared typed-builtin registry owns the working-directory aliases
+`current_directory`/`pwd`/`getcwd`, the directory listing aliases
+`list_directory`/`listdir`, and the glob entry point with their exact nominal
+`Path`/`Glob`, result, `Directory.Read`/`DirectoryError`, and opcode rows. It
+also owns the directory mutation aliases `create_directory`/`mkdir`,
+`create_directories`/`makedirs`/`mkdir_p`, `remove_directory`/`rmdir`, and
+`change_directory`/`cd`/`chdir`; these retain `Path -> bool`,
+`Directory.Write`/`DirectoryError`, and their distinct directory opcodes.
 
 ## Compile-time validation
 

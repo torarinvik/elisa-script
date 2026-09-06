@@ -65,7 +65,8 @@ for name in $registry_names; do
         exit 1
     fi
     argument_types="$(sed -n "s/.*name: \"$name\".*argument_types: \"\([^\"]*\)\".*/\1/p" "$registry_file" | head -1)"
-    if [[ -z "$argument_types" ]]; then
+    arity_min="$(sed -n "s/.*name: \"$name\".*arity_min: \([0-9][0-9]*\).*/\1/p" "$registry_file" | head -1)"
+    if [[ -z "$argument_types" && "${arity_min:-1}" != "0" ]]; then
         printf 'builtin registry audit: %s has no argument-type descriptor\n' "$name" >&2
         exit 1
     fi
@@ -345,6 +346,46 @@ for filesystem_name in read_bytes read_binary; do
         exit 1
     fi
 done
+for filesystem_name in current_directory pwd getcwd; do
+    if ! rg -q "name: \"$filesystem_name\", receiver: \"global\".*arity_min: 0.*arity_max: 0.*argument_types: \"\".*return_type: \"Path\".*effects: \"Directory.Read\".*errors: \"DirectoryError\".*opcode: \"CurrentDirectory\"" "$registry_file"; then
+        printf 'builtin registry audit: working-directory row is incomplete: %s\n' "$filesystem_name" >&2
+        exit 1
+    fi
+done
+for filesystem_name in list_directory listdir; do
+    if ! rg -q "name: \"$filesystem_name\", receiver: \"global\".*argument_types: \"Path\".*return_type: \"darray\[text\]\".*effects: \"Directory.Read\".*errors: \"DirectoryError\".*opcode: \"ListDirectory\"" "$registry_file"; then
+        printf 'builtin registry audit: directory-list row is incomplete: %s\n' "$filesystem_name" >&2
+        exit 1
+    fi
+done
+if ! rg -q 'name: "expand_glob", receiver: "global".*argument_types: "Glob".*return_type: "darray\[text\]".*effects: "Directory.Read".*errors: "DirectoryError".*opcode: "ExpandGlob"' "$registry_file" || ! rg -q 'expected == "Glob"' "$receiver_semantic_file"; then
+    printf 'builtin registry audit: glob-expansion row is incomplete\n' >&2
+    exit 1
+fi
+for filesystem_name in create_directory mkdir; do
+    if ! rg -q "name: \"$filesystem_name\", receiver: \"global\".*argument_types: \"Path\".*return_type: \"bool\".*effects: \"Directory.Write\".*errors: \"DirectoryError\".*opcode: \"CreateDirectory\"" "$registry_file"; then
+        printf 'builtin registry audit: directory-create row is incomplete: %s\n' "$filesystem_name" >&2
+        exit 1
+    fi
+done
+for filesystem_name in create_directories makedirs mkdir_p; do
+    if ! rg -q "name: \"$filesystem_name\", receiver: \"global\".*argument_types: \"Path\".*return_type: \"bool\".*effects: \"Directory.Write\".*errors: \"DirectoryError\".*opcode: \"CreateDirectories\"" "$registry_file"; then
+        printf 'builtin registry audit: recursive-directory-create row is incomplete: %s\n' "$filesystem_name" >&2
+        exit 1
+    fi
+done
+for filesystem_name in remove_directory rmdir; do
+    if ! rg -q "name: \"$filesystem_name\", receiver: \"global\".*argument_types: \"Path\".*return_type: \"bool\".*effects: \"Directory.Write\".*errors: \"DirectoryError\".*opcode: \"RemoveDirectory\"" "$registry_file"; then
+        printf 'builtin registry audit: directory-remove row is incomplete: %s\n' "$filesystem_name" >&2
+        exit 1
+    fi
+done
+for filesystem_name in change_directory cd chdir; do
+    if ! rg -q "name: \"$filesystem_name\", receiver: \"global\".*argument_types: \"Path\".*return_type: \"bool\".*effects: \"Directory.Write\".*errors: \"DirectoryError\".*opcode: \"ChangeDirectory\"" "$registry_file"; then
+        printf 'builtin registry audit: working-directory mutation row is incomplete: %s\n' "$filesystem_name" >&2
+        exit 1
+    fi
+done
 if ! rg -q 'spec\.argument_types == "Path,Path"' "$receiver_semantic_file"; then
     printf 'builtin registry audit: mixed Path/Path descriptor is not consumed by semantic checks\n' >&2
     exit 1
@@ -533,6 +574,14 @@ if ! rg -q 'lowers_nominal_text_append_with_file_effect_and_error' "$repo_root/t
 fi
 if ! rg -q 'def registry_remove_path_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_move_path_checks_both_nominal_paths\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_write_text_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_write_lines_checks_text_array_elements\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_write_bytes_checks_unsigned_byte_elements\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_read_text_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_read_bytes_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
     printf 'builtin registry audit: filesystem registry rows lack semantic negative fixtures\n' >&2
+    exit 1
+fi
+if ! rg -q 'def registry_directory_mutation_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_expand_glob_requires_a_nominal_glob\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
+    printf 'builtin registry audit: directory registry rows lack semantic negative fixtures\n' >&2
+    exit 1
+fi
+if ! rg -q 'lowers_python_directory_aliases_to_existing_typed_opcodes' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_typed_directory_lifecycle_and_working_directory_operations' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_deterministic_typed_directory_listing' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_native_typed_glob_expansion' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
+    printf 'builtin registry audit: directory registry rows lack lowering fixtures\n' >&2
     exit 1
 fi
 
