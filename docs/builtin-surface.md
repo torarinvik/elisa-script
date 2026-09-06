@@ -27,7 +27,7 @@ otherwise a seeded global such as `contains` would incorrectly suppress its
 receiver contract.
 
 The compact registry currently contains 202 global spellings, 42 Text receiver,
-9 Regex receiver, 9 Map receiver, 3 Set receiver, and 14 Array receiver spellings. The table below names the strict
+9 Regex receiver, 9 Map receiver, 4 Set receiver, and 14 Array receiver spellings. The table below names the strict
 scalar/text/regex core; filesystem, directory, process, environment, stream,
 and time families use the same row format and are covered by the registry
 audit.
@@ -144,10 +144,11 @@ verified `MapKeys`/`MapValues`/`CopyMap`/`IndexValid`/`PopMapValue`/
 `SetDefaultMapValue`/`Concat`/`DeleteIndex`/`MakeMap` identities and retain
 source-function shadowing precedence.
 
-Set receiver dispatch covers `add(value)`, `remove(value)`, and `clear()`.
-These rows preserve the set marker in the IR's map-shaped storage while
-selecting the verified `SetIndex`, `DeleteIndex`, and `MakeMap` identities;
-`discard(value)` remains a compatibility alias for `remove(value)`.
+Set receiver dispatch covers `add(value)`, `remove(value)`, `discard(value)`,
+and `clear()`. These rows preserve the set marker in the IR's map-shaped
+storage while selecting the verified `SetIndex`, `DeleteIndex`, and `MakeMap`
+identities; `discard(value)` is a typed set-only `DeleteIndex` row with
+no-op-on-missing semantics.
 
 Array receiver dispatch currently covers `copy()`, `pop(index?)`, `reverse()`,
 `sort(reverse?)`, `insert(index, value)`, `remove(value)`, `count(value)`,

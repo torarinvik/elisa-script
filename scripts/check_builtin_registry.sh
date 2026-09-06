@@ -2071,7 +2071,12 @@ for name in $set_method_names; do
         printf 'builtin registry audit: Set.%s has no argument-type descriptor\n' "$name" >&2
         exit 1
     fi
-    if ! rg -q "scripting_set_builtin_available\(state, method_name\) and method_name == \"$name\"" "$lowerer_file"; then
+    if [[ "$name" == "discard" ]]; then
+        if ! rg -q 'scripting_set_builtin_available\(state, method_name\)' "$lowerer_file" || ! rg -q 'typed_builtin_method_spec\("Set", "discard"\)' "$lowerer_file"; then
+            printf 'builtin registry audit: lowerer has no Set method branch for %s\n' "$name" >&2
+            exit 1
+        fi
+    elif ! rg -q "scripting_set_builtin_available\(state, method_name\) and method_name == \"$name\"" "$lowerer_file"; then
         printf 'builtin registry audit: lowerer has no Set method branch for %s\n' "$name" >&2
         exit 1
     fi
@@ -2081,6 +2086,10 @@ for name in $set_method_names; do
     fi
     if [[ "$name" == "remove" ]] && ! rg -q 'def lowers_mutable_set_remove_to_typed_delete\(' "$lowering_test_file"; then
         printf 'builtin registry audit: Set.remove lowering fixture is missing\n' >&2
+        exit 1
+    fi
+    if [[ "$name" == "discard" ]] && ! rg -q 'values\.discard\(' "$lowering_test_file"; then
+        printf 'builtin registry audit: Set.discard lowering fixture is missing\n' >&2
         exit 1
     fi
     if [[ "$name" == "clear" ]] && ! rg -q 'def lowers_mutable_set_clear_to_typed_empty_map\(' "$lowering_test_file"; then
