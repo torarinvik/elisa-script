@@ -1110,7 +1110,7 @@ for filesystem_name in symlink create_symlink; do
     fi
 done
 for filesystem_name in remove_path rm remove unlink; do
-    if ! rg -q "name: \"$filesystem_name\", receiver: \"global\".*argument_types: \"Path\".*return_type: \"bool\".*effects: \"File.Write\".*errors: \"\".*opcode: \"RemovePath\"" "$registry_file"; then
+    if ! rg -q "name: \"$filesystem_name\", receiver: \"global\".*argument_types: \"Path\".*return_type: \"bool\".*effects: \"File.Write\".*errors: \"FileIoError\".*opcode: \"RemovePath\"" "$registry_file"; then
         printf 'builtin registry audit: path-removal row is incomplete: %s\n' "$filesystem_name" >&2
         exit 1
     fi
@@ -1817,6 +1817,12 @@ fi
 for copy_name in copy_path cp copyfile; do
     if ! rg -q "name: \"$copy_name\", receiver: \"global\", arity_min: 2, arity_max: 2, argument_types: \"Path,Path\", return_type: \"bool\", effects: \"File.Read\", effects_secondary: \"File.Write\", errors: \"FileIoError\", opcode: \"CopyPath\"" "$registry_file"; then
         printf 'builtin registry audit: file-copy row is incomplete for %s\n' "$copy_name" >&2
+        exit 1
+    fi
+done
+for remove_name in remove_path rm remove unlink; do
+    if ! rg -q "name: \"$remove_name\", receiver: \"global\", arity_min: 1, arity_max: 1, argument_types: \"Path\", return_type: \"bool\", effects: \"File.Write\", errors: \"FileIoError\", opcode: \"RemovePath\"" "$registry_file"; then
+        printf 'builtin registry audit: file-removal row is incomplete for %s\n' "$remove_name" >&2
         exit 1
     fi
 done
