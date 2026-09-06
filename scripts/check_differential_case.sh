@@ -51,14 +51,14 @@ for boundary in 'validate_differential_runner(case.reference)' 'validate_differe
     fi
 done
 
-for boundary in 'DifferentialCaseIssueKind.InvalidWorldFileKind' 'DifferentialCaseIssueKind.InvalidWorldFilePayload' 'DifferentialWorldFileKind.Bytes' 'bytes: [0, 255, 7]' 'changed_binary_case.world.files'; do
+for boundary in 'DifferentialCaseIssueKind.InvalidWorldFileKind' 'DifferentialCaseIssueKind.InvalidWorldFilePayload' 'DifferentialCaseIssueKind.InvalidWorldStdinPayload' 'DifferentialWorldFileKind.Bytes' 'bytes: [0, 255, 7]' 'changed_binary_case.world.files'; do
     if ! rg -Fq "$boundary" "$source_file" "$fixture_file"; then
         printf 'differential case audit: missing binary fixture coverage %s\n' "$boundary" >&2
         exit 1
     fi
 done
 
-for boundary in 'stdin_bytes: mutable darray[u8]' 'stdin_binary: bool' 'InvalidProcessInputPayload' 'differential_process_preparation_preserves_binary_stdin'; do
+for boundary in 'stdin_bytes: mutable darray[u8]' 'stdin_binary: bool' 'InvalidProcessInputPayload' 'differential_process_preparation_preserves_binary_stdin' 'differential_world_binary_stdin_is_bounded_and_fingerprinted'; do
     if ! rg -Fq "$boundary" "$source_file" "$fixture_file"; then
         printf 'differential case audit: missing binary process-input coverage %s\n' "$boundary" >&2
         exit 1
