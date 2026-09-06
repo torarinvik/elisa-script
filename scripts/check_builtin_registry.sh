@@ -382,6 +382,20 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            keys|values)
+                expected_opcode="MapKeys"
+                if [[ "$name" == "values" ]]; then
+                    expected_opcode="MapValues"
+                fi
+                if ! rg -q 'registry_spec\.known and registry_spec\.argument_types == "dict" and \(registry_spec\.opcode == "MapKeys" or registry_spec\.opcode == "MapValues"\)' "$lowerer_file" || \
+                   ! rg -q "name: \"$name\".*arity_min: 1.*arity_max: 1.*argument_types: \"dict\".*return_type: \"array\".*opcode: \"$expected_opcode\"" "$registry_file" || \
+                   ! rg -q 'collection_and_capture_builtins_preserve_static_result_shapes' "$semantic_test_file" || \
+                   ! rg -q 'lowers_python_dictionary_global_aliases' "$lowering_test_file" || \
+                   ! rg -q 'shadowed-map-projections' "$lowering_test_file"; then
+                    printf 'builtin registry audit: keys/values registry/result/source-shadow coverage is missing for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
             split)
                 if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "Split"' "$lowerer_file"; then
                     printf 'builtin registry audit: lowerer has no registry-driven split dispatch\n' >&2
