@@ -1254,7 +1254,9 @@ if ! rg -q 'Regex,text' "$receiver_semantic_file" || ! rg -q 'Regex,text,text' "
     printf 'builtin registry audit: regex namespace descriptors lack semantic coverage\n' >&2
     exit 1
 fi
-if ! rg -q 'def lowers_registry_regex_namespace_aliases_with_modes\(' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'regex_findall' "$inference_file" || ! rg -q 'regex_split' "$inference_file" || ! rg -q 'regex_sub' "$inference_file"; then
+if ! rg -q 'def lowers_registry_regex_namespace_aliases_with_modes\(' "$repo_root/test/ir/elisascript_lowering_test.elisa" || \
+   ! rg -q 'spec\.known and spec\.return_type == "darray\[text\]"' "$inference_file" || \
+   ! rg -q 'spec\.known and spec\.return_type == "sview"' "$inference_file"; then
     printf 'builtin registry audit: regex namespace lowering/inference coverage is missing\n' >&2
     exit 1
 fi
