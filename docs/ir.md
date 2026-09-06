@@ -257,12 +257,15 @@ returns zero for that invalid metadata and otherwise hashes the exact envelope
 for cache keys or diagnostic correlation; it is intentionally not a substitute
 for validating the artifact against the verified module.
 
-`EsArtifactCache` keeps the I/O adapter separate from these typed records. Its
-admission classifier distinguishes current, migratable, and invalid ESIA/ESBC
-bytes, while its publication state machine requires `Empty → Staged →
-Committed` and treats aborts or restart-before-commit as non-committed. Atomic
-file writes, fsync, rename, and crash-recovery tests still belong to the host
-cache adapter.
+`EsArtifactCache` keeps typed admission beside a bounded POSIX adapter. Its
+load helpers reject files larger than the 64 KiB envelope before allocation and
+return both borrowed bytes and a current/migratable/invalid decision. Its
+publication helpers write through `FileStream` to a staging path, close the
+handle, remove the staging file on a write/close failure, and publish only with
+one `rename` edge after `Empty → Staged → Committed` admission. Restart-before-
+commit remains non-committed. Directory fsync, crash recovery, concurrent
+writer arbitration, and corruption-repair execution evidence remain open host
+qualification work.
 
 `EsRuntime::FileStream` is the first typed large-file vertical slice. A handle
 is opened with an explicit read/text/binary/write/append mode and a byte budget

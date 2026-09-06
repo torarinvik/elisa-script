@@ -1,13 +1,20 @@
 # Bounded cache-boundary decisions for persisted IR and bytecode metadata.
 #
-# This module deliberately stops at typed admission and publication state.  It
-# does not perform filesystem I/O: cache backends can implement atomic write,
-# restart recovery, and fsync policy around this contract without duplicating
-# envelope-version or migration rules.
+# This module keeps admission and publication state beside a bounded POSIX
+# adapter.  The adapter writes a staged file, closes it through the typed
+# stream API, and publishes it with one rename edge; crash recovery and fsync
+# policy remain explicit host qualifications rather than hidden assumptions.
+
+error ArtifactCacheIoError:
+    NotAdmissible
+    StagingWriteFailed(path: cstr)
+    PublishFailed(path: cstr)
+
 
 module EsArtifactCache:
     using EsIrArtifact
     using EsBytecode
+    using EsRuntime
 
     private:
         const ARTIFACT_CACHE_MAX_BYTES: usize = 65536
@@ -50,6 +57,64 @@ module EsArtifactCache:
             fingerprint: u64 = 0
 
 
+        struct ArtifactCacheLoad:
+            bytes: darray[u8]
+            decision: ArtifactCacheDecision
+
+
+    private:
+        def artifact_cache_read_bounded_file(a: mutable Arena&, path: cstr) -> darray[u8] error[FileIoError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic]:
+            size: i64 = try file_size(path)
+            return [] if size == 0
+            raise FileIoError.ReadFailed(path) if size < 0 or size.usize().i64() != size or size.usize() > ARTIFACT_CACHE_MAX_BYTES
+            bytes: darray[u8] = try read_entire_file(a, path)
+            raise FileIoError.ReadFailed(path) if bytes.count > ARTIFACT_CACHE_MAX_BYTES
+            return bytes
+
+
+        def artifact_cache_write_staging(staging_path: cstr, bytes: mutable darray[u8]&) -> void error[ArtifactCacheIoError, FileStreamError] can[Blocking.IO, Memory.Allocate, Memory.Release]:
+            raise ArtifactCacheIoError.StagingWriteFailed(staging_path) if bytes.count == 0 or bytes.count > ARTIFACT_CACHE_MAX_BYTES or bytes.items == null
+            stream: mutable FileStream = try file_stream_open(staging_path, FileStreamMode.WriteBinary, bytes.count)
+            offset: mutable usize = 0
+            while offset < bytes.count:
+                remaining: usize = bytes.count - offset
+                buffer: mutable u8& = bytes.items + offset
+                catch file_stream_write_chunk(stream, buffer, remaining):
+                    ok progress:
+                        if progress.count == 0 or progress.count > remaining:
+                            _ = file_stream_close(stream)
+                            _ = remove_file(staging_path)
+                            raise ArtifactCacheIoError.StagingWriteFailed(staging_path)
+                        offset <- offset + progress.count
+                    error failure:
+                        _ = file_stream_close(stream)
+                        _ = remove_file(staging_path)
+                        raise failure
+            catch file_stream_close(stream):
+                ok:
+                    pass
+                error failure:
+                    _ = remove_file(staging_path)
+                    raise failure
+            raise ArtifactCacheIoError.StagingWriteFailed(staging_path) if offset != bytes.count
+
+
+        def artifact_cache_publish_file(staging_path: cstr, destination_path: cstr, bytes: mutable darray[u8]&, decision: ArtifactCacheDecision) -> ArtifactCachePublication error[ArtifactCacheIoError, FileStreamError] can[Blocking.IO, Memory.Allocate, Memory.Release]:
+            publication: ArtifactCachePublication = artifact_cache_stage(decision, bytes.count)
+            raise ArtifactCacheIoError.NotAdmissible if publication.state != ArtifactCacheLifecycle.Staged
+            catch artifact_cache_write_staging(staging_path, bytes):
+                ok:
+                    pass
+                error failure:
+                    _ = remove_file(staging_path)
+                    raise failure
+            if elisascript_posix_rename(staging_path.cast[u8&], destination_path.cast[u8&]) != 0:
+                _ = remove_file(staging_path)
+                raise ArtifactCacheIoError.PublishFailed(destination_path)
+            return artifact_cache_commit(publication)
+
+
+    public:
         def classify_module_artifact_cache(bytes: darray[u8]&) -> ArtifactCacheDecision:
             status: ModuleArtifactEnvelopeStatus = module_artifact_envelope_status(bytes)
             return ArtifactCacheDecision{kind: ArtifactCacheKind.IrMetadata, admission: ArtifactCacheAdmission.NeedsMigration} if status == ModuleArtifactEnvelopeStatus.Legacy
@@ -66,6 +131,24 @@ module EsArtifactCache:
             decoded: BytecodeArtifactDecode = decode_bytecode_artifact(bytes)
             return ArtifactCacheDecision{kind: ArtifactCacheKind.BytecodeMetadata, admission: ArtifactCacheAdmission.Invalid} if not decoded.valid
             return ArtifactCacheDecision{kind: ArtifactCacheKind.BytecodeMetadata, admission: ArtifactCacheAdmission.Current, fingerprint: decoded.artifact.module_fingerprint}
+
+
+        def load_module_artifact_file(a: mutable Arena&, path: cstr) -> ArtifactCacheLoad error[FileIoError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic]:
+            bytes: darray[u8] = try artifact_cache_read_bounded_file(a, path)
+            return ArtifactCacheLoad{bytes: bytes, decision: classify_module_artifact_cache(bytes)}
+
+
+        def load_bytecode_artifact_file(a: mutable Arena&, path: cstr) -> ArtifactCacheLoad error[FileIoError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic]:
+            bytes: darray[u8] = try artifact_cache_read_bounded_file(a, path)
+            return ArtifactCacheLoad{bytes: bytes, decision: classify_bytecode_artifact_cache(bytes)}
+
+
+        def publish_module_artifact_file(staging_path: cstr, destination_path: cstr, bytes: mutable darray[u8]&) -> ArtifactCachePublication error[ArtifactCacheIoError, FileStreamError] can[Blocking.IO, Memory.Allocate, Memory.Release]:
+            return try artifact_cache_publish_file(staging_path, destination_path, bytes, classify_module_artifact_cache(bytes))
+
+
+        def publish_bytecode_artifact_file(staging_path: cstr, destination_path: cstr, bytes: mutable darray[u8]&) -> ArtifactCachePublication error[ArtifactCacheIoError, FileStreamError] can[Blocking.IO, Memory.Allocate, Memory.Release]:
+            return try artifact_cache_publish_file(staging_path, destination_path, bytes, classify_bytecode_artifact_cache(bytes))
 
 
         def artifact_cache_decision_valid(decision: ArtifactCacheDecision&) -> bool:
