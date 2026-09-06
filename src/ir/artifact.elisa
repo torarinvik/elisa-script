@@ -17,6 +17,32 @@ module EsIrArtifact:
         # malformed report from retaining oversized borrowed views while still
         # allowing backend-specific labels and source revisions.
         const ARTIFACT_MAX_METADATA_TEXT_BYTES: usize = 4096
+        const ARTIFACT_MAX_ENVELOPE_BYTES: usize = 65536
+
+
+        def module_artifact_read_u64(bytes: darray[u8]&, offset: mutable usize&, value: mutable u64&) -> bool:
+            return false if offset > bytes.count or bytes.count - offset < 8
+            value <- 0
+            for shift in 0..<8 |bytes, offset, value|:
+                value <- value | (bytes[offset + shift].u64() << (shift * 8))
+            offset <- offset + 8
+            return true
+
+
+        def module_artifact_read_text_bounds(bytes: darray[u8]&, offset: mutable usize&, start: mutable usize&, end: mutable usize&) -> bool:
+            length: mutable u64 = 0
+            return false if not module_artifact_read_u64(bytes, offset, length)
+            return false if length.usize().u64() != length
+            start <- offset
+            return false if not runtime_bounded_slice_end(offset, length.usize(), bytes.count, end)
+            offset <- end
+            return true
+
+
+        def module_artifact_text_view(bytes: darray[u8]&, start: usize, end: usize) -> sview can[Unsafe.PointerCast]:
+            return sview("", 0, 0) if end <= start
+            base: u8& = (&bytes[start]).cast[u8&]
+            return base[0:(end - start)]
 
 
     public:
@@ -29,6 +55,11 @@ module EsIrArtifact:
             digest_1: u64
             digest_2: u64
             digest_3: u64
+
+
+        struct ModuleArtifactDecode:
+            valid: bool
+            artifact: ModuleArtifact
 
 
         def make_module_artifact(module: Module&, backend: sview, source_revision: sview) -> ModuleArtifact can[Memory.Allocate, Abort.Panic]:
@@ -44,3 +75,66 @@ module EsIrArtifact:
 
         def artifact_fingerprint_matches_module(artifact: ModuleArtifact&, module: Module&) -> bool can[Memory.Allocate, Abort.Panic]:
             return artifact_metadata_valid(artifact) and artifact.fingerprint == module_fingerprint(module) and artifact.digest_0 == canonical_module_digest_word(module, 0) and artifact.digest_1 == canonical_module_digest_word(module, 1) and artifact.digest_2 == canonical_module_digest_word(module, 2) and artifact.digest_3 == canonical_module_digest_word(module, 3)
+
+
+        # Canonical persisted IR metadata. The verified module bytes remain a
+        # separate payload, while this bounded envelope lets a cache reject
+        # stale backend/source metadata before opening that payload.
+        def canonical_module_artifact_bytes(artifact: ModuleArtifact) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+            return [] if not artifact_metadata_valid(artifact)
+            output: mutable darray[u8] = []
+            canonical_artifact_emit_byte(output, 69)
+            canonical_artifact_emit_byte(output, 83)
+            canonical_artifact_emit_byte(output, 73)
+            canonical_artifact_emit_byte(output, 65)
+            canonical_artifact_emit_byte(output, artifact.format_version)
+            canonical_artifact_emit_text(output, artifact.backend)
+            canonical_artifact_emit_text(output, artifact.source_revision)
+            canonical_artifact_emit_u64(output, artifact.fingerprint)
+            canonical_artifact_emit_u64(output, artifact.digest_0)
+            canonical_artifact_emit_u64(output, artifact.digest_1)
+            canonical_artifact_emit_u64(output, artifact.digest_2)
+            canonical_artifact_emit_u64(output, artifact.digest_3)
+            return [] if output.count > ARTIFACT_MAX_ENVELOPE_BYTES else output
+
+
+        def module_artifact_bytes_valid(bytes: darray[u8]&) -> bool:
+            return false if bytes.count < 5 or bytes.count > ARTIFACT_MAX_ENVELOPE_BYTES
+            return false if bytes[0] != 69 or bytes[1] != 83 or bytes[2] != 73 or bytes[3] != 65 or bytes[4] != 2
+            offset: mutable usize = 5
+            backend_start: mutable usize = 0
+            backend_end: mutable usize = 0
+            return false if not module_artifact_read_text_bounds(bytes, offset, backend_start, backend_end)
+            return false if backend_end <= backend_start or backend_end - backend_start > ARTIFACT_MAX_METADATA_TEXT_BYTES
+            revision_start: mutable usize = 0
+            revision_end: mutable usize = 0
+            return false if not module_artifact_read_text_bounds(bytes, offset, revision_start, revision_end)
+            return false if revision_end - revision_start > ARTIFACT_MAX_METADATA_TEXT_BYTES
+            fingerprint: mutable u64 = 0
+            return false if not module_artifact_read_u64(bytes, offset, fingerprint)
+            digest_0: mutable u64 = 0
+            digest_1: mutable u64 = 0
+            digest_2: mutable u64 = 0
+            digest_3: mutable u64 = 0
+            return false if not module_artifact_read_u64(bytes, offset, digest_0) or not module_artifact_read_u64(bytes, offset, digest_1) or not module_artifact_read_u64(bytes, offset, digest_2) or not module_artifact_read_u64(bytes, offset, digest_3)
+            return false if digest_0 == 0 or digest_1 == 0 or digest_2 == 0 or digest_3 == 0
+            return offset == bytes.count
+
+
+        def decode_module_artifact(bytes: darray[u8]&) -> ModuleArtifactDecode can[Unsafe.PointerCast]:
+            invalid: ModuleArtifact = ModuleArtifact{format_version: 2, fingerprint: 0, digest_0: 0, digest_1: 0, digest_2: 0, digest_3: 0}
+            return ModuleArtifactDecode{valid: false, artifact: invalid} if not module_artifact_bytes_valid(bytes)
+            offset: mutable usize = 5
+            backend_start: mutable usize = 0
+            backend_end: mutable usize = 0
+            revision_start: mutable usize = 0
+            revision_end: mutable usize = 0
+            fingerprint: mutable u64 = 0
+            return ModuleArtifactDecode{valid: false, artifact: invalid} if not module_artifact_read_text_bounds(bytes, offset, backend_start, backend_end) or not module_artifact_read_text_bounds(bytes, offset, revision_start, revision_end) or not module_artifact_read_u64(bytes, offset, fingerprint)
+            digest_0: mutable u64 = 0
+            digest_1: mutable u64 = 0
+            digest_2: mutable u64 = 0
+            digest_3: mutable u64 = 0
+            return ModuleArtifactDecode{valid: false, artifact: invalid} if not module_artifact_read_u64(bytes, offset, digest_0) or not module_artifact_read_u64(bytes, offset, digest_1) or not module_artifact_read_u64(bytes, offset, digest_2) or not module_artifact_read_u64(bytes, offset, digest_3)
+            decoded: ModuleArtifact = ModuleArtifact{format_version: 2, backend: module_artifact_text_view(bytes, backend_start, backend_end), source_revision: module_artifact_text_view(bytes, revision_start, revision_end), fingerprint: fingerprint, digest_0: digest_0, digest_1: digest_1, digest_2: digest_2, digest_3: digest_3}
+            return ModuleArtifactDecode{valid: true, artifact: decoded}

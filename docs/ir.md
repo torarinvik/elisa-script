@@ -130,6 +130,10 @@ SHA-256 digest; the owned canonical byte stream is kept as the separate
 writer. `artifact_metadata_valid` rejects version mismatches, an empty backend
 label, oversized backend/source-revision views, or an all-zero digest before
 `artifact_fingerprint_matches_module` correlates both identities with a module.
+`canonical_module_artifact_bytes` persists this metadata as a bounded version-2
+`ESIA` envelope, and `module_artifact_bytes_valid`/`decode_module_artifact`
+reject legacy versions, malformed lengths, incomplete digests, and trailing
+bytes before exposing borrowed text views.
 
 ## Bytecode lowering
 
