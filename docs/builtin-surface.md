@@ -39,6 +39,7 @@ audit.
 | Text predicates | `starts_with`, `startswith`, `ends_with`, `endswith` | two text values to `bool` |
 | Text transforms | `replace`, `strip`, `trim`, `lstrip`, `rstrip`, `lower`, `upper`, `casefold` | text result; `casefold` currently reuses `LowerText` until a Unicode-aware opcode exists; trim aliases select both/left/right modes |
 | Text aggregates | `partition`, `rpartition`, `split`, `split_lines`, `splitlines`, `join` | `darray[sview]` split/partition results and typed `join(darray[sview], text) -> sview`; split accepts an optional signed `i64` `maxsplit` at named slot 2 |
+| Array order aggregates | `reversed`, `sorted` | one array input preserves the concrete element type; `sorted` accepts an optional positional or named `reverse: bool` and lowers through the checked array state machine |
 | Numeric parsing/formatting | `parse_int`, `format_int`, `parse_float`, `format_float` | checked `i64`/`f64` conversions; parsers require `ParseError` |
 | Scalar formatting | `format_bool`, `format_char` | one scalar to `sview` |
 | Regex facades | `matches`, `replace_regex`, `split_regex`, `find_regex`, `capture_regex`, `captures_regex` | text/`Regex` operands; `bool`, `sview`, or `darray[sview]` result |
