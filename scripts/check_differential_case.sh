@@ -134,7 +134,11 @@ for fixture in \
     differential_process_execution_applies_environment_only_in_child \
     differential_process_execution_keeps_nonzero_exit_status_as_data \
     differential_process_execution_rejects_invalid_invocation_through_error_channel \
-    differential_process_execution_rejects_zero_output_limit_before_launch; do
+    differential_process_execution_rejects_zero_output_limit_before_launch \
+    differential_process_execution_rejects_output_beyond_declared_limit \
+    differential_process_execution_rejects_stderr_beyond_declared_limit \
+    differential_process_execution_reports_bounded_timeout \
+    differential_process_timeout_owns_descendant_process_group; do
     if ! rg -q "def $fixture\(" "$fixture_file"; then
         printf 'differential case audit: missing process execution fixture %s\n' "$fixture" >&2
         exit 1
