@@ -329,6 +329,15 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            assert)
+                if ! rg -q 'registry_spec\.known and registry_spec\.opcode == "Assert"' "$lowerer_file" || \
+                   ! rg -q 'name: "assert".*argument_types: "bool".*return_type: "void".*errors: "AssertionError".*opcode: "Assert"' "$registry_file" || \
+                   ! rg -q 'source_assert_declaration_takes_precedence_over_registry_assert_builtin' "$semantic_test_file" || \
+                   ! rg -q 'shadowed-assert' "$lowering_test_file"; then
+                    printf 'builtin registry audit: assert registry/source-shadow coverage is missing\n' >&2
+                    exit 1
+                fi
+                ;;
             split)
                 if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "Split"' "$lowerer_file"; then
                     printf 'builtin registry audit: lowerer has no registry-driven split dispatch\n' >&2
