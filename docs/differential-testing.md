@@ -360,8 +360,9 @@ Normalization must be explicit and reported. The framework must never silently
 discard nondeterministic fields merely to make a test pass.
 
 Float comparison is exact by default. Explicit absolute and relative tolerances
-must be nonnegative; NaN never equals anything, equal infinities compare equal,
-and an infinity cannot match a finite value through relative scaling.
+must be finite and nonnegative; case validation rejects NaN and infinity before
+launch. NaN never equals anything, equal infinities compare equal, and an
+infinity cannot match a finite value through relative scaling.
 
 ## Deterministic worlds
 
