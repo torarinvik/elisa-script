@@ -152,6 +152,10 @@ the replay-frame range and each saved SSA-id, runtime-value, and handler-name
 slice against the bounded continuation pools; malformed metadata reports
 `InvalidContinuation` and is never indexed.
 
+The complete continuation decision record, including zero/duplicate/late resume
+outcomes, reentrancy, cleanup, cancellation, and stable-profile restrictions,
+lives in [`docs/continuation-policy.md`](continuation-policy.md).
+
 ## Module constants
 
 Immutable, initialized module-level constants are available from every function
