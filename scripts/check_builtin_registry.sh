@@ -673,6 +673,23 @@ for filesystem_name in path_normalize normalize_path normpath; do
         exit 1
     fi
 done
+if ! rg -q 'path_join_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'path_join_spec\.opcode == "PathJoin"' "$lowerer_file" || \
+   ! rg -q 'path_parent_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'path_parent_spec\.opcode == "PathParent"' "$lowerer_file" || \
+   ! rg -q 'path_name_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'path_name_spec\.opcode == "PathName"' "$lowerer_file" || \
+   ! rg -q 'path_component_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'path_component_spec\.opcode == "PathExtension"' "$lowerer_file" || \
+   ! rg -q 'path_absolute_predicate_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'path_absolute_predicate_spec\.opcode == "PathIsAbsolute"' "$lowerer_file" || \
+   ! rg -q 'path_normalize_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'path_normalize_spec\.opcode == "PathNormalize"' "$lowerer_file" || \
+   ! rg -q 'path_relative_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'path_relative_spec\.opcode == "PathRelative"' "$lowerer_file"; then
+    printf 'builtin registry audit: pure path lowerers do not consume registry result/opcode metadata\n' >&2
+    exit 1
+fi
 for filesystem_name in path_absolute absolute_path abspath; do
     if ! rg -q "name: \"$filesystem_name\", receiver: \"global\".*argument_types: \"Path\".*return_type: \"Path\".*effects: \"Directory.Read\".*errors: \"DirectoryError\".*opcode: \"PathAbsolute\"" "$registry_file"; then
         printf 'builtin registry audit: absolute-path construction row is incomplete: %s\n' "$filesystem_name" >&2

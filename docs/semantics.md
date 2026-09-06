@@ -1408,6 +1408,8 @@ target is returned unchanged. The `relative_path` and `relpath` aliases, plus
 typed operation. The shared typed-builtin registry owns `path_join`, the three
 relative-path spellings, and the three normalization spellings with their
 nominal/mixed descriptors and `PathJoin`/`PathRelative`/`PathNormalize` opcodes.
+The lowerer consumes those result and opcode rows directly for all pure path
+aliases, including parent/name/extension/stem and absolute predicates.
 
 `path_real(path: Path) -> Path error[FileIoError] can[File.Read]` resolves a path
 through the host filesystem, following symbolic links and returning the
