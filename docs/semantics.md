@@ -1194,7 +1194,10 @@ their exact target scalar as an identity or parse `sview` through the checked
 `ParseError` path. `bool(value) -> bool` is likewise an exact-type identity.
 They reject lossy numeric coercions, truthiness conversions, aggregates, and
 other integer widths; source declarations named `int`, `float`, or `bool`
-shadow these compiler-known facades.
+shadow these compiler-known facades. Their rows now live in the shared typed
+registry, including the identity-versus-parse lowering selection and the
+ParseError contract, so semantic argument checking, inference, and lowering
+consume one descriptor rather than spelling these constructor rules separately.
 
 Registry-backed builtins record their declared effect and error rows at the
 shared global-call lowering boundary before the corresponding IR operation is

@@ -157,6 +157,24 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            int)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "ParseInt" and registry_spec\.lowering_steps == "ParseInt\|IdentityInt"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven integer-constructor dispatch\n' >&2
+                    exit 1
+                fi
+                ;;
+            float)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "ParseFloat" and registry_spec\.lowering_steps == "ParseFloat\|IdentityFloat"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven float-constructor dispatch\n' >&2
+                    exit 1
+                fi
+                ;;
+            bool)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "Copy" and registry_spec\.lowering_steps == "IdentityBool"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven bool-constructor dispatch\n' >&2
+                    exit 1
+                fi
+                ;;
             starts_with|startswith)
                 if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "StartsWith"' "$lowerer_file"; then
                     printf 'builtin registry audit: lowerer has no registry-driven starts-with dispatch for %s\n' "$name" >&2
@@ -2114,7 +2132,17 @@ if ! rg -q 'def typed_builtin_result_type' "$lowerer_file" || \
     printf 'builtin registry audit: aggregate registry rows do not share lowerer result-shape conversion\n' >&2
     exit 1
 fi
-if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "text" and registry_spec\.opcode == "ParseInt"' "$lowerer_file" || \
+if ! rg -q 'name: "int", receiver: "global".*argument_types: "text\|i64".*return_type: "i64".*errors: "ParseError".*opcode: "ParseInt".*lowering_steps: "ParseInt\|IdentityInt"' "$registry_file" || \
+   ! rg -q 'name: "float", receiver: "global".*argument_types: "text\|f64".*return_type: "f64".*errors: "ParseError".*opcode: "ParseFloat".*lowering_steps: "ParseFloat\|IdentityFloat"' "$registry_file" || \
+   ! rg -q 'name: "bool", receiver: "global".*argument_types: "bool".*return_type: "bool".*errors: "".*opcode: "Copy".*lowering_steps: "IdentityBool"' "$registry_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "ParseInt" and registry_spec\.lowering_steps == "ParseInt\|IdentityInt"' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "ParseFloat" and registry_spec\.lowering_steps == "ParseFloat\|IdentityFloat"' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "Copy" and registry_spec\.lowering_steps == "IdentityBool"' "$lowerer_file" || \
+   ! rg -q 'spec\.argument_types == "text\|i64"' "$receiver_semantic_file" || \
+   ! rg -q 'spec\.argument_types == "text\|f64"' "$receiver_semantic_file" || \
+   ! rg -q 'expected == "text\|i64"' "$receiver_semantic_file" || \
+   ! rg -q 'expected == "text\|f64"' "$receiver_semantic_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "text" and registry_spec\.opcode == "ParseInt"' "$lowerer_file" || \
    ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "text" and registry_spec\.opcode == "ParseFloat"' "$lowerer_file" || \
    ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "i64" and registry_spec\.opcode == "FormatInt"' "$lowerer_file" || \
    ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "f64" and registry_spec\.opcode == "FormatFloat"' "$lowerer_file" || \
