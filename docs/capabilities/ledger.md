@@ -111,6 +111,8 @@ ordered payload for multi-parameter `perform` and `signal` operations; the exist
 IR and handler callback ABI already carry arbitrary operand counts (`dc122b3`),
 with static lowering fixtures for matching and mismatched two-parameter effects
 (`066d585`).
+Statement-form `signal` rejects a source-declared non-void result, preserving the
+distinction between fire-and-forget signals and value-producing `perform`.
 
 ## Evidence record template
 

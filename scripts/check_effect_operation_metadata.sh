@@ -109,6 +109,10 @@ for message in 'perform payload arity does not match the declared effect operati
         exit 1
     fi
 done
+if ! rg -q 'signal requires a void declared effect operation result' "$lowerer_file"; then
+    printf 'effect operation metadata audit: signal lowering does not reject non-void declarations\n' >&2
+    exit 1
+fi
 
 if ! rg -q 'exact source spans for the parenthesized payload list and result type|payload_signature|result_signature' "$docs_file"; then
     printf 'effect operation metadata audit: semantics documentation omits preserved signature spans\n' >&2
