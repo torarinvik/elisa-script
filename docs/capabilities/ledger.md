@@ -87,7 +87,7 @@ scalar/text/collection descriptor checks with the same source-declaration
 shadowing rule (`bf5fd4c`).
 
 Receiver return-type inference now applies the source-declaration guard to both
-registry rows and legacy Text fallback results (`working tree`).
+registry rows and legacy Text fallback results (`90a1581`).
 
 ## Evidence record template
 
