@@ -31,4 +31,6 @@ rg -q 'ContinuationPolicy\.MultiClone' "$verifier"
 rg -q 'ContinuationPolicy\.MultiReplay' "$verifier"
 rg -q 'capture\.type\.kind in \{TypeKind\.Array, TypeKind\.Map\}' "$verifier"
 rg -q 'multi_shot_rejects_mutable_aggregate_capture' "$tests"
+rg -q 'set_capture: ContinuationCapture' "$tests"
+rg -q 'issue_count\(issues, IssueKind\.UnsafeMultiShot\) == 3' "$tests"
 printf 'continuation policy audit: decision record, verifier guard, and IR fixture present\n'
