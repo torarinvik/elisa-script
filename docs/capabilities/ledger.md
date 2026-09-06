@@ -76,7 +76,7 @@ leaving unknown expressions conservative (`9ee7cd2`).
 
 Registry `darray[text]` result rows for Text split, line-split, and partition
 methods now flow through the structural type channel when the canonical
-`darray[sview]` row is interned (`working tree`).
+`darray[sview]` row is interned (`69de436`).
 
 ## Evidence record template
 
