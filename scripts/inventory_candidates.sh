@@ -26,9 +26,23 @@ fi
 # callers should split a larger project root into reviewable slices instead of
 # turning discovery into an unbounded whole-drive operation.
 max_scan_files=200000
-scan_file_count="$(find "$scan_root" \
+scan_tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/elisascript-candidate-scan.XXXXXX")" || {
+    echo "inventory_candidates: unable to create private temporary directory" >&2
+    exit 3
+}
+cleanup_scan_tmp() {
+    rm -rf -- "$scan_tmp_dir"
+}
+trap cleanup_scan_tmp EXIT HUP INT TERM
+
+scan_census_file="$scan_tmp_dir/census.paths"
+if ! find "$scan_root" \
     \( -path '*/.git' -o -path '*/node_modules' -o -path '*/.venv' -o -path '*/__pycache__' -o -path '*/vendor' -o -path '*/third_party' \) -prune -o \
-    -type f -print 2>/dev/null | wc -l | tr -d '[:space:]')"
+    -type f -print > "$scan_census_file" 2>/dev/null; then
+    echo "inventory_candidates: regular-file traversal failed for $scan_root" >&2
+    exit 3
+fi
+scan_file_count="$(wc -l < "$scan_census_file" | tr -d '[:space:]')"
 case "$scan_file_count" in
     ''|*[!0-9]*)
         echo "inventory_candidates: unable to count regular files under $scan_root" >&2
@@ -77,17 +91,22 @@ candidate_disposition() {
 # unnecessary. Materialize the bounded path list in a private temporary file;
 # redirecting the state-machine reader from a regular file avoids keeping a
 # producer pipe open while a shell `while read` waits for EOF on large roots.
-candidate_paths_file="$(mktemp "${TMPDIR:-/tmp}/elisascript-candidates.XXXXXX")" || {
+candidate_paths_file="$scan_tmp_dir/candidate.paths"
+if ! : > "$candidate_paths_file"; then
     echo "inventory_candidates: unable to create a private path-list file" >&2
     exit 3
-}
-cleanup_candidate_paths() {
-    rm -f -- "$candidate_paths_file"
-}
-trap cleanup_candidate_paths EXIT HUP INT TERM
+fi
 
 for candidate_pattern in '*.py' '*.pl' '*.pm' '*.awk' '*.sh' '*.bash' '*.zsh' '*.fish' 'Makefile' 'makefile'; do
-    rg --files --hidden -g "$candidate_pattern" "$scan_root" 2>/dev/null >> "$candidate_paths_file" || true
+    if rg --files --hidden -g "$candidate_pattern" "$scan_root" 2>/dev/null >> "$candidate_paths_file"; then
+        :
+    else
+        rg_status=$?
+        if [ "$rg_status" -ne 1 ]; then
+            echo "inventory_candidates: filename search failed for pattern $candidate_pattern" >&2
+            exit 3
+        fi
+    fi
 done
 
 while IFS= read -r candidate_path; do

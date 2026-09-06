@@ -7,7 +7,8 @@ dispositions until a maintainer reviews the record. The scanner refuses roots
 with more than 200,000 regular files, emits mutually exclusive filename
 patterns into a private temporary path list, and reads that list through an
 explicit bounded state machine rather than a global de-duplication buffer;
-split larger roots before generating a manifest.
+regular-file traversal and filename-search failures fail closed; split larger
+roots before generating a manifest.
 
 `docs/migration-project-roots.tsv` is the checked-in partition manifest for the
 declared project roots. `scripts/inventory_project_roots.sh` reads it and runs
