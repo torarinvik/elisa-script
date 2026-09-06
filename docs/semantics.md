@@ -242,6 +242,8 @@ verified `Length` operation as `.count` and slice bounds. Text length follows
 Elisa's byte-oriented `sview` contract. A source function named `len` shadows
 the builtin like any other direct call, so ports can introduce a local helper
 without changing resolution rules.
+The shared registry owns the `collection|text -> usize` descriptor and `Length`
+opcode; the global lowerer consumes that row before emitting the instruction.
 
 Text receivers also expose `value.len() -> usize` as a zero-argument registry
 method. It is source-shadowable by a direct `len` function and lowers to the

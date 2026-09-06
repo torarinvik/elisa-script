@@ -1116,6 +1116,12 @@ if ! rg -q 'state\.required_errors\.push\(spec\.errors\)' "$lowerer_file" || \
 fi
 # Fixed global text aliases must derive their result shape, opcode, and any
 # alias-specific mode from the same registry rows used by semantic checking.
+if ! rg -q 'name: "len", receiver: "global".*argument_types: "collection\|text".*return_type: "usize".*effects: "".*errors: "".*opcode: "Length"' "$registry_file" || \
+   ! rg -q 'len_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'len_spec\.opcode == "Length"' "$lowerer_file"; then
+    printf 'builtin registry audit: global len lowerer does not consume registry shape/result/opcode metadata\n' >&2
+    exit 1
+fi
 for text_name in starts_with startswith; do
     if ! rg -q "name: \"$text_name\", receiver: \"global\".*argument_types: \"text,text\".*return_type: \"bool\".*effects: \"\".*errors: \"\".*opcode: \"StartsWith\"" "$registry_file"; then
         printf 'builtin registry audit: starts-with row is incomplete: %s\n' "$text_name" >&2
