@@ -125,7 +125,9 @@ preventing capability/error rows from disappearing at the source-to-IR boundary.
 The interpreter and direct-bytecode adapters now consume one shared
 `ES_RUNTIME_DEFAULT_MAX_EXECUTION_CALL_DEPTH` limit for host-recursive calls and
 handler/error-stack depth, with a compiler-free audit and IR fixture preventing
-backend drift.
+backend drift. The aggregate equality recursion ceiling is centralized there as
+well, so interpreter and direct bytecode share the 128-level malformed/cyclic
+storage boundary.
 
 ## Evidence record template
 

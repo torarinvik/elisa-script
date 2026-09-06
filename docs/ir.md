@@ -183,6 +183,9 @@ contract (currently 4,096 active calls/handler depth) while ordinary calls still
 use host-recursive adapters. Hitting that boundary is a typed `OutputLimit`
 failure, not a fabricated return value; keeping the constant in the runtime model
 prevents backend-specific stack policies from drifting.
+The same runtime model owns the 128-level aggregate equality recursion boundary;
+both engines fail closed on cyclic or hostile nested storage at that limit instead
+of allowing a backend-specific host-stack exhaustion.
 `EsBytecode.bytecode_capability_report` exposes the same decision before a run,
 along with function, instruction, and global counts. Record this report beside
 the execution artifact; counts are descriptive telemetry, while

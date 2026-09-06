@@ -20,8 +20,15 @@ for required_file in "$runtime_file" "$interpreter_file" "$bytecode_file" "$ir_d
     fi
 done
 
-if ! rg -q '^        const ES_RUNTIME_DEFAULT_MAX_EXECUTION_CALL_DEPTH: usize = 4096$' "$runtime_file"; then
-    printf 'runtime limit audit: shared execution depth constant is missing or changed\n' >&2
+for shared_constant in 'ES_RUNTIME_DEFAULT_MAX_EXECUTION_CALL_DEPTH: usize = 4096' 'ES_RUNTIME_DEFAULT_MAX_VALUE_EQUAL_DEPTH: usize = 128'; do
+    if ! rg -q "^        const $shared_constant$" "$runtime_file"; then
+        printf 'runtime limit audit: shared constant is missing or changed: %s\n' "$shared_constant" >&2
+        exit 1
+    fi
+done
+
+if rg -q 'INTERPRET_MAX_VALUE_EQUAL_DEPTH|BYTECODE_MAX_VALUE_EQUAL_DEPTH' "$interpreter_file" "$bytecode_file"; then
+    printf 'runtime limit audit: backend-local aggregate equality depth constant leaked back in\n' >&2
     exit 1
 fi
 
@@ -36,6 +43,14 @@ if ! rg -q 'ES_RUNTIME_DEFAULT_MAX_EXECUTION_CALL_DEPTH' "$interpreter_file"; th
 fi
 if ! rg -q 'ES_RUNTIME_DEFAULT_MAX_EXECUTION_CALL_DEPTH' "$bytecode_file"; then
     printf 'runtime limit audit: direct bytecode does not consume the shared depth limit\n' >&2
+    exit 1
+fi
+if ! rg -q 'ES_RUNTIME_DEFAULT_MAX_VALUE_EQUAL_DEPTH' "$interpreter_file"; then
+    printf 'runtime limit audit: interpreter does not consume the shared equality depth limit\n' >&2
+    exit 1
+fi
+if ! rg -q 'ES_RUNTIME_DEFAULT_MAX_VALUE_EQUAL_DEPTH' "$bytecode_file"; then
+    printf 'runtime limit audit: direct bytecode does not consume the shared equality depth limit\n' >&2
     exit 1
 fi
 if ! rg -q 'ES_RUNTIME_DEFAULT_MAX_EXECUTION_CALL_DEPTH' "$ir_docs" || ! rg -q 'host-recursive|host recursive|handler/error-stack depth' "$ir_docs"; then
