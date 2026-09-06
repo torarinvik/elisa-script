@@ -1081,9 +1081,10 @@ They reject lossy numeric coercions, truthiness conversions, aggregates, and
 other integer widths; source declarations named `int`, `float`, or `bool`
 shadow these compiler-known facades.
 
-Registry-backed fallible builtins record their declared effect and error rows at
-the lowering boundary before the corresponding IR operation is emitted. This
-keeps `ParseError` for `parse_int`/`parse_float` and `IndexOutOfBounds` for
+Registry-backed builtins record their declared effect and error rows at the
+shared global-call lowering boundary before the corresponding IR operation is
+emitted; receiver methods use the same helper after receiver classification.
+This keeps `ParseError` for `parse_int`/`parse_float` and `IndexOutOfBounds` for
 checked text indexing in the function contract without duplicating row names in
 each operation-specific lowering helper. The compact registry fields currently
 hold one effect/error family per row; structured multi-row IDs remain a planned

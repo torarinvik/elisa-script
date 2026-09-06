@@ -183,7 +183,7 @@ if ! rg -q 'global_registry_spec: EsBuiltin::BuiltinSpec' "$repo_root/vendor/eli
     exit 1
 fi
 if ! rg -q 'def record_builtin_contract' "$lowerer_file" || \
-   ! rg -q 'record_builtin_contract\(parse_spec, state\)' "$lowerer_file" || \
+   ! rg -q 'record_builtin_contract\(registry_spec, state\)' "$lowerer_file" || \
    ! rg -q 'record_builtin_contract\(method_spec, state\)' "$lowerer_file" || \
    ! rg -q 'state\.required_effects\.push\(spec\.effects\)' "$lowerer_file" || \
    ! rg -q 'state\.required_errors\.push\(spec\.errors\)' "$lowerer_file"; then
@@ -257,7 +257,7 @@ if ! rg -q "typed_builtin_spec\(callee_name\)\.return_type" "$lowerer_file"; the
 fi
 
 if ! rg -q 'state\.required_errors\.push\(spec\.errors\)' "$lowerer_file" || \
-   ! rg -q 'record_builtin_contract\(parse_spec, state\)' "$lowerer_file"; then
+   ! rg -q 'record_builtin_contract\(registry_spec, state\)' "$lowerer_file"; then
     printf 'builtin registry audit: lowerer has no registry error-row consumer\n' >&2
     exit 1
 fi

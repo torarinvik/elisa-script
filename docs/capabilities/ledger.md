@@ -54,9 +54,10 @@ miss sentinel (`5f6b70a`).
 `TextRIndex` opcodes and the `IndexOutOfBounds` error row (`36b6684`).
 
 Registry-declared effect/error metadata is now recorded through one lowerer
-contract helper for fallible rows, covering `ParseError` conversions and
-checked text indexing while preserving future effect rows without another
-operation-specific push path (static increment, compiler validation suspended).
+contract helper at the shared global-call boundary (and the receiver method
+boundary), covering `ParseError` conversions and checked text indexing while
+preserving future effect rows without another operation-specific push path
+(static increment, compiler validation suspended).
 
 `Text.partition` and `Text.rpartition` now carry the `TextPartition` opcode and
 fixed text-separator contract while preserving their `darray[sview]` result
