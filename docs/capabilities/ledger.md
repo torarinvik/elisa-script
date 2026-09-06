@@ -67,7 +67,7 @@ slot (`cd8ae26`).
 
 Registry receiver diagnostics and lowerer dispatch now give direct source
 functions precedence over matching Text spellings, while normalized qualified
-builtins apply the same source-name guard (`working tree`). Generic UFCS
+builtins apply the same source-name guard (`430cf38`). Generic UFCS
 lowering for a shadowing source function remains open.
 
 ## Evidence record template
