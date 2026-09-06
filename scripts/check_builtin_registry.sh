@@ -1238,6 +1238,22 @@ if ! rg -q 'method_spec\.opcode != "TextPredicate"' "$lowerer_file" || \
     printf 'builtin registry audit: Text predicate lowerer does not consume registry mode metadata\n' >&2
     exit 1
 fi
+for boundary_pair in removeprefix:0 removesuffix:1; do
+    boundary_name="${boundary_pair%%:*}"
+    boundary_mode="${boundary_pair##*:}"
+    if ! rg -q "name: \"$boundary_name\", receiver: \"Text\".*argument_types: \"text\".*return_type: \"sview\".*effects: \"\".*errors: \"\".*opcode: \"TextRemoveBoundary\".*lowering_mode: $boundary_mode" "$registry_file"; then
+        printf 'builtin registry audit: Text boundary-removal row lacks mode metadata: %s\n' "$boundary_name" >&2
+        exit 1
+    fi
+done
+if ! rg -q 'def lower_text_remove_boundary_expression\(receiver_expression: Ast::Expr, method_name: sview, arguments:' "$lowerer_file" || \
+   ! rg -q 'not method_spec\.known or method_spec\.opcode != "TextRemoveBoundary"' "$lowerer_file" || \
+   ! rg -q 'mode: i64 = method_spec\.lowering_mode' "$lowerer_file" || \
+   rg -q 'lower_text_remove_boundary_expression\([^\n]*, (true|false),' "$lowerer_file" || \
+   rg -q '0 if starts else 1' "$lowerer_file"; then
+    printf 'builtin registry audit: Text boundary-removal lowerer does not consume registry mode metadata\n' >&2
+    exit 1
+fi
 if ! rg -q 'def typed_builtin_result_type' "$lowerer_file" || \
    ! rg -q 'typed_builtin_result_type\([a-z_]+_spec\)' "$lowerer_file" || \
    ! rg -q 'typed_builtin_result_type\(method_spec\)' "$lowerer_file"; then

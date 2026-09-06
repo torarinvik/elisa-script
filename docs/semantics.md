@@ -518,6 +518,8 @@ Text boundary-removal methods `text.removeprefix(prefix)` and
 `text.removesuffix(suffix)` take one positional text boundary and return the
 original text unchanged when it does not match. A matching boundary is removed
 by byte offset; an empty boundary is a no-op. They are pure and deterministic.
+Their `TextRemoveBoundary` registry rows carry modes 0 (`removeprefix`) and 1
+(`removesuffix`), which the receiver lowerer forwards to the shared IR opcode.
 
 The first executable regex operation is the compiler-known, strongly typed search
 `matches(text, pattern) -> bool`, where `text` is `sview` and `pattern` is `Regex`:
