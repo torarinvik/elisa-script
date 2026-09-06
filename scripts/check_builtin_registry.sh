@@ -279,6 +279,10 @@ if ! rg -q 'name: "touch", receiver: "global".*argument_types: "Path".*return_ty
     printf 'builtin registry audit: touch row is incomplete\n' >&2
     exit 1
 fi
+if ! rg -q 'name: "chmod", receiver: "global".*argument_types: "Path,u64".*return_type: "bool".*effects: "File.Write".*errors: "FileIoError".*opcode: "ChmodPath"' "$registry_file" || ! rg -q 'spec\.argument_types == "Path,u64"' "$receiver_semantic_file" || ! rg -q 'expected == "u64"' "$receiver_semantic_file"; then
+    printf 'builtin registry audit: chmod mixed Path/u64 row is not fully consumed\n' >&2
+    exit 1
+fi
 if ! rg -q 'lowers_nominal_path_existence_with_file_effect' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'any error_name in fn\.errors where error_name == "FileIoError"' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: filesystem existence row lacks lowering effect/error fixture\n' >&2
     exit 1
@@ -335,8 +339,16 @@ if ! rg -q 'def registry_touch_requires_a_nominal_path\(' "$repo_root/test/seman
     printf 'builtin registry audit: touch registry negative fixture is missing\n' >&2
     exit 1
 fi
+if ! rg -q 'def registry_chmod_checks_the_unsigned_mode_argument\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
+    printf 'builtin registry audit: chmod mixed-argument fixture is missing\n' >&2
+    exit 1
+fi
 if ! rg -q 'lowers_typed_file_mode_with_file_read_effect_and_error' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: file-mode lowering fixture is missing\n' >&2
+    exit 1
+fi
+if ! rg -q 'lowers_typed_chmod_with_file_write_effect_and_error' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
+    printf 'builtin registry audit: chmod lowering fixture is missing\n' >&2
     exit 1
 fi
 if ! rg -q 'lowers_typed_touch_with_file_write_effect_and_error' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then

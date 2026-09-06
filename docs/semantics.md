@@ -1184,6 +1184,10 @@ stringly shell command.
 numeric POSIX mode such as `0x180u64` (octal `0600`). It is the typed counterpart to
 shell `chmod` and Python `Path.chmod`; invalid paths or modes remain typed file-I/O
 errors and no shell command is assembled.
+The shared typed-builtin registry owns the global `chmod` row with the mixed
+nominal `Path,u64` argument descriptor, `File.Write`/`FileIoError`, and
+`ChmodPath` opcode; semantic checking validates both argument positions before
+lowering.
 
 `file_size(path: Path) -> usize error[FileIoError] can[File.Read]` returns the
 length reported by POSIX `stat`, including regular files and directory entries.
