@@ -128,6 +128,19 @@ for boundary in 'DifferentialRunShrinkKind.ClearReferenceStdout' 'DifferentialRu
     fi
 done
 
+for fixture in \
+    differential_process_execution_captures_native_stdout_and_stderr \
+    differential_process_execution_feeds_stdin_without_shell_joining \
+    differential_process_execution_applies_environment_only_in_child \
+    differential_process_execution_keeps_nonzero_exit_status_as_data \
+    differential_process_execution_rejects_invalid_invocation_through_error_channel \
+    differential_process_execution_rejects_zero_output_limit_before_launch; do
+    if ! rg -q "def $fixture\(" "$fixture_file"; then
+        printf 'differential case audit: missing process execution fixture %s\n' "$fixture" >&2
+        exit 1
+    fi
+done
+
 if ! rg -q 'Define a Case|DifferentialCase|artifact manifest|artifact' "$docs_file"; then
     printf 'differential case audit: documentation omits the case/artifact contract\n' >&2
     exit 1
