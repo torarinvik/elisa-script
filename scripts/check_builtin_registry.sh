@@ -2000,6 +2000,10 @@ for name in $map_method_names; do
         printf 'builtin registry audit: Map.copy semantic fixture is missing\n' >&2
         exit 1
     fi
+    if [[ "$name" == "get" ]] && ! rg -Fq 'looked_up: i64 = mapping.get(\"key\", 0)' "$semantic_test_file"; then
+        printf 'builtin registry audit: Map.get semantic fixture is missing\n' >&2
+        exit 1
+    fi
     opcode="$(sed -n "s/.*name: \"$name\".*receiver: \"Map\".*opcode: \"\([A-Za-z0-9_]*\)\".*/\1/p" "$registry_file" | head -1)"
     if [[ -z "$opcode" ]] || ! rg -q "Opcode\\.$opcode" "$verifier_file"; then
         printf 'builtin registry audit: Map.%s opcode is not verifier-covered (%s)\n' "$name" "${opcode:-missing}" >&2
