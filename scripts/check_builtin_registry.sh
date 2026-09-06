@@ -157,6 +157,36 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            starts_with|startswith)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "StartsWith"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven starts-with dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
+            ends_with|endswith)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "EndsWith"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven ends-with dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
+            replace)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "TextReplace"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven text-replace dispatch\n' >&2
+                    exit 1
+                fi
+                ;;
+            strip|trim|lstrip|rstrip)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "TrimText"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven trim dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
+            lower|upper|casefold)
+                if ! rg -q 'registry_spec\.receiver == "global" and \(registry_spec\.opcode == "LowerText" or registry_spec\.opcode == "UpperText"\)' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven case dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
             *)
                 printf 'builtin registry audit: lowerer has no dispatch branch for %s\n' "$name" >&2
                 exit 1
@@ -1537,11 +1567,14 @@ if ! rg -q 'name: "replace", receiver: "global".*argument_types: "text,text,text
     printf 'builtin registry audit: fixed global text operation rows are incomplete\n' >&2
     exit 1
 fi
-if ! rg -q 'starts_with_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+if ! rg -q 'starts_with_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "StartsWith"' "$lowerer_file" || \
    ! rg -q 'starts_with_spec\.opcode == "StartsWith"' "$lowerer_file" || \
-   ! rg -q 'ends_with_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'ends_with_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "EndsWith"' "$lowerer_file" || \
    ! rg -q 'ends_with_spec\.opcode == "EndsWith"' "$lowerer_file" || \
-   ! rg -q 'replace_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'replace_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "TextReplace"' "$lowerer_file" || \
    ! rg -q 'replace_spec\.opcode == "TextReplace"' "$lowerer_file" || \
    ! rg -q 'split_spec\.opcode == "Split"' "$lowerer_file" || \
    ! rg -q 'name: "split", receiver: "global".*opcode: "Split", lowering_mode: 0' "$registry_file" || \
@@ -1564,10 +1597,12 @@ for trim_name in strip trim lstrip rstrip; do
         exit 1
     fi
 done
-if ! rg -q 'trim_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+if ! rg -q 'trim_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "TrimText"' "$lowerer_file" || \
    ! rg -q 'trim_spec\.opcode == "TrimText"' "$lowerer_file" || \
    ! rg -q 'trim_mode: i64 = trim_spec\.lowering_mode' "$lowerer_file" || \
-   ! rg -q 'case_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'case_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and \(registry_spec\.opcode == "LowerText" or registry_spec\.opcode == "UpperText"\)' "$lowerer_file" || \
    ! rg -q 'case_spec\.opcode == "LowerText"' "$lowerer_file" || \
    ! rg -q 'lower_text_case_value_with_spec\(text_value\.value, case_spec' "$lowerer_file"; then
     printf 'builtin registry audit: global case/trim lowerers do not consume registry mode metadata\n' >&2
