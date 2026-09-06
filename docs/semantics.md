@@ -914,6 +914,8 @@ fields: darray[sview] = split("name::value", ":")
 `split` preserves empty fields at every position. An empty separator splits a
 nonempty string into byte-sized `sview` values and maps empty input to `[]`.
 An explicit signed `i64` `maxsplit` bounds the number of separator matches;
+the global form accepts the keyword spelling `maxsplit:` only for its third
+argument, while the receiver form places it after the separator;
 negative values are unlimited and zero returns one unsplit field. These rules are
 total, deterministic, and identical across the interpreter and future
 bytecode, JIT, and native backends. A source function named `split` shadows the
