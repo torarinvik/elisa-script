@@ -81,6 +81,10 @@ if ! rg -q 'operation_identity_matches\(' "$ir_verify_file" || ! rg -q 'verify_c
     printf 'effect operation metadata audit: verifier does not validate populated operation identities\n' >&2
     exit 1
 fi
+if ! rg -q 'def verifier_does_not_treat_handler_family_as_operation_wildcard\(' "$repo_root/test/ir/elisascript_ir_test.elisa"; then
+    printf 'effect operation metadata audit: exact-operation handler coverage fixture is missing\n' >&2
+    exit 1
+fi
 if ! rg -q 'operation_id == Ast::effect_operation_identity' "$fixture_file" || ! rg -q 'handler clause operation id does not match' "$fixture_file"; then
     printf 'effect operation metadata audit: lowering fixtures omit operation identity coverage\n' >&2
     exit 1
