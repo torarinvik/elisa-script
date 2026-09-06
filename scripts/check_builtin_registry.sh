@@ -233,6 +233,8 @@ fi
 if ! rg -q 'typed_builtin_method_spec\("Path", method\)' "$receiver_semantic_file" || \
    ! rg -q 'ufm_check_path_builtin_arity' "$receiver_semantic_file" || \
    ! rg -q 'ufm_check_path_builtin_argument_types' "$receiver_semantic_file" || \
+   ! rg -q 'named_allowed: bool = argument_names\[argument_index\] == "" or \(spec\.argument_names != "" and argument_index\.u32\(\) == spec\.named_argument_index and argument_names\[argument_index\] == spec\.argument_names\)' "$receiver_semantic_file" || \
+   ! rg -q '"bool" if spec\.argument_types == "bool" and argument_index == 0' "$receiver_semantic_file" || \
    ! rg -q 'scripting_path_registry_return_type' "$inference_file" || \
    ! rg -q 'scripting_path_method_available\(table, method_name\)' "$inference_file"; then
     printf 'builtin registry audit: Path access receiver semantic consumers are incomplete\n' >&2
