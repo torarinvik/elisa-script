@@ -209,6 +209,9 @@ shell-free and keeps process failures in `error[ProcessError]`.
 The in-process adapter applies the same 64 MiB stdout/stderr ceiling before
 materializing a `DifferentialRun`; an oversized borrowed snapshot becomes an
 explicit `DifferentialRunOutcome.OutputLimit` instead of entering comparison.
+Runtime-to-owned observation conversion applies that ceiling as well, returning
+`DifferentialRunnerError.OutputLimit` before a borrowed `ProcessCapture` enters
+the differential value pool.
 The adapter also bounds caller-supplied observation and value-pool snapshots at
 that boundary, so oversized borrowed `ProcessCapture` fields cannot be carried
 forward for a later comparison. It also rejects unknown value kinds and
