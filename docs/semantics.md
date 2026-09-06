@@ -1550,6 +1550,9 @@ supplies their process effect/error contracts.
 The plain `capture_process_result` and working-directory result forms use the
 same registry-owned result and opcode metadata while retaining their explicit
 capture operand layouts.
+The child-environment and combined directory/environment result forms consume
+their corresponding single-opcode registry rows as well; only status facades
+and pipelines remain composed lowerer helpers.
 
 Assertions are typed runtime checks rather than a result wrapper:
 `assert(condition) -> void error[AssertionError]`. The condition must be exactly
