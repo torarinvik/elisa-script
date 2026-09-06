@@ -121,6 +121,12 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            temp_file|mktemp|temp_directory|temp_dir|mkdtemp)
+                if ! rg -q 'registry_spec\.opcode == "CreateTemporary"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven temporary-path dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
             *)
                 printf 'builtin registry audit: lowerer has no dispatch branch for %s\n' "$name" >&2
                 exit 1
@@ -1151,7 +1157,8 @@ done
 if ! rg -q 'name: "temp_directory".*opcode: "CreateTemporary", lowering_mode: 1' "$registry_file" || \
    ! rg -q 'name: "temp_dir".*opcode: "CreateTemporary", lowering_mode: 1' "$registry_file" || \
    ! rg -q 'name: "mkdtemp".*opcode: "CreateTemporary", lowering_mode: 1' "$registry_file" || \
-   ! rg -q 'temporary_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'temporary_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.opcode == "CreateTemporary"' "$lowerer_file" || \
    ! rg -q 'temporary_spec\.opcode == "CreateTemporary"' "$lowerer_file" || \
    ! rg -q 'temporary_kind: i64 = temporary_spec\.lowering_mode' "$lowerer_file"; then
     printf 'builtin registry audit: temporary-path lowerer does not consume registry kind/opcode metadata\n' >&2
