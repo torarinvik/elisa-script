@@ -159,6 +159,9 @@ if ! rg -q 'def typed_builtin_path_method_names\(\)' "$registry_file" || \
    ! rg -q 'name: "resolve", receiver: "Path".*argument_types: "".*return_type: "Path".*effects: "File.Read".*errors: "FileIoError".*opcode: "PathReal"' "$registry_file" || \
    ! rg -q 'name: "joinpath", receiver: "Path".*argument_types: "text".*return_type: "Path".*effects: "".*opcode: "PathJoin"' "$registry_file" || \
    ! rg -q 'name: "relative_to", receiver: "Path".*argument_types: "Path".*return_type: "Path".*effects: "".*opcode: "PathRelative"' "$registry_file" || \
+   ! rg -q 'name: "iterdir", receiver: "Path".*argument_types: "".*return_type: "darray\[text\]".*effects: "Directory.Read".*errors: "DirectoryError".*opcode: "PathIterDir"' "$registry_file" || \
+   ! rg -q 'name: "glob", receiver: "Path".*argument_types: "text".*return_type: "darray\[text\]".*effects: "Directory.Read".*errors: "DirectoryError".*opcode: "PathGlob"' "$registry_file" || \
+   ! rg -q 'name: "rglob", receiver: "Path".*argument_types: "text".*return_type: "darray\[text\]".*effects: "Directory.Read".*errors: "DirectoryError".*opcode: "PathRGlob"' "$registry_file" || \
    ! rg -q 'name: "is_readable", receiver: "Path".*argument_types: "".*return_type: "bool".*effects: "File.Read".*opcode: "PathAccess".*lowering_mode: 4' "$registry_file" || \
    ! rg -q 'name: "is_writable", receiver: "Path".*argument_types: "".*return_type: "bool".*effects: "File.Read".*opcode: "PathAccess".*lowering_mode: 2' "$registry_file" || \
    ! rg -q 'name: "is_executable", receiver: "Path".*argument_types: "".*return_type: "bool".*effects: "File.Read".*opcode: "PathAccess".*lowering_mode: 1' "$registry_file"; then
@@ -175,6 +178,9 @@ if ! rg -q 'typed_builtin_method_spec\("Path", method_name\)' "$lowerer_file" ||
    ! rg -q 'path_spec\.known and path_spec\.opcode == "PathAbsolute"' "$lowerer_file" || \
    ! rg -q 'path_spec\.known and path_spec\.opcode == "PathJoin"' "$lowerer_file" || \
    ! rg -q 'path_spec\.known and path_spec\.opcode == "PathRelative"' "$lowerer_file" || \
+   ! rg -q 'path_spec\.known and path_spec\.opcode == "PathIterDir"' "$lowerer_file" || \
+   ! rg -q 'path_spec\.known and \(path_spec\.opcode == "PathGlob" or path_spec\.opcode == "PathRGlob"\)' "$lowerer_file" || \
+   ! rg -q 'opcode: Opcode\.PathRGlob if path_spec\.opcode == "PathRGlob" else Opcode\.PathGlob' "$lowerer_file" || \
    ! rg -q 'path_spec\.known and path_spec\.opcode == "PathAccess"' "$lowerer_file" || \
    ! rg -q 'typed_builtin_method_call_shape\("Path", method_name' "$lowerer_file" || \
    ! rg -q 'instruction_integer <- path_spec\.lowering_mode' "$lowerer_file"; then

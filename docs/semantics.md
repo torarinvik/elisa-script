@@ -1257,6 +1257,10 @@ the receiver rows rather than reconstructed in the method spelling branch.
 The argument-bearing `path.joinpath(text)` and `path.relative_to(Path)` methods
 also use receiver rows for arity and argument-family checking before emitting
 `PathJoin` or `PathRelative`.
+The enumeration methods `path.iterdir()`, `path.glob(text)`, and
+`path.rglob(text)` likewise consume `darray[text]`, `Directory.Read`, and
+`DirectoryError` metadata, selecting `PathIterDir`, `PathGlob`, or `PathRGlob`
+without deriving the recursive mode from the method spelling.
 
 `touch(path: Path) -> bool error[FileIoError] can[File.Write]` creates an empty file
 when it is missing and updates its timestamps without truncating an existing file.
