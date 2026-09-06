@@ -194,6 +194,7 @@ fi
 if ! rg -q 'typed_builtin_method_spec\("Path", method_name\)' "$lowerer_file" || \
    ! rg -q 'def scripting_path_builtin_available\(state: LowerState&, method_name: sview\)' "$lowerer_file" || \
    ! rg -q 'def is_path_receiver_expression\(expression: Ast::Expr, state: LowerState&\)' "$lowerer_file" || \
+   ! rg -q 'scripting_path_builtin_available\(state, method_name\) or method_name == "mkdir"' "$lowerer_file" || \
    ! rg -q 'path_spec\.known and path_spec\.opcode == "PathParent"' "$lowerer_file" || \
    ! rg -q 'path_spec\.known and path_spec\.opcode == "PathIsAbsolute"' "$lowerer_file" || \
    ! rg -q 'path_spec\.known and path_spec\.opcode == "PathNormalize"' "$lowerer_file" || \

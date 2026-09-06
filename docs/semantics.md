@@ -1559,6 +1559,10 @@ use exact zero-argument rows. Their rows provide the nominal result, the
 File.Read or Directory.Read contract, and the `PathExists`, `IsFile`,
 `IsSymlink`, `IsDirectory`, or `ReadLink` opcode, so receiver spelling no longer
 selects these host operations or their error behavior.
+Receiver dispatch itself is registry-gated and still honors source UFCS
+shadowing before falling back to the one deferred `mkdir` control layout; adding
+a new Path row therefore updates admission without another spelling list in the
+lowerer.
 
 `copy_path(source: Path, destination: Path) -> bool error[FileIoError]
 can[File.Read, File.Write]` copies one regular file by length-delimited bytes and
