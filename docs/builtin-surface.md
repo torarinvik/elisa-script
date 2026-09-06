@@ -96,6 +96,12 @@ container element row when the argument has a firm annotated array type. Unknown
 expressions and untyped array literals remain conservative until recursive
 container inference can preserve their element descriptors.
 
+The same structural channel now preserves the registry's `darray[text]` result
+row for `split`, `rsplit`, both line-splitting aliases, and both partition
+aliases whenever the `darray[sview]` row is interned. This lets later indexing
+and `join` calls consume the precise element type without widening every result
+to an unparameterized container.
+
 The remaining Q03 work is intentionally explicit: migrate aggregate and
 variadic signatures, receiver method families, generic/container result
 descriptors, effect and error sets with structured IDs, and verifier-side

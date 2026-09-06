@@ -74,6 +74,10 @@ The `Text.join` `darray[text]` descriptor now consults the interned container
 type table for firm annotated arrays, rejecting known non-text element rows while
 leaving unknown expressions conservative (`9ee7cd2`).
 
+Registry `darray[text]` result rows for Text split, line-split, and partition
+methods now flow through the structural type channel when the canonical
+`darray[sview]` row is interned (`working tree`).
+
 ## Evidence record template
 
 Every future executed or differential-verified entry must append a dated record

@@ -118,6 +118,11 @@ if ! rg -q 'darray\[text\]' "$receiver_semantic_file" || \
     printf 'builtin registry audit: structural Text argument descriptors are not checked through the type table\n' >&2
     exit 1
 fi
+if ! rg -q 'text_method_spec: EsBuiltin::BuiltinSpec' "$inference_file" 2>/dev/null && \
+   ! rg -q 'text_method_spec: EsBuiltin::BuiltinSpec' "$repo_root/vendor/elisa-compiler/src/semantic/resolve_types.elisa"; then
+    printf 'builtin registry audit: structural Text result inference does not consume receiver registry rows\n' >&2
+    exit 1
+fi
 
 for name in $method_names; do
     if ! rg -q "known: true, name: \"$name\", receiver: \"Text\"" "$registry_file"; then
