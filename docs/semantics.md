@@ -98,6 +98,10 @@ also enforce the declared payload arity for both `perform` and `signal`; source-
 declared operations are closed by `(family, operation)`, and a `signal` may target
 only a declared void-result operation. Value-producing declarations are dispatched through `perform`, while
 builtin and permission-only families remain open to host-defined operation names.
+Every captured `(family, operation)` pair also receives a stable FNV-1a operation
+identity. The parser, semantic lookup, and lowered IR carry this `u64` alongside
+the readable names; the verifier accepts zero only for legacy hand-authored
+fixtures and rejects any populated identity that does not match its two names.
 Dynamic handlers may therefore intercept
 user-defined operations without introducing a second runtime representation.
 Source `@handler` decorators for same-file effect declarations are checked at

@@ -249,7 +249,12 @@ separator. Bare families and multi-dot names are rejected during lowering rather
 than being reinterpreted as a synthetic operation, so handler clause lookup and
 effect-row coverage cannot silently diverge from the source spelling.
 The function effect row may grant the complete operation or its family. Every
-perform receives a stable source-derived trace identity.
+operation-bearing instruction also carries a stable FNV-1a `u64` identity derived
+from its `(family, operation)` pair. Parser metadata, semantic lookup, handler
+clauses, and lowered `Perform`/`Raise`/`Panic`/error-guard instructions share the
+same identity rule; the verifier preserves zero as a legacy-fixture escape hatch
+but rejects any populated id that disagrees with the readable names. Every perform
+also receives a stable source-derived trace identity.
 
 Value-producing effect requests use the compiler-known
 `perform("Family.Operation", payload)` intrinsic in an expected-type position,

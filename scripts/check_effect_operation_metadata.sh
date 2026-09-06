@@ -15,8 +15,11 @@ capture_file="$repo_root/vendor/elisa-compiler/src/parser/parser_decl_impl.elisa
 semantic_file="$repo_root/vendor/elisa-compiler/src/semantic/check_signal_effect.elisa"
 docs_file="$repo_root/docs/semantics.md"
 lowerer_file="$repo_root/src/ir/lower_ast.elisa"
+ir_model_file="$repo_root/src/ir/ir_model.elisa"
+ir_verify_file="$repo_root/src/ir/ir_verify.elisa"
+fixture_file="$repo_root/test/ir/elisascript_lowering_test.elisa"
 
-for required_file in "$tokens_file" "$parser_file" "$capture_file" "$semantic_file" "$docs_file" "$lowerer_file"; do
+for required_file in "$tokens_file" "$parser_file" "$capture_file" "$semantic_file" "$docs_file" "$lowerer_file" "$ir_model_file" "$ir_verify_file" "$fixture_file"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'effect operation metadata audit: missing file: %s\n' "$required_file" >&2
         exit 2
@@ -24,7 +27,7 @@ for required_file in "$tokens_file" "$parser_file" "$capture_file" "$semantic_fi
 done
 
 effect_struct="$(sed -n '/struct EffectOperation:/,/^    struct /p' "$tokens_file")"
-for field in arity payload_signature result_signature; do
+for field in arity payload_signature result_signature operation_id; do
     if ! printf '%s\n' "$effect_struct" | rg -q "^[[:space:]]+$field:"; then
         printf 'effect operation metadata audit: EffectOperation omits %s\n' "$field" >&2
         exit 1
@@ -39,7 +42,7 @@ for helper in effect_operation_payload_signature effect_operation_result_signatu
 done
 
 constructor="$(rg 'Ast::EffectOperation\{' "$capture_file")"
-for field in payload_signature result_signature; do
+for field in payload_signature result_signature operation_id; do
     if ! printf '%s\n' "$constructor" | rg -q "$field:"; then
         printf 'effect operation metadata audit: capture constructor omits %s\n' "$field" >&2
         exit 1
@@ -47,19 +50,35 @@ for field in payload_signature result_signature; do
 done
 
 sig_struct="$(sed -n '/struct SigEffectOperation:/,/^        #/p' "$semantic_file")"
-for field in payload_signature result_signature; do
+for field in payload_signature result_signature operation_id; do
     if ! printf '%s\n' "$sig_struct" | rg -q "^[[:space:]]+$field:"; then
         printf 'effect operation metadata audit: semantic lookup omits %s\n' "$field" >&2
         exit 1
     fi
 done
 
-for field in payload_signature result_signature; do
+for field in payload_signature result_signature operation_id; do
     if ! rg -q "candidate\.$field" "$semantic_file"; then
         printf 'effect operation metadata audit: semantic lookup does not carry candidate.%s\n' "$field" >&2
         exit 1
     fi
 done
+if ! rg -q 'def effect_operation_identity\(' "$tokens_file" || ! rg -q 'operation_id: Ast::effect_operation_identity' "$capture_file"; then
+    printf 'effect operation metadata audit: parser does not assign the stable operation identity\n' >&2
+    exit 1
+fi
+if ! rg -q 'operation_id: u64 = 0' "$ir_model_file" || ! rg -q 'def effect_operation_identity\(' "$ir_model_file"; then
+    printf 'effect operation metadata audit: IR operation identity fields/helper are missing\n' >&2
+    exit 1
+fi
+if ! rg -q 'operation_identity_matches\(' "$ir_verify_file" || ! rg -q 'handler clause operation id does not match' "$ir_verify_file"; then
+    printf 'effect operation metadata audit: verifier does not validate populated operation identities\n' >&2
+    exit 1
+fi
+if ! rg -q 'operation_id == Ast::effect_operation_identity' "$fixture_file" || ! rg -q 'handler clause operation id does not match' "$fixture_file"; then
+    printf 'effect operation metadata audit: lowering fixtures omit operation identity coverage\n' >&2
+    exit 1
+fi
 if ! rg -q 'DiagnosticKind.TypeMismatch.*expected: "void".*operation_info\.result_signature' "$semantic_file"; then
     printf 'effect operation metadata audit: semantic signal checking does not reject non-void declarations\n' >&2
     exit 1

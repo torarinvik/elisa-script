@@ -128,6 +128,13 @@ decorators also copy callback-declared `can[...]` effects and `error[...]` famil
 into the derived handler descriptor, preserving the host descriptor contract and
 preventing capability/error rows from disappearing at the source-to-IR boundary.
 
+Effect-operation metadata now also carries one stable FNV-1a `u64` identity from
+parser capture through semantic lookup and lowered IR. Handler clauses and every
+operation-bearing instruction preserve the identity; verification accepts zero only
+for legacy fixtures and rejects populated ids that disagree with their readable
+family/operation names. Runtime dispatch still compares names for compatibility;
+typed runtime/continuation IDs remain a later migration step.
+
 The interpreter and direct-bytecode adapters now consume one shared
 `ES_RUNTIME_DEFAULT_MAX_EXECUTION_CALL_DEPTH` limit for host-recursive calls and
 handler/error-stack depth, with a compiler-free audit and IR fixture preventing
