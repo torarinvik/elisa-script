@@ -179,6 +179,9 @@ provides bounded file loads plus staged-file/sync/close/rename publication aroun
 current/migration/invalid admission classifier and explicit
 staged/committed/aborted/restart state machine. Directory fsync, crash recovery,
 and concurrent-writer evidence remain pending.
+The typed `ArtifactCacheWriterLease` now rejects zero, competing, and stale
+owner tokens before publication; an OS lock and crash-recovery qualification are
+still required.
 
 The first large-file vertical slice is now a typed `EsRuntime::FileStream`
 contract with explicit modes, bounded chunk read/write, an error-safe line

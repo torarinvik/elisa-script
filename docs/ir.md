@@ -266,7 +266,10 @@ failure, and publish only with one `rename` edge after `Empty → Staged →
 Committed` admission. Restart-before-commit remains non-committed. Directory
 fsync, crash recovery, concurrent
 writer arbitration, and corruption-repair execution evidence remain open host
-qualification work.
+qualification work. `ArtifactCacheWriterLease` adds a typed nonzero-owner
+admission state machine (`Available → Held → Published/Aborted`) so stale or
+competing tokens fail closed before the host adapter mutates a staging path; it
+is deliberately not presented as an OS lock.
 
 `EsRuntime::FileStream` is the first typed large-file vertical slice. A handle
 is opened with an explicit read/text/binary/write/append mode and a byte budget

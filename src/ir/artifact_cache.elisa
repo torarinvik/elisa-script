@@ -62,6 +62,24 @@ module EsArtifactCache:
             decision: ArtifactCacheDecision
 
 
+        const enum ArtifactCacheWriterState of u8:
+            Available
+            Held
+            Published
+            Aborted
+
+
+        const enum ArtifactCacheWriterEvent of u8:
+            Acquire
+            Publish
+            Abort
+
+
+        struct ArtifactCacheWriterLease:
+            state: ArtifactCacheWriterState = ArtifactCacheWriterState.Available
+            owner_token: u64 = 0
+
+
     private:
         def artifact_cache_read_bounded_file(a: mutable Arena&, path: cstr) -> darray[u8] error[FileIoError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic]:
             size: i64 = try file_size(path)
@@ -156,6 +174,37 @@ module EsArtifactCache:
 
         def publish_bytecode_artifact_file(staging_path: cstr, destination_path: cstr, bytes: mutable darray[u8]&) -> ArtifactCachePublication error[ArtifactCacheIoError, FileStreamError] can[Blocking.IO, Memory.Allocate, Memory.Release]:
             return try artifact_cache_publish_file(staging_path, destination_path, bytes, classify_bytecode_artifact_cache(bytes))
+
+
+        # This is an ownership admission contract, not a replacement for an
+        # OS lock.  A host adapter must hold one nonzero token while it stages
+        # and publishes; stale or competing tokens fail closed.
+        def artifact_cache_writer_transition(state: ArtifactCacheWriterState, event: ArtifactCacheWriterEvent) -> ArtifactCacheWriterState:
+            return ArtifactCacheWriterState.Held if state == ArtifactCacheWriterState.Available and event == ArtifactCacheWriterEvent.Acquire
+            return ArtifactCacheWriterState.Published if state == ArtifactCacheWriterState.Held and event == ArtifactCacheWriterEvent.Publish
+            return ArtifactCacheWriterState.Aborted if state == ArtifactCacheWriterState.Held and event == ArtifactCacheWriterEvent.Abort
+            return ArtifactCacheWriterState.Held if state == ArtifactCacheWriterState.Aborted and event == ArtifactCacheWriterEvent.Acquire
+            return state
+
+
+        def artifact_cache_writer_acquire(lease: mutable ArtifactCacheWriterLease&, owner_token: u64) -> bool:
+            return false if owner_token == 0 or (lease.state != ArtifactCacheWriterState.Available and lease.state != ArtifactCacheWriterState.Aborted)
+            lease.state <- artifact_cache_writer_transition(lease.state, ArtifactCacheWriterEvent.Acquire)
+            lease.owner_token <- owner_token
+            return true
+
+
+        def artifact_cache_writer_publish(lease: mutable ArtifactCacheWriterLease&, owner_token: u64) -> bool:
+            return false if owner_token == 0 or lease.state != ArtifactCacheWriterState.Held or lease.owner_token != owner_token
+            lease.state <- artifact_cache_writer_transition(lease.state, ArtifactCacheWriterEvent.Publish)
+            return true
+
+
+        def artifact_cache_writer_abort(lease: mutable ArtifactCacheWriterLease&, owner_token: u64) -> bool:
+            return false if owner_token == 0 or lease.state != ArtifactCacheWriterState.Held or lease.owner_token != owner_token
+            lease.state <- artifact_cache_writer_transition(lease.state, ArtifactCacheWriterEvent.Abort)
+            lease.owner_token <- 0
+            return true
 
 
         def artifact_cache_decision_valid(decision: ArtifactCacheDecision&) -> bool:
