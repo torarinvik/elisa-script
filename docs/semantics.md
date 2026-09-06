@@ -1145,6 +1145,9 @@ also fail-closed as `false`.
 and Python `Path.is_file()`. It contributes `File.Read`; missing paths and entries
 that are not regular files return `false`. The `path.is_file()` method lowers to the
 same typed operation, and a source-defined `is_file` shadows the compiler-known
+operation. The shared typed-builtin registry owns both `is_file` and the
+Python-compatible `isfile` spelling, including the nominal `Path` argument and
+`IsFile` opcode metadata. A source-defined `is_file` shadows the compiler-known
 operation.
 
 `is_readable(path: Path)`, `is_writable(path: Path)`, and
