@@ -51,6 +51,20 @@ for helper in differential_run_text_bytes_fits differential_value_pool_compariso
     fi
 done
 
+for helper in differential_world_payload_add_fits differential_world_payload_text_fits differential_world_payload_bytes_fits differential_world_payload_fits differential_world_text_field_lengths_valid; do
+    if ! rg -q "def $helper\(" "$source_file"; then
+        printf 'differential case audit: missing world payload helper %s\n' "$helper" >&2
+        exit 1
+    fi
+done
+
+for boundary in 'differential_world_payload_is_aggregate_bounded' 'oversized_environment' 'oversized_path' 'DIFFERENTIAL_DEFAULT_MAX_WORLD_BYTES' 'DIFFERENTIAL_DEFAULT_MAX_WORLD_PATH_BYTES' 'DIFFERENTIAL_DEFAULT_MAX_WORLD_METADATA_BYTES'; do
+    if ! rg -Fq "$boundary" "$source_file" "$fixture_file"; then
+        printf 'differential case audit: missing world payload boundary %s\n' "$boundary" >&2
+        exit 1
+    fi
+done
+
 for boundary in 'validate_differential_runner(case.reference)' 'validate_differential_runner(case.candidate)' 'DifferentialCaseIssueKind.DuplicateWorldPath' 'DifferentialCaseIssueKind.InvalidWorldPath' 'DifferentialCaseIssueKind.InvalidTolerance' 'DifferentialTextComparison.TrimFinalNewline' 'DifferentialMapComparison.Ordered' 'compare_differential_runs_with_policy' 'DifferentialArtifactPolicy.Always' 'DifferentialRunOutcome.Crash' 'DifferentialDifferenceKind.Outcome' 'world_fingerprint' 'format_version: 2' 'format_version: 3' 'DifferentialArtifactSide.Candidate' 'DifferentialArtifactPublicationState.Complete' 'DifferentialArtifactReplayIssue.Incomplete' 'DifferentialArtifactReplayIssue.FingerprintMismatch' 'make_differential_artifact_manifest' 'canonical_differential_artifact_manifest_bytes' 'differential_artifact_manifest_fingerprint' 'decode_differential_artifact_manifest' 'differential_artifact_manifest_bytes_valid' 'make_differential_process_stream_artifact' 'canonical_differential_process_stream_artifact_bytes' 'differential_process_stream_artifact_fingerprint' 'decode_differential_process_stream_artifact' 'differential_process_stream_artifact_bytes_valid' 'make_differential_reproduction_artifact' 'canonical_differential_reproduction_artifact_bytes' 'differential_reproduction_artifact_fingerprint' 'decode_differential_reproduction_artifact' 'differential_reproduction_artifact_bytes_valid' 'make_differential_value_pool_artifact' 'canonical_differential_value_pool_artifact_bytes' 'differential_value_pool_artifact_fingerprint' 'decode_differential_value_pool_artifact' 'differential_value_pool_artifact_bytes_valid' 'make_differential_artifact_index' 'canonical_differential_artifact_index_bytes' 'differential_artifact_index_fingerprint' 'differential_artifact_index_bytes_valid' 'decode_differential_artifact_index' 'make_differential_comparison_artifact' 'canonical_differential_comparison_artifact_bytes' 'differential_comparison_artifact_fingerprint' 'differential_comparison_artifact_bytes_valid' 'decode_differential_comparison_artifact' 'validate_differential_artifact_bundle'; do
     if ! rg -Fq "$boundary" "$source_file" "$fixture_file"; then
         printf 'differential case audit: missing boundary coverage %s\n' "$boundary" >&2

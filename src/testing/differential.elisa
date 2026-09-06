@@ -34,6 +34,13 @@ module EsDifferential:
     # a differential process duplicates caller-owned text into host buffers.
     const DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES: usize = 67108864
     const DIFFERENTIAL_DEFAULT_MAX_PROCESS_INPUT_BYTES: usize = 67108864
+    # A complete hermetic world is fingerprinted and materialized as one
+    # admission unit. Bound its aggregate payload independently from each
+    # fixture/channel limit so many individually valid entries cannot create an
+    # unbounded hash or staging workload.
+    const DIFFERENTIAL_DEFAULT_MAX_WORLD_BYTES: usize = 268435456
+    const DIFFERENTIAL_DEFAULT_MAX_WORLD_PATH_BYTES: usize = 4096
+    const DIFFERENTIAL_DEFAULT_MAX_WORLD_METADATA_BYTES: usize = 4096
 
     public:
         const enum DifferentialValueKind of u8:
@@ -856,7 +863,54 @@ module EsDifferential:
             return kind in {DifferentialWorldFileKind.Text, DifferentialWorldFileKind.Bytes}
 
 
+        def differential_world_payload_add_fits(total: mutable usize&, amount: usize) -> bool:
+            return false if total > DIFFERENTIAL_DEFAULT_MAX_WORLD_BYTES or amount > DIFFERENTIAL_DEFAULT_MAX_WORLD_BYTES - total
+            total <- total + amount
+            return true
+
+
+        def differential_world_payload_text_fits(total: mutable usize&, value: sview) -> bool:
+            return differential_world_payload_add_fits(total, sview_len(value))
+
+
+        def differential_world_payload_bytes_fits(total: mutable usize&, value: darray[u8]&) -> bool:
+            return differential_world_payload_add_fits(total, value.count)
+
+
+        def differential_world_payload_fits(world: DifferentialWorld&) -> bool:
+            total: mutable usize = 0
+            return false if not differential_world_payload_text_fits(total, world.working_directory) or not differential_world_payload_text_fits(total, world.locale) or not differential_world_payload_text_fits(total, world.timezone)
+            if world.stdin_binary:
+                return false if not differential_world_payload_bytes_fits(total, world.stdin_bytes)
+            else:
+                return false if not differential_world_payload_text_fits(total, world.stdin)
+            for argument in world.argv |total|:
+                return false if not differential_world_payload_text_fits(total, argument)
+            for entry in world.environment |total|:
+                return false if not differential_world_payload_text_fits(total, entry.name) or not differential_world_payload_text_fits(total, entry.value)
+            for fixture in world.files |total|:
+                return false if not differential_world_payload_text_fits(total, fixture.path)
+                return false if not differential_world_payload_text_fits(total, fixture.contents) or not differential_world_payload_bytes_fits(total, fixture.bytes)
+            return total <= DIFFERENTIAL_DEFAULT_MAX_WORLD_BYTES
+
+
+        # Check only lengths before any NUL, duplicate, or path scan. This
+        # keeps borrowed hostile views out of byte-walking helpers even when
+        # the caller bypasses a typed world builder.
+        def differential_world_text_field_lengths_valid(world: DifferentialWorld&) -> bool:
+            return false if sview_len(world.working_directory) > DIFFERENTIAL_DEFAULT_MAX_WORLD_PATH_BYTES or sview_len(world.locale) > DIFFERENTIAL_DEFAULT_MAX_WORLD_METADATA_BYTES or sview_len(world.timezone) > DIFFERENTIAL_DEFAULT_MAX_WORLD_METADATA_BYTES
+            return false if sview_len(world.stdin) > DIFFERENTIAL_DEFAULT_MAX_PROCESS_INPUT_BYTES
+            for argument in world.argv:
+                return false if sview_len(argument) > DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES
+            for entry in world.environment:
+                return false if sview_len(entry.name) > DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES or sview_len(entry.value) > DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES
+            for fixture in world.files:
+                return false if sview_len(fixture.path) > DIFFERENTIAL_DEFAULT_MAX_WORLD_PATH_BYTES
+            return true
+
+
         def differential_world_issue(world: DifferentialWorld&) -> DifferentialCaseIssueKind:
+            return DifferentialCaseIssueKind.InvalidLimit if not differential_world_text_field_lengths_valid(world)
             return DifferentialCaseIssueKind.EmbeddedNul if differential_sview_has_nul(world.working_directory) or differential_sview_has_nul(world.locale) or differential_sview_has_nul(world.timezone)
             return DifferentialCaseIssueKind.InvalidLimit if sview_len(world.stdin) > DIFFERENTIAL_DEFAULT_MAX_PROCESS_INPUT_BYTES or world.files.count > DIFFERENTIAL_DEFAULT_MAX_ARGUMENTS or world.environment.count > DIFFERENTIAL_DEFAULT_MAX_ENVIRONMENT_ENTRIES or world.argv.count > DIFFERENTIAL_DEFAULT_MAX_ARGUMENTS
             return DifferentialCaseIssueKind.InvalidWorldStdinPayload if world.stdin_binary and world.stdin != ""
@@ -874,6 +928,7 @@ module EsDifferential:
                 return DifferentialCaseIssueKind.InvalidWorldFilePayload if (fixture.kind == DifferentialWorldFileKind.Bytes and fixture.contents != "") or (fixture.kind == DifferentialWorldFileKind.Text and fixture.bytes.count != 0)
                 for earlier in 0..<index |world, fixture|:
                     return DifferentialCaseIssueKind.DuplicateWorldPath if world.files[earlier].path == fixture.path
+            return DifferentialCaseIssueKind.InvalidLimit if not differential_world_payload_fits(world)
             return DifferentialCaseIssueKind.None
 
 

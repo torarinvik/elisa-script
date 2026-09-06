@@ -41,6 +41,11 @@ World binary stdin uses the same explicit mode and bounded owned-byte rule as
 binary files, and its bytes participate in the world fingerprint. `validate_differential_case` validates both nested runners, rejects NULs, duplicate
 fixture paths, oversized world data, invalid engine or artifact policies, comparator
 policy, and preserves the nested runner issue kind.
+A complete world is also subject to an aggregate payload ceiling across its
+working-directory/locale metadata, stdin, argv, environment, fixture paths, and
+fixture bytes/text; length-only admission runs before NUL/duplicate/path scans,
+and fixture paths have an explicit host-safe length ceiling before hashing or
+filesystem materialization.
 A validated case can produce a `DifferentialArtifactManifest` with case/runner
 identities, seeds, engine requirement, artifact policy, a deterministic
 fingerprint of the complete validated world (including fixture kind, bytes, mode,
