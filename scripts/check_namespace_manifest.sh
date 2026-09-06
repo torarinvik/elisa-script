@@ -107,6 +107,37 @@ for lower_issue_kind in $lower_issue_kinds; do
     fi
 done
 
+# Diagnostic records are reused by the launcher; require one complete reset
+# operation before the file-backed pipeline so stale phase/payload fields
+# cannot leak between invocations.
+runner_source="$source_root/ir/runner.elisa"
+if [ ! -f "$runner_source" ]; then
+    echo "check_namespace_manifest: runner source is missing: $runner_source" >&2
+    exit 1
+fi
+if ! rg -q '^        def elisascript_program_diagnostic_reset\(' "$runner_source" || ! rg -q 'elisascript_program_diagnostic_reset\(result\)' "$runner_source"; then
+    echo "check_namespace_manifest: diagnostic pipeline is missing its complete reset operation" >&2
+    exit 1
+fi
+diagnostic_fields="$(awk '
+    /^        struct ElisascriptProgramDiagnostic:/ { inside=1; next }
+    inside && /^[[:space:]]*$/ { exit }
+    inside && /^            [a-z_][a-z0-9_]*:/ {
+        field=$1
+        sub(/:$/, "", field)
+        print field
+    }
+' "$runner_source")"
+reset_start="$(rg -n '^        def elisascript_program_diagnostic_reset' "$runner_source" | cut -d: -f1)"
+reset_end="$(rg -n '^        # Parse argv after the launcher name' "$runner_source" | cut -d: -f1)"
+reset_body="$(sed -n "${reset_start},${reset_end}p" "$runner_source")"
+for diagnostic_field in $diagnostic_fields; do
+    if ! printf '%s\n' "$reset_body" | grep -Eq "result\\.${diagnostic_field}([[:space:]]|<-|:)"; then
+        echo "check_namespace_manifest: diagnostic reset omits $diagnostic_field" >&2
+        exit 1
+    fi
+done
+
 # Parser diagnostics are rendered by the host driver rather than flattened to
 # one generic parse failure. Keep this small frontend enum exhaustive so a new
 # parser failure category cannot silently lose its typed spelling.
