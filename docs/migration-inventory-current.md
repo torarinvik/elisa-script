@@ -52,8 +52,13 @@ their safety semantics even while compiler execution remains disabled.
 
 ## Open inventory work
 
-- Partition and scan each declared project root from `docs/migration-inventory.md`
-  with a per-root resource budget.
+- The checked-in partition manifest `docs/migration-project-roots.tsv` and
+  `scripts/inventory_project_roots.sh` now scan each declared project root
+  independently with bounded, read-only candidate and signal scanners. Missing,
+  malformed, or unlisted roots fail closed; the coordinator writes only to a
+  private temporary directory and removes it on exit.
+- Review every emitted record for owner, callers, inputs/outputs, external
+  dependencies, platform behavior, fixtures, and acceptance evidence.
 - Add owner, callers, inputs/outputs, external dependencies, platform behavior,
   fixtures, and acceptance evidence to every candidate record.
 - Keep generated/vendored files and safety wrappers explicitly classified before
