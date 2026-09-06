@@ -1,0 +1,144 @@
+# Typed streaming file handles for large-file workflows.
+#
+# The existing read_entire_file/write_entire_file helpers remain convenient for
+# small bounded payloads.  This module gives scripts a scoped, stateful handle
+# for chunk and line iteration without exposing an untyped FILE* API at the
+# language boundary.  The path is a borrowed cstr owned by the caller for the
+# lifetime of the handle; no implicit path conversion or NUL truncation occurs.
+
+error FileStreamError:
+    OpenFailed(path: cstr)
+    ReadFailed(path: cstr)
+    WriteFailed(path: cstr)
+    CloseFailed(path: cstr)
+    Closed(path: cstr)
+    LimitExceeded(path: cstr)
+    LineTooLong(path: cstr)
+
+
+extend EsRuntime:
+    public:
+        # A stream is bounded independently of the process-capture helpers.  A
+        # caller may choose a smaller limit, but cannot silently turn this
+        # adapter into an unbounded host allocation/IO commitment.
+        const FILE_STREAM_DEFAULT_MAX_BYTES: usize = ES_RUNTIME_DEFAULT_MAX_MEMORY_BYTES
+
+
+        const enum FileStreamMode of u8:
+            ReadText
+            ReadBinary
+            WriteText
+            WriteBinary
+            AppendText
+            AppendBinary
+
+
+        const enum FileStreamState of u8:
+            Open
+            Closed
+
+
+        struct FileStreamRead:
+            count: usize
+            eof: bool
+
+
+        struct FileStreamWrite:
+            count: usize
+
+
+        struct FileStream:
+            # `handle` is an opaque POSIX value owned by this module.  Callers
+            # must obtain it from `file_stream_open` and release it through
+            # `file_stream_close`; the state field makes use-after-close
+            # fail as a typed error.
+            handle: mutable heap void&?
+            path: cstr
+            mode: FileStreamMode
+            state: FileStreamState
+            byte_budget: usize
+            bytes_read: usize = 0
+            bytes_written: usize = 0
+
+
+        def file_stream_open(path: cstr, mode: FileStreamMode, byte_budget: usize = FILE_STREAM_DEFAULT_MAX_BYTES) -> FileStream error[FileStreamError] can[Blocking.IO, Memory.Allocate, Memory.Release]:
+            raise FileStreamError.LimitExceeded(path) if byte_budget == 0 or byte_budget > FILE_STREAM_DEFAULT_MAX_BYTES
+            mode_bytes: u8& = "rb"
+            if mode == FileStreamMode.ReadText:
+                mode_bytes <- "r"
+            elif mode == FileStreamMode.WriteText:
+                mode_bytes <- "w"
+            elif mode == FileStreamMode.WriteBinary:
+                mode_bytes <- "wb"
+            elif mode == FileStreamMode.AppendText:
+                mode_bytes <- "a"
+            elif mode == FileStreamMode.AppendBinary:
+                mode_bytes <- "ab"
+            elif mode != FileStreamMode.ReadBinary:
+                raise FileStreamError.OpenFailed(path)
+            opened: mutable heap void&? = fopen(path.cast[u8&], mode_bytes)
+            raise FileStreamError.OpenFailed(path) if opened == null
+            return FileStream{handle: opened, path: path, mode: mode, state: FileStreamState.Open, byte_budget: byte_budget}
+
+
+        def file_stream_read_chunk(stream: mutable FileStream&, buffer: mutable u8&, capacity: usize) -> FileStreamRead error[FileStreamError] can[Blocking.IO]:
+            raise FileStreamError.Closed(stream.path) if stream.state != FileStreamState.Open or stream.handle == null
+            raise FileStreamError.ReadFailed(stream.path) if stream.mode != FileStreamMode.ReadText and stream.mode != FileStreamMode.ReadBinary
+            return FileStreamRead{count: 0, eof: false} if capacity == 0
+            raise FileStreamError.LimitExceeded(stream.path) if stream.bytes_read > stream.byte_budget or capacity > stream.byte_budget - stream.bytes_read
+            handle: mutable heap void& = stream.handle
+            read_count: usize = fread(buffer.cast[mutable void&], 1, capacity, handle)
+            raise FileStreamError.ReadFailed(stream.path) if read_count > capacity or read_count == 0 and ferror(handle) != 0
+            raise FileStreamError.LimitExceeded(stream.path) if read_count > stream.byte_budget - stream.bytes_read
+            stream.bytes_read <- stream.bytes_read + read_count
+            return FileStreamRead{count: read_count, eof: read_count == 0}
+
+
+        def file_stream_write_chunk(stream: mutable FileStream&, buffer: mutable u8&, capacity: usize) -> FileStreamWrite error[FileStreamError] can[Blocking.IO]:
+            raise FileStreamError.Closed(stream.path) if stream.state != FileStreamState.Open or stream.handle == null
+            raise FileStreamError.WriteFailed(stream.path) if stream.mode != FileStreamMode.WriteText and stream.mode != FileStreamMode.WriteBinary and stream.mode != FileStreamMode.AppendText and stream.mode != FileStreamMode.AppendBinary
+            return FileStreamWrite{count: 0} if capacity == 0
+            raise FileStreamError.LimitExceeded(stream.path) if stream.bytes_written > stream.byte_budget or capacity > stream.byte_budget - stream.bytes_written
+            handle: mutable heap void& = stream.handle
+            write_count: usize = fwrite(buffer.cast[void&], 1, capacity, handle)
+            raise FileStreamError.WriteFailed(stream.path) if write_count > capacity or write_count == 0 and ferror(handle) != 0
+            raise FileStreamError.LimitExceeded(stream.path) if write_count > stream.byte_budget - stream.bytes_written
+            stream.bytes_written <- stream.bytes_written + write_count
+            return FileStreamWrite{count: write_count}
+
+
+        # Read one logical line without retaining the newline byte.  A caller
+        # supplies the maximum line size, so a hostile unbounded line fails
+        # before the destination grows without limit.  CR bytes are preserved;
+        # callers that need CRLF normalization can make that policy explicit.
+        def file_stream_read_line(stream: mutable FileStream&, line: mutable darray[u8]&, max_line_bytes: usize) -> FileStreamRead error[FileStreamError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            raise FileStreamError.Closed(stream.path) if stream.state != FileStreamState.Open or stream.handle == null
+            raise FileStreamError.ReadFailed(stream.path) if stream.mode != FileStreamMode.ReadText and stream.mode != FileStreamMode.ReadBinary
+            raise FileStreamError.LineTooLong(stream.path) if max_line_bytes == 0
+            line.truncate(0)
+            handle: mutable heap void& = stream.handle
+            byte: mutable u8 = 0
+            machine over fread((&byte).cast[mutable void&], 1, 1, handle) while true:
+                state Read
+                start Read
+
+                Read, 0:
+                    raise FileStreamError.ReadFailed(stream.path) if ferror(handle) != 0
+                    return FileStreamRead{count: line.count, eof: true}
+                Read, 1:
+                    raise FileStreamError.LimitExceeded(stream.path) if stream.bytes_read >= stream.byte_budget
+                    stream.bytes_read <- stream.bytes_read + 1
+                    break if byte == 10
+                    raise FileStreamError.LineTooLong(stream.path) if line.count >= max_line_bytes
+                    line.push(byte)
+                    -> Read
+
+
+        def file_stream_close(stream: mutable FileStream&) -> bool error[FileStreamError] can[Blocking.IO, Memory.Release]:
+            return true if stream.state == FileStreamState.Closed or stream.handle == null
+            handle: mutable heap void& = stream.handle
+            status: int = fclose(handle)
+            stream.handle <- null
+            stream.state <- FileStreamState.Closed
+            raise FileStreamError.CloseFailed(stream.path) if status != 0
+            return true

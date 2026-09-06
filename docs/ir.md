@@ -263,6 +263,20 @@ bytes, while its publication state machine requires `Empty → Staged →
 Committed` and treats aborts or restart-before-commit as non-committed. Atomic
 file writes, fsync, rename, and crash-recovery tests still belong to the host
 cache adapter.
+
+`EsRuntime::FileStream` is the first typed large-file vertical slice. A handle
+is opened with an explicit read/text/binary/write/append mode and a byte budget
+bounded by the shared runtime memory ceiling. `file_stream_read_chunk` and
+`file_stream_write_chunk` admit each request with subtraction-before-addition,
+return typed progress records, and reject closed handles, wrong directions,
+short host counts with errors, and budget overflow. `file_stream_read_line`
+uses an explicit state machine, strips only the LF delimiter, preserves CR,
+and rejects a line before its destination grows past the caller's maximum.
+`file_stream_close` is idempotent, transitions the handle to `Closed` before
+reporting a host close failure, and prevents use-after-close through the typed
+`FileStreamError.Closed` row. The path is borrowed for the handle lifetime and
+the opaque POSIX value is owned by the stream module; scoped cleanup and
+platform-independent adapters remain open qualification work.
 `decode_bytecode_artifact` first applies that allocation-free validation and then
 returns a borrowed, typed metadata record without copying its strings;
 all length-delimited metadata readers use the public
