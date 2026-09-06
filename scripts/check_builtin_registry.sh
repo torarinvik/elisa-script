@@ -362,6 +362,16 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            abs)
+                if ! rg -q 'registry_spec\.known and registry_spec\.opcode == "Negate" and registry_spec\.lowering_steps == "Compare,Negate,Select"' "$lowerer_file" || \
+                   ! rg -q 'name: "abs".*arity_min: 1.*arity_max: 1.*argument_types: "i64\|f64".*return_type: "numeric".*opcode: "Negate".*lowering_steps: "Compare,Negate,Select"' "$registry_file" || \
+                   ! rg -q 'numeric_polymorphic_builtin_result_types_are_preserved' "$semantic_test_file" || \
+                   ! rg -q 'lowers_typed_abs_through_state_machine' "$lowering_test_file" || \
+                   ! rg -q 'shadowed-abs' "$lowering_test_file"; then
+                    printf 'builtin registry audit: abs registry/polymorphic/source-shadow coverage is missing\n' >&2
+                    exit 1
+                fi
+                ;;
             split)
                 if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.opcode == "Split"' "$lowerer_file"; then
                     printf 'builtin registry audit: lowerer has no registry-driven split dispatch\n' >&2
