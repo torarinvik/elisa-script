@@ -1228,6 +1228,8 @@ check. It returns `false` for an existing empty file, `true` for any entry with 
 positive `st_size`, and preserves `FileIoError` for missing or invalid paths.
 `file_nonempty` is an equivalent alias; lowering expands either spelling to the
 verified `FileSize` plus typed unsigned `Greater` operations.
+The shared registry records its nominal `Path`, `File.Read`/`FileIoError`, and
+composed `FileSize,Greater` lowering contract.
 
 `file_mode(path: Path) -> u64 error[FileIoError] can[File.Read]` returns the
 POSIX `st_mode` bits reported by `stat`, including the file-kind and permission

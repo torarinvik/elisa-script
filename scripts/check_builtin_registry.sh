@@ -462,6 +462,10 @@ if ! rg -q 'name: "process_exit_status", receiver: "global".*argument_types: "Pr
     printf 'builtin registry audit: process-result accessor rows are incomplete\n' >&2
     exit 1
 fi
+if ! rg -q 'name: "file_nonempty", receiver: "global".*argument_types: "Path".*return_type: "bool".*effects: "File.Read".*errors: "FileIoError".*opcode: "FileSize".*lowering_steps: "FileSize,Greater"' "$registry_file" || ! rg -q 'file_nonempty' "$lowerer_file" || ! rg -q 'def registry_file_nonempty_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
+    printf 'builtin registry audit: file-nonempty alias contract is incomplete\n' >&2
+    exit 1
+fi
 if ! rg -q 'name: "regex_search", receiver: "global".*argument_types: "Regex,text".*return_type: "bool".*opcode: "RegexSearch".*lowering_mode: 0' "$registry_file" || \
    ! rg -q 'name: "regex_match", receiver: "global".*argument_types: "Regex,text".*return_type: "bool".*opcode: "RegexSearch".*lowering_mode: 1' "$registry_file" || \
    ! rg -q 'name: "regex_fullmatch", receiver: "global".*argument_types: "Regex,text".*return_type: "bool".*opcode: "RegexSearch".*lowering_mode: 2' "$registry_file" || \
