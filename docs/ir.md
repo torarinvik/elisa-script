@@ -114,6 +114,10 @@ pools. An unrepresentable host count therefore returns the empty byte sentinel
 from `canonical_module_bytes` and zero from `canonical_module_hash` instead of
 silently truncating a cache identity; normal verified modules remain on the
 version-1 stream.
+That admission also performs an allocation-free module budget pass: every
+borrowed text field is capped at 64 MiB, text payloads and collection elements
+are accumulated with checked subtraction, and the conservative total stays
+within the 256 MiB canonical-stream ceiling before `darray[u8]` emission begins.
 TypeTable child lookups also use a subtraction-based host-index helper after
 validating the serialized u32 start and u16 count. They never add a hostile
 offset in u32 space before checking bounds, and tables whose row or child pool

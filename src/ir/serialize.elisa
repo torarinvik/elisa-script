@@ -19,10 +19,136 @@ extend EsIr:
         # streaming sink; callers receive an empty digest for an oversized or
         # otherwise unavailable canonical stream.
         const CANONICAL_SHA256_MAX_INPUT_BYTES: usize = 268435456
+        const CANONICAL_MAX_MODULE_TEXT_BYTES: usize = 67108864
+        # The largest current emitted record is an instruction with a span,
+        # recursive legacy type, trace, and five text fields. Keep the per-item
+        # reserve above that fixed envelope so accepted streams stay below the
+        # aggregate ceiling even before their variable text bytes are added.
+        const CANONICAL_MODULE_BUDGET_ITEM_BYTES: usize = 512
 
 
         def canonical_u32_count_valid(count: usize) -> bool:
             return count <= CANONICAL_U32_COUNT_MAX
+
+
+        # Run an allocation-free upper-bound pass before canonical emission.
+        # Length-prefixed text and collection elements are accounted for with
+        # checked subtraction; this keeps a borrowed oversized view or a very
+        # large but otherwise representable collection from forcing an
+        # unbounded output allocation before the digest ceiling can reject it.
+        def canonical_budget_add(total: mutable usize&, amount: usize) -> bool:
+            return false if total > CANONICAL_SHA256_MAX_INPUT_BYTES or amount > CANONICAL_SHA256_MAX_INPUT_BYTES - total
+            total <- total + amount
+            return true
+
+
+        def canonical_budget_text(total: mutable usize&, value: sview) -> bool:
+            length: usize = sview_len(value)
+            return false if length > CANONICAL_MAX_MODULE_TEXT_BYTES
+            return canonical_budget_add(total, length + 8)
+
+
+        def canonical_budget_items(total: mutable usize&, count: usize) -> bool:
+            return false if count > (CANONICAL_SHA256_MAX_INPUT_BYTES - total) / CANONICAL_MODULE_BUDGET_ITEM_BYTES
+            return canonical_budget_add(total, count * CANONICAL_MODULE_BUDGET_ITEM_BYTES)
+
+
+        def canonical_type_budget_valid(total: mutable usize&, value: Type&) -> bool:
+            return false if not canonical_budget_text(total, value.name) or not canonical_budget_text(total, value.element_name) or not canonical_budget_text(total, value.element_element_name) or not canonical_budget_text(total, value.element_element_element_name) or not canonical_budget_text(total, value.element_element_element_element_name) or not canonical_budget_text(total, value.element_element_element_element_element_name) or not canonical_budget_text(total, value.element_element_element_element_element_element_name)
+            return true
+
+
+        def canonical_span_budget_valid(total: mutable usize&, value: SourceSpan&) -> bool:
+            return canonical_budget_text(total, value.file)
+
+
+        def canonical_trace_budget_valid(total: mutable usize&, value: TraceSite&) -> bool:
+            return canonical_budget_text(total, value.label)
+
+
+        def canonical_parameter_budget_valid(total: mutable usize&, value: Parameter&) -> bool:
+            return canonical_type_budget_valid(total, value.type) and canonical_budget_text(total, value.name)
+
+
+        def canonical_instruction_budget_valid(total: mutable usize&, value: Instruction&) -> bool:
+            return canonical_span_budget_valid(total, value.span) and canonical_type_budget_valid(total, value.result_type) and canonical_trace_budget_valid(total, value.trace) and canonical_budget_text(total, value.decimal) and canonical_budget_text(total, value.text) and canonical_budget_text(total, value.symbol) and canonical_budget_text(total, value.effect_family) and canonical_budget_text(total, value.effect_operation)
+
+
+        def canonical_terminator_budget_valid(total: mutable usize&, value: Terminator&) -> bool:
+            return canonical_span_budget_valid(total, value.span)
+
+
+        def canonical_block_budget_valid(total: mutable usize&, value: Block&) -> bool:
+            return canonical_terminator_budget_valid(total, value.terminator)
+
+
+        def canonical_clause_budget_valid(total: mutable usize&, value: HandlerClause&) -> bool:
+            return canonical_budget_text(total, value.effect_family) and canonical_budget_text(total, value.effect_operation) and canonical_budget_text(total, value.function)
+
+
+        def canonical_capture_budget_valid(total: mutable usize&, value: ContinuationCapture&) -> bool:
+            return canonical_budget_text(total, value.name) and canonical_type_budget_valid(total, value.type)
+
+
+        def canonical_literal_budget_valid(total: mutable usize&, value: GlobalLiteral&) -> bool:
+            return canonical_budget_text(total, value.decimal) and canonical_budget_text(total, value.text)
+
+
+        def canonical_global_budget_valid(total: mutable usize&, value: Global&) -> bool:
+            return false if not canonical_budget_text(total, value.name) or not canonical_type_budget_valid(total, value.type) or not canonical_budget_text(total, value.decimal) or not canonical_budget_text(total, value.text)
+            if value.type.kind == TypeKind.Array or value.type.kind == TypeKind.Map:
+                return false if not canonical_budget_items(total, value.aggregate_values.count)
+                for literal in value.aggregate_values |total|:
+                    return false if not canonical_literal_budget_valid(total, literal)
+            return true
+
+
+        def canonical_handler_budget_valid(total: mutable usize&, value: Handler&) -> bool:
+            return false if not canonical_budget_text(total, value.name) or not canonical_budget_items(total, value.handles.count) or not canonical_budget_items(total, value.introduces_effects.count) or not canonical_budget_items(total, value.errors.count) or not canonical_budget_items(total, value.clauses.count) or not canonical_budget_items(total, value.captures.count) or not canonical_budget_items(total, value.replay_safe_effects.count)
+            for item in value.handles |total|:
+                return false if not canonical_budget_text(total, item)
+            for item in value.introduces_effects |total|:
+                return false if not canonical_budget_text(total, item)
+            for item in value.errors |total|:
+                return false if not canonical_budget_text(total, item)
+            for item in value.clauses |total|:
+                return false if not canonical_clause_budget_valid(total, item)
+            for item in value.captures |total|:
+                return false if not canonical_capture_budget_valid(total, item)
+            for item in value.replay_safe_effects |total|:
+                return false if not canonical_budget_text(total, item)
+            return true
+
+
+        def canonical_function_budget_valid(total: mutable usize&, value: Function&) -> bool:
+            return false if not canonical_budget_text(total, value.name) or not canonical_budget_items(total, value.parameters.count) or not canonical_type_budget_valid(total, value.return_type) or not canonical_budget_items(total, value.effects.count) or not canonical_budget_items(total, value.operand_pool.count) or not canonical_budget_items(total, value.edge_arg_pool.count) or not canonical_budget_items(total, value.block_parameter_pool.count) or not canonical_budget_items(total, value.instruction_pool.count) or not canonical_budget_items(total, value.blocks.count) or not canonical_budget_items(total, value.errors.count)
+            for item in value.parameters |total|:
+                return false if not canonical_parameter_budget_valid(total, item)
+            for item in value.effects |total|:
+                return false if not canonical_budget_text(total, item)
+            for item in value.block_parameter_pool |total|:
+                return false if not canonical_parameter_budget_valid(total, item)
+            for item in value.instruction_pool |total|:
+                return false if not canonical_instruction_budget_valid(total, item)
+            for item in value.blocks |total|:
+                return false if not canonical_block_budget_valid(total, item)
+            for item in value.errors |total|:
+                return false if not canonical_budget_text(total, item)
+            return true
+
+
+        def canonical_module_budget_valid(module: Module&) -> bool:
+            total: mutable usize = 0
+            return false if not canonical_budget_text(total, module.name) or not canonical_budget_items(total, module.type_table.rows.count) or not canonical_budget_items(total, module.type_table.children.count) or not canonical_budget_items(total, module.globals.count) or not canonical_budget_items(total, module.functions.count) or not canonical_budget_items(total, module.handlers.count)
+            for row in module.type_table.rows |total|:
+                return false if not canonical_budget_text(total, row.name)
+            for binding in module.globals |total|:
+                return false if not canonical_global_budget_valid(total, binding)
+            for function in module.functions |total|:
+                return false if not canonical_function_budget_valid(total, function)
+            for handler in module.handlers |total|:
+                return false if not canonical_handler_budget_valid(total, handler)
+            return true
 
 
         def canonical_sha256_mask(value: u64) -> u64:
@@ -169,7 +295,7 @@ extend EsIr:
                 return false if not canonical_u32_count_valid(handler.handles.count) or not canonical_u32_count_valid(handler.introduces_effects.count) or not canonical_u32_count_valid(handler.errors.count) or not canonical_u32_count_valid(handler.clauses.count) or not canonical_u32_count_valid(handler.captures.count) or not canonical_u32_count_valid(handler.replay_safe_effects.count)
             for function in module.functions |module|:
                 return false if not canonical_u32_count_valid(function.parameters.count) or not canonical_u32_count_valid(function.effects.count) or not canonical_u32_count_valid(function.operand_pool.count) or not canonical_u32_count_valid(function.edge_arg_pool.count) or not canonical_u32_count_valid(function.block_parameter_pool.count) or not canonical_u32_count_valid(function.instruction_pool.count) or not canonical_u32_count_valid(function.blocks.count) or not canonical_u32_count_valid(function.errors.count)
-            return true
+            return canonical_module_budget_valid(module)
 
 
         def canonical_hash_byte(hash: u64, value: u8) -> u64:
