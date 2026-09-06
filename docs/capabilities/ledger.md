@@ -185,9 +185,11 @@ still required.
 
 The first large-file vertical slice is now a typed `EsRuntime::FileStream`
 contract with explicit modes, bounded chunk read/write, an error-safe line
-iterator, and idempotent closed-state transitions. Its static audit covers the
-shared byte-budget admission and state-machine syntax; scoped cleanup,
-platform adapters, and executed large-file evidence remain open.
+iterator, idempotent closed-state transitions, and a one-shot
+`FileStreamCleanupGuard` commit/abort state machine. Its static audit covers the
+shared byte-budget admission and state-machine syntax; compiler-enforced lexical
+cleanup/lifetime, platform adapters, and executed large-file evidence remain
+open.
 
 ## Evidence record template
 

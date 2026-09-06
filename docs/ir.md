@@ -282,7 +282,10 @@ and rejects a line before its destination grows past the caller's maximum.
 `file_stream_close` is idempotent, transitions the handle to `Closed` before
 reporting a host close failure, and prevents use-after-close through the typed
 `FileStreamError.Closed` row. The path is borrowed for the handle lifetime and
-the opaque POSIX value is owned by the stream module; scoped cleanup and
+the opaque POSIX value is owned by the stream module. `FileStreamCleanupGuard`
+is an explicit one-shot token: a successful commit closes the stream and marks
+the guard closed, while abort closes it and marks the guard aborted; repeated or
+cross-state cleanup fails with a typed error. Compiler-enforced lexical drop and
 platform-independent adapters remain open qualification work.
 `decode_bytecode_artifact` first applies that allocation-free validation and then
 returns a borrowed, typed metadata record without copying its strings;
