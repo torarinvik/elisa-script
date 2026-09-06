@@ -1026,6 +1026,11 @@ against the same terminated 64 MiB byte budget before their independent
 C-string buffers are reserved; the `=` separator used by `setenv` is included,
 and malformed entries still take the ordinary type path. The element-count budget also bounds environment override entries and
 pipeline stages before their reservation or child-spawn loops.
+Each individual executable, argument, environment name, and environment value
+also passes a per-field length check before `text_has_nul` or delimiter scans.
+This keeps a borrowed oversized view from forcing an unbounded host scan even
+if a future adapter changes aggregate admission. Direct environment get/set/
+unset wrappers apply the same preflight before copying their C-string operands.
 Process waits use nonblocking `waitpid` polling and a 120-second deadline; a child
 that exceeds the deadline is killed and reported as `ProcessError` rather than
 blocking the host indefinitely. Interrupted waits and one-millisecond poll
@@ -1133,7 +1138,8 @@ and reject negative or non-finite durations.
 `GetEnvironment`, `SetEnvironment`, and `UnsetEnvironment` operate on `Text`
 operands. Reads produce owned `Text` under `Environment.Read`; mutations produce
 `Bool` under `Environment.Write`. All three require `EnvironmentError`, reject C
-string truncation hazards and names containing `=`, and execute through explicit
+string truncation hazards and names containing `=`, admit each operand by the
+shared process-text byte ceiling before scanning it, and execute through explicit
 exhaustive opcode arms.
 The scripting-profile `get_environment_or(name, fallback)` lowers to the same
 `GetEnvironment` operation wrapped by `ErrorGuardPush`/`ErrorGuardPop` and a typed
