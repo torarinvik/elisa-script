@@ -74,6 +74,8 @@ rg -q 'tiny_policy: RuntimeResourcePolicy' "$repo_root/test/ir/elisascript_ir_te
 rg -q 'tiny_usage: mutable RuntimeResourceUsage' "$repo_root/test/ir/elisascript_ir_test.elisa"
 rg -q 'not runtime_resource_acquire\(tiny_usage' "$repo_root/test/ir/elisascript_ir_test.elisa"
 rg -q 'not runtime_resource_release\(tiny_usage' "$repo_root/test/ir/elisascript_ir_test.elisa"
+rg -q 'zero_resource_policy: RuntimeResourcePolicy' "$repo_root/test/ir/elisascript_ir_test.elisa"
+rg -q 'not runtime_resource_acquire\(zero_resource_usage' "$repo_root/test/ir/elisascript_ir_test.elisa"
 rg -q 'runtime_resource_policy_with_step_limit' "$bytecode"
 rg -q 'def execute_bytecode_with_resource_policy' "$bytecode"
 rg -q 'def execute_bytecode_direct_only_with_resource_policy' "$bytecode"
