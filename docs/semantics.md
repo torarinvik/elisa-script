@@ -247,7 +247,8 @@ method, preserving direct-call defaults, effects, and `error[...]` propagation.
 Semantic inference likewise uses the unique non-seeded source declaration for
 the return row and checks its receiver/argument literals and firm scalar
 families. UFCS arity checks prepend the receiver while ignoring line-zero
-builtin seeds; ambiguous source overloads remain conservative until full UFCS
+builtin seeds, and unique source UFCS labels are checked against the remaining
+parameter slots. Ambiguous source overloads remain conservative until full UFCS
 overload resolution is available.
 
 The compiler-known `is_empty(value) -> bool` (also `isempty`) and the matching
