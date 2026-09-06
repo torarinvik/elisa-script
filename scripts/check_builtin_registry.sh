@@ -18,8 +18,10 @@ structural_inference_file="$repo_root/vendor/elisa-compiler/src/semantic/resolve
 lowerer_file="$repo_root/src/ir/lower_ast.elisa"
 opcode_file="$repo_root/src/ir/ir_model.elisa"
 verifier_file="$repo_root/src/ir/ir_verify.elisa"
+surface_doc="$repo_root/docs/builtin-surface.md"
+ledger_doc="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$registry_file" "$semantic_file" "$receiver_semantic_file" "$firm_argument_file" "$literal_argument_file" "$inference_file" "$structural_inference_file" "$lowerer_file" "$opcode_file" "$verifier_file"; do
+for required_file in "$registry_file" "$semantic_file" "$receiver_semantic_file" "$firm_argument_file" "$literal_argument_file" "$inference_file" "$structural_inference_file" "$lowerer_file" "$opcode_file" "$verifier_file" "$surface_doc" "$ledger_doc"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'builtin registry audit: missing file: %s\n' "$required_file" >&2
         exit 2
@@ -2189,4 +2191,15 @@ if ! rg -q 'name == "regex"' "$inference_file" || \
     exit 1
 fi
 
-printf 'builtin registry audit: %s global, %s Text, and %s Regex receiver spellings share semantic and lowerer metadata\n' "$(printf '%s\n' "$registry_names" | awk 'NF {count += 1} END {print count + 0}')" "$(printf '%s\n' "$method_names" | awk 'NF {count += 1} END {print count + 0}')" "$(printf '%s\n' "$regex_method_names" | awk 'NF {count += 1} END {print count + 0}')"
+global_count="$(printf '%s\n' "$registry_names" | awk 'NF {count += 1} END {print count + 0}')"
+text_count="$(printf '%s\n' "$method_names" | awk 'NF {count += 1} END {print count + 0}')"
+regex_count="$(printf '%s\n' "$regex_method_names" | awk 'NF {count += 1} END {print count + 0}')"
+if ! rg -q "${global_count} global spellings" "$surface_doc" || \
+   ! rg -q "${global_count} global rows" "$ledger_doc" || \
+   ! rg -q "${text_count} Text receiver" "$surface_doc" || \
+   ! rg -q "${regex_count} Regex receiver" "$surface_doc"; then
+    printf 'builtin registry audit: documentation counts do not match registry rows\n' >&2
+    exit 1
+fi
+
+printf 'builtin registry audit: %s global, %s Text, and %s Regex receiver spellings share semantic and lowerer metadata\n' "$global_count" "$text_count" "$regex_count"
