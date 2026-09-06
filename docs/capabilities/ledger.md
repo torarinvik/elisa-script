@@ -193,8 +193,9 @@ open.
 
 Recent static increments are committed as `72f3325` (Path line semantics audit),
 `0739d4c` (typed cleanup guard), `b0ecf06` (cache cleanup integration),
-`9873d8c` (all resource-policy ceiling admission), and `64986ef` (ESDF version-3
-manifest fixture). They remain compiler-free evidence while validation is paused.
+`9873d8c` (all resource-policy ceiling admission), `3bd7152` (typed resource
+counter edges), and `64986ef` (ESDF version-3 manifest fixture). They remain
+compiler-free evidence while validation is paused.
 
 ## Evidence record template
 
