@@ -27,7 +27,7 @@ otherwise a seeded global such as `contains` would incorrectly suppress its
 receiver contract.
 
 The compact registry currently contains 202 global spellings, 42 Text receiver,
-9 Regex receiver, and 2 Map receiver spellings. The table below names the strict
+9 Regex receiver, and 3 Map receiver spellings. The table below names the strict
 scalar/text/regex core; filesystem, directory, process, environment, stream,
 and time families use the same row format and are covered by the registry
 audit.
@@ -135,12 +135,12 @@ Regex receiver dispatch (`search`, `match`, `fullmatch`, find/capture aliases,
 return-type inference; a source function with one of those names is not silently
 rewritten as a regex operation.
 
-Map receiver dispatch covers `keys()` and `values()`. Both take no arguments,
-reject set payloads, preserve the dictionary's concrete key/value descriptor in
-the lowerer, and emit the verified `MapKeys`/`MapValues` opcode. Their
-source-function shadowing guard is shared with Text, Regex, and Path receiver
-methods, so a user-defined `keys` or `values` UFCS function retains ordinary
-source-call precedence.
+Map receiver dispatch covers `keys()`, `values()`, and `copy()`. All three take
+no arguments, reject set payloads, and preserve the dictionary's concrete
+descriptor in the lowerer; projections emit the verified `MapKeys`/`MapValues`
+opcode and `copy()` emits `CopyMap`. Their source-function shadowing guard is
+shared with Text, Regex, and Path receiver methods, so user-defined `keys`,
+`values`, or `copy` UFCS functions retain ordinary source-call precedence.
 
 Run the compiler-free audits:
 

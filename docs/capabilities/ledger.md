@@ -25,7 +25,7 @@ unbound until migrated. This is recorded in commit `47466a4` and remains
 unqualified for executed replay evidence.
 
 The shared builtin registry snapshot now contains 202 global rows, 42 `Text`
-receiver rows, 9 `Regex` receiver rows, and 2 Map receiver rows. The global count includes the
+receiver rows, 9 `Regex` receiver rows, and 3 Map receiver rows. The global count includes the
 filesystem, process, environment, stream, scalar, text, and regex facades that
 have migrated to descriptor-backed semantic and lowering metadata; generic,
 variadic, and aggregate-polymorphic families remain explicitly open below.
@@ -38,12 +38,12 @@ driving semantic seeding, inference, and lowering (`bcd2f6d`, `1ec23ba`,
 spelling guards are now absent; the compiler-free surface audit treats that
 empty set as the intended invariant (`a185cb8`, `fc864a5`).
 
-Dictionary receiver projections now share the registry as `Map.keys()` and
-`Map.values()` rows. Semantic zero-argument checking, source-shadowing
-precedence, receiver return inference, and both lowerer receiver shapes consume
-the same `MapKeys`/`MapValues` metadata; concrete key/value descriptors remain
-owned by the structural map type while recursive generic descriptors remain
-open.
+Dictionary receiver operations now share the registry as `Map.keys()`,
+`Map.values()`, and `Map.copy()` rows. Semantic zero-argument checking,
+source-shadowing precedence, receiver return inference, and both lowerer
+receiver shapes consume the same `MapKeys`/`MapValues`/`CopyMap` metadata;
+concrete key/value descriptors remain owned by the structural map type while
+recursive generic descriptors remain open.
 
 Differential artifact text and fixed-width lookahead readers now share the
 subtraction-safe serialized-slice admission used by ESBC (`1d96bfa`); malformed
