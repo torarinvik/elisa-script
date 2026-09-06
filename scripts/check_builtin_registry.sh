@@ -18,10 +18,12 @@ structural_inference_file="$repo_root/vendor/elisa-compiler/src/semantic/resolve
 lowerer_file="$repo_root/src/ir/lower_ast.elisa"
 opcode_file="$repo_root/src/ir/ir_model.elisa"
 verifier_file="$repo_root/src/ir/ir_verify.elisa"
+lowering_test_file="$repo_root/test/ir/elisascript_lowering_test.elisa"
+semantic_test_file="$repo_root/test/semantic/elisascript_semantic_test.elisa"
 surface_doc="$repo_root/docs/builtin-surface.md"
 ledger_doc="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$registry_file" "$semantic_file" "$receiver_semantic_file" "$firm_argument_file" "$literal_argument_file" "$inference_file" "$structural_inference_file" "$lowerer_file" "$opcode_file" "$verifier_file" "$surface_doc" "$ledger_doc"; do
+for required_file in "$registry_file" "$semantic_file" "$receiver_semantic_file" "$firm_argument_file" "$literal_argument_file" "$inference_file" "$structural_inference_file" "$lowerer_file" "$opcode_file" "$verifier_file" "$lowering_test_file" "$semantic_test_file" "$surface_doc" "$ledger_doc"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'builtin registry audit: missing file: %s\n' "$required_file" >&2
         exit 2
@@ -2199,6 +2201,18 @@ if ! rg -q "${global_count} global spellings" "$surface_doc" || \
    ! rg -q "${text_count} Text receiver" "$surface_doc" || \
    ! rg -q "${regex_count} Regex receiver" "$surface_doc"; then
     printf 'builtin registry audit: documentation counts do not match registry rows\n' >&2
+    exit 1
+fi
+for fixture in lowers_python_reversed_as_fresh_typed_array lowers_python_sorted_as_fresh_typed_array lowers_python_sorted_reverse_argument_through_typed_cfg; do
+    if ! rg -q "def ${fixture}\(" "$lowering_test_file"; then
+        printf 'builtin registry audit: aggregate lowering fixture is missing: %s\n' "$fixture" >&2
+        exit 1
+    fi
+done
+if ! rg -q 'polymorphic_collection_builtins_preserve_known_element_types' "$semantic_test_file" || \
+   ! rg -q 'bad-array-reversed' "$lowering_test_file" || \
+   ! rg -q 'bad-array-sorted' "$lowering_test_file"; then
+    printf 'builtin registry audit: aggregate malformed-call coverage is missing\n' >&2
     exit 1
 fi
 
