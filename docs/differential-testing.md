@@ -211,7 +211,9 @@ materializing a `DifferentialRun`; an oversized borrowed snapshot becomes an
 explicit `DifferentialRunOutcome.OutputLimit` instead of entering comparison.
 The adapter also bounds caller-supplied observation and value-pool snapshots at
 that boundary, so oversized borrowed `ProcessCapture` fields cannot be carried
-forward for a later comparison.
+forward for a later comparison. It also rejects unknown value kinds and
+out-of-range array/map views as a typed normal-error snapshot before
+materialization.
 The comparison entry point repeats that boundary for directly assembled runs
 and value pools: each error/stdout/stderr channel and the aggregate text
 envelope are checked before `differential_text_equal` or structured value

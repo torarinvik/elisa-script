@@ -44,7 +44,7 @@ for helper in differential_world_path_segment_safe differential_world_fixture_pa
     fi
 done
 
-for helper in differential_run_text_bytes_fits differential_value_pool_comparison_text_bytes_fits differential_capture_observation_values_fit differential_capture_inputs_text_bytes_fit differential_run_value_text_bytes_fits; do
+for helper in differential_run_text_bytes_fits differential_value_pool_comparison_text_bytes_fits differential_capture_observation_values_fit differential_capture_observation_values_shape_valid differential_capture_inputs_text_bytes_fit differential_run_value_text_bytes_fits; do
     if ! rg -q "def $helper\(" "$source_file"; then
         printf 'differential case audit: missing helper %s\n' "$helper" >&2
         exit 1
@@ -86,7 +86,7 @@ for boundary in 'stdin_bytes: mutable darray[u8]' 'stdin_binary: bool' 'InvalidP
     fi
 done
 
-for boundary in 'differential_comparison_rejects_oversized_run_text' 'differential_comparison_rejects_oversized_value_pool_text' 'run text exceeds differential budget' 'owned value text exceeds differential budget' 'differential_process_capture_adapter_rejects_oversized_inputs' 'process capture inputs exceed differential budget'; do
+for boundary in 'differential_comparison_rejects_oversized_run_text' 'differential_comparison_rejects_oversized_value_pool_text' 'run text exceeds differential budget' 'owned value text exceeds differential budget' 'differential_process_capture_adapter_rejects_oversized_inputs' 'process capture inputs exceed differential budget' 'differential_process_capture_adapter_rejects_malformed_inputs' 'process capture inputs are structurally invalid'; do
     if ! rg -Fq "$boundary" "$fixture_file"; then
         printf 'differential case audit: missing comparison-bound coverage %s\n' "$boundary" >&2
         exit 1
