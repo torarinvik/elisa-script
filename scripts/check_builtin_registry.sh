@@ -262,6 +262,12 @@ if ! rg -q 'typed_builtin_method_spec\("Path", method_name\)' "$lowerer_file" ||
     printf 'builtin registry audit: Path receiver lowering does not consume registry metadata\n' >&2
     exit 1
 fi
+if ! rg -q 'def is_registry_zero_arg_spec\(spec: EsBuiltin::BuiltinSpec\)' "$lowerer_file" || \
+   ! rg -q 'def lower_registry_zero_arg\(callee_name: sview' "$lowerer_file" || \
+   ! rg -q 'is_registry_zero_arg_spec\(registry_spec\)' "$lowerer_file"; then
+    printf 'builtin registry audit: zero-argument registry lowerers are incomplete\n' >&2
+    exit 1
+fi
 if ! rg -q 'opcode <- Opcode\.TouchPath' "$lowerer_file" || \
    ! rg -q 'opcode <- Opcode\.ReadBytes' "$lowerer_file" || \
    ! rg -q 'opcode <- Opcode\.RemovePath' "$lowerer_file" || \
