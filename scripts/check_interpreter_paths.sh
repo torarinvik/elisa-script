@@ -7,11 +7,12 @@ script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 interpreter="$repo_root/src/ir/interpret.elisa"
 fixture="$repo_root/test/ir/elisascript_interpreter_test.elisa"
+bytecode_fixture="$repo_root/test/ir/elisascript_bytecode_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$interpreter" "$fixture" "$docs" "$ledger" "$plan"; do
+for required_file in "$interpreter" "$fixture" "$bytecode_fixture" "$docs" "$ledger" "$plan"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'interpreter path audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -23,6 +24,14 @@ rg -q 'const INTERPRET_MAX_TEMPORARY_PREFIX_BYTES: usize = INTERPRET_MAX_PATH_BY
 rg -q 'def path_text_valid\(' "$interpreter"
 rg -q 'return false if length == 0 or length >= INTERPRET_MAX_PATH_BYTES' "$interpreter"
 rg -q 'return not text_has_nul\(value\)' "$interpreter"
+rg -q 'def path_shape_text_valid\(' "$interpreter"
+rg -q 'def path_shape_result_valid\(' "$interpreter"
+rg -q 'return false if sview_len\(value\) >= INTERPRET_MAX_PATH_BYTES' "$interpreter"
+rg -q 'path_shape_result_valid\(bytes_view\(joined\)\)' "$interpreter"
+rg -q 'path_shape_result_valid\(bytes_view\(normalized\)\)' "$interpreter"
+rg -q 'path_shape_result_valid\(bytes_view\(relative\)\)' "$interpreter"
+rg -q 'def path_value_input_valid\(' "$interpreter"
+rg -q 'def path_value_output_valid\(' "$interpreter"
 rg -q 'def nul_terminated_path\(' "$interpreter"
 rg -q 'return \[\] if not path_text_valid\(value\)' "$interpreter"
 rg -q 'def host_path_cstring_length_bounded\(' "$interpreter"
@@ -60,6 +69,8 @@ for forbidden in \
 done
 
 rg -q 'interpreter_rejects_oversized_path_before_c_string_allocation' "$fixture"
+rg -q 'interpreter_rejects_oversized_pure_path_before_arena_allocation' "$fixture"
+rg -q 'bytecode_direct_rejects_oversized_pure_path_before_arena_allocation' "$bytecode_fixture"
 rg -q 'sview\("", 0, 4096\)' "$fixture"
 rg -q 'All filesystem text and byte operations reject an empty path' "$docs"
 rg -q '4 KiB path admission|4096-byte path|interpreter.*path' "$docs"

@@ -912,6 +912,13 @@ the target as its first operand and the base as its second. It is pure, does not
 consult the filesystem, and is eligible for direct bytecode execution. The
 `path_relative`, `relative_path`, and `relpath` builtins plus the scripting
 convenience `Path.relative_to()` lower to this operation.
+All pure path-shape operations admit their length-delimited inputs through the
+same 4 KiB shape envelope before calling `Fs::join`, `Fs::normalize`, or
+`Fs::relative`; empty lexical input remains valid for compatibility with
+`path_normalize(path"")`. Derived `Path` results must be non-empty and stay
+inside that envelope. The reference and direct-bytecode paths share the same
+preflight/result checks, so an oversized nominal value cannot force a large
+permanent-arena allocation or silently become an empty path sentinel.
 `PathReal` verifies `Named(Path) -> Named(Path)` and requires `File.Read` plus
 `FileIoError`; it follows symbolic links through the host filesystem and returns
 an owned canonical absolute path bounded by the same non-empty 4 KiB Path
