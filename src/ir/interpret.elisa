@@ -248,6 +248,10 @@ extend EsIr:
             failed: mutable bool
             ended: mutable bool = false
             limit: u64 = INTERPRET_DEFAULT_MAX_STDIN_BYTES
+            # Count every byte consumed from fd 0, including a line delimiter.
+            # The retained payload may omit LF/CR, but the host-read budget may
+            # never be bypassed by repeatedly probing after the limit.
+            consumed: mutable u64 = 0
             eintr_retries: mutable usize = 0
 
 
@@ -313,7 +317,7 @@ extend EsIr:
 
 
         def stdio_read_append_fits(reader: StdioReader&, additional: usize) -> bool:
-            current: u64 = reader.bytes.count.u64()
+            current: u64 = reader.consumed
             return false if current > reader.limit
             return additional.u64() <= reader.limit - current
 
@@ -6062,8 +6066,19 @@ extend EsIr:
 
         def stdio_read_next(reader: mutable StdioReader&) -> StdioReadState can[Memory.Allocate, Abort.Panic]:
             chunk: mutable u8[4096] = zeroed
+            current: u64 = reader.consumed
+            if current > reader.limit:
+                reader.failed <- true
+                return StdioReadState.Error
+            remaining: u64 = reader.limit - current
+            capacity: mutable usize = 4096
+            if remaining < capacity.u64():
+                capacity <- remaining.usize()
+            if capacity == 0:
+                reader.failed <- true
+                return StdioReadState.Error
             can Blocking.IO:
-                amount: isize = elisascript_posix_read(0, (&chunk[0]).cast[mutable void&], 4096)
+                amount: isize = elisascript_posix_read(0, (&chunk[0]).cast[mutable void&], capacity)
                 if amount < 0:
                     errno: mutable int& = elisascript_posix_errno()
                     if errno[0] == ES_RUNTIME_ERRNO_EINTR and reader.eintr_retries < INTERPRET_MAX_EINTR_RETRIES:
@@ -6074,13 +6089,14 @@ extend EsIr:
                 if amount == 0:
                     return StdioReadState.End
                 reader.eintr_retries <- 0
-                if amount > 4096:
+                if amount.usize() > capacity:
                     reader.failed <- true
                     return StdioReadState.Error
                 count: usize = amount.usize()
                 if not stdio_read_append_fits(reader, count):
                     reader.failed <- true
                     return StdioReadState.Error
+                reader.consumed <- reader.consumed + count.u64()
                 for index in 0..<count |reader, chunk|:
                     reader.bytes.push(chunk[index])
                 return StdioReadState.Data
@@ -6088,6 +6104,9 @@ extend EsIr:
 
         def stdio_read_line_next(reader: mutable StdioReader&) -> StdioLineReadState can[Memory.Allocate, Abort.Panic]:
             chunk: mutable u8[1] = zeroed
+            if not stdio_read_append_fits(reader, 1):
+                reader.failed <- true
+                return StdioLineReadState.Error
             can Blocking.IO:
                 amount: isize = elisascript_posix_read(0, (&chunk[0]).cast[mutable void&], 1)
                 if amount < 0:
@@ -6103,10 +6122,8 @@ extend EsIr:
                 if amount > 1:
                     reader.failed <- true
                     return StdioLineReadState.Error
+                reader.consumed <- reader.consumed + 1
                 return StdioLineReadState.Done if chunk[0] == 10
-                if not stdio_read_append_fits(reader, 1):
-                    reader.failed <- true
-                    return StdioLineReadState.Error
                 reader.bytes.push(chunk[0])
                 return StdioLineReadState.Progress
 
