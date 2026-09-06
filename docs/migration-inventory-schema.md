@@ -69,8 +69,9 @@ match and require maintainer review. The scanner never evaluates the matched
 file or embedded command. To keep a broad root scan bounded, it skips `.git`,
 `node_modules`, virtualenvs, Python caches, `vendor`, and `third_party`, refuses
 roots with more than 200,000 regular files, and limits content inspection to
-files no larger than 8 MiB. Split larger roots and use the candidate manifest
-when those trees themselves require review.
+files no larger than 8 MiB. Traversal and content-search failures fail closed
+instead of silently dropping a signal. Split larger roots and use the candidate
+manifest when those trees themselves require review.
 
 Regenerate the signal report outside the repository:
 

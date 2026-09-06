@@ -42,30 +42,62 @@ if [ "$scan_file_count" -gt "$max_scan_files" ]; then
     exit 3
 fi
 
+signal_tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/elisascript-signals.XXXXXX")" || {
+    echo "inventory_signals: unable to create private temporary directory" >&2
+    exit 3
+}
+cleanup_signal_tmp() {
+    rm -rf -- "$signal_tmp_dir"
+}
+trap cleanup_signal_tmp EXIT HUP INT TERM
+
+executable_paths="$signal_tmp_dir/executable.paths"
+shebang_paths="$signal_tmp_dir/shebang.paths"
+inline_paths="$signal_tmp_dir/inline.paths"
+
+if ! find "$scan_root" \
+    \( -path '*/.git' -o -path '*/node_modules' -o -path '*/.venv' -o -path '*/__pycache__' -o -path '*/vendor' -o -path '*/third_party' \) -prune -o \
+    -type f -perm -111 -print > "$executable_paths" 2>/dev/null; then
+    echo "inventory_signals: executable-file traversal failed for $scan_root" >&2
+    exit 3
+fi
+
+if rg -l --hidden --no-messages --max-filesize "$max_scan_file_bytes" --glob '!.git/**' --glob '!**/node_modules/**' --glob '!**/.venv/**' --glob '!**/__pycache__/**' --glob '!**/vendor/**' --glob '!**/third_party/**' \
+    '^[[:space:]]*#![[:space:]]*(/[^[:space:]]*/)?(env[[:space:]]+)?(python3?|pypy3?|perl|awk|gawk|mawk|sh|bash|zsh|fish)([[:space:]]|$)' \
+    "$scan_root" > "$shebang_paths" 2>/dev/null; then
+    :
+else
+    rg_status=$?
+    if [ "$rg_status" -ne 1 ]; then
+        echo "inventory_signals: shebang search failed for $scan_root" >&2
+        exit 3
+    fi
+fi
+
+if rg -l --hidden --no-messages --max-filesize "$max_scan_file_bytes" --glob '!.git/**' --glob '!**/node_modules/**' --glob '!**/.venv/**' --glob '!**/__pycache__/**' --glob '!**/vendor/**' --glob '!**/third_party/**' \
+    '(^|[^[:alnum:]_])(python3?|pypy3?)[[:space:]]+-c([[:space:]]|$)|(^|[^[:alnum:]_])perl[[:space:]]+-e([[:space:]]|$)|(^|[^[:alnum:]_])(g?awk|mawk)([[:space:]]|$)' \
+    "$scan_root" > "$inline_paths" 2>/dev/null; then
+    :
+else
+    rg_status=$?
+    if [ "$rg_status" -ne 1 ]; then
+        echo "inventory_signals: inline-invocation search failed for $scan_root" >&2
+        exit 3
+    fi
+fi
+
 printf 'path\tsignal\tdetail\n'
-
 {
-    find "$scan_root" \
-        \( -path '*/.git' -o -path '*/node_modules' -o -path '*/.venv' -o -path '*/__pycache__' -o -path '*/vendor' -o -path '*/third_party' \) -prune -o \
-        -type f -perm -111 -print 2>/dev/null |
-        while IFS= read -r path; do
-            case "$path" in
-                */.git/*) continue ;;
-            esac
-            printf '%s\texecutable-file\tpermission bit; inspect file type and shebang before classifying\n' "$path"
-        done
-
-    rg -l --hidden --no-messages --max-filesize "$max_scan_file_bytes" --glob '!.git/**' --glob '!**/node_modules/**' --glob '!**/.venv/**' --glob '!**/__pycache__/**' --glob '!**/vendor/**' --glob '!**/third_party/**' \
-        '^[[:space:]]*#![[:space:]]*(/[^[:space:]]*/)?(env[[:space:]]+)?(python3?|pypy3?|perl|awk|gawk|mawk|sh|bash|zsh|fish)([[:space:]]|$)' \
-        "$scan_root" 2>/dev/null |
-        while IFS= read -r path; do
-            printf '%s\tlegacy-shebang\tinterpreter shebang; review runtime, argv, cwd, environment, and exit behavior\n' "$path"
-        done
-
-    rg -l --hidden --no-messages --max-filesize "$max_scan_file_bytes" --glob '!.git/**' --glob '!**/node_modules/**' --glob '!**/.venv/**' --glob '!**/__pycache__/**' --glob '!**/vendor/**' --glob '!**/third_party/**' \
-        '(^|[^[:alnum:]_])(python3?|pypy3?)[[:space:]]+-c([[:space:]]|$)|(^|[^[:alnum:]_])perl[[:space:]]+-e([[:space:]]|$)|(^|[^[:alnum:]_])(g?awk|mawk)([[:space:]]|$)' \
-        "$scan_root" 2>/dev/null |
-        while IFS= read -r path; do
-            printf '%s\tinline-legacy-invocation\tcontent references python/perl/awk command syntax; inspect callers and embedded program text\n' "$path"
-        done
+    while IFS= read -r path; do
+        [ -n "$path" ] || continue
+        printf '%s\texecutable-file\tpermission bit; inspect file type and shebang before classifying\n' "$path"
+    done < "$executable_paths"
+    while IFS= read -r path; do
+        [ -n "$path" ] || continue
+        printf '%s\tlegacy-shebang\tinterpreter shebang; review runtime, argv, cwd, environment, and exit behavior\n' "$path"
+    done < "$shebang_paths"
+    while IFS= read -r path; do
+        [ -n "$path" ] || continue
+        printf '%s\tinline-legacy-invocation\tcontent references python/perl/awk command syntax; inspect callers and embedded program text\n' "$path"
+    done < "$inline_paths"
 } | sort -u
