@@ -35,17 +35,20 @@ reference runner and candidate runner to a `DifferentialWorld` containing the
 working directory, fixture files, ordered environment, argv, stdin, locale,
 timezone, and seed. `validate_differential_case` validates both nested runners,
 rejects NULs, duplicate fixture paths, oversized world data, invalid engine or
-artifact policies, and preserves the nested runner issue kind. A validated case
-can produce a `DifferentialArtifactManifest` with case/runner identities, seeds,
-engine requirement, artifact policy, a deterministic fingerprint of the complete
-validated world, and optional verified-module fingerprint;
+artifact policies, comparator policy, and preserves the nested runner issue kind.
+A validated case can produce a `DifferentialArtifactManifest` with case/runner
+identities, seeds, engine requirement, artifact policy, a deterministic
+fingerprint of the complete validated world, a complete comparator policy, and
+optional verified-module fingerprint;
 `canonical_differential_artifact_manifest_bytes` emits a bounded versioned `ESDF`
 sidecar and `differential_artifact_manifest_fingerprint` provides a deterministic
-correlation key. Version 2 adds the world fingerprint while the borrowed decoder
-continues to admit version-1 manifests for compatibility. The decoder validates
-magic, version, lengths, enum ordinals, and trailing bytes before exposing borrowed
-metadata; truncated or malformed sidecars fail closed. Adapters remain responsible
-for materializing the separate worlds and writing the complete output artifact.
+correlation key. Version 2 adds the world fingerprint while version 3 adds text
+comparison, map ordering, and exact float-tolerance bits; the borrowed decoder
+continues to admit version-1 and version-2 manifests with the exact historical
+default policy. The decoder validates magic, version, lengths, enum ordinals,
+float payloads, and trailing bytes before exposing borrowed metadata; truncated
+or malformed sidecars fail closed. Adapters remain responsible for materializing
+the separate worlds and writing the complete output artifact.
 
 The first shared comparison primitive is `EsDifferential.compare_differential_runs`.
 It compares run outcome, exit status, named error, stdout, stderr, the typed return value,
@@ -82,10 +85,9 @@ call `compare_differential_runs_with_policy` with a
 removes one final LF (and its preceding CR) from text and process streams, while
 `DifferentialMapComparison.Ordered` compares map pairs in source order. The
 default policy is exact text, unordered maps, and zero float tolerance; policy
-validation rejects unknown enum values and invalid tolerances. The case boundary
-also validates its comparator policy, but manifest serialization does not yet
-persist the policy fields, so replay must retain the originating case until that
-schema extension lands.
+validation rejects unknown enum values and invalid tolerances. Version-3 ESDF
+manifests persist these policy fields, so replay can validate comparison intent
+without retaining the original in-memory case.
 
 The owned comparison boundary has a closed value-kind admission check. Every
 pending pair, including recursively reached array and map members, must use one
