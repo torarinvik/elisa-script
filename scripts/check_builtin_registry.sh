@@ -128,8 +128,11 @@ if ! rg -q 'typed_builtin_method_spec\("Regex", method\)' "$inference_file" || \
     exit 1
 fi
 if ! rg -q 'argument_names: sview' "$registry_file" || \
+   ! rg -q 'named_argument_index: u32' "$registry_file" || \
    ! rg -q 'builtin_named_argument_allowed' "$lowerer_file" || \
-   ! rg -q 'ufm_text_named_argument_allowed' "$receiver_semantic_file"; then
+   ! rg -q 'named_argument_index' "$lowerer_file" || \
+   ! rg -q 'ufm_text_named_argument_allowed' "$receiver_semantic_file" || \
+   ! rg -q 'named_argument_index' "$receiver_semantic_file"; then
     printf 'builtin registry audit: named-argument metadata is not shared across registry, semantic, and lowerer layers\n' >&2
     exit 1
 fi
