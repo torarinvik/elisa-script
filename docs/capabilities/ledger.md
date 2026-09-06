@@ -181,7 +181,9 @@ staged/committed/aborted/restart state machine. Directory fsync, crash recovery,
 and concurrent-writer evidence remain pending.
 The typed `ArtifactCacheWriterLease` now rejects zero, competing, and stale
 owner tokens before publication; an OS lock and crash-recovery qualification are
-still required.
+still required. Publication can additionally receive a parent directory and
+perform a typed `dirfd`/`fsync`/`closedir` edge after rename; platform lock and
+restart evidence remain open.
 
 The first large-file vertical slice is now a typed `EsRuntime::FileStream`
 contract with explicit modes, bounded chunk read/write, an error-safe line
