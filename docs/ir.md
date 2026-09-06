@@ -213,7 +213,8 @@ matching `RuntimeResourceUsage` snapshot. The policy names the common budget
 dimensions—steps, optional elapsed time, memory, open handles, child
 processes, output bytes, regex work, retained traces, and concurrent tasks—so a
 nested call or backend fallback has an explicit place to inherit the parent
-contract. `runtime_resource_usage_within_policy` uses subtraction-free
+contract. `runtime_resource_policy_valid` now caps every declared resource
+dimension against the shared host ceilings before execution. `runtime_resource_usage_within_policy` uses subtraction-free
 comparisons and treats only the elapsed-time field's zero as "timer not
 attached"; a zero in every other field is an exact zero budget. The current
 interpreter and direct bytecode paths populate the step/retained-trace limits
