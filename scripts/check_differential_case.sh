@@ -16,6 +16,20 @@ for required_file in "$source_file" "$fixture_file" "$docs_file"; do
     fi
 done
 
+for binary_boundary in 'const enum DifferentialWorldFileKind' 'bytes: mutable darray[u8]' 'InvalidWorldFileKind' 'InvalidWorldFilePayload' 'def differential_world_file_kind_valid' 'def differential_world_hash_bytes'; do
+    if ! rg -Fq "$binary_boundary" "$source_file"; then
+        printf 'differential case audit: missing binary world boundary %s\n' "$binary_boundary" >&2
+        exit 1
+    fi
+done
+
+for binary_helper in differential_world_file_kind_valid differential_world_hash_bytes; do
+    if ! rg -q "def $binary_helper\\(" "$source_file"; then
+        printf 'differential case audit: missing binary helper %s\n' "$binary_helper" >&2
+        exit 1
+    fi
+done
+
 for declaration in 'struct DifferentialWorldFile' 'struct DifferentialWorld' 'struct DifferentialWorldSnapshot' 'struct DifferentialWorldSnapshotCheck' 'struct DifferentialWorldMaterializationPlan' 'struct DifferentialWorldMaterializationCheck' 'struct DifferentialCase' 'struct DifferentialComparatorPolicy' 'struct DifferentialArtifactManifest' 'struct DifferentialArtifactManifestDecode' 'struct DifferentialProcessStreamArtifact' 'struct DifferentialProcessStreamArtifactDecode' 'struct DifferentialReproductionArtifact' 'struct DifferentialReproductionArtifactDecode' 'struct DifferentialValuePoolArtifact' 'struct DifferentialValuePoolArtifactDecode' 'struct DifferentialArtifactIndex' 'struct DifferentialArtifactIndexDecode' 'struct DifferentialArtifactReplayCheck' 'struct DifferentialArtifactDirectoryPlan' 'struct DifferentialArtifactDirectoryCheck' 'struct DifferentialShrinkCandidate' 'struct DifferentialShrinkResult' 'struct DifferentialRunShrinkCandidate' 'struct DifferentialRunShrinkResult' 'struct DifferentialOracle' 'struct DifferentialOracleCheck' 'struct DifferentialComparison' 'struct DifferentialComparisonArtifact' 'struct DifferentialComparisonArtifactDecode' 'const enum DifferentialArtifactPolicy' 'const enum DifferentialArtifactPublicationState' 'const enum DifferentialArtifactReplayIssue' 'const enum DifferentialArtifactDirectoryState' 'const enum DifferentialArtifactDirectoryIssue' 'const enum DifferentialShrinkKind' 'const enum DifferentialRunShrinkKind' 'const enum DifferentialOracleLanguage' 'const enum DifferentialOracleIssue' 'const enum DifferentialWorldSnapshotIssue' 'const enum DifferentialWorldMaterializationState' 'const enum DifferentialWorldMaterializationIssue' 'const enum DifferentialCaseIssueKind' 'const enum DifferentialDifferenceKind' 'const enum DifferentialRunOutcome' 'const enum DifferentialTextComparison' 'const enum DifferentialMapComparison'; do
     if ! rg -q "$declaration" "$source_file"; then
         printf 'differential case audit: missing %s\n' "$declaration" >&2
@@ -33,6 +47,13 @@ done
 for boundary in 'validate_differential_runner(case.reference)' 'validate_differential_runner(case.candidate)' 'DifferentialCaseIssueKind.DuplicateWorldPath' 'DifferentialCaseIssueKind.InvalidWorldPath' 'DifferentialCaseIssueKind.InvalidTolerance' 'DifferentialTextComparison.TrimFinalNewline' 'DifferentialMapComparison.Ordered' 'compare_differential_runs_with_policy' 'DifferentialArtifactPolicy.Always' 'DifferentialRunOutcome.Crash' 'DifferentialDifferenceKind.Outcome' 'world_fingerprint' 'format_version: 2' 'format_version: 3' 'DifferentialArtifactSide.Candidate' 'DifferentialArtifactPublicationState.Complete' 'DifferentialArtifactReplayIssue.Incomplete' 'DifferentialArtifactReplayIssue.FingerprintMismatch' 'make_differential_artifact_manifest' 'canonical_differential_artifact_manifest_bytes' 'differential_artifact_manifest_fingerprint' 'decode_differential_artifact_manifest' 'differential_artifact_manifest_bytes_valid' 'make_differential_process_stream_artifact' 'canonical_differential_process_stream_artifact_bytes' 'differential_process_stream_artifact_fingerprint' 'decode_differential_process_stream_artifact' 'differential_process_stream_artifact_bytes_valid' 'make_differential_reproduction_artifact' 'canonical_differential_reproduction_artifact_bytes' 'differential_reproduction_artifact_fingerprint' 'decode_differential_reproduction_artifact' 'differential_reproduction_artifact_bytes_valid' 'make_differential_value_pool_artifact' 'canonical_differential_value_pool_artifact_bytes' 'differential_value_pool_artifact_fingerprint' 'decode_differential_value_pool_artifact' 'differential_value_pool_artifact_bytes_valid' 'make_differential_artifact_index' 'canonical_differential_artifact_index_bytes' 'differential_artifact_index_fingerprint' 'differential_artifact_index_bytes_valid' 'decode_differential_artifact_index' 'make_differential_comparison_artifact' 'canonical_differential_comparison_artifact_bytes' 'differential_comparison_artifact_fingerprint' 'decode_differential_comparison_artifact' 'differential_comparison_artifact_bytes_valid' 'validate_differential_artifact_bundle'; do
     if ! rg -Fq "$boundary" "$source_file" "$fixture_file"; then
         printf 'differential case audit: missing boundary coverage %s\n' "$boundary" >&2
+        exit 1
+    fi
+done
+
+for boundary in 'DifferentialCaseIssueKind.InvalidWorldFileKind' 'DifferentialCaseIssueKind.InvalidWorldFilePayload' 'DifferentialWorldFileKind.Bytes' 'bytes: [0, 255, 7]' 'changed_binary_case.world.files'; do
+    if ! rg -Fq "$boundary" "$source_file" "$fixture_file"; then
+        printf 'differential case audit: missing binary fixture coverage %s\n' "$boundary" >&2
         exit 1
     fi
 done

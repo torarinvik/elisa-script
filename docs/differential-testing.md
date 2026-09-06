@@ -32,13 +32,18 @@ compares structured observations.
 
 The concrete first case boundary is `EsDifferential.DifferentialCase`. It binds a
 reference runner and candidate runner to a `DifferentialWorld` containing the
-working directory, fixture files, ordered environment, argv, stdin, locale,
-timezone, and seed. `validate_differential_case` validates both nested runners,
-rejects NULs, duplicate fixture paths, oversized world data, invalid engine or
-artifact policies, comparator policy, and preserves the nested runner issue kind.
+working directory, typed fixture files, ordered environment, argv, stdin, locale,
+timezone, and seed. A fixture is explicitly `DifferentialWorldFileKind.Text` or
+`DifferentialWorldFileKind.Bytes`; byte fixtures own their bounded `darray[u8]`
+payload, so NULs and other binary data never cross a C-string boundary. Mixed
+text/byte payloads and unknown fixture kinds are rejected rather than guessed.
+`validate_differential_case` validates both nested runners, rejects NULs, duplicate
+fixture paths, oversized world data, invalid engine or artifact policies, comparator
+policy, and preserves the nested runner issue kind.
 A validated case can produce a `DifferentialArtifactManifest` with case/runner
 identities, seeds, engine requirement, artifact policy, a deterministic
-fingerprint of the complete validated world, a complete comparator policy, and
+fingerprint of the complete validated world (including fixture kind, bytes, mode,
+and executable bit), a complete comparator policy, and
 optional verified-module fingerprint;
 `canonical_differential_artifact_manifest_bytes` emits a bounded versioned `ESDF`
 sidecar and `differential_artifact_manifest_fingerprint` provides a deterministic
