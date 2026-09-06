@@ -1122,6 +1122,14 @@ if ! rg -q 'name: "len", receiver: "global".*argument_types: "collection\|text".
     printf 'builtin registry audit: global len lowerer does not consume registry shape/result/opcode metadata\n' >&2
     exit 1
 fi
+if ! rg -q 'name: "contains", receiver: "global".*argument_types: "collection,any".*return_type: "bool".*effects: "".*errors: "".*opcode: "Contains"' "$registry_file" || \
+   ! rg -q 'contains_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+   ! rg -q 'contains_spec\.opcode == "Contains"' "$lowerer_file" || \
+   ! rg -q 'def lower_collection_contains_expression\(collection_expression: Ast::Expr.*spec: EsBuiltin::BuiltinSpec' "$lowerer_file" || \
+   ! rg -q 'opcode: Opcode = Opcode.Contains if spec\.opcode == "Contains"' "$lowerer_file"; then
+    printf 'builtin registry audit: global/receiver contains lowerers do not consume registry shape/result/opcode metadata\n' >&2
+    exit 1
+fi
 for text_name in starts_with startswith; do
     if ! rg -q "name: \"$text_name\", receiver: \"global\".*argument_types: \"text,text\".*return_type: \"bool\".*effects: \"\".*errors: \"\".*opcode: \"StartsWith\"" "$registry_file"; then
         printf 'builtin registry audit: starts-with row is incomplete: %s\n' "$text_name" >&2

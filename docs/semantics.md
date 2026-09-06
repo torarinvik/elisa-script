@@ -333,6 +333,9 @@ exact elements, dictionaries inspect keys, and text accepts `sview` or `char`
 needles. The collection is evaluated before the needle, each operand is
 evaluated once, and both forms lower to the shared `Contains` operation; a
 source declaration named `contains` still shadows the global helper.
+The shared registry owns the global `collection,any -> bool` row and `Contains`
+opcode, and the same opcode/result metadata is passed through the Text receiver
+method lowerer.
 
 ## Text boundary predicates
 
