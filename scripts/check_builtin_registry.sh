@@ -976,6 +976,16 @@ if ! rg -q 'typed_builtin_spec\(callee_name\)\.lowering_steps' "$lowerer_file"; 
     printf 'builtin registry audit: lowerer does not consume composed process lowering metadata\n' >&2
     exit 1
 fi
+for status_helper in lower_run_process_with_stdin lower_run_process_in_directory lower_run_process_with_environment lower_run_process_in_directory_with_environment; do
+    if ! rg -q "def ${status_helper}\\(arguments: darray\\[Ast::Expr\\].*spec: EsBuiltin::BuiltinSpec" "$lowerer_file"; then
+        printf 'builtin registry audit: status helper does not accept its registry descriptor: %s\n' "$status_helper" >&2
+        exit 1
+    fi
+done
+if ! rg -q 'spec\.opcode == "ProcessResultExitStatus" and spec\.lowering_steps != "" and typed_builtin_call_shape\(spec\.name' "$lowerer_file"; then
+    printf 'builtin registry audit: status helpers do not consume registry shape/opcode/sequence metadata\n' >&2
+    exit 1
+fi
 if ! rg -q 'lowers_python_print_to_typed_stdout_state' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_console_print_aliases_to_explicit_stream_opcodes' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: standard-stream registry rows lack lowering fixtures\n' >&2
     exit 1
