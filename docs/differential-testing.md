@@ -571,6 +571,13 @@ serialized or later comparison record cannot lose the pre-run capability facts.
 Reference-interpreter and external-process runs deliberately leave the snapshot
 unknown; zero counts must not be interpreted as proof that a module was empty.
 
+In-process runs also copy the shared `RuntimeResourcePolicy` and
+`RuntimeResourceUsage` into `DifferentialRun`. External oracle processes leave
+`resource_policy_known` false because the adapter cannot observe their memory,
+handle, process, regex, or concurrency counters. This keeps resource metadata
+available for later artifact publication without pretending that a process
+boundary has been measured.
+
 `compare_differential_runs` remains a value/observation comparator and therefore
 does not reject an unknown engine by default. Backend qualification must use
 `compare_differential_runs_with_engine_requirement` with an explicit

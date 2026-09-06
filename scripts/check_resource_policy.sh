@@ -8,10 +8,11 @@ repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 runtime_model="$repo_root/src/ir/runtime_model.elisa"
 interpreter="$repo_root/src/ir/interpret.elisa"
 bytecode="$repo_root/src/bytecode/bytecode.elisa"
+differential="$repo_root/src/testing/differential.elisa"
 docs_file="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$runtime_model" "$interpreter" "$bytecode" "$docs_file" "$ledger"; do
+for required_file in "$runtime_model" "$interpreter" "$bytecode" "$differential" "$docs_file" "$ledger"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'resource policy audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -38,10 +39,18 @@ done
 rg -q 'resource_policy: RuntimeResourcePolicy' "$interpreter"
 rg -q 'resource_usage: mutable RuntimeResourceUsage' "$interpreter"
 rg -q 'runtime_resource_policy_with_step_limit' "$interpreter"
+rg -q 'def interpret_with_resource_policy' "$interpreter"
 rg -q 'policy: machine.resource_policy' "$interpreter"
 rg -q 'usage: machine.resource_usage' "$interpreter"
 rg -q 'runtime_resource_policy_with_step_limit' "$bytecode"
+rg -q 'def execute_bytecode_with_resource_policy' "$bytecode"
+rg -q 'def execute_bytecode_direct_only_with_resource_policy' "$bytecode"
 rg -q 'usage: usage' "$bytecode"
+rg -q 'resource_policy_known: mutable bool' "$differential"
+rg -q 'resource_policy: mutable EsIr::RuntimeResourcePolicy' "$differential"
+rg -q 'resource_usage: mutable EsIr::RuntimeResourceUsage' "$differential"
+rg -q 'result.resource_policy <- execution.policy' "$differential"
+rg -q 'result.resource_usage <- execution.usage' "$differential"
 
 rg -q 'per-run' "$docs_file"
 rg -q 'RuntimeResourcePolicy' "$docs_file"

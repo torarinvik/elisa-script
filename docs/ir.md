@@ -199,8 +199,13 @@ comparisons and treats only the elapsed-time field's zero as "timer not
 attached"; a zero in every other field is an exact zero budget. The current
 interpreter and direct bytecode paths populate the step limit and returned usage
 snapshot while their existing host bridges continue enforcing their specialized
-ceilings. Full cross-bridge accounting, wall-clock enforcement, and adverse
-resource evidence remain an open P6 qualification item.
+ceilings. `interpret_with_resource_policy`,
+`execute_bytecode_with_resource_policy`, and
+`execute_bytecode_direct_only_with_resource_policy` make this boundary explicit;
+the legacy entrypoints remain compatibility wrappers that construct the default
+policy with a caller-supplied step limit. Full cross-bridge accounting,
+wall-clock enforcement, and adverse-resource evidence remain an open P6
+qualification item.
 `EsBytecode.bytecode_capability_report` exposes the same decision before a run,
 along with function, instruction, and global counts. Record this report beside
 the execution artifact; counts are descriptive telemetry, while
