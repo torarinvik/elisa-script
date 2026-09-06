@@ -201,6 +201,10 @@ if ! rg -q 'global_registry_spec: EsBuiltin::BuiltinSpec' "$repo_root/vendor/eli
     printf 'builtin registry audit: structural global result inference does not consume registry rows\n' >&2
     exit 1
 fi
+if ! rg -q 'return InferType\{kind: SemTypeKind.Container, name: "darray"\} if spec\.known and spec\.return_type == "darray\[u8\]"' "$inference_file" || ! rg -q 'global_registry_spec\.return_type == "darray\[u8\]"' "$structural_inference_file"; then
+    printf 'builtin registry audit: byte-array reader result inference is not registry-backed\n' >&2
+    exit 1
+fi
 if ! rg -q 'def record_builtin_contract' "$lowerer_file" || \
    ! rg -q 'record_builtin_contract\(registry_spec, state\)' "$lowerer_file" || \
    ! rg -q 'record_builtin_contract\(method_spec, state\)' "$lowerer_file" || \
@@ -324,6 +328,20 @@ for filesystem_name in write_bytes write_binary append_bytes append_binary; do
     [[ "$filesystem_name" == "append_bytes" || "$filesystem_name" == "append_binary" ]] && opcode="AppendBytes"
     if ! rg -q "name: \"$filesystem_name\", receiver: \"global\".*argument_types: \"Path,darray\[u8\]\".*return_type: \"usize\".*effects: \"File.Write\".*errors: \"FileIoError\".*opcode: \"$opcode\"" "$registry_file"; then
         printf 'builtin registry audit: byte writer row is incomplete: %s\n' "$filesystem_name" >&2
+        exit 1
+    fi
+done
+if ! rg -q 'name: "read_text", receiver: "global".*argument_types: "Path".*return_type: "sview".*effects: "File.Read".*errors: "FileIoError".*opcode: "ReadText"' "$registry_file" || ! rg -q 'name: "cat", receiver: "global".*argument_types: "Path".*return_type: "sview".*effects: "File.Read".*errors: "FileIoError".*opcode: "ReadText"' "$registry_file"; then
+    printf 'builtin registry audit: text reader rows are incomplete\n' >&2
+    exit 1
+fi
+if ! rg -q 'name: "read_lines", receiver: "global".*argument_types: "Path".*return_type: "darray\[text\]".*effects: "File.Read".*errors: "FileIoError".*opcode: "ReadText"' "$registry_file"; then
+    printf 'builtin registry audit: line reader row is incomplete\n' >&2
+    exit 1
+fi
+for filesystem_name in read_bytes read_binary; do
+    if ! rg -q "name: \"$filesystem_name\", receiver: \"global\".*argument_types: \"Path\".*return_type: \"darray\[u8\]\".*effects: \"File.Read\".*errors: \"FileIoError\".*opcode: \"ReadBytes\"" "$registry_file"; then
+        printf 'builtin registry audit: byte reader row is incomplete: %s\n' "$filesystem_name" >&2
         exit 1
     fi
 done
@@ -513,8 +531,8 @@ if ! rg -q 'lowers_nominal_text_append_with_file_effect_and_error' "$repo_root/t
     printf 'builtin registry audit: text/line/byte writer rows lack lowering fixtures\n' >&2
     exit 1
 fi
-if ! rg -q 'def registry_remove_path_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_move_path_checks_both_nominal_paths\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_write_text_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_write_lines_checks_text_array_elements\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_write_bytes_checks_unsigned_byte_elements\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
-    printf 'builtin registry audit: path mutation rows lack semantic negative fixtures\n' >&2
+if ! rg -q 'def registry_remove_path_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_move_path_checks_both_nominal_paths\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_write_text_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_write_lines_checks_text_array_elements\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_write_bytes_checks_unsigned_byte_elements\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_read_text_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_read_bytes_requires_a_nominal_path\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
+    printf 'builtin registry audit: filesystem registry rows lack semantic negative fixtures\n' >&2
     exit 1
 fi
 

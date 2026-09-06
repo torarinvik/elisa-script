@@ -1285,6 +1285,11 @@ an impossible over-count is a typed file failure, so a truncation or race
 cannot publish a partial array.
 `read_binary` is an equivalent alias. The byte array is
 strongly typed: arbitrary integer arrays are not accepted by the write operations.
+The shared typed-builtin registry owns `read_text`/`cat` as `Path -> sview`,
+`read_lines` as `Path -> darray[text]`, and `read_bytes`/`read_binary` as
+`Path -> darray[u8]`; all rows carry `File.Read`/`FileIoError` and the existing
+read opcodes. Structural result inference preserves the interned text or `u8`
+element row when the surrounding declaration has made it available.
 
 `write_bytes(path: Path, bytes: darray[u8]) -> usize error[FileIoError]
 can[File.Write]` replaces or creates a file and returns the exact number of bytes
