@@ -114,6 +114,10 @@ pools. An unrepresentable host count therefore returns the empty byte sentinel
 from `canonical_module_bytes` and zero from `canonical_module_hash` instead of
 silently truncating a cache identity; normal verified modules remain on the
 version-1 stream.
+TypeTable child lookups also use a subtraction-based host-index helper after
+validating the serialized u32 start and u16 count. They never add a hostile
+offset in u32 space before checking bounds, and tables whose row or child pool
+counts cannot fit the serialized u32 domain are rejected before iteration.
 Field-level emitters and hash primitives are private to `EsIr`'s serializer. The
 bytecode artifact envelope uses only the qualified
 `EsIr::canonical_artifact_*` adapters, keeping its metadata format independent
