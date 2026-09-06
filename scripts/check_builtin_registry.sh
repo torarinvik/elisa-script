@@ -386,6 +386,26 @@ for filesystem_name in change_directory cd chdir; do
         exit 1
     fi
 done
+if ! rg -q 'name: "get_environment", receiver: "global".*arity_min: 1.*arity_max: 1.*argument_types: "text".*return_type: "sview".*effects: "Environment.Read".*errors: "EnvironmentError".*opcode: "GetEnvironment"' "$registry_file"; then
+    printf 'builtin registry audit: canonical environment-read row is incomplete\n' >&2
+    exit 1
+fi
+if ! rg -q 'name: "getenv", receiver: "global".*arity_min: 1.*arity_max: 2.*argument_types: "text,text".*return_type: "sview".*effects: "Environment.Read".*errors: "EnvironmentError".*opcode: "GetEnvironment"' "$registry_file" || ! rg -q 'name: "get_environment_or", receiver: "global".*arity_min: 2.*arity_max: 2.*argument_types: "text,text".*return_type: "sview".*effects: "Environment.Read".*errors: "EnvironmentError".*opcode: "GetEnvironment"' "$registry_file" || ! rg -q 'name: "getenv_or", receiver: "global".*arity_min: 2.*arity_max: 2.*argument_types: "text,text".*return_type: "sview".*effects: "Environment.Read".*errors: "EnvironmentError".*opcode: "GetEnvironment"' "$registry_file"; then
+    printf 'builtin registry audit: environment-read alias rows are incomplete\n' >&2
+    exit 1
+fi
+for environment_name in set_environment setenv; do
+    if ! rg -q "name: \"$environment_name\", receiver: \"global\".*arity_min: 2.*arity_max: 2.*argument_types: \"text,text\".*return_type: \"bool\".*effects: \"Environment.Write\".*errors: \"EnvironmentError\".*opcode: \"SetEnvironment\"" "$registry_file"; then
+        printf 'builtin registry audit: environment-write row is incomplete: %s\n' "$environment_name" >&2
+        exit 1
+    fi
+done
+for environment_name in unset_environment unsetenv; do
+    if ! rg -q "name: \"$environment_name\", receiver: \"global\".*arity_min: 1.*arity_max: 1.*argument_types: \"text\".*return_type: \"bool\".*effects: \"Environment.Write\".*errors: \"EnvironmentError\".*opcode: \"UnsetEnvironment\"" "$registry_file"; then
+        printf 'builtin registry audit: environment-remove row is incomplete: %s\n' "$environment_name" >&2
+        exit 1
+    fi
+done
 if ! rg -q 'spec\.argument_types == "Path,Path"' "$receiver_semantic_file"; then
     printf 'builtin registry audit: mixed Path/Path descriptor is not consumed by semantic checks\n' >&2
     exit 1
@@ -580,8 +600,16 @@ if ! rg -q 'def registry_directory_mutation_requires_a_nominal_path\(' "$repo_ro
     printf 'builtin registry audit: directory registry rows lack semantic negative fixtures\n' >&2
     exit 1
 fi
+if ! rg -q 'def registry_environment_reads_require_text_names\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_environment_mutations_require_text_pairs\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
+    printf 'builtin registry audit: environment registry rows lack semantic negative fixtures\n' >&2
+    exit 1
+fi
 if ! rg -q 'lowers_python_directory_aliases_to_existing_typed_opcodes' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_typed_directory_lifecycle_and_working_directory_operations' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_deterministic_typed_directory_listing' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_native_typed_glob_expansion' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: directory registry rows lack lowering fixtures\n' >&2
+    exit 1
+fi
+if ! rg -q 'lowers_typed_environment_operations_and_contracts' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_environment_default_through_error_guard' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_python_environment_aliases_to_existing_typed_opcodes' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
+    printf 'builtin registry audit: environment registry rows lack lowering fixtures\n' >&2
     exit 1
 fi
 

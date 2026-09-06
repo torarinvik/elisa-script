@@ -1861,6 +1861,13 @@ against the shared 64 MiB host C-string ceiling before they are copied into an
 owned `sview`; an unterminated or overlong host value raises `EnvironmentError`
 instead of performing an unbounded C-string walk.
 
+The shared typed-builtin registry owns these eight global spellings with their
+exact `text`/`text,text` arity descriptors, `sview`/`bool` results,
+`Environment.Read` or `Environment.Write` effects, `EnvironmentError`, and
+`GetEnvironment`/`SetEnvironment`/`UnsetEnvironment` opcodes. `getenv` keeps
+its one-argument fallible form and two-argument lazy-fallback form under the
+same registry row.
+
 ## Directories and working directory
 
 Directory operations use nominal `Path` values and structured `DirectoryError`:
