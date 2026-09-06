@@ -48,8 +48,18 @@ for name in $registry_names; do
         exit 1
     fi
     if ! rg -q "callee_name == \"$name\"" "$lowerer_file"; then
-        printf 'builtin registry audit: lowerer has no dispatch branch for %s\n' "$name" >&2
-        exit 1
+        case "$name" in
+            process_exit_status|process_stdout|process_stderr)
+                if ! rg -q 'process_result_accessor: bool = registry_spec\.known and registry_spec\.receiver == "global" and registry_spec\.argument_types == "ProcessCapture"' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven process accessor dispatch for %s\n' "$name" >&2
+                    exit 1
+                fi
+                ;;
+            *)
+                printf 'builtin registry audit: lowerer has no dispatch branch for %s\n' "$name" >&2
+                exit 1
+                ;;
+        esac
     fi
     if rg -q "add_symbol\(\"$name\"" "$semantic_file"; then
         printf 'builtin registry audit: %s is re-seeded outside the typed registry loop\n' "$name" >&2
@@ -707,7 +717,8 @@ if ! rg -q 'name: "process_exit_status", receiver: "global".*argument_types: "Pr
     printf 'builtin registry audit: process-result accessor rows are incomplete\n' >&2
     exit 1
 fi
-if ! rg -q 'accessor_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec\(callee_name\)' "$lowerer_file" || \
+if ! rg -q 'process_result_accessor: bool = registry_spec\.known and registry_spec\.receiver == "global" and registry_spec\.argument_types == "ProcessCapture"' "$lowerer_file" || \
+   ! rg -q 'accessor_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
    ! rg -q 'accessor_spec\.argument_types == "ProcessCapture"' "$lowerer_file" || \
    ! rg -q 'accessor_spec\.opcode == "ProcessResultExitStatus"' "$lowerer_file"; then
     printf 'builtin registry audit: process-result accessors do not consume registry argument/result/opcode metadata\n' >&2
