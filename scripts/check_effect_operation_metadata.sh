@@ -125,12 +125,20 @@ if ! rg -q 'sig_check_effect_literal_payloads\(arguments, 1, operation, operatio
     printf 'effect operation metadata audit: semantic perform/signal literal payload checks are not wired\n' >&2
     exit 1
 fi
+if ! rg -q 'DiagnosticKind.NamedArgError.*expected: "positional"' "$semantic_file" || ! rg -q 'sig_validate_perform\(callee, arguments, argument_names' "$semantic_file"; then
+    printf 'effect operation metadata audit: semantic perform named-argument rejection is missing\n' >&2
+    exit 1
+fi
 for fixture in source_effect_signal_literal_payload_type_is_checked source_effect_perform_literal_payload_type_is_checked; do
     if ! rg -q "def $fixture\(" "$fixture_file" "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
         printf 'effect operation metadata audit: semantic literal-payload fixture is missing: %s\n' "$fixture" >&2
         exit 1
     fi
 done
+if ! rg -q 'def source_effect_perform_payloads_must_be_positional\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
+    printf 'effect operation metadata audit: semantic perform named-argument fixture is missing\n' >&2
+    exit 1
+fi
 
 for helper in effect_operation_bare_result_spelling effect_operation_trim_type_spelling effect_operation_top_level_comma effect_operation_type_from_spelling effect_operation_result_type effect_operation_result_is_known effect_operation_declared effect_operation_declared_arity effect_operation_parameter_type effect_operation_payload_type effect_operation_single_payload_type effect_operation_payload_is_known; do
     if ! rg -q "def $helper\(" "$lowerer_file"; then
