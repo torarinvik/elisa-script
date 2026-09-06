@@ -86,6 +86,9 @@ Global registry rows now receive semantic arity, named-argument, and
 scalar/text/collection descriptor checks with the same source-declaration
 shadowing rule (`bf5fd4c`).
 
+Receiver return-type inference now applies the source-declaration guard to both
+registry rows and legacy Text fallback results (`working tree`).
+
 ## Evidence record template
 
 Every future executed or differential-verified entry must append a dated record

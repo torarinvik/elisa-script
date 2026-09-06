@@ -96,6 +96,10 @@ if ! rg -q 'typed_builtin_method_spec\("Text", method\)' "$inference_file"; then
     printf 'builtin registry audit: semantic receiver inference does not consume the Text registry\n' >&2
     exit 1
 fi
+if ! rg -q 'scripting_text_method_available\(table, method_name\)' "$inference_file"; then
+    printf 'builtin registry audit: semantic receiver inference does not guard source shadowing\n' >&2
+    exit 1
+fi
 if ! rg -q 'argument_names: sview' "$registry_file" || \
    ! rg -q 'builtin_named_argument_allowed' "$lowerer_file" || \
    ! rg -q 'ufm_text_named_argument_allowed' "$receiver_semantic_file"; then

@@ -81,6 +81,10 @@ conservative scalar/text/collection descriptor checks before lowering. The
 checker ignores unknown expressions and line-zero seed symbols, and source
 functions with the same spelling retain precedence.
 
+Receiver return-type inference applies the same source guard, including its
+legacy Text fallback rows, so a shadowing source UFCS function cannot inherit a
+registry result type merely from its spelling.
+
 Run the compiler-free audits:
 
 ```sh
