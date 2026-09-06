@@ -18,8 +18,10 @@ Semantic receiver diagnostics and lowerer dispatch both require that no direct
 source function owns the method name, and qualified `os`, `os.path`, `shutil`,
 `subprocess`, and `re` normalization applies the same guard to the normalized
 callable name. This keeps local or module-qualified code from being silently
-rewritten into an unrelated builtin; generic UFCS lowering remains a separate
-migration item.
+rewritten into an unrelated builtin. When a source function owns the method
+spelling, the lowerer forwards the receiver as its first positional argument
+through the ordinary typed call path; generic UFCS calls therefore retain the
+same signature, default-argument, effect, and error checks as direct calls.
 The source-declaration test intentionally ignores line-zero registry seed rows;
 otherwise a seeded global such as `contains` would incorrectly suppress its
 receiver contract.

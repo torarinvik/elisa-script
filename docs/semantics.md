@@ -241,6 +241,9 @@ Text receivers also expose `value.len() -> usize` as a zero-argument registry
 method. It is source-shadowable by a direct `len` function and lowers to the
 same `Length` operation, keeping Python-shaped ports explicit without adding a
 second length representation.
+If that source `len` function is called through `value.len()`, UFCS lowering
+forwards `value` as the first typed argument instead of selecting the registry
+method, preserving direct-call defaults, effects, and `error[...]` propagation.
 
 The compiler-known `is_empty(value) -> bool` (also `isempty`) and the matching
 `value.is_empty()`/`value.isempty()` methods accept the same array, dictionary, or

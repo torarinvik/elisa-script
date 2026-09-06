@@ -100,8 +100,9 @@ slot (`cd8ae26`).
 
 Registry receiver diagnostics and lowerer dispatch now give direct source
 functions precedence over matching Text spellings, while normalized qualified
-builtins apply the same source-name guard (`430cf38`). Generic UFCS
-lowering for a shadowing source function remains open.
+builtins apply the same source-name guard (`430cf38`). Generic UFCS lowering
+now forwards a shadowing receiver through the ordinary typed direct-call path,
+with static semantic/lowering fixtures covering the precedence boundary.
 
 The `Text.join` `darray[text]` descriptor now consults the interned container
 type table for firm annotated arrays, rejecting known non-text element rows while
