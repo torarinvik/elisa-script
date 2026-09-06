@@ -24,6 +24,12 @@ legacy version-1/2/3 manifests remain decode-compatible but are explicitly
 unbound until migrated. This is recorded in commit `47466a4` and remains
 unqualified for executed replay evidence.
 
+The shared builtin registry snapshot now contains 182 global rows, 42 `Text`
+receiver rows, and 9 `Regex` receiver rows. The global count includes the
+filesystem, process, environment, stream, scalar, text, and regex facades that
+have migrated to descriptor-backed semantic and lowering metadata; generic,
+variadic, and aggregate-polymorphic families remain explicitly open below.
+
 Differential artifact text and fixed-width lookahead readers now share the
 subtraction-safe serialized-slice admission used by ESBC (`1d96bfa`); malformed
 length fixtures remain static-only while compiler/runtime validation is paused.
