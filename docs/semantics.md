@@ -1498,6 +1498,15 @@ interpreter repeats the empty-name check at every process host boundary as
 defense-in-depth for adapters that construct a nominal `Executable` without
 calling the source-level constructor.
 
+The shared typed-builtin registry owns this constructor, the status runner,
+both basic stream-capture spellings, and the three `ProcessCapture` accessors.
+Their rows preserve the nominal `Executable`/`ProcessCapture` argument types,
+exact `darray[text]` shapes, `i64`/`sview` results, `Process.Run` and
+`ProcessError` contracts where applicable, and the existing verifier-visible
+process opcodes. More elaborate stdin, directory, environment, pipeline, and
+multi-stream capture forms remain explicit lowerer rows until the registry can
+represent their composed operand structures without losing information.
+
 Assertions are typed runtime checks rather than a result wrapper:
 `assert(condition) -> void error[AssertionError]`. The condition must be exactly
 `bool`; integers, text, and other values are rejected during lowering instead of

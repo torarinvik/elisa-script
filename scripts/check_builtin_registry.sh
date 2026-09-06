@@ -406,6 +406,30 @@ for environment_name in unset_environment unsetenv; do
         exit 1
     fi
 done
+if ! rg -q 'name: "executable", receiver: "global".*argument_types: "sview".*return_type: "Executable".*effects: "".*errors: "ProcessError".*opcode: "MakeExecutable"' "$registry_file"; then
+    printf 'builtin registry audit: executable process-constructor row is incomplete\n' >&2
+    exit 1
+fi
+if ! rg -q 'name: "run_process", receiver: "global".*argument_types: "Executable,darray\[text\]".*return_type: "i64".*effects: "Process.Run".*errors: "ProcessError".*opcode: "RunProcess"' "$registry_file"; then
+    printf 'builtin registry audit: process-run row is incomplete\n' >&2
+    exit 1
+fi
+for process_name in capture_process_stdout capture_process_stderr; do
+    opcode="CaptureProcessStdout"
+    [[ "$process_name" == "capture_process_stderr" ]] && opcode="CaptureProcessStderr"
+    if ! rg -q "name: \"$process_name\", receiver: \"global\".*argument_types: \"Executable,darray\\[text\\]\".*return_type: \"sview\".*effects: \"Process.Run\".*errors: \"ProcessError\".*opcode: \"$opcode\"" "$registry_file"; then
+        printf 'builtin registry audit: process stream-capture row is incomplete: %s\n' "$process_name" >&2
+        exit 1
+    fi
+done
+if ! rg -q 'name: "process_exit_status", receiver: "global".*argument_types: "ProcessCapture".*return_type: "i64".*effects: "".*errors: "".*opcode: "ProcessResultExitStatus"' "$registry_file" || ! rg -q 'name: "process_stdout", receiver: "global".*argument_types: "ProcessCapture".*return_type: "sview".*effects: "".*errors: "".*opcode: "ProcessResultStdout"' "$registry_file" || ! rg -q 'name: "process_stderr", receiver: "global".*argument_types: "ProcessCapture".*return_type: "sview".*effects: "".*errors: "".*opcode: "ProcessResultStderr"' "$registry_file"; then
+    printf 'builtin registry audit: process-result accessor rows are incomplete\n' >&2
+    exit 1
+fi
+if ! rg -q 'expected == "Executable"' "$receiver_semantic_file" || ! rg -q 'expected == "ProcessCapture"' "$receiver_semantic_file" || ! rg -q 'Executable,darray\[text\]' "$receiver_semantic_file"; then
+    printf 'builtin registry audit: process nominal argument descriptors are not consumed by semantic checks\n' >&2
+    exit 1
+fi
 if ! rg -q 'spec\.argument_types == "Path,Path"' "$receiver_semantic_file"; then
     printf 'builtin registry audit: mixed Path/Path descriptor is not consumed by semantic checks\n' >&2
     exit 1
@@ -604,12 +628,20 @@ if ! rg -q 'def registry_environment_reads_require_text_names\(' "$repo_root/tes
     printf 'builtin registry audit: environment registry rows lack semantic negative fixtures\n' >&2
     exit 1
 fi
+if ! rg -q 'def registry_process_construction_requires_text\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'def registry_process_accessors_require_process_captures\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
+    printf 'builtin registry audit: process registry rows lack semantic negative fixtures\n' >&2
+    exit 1
+fi
 if ! rg -q 'lowers_python_directory_aliases_to_existing_typed_opcodes' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_typed_directory_lifecycle_and_working_directory_operations' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_deterministic_typed_directory_listing' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_native_typed_glob_expansion' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: directory registry rows lack lowering fixtures\n' >&2
     exit 1
 fi
 if ! rg -q 'lowers_typed_environment_operations_and_contracts' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_environment_default_through_error_guard' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_python_environment_aliases_to_existing_typed_opcodes' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
     printf 'builtin registry audit: environment registry rows lack lowering fixtures\n' >&2
+    exit 1
+fi
+if ! rg -q 'lowers_dynamic_executable_constructor' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_shell_free_process_execution_with_typed_arguments' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_shell_free_process_stdout_capture' "$repo_root/test/ir/elisascript_lowering_test.elisa" || ! rg -q 'lowers_typed_process_result_and_accessors' "$repo_root/test/ir/elisascript_lowering_test.elisa"; then
+    printf 'builtin registry audit: migrated process rows lack lowering fixtures\n' >&2
     exit 1
 fi
 
