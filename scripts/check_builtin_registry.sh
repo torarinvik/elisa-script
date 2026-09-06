@@ -1277,6 +1277,21 @@ for boundary_pair in removeprefix:0 removesuffix:1; do
         exit 1
     fi
 done
+for boundary_opcode_pair in starts_with:StartsWith startswith:StartsWith ends_with:EndsWith endswith:EndsWith; do
+    boundary_name="${boundary_opcode_pair%%:*}"
+    boundary_opcode="${boundary_opcode_pair##*:}"
+    if ! rg -q "name: \"$boundary_name\", receiver: \"Text\".*argument_types: \"text\".*return_type: \"bool\".*effects: \"\".*errors: \"\".*opcode: \"$boundary_opcode\"" "$registry_file"; then
+        printf 'builtin registry audit: Text boundary-predicate row is incomplete: %s\n' "$boundary_name" >&2
+        exit 1
+    fi
+done
+if ! rg -q 'def lower_text_boundary_expression\(receiver_expression: Ast::Expr, method_name: sview, arguments:' "$lowerer_file" || \
+   ! rg -q 'method_spec\.known and \(method_spec\.opcode == "StartsWith" or method_spec\.opcode == "EndsWith"\)' "$lowerer_file" || \
+   ! rg -q 'typed_builtin_method_call_shape\("Text", method_name, arguments, argument_names\)' "$lowerer_file" || \
+   ! rg -q 'typed_builtin_result_type\(method_spec\)' "$lowerer_file"; then
+    printf 'builtin registry audit: Text boundary-predicate lowerer does not consume registry result/opcode metadata\n' >&2
+    exit 1
+fi
 if ! rg -q 'def lower_text_remove_boundary_expression\(receiver_expression: Ast::Expr, method_name: sview, arguments:' "$lowerer_file" || \
    ! rg -q 'not method_spec\.known or method_spec\.opcode != "TextRemoveBoundary"' "$lowerer_file" || \
    ! rg -q 'mode: i64 = method_spec\.lowering_mode' "$lowerer_file" || \
