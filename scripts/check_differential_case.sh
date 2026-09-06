@@ -44,7 +44,7 @@ for helper in differential_world_path_segment_safe differential_world_fixture_pa
     fi
 done
 
-for helper in differential_run_text_bytes_fits differential_value_pool_comparison_text_bytes_fits; do
+for helper in differential_run_text_bytes_fits differential_value_pool_comparison_text_bytes_fits differential_run_value_text_bytes_fits; do
     if ! rg -q "def $helper\(" "$source_file"; then
         printf 'differential case audit: missing helper %s\n' "$helper" >&2
         exit 1
