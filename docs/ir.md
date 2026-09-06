@@ -1298,7 +1298,11 @@ by an ordinary source function. `is_empty(value)`/`isempty(value)` and their
 receiver methods lower to `Length` plus an exact zero comparison over the same
 three families, without introducing general truthiness coercion. The
 verifier rejects any `Length` instruction whose result is not the exact unsigned
-64-bit `usize` representation.
+64-bit `usize` representation. The same canonical predicate is reused by
+`TextCount`, `ArrayCount`, file-size/mode queries, text/byte writes, and
+standard-stream writes, so every byte/count-producing opcode has one verifier
+definition of `usize` rather than a collection of subtly divergent integer
+checks.
 `is_nonempty`/`nonempty` forms add a typed `Not` over that comparison.
 compiler-known `abs(value)` builtin lowers
 to a typed comparison, branch, and merge using the existing `Less` and `Negate`
