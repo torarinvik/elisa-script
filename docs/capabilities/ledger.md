@@ -93,8 +93,8 @@ Regex receiver lowering and return inference now apply the same source-callable
 shadowing guard (`84f3064`). The nine Regex receiver spellings now share typed
 registry rows for arity, text arguments, result shape, and opcode; semantic
 diagnostics, structural result inference, and lowerer call-shape validation all
-consume those rows, with compiler-free audit coverage (`WORKTREE`, pending
-commit).
+consume those rows, including bound Regex receiver classification for `split`,
+with compiler-free audit coverage (`a0337ec`, `73b15d4`).
 
 ## Evidence record template
 
