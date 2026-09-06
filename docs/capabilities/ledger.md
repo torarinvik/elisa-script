@@ -198,8 +198,9 @@ Recent static increments are committed as `72f3325` (Path line semantics audit),
 `9873d8c` (all resource-policy ceiling admission), `3bd7152` (typed resource
 counter edges), `614ad2e` (bounded additive resource edges), `cc418d6`
 (interpreter step accounting), `d23ffbd` (configured step ceiling), and `64986ef`
-(ESDF version-3 manifest fixture). They remain compiler-free evidence while
-validation is paused.
+(ESDF version-3 manifest fixture), `1313ba7` (directory fsync), and `957aa55`
+(POSIX writer locking). They remain compiler-free evidence while validation is
+paused.
 
 ## Evidence record template
 
