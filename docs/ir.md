@@ -1114,6 +1114,17 @@ double-open records, file closure with a live record, and post-terminal events;
 failure and cancellation clear ownership state so a host callback cannot leave a
 half-open traversal.
 
+`EsRecordPattern::RecordPatternSession` owns bounded pattern/action selection and
+inclusive record ranges. Clauses have typed predicates (`Always`, numeric
+metadata, text equality/containment, or host-supplied `External`) and an
+explicit `Select`/`Skip` action. The host supplies one observation per clause,
+while the state machine opens a range on its start match, includes its end
+match, closes it deterministically, and records one bounded decision per input
+record. Shape mismatches, unterminated ranges, malformed predicates, text
+limits, cancellation, and terminal transitions use
+`error[RecordPatternError]`; regex compilation and callback dispatch remain
+separate adapters.
+
 `EsNetwork::NetworkRequest` and `NetworkResponse` define a transport-neutral
 HTTP/TLS boundary. Requests carry an explicit method, URL, ordered header pairs,
 binary body, positive timeout, response ceiling, and redirect policy; responses

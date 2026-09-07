@@ -682,6 +682,15 @@ inclusion, documentation, and check_record_numeric.sh audit are static
 evidence; exact-decimal/floating conversion, locale policy, and host scanner
 integration remain open.
 
+ES-SCRIPT-039 | EsRecordPattern supplies bounded pattern/action filtering and
+inclusive-range selection for Perl/AWK-style record streams. Typed predicates,
+explicit Select/Skip actions, host-supplied External observations, range-active
+state, one decision per record, shape/record/text ceilings, and terminal
+failure/cancellation edges are validated through `error[RecordPatternError]`.
+The focused IR fixture, namespace inclusion, documentation, and
+check_record_pattern.sh audit are static evidence; regex adapter integration,
+callback dispatch, and executed stream parity remain open.
+
 ES-FS-004 | EsFileLock supplies a bounded advisory file-lock ownership
 contract. Requests carry explicit shared/exclusive mode, owner token, path and
 bounded-wait policy; same-path shared leases may coexist, while exclusive and

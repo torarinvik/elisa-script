@@ -1,0 +1,263 @@
+# Deterministic pattern/action and inclusive-range contract for record streams.
+#
+# The host matcher may supply observations for External predicates, but it may
+# not decide range lifetime or action selection.  This module owns those
+# transitions and keeps every selected record bounded and auditable.
+
+module EsRecordPattern:
+    using EsRecord
+
+    public:
+        const RECORD_PATTERN_MAX_CLAUSES: usize = 4096
+        const RECORD_PATTERN_MAX_RECORDS: usize = 1048576
+        const RECORD_PATTERN_MAX_TEXT_BYTES: usize = RECORD_MAX_TEXT_BYTES
+
+
+        const enum RecordPatternState of u8:
+            Planned
+            Running
+            Completed
+            Failed
+            Cancelled
+
+
+        const enum RecordPatternEvent of u8:
+            Begin
+            Record
+            End
+            Fail
+            Cancel
+
+
+        const enum RecordPatternPredicateKind of u8:
+            Always
+            Never
+            RecordNumberEquals
+            FileRecordNumberEquals
+            TextEquals
+            TextContains
+            External
+
+
+        const enum RecordPatternAction of u8:
+            Select
+            Skip
+
+
+        const enum RecordPatternClauseState of u8:
+            Inactive
+            Active
+
+
+        struct RecordPatternPredicate:
+            kind: RecordPatternPredicateKind = RecordPatternPredicateKind.Always
+            number: u64 = 0
+            text: sview = ""
+
+
+        struct RecordPatternClause:
+            start: RecordPatternPredicate
+            end: RecordPatternPredicate = RecordPatternPredicate{}
+            has_end: bool = false
+            action: RecordPatternAction = RecordPatternAction.Select
+
+
+        struct RecordPatternPolicy:
+            max_clauses: usize = RECORD_PATTERN_MAX_CLAUSES
+            max_records: usize = RECORD_PATTERN_MAX_RECORDS
+            max_text_bytes: usize = RECORD_PATTERN_MAX_TEXT_BYTES - 1
+
+
+        struct RecordPatternObservation:
+            record: Record
+            start_matches: darray[bool] = []
+            end_matches: darray[bool] = []
+
+
+        struct RecordPatternDecision:
+            record_number: u64
+            selected: bool
+            active_ranges: usize
+
+
+        struct RecordPatternSession:
+            policy: RecordPatternPolicy
+            clauses: darray[RecordPatternClause]
+            state: RecordPatternState = RecordPatternState.Planned
+            clause_states: darray[RecordPatternClauseState] = []
+            decisions: darray[RecordPatternDecision] = []
+            processed_records: usize = 0
+            selected_records: usize = 0
+            text_bytes: usize = 0
+
+
+        error RecordPatternError:
+            InvalidState
+            InvalidEvent
+            InvalidPolicy
+            InvalidPredicate
+            InvalidAction
+            InvalidClause
+            ClauseLimitExceeded
+            RecordLimitExceeded
+            TextLimitExceeded
+            RecordInvalid
+            ObservationShapeInvalid
+            DecisionLimitExceeded
+            RangeStateInvalid
+            EndNotReady
+            CancelNotReady
+
+
+    private:
+        def record_pattern_state_valid(state: RecordPatternState) -> bool:
+            return state in {RecordPatternState.Planned, RecordPatternState.Running, RecordPatternState.Completed, RecordPatternState.Failed, RecordPatternState.Cancelled}
+
+
+        def record_pattern_event_valid(event: RecordPatternEvent) -> bool:
+            return event in {RecordPatternEvent.Begin, RecordPatternEvent.Record, RecordPatternEvent.End, RecordPatternEvent.Fail, RecordPatternEvent.Cancel}
+
+
+        def record_pattern_predicate_kind_valid(kind: RecordPatternPredicateKind) -> bool:
+            return kind in {RecordPatternPredicateKind.Always, RecordPatternPredicateKind.Never, RecordPatternPredicateKind.RecordNumberEquals, RecordPatternPredicateKind.FileRecordNumberEquals, RecordPatternPredicateKind.TextEquals, RecordPatternPredicateKind.TextContains, RecordPatternPredicateKind.External}
+
+
+        def record_pattern_action_valid(action: RecordPatternAction) -> bool:
+            return action in {RecordPatternAction.Select, RecordPatternAction.Skip}
+
+
+        def record_pattern_text_valid(value: sview, policy: RecordPatternPolicy) -> bool:
+            return sview_len(value) < policy.max_text_bytes and not sview_contains_byte(value, 0)
+
+
+        def record_pattern_predicate_valid(predicate: RecordPatternPredicate, policy: RecordPatternPolicy) -> bool:
+            return false if not record_pattern_predicate_kind_valid(predicate.kind)
+            return false if predicate.kind in {RecordPatternPredicateKind.RecordNumberEquals, RecordPatternPredicateKind.FileRecordNumberEquals} and predicate.number == 0
+            return false if predicate.kind in {RecordPatternPredicateKind.TextEquals, RecordPatternPredicateKind.TextContains} and not record_pattern_text_valid(predicate.text, policy)
+            return false if predicate.kind in {RecordPatternPredicateKind.Always, RecordPatternPredicateKind.Never, RecordPatternPredicateKind.RecordNumberEquals, RecordPatternPredicateKind.FileRecordNumberEquals, RecordPatternPredicateKind.External} and predicate.text != ""
+            return false if predicate.kind in {RecordPatternPredicateKind.Always, RecordPatternPredicateKind.Never, RecordPatternPredicateKind.TextEquals, RecordPatternPredicateKind.TextContains, RecordPatternPredicateKind.External} and predicate.number != 0
+            return true
+
+
+        def record_pattern_policy_valid(policy: RecordPatternPolicy) -> bool:
+            return policy.max_clauses != 0 and policy.max_clauses <= RECORD_PATTERN_MAX_CLAUSES and policy.max_records != 0 and policy.max_records <= RECORD_PATTERN_MAX_RECORDS and policy.max_text_bytes != 0 and policy.max_text_bytes < RECORD_PATTERN_MAX_TEXT_BYTES
+
+
+        def record_pattern_clause_valid(clause: RecordPatternClause, policy: RecordPatternPolicy) -> bool:
+            return false if not record_pattern_predicate_valid(clause.start, policy)
+            return false if clause.has_end and not record_pattern_predicate_valid(clause.end, policy)
+            return false if not clause.has_end and clause.end.kind != RecordPatternPredicateKind.Always
+            return record_pattern_action_valid(clause.action)
+
+
+        def record_pattern_text_contains(haystack: sview, needle: sview) -> bool:
+            return true if needle == ""
+            return false if sview_len(needle) > sview_len(haystack)
+            limit: usize = sview_len(haystack) - sview_len(needle)
+            for start in 0..<(limit + 1) |haystack, needle|:
+                matched: mutable bool = true
+                for offset in 0..<sview_len(needle) |haystack, needle, start, matched|:
+                    matched <- false if sview_at(haystack, start + offset) != sview_at(needle, offset)
+                return true if matched
+            return false
+
+
+        def record_pattern_predicate_matches(predicate: RecordPatternPredicate, record: Record, external_match: bool) -> bool error[RecordPatternError]:
+            raise RecordPatternError.InvalidPredicate if not record_pattern_predicate_kind_valid(predicate.kind)
+            if predicate.kind == RecordPatternPredicateKind.Always:
+                return true
+            elif predicate.kind == RecordPatternPredicateKind.Never:
+                return false
+            elif predicate.kind == RecordPatternPredicateKind.RecordNumberEquals:
+                return record.record_number == predicate.number
+            elif predicate.kind == RecordPatternPredicateKind.FileRecordNumberEquals:
+                return record.file_record_number == predicate.number
+            elif predicate.kind == RecordPatternPredicateKind.TextEquals:
+                return record.raw == predicate.text
+            elif predicate.kind == RecordPatternPredicateKind.TextContains:
+                return record_pattern_text_contains(record.raw, predicate.text)
+            elif predicate.kind == RecordPatternPredicateKind.External:
+                return external_match
+            return false
+
+
+    public:
+        def validate_record_pattern_session(session: RecordPatternSession&) -> bool error[RecordPatternError]:
+            raise RecordPatternError.InvalidState if not record_pattern_state_valid(session.state)
+            raise RecordPatternError.InvalidPolicy if not record_pattern_policy_valid(session.policy)
+            raise RecordPatternError.ClauseLimitExceeded if session.clauses.count == 0 or session.clauses.count > session.policy.max_clauses
+            raise RecordPatternError.RecordLimitExceeded if session.processed_records > session.policy.max_records
+            raise RecordPatternError.RecordLimitExceeded if session.selected_records > session.processed_records
+            raise RecordPatternError.TextLimitExceeded if session.text_bytes > session.policy.max_text_bytes
+            raise RecordPatternError.ObservationShapeInvalid if session.clause_states.count != 0 and session.clause_states.count != session.clauses.count
+            for clause in session.clauses |session|:
+                raise RecordPatternError.InvalidClause if not record_pattern_clause_valid(clause, session.policy)
+            for clause_state in session.clause_states:
+                raise RecordPatternError.RangeStateInvalid if clause_state != RecordPatternClauseState.Inactive and clause_state != RecordPatternClauseState.Active
+            return true
+
+
+        def record_pattern_selected(session: RecordPatternSession&, record_number: u64) -> bool error[RecordPatternError]:
+            try validate_record_pattern_session(session)
+            for decision in session.decisions:
+                return true if decision.record_number == record_number and decision.selected
+            return false
+
+
+        def advance_record_pattern(session: mutable RecordPatternSession&, event: RecordPatternEvent, observation: RecordPatternObservation = RecordPatternObservation{record: Record{source: ""}}) -> RecordPatternState error[RecordPatternError]:
+            try validate_record_pattern_session(session)
+            raise RecordPatternError.InvalidEvent if not record_pattern_event_valid(event)
+            if event == RecordPatternEvent.Begin:
+                raise RecordPatternError.InvalidState if session.state != RecordPatternState.Planned
+                session.clause_states <- []
+                for clause in session.clauses:
+                    session.clause_states.push(RecordPatternClauseState.Inactive)
+                session.state <- RecordPatternState.Running
+            elif event == RecordPatternEvent.Record:
+                raise RecordPatternError.InvalidState if session.state != RecordPatternState.Running
+                raise RecordPatternError.RecordLimitExceeded if session.processed_records >= session.policy.max_records
+                catch validate_record(observation.record, RecordStreamPolicy{max_record_bytes: session.policy.max_text_bytes}):
+                    ok:
+                    error failure:
+                        raise RecordPatternError.RecordInvalid
+                raise RecordPatternError.ObservationShapeInvalid if observation.start_matches.count != session.clauses.count or observation.end_matches.count != session.clauses.count
+                raise RecordPatternError.TextLimitExceeded if sview_len(observation.record.raw) > session.policy.max_text_bytes - session.text_bytes
+                session.text_bytes <- session.text_bytes + sview_len(observation.record.raw)
+                for index in 0..<session.clauses.count |session, observation|:
+                    clause: RecordPatternClause = session.clauses[index]
+                    state: RecordPatternClauseState = session.clause_states[index]
+                    start_match: bool = try record_pattern_predicate_matches(clause.start, observation.record, observation.start_matches[index])
+                    end_match: mutable bool = false
+                    if clause.has_end:
+                        end_match <- try record_pattern_predicate_matches(clause.end, observation.record, observation.end_matches[index])
+                    selected: mutable bool = false
+                    if state == RecordPatternClauseState.Inactive:
+                        if start_match:
+                            selected <- clause.action == RecordPatternAction.Select
+                            session.clause_states[index] <- RecordPatternClauseState.Active if clause.has_end
+                            if clause.has_end and end_match:
+                                session.clause_states[index] <- RecordPatternClauseState.Inactive
+                    else:
+                        selected <- clause.action == RecordPatternAction.Select
+                        if end_match:
+                            session.clause_states[index] <- RecordPatternClauseState.Inactive
+                    selected <- true if selected
+                active_ranges: mutable usize = 0
+                for clause_state in session.clause_states:
+                    active_ranges <- active_ranges + 1 if clause_state == RecordPatternClauseState.Active
+                raise RecordPatternError.DecisionLimitExceeded if session.decisions.count >= session.policy.max_records
+                session.decisions.push(RecordPatternDecision{record_number: observation.record.record_number, selected: selected, active_ranges: active_ranges})
+                session.selected_records <- session.selected_records + 1 if selected
+                session.processed_records <- session.processed_records + 1
+            elif event == RecordPatternEvent.End:
+                raise RecordPatternError.EndNotReady if session.state != RecordPatternState.Running
+                for clause_state in session.clause_states:
+                    raise RecordPatternError.EndNotReady if clause_state == RecordPatternClauseState.Active
+                session.state <- RecordPatternState.Completed
+            elif event == RecordPatternEvent.Fail:
+                raise RecordPatternError.InvalidState if session.state != RecordPatternState.Running
+                session.state <- RecordPatternState.Failed
+            elif event == RecordPatternEvent.Cancel:
+                raise RecordPatternError.CancelNotReady if session.state != RecordPatternState.Planned and session.state != RecordPatternState.Running
+                session.state <- RecordPatternState.Cancelled
+            return session.state
