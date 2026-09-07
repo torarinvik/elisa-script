@@ -1,0 +1,185 @@
+# Monotonic deadline and deterministic virtual-clock contract.
+#
+# Host adapters may feed sampled monotonic ticks; tests may use Virtual mode.
+# The model never calls a clock and never moves time backwards. Waits become
+# Ready only through an explicit bounded fire edge after an advance.
+
+module EsDeadline:
+    public:
+        const DEADLINE_MAX_WAITS: usize = 65536
+        const DEADLINE_MAX_ADVANCE: u64 = 864000000000
+
+
+        const enum DeadlineClockMode of u8:
+            HostMonotonic
+            Virtual
+
+
+        const enum DeadlineWaitState of u8:
+            Pending
+            Ready
+            Cancelled
+
+
+        const enum DeadlineEvent of u8:
+            Advance
+            Arm
+            Fire
+            Cancel
+            Seal
+
+
+        struct DeadlinePolicy:
+            mode: DeadlineClockMode = DeadlineClockMode.Virtual
+            max_waits: usize = DEADLINE_MAX_WAITS
+            max_advance: u64 = DEADLINE_MAX_ADVANCE
+
+
+        struct DeadlineWait:
+            wait_id: u64
+            owner_token: u64
+            deadline: u64
+            state: DeadlineWaitState = DeadlineWaitState.Pending
+
+
+        struct DeadlineClock:
+            policy: DeadlinePolicy
+            now: u64 = 0
+            waits: darray[DeadlineWait] = []
+            pending_waits: usize = 0
+            ready_waits: usize = 0
+            cancelled_waits: usize = 0
+            sealed: bool = false
+
+
+        error DeadlineError:
+            InvalidPolicy
+            InvalidMode
+            InvalidWaitState
+            InvalidEvent
+            InvalidId
+            InvalidOwner
+            DuplicateWait
+            WaitLimitExceeded
+            WaitIndexInvalid
+            DeadlineInPast
+            DeadlineOverflow
+            AdvanceInvalid
+            AdvanceLimitExceeded
+            NoDueWait
+            InvalidTransition
+            AccountingInvalid
+
+
+    private:
+        def deadline_mode_valid(mode: DeadlineClockMode) -> bool:
+            return mode in {DeadlineClockMode.HostMonotonic, DeadlineClockMode.Virtual}
+
+
+        def deadline_wait_state_valid(state: DeadlineWaitState) -> bool:
+            return state in {DeadlineWaitState.Pending, DeadlineWaitState.Ready, DeadlineWaitState.Cancelled}
+
+
+        def deadline_event_valid(event: DeadlineEvent) -> bool:
+            return event in {DeadlineEvent.Advance, DeadlineEvent.Arm, DeadlineEvent.Fire, DeadlineEvent.Cancel, DeadlineEvent.Seal}
+
+
+        def deadline_policy_valid(policy: DeadlinePolicy) -> bool:
+            return deadline_mode_valid(policy.mode) and policy.max_waits != 0 and policy.max_waits <= DEADLINE_MAX_WAITS and policy.max_advance != 0 and policy.max_advance <= DEADLINE_MAX_ADVANCE
+
+
+        def deadline_index(clock: DeadlineClock&, wait_id: u64) -> usize:
+            for index in 0..<clock.waits.count |clock, wait_id|:
+                return index if clock.waits[index].wait_id == wait_id
+            return clock.waits.count
+
+
+    public:
+        def validate_deadline_clock(clock: DeadlineClock&) -> bool error[DeadlineError]:
+            raise DeadlineError.InvalidPolicy if not deadline_policy_valid(clock.policy)
+            raise DeadlineError.WaitLimitExceeded if clock.waits.count > clock.policy.max_waits
+            pending: mutable usize = 0
+            ready: mutable usize = 0
+            cancelled: mutable usize = 0
+            for index in 0..<clock.waits.count |clock|:
+                wait: DeadlineWait = clock.waits[index]
+                raise DeadlineError.InvalidId if wait.wait_id == 0
+                raise DeadlineError.InvalidOwner if wait.owner_token == 0
+                raise DeadlineError.InvalidWaitState if not deadline_wait_state_valid(wait.state)
+                for earlier in 0..<index |clock, wait|:
+                    raise DeadlineError.DuplicateWait if clock.waits[earlier].wait_id == wait.wait_id
+                pending <- pending + 1 if wait.state == DeadlineWaitState.Pending
+                ready <- ready + 1 if wait.state == DeadlineWaitState.Ready
+                cancelled <- cancelled + 1 if wait.state == DeadlineWaitState.Cancelled
+            raise DeadlineError.AccountingInvalid if pending != clock.pending_waits or ready != clock.ready_waits or cancelled != clock.cancelled_waits
+            raise DeadlineError.InvalidTransition if clock.sealed and clock.pending_waits != 0
+            return true
+
+
+        def deadline_arm(clock: mutable DeadlineClock&, wait_id: u64, owner_token: u64, deadline: u64) -> bool error[DeadlineError]:
+            try validate_deadline_clock(clock)
+            raise DeadlineError.InvalidTransition if clock.sealed
+            raise DeadlineError.InvalidId if wait_id == 0
+            raise DeadlineError.InvalidOwner if owner_token == 0
+            raise DeadlineError.WaitLimitExceeded if clock.waits.count >= clock.policy.max_waits
+            raise DeadlineError.DuplicateWait if deadline_index(clock, wait_id) != clock.waits.count
+            raise DeadlineError.DeadlineInPast if deadline < clock.now
+            clock.waits.push(DeadlineWait{wait_id: wait_id, owner_token: owner_token, deadline: deadline})
+            clock.pending_waits <- clock.pending_waits + 1
+            return true
+
+
+        def deadline_advance(clock: mutable DeadlineClock&, delta: u64) -> u64 error[DeadlineError]:
+            try validate_deadline_clock(clock)
+            raise DeadlineError.InvalidTransition if clock.sealed
+            raise DeadlineError.AdvanceInvalid if delta == 0
+            raise DeadlineError.AdvanceLimitExceeded if delta > clock.policy.max_advance
+            raise DeadlineError.DeadlineOverflow if clock.now > 18446744073709551615u64 - delta
+            clock.now <- clock.now + delta
+            return clock.now
+
+
+        def deadline_fire(clock: mutable DeadlineClock&, wait_id: u64, owner_token: u64) -> DeadlineWaitState error[DeadlineError]:
+            try validate_deadline_clock(clock)
+            raise DeadlineError.InvalidTransition if clock.sealed
+            raise DeadlineError.InvalidOwner if owner_token == 0
+            index: usize = deadline_index(clock, wait_id)
+            raise DeadlineError.WaitIndexInvalid if index == clock.waits.count
+            raise DeadlineError.InvalidOwner if clock.waits[index].owner_token != owner_token
+            raise DeadlineError.InvalidTransition if clock.waits[index].state != DeadlineWaitState.Pending
+            raise DeadlineError.NoDueWait if clock.waits[index].deadline > clock.now
+            clock.waits[index].state <- DeadlineWaitState.Ready
+            clock.pending_waits <- clock.pending_waits - 1
+            clock.ready_waits <- clock.ready_waits + 1
+            return clock.waits[index].state
+
+
+        def deadline_cancel(clock: mutable DeadlineClock&, wait_id: u64, owner_token: u64) -> DeadlineWaitState error[DeadlineError]:
+            try validate_deadline_clock(clock)
+            raise DeadlineError.InvalidTransition if clock.sealed
+            raise DeadlineError.InvalidOwner if owner_token == 0
+            index: usize = deadline_index(clock, wait_id)
+            raise DeadlineError.WaitIndexInvalid if index == clock.waits.count
+            raise DeadlineError.InvalidOwner if clock.waits[index].owner_token != owner_token
+            raise DeadlineError.InvalidTransition if clock.waits[index].state != DeadlineWaitState.Pending
+            clock.waits[index].state <- DeadlineWaitState.Cancelled
+            clock.pending_waits <- clock.pending_waits - 1
+            clock.cancelled_waits <- clock.cancelled_waits + 1
+            return clock.waits[index].state
+
+
+        def advance_deadline_event(clock: mutable DeadlineClock&, event: DeadlineEvent, delta: u64 = 0, wait_id: u64 = 0, owner_token: u64 = 0, deadline: u64 = 0) -> bool error[DeadlineError]:
+            try validate_deadline_clock(clock)
+            raise DeadlineError.InvalidEvent if not deadline_event_valid(event)
+            if event == DeadlineEvent.Advance:
+                try deadline_advance(clock, delta)
+            elif event == DeadlineEvent.Arm:
+                try deadline_arm(clock, wait_id, owner_token, deadline)
+            elif event == DeadlineEvent.Fire:
+                try deadline_fire(clock, wait_id, owner_token)
+            elif event == DeadlineEvent.Cancel:
+                try deadline_cancel(clock, wait_id, owner_token)
+            elif event == DeadlineEvent.Seal:
+                raise DeadlineError.InvalidTransition if clock.sealed or clock.pending_waits != 0
+                clock.sealed <- true
+            return true
