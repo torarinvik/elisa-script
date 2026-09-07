@@ -29,6 +29,25 @@ module EsProcess:
             Allow
 
 
+        const enum ProcessResultKind of u8:
+            Exited
+            Signaled
+            SpawnFailure
+            TimedOut
+            Cancelled
+            OutputLimit
+            HostIoFailure
+
+
+        struct ProcessResult:
+            kind: ProcessResultKind = ProcessResultKind.Exited
+            exit_status: i64 = 0
+            signal: u32 = 0
+            stdout: sview = ""
+            stderr: sview = ""
+            error_text: sview = ""
+
+
         # Environment entries are an alternating name/value vector. Keeping
         # the representation flat makes duplicate-name checks deterministic
         # and lets host adapters preserve insertion order without a map-order
@@ -66,7 +85,25 @@ module EsProcess:
             InvalidFailureMode
 
 
+        error ProcessResultError:
+            InvalidOutcome
+            InvalidSignal
+            TextLimitExceeded
+            EmbeddedNul
+            AggregateTextLimitExceeded
+
+
         private:
+            def process_result_kind_valid(kind: ProcessResultKind) -> bool:
+                return kind in {ProcessResultKind.Exited, ProcessResultKind.Signaled, ProcessResultKind.SpawnFailure, ProcessResultKind.TimedOut, ProcessResultKind.Cancelled, ProcessResultKind.OutputLimit, ProcessResultKind.HostIoFailure}
+
+
+            def process_result_text_add_fits(total: usize, value: sview) -> bool:
+                return false if total > PROCESS_COMMAND_MAX_TEXT_BYTES
+                return false if sview_len(value) >= PROCESS_COMMAND_MAX_TEXT_BYTES - total
+                return true
+
+
             def process_command_text_length_valid(value: sview) -> bool:
                 return sview_len(value) < PROCESS_COMMAND_MAX_TEXT_BYTES
 
@@ -149,4 +186,20 @@ module EsProcess:
                     if path != "":
                         raise ProcessCommandError.ArgumentVectorMalformed if not process_command_text_add_fits(total, path)
                         total <- total + sview_len(path) + 1
+                return true
+
+
+            # Validate the outcome independently from command construction so a
+            # host adapter cannot reinterpret a signal, timeout, or output
+            # ceiling as an ordinary nonzero exit status.
+            def validate_process_result(result: ProcessResult&) -> bool error[ProcessResultError]:
+                raise ProcessResultError.InvalidOutcome if not process_result_kind_valid(result.kind)
+                raise ProcessResultError.InvalidSignal if result.kind == ProcessResultKind.Signaled and result.signal == 0
+                raise ProcessResultError.InvalidSignal if result.kind != ProcessResultKind.Signaled and result.signal != 0
+                raise ProcessResultError.TextLimitExceeded if not process_command_text_length_valid(result.stdout) or not process_command_text_length_valid(result.stderr) or not process_command_text_length_valid(result.error_text)
+                raise ProcessResultError.EmbeddedNul if process_command_text_has_nul(result.stdout) or process_command_text_has_nul(result.stderr) or process_command_text_has_nul(result.error_text)
+                total: mutable usize = 0
+                for value in [result.stdout, result.stderr, result.error_text] |result, total|:
+                    raise ProcessResultError.AggregateTextLimitExceeded if not process_result_text_add_fits(total, value)
+                    total <- total + sview_len(value) + 1
                 return true

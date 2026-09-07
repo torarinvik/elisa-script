@@ -372,6 +372,10 @@ The differential process adapter materializes every invocation through this
 validator before fork/exec, while retaining binary stdin as a length-delimited
 side channel. It is still static adapter-boundary evidence only; platform process
 creation, background jobs, and streaming callback execution remain open.
+`ProcessResult` now supplies the corresponding closed outcome vocabulary for
+normal exits, signal death, spawn/timeout/cancellation/output-limit/host-I/O
+failures, with bounded stdout/stderr/error payloads and signal consistency
+validation through `error[ProcessResultError]`.
 
 `EsRecord::RecordStreamPolicy`, `Record`, and `RecordField` now define a bounded
 Perl/AWK-style record boundary: separator and field modes are explicit, fixed

@@ -1128,6 +1128,13 @@ insertion order is explicit and host adapters cannot inherit map-order or shell
 assignment semantics. This model is a validated adapter boundary; fork/exec,
 Windows process creation, background scheduling, and streaming callbacks remain
 host integrations rather than hidden behavior in the value itself.
+`EsProcess::ProcessResult` is the matching outcome boundary. Its closed
+`ProcessResultKind` distinguishes normal exit, signal death, spawn failure,
+timeout, cancellation, output-limit termination, and host I/O failure; a signal
+kind requires a nonzero signal while every other kind rejects one. Captured
+stdout, stderr, and adapter error text receive length-first NUL admission and a
+shared terminated-byte ceiling through `error[ProcessResultError]`, so a failed
+child cannot be silently reclassified as an ordinary exit status.
 The argv terminator is cleared using `size_of(uintptr)`, matching the target
 pointer width rather than assuming an 8-byte slot.
 Before reserving argv pointers or owned argument strings, the interpreter
