@@ -924,6 +924,16 @@ numbers, out-of-range field slices, and inconsistent field payloads through
 is allocated. This is a reusable contract; record I/O, external sort, and
 transactional in-place rewriting remain host adapters.
 
+`EsRecordNumeric::RecordNumericSession` supplies bounded lexical numeric
+admission for extracted fields. Signed and unsigned integers use a checked
+`magnitude` accumulator with the signed-minimum boundary represented without
+wrapping; decimal fields retain coefficient/fraction digit counts and a
+bounded signed exponent for a later exact-decimal or floating adapter. Signs,
+underscores, decimal points, exponent markers, and finish conditions are
+state-machine validated, with explicit empty/trailing-separator, overflow,
+digit, exponent, cancellation, and invalid-character errors. No implicit
+float conversion occurs at the record boundary.
+
 `EsRecordMaterialize::RecordMaterializer` adds the bounded stream-adapter
 boundary without embedding a regex engine or file descriptor. A producer opens
 one `Record`, appends zero or more validated `RecordField` values in index order,

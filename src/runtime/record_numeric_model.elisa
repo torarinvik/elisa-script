@@ -1,0 +1,290 @@
+# Bounded typed numeric-field parsing for Perl/AWK-style record streams.
+#
+# The scanner owns lexical admission only. Integer magnitudes are accumulated
+# with checked arithmetic; decimal fields retain a bounded lexical descriptor
+# (coefficient digit count and signed exponent) so a host can choose an exact
+# decimal/rational or floating representation without an implicit coercion.
+
+module EsRecordNumeric:
+    public:
+        const RECORD_NUMERIC_MAX_BYTES: usize = 4096
+        const RECORD_NUMERIC_MAX_DIGITS: usize = 4096
+        const RECORD_NUMERIC_MAX_EXPONENT_DIGITS: usize = 4
+
+
+        const enum RecordNumericKind of u8:
+            Integer
+            Unsigned
+            Decimal
+
+
+        const enum RecordNumericState of u8:
+            Planned
+            Parsing
+            Complete
+            Failed
+            Cancelled
+
+
+        const enum RecordNumericPhase of u8:
+            Start
+            Sign
+            Digits
+            Fraction
+            ExponentLead
+            ExponentSign
+            ExponentDigits
+
+
+        const enum RecordNumericEvent of u8:
+            Begin
+            Byte
+            Finish
+            Fail
+            Cancel
+
+
+        struct RecordNumericPolicy:
+            kind: RecordNumericKind
+            max_bytes: usize = RECORD_NUMERIC_MAX_BYTES
+            max_digits: usize = RECORD_NUMERIC_MAX_DIGITS
+            max_exponent_digits: usize = RECORD_NUMERIC_MAX_EXPONENT_DIGITS
+            allow_underscores: bool = true
+
+
+        struct RecordNumericResult:
+            kind: RecordNumericKind
+            negative: bool = false
+            magnitude: u64 = 0
+            coefficient_digits: usize = 0
+            fraction_digits: usize = 0
+            exponent_negative: bool = false
+            exponent_magnitude: usize = 0
+
+
+        struct RecordNumericSession:
+            policy: RecordNumericPolicy
+            state: RecordNumericState = RecordNumericState.Planned
+            phase: RecordNumericPhase = RecordNumericPhase.Start
+            chars: usize = 0
+            digits: usize = 0
+            fraction_digits: usize = 0
+            exponent_digits: usize = 0
+            exponent_magnitude: usize = 0
+            magnitude: u64 = 0
+            negative: bool = false
+            exponent_negative: bool = false
+            previous_digit: bool = false
+            saw_digit: bool = false
+            saw_dot: bool = false
+            saw_exponent: bool = false
+
+
+        error RecordNumericError:
+            InvalidState
+            InvalidEvent
+            InvalidKind
+            InvalidPolicy
+            InvalidPhase
+            InvalidCharacter
+            SignNotAllowed
+            DecimalNotAllowed
+            ExponentNotAllowed
+            UnderscoreNotAllowed
+            UnderscorePlacement
+            EmptyNumber
+            TrailingSeparator
+            TextLimitExceeded
+            DigitLimitExceeded
+            ExponentLimitExceeded
+            IntegerOverflow
+            FinishNotReady
+            ResultNotReady
+            CancelNotReady
+            InvalidTransition
+
+
+    private:
+        def record_numeric_kind_valid(kind: RecordNumericKind) -> bool:
+            return kind in {RecordNumericKind.Integer, RecordNumericKind.Unsigned, RecordNumericKind.Decimal}
+
+
+        def record_numeric_state_valid(state: RecordNumericState) -> bool:
+            return state in {RecordNumericState.Planned, RecordNumericState.Parsing, RecordNumericState.Complete, RecordNumericState.Failed, RecordNumericState.Cancelled}
+
+
+        def record_numeric_phase_valid(phase: RecordNumericPhase) -> bool:
+            return phase in {RecordNumericPhase.Start, RecordNumericPhase.Sign, RecordNumericPhase.Digits, RecordNumericPhase.Fraction, RecordNumericPhase.ExponentLead, RecordNumericPhase.ExponentSign, RecordNumericPhase.ExponentDigits}
+
+
+        def record_numeric_event_valid(event: RecordNumericEvent) -> bool:
+            return event in {RecordNumericEvent.Begin, RecordNumericEvent.Byte, RecordNumericEvent.Finish, RecordNumericEvent.Fail, RecordNumericEvent.Cancel}
+
+
+        def record_numeric_policy_valid(policy: RecordNumericPolicy) -> bool:
+            return record_numeric_kind_valid(policy.kind) and policy.max_bytes != 0 and policy.max_bytes <= RECORD_NUMERIC_MAX_BYTES and policy.max_digits != 0 and policy.max_digits <= RECORD_NUMERIC_MAX_DIGITS and policy.max_exponent_digits != 0 and policy.max_exponent_digits <= RECORD_NUMERIC_MAX_EXPONENT_DIGITS
+
+
+        def record_numeric_digit(byte: u8) -> u8:
+            return byte - 48
+
+
+        def record_numeric_byte_is_digit(byte: u8) -> bool:
+            return byte >= 48 and byte <= 57
+
+
+        def record_numeric_integer_limit(session: RecordNumericSession) -> u64:
+            return 18446744073709551615u64 if session.policy.kind == RecordNumericKind.Unsigned else 9223372036854775808u64 if session.negative else 9223372036854775807u64
+
+
+        def record_numeric_exponent_limit(policy: RecordNumericPolicy) -> usize:
+            limit: mutable usize = 1
+            for _ in 0..<policy.max_exponent_digits |limit|:
+                limit <- limit * 10
+            return limit - 1
+
+
+        def record_numeric_consume_digit(session: mutable RecordNumericSession&, byte: u8, fractional: bool, exponent: bool) -> void error[RecordNumericError]:
+            raise RecordNumericError.DigitLimitExceeded if session.digits >= session.policy.max_digits and not exponent
+            if exponent:
+                raise RecordNumericError.ExponentLimitExceeded if session.exponent_digits >= session.policy.max_exponent_digits
+                digit: usize = record_numeric_digit(byte).usize()
+                limit: usize = record_numeric_exponent_limit(session.policy)
+                raise RecordNumericError.ExponentLimitExceeded if session.exponent_magnitude > (limit - digit) / 10
+                session.exponent_magnitude <- session.exponent_magnitude * 10 + digit
+                session.exponent_digits <- session.exponent_digits + 1
+                session.previous_digit <- true
+            else:
+                session.digits <- session.digits + 1
+                session.saw_digit <- true
+                session.previous_digit <- true
+                session.fraction_digits <- session.fraction_digits + 1 if fractional
+                if session.policy.kind != RecordNumericKind.Decimal:
+                    digit: u64 = record_numeric_digit(byte).u64()
+                    limit: u64 = record_numeric_integer_limit(session)
+                    raise RecordNumericError.IntegerOverflow if session.magnitude > (limit - digit) / 10
+                    session.magnitude <- session.magnitude * 10 + digit
+
+
+        def record_numeric_finish_valid(session: RecordNumericSession&) -> bool:
+            return session.saw_digit and session.previous_digit and session.phase != RecordNumericPhase.Start and session.phase != RecordNumericPhase.Sign and session.phase != RecordNumericPhase.ExponentLead and session.phase != RecordNumericPhase.ExponentSign and (session.phase != RecordNumericPhase.Fraction or session.fraction_digits != 0)
+
+
+    public:
+        def validate_record_numeric_session(session: RecordNumericSession&) -> bool error[RecordNumericError]:
+            raise RecordNumericError.InvalidState if not record_numeric_state_valid(session.state)
+            raise RecordNumericError.InvalidPolicy if not record_numeric_policy_valid(session.policy)
+            raise RecordNumericError.InvalidPhase if not record_numeric_phase_valid(session.phase)
+            raise RecordNumericError.TextLimitExceeded if session.chars > session.policy.max_bytes
+            raise RecordNumericError.DigitLimitExceeded if session.digits > session.policy.max_digits
+            raise RecordNumericError.ExponentLimitExceeded if session.exponent_digits > session.policy.max_exponent_digits
+            raise RecordNumericError.InvalidTransition if session.policy.kind != RecordNumericKind.Decimal and (session.saw_dot or session.saw_exponent)
+            raise RecordNumericError.InvalidTransition if session.policy.kind == RecordNumericKind.Unsigned and session.negative
+            raise RecordNumericError.FinishNotReady if session.state == RecordNumericState.Complete and not record_numeric_finish_valid(session)
+            return true
+
+
+        def record_numeric_result(session: RecordNumericSession&) -> RecordNumericResult error[RecordNumericError]:
+            try validate_record_numeric_session(session)
+            raise RecordNumericError.ResultNotReady if session.state != RecordNumericState.Complete
+            return RecordNumericResult{kind: session.policy.kind, negative: session.negative, magnitude: session.magnitude, coefficient_digits: session.digits, fraction_digits: session.fraction_digits, exponent_negative: session.exponent_negative, exponent_magnitude: session.exponent_magnitude}
+
+
+        def advance_record_numeric(session: mutable RecordNumericSession&, event: RecordNumericEvent, byte: u8 = 0) -> RecordNumericState error[RecordNumericError]:
+            try validate_record_numeric_session(session)
+            raise RecordNumericError.InvalidEvent if not record_numeric_event_valid(event)
+            if event == RecordNumericEvent.Begin:
+                raise RecordNumericError.InvalidTransition if session.state != RecordNumericState.Planned
+                session.state <- RecordNumericState.Parsing
+            elif event == RecordNumericEvent.Byte:
+                raise RecordNumericError.InvalidTransition if session.state != RecordNumericState.Parsing
+                raise RecordNumericError.TextLimitExceeded if session.chars >= session.policy.max_bytes
+                session.chars <- session.chars + 1
+                if session.phase == RecordNumericPhase.Start:
+                    if byte == 43 or byte == 45:
+                        raise RecordNumericError.SignNotAllowed if session.policy.kind == RecordNumericKind.Unsigned
+                        session.negative <- byte == 45
+                        session.phase <- RecordNumericPhase.Sign
+                    elif record_numeric_byte_is_digit(byte):
+                        try record_numeric_consume_digit(session, byte, false, false)
+                        session.phase <- RecordNumericPhase.Digits
+                    elif byte == 46 and session.policy.kind == RecordNumericKind.Decimal:
+                        session.saw_dot <- true
+                        session.phase <- RecordNumericPhase.Fraction
+                    else:
+                        raise RecordNumericError.InvalidCharacter
+                elif session.phase == RecordNumericPhase.Sign:
+                    if record_numeric_byte_is_digit(byte):
+                        try record_numeric_consume_digit(session, byte, false, false)
+                        session.phase <- RecordNumericPhase.Digits
+                    elif byte == 46 and session.policy.kind == RecordNumericKind.Decimal:
+                        session.saw_dot <- true
+                        session.phase <- RecordNumericPhase.Fraction
+                    else:
+                        raise RecordNumericError.InvalidCharacter
+                elif session.phase == RecordNumericPhase.Digits:
+                    if record_numeric_byte_is_digit(byte):
+                        try record_numeric_consume_digit(session, byte, false, false)
+                    elif byte == 95:
+                        raise RecordNumericError.UnderscoreNotAllowed if not session.policy.allow_underscores
+                        raise RecordNumericError.UnderscorePlacement if not session.previous_digit
+                        session.previous_digit <- false
+                    elif byte == 46:
+                        raise RecordNumericError.DecimalNotAllowed if session.policy.kind != RecordNumericKind.Decimal or session.saw_dot
+                        session.saw_dot <- true
+                        session.previous_digit <- false
+                        session.phase <- RecordNumericPhase.Fraction
+                    elif byte == 69 or byte == 101:
+                        raise RecordNumericError.ExponentNotAllowed if session.policy.kind != RecordNumericKind.Decimal or session.saw_exponent or not session.previous_digit
+                        session.saw_exponent <- true
+                        session.phase <- RecordNumericPhase.ExponentLead
+                    else:
+                        raise RecordNumericError.InvalidCharacter
+                elif session.phase == RecordNumericPhase.Fraction:
+                    if record_numeric_byte_is_digit(byte):
+                        try record_numeric_consume_digit(session, byte, true, false)
+                    elif byte == 95:
+                        raise RecordNumericError.UnderscoreNotAllowed if not session.policy.allow_underscores
+                        raise RecordNumericError.UnderscorePlacement if not session.previous_digit
+                        session.previous_digit <- false
+                    elif byte == 69 or byte == 101:
+                        raise RecordNumericError.ExponentNotAllowed if session.saw_exponent or session.fraction_digits == 0 or not session.previous_digit
+                        session.saw_exponent <- true
+                        session.phase <- RecordNumericPhase.ExponentLead
+                    else:
+                        raise RecordNumericError.InvalidCharacter
+                elif session.phase == RecordNumericPhase.ExponentLead:
+                    if byte == 43 or byte == 45:
+                        session.exponent_negative <- byte == 45
+                        session.phase <- RecordNumericPhase.ExponentSign
+                    elif record_numeric_byte_is_digit(byte):
+                        try record_numeric_consume_digit(session, byte, false, true)
+                        session.phase <- RecordNumericPhase.ExponentDigits
+                    else:
+                        raise RecordNumericError.InvalidCharacter
+                elif session.phase == RecordNumericPhase.ExponentSign:
+                    raise RecordNumericError.InvalidCharacter if not record_numeric_byte_is_digit(byte)
+                    try record_numeric_consume_digit(session, byte, false, true)
+                    session.phase <- RecordNumericPhase.ExponentDigits
+                elif session.phase == RecordNumericPhase.ExponentDigits:
+                    if record_numeric_byte_is_digit(byte):
+                        try record_numeric_consume_digit(session, byte, false, true)
+                    elif byte == 95:
+                        raise RecordNumericError.UnderscoreNotAllowed if not session.policy.allow_underscores
+                        raise RecordNumericError.UnderscorePlacement if not session.previous_digit
+                        session.previous_digit <- false
+                    else:
+                        raise RecordNumericError.InvalidCharacter
+            elif event == RecordNumericEvent.Finish:
+                raise RecordNumericError.FinishNotReady if session.state != RecordNumericState.Parsing
+                raise RecordNumericError.EmptyNumber if not session.saw_digit
+                raise RecordNumericError.TrailingSeparator if not session.previous_digit
+                raise RecordNumericError.FinishNotReady if session.phase == RecordNumericPhase.Sign or session.phase == RecordNumericPhase.ExponentLead or session.phase == RecordNumericPhase.ExponentSign
+                session.state <- RecordNumericState.Complete
+            elif event == RecordNumericEvent.Fail:
+                raise RecordNumericError.InvalidTransition if session.state == RecordNumericState.Planned or session.state == RecordNumericState.Complete or session.state == RecordNumericState.Failed or session.state == RecordNumericState.Cancelled
+                session.state <- RecordNumericState.Failed
+            elif event == RecordNumericEvent.Cancel:
+                raise RecordNumericError.CancelNotReady if session.state != RecordNumericState.Parsing
+                session.state <- RecordNumericState.Cancelled
+            return session.state

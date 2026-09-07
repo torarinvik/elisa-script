@@ -672,6 +672,16 @@ namespace inclusion, documentation, and check_record_spill.sh audit are static
 evidence; sorting, fsync/rename, cleanup, crash recovery, and host execution
 remain open.
 
+ES-SCRIPT-038 | EsRecordNumeric supplies a bounded lexical numeric-field
+contract for Perl/AWK-style extraction. Signed/unsigned integer magnitudes use
+subtraction-safe overflow checks, decimal fields retain bounded coefficient/
+fraction/exponent descriptors without an implicit float conversion, and sign,
+underscore, decimal, exponent, finish, failure, and cancellation edges are
+explicit under `error[RecordNumericError]`. The focused IR fixture, namespace
+inclusion, documentation, and check_record_numeric.sh audit are static
+evidence; exact-decimal/floating conversion, locale policy, and host scanner
+integration remain open.
+
 ES-FS-004 | EsFileLock supplies a bounded advisory file-lock ownership
 contract. Requests carry explicit shared/exclusive mode, owner token, path and
 bounded-wait policy; same-path shared leases may coexist, while exclusive and
