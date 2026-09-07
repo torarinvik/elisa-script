@@ -7,7 +7,7 @@ reproducible.
 
 Use the compiler built from the local Elisa-core checkout when changing stage0 or
 stage1 compiler code. Validation is currently fail-closed after an RSS incident:
-the checked-in process-tree watchdog refuses to launch unless the user explicitly
+the checked-in process-group watchdog refuses to launch unless the user explicitly
 sets `ELISASCRIPT_VALIDATION_REAUTHORIZED=1`. Do not set that override without a
 small, bounded repro and an explicit decision to resume validation. When validation
 is authorized, use the local compiler path and watchdog:
@@ -85,7 +85,7 @@ usage records cover every declared budget dimension and that both interpreter
 and direct-bytecode execution return the inherited step policy without starting
 either backend.
 
-Executable fixtures use the matching process-tree guard:
+Executable fixtures use the matching process-group guard:
 
 ```sh
 ELISASCRIPT_VALIDATION_REAUTHORIZED=1 \
