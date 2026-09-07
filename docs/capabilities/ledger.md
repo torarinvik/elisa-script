@@ -294,12 +294,13 @@ preserves a trailing empty field through `ReadText + Split`) and `split_lines`
 (which follows delimiter-oriented Python behavior). Interpreter and direct
 bytecode fixtures cover a file ending in a newline, recorded in `8e69ada`.
 
-Recursive tree-copy admission now rejects a source-equal or normalized lexical
-descendant destination before filesystem mutation. This closes self-expanding
-copy traversal while keeping the 128-level depth guard as defense in depth; the
-interpreter/direct-bytecode parity fixtures and path contract audit record the
-boundary (`WORKTREE`). Destination-parent symlink aliases remain open for the
-host-canonical filesystem adapter.
+Recursive tree-copy admission rejects a source-equal or normalized lexical
+descendant destination before filesystem mutation. It now also canonicalizes the
+existing source and destination parent through the POSIX `realpath` adapter, so
+destination-parent symlink aliases into the source tree are rejected before
+`mkdir`; the final destination leaf may be absent. The interpreter/direct-bytecode
+parity fixtures and path contract audit record both boundaries (`WORKTREE`),
+while host canonicalization and execution evidence remain unqualified.
 
 The semantic registry now has a dedicated negative fixture for `copy_tree`'s two
 nominal `Path` operands, keeping recursive-copy aliases aligned with the existing

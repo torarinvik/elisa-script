@@ -1375,9 +1375,12 @@ can[File.Read, File.Write]` recursively copies files, directories, and symbolic
 links while preserving link identity. `copytree` is an equivalent alias; the
 destination root must not already exist, and traversal is bounded to 128 levels.
 The operation rejects the source itself and any normalized lexical descendant as
-the destination before creating output, preventing recursive self-expansion.
-Destination-parent symlink aliases are host-canonicalization work still tracked
-for the filesystem adapter.
+the destination before creating output, preventing recursive self-expansion. It
+also resolves the existing source and destination parent with the host
+`realpath` adapter before `mkdir`, so a destination reached through a symlink
+alias into the source tree is rejected even when its lexical spelling is not a
+descendant. The final destination leaf may be absent; canonicalization and
+execution evidence remain platform-qualified work.
 
 `read_text(path: Path) -> sview error[FileIoError]` reads a whole file without
 discarding embedded bytes, subject to the interpreter's 64 MiB file-input safety
