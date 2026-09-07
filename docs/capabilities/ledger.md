@@ -489,6 +489,14 @@ documentation, and check_archive.sh audit are compiler-free static evidence;
 format decoders, filesystem writes, overwrite/permission behavior, atomic
 publication, and extraction parity remain open.
 
+ES-SCRIPT-051 | EsHash supplies a bounded incremental integrity contract.
+Algorithm identity (`Sha256`, `Sha512`, or `Fnv1a64`), input/chunk ceilings,
+chunk counts, one-way begin/update/finalize/fail transitions, digest word shape,
+and algorithm matching are explicit. The focused IR fixture, namespace
+inclusion, documentation, and check_hash.sh audit are compiler-free static
+evidence; cryptographic implementation, streaming adapters, package/archive
+integration, and cross-platform digest parity remain open.
+
 ES-SCRIPT-040 | EsTaskTransfer supplies a bounded ownership protocol for
 copyable values, linear values, and dynamic handler contexts crossing task
 boundaries. Copy/move/borrow modes, source/target owners, generation updates,

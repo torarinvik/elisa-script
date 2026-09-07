@@ -1,0 +1,137 @@
+# Bounded incremental hash/checksum contract for artifacts and archives.
+#
+# Host adapters perform the algorithm; this model ensures the selected
+# algorithm, input accounting, chunk limits, and one-shot digest publication
+# cannot be silently changed or exceeded.
+
+module EsHash:
+    public:
+        const HASH_MAX_INPUT_BYTES: usize = 1099511627776
+        const HASH_MAX_CHUNK_BYTES: usize = 67108864
+        const HASH_MAX_CHUNKS: usize = 1048576
+
+
+        const enum HashAlgorithm of u8:
+            Sha256
+            Sha512
+            Fnv1a64
+
+
+        const enum HashState of u8:
+            Planned
+            Active
+            Finalized
+            Failed
+
+
+        const enum HashEvent of u8:
+            Begin
+            Update
+            Finalize
+            Fail
+
+
+        struct HashPolicy:
+            algorithm: HashAlgorithm = HashAlgorithm.Sha256
+            max_input_bytes: usize = HASH_MAX_INPUT_BYTES
+            max_chunk_bytes: usize = HASH_MAX_CHUNK_BYTES
+            max_chunks: usize = HASH_MAX_CHUNKS
+
+
+        struct HashDigest:
+            algorithm: HashAlgorithm
+            word_count: usize
+            word0: u64 = 0
+            word1: u64 = 0
+            word2: u64 = 0
+            word3: u64 = 0
+            word4: u64 = 0
+            word5: u64 = 0
+            word6: u64 = 0
+            word7: u64 = 0
+
+
+        struct HashContext:
+            policy: HashPolicy
+            state: HashState = HashState.Planned
+            bytes_seen: usize = 0
+            chunks_seen: usize = 0
+            digest: HashDigest = HashDigest{algorithm: HashAlgorithm.Sha256, word_count: 0}
+
+
+        error HashError:
+            InvalidPolicy
+            InvalidAlgorithm
+            InvalidState
+            InvalidEvent
+            InvalidChunk
+            ChunkLimitExceeded
+            InputLimitExceeded
+            DigestShapeInvalid
+            DigestAlgorithmMismatch
+            DigestAlreadyPublished
+            InvalidTransition
+
+
+    private:
+        def hash_algorithm_valid(algorithm: HashAlgorithm) -> bool:
+            return algorithm in {HashAlgorithm.Sha256, HashAlgorithm.Sha512, HashAlgorithm.Fnv1a64}
+
+
+        def hash_state_valid(state: HashState) -> bool:
+            return state in {HashState.Planned, HashState.Active, HashState.Finalized, HashState.Failed}
+
+
+        def hash_event_valid(event: HashEvent) -> bool:
+            return event in {HashEvent.Begin, HashEvent.Update, HashEvent.Finalize, HashEvent.Fail}
+
+
+        def hash_word_count(algorithm: HashAlgorithm) -> usize:
+            return 1 if algorithm == HashAlgorithm.Fnv1a64 else 4 if algorithm == HashAlgorithm.Sha256 else 8
+
+
+        def hash_policy_valid(policy: HashPolicy) -> bool:
+            return hash_algorithm_valid(policy.algorithm) and policy.max_input_bytes != 0 and policy.max_input_bytes <= HASH_MAX_INPUT_BYTES and policy.max_chunk_bytes != 0 and policy.max_chunk_bytes <= HASH_MAX_CHUNK_BYTES and policy.max_chunks != 0 and policy.max_chunks <= HASH_MAX_CHUNKS
+
+
+        def hash_digest_shape_valid(digest: HashDigest) -> bool:
+            return hash_algorithm_valid(digest.algorithm) and digest.word_count == hash_word_count(digest.algorithm)
+
+
+    public:
+        def validate_hash_context(context: HashContext) -> bool error[HashError]:
+            raise HashError.InvalidPolicy if not hash_policy_valid(context.policy)
+            raise HashError.InvalidState if not hash_state_valid(context.state)
+            raise HashError.ChunkLimitExceeded if context.chunks_seen > context.policy.max_chunks
+            raise HashError.InputLimitExceeded if context.bytes_seen > context.policy.max_input_bytes
+            if context.state == HashState.Finalized:
+                raise HashError.DigestShapeInvalid if not hash_digest_shape_valid(context.digest)
+                raise HashError.DigestAlgorithmMismatch if context.digest.algorithm != context.policy.algorithm
+            else:
+                raise HashError.DigestAlreadyPublished if context.digest.word_count != 0
+            return true
+
+
+        def advance_hash(context: mutable HashContext&, event: HashEvent, chunk_bytes: usize = 0, digest: HashDigest = HashDigest{algorithm: HashAlgorithm.Sha256, word_count: 0}) -> HashState error[HashError]:
+            try validate_hash_context(context)
+            raise HashError.InvalidEvent if not hash_event_valid(event)
+            if event == HashEvent.Begin:
+                raise HashError.InvalidTransition if context.state != HashState.Planned
+                context.state <- HashState.Active
+            elif event == HashEvent.Update:
+                raise HashError.InvalidTransition if context.state != HashState.Active
+                raise HashError.InvalidChunk if chunk_bytes == 0 or chunk_bytes > context.policy.max_chunk_bytes
+                raise HashError.ChunkLimitExceeded if context.chunks_seen >= context.policy.max_chunks
+                raise HashError.InputLimitExceeded if chunk_bytes > context.policy.max_input_bytes - context.bytes_seen
+                context.chunks_seen <- context.chunks_seen + 1
+                context.bytes_seen <- context.bytes_seen + chunk_bytes
+            elif event == HashEvent.Finalize:
+                raise HashError.InvalidTransition if context.state != HashState.Active
+                raise HashError.DigestShapeInvalid if not hash_digest_shape_valid(digest)
+                raise HashError.DigestAlgorithmMismatch if digest.algorithm != context.policy.algorithm
+                context.digest <- digest
+                context.state <- HashState.Finalized
+            elif event == HashEvent.Fail:
+                raise HashError.InvalidTransition if context.state == HashState.Finalized or context.state == HashState.Failed
+                context.state <- HashState.Failed
+            return context.state

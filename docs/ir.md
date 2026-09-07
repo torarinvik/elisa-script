@@ -308,6 +308,13 @@ per-entry bytes, aggregate bytes, duplicate ids/paths, link policy, and
 planned/extracting/committed/failed/cancelled states are bounded through
 `error[ArchiveError]`; filesystem writes remain host-adapter work.
 
+`EsHash::HashContext` is the bounded integrity boundary used by package,
+archive, and artifact adapters. Algorithm identity, input/chunk ceilings,
+one-way begin/update/finalize/fail transitions, digest word shape, and
+algorithm matching are checked before publication; the model records the
+contract but delegates cryptographic computation to a maintained host/library
+implementation through `error[HashError]`.
+
 EsHandle supplies the host-handle table that those adapters consume. Raw
 handle identity is distinct from the logical resource id and owner token;
 duplicate identities are rejected, ownership transfer requires a new owner,
