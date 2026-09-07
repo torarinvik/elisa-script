@@ -673,6 +673,16 @@ documentation, and check_file_lock.sh audit are static evidence; platform
 flock/LockFileEx calls, fairness, mandatory-locking differences, and race
 fixtures remain host work.
 
+ES-FS-005 | EsDirectoryMutation supplies a bounded recursive copy/remove
+planning contract. It records source/destination paths, stable identities,
+depth and byte accounting, explicit applied/skipped/failed entry outcomes,
+symlink preserve/follow/skip/reject policy, fail-fast versus collected partial
+failures, balanced directory scopes, cycle/alias rejection, resource limits,
+and cancellation through `error[DirectoryMutationError]`. The focused IR
+fixture, namespace inclusion, documentation, and check_directory_mutation.sh
+audit are static evidence; mkdir/copy/unlink/rmdir adapters, canonical path
+containment, permissions, rollback, and race fixtures remain host work.
+
 ES-SCRIPT-029 | EsRecordControl supplies explicit bounded `next`/`nextfile`/
 exit transitions for pattern-action adapters. It closes record/file ownership
 on skips, rejects record events outside files and premature file closure, caps

@@ -1054,6 +1054,18 @@ completion require a balanced walk; malformed paths, non-directories, denied
 symlink descent, limits, and identity/accounting failures use
 `error[DirectoryTreeError]`.
 
+`EsDirectoryMutation::DirectoryMutationSession` is the bounded recursive
+copy/remove planning boundary. Every admitted entry carries source and (for
+copy) destination paths, an identity, depth, byte count, and an explicit
+`Planned`/`Applied`/`Skipped`/`Failed` outcome. `Preserve`, `Follow`, `Skip`,
+and `Reject` symlink policies, fail-fast versus collected failures, identity
+cycle/alias rejection, depth/entry/byte/failure ceilings, balanced
+`Enter`/`Leave` scopes, and cancellation are all checked before host mutation.
+`Complete` is only reachable with no pending entry and no active scope; a
+collected failure is retained in the completed report rather than silently
+converted into success. The host owns mkdir/copy/unlink/rmdir calls, canonical
+source/destination checks, permissions, race handling, and rollback.
+
 `EsRegexCallback::RegexCallbackSession` is the callback-aware replacement
 boundary. The matcher submits non-overlapping spans and capture counts; the
 session accounts unmatched prefixes, callback replacement bytes, and the final

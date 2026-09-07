@@ -1,0 +1,309 @@
+# Bounded typed recursive copy/remove planning boundary.
+#
+# The host performs mkdir/copy/unlink/rmdir calls; this module governs the
+# admission and ordering of those calls.  It deliberately records every
+# identity and outcome so a partial failure cannot be mistaken for success.
+
+module EsDirectoryMutation:
+    public:
+        const DIRECTORY_MUTATION_MAX_ENTRIES: usize = 1048576
+        const DIRECTORY_MUTATION_MAX_DEPTH: usize = 4096
+        const DIRECTORY_MUTATION_MAX_IDENTITIES: usize = 1048576
+        const DIRECTORY_MUTATION_MAX_PATH_BYTES: usize = 4096
+        const DIRECTORY_MUTATION_MAX_BYTES: usize = 67108864
+        const DIRECTORY_MUTATION_MAX_FAILURES: usize = 1048576
+
+
+        const enum DirectoryMutationOperation of u8:
+            Copy
+            Remove
+
+
+        const enum DirectoryMutationSymlinkPolicy of u8:
+            Preserve
+            Follow
+            Skip
+            Reject
+
+
+        const enum DirectoryMutationFailureMode of u8:
+            FailFast
+            Collect
+
+
+        const enum DirectoryMutationEntryKind of u8:
+            Regular
+            Directory
+            Symlink
+            Other
+
+
+        const enum DirectoryMutationEntryState of u8:
+            Planned
+            Applied
+            Skipped
+            Failed
+
+
+        const enum DirectoryMutationState of u8:
+            Planned
+            Executing
+            Completed
+            Failed
+            Cancelled
+
+
+        const enum DirectoryMutationEvent of u8:
+            Begin
+            Plan
+            Apply
+            Enter
+            Leave
+            Failure
+            Complete
+            Cancel
+
+
+        struct DirectoryMutationPolicy:
+            max_entries: usize = DIRECTORY_MUTATION_MAX_ENTRIES
+            max_depth: usize = DIRECTORY_MUTATION_MAX_DEPTH
+            max_identities: usize = DIRECTORY_MUTATION_MAX_IDENTITIES
+            max_path_bytes: usize = DIRECTORY_MUTATION_MAX_PATH_BYTES
+            max_bytes: usize = DIRECTORY_MUTATION_MAX_BYTES
+            max_failures: usize = DIRECTORY_MUTATION_MAX_FAILURES
+            symlink_policy: DirectoryMutationSymlinkPolicy = DirectoryMutationSymlinkPolicy.Preserve
+            failure_mode: DirectoryMutationFailureMode = DirectoryMutationFailureMode.FailFast
+
+
+        struct DirectoryMutationEntry:
+            ordinal: usize
+            source: sview
+            destination: sview = ""
+            identity: u64
+            depth: usize
+            kind: DirectoryMutationEntryKind
+            bytes: usize = 0
+            state: DirectoryMutationEntryState = DirectoryMutationEntryState.Planned
+
+
+        struct DirectoryMutationSession:
+            operation: DirectoryMutationOperation
+            source_path: sview
+            destination_path: sview = ""
+            policy: DirectoryMutationPolicy
+            state: DirectoryMutationState = DirectoryMutationState.Planned
+            entries: darray[DirectoryMutationEntry] = []
+            identities: darray[u64] = []
+            total_bytes: usize = 0
+            failure_count: usize = 0
+            applied_entries: usize = 0
+            active_depth: usize = 0
+            has_pending: bool = false
+            pending_index: usize = 0
+
+
+        error DirectoryMutationError:
+            InvalidState
+            InvalidEvent
+            InvalidOperation
+            InvalidPolicy
+            InvalidSymlinkPolicy
+            InvalidFailureMode
+            InvalidKind
+            InvalidPath
+            EmbeddedNul
+            PathLimitExceeded
+            DestinationCollision
+            InvalidIdentity
+            DuplicateIdentity
+            InvalidOrdinal
+            InvalidDepth
+            DepthLimitExceeded
+            EntryLimitExceeded
+            IdentityLimitExceeded
+            ByteLimitExceeded
+            FailureLimitExceeded
+            PendingEntry
+            PendingIndexInvalid
+            EntryNotPending
+            EntryNotApplied
+            NotDirectory
+            SymlinkNotFollowed
+            ActiveScope
+            AccountingInvalid
+            InvalidTransition
+            CancelNotReady
+
+
+    private:
+        def directory_mutation_state_valid(state: DirectoryMutationState) -> bool:
+            return state in {DirectoryMutationState.Planned, DirectoryMutationState.Executing, DirectoryMutationState.Completed, DirectoryMutationState.Failed, DirectoryMutationState.Cancelled}
+
+
+        def directory_mutation_event_valid(event: DirectoryMutationEvent) -> bool:
+            return event in {DirectoryMutationEvent.Begin, DirectoryMutationEvent.Plan, DirectoryMutationEvent.Apply, DirectoryMutationEvent.Enter, DirectoryMutationEvent.Leave, DirectoryMutationEvent.Failure, DirectoryMutationEvent.Complete, DirectoryMutationEvent.Cancel}
+
+
+        def directory_mutation_operation_valid(operation: DirectoryMutationOperation) -> bool:
+            return operation in {DirectoryMutationOperation.Copy, DirectoryMutationOperation.Remove}
+
+
+        def directory_mutation_symlink_policy_valid(policy: DirectoryMutationSymlinkPolicy) -> bool:
+            return policy in {DirectoryMutationSymlinkPolicy.Preserve, DirectoryMutationSymlinkPolicy.Follow, DirectoryMutationSymlinkPolicy.Skip, DirectoryMutationSymlinkPolicy.Reject}
+
+
+        def directory_mutation_failure_mode_valid(mode: DirectoryMutationFailureMode) -> bool:
+            return mode in {DirectoryMutationFailureMode.FailFast, DirectoryMutationFailureMode.Collect}
+
+
+        def directory_mutation_kind_valid(kind: DirectoryMutationEntryKind) -> bool:
+            return kind in {DirectoryMutationEntryKind.Regular, DirectoryMutationEntryKind.Directory, DirectoryMutationEntryKind.Symlink, DirectoryMutationEntryKind.Other}
+
+
+        def directory_mutation_entry_state_valid(state: DirectoryMutationEntryState) -> bool:
+            return state in {DirectoryMutationEntryState.Planned, DirectoryMutationEntryState.Applied, DirectoryMutationEntryState.Skipped, DirectoryMutationEntryState.Failed}
+
+
+        def directory_mutation_path_valid(path: sview, limit: usize) -> bool:
+            return sview_len(path) != 0 and sview_len(path) < limit and not sview_contains_byte(path, 0)
+
+
+        def directory_mutation_optional_path_valid(path: sview, limit: usize) -> bool:
+            return path == "" or directory_mutation_path_valid(path, limit)
+
+
+        def directory_mutation_policy_valid(policy: DirectoryMutationPolicy) -> bool:
+            return policy.max_entries != 0 and policy.max_entries <= DIRECTORY_MUTATION_MAX_ENTRIES and policy.max_depth != 0 and policy.max_depth <= DIRECTORY_MUTATION_MAX_DEPTH and policy.max_identities != 0 and policy.max_identities <= DIRECTORY_MUTATION_MAX_IDENTITIES and policy.max_path_bytes != 0 and policy.max_path_bytes <= DIRECTORY_MUTATION_MAX_PATH_BYTES and policy.max_bytes != 0 and policy.max_bytes <= DIRECTORY_MUTATION_MAX_BYTES and policy.max_failures != 0 and policy.max_failures <= DIRECTORY_MUTATION_MAX_FAILURES and directory_mutation_symlink_policy_valid(policy.symlink_policy) and directory_mutation_failure_mode_valid(policy.failure_mode)
+
+
+        def directory_mutation_identity_index(session: DirectoryMutationSession&, identity: u64) -> usize:
+            for index in 0..<session.identities.count |session, identity|:
+                return index if session.identities[index] == identity
+            return session.identities.count
+
+
+    public:
+        def validate_directory_mutation(session: DirectoryMutationSession&) -> bool error[DirectoryMutationError]:
+            raise DirectoryMutationError.InvalidState if not directory_mutation_state_valid(session.state)
+            raise DirectoryMutationError.InvalidOperation if not directory_mutation_operation_valid(session.operation)
+            raise DirectoryMutationError.InvalidPolicy if not directory_mutation_policy_valid(session.policy)
+            raise DirectoryMutationError.InvalidPath if not directory_mutation_path_valid(session.source_path, session.policy.max_path_bytes)
+            raise DirectoryMutationError.EmbeddedNul if sview_contains_byte(session.source_path, 0)
+            if session.operation == DirectoryMutationOperation.Copy:
+                raise DirectoryMutationError.InvalidPath if not directory_mutation_path_valid(session.destination_path, session.policy.max_path_bytes)
+                raise DirectoryMutationError.DestinationCollision if session.source_path == session.destination_path
+            else:
+                raise DirectoryMutationError.DestinationCollision if session.destination_path != ""
+            raise DirectoryMutationError.EntryLimitExceeded if session.entries.count > session.policy.max_entries
+            raise DirectoryMutationError.IdentityLimitExceeded if session.identities.count > session.policy.max_identities
+            raise DirectoryMutationError.AccountingInvalid if session.identities.count != session.entries.count
+            raise DirectoryMutationError.ByteLimitExceeded if session.total_bytes > session.policy.max_bytes
+            raise DirectoryMutationError.FailureLimitExceeded if session.failure_count > session.policy.max_failures
+            raise DirectoryMutationError.AccountingInvalid if session.applied_entries > session.entries.count
+            raise DirectoryMutationError.InvalidDepth if session.active_depth > session.policy.max_depth
+            raise DirectoryMutationError.PendingIndexInvalid if session.has_pending and session.pending_index >= session.entries.count
+            if session.has_pending:
+                raise DirectoryMutationError.EntryNotPending if session.entries[session.pending_index].state != DirectoryMutationEntryState.Planned
+            accounted_bytes: mutable usize = 0
+            counted_applied: mutable usize = 0
+            for index in 0..<session.entries.count |session, accounted_bytes, counted_applied|:
+                entry: DirectoryMutationEntry = session.entries[index]
+                raise DirectoryMutationError.InvalidOrdinal if entry.ordinal != index
+                raise DirectoryMutationError.InvalidKind if not directory_mutation_kind_valid(entry.kind)
+                raise DirectoryMutationError.InvalidPath if not directory_mutation_path_valid(entry.source, session.policy.max_path_bytes)
+                raise DirectoryMutationError.EmbeddedNul if sview_contains_byte(entry.source, 0)
+                if session.operation == DirectoryMutationOperation.Copy:
+                    raise DirectoryMutationError.InvalidPath if not directory_mutation_path_valid(entry.destination, session.policy.max_path_bytes)
+                    raise DirectoryMutationError.DestinationCollision if entry.source == entry.destination
+                else:
+                    raise DirectoryMutationError.DestinationCollision if entry.destination != ""
+                raise DirectoryMutationError.InvalidIdentity if entry.identity == 0
+                raise DirectoryMutationError.InvalidDepth if entry.depth > session.policy.max_depth
+                raise DirectoryMutationError.InvalidState if not directory_mutation_entry_state_valid(entry.state)
+                raise DirectoryMutationError.InvalidState if entry.state == DirectoryMutationEntryState.Skipped and (entry.kind != DirectoryMutationEntryKind.Symlink or session.policy.symlink_policy != DirectoryMutationSymlinkPolicy.Skip)
+                raise DirectoryMutationError.EntryNotPending if entry.state == DirectoryMutationEntryState.Planned and (not session.has_pending or session.pending_index != index)
+                raise DirectoryMutationError.ByteLimitExceeded if entry.bytes > session.policy.max_bytes
+                raise DirectoryMutationError.ByteLimitExceeded if entry.bytes > session.policy.max_bytes - accounted_bytes
+                accounted_bytes <- accounted_bytes + entry.bytes
+                counted_applied <- counted_applied + 1 if entry.state == DirectoryMutationEntryState.Applied
+                for earlier in 0..<index |session, entry|:
+                    raise DirectoryMutationError.DuplicateIdentity if session.identities[earlier] == entry.identity
+            raise DirectoryMutationError.AccountingInvalid if counted_applied != session.applied_entries
+            raise DirectoryMutationError.AccountingInvalid if accounted_bytes != session.total_bytes
+            for identity in session.identities:
+                raise DirectoryMutationError.InvalidIdentity if identity == 0
+            return true
+
+
+        def advance_directory_mutation(session: mutable DirectoryMutationSession&, event: DirectoryMutationEvent, entry: DirectoryMutationEntry = DirectoryMutationEntry{ordinal: 0, source: "", identity: 0, depth: 0, kind: DirectoryMutationEntryKind.Other}) -> DirectoryMutationState error[DirectoryMutationError]:
+            try validate_directory_mutation(session)
+            raise DirectoryMutationError.InvalidEvent if not directory_mutation_event_valid(event)
+            if event == DirectoryMutationEvent.Begin:
+                raise DirectoryMutationError.InvalidTransition if session.state != DirectoryMutationState.Planned
+                session.state <- DirectoryMutationState.Executing
+            elif event == DirectoryMutationEvent.Plan:
+                raise DirectoryMutationError.InvalidTransition if session.state != DirectoryMutationState.Executing
+                raise DirectoryMutationError.PendingEntry if session.has_pending
+                raise DirectoryMutationError.EntryLimitExceeded if session.entries.count >= session.policy.max_entries
+                raise DirectoryMutationError.IdentityLimitExceeded if session.identities.count >= session.policy.max_identities
+                raise DirectoryMutationError.InvalidOrdinal if entry.ordinal != session.entries.count
+                raise DirectoryMutationError.InvalidKind if not directory_mutation_kind_valid(entry.kind)
+                raise DirectoryMutationError.InvalidPath if not directory_mutation_path_valid(entry.source, session.policy.max_path_bytes)
+                raise DirectoryMutationError.EmbeddedNul if sview_contains_byte(entry.source, 0)
+                raise DirectoryMutationError.InvalidDepth if entry.depth != session.active_depth or entry.depth > session.policy.max_depth
+                raise DirectoryMutationError.InvalidIdentity if entry.identity == 0
+                raise DirectoryMutationError.DuplicateIdentity if directory_mutation_identity_index(session, entry.identity) != session.identities.count
+                if session.operation == DirectoryMutationOperation.Copy:
+                    raise DirectoryMutationError.InvalidPath if not directory_mutation_path_valid(entry.destination, session.policy.max_path_bytes)
+                    raise DirectoryMutationError.DestinationCollision if entry.source == entry.destination
+                else:
+                    raise DirectoryMutationError.DestinationCollision if entry.destination != ""
+                raise DirectoryMutationError.InvalidPolicy if entry.kind == DirectoryMutationEntryKind.Symlink and session.policy.symlink_policy == DirectoryMutationSymlinkPolicy.Reject
+                raise DirectoryMutationError.ByteLimitExceeded if entry.bytes > session.policy.max_bytes - session.total_bytes
+                session.identities.push(entry.identity)
+                session.entries.push(entry)
+                session.total_bytes <- session.total_bytes + entry.bytes
+                if entry.kind == DirectoryMutationEntryKind.Symlink and session.policy.symlink_policy == DirectoryMutationSymlinkPolicy.Skip:
+                    session.entries[session.entries.count - 1].state <- DirectoryMutationEntryState.Skipped
+                else:
+                    session.has_pending <- true
+                    session.pending_index <- session.entries.count - 1
+            elif event == DirectoryMutationEvent.Apply:
+                raise DirectoryMutationError.InvalidTransition if session.state != DirectoryMutationState.Executing
+                raise DirectoryMutationError.EntryNotPending if not session.has_pending
+                raise DirectoryMutationError.PendingIndexInvalid if session.pending_index >= session.entries.count
+                raise DirectoryMutationError.EntryNotPending if session.entries[session.pending_index].state != DirectoryMutationEntryState.Planned
+                session.entries[session.pending_index].state <- DirectoryMutationEntryState.Applied
+                session.applied_entries <- session.applied_entries + 1
+                session.has_pending <- false
+            elif event == DirectoryMutationEvent.Enter:
+                raise DirectoryMutationError.InvalidTransition if session.state != DirectoryMutationState.Executing
+                raise DirectoryMutationError.PendingEntry if session.has_pending
+                raise DirectoryMutationError.EntryNotApplied if session.entries.count == 0 or session.entries[session.entries.count - 1].state != DirectoryMutationEntryState.Applied
+                last: DirectoryMutationEntry = session.entries[session.entries.count - 1]
+                raise DirectoryMutationError.NotDirectory if last.kind != DirectoryMutationEntryKind.Directory and last.kind != DirectoryMutationEntryKind.Symlink
+                raise DirectoryMutationError.SymlinkNotFollowed if last.kind == DirectoryMutationEntryKind.Symlink and session.policy.symlink_policy != DirectoryMutationSymlinkPolicy.Follow
+                raise DirectoryMutationError.DepthLimitExceeded if session.active_depth >= session.policy.max_depth
+                session.active_depth <- session.active_depth + 1
+            elif event == DirectoryMutationEvent.Leave:
+                raise DirectoryMutationError.InvalidTransition if session.state != DirectoryMutationState.Executing
+                raise DirectoryMutationError.PendingEntry if session.has_pending
+                raise DirectoryMutationError.ActiveScope if session.active_depth == 0
+                session.active_depth <- session.active_depth - 1
+            elif event == DirectoryMutationEvent.Failure:
+                raise DirectoryMutationError.InvalidTransition if session.state != DirectoryMutationState.Executing
+                raise DirectoryMutationError.FailureLimitExceeded if session.failure_count >= session.policy.max_failures
+                if session.has_pending:
+                    session.entries[session.pending_index].state <- DirectoryMutationEntryState.Failed
+                    session.has_pending <- false
+                session.failure_count <- session.failure_count + 1
+                session.state <- DirectoryMutationState.Failed if session.policy.failure_mode == DirectoryMutationFailureMode.FailFast
+            elif event == DirectoryMutationEvent.Complete:
+                raise DirectoryMutationError.InvalidTransition if session.state != DirectoryMutationState.Executing
+                raise DirectoryMutationError.PendingEntry if session.has_pending
+                raise DirectoryMutationError.ActiveScope if session.active_depth != 0
+                session.state <- DirectoryMutationState.Completed
+            elif event == DirectoryMutationEvent.Cancel:
+                raise DirectoryMutationError.CancelNotReady if session.state != DirectoryMutationState.Executing or session.has_pending or session.active_depth != 0
+                session.state <- DirectoryMutationState.Cancelled
+            return session.state
