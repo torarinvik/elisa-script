@@ -28,7 +28,8 @@ for declaration in \
     'struct JsonDocument:' \
     'error JsonContractError:' \
     'def validate_json_document(' \
-    'def advance_json_document('; do
+    'def advance_json_document(' \
+    'try validate_json_document(document)'; do
     rg -Fq "$declaration" "$model"
 done
 

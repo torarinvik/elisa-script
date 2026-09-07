@@ -158,8 +158,9 @@ parser implementations remain separate work.
 `EsJson` is the namespaced adapter boundary for the vendor JSON parser. A
 `JsonDocument` owns a bounded table of non-recursive `JsonNode` values,
 source ranges, object members, and roots, while `JsonPolicy` and
-`DataDecodeLimits` remain explicit inputs. `advance_json_document` requires
-`Empty → Building → Sealed` (or `Failed`) transitions and rejects out-of-range
+`DataDecodeLimits` remain explicit inputs. `advance_json_document` revalidates
+the complete document ledger before every transition, requires `Empty → Building
+→ Sealed` (or `Failed`) transitions, and rejects out-of-range
 children, duplicate object keys, oversized source/token/node/member tables, and
 malformed ranges before a renderer or schema decoder can consume the table.
 The adapter is intentionally separate from the vendor's global parser names so
