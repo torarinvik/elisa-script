@@ -281,6 +281,13 @@ are separate transitions. A child in `Cleaning` cannot acknowledge cancellation
 until its cleanup depth returns to zero, and join reports failure or cancellation
 only after every active child is accounted for through `error[StructuredTaskError]`.
 
+`EsExitStatus::ExitStatus` gives the launcher one stable process-status
+contract. Success, user statuses, usage/source/check/test failures, script and
+host failures, resource limits, cancellation, and signal death are distinct
+outcomes; user `main -> i64` values are restricted to `0..123`, reserved
+categories use fixed codes, and signals map to `128 + signal` only for bounded
+positive signal numbers through `error[ExitStatusError]`.
+
 EsHandle supplies the host-handle table that those adapters consume. Raw
 handle identity is distinct from the logical resource id and owner token;
 duplicate identities are rejected, ownership transfer requires a new owner,

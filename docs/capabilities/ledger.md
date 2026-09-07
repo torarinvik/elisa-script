@@ -453,6 +453,15 @@ documentation, and check_structured_task.sh audit are compiler-free static
 evidence; scheduler queues, thread/task adapters, and runtime execution remain
 open.
 
+ES-SCRIPT-047 | EsExitStatus supplies a stable launcher/process-status mapping.
+Success, bounded user `main -> i64` statuses, usage/source/check/test/script/
+host/limit/cancellation outcomes, and signal death are distinct typed cases;
+reserved codes are fixed, user codes are restricted to `0..123`, and signal
+codes are bounded `128 + signal` values. The focused IR fixture, namespace
+inclusion, documentation, and check_exit_status.sh audit are compiler-free
+static evidence; platform exit-width differences, launcher integration, and
+executed process-status parity remain open.
+
 ES-SCRIPT-040 | EsTaskTransfer supplies a bounded ownership protocol for
 copyable values, linear values, and dynamic handler contexts crossing task
 boundaries. Copy/move/borrow modes, source/target owners, generation updates,
