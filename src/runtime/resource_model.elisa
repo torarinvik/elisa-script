@@ -1,0 +1,140 @@
+# Typed resource ownership ledger.
+#
+# Host adapters register every externally owned handle with a nonzero owner
+# token. Closing, failure, and abandonment are explicit edges; a released
+# resource cannot be closed twice, and a different task cannot consume the
+# lease. The ledger is a policy boundary, not an OS handle table.
+
+module EsResource:
+    public:
+        const RESOURCE_MAX_ENTRIES: usize = 1048576
+
+
+        const enum ResourceKind of u8:
+            File
+            Socket
+            Process
+            Lock
+            Temporary
+
+
+        const enum ResourceLeaseState of u8:
+            Acquired
+            Closing
+            Released
+            Failed
+
+
+        const enum ResourceEvent of u8:
+            BeginClose
+            CompleteClose
+            Fail
+            Abandon
+
+
+        struct ResourceLease:
+            id: u64
+            kind: ResourceKind
+            owner_token: u64
+            state: ResourceLeaseState = ResourceLeaseState.Acquired
+
+
+        struct ResourceLedger:
+            max_entries: usize = RESOURCE_MAX_ENTRIES
+            resources: darray[ResourceLease] = []
+            active_entries: usize = 0
+            failed_entries: usize = 0
+
+
+        error ResourceContractError:
+            InvalidKind
+            InvalidState
+            InvalidEvent
+            InvalidLimit
+            ResourceLimitExceeded
+            InvalidId
+            InvalidOwner
+            DuplicateId
+            ResourceIndexInvalid
+            OwnerMismatch
+            InvalidTransition
+            AccountingInvalid
+
+
+    private:
+        def resource_kind_valid(kind: ResourceKind) -> bool:
+            return kind in {ResourceKind.File, ResourceKind.Socket, ResourceKind.Process, ResourceKind.Lock, ResourceKind.Temporary}
+
+
+        def resource_state_valid(state: ResourceLeaseState) -> bool:
+            return state in {ResourceLeaseState.Acquired, ResourceLeaseState.Closing, ResourceLeaseState.Released, ResourceLeaseState.Failed}
+
+
+        def resource_event_valid(event: ResourceEvent) -> bool:
+            return event in {ResourceEvent.BeginClose, ResourceEvent.CompleteClose, ResourceEvent.Fail, ResourceEvent.Abandon}
+
+
+        def resource_index(ledger: ResourceLedger&, id: u64) -> usize:
+            for index in 0..<ledger.resources.count |ledger, id|:
+                return index if ledger.resources[index].id == id
+            return ledger.resources.count
+
+
+        def resource_lease_active(state: ResourceLeaseState) -> bool:
+            return state == ResourceLeaseState.Acquired or state == ResourceLeaseState.Closing
+
+
+    public:
+        def validate_resource_ledger(ledger: ResourceLedger&) -> bool error[ResourceContractError]:
+            raise ResourceContractError.InvalidLimit if ledger.max_entries == 0 or ledger.max_entries > RESOURCE_MAX_ENTRIES
+            raise ResourceContractError.ResourceLimitExceeded if ledger.resources.count > ledger.max_entries
+            raise ResourceContractError.AccountingInvalid if ledger.active_entries > ledger.resources.count or ledger.failed_entries > ledger.resources.count
+            active: mutable usize = 0
+            failed: mutable usize = 0
+            for index in 0..<ledger.resources.count |ledger|:
+                lease: ResourceLease = ledger.resources[index]
+                raise ResourceContractError.InvalidId if lease.id == 0
+                raise ResourceContractError.InvalidOwner if lease.owner_token == 0
+                raise ResourceContractError.InvalidKind if not resource_kind_valid(lease.kind)
+                raise ResourceContractError.InvalidState if not resource_state_valid(lease.state)
+                active <- active + 1 if resource_lease_active(lease.state)
+                failed <- failed + 1 if lease.state == ResourceLeaseState.Failed
+                for earlier in 0..<index |ledger, lease|:
+                    raise ResourceContractError.DuplicateId if ledger.resources[earlier].id == lease.id
+            raise ResourceContractError.AccountingInvalid if active != ledger.active_entries or failed != ledger.failed_entries
+            return true
+
+
+        def resource_ledger_acquire(ledger: mutable ResourceLedger&, id: u64, kind: ResourceKind, owner_token: u64) -> bool error[ResourceContractError]:
+            try validate_resource_ledger(ledger)
+            raise ResourceContractError.InvalidId if id == 0
+            raise ResourceContractError.InvalidOwner if owner_token == 0
+            raise ResourceContractError.InvalidKind if not resource_kind_valid(kind)
+            raise ResourceContractError.ResourceLimitExceeded if ledger.resources.count >= ledger.max_entries
+            raise ResourceContractError.DuplicateId if resource_index(ledger, id) != ledger.resources.count
+            ledger.resources.push(ResourceLease{id: id, kind: kind, owner_token: owner_token})
+            ledger.active_entries <- ledger.active_entries + 1
+            return true
+
+
+        def advance_resource_lease(ledger: mutable ResourceLedger&, id: u64, owner_token: u64, event: ResourceEvent) -> ResourceLeaseState error[ResourceContractError]:
+            try validate_resource_ledger(ledger)
+            raise ResourceContractError.InvalidOwner if owner_token == 0
+            raise ResourceContractError.InvalidEvent if not resource_event_valid(event)
+            index: usize = resource_index(ledger, id)
+            raise ResourceContractError.ResourceIndexInvalid if index == ledger.resources.count
+            raise ResourceContractError.OwnerMismatch if ledger.resources[index].owner_token != owner_token
+            lease_state: ResourceLeaseState = ledger.resources[index].state
+            if event == ResourceEvent.BeginClose:
+                raise ResourceContractError.InvalidTransition if lease_state != ResourceLeaseState.Acquired
+                ledger.resources[index].state <- ResourceLeaseState.Closing
+            elif event == ResourceEvent.CompleteClose:
+                raise ResourceContractError.InvalidTransition if lease_state != ResourceLeaseState.Closing
+                ledger.resources[index].state <- ResourceLeaseState.Released
+                ledger.active_entries <- ledger.active_entries - 1
+            elif event == ResourceEvent.Fail or event == ResourceEvent.Abandon:
+                raise ResourceContractError.InvalidTransition if lease_state != ResourceLeaseState.Acquired and lease_state != ResourceLeaseState.Closing
+                ledger.resources[index].state <- ResourceLeaseState.Failed
+                ledger.active_entries <- ledger.active_entries - 1
+                ledger.failed_entries <- ledger.failed_entries + 1
+            return ledger.resources[index].state
