@@ -1,0 +1,188 @@
+# Bounded record/field materialization session for Perl/AWK-style streams.
+#
+# `EsRecord` validates individual policies, records, and fields. This module
+# owns the next lifecycle edge: adapters submit one record and its fields in
+# order, retain borrowed spans, and seal only after all records are complete.
+# Regex scanning, CSV decoding, and external aggregation remain adapters.
+
+module EsRecordMaterialize:
+    using EsRecord
+
+    public:
+        const RECORD_MATERIALIZER_MAX_RECORDS: usize = 1048576
+        const RECORD_MATERIALIZER_MAX_FIELDS: usize = 1048576
+        const RECORD_MATERIALIZER_MAX_TEXT_BYTES: usize = 268435456
+
+
+        const enum RecordMaterializerState of u8:
+            Planned
+            Collecting
+            Sealed
+            Failed
+            Cancelled
+
+
+        const enum RecordMaterializerEvent of u8:
+            BeginRecord
+            Field
+            EndRecord
+            Seal
+            Fail
+            Cancel
+
+
+        struct MaterializedRecord:
+            record: Record
+            field_start: usize
+            field_count: usize
+
+
+        struct RecordMaterializer:
+            policy: RecordStreamPolicy
+            state: RecordMaterializerState = RecordMaterializerState.Planned
+            records: darray[MaterializedRecord] = []
+            fields: darray[RecordField] = []
+            current_record: Record = Record{source: ""}
+            current_field_start: usize = 0
+            current_field_count: usize = 0
+            record_open: bool = false
+            text_bytes: usize = 0
+
+
+        error RecordMaterializerError:
+            InvalidState
+            InvalidEvent
+            PolicyInvalid
+            RecordInvalid
+            FieldInvalid
+            RecordLimitExceeded
+            FieldLimitExceeded
+            TextLimitExceeded
+            FieldOrderInvalid
+            RecordNotOpen
+            RecordAlreadyOpen
+            SealNotReady
+            CancelNotReady
+
+
+    private:
+        def record_materializer_state_valid(state: RecordMaterializerState) -> bool:
+            return state in {RecordMaterializerState.Planned, RecordMaterializerState.Collecting, RecordMaterializerState.Sealed, RecordMaterializerState.Failed, RecordMaterializerState.Cancelled}
+
+
+        def record_materializer_event_valid(event: RecordMaterializerEvent) -> bool:
+            return event in {RecordMaterializerEvent.BeginRecord, RecordMaterializerEvent.Field, RecordMaterializerEvent.EndRecord, RecordMaterializerEvent.Seal, RecordMaterializerEvent.Fail, RecordMaterializerEvent.Cancel}
+
+
+        def record_materializer_policy_valid(policy: RecordStreamPolicy) -> bool:
+            catch validate_record_stream_policy(policy):
+                ok:
+                    return policy.max_fields <= RECORD_MATERIALIZER_MAX_FIELDS
+                error failure:
+                    return false
+
+
+        def record_materializer_record_valid(record: Record, policy: RecordStreamPolicy) -> bool:
+            catch validate_record(record, policy):
+                ok:
+                    return sview_len(record.raw) <= RECORD_MATERIALIZER_MAX_TEXT_BYTES
+                error failure:
+                    return false
+
+
+        def record_materializer_field_valid(field: RecordField, record: Record, policy: RecordStreamPolicy) -> bool:
+            catch validate_record_field(field, record, policy):
+                ok:
+                    return true
+                error failure:
+                    return false
+
+
+        def record_materializer_text_add_fits(current: usize, value: sview) -> bool:
+            return current <= RECORD_MATERIALIZER_MAX_TEXT_BYTES and sview_len(value) <= RECORD_MATERIALIZER_MAX_TEXT_BYTES - current
+
+
+    public:
+        def validate_record_materializer(materializer: RecordMaterializer&) -> bool error[RecordMaterializerError]:
+            raise RecordMaterializerError.InvalidState if not record_materializer_state_valid(materializer.state)
+            raise RecordMaterializerError.PolicyInvalid if not record_materializer_policy_valid(materializer.policy)
+            raise RecordMaterializerError.RecordLimitExceeded if materializer.records.count > RECORD_MATERIALIZER_MAX_RECORDS
+            raise RecordMaterializerError.FieldLimitExceeded if materializer.fields.count > RECORD_MATERIALIZER_MAX_FIELDS
+            raise RecordMaterializerError.TextLimitExceeded if materializer.text_bytes > RECORD_MATERIALIZER_MAX_TEXT_BYTES
+            raise RecordMaterializerError.RecordInvalid if materializer.record_open and not record_materializer_record_valid(materializer.current_record, materializer.policy)
+            raise RecordMaterializerError.InvalidState if materializer.state == RecordMaterializerState.Planned and materializer.record_open
+            raise RecordMaterializerError.InvalidState if materializer.state != RecordMaterializerState.Collecting and materializer.record_open
+            raise RecordMaterializerError.FieldLimitExceeded if materializer.current_field_count > materializer.policy.max_fields
+            raise RecordMaterializerError.FieldLimitExceeded if materializer.current_field_start > materializer.fields.count or materializer.current_field_count > materializer.fields.count - materializer.current_field_start
+            committed_fields: mutable usize = 0
+            accounted_text: mutable usize = 0
+            for index in 0..<materializer.records.count |materializer|:
+                item: MaterializedRecord = materializer.records[index]
+                raise RecordMaterializerError.RecordInvalid if not record_materializer_record_valid(item.record, materializer.policy)
+                raise RecordMaterializerError.TextLimitExceeded if not record_materializer_text_add_fits(accounted_text, item.record.raw)
+                accounted_text <- accounted_text + sview_len(item.record.raw)
+                raise RecordMaterializerError.FieldLimitExceeded if item.field_start > materializer.fields.count or item.field_count > materializer.fields.count - item.field_start
+                raise RecordMaterializerError.FieldOrderInvalid if item.field_start != committed_fields
+                for field_index in item.field_start..<(item.field_start + item.field_count) |materializer, item|:
+                    raise RecordMaterializerError.FieldInvalid if not record_materializer_field_valid(materializer.fields[field_index], item.record, materializer.policy)
+                    raise RecordMaterializerError.TextLimitExceeded if not record_materializer_text_add_fits(accounted_text, materializer.fields[field_index].value)
+                    accounted_text <- accounted_text + sview_len(materializer.fields[field_index].value)
+                committed_fields <- committed_fields + item.field_count
+            raise RecordMaterializerError.FieldOrderInvalid if committed_fields > materializer.fields.count
+            if materializer.record_open:
+                raise RecordMaterializerError.FieldOrderInvalid if materializer.current_field_start != committed_fields
+                raise RecordMaterializerError.FieldOrderInvalid if materializer.current_field_count != materializer.fields.count - materializer.current_field_start
+                raise RecordMaterializerError.TextLimitExceeded if not record_materializer_text_add_fits(accounted_text, materializer.current_record.raw)
+                accounted_text <- accounted_text + sview_len(materializer.current_record.raw)
+                for field_index in materializer.current_field_start..<materializer.fields.count |materializer|:
+                    raise RecordMaterializerError.FieldInvalid if not record_materializer_field_valid(materializer.fields[field_index], materializer.current_record, materializer.policy)
+                    raise RecordMaterializerError.TextLimitExceeded if not record_materializer_text_add_fits(accounted_text, materializer.fields[field_index].value)
+                    accounted_text <- accounted_text + sview_len(materializer.fields[field_index].value)
+            else:
+                raise RecordMaterializerError.FieldOrderInvalid if committed_fields != materializer.fields.count
+            raise RecordMaterializerError.TextLimitExceeded if accounted_text != materializer.text_bytes
+            return true
+
+
+        def advance_record_materializer(materializer: mutable RecordMaterializer&, event: RecordMaterializerEvent, record: Record = Record{source: ""}, field: RecordField = RecordField{index: 0, start_byte: 0, end_byte: 0, value: ""}) -> RecordMaterializerState error[RecordMaterializerError]:
+            try validate_record_materializer(materializer)
+            raise RecordMaterializerError.InvalidEvent if not record_materializer_event_valid(event)
+            if event == RecordMaterializerEvent.BeginRecord:
+                raise RecordMaterializerError.InvalidState if materializer.state != RecordMaterializerState.Planned and materializer.state != RecordMaterializerState.Collecting
+                raise RecordMaterializerError.RecordAlreadyOpen if materializer.record_open
+                raise RecordMaterializerError.RecordLimitExceeded if materializer.records.count >= RECORD_MATERIALIZER_MAX_RECORDS
+                raise RecordMaterializerError.RecordInvalid if not record_materializer_record_valid(record, materializer.policy)
+                raise RecordMaterializerError.TextLimitExceeded if sview_len(record.raw) > RECORD_MATERIALIZER_MAX_TEXT_BYTES - materializer.text_bytes
+                materializer.current_record <- record
+                materializer.current_field_start <- materializer.fields.count
+                materializer.current_field_count <- 0
+                materializer.record_open <- true
+                materializer.text_bytes <- materializer.text_bytes + sview_len(record.raw)
+                materializer.state <- RecordMaterializerState.Collecting
+            elif event == RecordMaterializerEvent.Field:
+                raise RecordMaterializerError.InvalidState if materializer.state != RecordMaterializerState.Collecting
+                raise RecordMaterializerError.RecordNotOpen if not materializer.record_open
+                raise RecordMaterializerError.FieldLimitExceeded if materializer.fields.count >= RECORD_MATERIALIZER_MAX_FIELDS or materializer.current_field_count >= materializer.policy.max_fields
+                raise RecordMaterializerError.FieldOrderInvalid if field.index != materializer.current_field_count
+                raise RecordMaterializerError.FieldInvalid if not record_materializer_field_valid(field, materializer.current_record, materializer.policy)
+                raise RecordMaterializerError.TextLimitExceeded if sview_len(field.value) > RECORD_MATERIALIZER_MAX_TEXT_BYTES - materializer.text_bytes
+                materializer.fields.push(field)
+                materializer.current_field_count <- materializer.current_field_count + 1
+                materializer.text_bytes <- materializer.text_bytes + sview_len(field.value)
+            elif event == RecordMaterializerEvent.EndRecord:
+                raise RecordMaterializerError.InvalidState if materializer.state != RecordMaterializerState.Collecting
+                raise RecordMaterializerError.RecordNotOpen if not materializer.record_open
+                materializer.records.push(MaterializedRecord{record: materializer.current_record, field_start: materializer.current_field_start, field_count: materializer.current_field_count})
+                materializer.record_open <- false
+            elif event == RecordMaterializerEvent.Seal:
+                raise RecordMaterializerError.SealNotReady if materializer.state != RecordMaterializerState.Collecting or materializer.record_open
+                materializer.state <- RecordMaterializerState.Sealed
+            elif event == RecordMaterializerEvent.Fail:
+                raise RecordMaterializerError.InvalidState if materializer.state != RecordMaterializerState.Collecting
+                materializer.record_open <- false
+                materializer.state <- RecordMaterializerState.Failed
+            elif event == RecordMaterializerEvent.Cancel:
+                raise RecordMaterializerError.CancelNotReady if materializer.state != RecordMaterializerState.Planned and materializer.state != RecordMaterializerState.Collecting
+                materializer.record_open <- false
+                materializer.state <- RecordMaterializerState.Cancelled
+            return materializer.state

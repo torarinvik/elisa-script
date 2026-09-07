@@ -924,6 +924,18 @@ numbers, out-of-range field slices, and inconsistent field payloads through
 is allocated. This is a reusable contract; record I/O, external sort, and
 transactional in-place rewriting remain host adapters.
 
+`EsRecordMaterialize::RecordMaterializer` adds the bounded stream-adapter
+boundary without embedding a regex engine or file descriptor. A producer opens
+one `Record`, appends zero or more validated `RecordField` values in index order,
+closes that record, and repeats until `Seal`; `Fail` and `Cancel` are explicit
+terminal alternatives. The materializer retains borrowed record/field spans,
+checks contiguous record-to-field ownership, counts record/field/text budgets
+with subtraction-safe admission, and rejects all transitions after sealing or
+cancellation through `error[RecordMaterializerError]`. This makes Perl/AWK-style
+`$0`/field streams deterministic for later adapters while leaving byte input,
+regex scanning, external sort, and transactional rewrite effects outside the
+typed core.
+
 `EsNetwork::NetworkRequest` and `NetworkResponse` define a transport-neutral
 HTTP/TLS boundary. Requests carry an explicit method, URL, ordered header pairs,
 binary body, positive timeout, response ceiling, and redirect policy; responses

@@ -558,3 +558,13 @@ candidate fingerprints, reduction kinds, preserved mismatch categories, and an
 explicit exhausted-budget minimality proof. The focused differential fixture,
 documentation, and check_differential_shrink_trace.sh audit are static
 evidence; aggregate-value reducers and rerun-backed minimality remain open.
+
+ES-SCRIPT-023 | EsRecordMaterialize supplies a bounded Perl/AWK-style record
+materialization session with explicit begin-record/field/end-record/seal,
+failure, and cancellation transitions. It validates every borrowed record and
+field against EsRecord, enforces record/field/text ceilings, preserves ordered
+field indices, checks contiguous record-to-field ownership, and rejects
+post-terminal mutation through typed `error[RecordMaterializerError]`. The
+focused IR fixture, namespace inclusion, documentation, and
+check_record_materializer.sh audit are static evidence; byte-stream adapters,
+regex scanning, external sort, and transactional rewrite execution remain open.
