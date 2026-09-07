@@ -28,6 +28,11 @@ for declaration in \
     'const enum NetworkTlsVersion of u8:' \
     'const enum NetworkTlsTrustMode of u8:' \
     'struct NetworkTlsPolicy:' \
+    'const enum NetworkStreamDirection of u8:' \
+    'const enum NetworkStreamState of u8:' \
+    'const enum NetworkStreamEvent of u8:' \
+    'struct NetworkChunk:' \
+    'struct NetworkStream:' \
     'const enum NetworkRequestState of u8:' \
     'const enum NetworkRequestEvent of u8:' \
     'struct NetworkRequestJob:' \
@@ -35,6 +40,10 @@ for declaration in \
     'struct NetworkResponse:' \
     'error NetworkContractError:' \
     'def validate_network_tls_policy(' \
+    'def validate_network_stream(' \
+    'def advance_network_stream(' \
+    'def enqueue_network_chunk(' \
+    'def consume_network_stream(' \
     'def validate_network_retry_policy(' \
     'def advance_network_request(' \
     'def validate_network_request(' \
@@ -49,6 +58,9 @@ for boundary in \
     'NETWORK_MAX_RETRY_ATTEMPTS' \
     'NETWORK_MAX_BACKOFF_MICROS' \
     'NETWORK_MAX_TLS_PATH_BYTES' \
+    'NETWORK_MAX_CHUNK_BYTES' \
+    'NETWORK_MAX_BUFFER_BYTES' \
+    'NETWORK_MAX_STREAM_CHUNKS' \
     'network_headers_valid' \
     'network_method_is_idempotent' \
     'network_tls_path_valid' \
@@ -61,6 +73,10 @@ for boundary in \
     'InvalidTlsBundle' \
     'InvalidTlsClientIdentity' \
     'TlsPathEmbeddedNul' \
+    'ChunkSequenceMismatch' \
+    'StreamBufferExceeded' \
+    'StreamNotComplete' \
+    'StreamNotDrained' \
     'network_request_state_is_active' \
     'NetworkRequestEvent.CancelAck' \
     'NetworkRequestEvent.Retry' \
@@ -78,6 +94,10 @@ for fixture_pattern in \
     'NetworkTlsTrustMode.CustomBundle' \
     'NetworkContractError.InvalidTlsBundle' \
     'NetworkContractError.InvalidTlsClientIdentity' \
+    'NetworkStreamEvent.Pause' \
+    'NetworkStreamEvent.Finish' \
+    'NetworkContractError.ChunkSequenceMismatch' \
+    'NetworkContractError.StreamNotDrained' \
     'NetworkRequestState.Cancelling' \
     'NetworkRequestState.Cancelled' \
     'NetworkContractError.DuplicateHeaderName' \
@@ -93,5 +113,6 @@ rg -Fq 'P12 network follow-up' "$plan"
 rg -Fq 'P12 retry follow-up' "$plan"
 rg -Fq 'P12 lifecycle follow-up' "$plan"
 rg -Fq 'P12 TLS follow-up' "$plan"
+rg -Fq 'P12 streaming follow-up' "$plan"
 
-printf 'network model audit: bounded request/response, retry, cancellation, and lifecycle contracts are present\n'
+printf 'network model audit: bounded request/response, retry, streaming, cancellation, and lifecycle contracts are present\n'

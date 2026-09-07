@@ -401,7 +401,9 @@ cover URL/header/body/status/retry admission plus a
 request lifecycle with explicit cancellation and retry edges; socket/TLS
 implementations now receive an explicit system/custom/test-only trust policy
 shape with paired client identity paths; certificate validation, streaming, and
-live service adapters remain open.
+live service adapters remain open. `NetworkStream`/`NetworkChunk` now supply a
+bounded, sequence-checked pause/resume buffer contract with explicit drain and
+cancel edges for those adapters.
 
 ## Evidence record template
 

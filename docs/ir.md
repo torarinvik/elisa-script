@@ -789,6 +789,11 @@ custom bundles require a bounded path, and `InsecureTestOnly` is a visibly named
 escape hatch rather than an implicit verification downgrade. Certificate and
 private-key paths must be supplied together, and all TLS paths/server-name text
 reject embedded NULs and oversized values before a host TLS library is called.
+`NetworkStream` and `NetworkChunk` provide bounded request/response streaming
+with sequence numbers, explicit pause/resume backpressure, final-chunk and
+drain requirements, and cancellation/failure states. Enqueueing cannot exceed
+the configured in-flight ceiling or occur after a final chunk; a stream cannot
+finish until the final chunk has been observed and all buffered bytes consumed.
 
 Before any regex opcode executes, both backends enforce a shared input-size
 boundary: haystack text is at most 64 MiB, the compiled-pattern payload is at

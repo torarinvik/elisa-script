@@ -12,6 +12,9 @@ module EsNetwork:
         const NETWORK_MAX_RETRY_ATTEMPTS: usize = 8
         const NETWORK_MAX_BACKOFF_MICROS: u64 = 60000000
         const NETWORK_MAX_TLS_PATH_BYTES: usize = 4096
+        const NETWORK_MAX_CHUNK_BYTES: usize = 1048576
+        const NETWORK_MAX_BUFFER_BYTES: usize = 16777216
+        const NETWORK_MAX_STREAM_CHUNKS: usize = 1048576
 
 
         const enum NetworkMethod of u8:
@@ -66,6 +69,46 @@ module EsNetwork:
             server_name: sview = ""
             client_certificate_path: sview = ""
             client_key_path: sview = ""
+
+
+        const enum NetworkStreamDirection of u8:
+            Request
+            Response
+
+
+        const enum NetworkStreamState of u8:
+            Idle
+            Open
+            Paused
+            Finished
+            Failed
+            Cancelling
+            Cancelled
+
+
+        const enum NetworkStreamEvent of u8:
+            Open
+            Pause
+            Resume
+            Finish
+            Fail
+            Cancel
+            CancelAck
+
+
+        struct NetworkChunk:
+            sequence: usize
+            bytes: darray[u8] = []
+            final_chunk: bool = false
+
+
+        struct NetworkStream:
+            direction: NetworkStreamDirection
+            state: NetworkStreamState = NetworkStreamState.Idle
+            next_sequence: usize = 0
+            buffered_bytes: usize = 0
+            max_buffer_bytes: usize = NETWORK_MAX_BUFFER_BYTES
+            final_seen: bool = false
 
 
         const enum NetworkRequestState of u8:
@@ -143,6 +186,15 @@ module EsNetwork:
             InvalidTlsClientIdentity
             TlsPathLimitExceeded
             TlsPathEmbeddedNul
+            InvalidStreamDirection
+            InvalidStreamState
+            InvalidStreamEvent
+            InvalidChunk
+            ChunkLimitExceeded
+            ChunkSequenceMismatch
+            StreamBufferExceeded
+            StreamNotComplete
+            StreamNotDrained
             InvalidRequestState
             InvalidRequestEvent
             RetryLimitExceeded
@@ -173,6 +225,22 @@ module EsNetwork:
 
         def network_tls_path_valid(value: sview) -> bool:
             return value == "" or (sview_len(value) < NETWORK_MAX_TLS_PATH_BYTES and not sview_contains_byte(value, 0))
+
+
+        def network_stream_direction_valid(direction: NetworkStreamDirection) -> bool:
+            return direction in {NetworkStreamDirection.Request, NetworkStreamDirection.Response}
+
+
+        def network_stream_state_valid(state: NetworkStreamState) -> bool:
+            return state in {NetworkStreamState.Idle, NetworkStreamState.Open, NetworkStreamState.Paused, NetworkStreamState.Finished, NetworkStreamState.Failed, NetworkStreamState.Cancelling, NetworkStreamState.Cancelled}
+
+
+        def network_stream_event_valid(event: NetworkStreamEvent) -> bool:
+            return event in {NetworkStreamEvent.Open, NetworkStreamEvent.Pause, NetworkStreamEvent.Resume, NetworkStreamEvent.Finish, NetworkStreamEvent.Fail, NetworkStreamEvent.Cancel, NetworkStreamEvent.CancelAck}
+
+
+        def network_stream_active(state: NetworkStreamState) -> bool:
+            return state == NetworkStreamState.Open or state == NetworkStreamState.Paused
 
 
         def network_method_is_idempotent(method: NetworkMethod) -> bool:
@@ -220,6 +288,69 @@ module EsNetwork:
 
 
         public:
+            def validate_network_stream(stream: NetworkStream&) -> bool error[NetworkContractError]:
+                raise NetworkContractError.InvalidStreamDirection if not network_stream_direction_valid(stream.direction)
+                raise NetworkContractError.InvalidStreamState if not network_stream_state_valid(stream.state)
+                raise NetworkContractError.StreamBufferExceeded if stream.max_buffer_bytes == 0 or stream.max_buffer_bytes > NETWORK_MAX_BUFFER_BYTES
+                raise NetworkContractError.StreamBufferExceeded if stream.buffered_bytes > stream.max_buffer_bytes
+                raise NetworkContractError.ChunkSequenceMismatch if stream.next_sequence > NETWORK_MAX_STREAM_CHUNKS
+                return true
+
+
+            def advance_network_stream(stream: mutable NetworkStream&, event: NetworkStreamEvent) -> NetworkStreamState error[NetworkContractError]:
+                try validate_network_stream(stream)
+                raise NetworkContractError.InvalidStreamEvent if not network_stream_event_valid(event)
+                if event == NetworkStreamEvent.Open:
+                    raise NetworkContractError.InvalidStreamState if stream.state != NetworkStreamState.Idle
+                    stream.state <- NetworkStreamState.Open
+                elif event == NetworkStreamEvent.Pause:
+                    raise NetworkContractError.InvalidStreamState if stream.state != NetworkStreamState.Open
+                    stream.state <- NetworkStreamState.Paused
+                elif event == NetworkStreamEvent.Resume:
+                    raise NetworkContractError.InvalidStreamState if stream.state != NetworkStreamState.Paused
+                    stream.state <- NetworkStreamState.Open
+                elif event == NetworkStreamEvent.Finish:
+                    raise NetworkContractError.InvalidStreamState if not network_stream_active(stream.state)
+                    raise NetworkContractError.StreamNotComplete if not stream.final_seen
+                    raise NetworkContractError.StreamNotDrained if stream.buffered_bytes != 0
+                    stream.state <- NetworkStreamState.Finished
+                elif event == NetworkStreamEvent.Fail:
+                    raise NetworkContractError.InvalidStreamState if not network_stream_active(stream.state)
+                    stream.state <- NetworkStreamState.Failed
+                elif event == NetworkStreamEvent.Cancel:
+                    if stream.state == NetworkStreamState.Idle:
+                        stream.state <- NetworkStreamState.Cancelled
+                    else:
+                        raise NetworkContractError.InvalidStreamState if not network_stream_active(stream.state)
+                        stream.state <- NetworkStreamState.Cancelling
+                elif event == NetworkStreamEvent.CancelAck:
+                    raise NetworkContractError.InvalidStreamState if stream.state != NetworkStreamState.Cancelling
+                    stream.state <- NetworkStreamState.Cancelled
+                return stream.state
+
+
+            def enqueue_network_chunk(stream: mutable NetworkStream&, chunk: NetworkChunk&) -> bool error[NetworkContractError]:
+                try validate_network_stream(stream)
+                raise NetworkContractError.InvalidStreamState if stream.state != NetworkStreamState.Open
+                raise NetworkContractError.InvalidChunk if chunk.bytes.count == 0 and not chunk.final_chunk
+                raise NetworkContractError.ChunkLimitExceeded if chunk.bytes.count > NETWORK_MAX_CHUNK_BYTES
+                raise NetworkContractError.ChunkSequenceMismatch if chunk.sequence != stream.next_sequence
+                raise NetworkContractError.ChunkSequenceMismatch if stream.final_seen
+                raise NetworkContractError.StreamBufferExceeded if chunk.bytes.count > stream.max_buffer_bytes - stream.buffered_bytes
+                raise NetworkContractError.ChunkSequenceMismatch if stream.next_sequence >= NETWORK_MAX_STREAM_CHUNKS
+                stream.buffered_bytes <- stream.buffered_bytes + chunk.bytes.count
+                stream.next_sequence <- stream.next_sequence + 1
+                stream.final_seen <- chunk.final_chunk if chunk.final_chunk
+                return true
+
+
+            def consume_network_stream(stream: mutable NetworkStream&, amount: usize) -> usize error[NetworkContractError]:
+                try validate_network_stream(stream)
+                raise NetworkContractError.StreamBufferExceeded if amount > stream.buffered_bytes
+                stream.buffered_bytes <- stream.buffered_bytes - amount
+                return amount
+
+
             def validate_network_tls_policy(policy: NetworkTlsPolicy&) -> bool error[NetworkContractError]:
                 raise NetworkContractError.InvalidTlsVersion if not network_tls_version_valid(policy.version)
                 raise NetworkContractError.InvalidTlsTrustMode if not network_tls_trust_mode_valid(policy.trust_mode)
