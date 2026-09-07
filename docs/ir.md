@@ -745,6 +745,21 @@ array operations.
 non-overlapping matched span. Zero-width matches advance explicitly, matching the
 termination rule used by `RegexSplit` and `RegexReplace`.
 
+`EsRecord::RecordStreamPolicy` and `EsRecord::Record` provide the typed boundary
+for Perl/AWK-style record processing. Separator mode is explicit (`Line`,
+`Literal`, `Regex`, or `Paragraph`), as is field extraction (`Whole`,
+`Whitespace`, `Literal`, `Regex`, `FixedWidth`, or `Schema`). Literal/regex
+separators must be present only in their selected modes; fixed-width policies
+require nonzero widths whose sum remains within the shared 64 MiB text envelope,
+and schema policies require a nonempty schema name. Every record carries source,
+optional filename, global/file-local numbers, byte offset, raw bytes, and the
+separator actually consumed. `validate_record_stream_policy`, `validate_record`,
+and `validate_record_field` reject embedded NULs, oversized text, zero metadata
+numbers, out-of-range field slices, and inconsistent field payloads through
+`error[RecordContractError]` before a scanner, regex walk, or aggregation buffer
+is allocated. This is a reusable contract; record I/O, external sort, and
+transactional in-place rewriting remain host adapters.
+
 Before any regex opcode executes, both backends enforce a shared input-size
 boundary: haystack text is at most 64 MiB, the compiled-pattern payload is at
 most 64 KiB, and replacement text is at most 64 MiB. Oversized operands fail

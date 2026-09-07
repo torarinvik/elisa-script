@@ -373,6 +373,14 @@ validator before fork/exec, while retaining binary stdin as a length-delimited
 side channel. It is still static adapter-boundary evidence only; platform process
 creation, background jobs, and streaming callback execution remain open.
 
+`EsRecord::RecordStreamPolicy`, `Record`, and `RecordField` now define a bounded
+Perl/AWK-style record boundary: separator and field modes are explicit, fixed
+widths and schema names are validated, and source/filename/record-number/
+file-number/byte-offset metadata remains attached to each raw record. The
+compiler-free IR fixture and record-model audit cover NUL/length/range admission;
+stream readers, external sort, lifecycle hooks, and transactional in-place edits
+remain open.
+
 ## Evidence record template
 
 Every future executed or differential-verified entry must append a dated record
