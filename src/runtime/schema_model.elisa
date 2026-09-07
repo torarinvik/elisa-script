@@ -1,0 +1,208 @@
+# Typed schema-binding contract for structured input.
+#
+# Schema binding is deliberately separate from parsing. A JSON/CSV adapter
+# supplies bounded source values; this module checks that each declared field
+# receives the expected kind before application code can observe it. No
+# unchecked cast or host-language default is part of this boundary.
+
+module EsSchema:
+    using EsJson
+
+    public:
+        const SCHEMA_FORMAT_VERSION: u8 = 1
+        const SCHEMA_MAX_FIELDS: usize = 1048576
+        const SCHEMA_MAX_NAME_BYTES: usize = 4096
+
+
+        const enum SchemaSource of u8:
+            Json
+            Csv
+            Tsv
+
+
+        const enum SchemaValueKind of u8:
+            Null
+            Bool
+            Number
+            Text
+            Array
+            Object
+            Any
+
+
+        const enum SchemaDecodeState of u8:
+            Ready
+            Binding
+            Complete
+            Failed
+
+
+        const enum SchemaDecodeEvent of u8:
+            Begin
+            Bind
+            Complete
+            Fail
+
+
+        struct SchemaField:
+            name: sview
+            kind: SchemaValueKind
+            source_name: sview = ""
+            source_index: usize = 0
+            required: bool = true
+
+
+        struct SchemaDescriptor:
+            format_version: u8 = SCHEMA_FORMAT_VERSION
+            name: sview
+            source: SchemaSource
+            fields: darray[SchemaField] = []
+            allow_unknown: bool = false
+
+
+        struct SchemaBinding:
+            field_index: usize
+            node_index: usize
+            present: bool = true
+
+
+        struct SchemaDecodeSession:
+            schema: SchemaDescriptor
+            state: SchemaDecodeState = SchemaDecodeState.Ready
+            input_nodes: darray[JsonNode] = []
+            bindings: darray[SchemaBinding] = []
+            bound_fields: usize = 0
+
+
+        error SchemaContractError:
+            InvalidFormatVersion
+            InvalidSource
+            InvalidValueKind
+            InvalidState
+            InvalidEvent
+            InvalidName
+            InvalidFieldLimit
+            DuplicateField
+            DuplicateSourceName
+            FieldIndexInvalid
+            NodeIndexInvalid
+            BindingLimitExceeded
+            BindingAccountingInvalid
+            RequiredFieldMissing
+            ValueKindMismatch
+            PresenceInvalid
+            BindNotReady
+            CompleteNotReady
+
+
+    private:
+        def schema_source_valid(source: SchemaSource) -> bool:
+            return source in {SchemaSource.Json, SchemaSource.Csv, SchemaSource.Tsv}
+
+
+        def schema_value_kind_valid(kind: SchemaValueKind) -> bool:
+            return kind in {SchemaValueKind.Null, SchemaValueKind.Bool, SchemaValueKind.Number, SchemaValueKind.Text, SchemaValueKind.Array, SchemaValueKind.Object, SchemaValueKind.Any}
+
+
+        def schema_state_valid(state: SchemaDecodeState) -> bool:
+            return state in {SchemaDecodeState.Ready, SchemaDecodeState.Binding, SchemaDecodeState.Complete, SchemaDecodeState.Failed}
+
+
+        def schema_event_valid(event: SchemaDecodeEvent) -> bool:
+            return event in {SchemaDecodeEvent.Begin, SchemaDecodeEvent.Bind, SchemaDecodeEvent.Complete, SchemaDecodeEvent.Fail}
+
+
+        def schema_name_valid(name: sview) -> bool:
+            return sview_len(name) != 0 and sview_len(name) < SCHEMA_MAX_NAME_BYTES and not sview_contains_byte(name, 0)
+
+
+        def schema_node_matches(kind: SchemaValueKind, node_kind: JsonNodeKind) -> bool:
+            if kind == SchemaValueKind.Any:
+                return true
+            if kind == SchemaValueKind.Null:
+                return node_kind == JsonNodeKind.Null
+            if kind == SchemaValueKind.Bool:
+                return node_kind == JsonNodeKind.Bool
+            if kind == SchemaValueKind.Number:
+                return node_kind == JsonNodeKind.Number
+            if kind == SchemaValueKind.Text:
+                return node_kind == JsonNodeKind.Text
+            if kind == SchemaValueKind.Array:
+                return node_kind == JsonNodeKind.Array
+            return node_kind == JsonNodeKind.Object
+
+
+        def schema_field_valid(field: SchemaField) -> bool error[SchemaContractError]:
+            raise SchemaContractError.InvalidName if not schema_name_valid(field.name)
+            raise SchemaContractError.InvalidName if field.source_name != "" and not schema_name_valid(field.source_name)
+            raise SchemaContractError.InvalidValueKind if not schema_value_kind_valid(field.kind)
+            return true
+
+
+    public:
+        def validate_schema_descriptor(schema: SchemaDescriptor&) -> bool error[SchemaContractError]:
+            raise SchemaContractError.InvalidFormatVersion if schema.format_version != SCHEMA_FORMAT_VERSION
+            raise SchemaContractError.InvalidName if not schema_name_valid(schema.name)
+            raise SchemaContractError.InvalidSource if not schema_source_valid(schema.source)
+            raise SchemaContractError.InvalidFieldLimit if schema.fields.count == 0 or schema.fields.count > SCHEMA_MAX_FIELDS
+            for field in schema.fields:
+                try schema_field_valid(field)
+            for index in 0..<schema.fields.count |schema|:
+                field: SchemaField = schema.fields[index]
+                for earlier in 0..<index |schema, field|:
+                    raise SchemaContractError.DuplicateField if schema.fields[earlier].name == field.name
+                    raise SchemaContractError.DuplicateSourceName if field.source_name != "" and schema.fields[earlier].source_name == field.source_name
+            return true
+
+
+        def validate_schema_session(session: SchemaDecodeSession&) -> bool error[SchemaContractError]:
+            try validate_schema_descriptor(session.schema)
+            raise SchemaContractError.InvalidState if not schema_state_valid(session.state)
+            raise SchemaContractError.BindingLimitExceeded if session.bindings.count > session.schema.fields.count
+            raise SchemaContractError.BindingAccountingInvalid if session.bound_fields != session.bindings.count
+            for binding in session.bindings:
+                raise SchemaContractError.FieldIndexInvalid if binding.field_index >= session.schema.fields.count
+                raise SchemaContractError.NodeIndexInvalid if binding.node_index >= session.input_nodes.count
+                raise SchemaContractError.PresenceInvalid if not binding.present
+                field: SchemaField = session.schema.fields[binding.field_index]
+                node: JsonNode = session.input_nodes[binding.node_index]
+                raise SchemaContractError.ValueKindMismatch if not schema_node_matches(field.kind, node.kind)
+            for index in 0..<session.bindings.count |session|:
+                binding: SchemaBinding = session.bindings[index]
+                for earlier in 0..<index |session, binding|:
+                    raise SchemaContractError.DuplicateField if session.bindings[earlier].field_index == binding.field_index
+            return true
+
+
+        def advance_schema_session(session: mutable SchemaDecodeSession&, event: SchemaDecodeEvent, binding: SchemaBinding = SchemaBinding{field_index: 0, node_index: 0}) -> SchemaDecodeState error[SchemaContractError]:
+            raise SchemaContractError.InvalidEvent if not schema_event_valid(event)
+            if event == SchemaDecodeEvent.Begin:
+                raise SchemaContractError.InvalidState if session.state != SchemaDecodeState.Ready
+                session.state <- SchemaDecodeState.Binding
+            elif event == SchemaDecodeEvent.Bind:
+                raise SchemaContractError.BindNotReady if session.state != SchemaDecodeState.Binding
+                raise SchemaContractError.BindingLimitExceeded if session.bindings.count >= session.schema.fields.count
+                raise SchemaContractError.FieldIndexInvalid if binding.field_index >= session.schema.fields.count
+                raise SchemaContractError.NodeIndexInvalid if binding.node_index >= session.input_nodes.count
+                raise SchemaContractError.PresenceInvalid if not binding.present
+                field: SchemaField = session.schema.fields[binding.field_index]
+                node: JsonNode = session.input_nodes[binding.node_index]
+                raise SchemaContractError.ValueKindMismatch if not schema_node_matches(field.kind, node.kind)
+                for earlier in session.bindings:
+                    raise SchemaContractError.DuplicateField if earlier.field_index == binding.field_index
+                session.bindings.push(binding)
+                session.bound_fields <- session.bound_fields + 1
+            elif event == SchemaDecodeEvent.Complete:
+                raise SchemaContractError.CompleteNotReady if session.state != SchemaDecodeState.Binding
+                for index in 0..<session.schema.fields.count |session|:
+                    field: SchemaField = session.schema.fields[index]
+                    if field.required:
+                        present: mutable bool = false
+                        for binding_entry in session.bindings:
+                            present <- true if binding_entry.field_index == index
+                        raise SchemaContractError.RequiredFieldMissing if not present
+                session.state <- SchemaDecodeState.Complete
+            elif event == SchemaDecodeEvent.Fail:
+                raise SchemaContractError.BindNotReady if session.state != SchemaDecodeState.Binding
+                session.state <- SchemaDecodeState.Failed
+            return session.state

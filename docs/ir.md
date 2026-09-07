@@ -146,6 +146,14 @@ The adapter is intentionally separate from the vendor's global parser names so
 public Elisascript modules retain namespace hygiene; parser translation,
 streaming JSONL, typed schema conversion, and encoding remain open.
 
+`EsSchema` adds the checked schema-conversion boundary that follows parsing.
+`SchemaDescriptor` declares named fields, source format, requiredness, and
+expected JSON kinds; `SchemaDecodeSession` binds each field at most once and
+advances `Ready → Binding → Complete|Failed`. Missing required fields,
+duplicate source names, out-of-range node references, and kind mismatches are
+reported through `error[SchemaContractError]` before application code receives
+a value. CSV/TSV row adapters and generated record constructors remain open.
+
 `EsInstall` makes release publication a typed state machine. An
 `InstallPlan` names the package version, workspace/user/system scope, source,
 bytecode, or native artifact targets, destination paths, executable intent, and
