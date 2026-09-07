@@ -666,8 +666,8 @@ the effect family and operation identity, payload/result fingerprints, and an
 explicit resumption count plus multishot marker. Event count, operation text,
 fingerprints, and resumption count are bounded before sealing. The comparator
 reports the first family, operation, payload, result, or resumption difference;
-an effect trace is never treated as equal merely because the final return value
-matches.
+malformed records produce an explicit `Invalid` comparison, and an effect trace
+is never treated as equal merely because the final return value matches.
 
 `EsDifferentialReplay::DifferentialReplaySession` is the lifecycle seam between
 validated artifacts and a future host replay adapter. Admission binds the

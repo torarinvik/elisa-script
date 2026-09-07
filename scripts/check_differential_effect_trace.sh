@@ -41,7 +41,8 @@ for boundary in \
     'DifferentialEffectDifferenceKind.Family' \
     'DifferentialEffectDifferenceKind.Operation' \
     'DifferentialEffectDifferenceKind.Payload' \
-    'DifferentialEffectDifferenceKind.Resumption'; do
+    'DifferentialEffectDifferenceKind.Resumption' \
+    'DifferentialEffectDifferenceKind.Invalid'; do
     rg -Fq "$boundary" "$model"
 done
 
@@ -51,7 +52,8 @@ for fixture_pattern in \
     'differential_effect_trace_contract_preserves_operation_and_resumption_differences' \
     'DifferentialEffectTraceEvent.Record' \
     'DifferentialEffectDifferenceKind.Equal' \
-    'DifferentialEffectDifferenceKind.Operation'; do
+    'DifferentialEffectDifferenceKind.Operation' \
+    'DifferentialEffectDifferenceKind.Invalid'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 
