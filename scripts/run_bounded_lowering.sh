@@ -33,6 +33,24 @@ case "$compiler" in
         ;;
 esac
 
+setsid_path="${ELISASCRIPT_SETSID:-}"
+if [ -z "$setsid_path" ]; then
+    for setsid_candidate in /usr/bin/setsid /bin/setsid; do
+        if [ -x "$setsid_candidate" ]; then
+            setsid_path="$setsid_candidate"
+            break
+        fi
+    done
+fi
+case "$setsid_path" in
+    /*) [ -x "$setsid_path" ] || setsid_path="" ;;
+    *) setsid_path="" ;;
+esac
+if [ -z "$setsid_path" ]; then
+    echo "run_bounded_lowering: refusing to launch without an absolute executable setsid helper" >&2
+    exit 125
+fi
+
 if [ "$#" -eq 0 ]; then
     echo "usage: run_bounded_lowering.sh SOURCE.elisascript [...]" >&2
     exit 2
@@ -80,7 +98,25 @@ process_tree_rss_kb() {
     echo "$process_tree_total"
 }
 
+process_group_rss_kb() {
+    process_group_id="$1"
+    ps -axo pgid=,rss= 2>/dev/null | awk -v group="$process_group_id" '$1 == group { total += $2 } END { print total + 0 }'
+}
+
+process_group_for_pid() {
+    ps -o pgid= -p "$1" 2>/dev/null | tr -d '[:space:]'
+}
+
 kill_process_tree() {
+    process_group_id="$(process_group_for_pid "$1")"
+    case "$process_group_id" in
+        ''|*[!0-9]*) ;;
+        *)
+            if [ "$process_group_id" != "$validation_wrapper_pgid" ]; then
+                kill -TERM -- "-$process_group_id" 2>/dev/null || true
+            fi
+            ;;
+    esac
     process_tree_snapshot="$(process_tree_pids "$1")"
     for process_tree_pid in $process_tree_snapshot; do
         kill -TERM "$process_tree_pid" 2>/dev/null || true
@@ -95,6 +131,14 @@ rss_limit_kb="${ELISASCRIPT_RSS_LIMIT_KB:-524288}"
 time_limit_seconds="${ELISASCRIPT_TIME_LIMIT_SECONDS:-120}"
 log_limit_bytes="${ELISASCRIPT_LOG_LIMIT_BYTES:-67108864}"
 compiler_pid=""
+compiler_pgid=""
+validation_wrapper_pgid="$(process_group_for_pid "$$")"
+case "$validation_wrapper_pgid" in
+    ''|*[!0-9]*)
+        echo "run_bounded_lowering: unable to identify wrapper process group" >&2
+        exit 125
+        ;;
+esac
 log_file=""
 validation_lease_dir="${TMPDIR:-/tmp}/elisascript-validation.lease"
 validation_lease_pid="$$"
@@ -216,8 +260,16 @@ for source_file in "$@"; do
         exit 2
     fi
     log_file="$(mktemp "${TMPDIR:-/tmp}/elisascript-lowering.XXXXXX")"
-    "$compiler" -O0 -emit lowered "$source_file" >"$log_file" 2>&1 &
+    "$setsid_path" "$compiler" -O0 -emit lowered "$source_file" >"$log_file" 2>&1 &
     compiler_pid=$!
+    compiler_pgid="$(process_group_for_pid "$compiler_pid")"
+    case "$compiler_pgid" in
+        ''|*[!0-9]*|"$validation_wrapper_pgid")
+            echo "run_bounded_lowering: compiler was not isolated in a private process group" >&2
+            kill_process_tree "$compiler_pid"
+            exit 125
+            ;;
+    esac
     started_at="$(date +%s)"
     rss_guard=0
     timeout_guard=0
@@ -225,7 +277,7 @@ for source_file in "$@"; do
     compiler_exit=0
 
     while kill -0 "$compiler_pid" 2>/dev/null; do
-        rss_kb="$(process_tree_rss_kb "$compiler_pid")"
+        rss_kb="$(process_group_rss_kb "$compiler_pgid")"
         if [ "$rss_kb" -gt "$rss_limit_kb" ]; then
             rss_guard=1
             if ! latch_validation_disabled "run_bounded_lowering rss_guard pid=$compiler_pid rss_kb=$rss_kb limit_kb=$rss_limit_kb"; then
@@ -264,6 +316,7 @@ for source_file in "$@"; do
     # The PID is no longer owned after wait; clear it before any diagnostic or
     # exit path so the EXIT trap cannot mistake a reused PID for our compiler.
     compiler_pid=""
+    compiler_pgid=""
     echo "$source_file exit=$compiler_exit rss_guard=$rss_guard timeout_guard=$timeout_guard output_guard=$output_guard"
     if [ "$compiler_exit" -ne 0 ] || [ "$rss_guard" -ne 0 ] || [ "$timeout_guard" -ne 0 ] || [ "$output_guard" -ne 0 ]; then
         tail -80 "$log_file"
@@ -273,4 +326,5 @@ for source_file in "$@"; do
     rm -f -- "$log_file"
     log_file=""
     compiler_pid=""
+    compiler_pgid=""
 done

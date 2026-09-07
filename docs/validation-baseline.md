@@ -44,6 +44,12 @@ outside the pinned StructPy `compiler/bin/elisac` suffix and fail closed unless
 - Architecture: `arm64`
 - Validation state: suspended; no compiler/test command was run for this record
 
+The checked-in wrappers now require an absolute `setsid` helper, launch each
+future compiler in a private process group, aggregate RSS by process group, and
+retain descendant snapshot cleanup as a fallback. This is a static contract
+change only; no wrapper or compiler process was launched for this record, and
+synthetic watchdog coverage remains outstanding.
+
 This record must be refreshed after any compiler-source, executable, vendored
 snapshot, host-platform, or Elisascript revision change. It is metadata, not a
 claim that the G0 execution gate has passed.

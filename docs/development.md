@@ -21,9 +21,9 @@ scripts/run_bounded_lowering.sh test/ir/elisascript_lowering_test.elisa
 The local StructPy checkout keeps compiler changes isolated from the installed
 release at `~/.elisac/elisac` and the Elisa-core main-worktree binary; do not use
 either installed or main-worktree binaries for stage0/stage1 validation. Keep
-validation bounded with the process-tree RSS-and-time watchdog that terminates
-the compiler before its total RSS exceeds the host-safe ceiling; a virtual-memory
-limit alone is not sufficient. The wrapper deliberately uses `-emit lowered`
+validation bounded with the process-group RSS-and-time watchdog that terminates
+the compiler before its aggregate resident set exceeds the host-safe ceiling; a
+virtual-memory limit alone is not sufficient. The wrapper deliberately uses `-emit lowered`
 first; do not relaunch a large executable fixture after an RSS incident until a
 smaller bounded repro has stayed under the guard. The same `ELISA_LOCAL_COMPILER`
 setting should be used for the lowering,
@@ -44,9 +44,14 @@ created. The log ceiling defaults to 64 MiB and bounds the temporary compiler
 diagnostic file using the same polling model as the RSS/time watchdog. Each
 fixture argument must be an existing `.elisascript` regular file. The wrapper installs signal/exit
 cleanup for its temporary log and owned compiler tree, and clears the child PID
-after `wait` so cleanup cannot act on a reused PID. Tree termination snapshots
-the owned PID set before signaling the root, so children that become reparented
-after the root exits still receive the forced second signal. The lowering and executable
+after `wait` so cleanup cannot act on a reused PID. Each compiler is launched by
+an absolute `setsid` helper in a private process group. The watchdog samples RSS
+for every process in that group (covering descendants even after reparenting),
+refuses to continue if the compiler inherits the wrapper's group, and sends group
+`TERM` followed by the snapshotted descendant `TERM`/`KILL` fallback. This is
+still a polling containment aid rather than an instantaneous OS quota, so group
+measurement and inter-sample overshoot must be recorded by the future synthetic
+harness. The lowering and executable
 wrappers also serialize validation through an atomic lease directory under
 `${TMPDIR:-/tmp}`. The lease records the owner PID and `ps` start identity; a
 live owner with an untrusted or reused identity fails closed, while a dead owner
@@ -69,9 +74,9 @@ Run the compiler-free wrapper audit before reviewing a validation change:
 scripts/check_validation_wrappers.sh
 ```
 
-This checks the disabled-by-default gate, StructPy compiler pin, process-tree
-RSS guard, identity-bound lease, and emergency-stop ownership without launching
-a compiler.
+This checks the disabled-by-default gate, StructPy compiler pin, process-group
+RSS guard, private-session launch requirement, identity-bound lease, and
+emergency-stop ownership without launching a compiler.
 
 Run `scripts/check_resource_policy.sh` alongside the wrapper audit when changing
 runtime limits. It is also compiler-free: it checks that the shared policy and

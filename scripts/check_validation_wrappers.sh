@@ -22,6 +22,10 @@ for wrapper in "$lowering" "$test_wrapper"; do
     rg -q 'elisascript-validation\.disabled' "$wrapper"
     rg -q 'Go projects/structpy-tree/compiler/bin/elisac' "$wrapper"
     rg -q 'process_tree_rss_kb' "$wrapper"
+    rg -q 'process_group_rss_kb' "$wrapper"
+    rg -q 'setsid_path' "$wrapper"
+    rg -q 'compiler_pgid' "$wrapper"
+    rg -q 'kill -TERM -- "-\$process_group_id"' "$wrapper"
     rg -q 'kill_process_tree' "$wrapper"
     rg -q 'validation_lease' "$wrapper"
     if rg -q 'Elisa-compiler|elisa-compiler/bin/elisac' "$wrapper"; then
