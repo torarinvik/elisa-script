@@ -289,6 +289,11 @@ nested calls, including child output emitted before a recoverable error. The
 parent usage snapshot therefore cannot reset or double-count nested captures;
 the regression fixture and compiler-free audit are recorded in `0d1bf9c`.
 
+The line-file parity slice now pins the distinction between `read_lines` (which
+preserves a trailing empty field through `ReadText + Split`) and `split_lines`
+(which follows delimiter-oriented Python behavior). Interpreter and direct
+bytecode fixtures cover a file ending in a newline, recorded in `8e69ada`.
+
 Recent static increments are committed as `72f3325` (Path line semantics audit),
 `0739d4c` (typed cleanup guard), `b0ecf06` (cache cleanup integration),
 `9873d8c` (all resource-policy ceiling admission), `3bd7152` (typed resource
