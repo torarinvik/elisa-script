@@ -1,0 +1,167 @@
+# Bounded first-divergence trace-window contract for differential testing.
+#
+# Lockstep adapters often need context around a mismatch, not an unbounded copy
+# of every event. A trace window admits a fixed number of ordered fingerprints
+# before and after an anchor step, requires the anchor itself, and seals before
+# publication. It is execution-engine neutral and performs no trace I/O.
+
+module EsDifferentialTraceWindow:
+    public:
+        const DIFFERENTIAL_TRACE_WINDOW_MAX_STEPS: usize = 4096
+        const DIFFERENTIAL_TRACE_WINDOW_MAX_EVENTS: usize = 1048576
+
+
+        const enum DifferentialTraceWindowState of u8:
+            Planned
+            Collecting
+            Sealed
+            Failed
+            Cancelled
+
+
+        const enum DifferentialTraceWindowEvent of u8:
+            Begin
+            Record
+            Seal
+            Fail
+            Cancel
+
+
+        const enum DifferentialTraceWindowPosition of u8:
+            Before
+            Divergence
+            After
+
+
+        struct DifferentialTraceWindowPolicy:
+            before_steps: usize = 8
+            after_steps: usize = 8
+            max_events: usize = 17
+
+
+        struct DifferentialTraceWindowRecord:
+            step_index: usize
+            reference_fingerprint: u64
+            candidate_fingerprint: u64
+            equal: bool
+            position: DifferentialTraceWindowPosition = DifferentialTraceWindowPosition.Divergence
+
+
+        struct DifferentialTraceWindow:
+            policy: DifferentialTraceWindowPolicy = DifferentialTraceWindowPolicy{}
+            anchor_step: usize = 0
+            state: DifferentialTraceWindowState = DifferentialTraceWindowState.Planned
+            records: darray[DifferentialTraceWindowRecord] = []
+            has_anchor: bool = false
+
+
+        error DifferentialTraceWindowError:
+            InvalidState
+            InvalidEvent
+            InvalidPolicy
+            StepLimitExceeded
+            EventLimitExceeded
+            FingerprintMissing
+            StepOrderInvalid
+            OutsideWindow
+            AnchorMissing
+            CancelNotReady
+
+
+    private:
+        const DIFFERENTIAL_TRACE_WINDOW_HASH_OFFSET: u64 = 14695981039346656037
+        const DIFFERENTIAL_TRACE_WINDOW_HASH_PRIME: u64 = 1099511628211
+
+
+        def differential_trace_window_state_valid(state: DifferentialTraceWindowState) -> bool:
+            return state in {DifferentialTraceWindowState.Planned, DifferentialTraceWindowState.Collecting, DifferentialTraceWindowState.Sealed, DifferentialTraceWindowState.Failed, DifferentialTraceWindowState.Cancelled}
+
+
+        def differential_trace_window_event_valid(event: DifferentialTraceWindowEvent) -> bool:
+            return event in {DifferentialTraceWindowEvent.Begin, DifferentialTraceWindowEvent.Record, DifferentialTraceWindowEvent.Seal, DifferentialTraceWindowEvent.Fail, DifferentialTraceWindowEvent.Cancel}
+
+
+        def differential_trace_window_position_valid(position: DifferentialTraceWindowPosition) -> bool:
+            return position in {DifferentialTraceWindowPosition.Before, DifferentialTraceWindowPosition.Divergence, DifferentialTraceWindowPosition.After}
+
+
+        def differential_trace_window_policy_valid(policy: DifferentialTraceWindowPolicy) -> bool:
+            return policy.before_steps <= DIFFERENTIAL_TRACE_WINDOW_MAX_STEPS and policy.after_steps <= DIFFERENTIAL_TRACE_WINDOW_MAX_STEPS and policy.max_events != 0 and policy.max_events <= DIFFERENTIAL_TRACE_WINDOW_MAX_EVENTS and policy.max_events >= policy.before_steps + policy.after_steps + 1
+
+
+        def differential_trace_window_fingerprint_valid(value: u64) -> bool:
+            return value != 0
+
+
+        def differential_trace_window_record_position(window: DifferentialTraceWindow&, step_index: usize) -> DifferentialTraceWindowPosition error[DifferentialTraceWindowError]:
+            if step_index < window.anchor_step:
+                raise DifferentialTraceWindowError.OutsideWindow if window.anchor_step - step_index > window.policy.before_steps
+                return DifferentialTraceWindowPosition.Before
+            if step_index > window.anchor_step:
+                raise DifferentialTraceWindowError.OutsideWindow if step_index - window.anchor_step > window.policy.after_steps
+                return DifferentialTraceWindowPosition.After
+            return DifferentialTraceWindowPosition.Divergence
+
+
+    public:
+        def validate_differential_trace_window(window: DifferentialTraceWindow&) -> bool error[DifferentialTraceWindowError]:
+            raise DifferentialTraceWindowError.InvalidState if not differential_trace_window_state_valid(window.state)
+            raise DifferentialTraceWindowError.InvalidPolicy if not differential_trace_window_policy_valid(window.policy)
+            raise DifferentialTraceWindowError.EventLimitExceeded if window.records.count > window.policy.max_events
+            anchor_found: mutable bool = false
+            for index in 0..<window.records.count |window|:
+                record: DifferentialTraceWindowRecord = window.records[index]
+                raise DifferentialTraceWindowError.StepOrderInvalid if index > 0 and record.step_index <= window.records[index - 1].step_index
+                raise DifferentialTraceWindowError.FingerprintMissing if not differential_trace_window_fingerprint_valid(record.reference_fingerprint) or not differential_trace_window_fingerprint_valid(record.candidate_fingerprint)
+                raise DifferentialTraceWindowError.InvalidPolicy if not differential_trace_window_position_valid(record.position)
+                expected: DifferentialTraceWindowPosition = try differential_trace_window_record_position(window, record.step_index)
+                raise DifferentialTraceWindowError.StepOrderInvalid if record.position != expected
+                anchor_found <- true if record.step_index == window.anchor_step
+            raise DifferentialTraceWindowError.AnchorMissing if window.state == DifferentialTraceWindowState.Sealed and not anchor_found
+            raise DifferentialTraceWindowError.StepOrderInvalid if window.has_anchor != anchor_found
+            return true
+
+
+        def advance_differential_trace_window(window: mutable DifferentialTraceWindow&, event: DifferentialTraceWindowEvent, record: DifferentialTraceWindowRecord = DifferentialTraceWindowRecord{step_index: 0, reference_fingerprint: 1, candidate_fingerprint: 1, equal: true}) -> DifferentialTraceWindowState error[DifferentialTraceWindowError]:
+            try validate_differential_trace_window(window)
+            raise DifferentialTraceWindowError.InvalidEvent if not differential_trace_window_event_valid(event)
+            if event == DifferentialTraceWindowEvent.Begin:
+                raise DifferentialTraceWindowError.InvalidState if window.state != DifferentialTraceWindowState.Planned
+                window.state <- DifferentialTraceWindowState.Collecting
+            elif event == DifferentialTraceWindowEvent.Record:
+                raise DifferentialTraceWindowError.InvalidState if window.state != DifferentialTraceWindowState.Collecting
+                raise DifferentialTraceWindowError.EventLimitExceeded if window.records.count >= window.policy.max_events
+                raise DifferentialTraceWindowError.FingerprintMissing if not differential_trace_window_fingerprint_valid(record.reference_fingerprint) or not differential_trace_window_fingerprint_valid(record.candidate_fingerprint)
+                raise DifferentialTraceWindowError.OutsideWindow if record.step_index < window.anchor_step and window.anchor_step - record.step_index > window.policy.before_steps
+                raise DifferentialTraceWindowError.OutsideWindow if record.step_index > window.anchor_step and record.step_index - window.anchor_step > window.policy.after_steps
+                if window.records.count > 0:
+                    raise DifferentialTraceWindowError.StepOrderInvalid if record.step_index <= window.records[window.records.count - 1].step_index
+                record.position <- try differential_trace_window_record_position(window, record.step_index)
+                window.has_anchor <- true if record.step_index == window.anchor_step
+                window.records.push(record)
+            elif event == DifferentialTraceWindowEvent.Seal:
+                raise DifferentialTraceWindowError.InvalidState if window.state != DifferentialTraceWindowState.Collecting
+                raise DifferentialTraceWindowError.AnchorMissing if not window.has_anchor
+                window.state <- DifferentialTraceWindowState.Sealed
+            elif event == DifferentialTraceWindowEvent.Fail:
+                raise DifferentialTraceWindowError.InvalidState if window.state != DifferentialTraceWindowState.Collecting
+                window.state <- DifferentialTraceWindowState.Failed
+            elif event == DifferentialTraceWindowEvent.Cancel:
+                raise DifferentialTraceWindowError.CancelNotReady if window.state != DifferentialTraceWindowState.Planned and window.state != DifferentialTraceWindowState.Collecting
+                window.state <- DifferentialTraceWindowState.Cancelled
+            return window.state
+
+
+        def differential_trace_window_fingerprint(window: DifferentialTraceWindow&) -> u64 can[Memory.Allocate, Abort.Panic]:
+            return 0 if window.state != DifferentialTraceWindowState.Sealed
+            return 0 if not differential_trace_window_policy_valid(window.policy) or not window.has_anchor or window.records.count > window.policy.max_events
+            result: mutable u64 = DIFFERENTIAL_TRACE_WINDOW_HASH_OFFSET
+            result <- result * DIFFERENTIAL_TRACE_WINDOW_HASH_PRIME + window.anchor_step.u64()
+            result <- result * DIFFERENTIAL_TRACE_WINDOW_HASH_PRIME + window.records.count.u64()
+            for record in window.records |result|:
+                result <- result * DIFFERENTIAL_TRACE_WINDOW_HASH_PRIME + record.step_index.u64()
+                result <- result * DIFFERENTIAL_TRACE_WINDOW_HASH_PRIME + record.reference_fingerprint
+                result <- result * DIFFERENTIAL_TRACE_WINDOW_HASH_PRIME + record.candidate_fingerprint
+                result <- result * DIFFERENTIAL_TRACE_WINDOW_HASH_PRIME + (1u64 if record.equal else 0u64)
+                result <- result * DIFFERENTIAL_TRACE_WINDOW_HASH_PRIME + record.position.u64()
+            return result
