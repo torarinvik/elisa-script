@@ -1,0 +1,172 @@
+# Bounded process-group termination and reaping contract.
+#
+# This module never sends a signal.  It records the exact process identities a
+# host supervisor is allowed to target, requires an acknowledged graceful
+# request before escalation, bounds polling/force attempts, and refuses to
+# report cleanup complete until every owned member has been reaped.
+
+module EsProcessTermination:
+    public:
+        const PROCESS_TERMINATION_MAX_MEMBERS: usize = 1048576
+        const PROCESS_TERMINATION_MAX_POLLS: usize = 1048576
+        const PROCESS_TERMINATION_MAX_FORCE_ATTEMPTS: usize = 16
+
+
+        const enum ProcessTerminationState of u8:
+            Planned
+            Running
+            GracefulRequested
+            GracefulWaiting
+            ForceRequested
+            Reaping
+            Reaped
+            TimedOut
+            Failed
+
+
+        const enum ProcessTerminationEvent of u8:
+            Begin
+            RequestGraceful
+            GracefulAck
+            Poll
+            RequestForce
+            ForceAck
+            ReportReaped
+            Timeout
+            Cancel
+            Fail
+
+
+        struct ProcessTerminationPolicy:
+            max_members: usize = PROCESS_TERMINATION_MAX_MEMBERS
+            max_polls: usize = PROCESS_TERMINATION_MAX_POLLS
+            max_force_attempts: usize = PROCESS_TERMINATION_MAX_FORCE_ATTEMPTS
+
+
+        struct ProcessTerminationMember:
+            pid: u64
+            start_token: u64
+
+
+        struct ProcessTerminationSession:
+            policy: ProcessTerminationPolicy
+            owner_token: u64
+            group_id: u64
+            root_pid: u64
+            members: darray[ProcessTerminationMember] = []
+            state: ProcessTerminationState = ProcessTerminationState.Planned
+            polls: usize = 0
+            force_attempts: usize = 0
+            reaped_members: usize = 0
+            cancel_requested: bool = false
+
+
+        error ProcessTerminationError:
+            InvalidState
+            InvalidEvent
+            InvalidPolicy
+            InvalidOwner
+            InvalidGroup
+            InvalidRoot
+            InvalidMember
+            DuplicateMember
+            RootNotOwned
+            MemberLimitExceeded
+            PollLimitExceeded
+            ForceLimitExceeded
+            ReapCountInvalid
+            AccountingInvalid
+            GracefulNotReady
+            ForceNotReady
+            ReapNotReady
+            TimeoutNotReady
+            InvalidTransition
+
+
+    private:
+        def process_termination_state_valid(state: ProcessTerminationState) -> bool:
+            return state in {ProcessTerminationState.Planned, ProcessTerminationState.Running, ProcessTerminationState.GracefulRequested, ProcessTerminationState.GracefulWaiting, ProcessTerminationState.ForceRequested, ProcessTerminationState.Reaping, ProcessTerminationState.Reaped, ProcessTerminationState.TimedOut, ProcessTerminationState.Failed}
+
+
+        def process_termination_event_valid(event: ProcessTerminationEvent) -> bool:
+            return event in {ProcessTerminationEvent.Begin, ProcessTerminationEvent.RequestGraceful, ProcessTerminationEvent.GracefulAck, ProcessTerminationEvent.Poll, ProcessTerminationEvent.RequestForce, ProcessTerminationEvent.ForceAck, ProcessTerminationEvent.ReportReaped, ProcessTerminationEvent.Timeout, ProcessTerminationEvent.Cancel, ProcessTerminationEvent.Fail}
+
+
+        def process_termination_policy_valid(policy: ProcessTerminationPolicy) -> bool:
+            return policy.max_members != 0 and policy.max_members <= PROCESS_TERMINATION_MAX_MEMBERS and policy.max_polls != 0 and policy.max_polls <= PROCESS_TERMINATION_MAX_POLLS and policy.max_force_attempts != 0 and policy.max_force_attempts <= PROCESS_TERMINATION_MAX_FORCE_ATTEMPTS
+
+
+        def process_termination_member_valid(member: ProcessTerminationMember) -> bool:
+            return member.pid != 0 and member.start_token != 0
+
+
+        def process_termination_member_index(session: ProcessTerminationSession&, pid: u64) -> usize:
+            for index in 0..<session.members.count |session, pid|:
+                return index if session.members[index].pid == pid
+            return session.members.count
+
+
+        def process_termination_active(state: ProcessTerminationState) -> bool:
+            return state == ProcessTerminationState.Running or state == ProcessTerminationState.GracefulRequested or state == ProcessTerminationState.GracefulWaiting or state == ProcessTerminationState.ForceRequested or state == ProcessTerminationState.Reaping
+
+
+    public:
+        def validate_process_termination(session: ProcessTerminationSession&) -> bool error[ProcessTerminationError]:
+            raise ProcessTerminationError.InvalidState if not process_termination_state_valid(session.state)
+            raise ProcessTerminationError.InvalidPolicy if not process_termination_policy_valid(session.policy)
+            raise ProcessTerminationError.InvalidOwner if session.owner_token == 0
+            raise ProcessTerminationError.InvalidGroup if session.group_id == 0
+            raise ProcessTerminationError.InvalidRoot if session.root_pid == 0
+            raise ProcessTerminationError.MemberLimitExceeded if session.members.count == 0 or session.members.count > session.policy.max_members
+            raise ProcessTerminationError.PollLimitExceeded if session.polls > session.policy.max_polls
+            raise ProcessTerminationError.ForceLimitExceeded if session.force_attempts > session.policy.max_force_attempts
+            raise ProcessTerminationError.ReapCountInvalid if session.reaped_members > session.members.count
+            for index in 0..<session.members.count |session|:
+                member: ProcessTerminationMember = session.members[index]
+                raise ProcessTerminationError.InvalidMember if not process_termination_member_valid(member)
+                for earlier in 0..<index |session, member|:
+                    raise ProcessTerminationError.DuplicateMember if session.members[earlier].pid == member.pid
+            raise ProcessTerminationError.RootNotOwned if process_termination_member_index(session, session.root_pid) == session.members.count
+            return true
+
+
+        def advance_process_termination(session: mutable ProcessTerminationSession&, event: ProcessTerminationEvent, reaped_members: usize = 0) -> ProcessTerminationState error[ProcessTerminationError]:
+            try validate_process_termination(session)
+            raise ProcessTerminationError.InvalidEvent if not process_termination_event_valid(event)
+            if event == ProcessTerminationEvent.Begin:
+                raise ProcessTerminationError.InvalidTransition if session.state != ProcessTerminationState.Planned
+                session.state <- ProcessTerminationState.Running
+            elif event == ProcessTerminationEvent.RequestGraceful:
+                raise ProcessTerminationError.GracefulNotReady if session.state != ProcessTerminationState.Running
+                session.state <- ProcessTerminationState.GracefulRequested
+            elif event == ProcessTerminationEvent.Cancel:
+                raise ProcessTerminationError.GracefulNotReady if session.state != ProcessTerminationState.Running
+                session.cancel_requested <- true
+                session.state <- ProcessTerminationState.GracefulRequested
+            elif event == ProcessTerminationEvent.GracefulAck:
+                raise ProcessTerminationError.GracefulNotReady if session.state != ProcessTerminationState.GracefulRequested
+                session.state <- ProcessTerminationState.GracefulWaiting
+            elif event == ProcessTerminationEvent.Poll:
+                raise ProcessTerminationError.InvalidTransition if session.state != ProcessTerminationState.GracefulWaiting and session.state != ProcessTerminationState.Reaping
+                raise ProcessTerminationError.PollLimitExceeded if session.polls >= session.policy.max_polls
+                session.polls <- session.polls + 1
+            elif event == ProcessTerminationEvent.RequestForce:
+                raise ProcessTerminationError.ForceNotReady if session.state != ProcessTerminationState.GracefulWaiting and session.state != ProcessTerminationState.Reaping
+                raise ProcessTerminationError.ForceLimitExceeded if session.force_attempts >= session.policy.max_force_attempts
+                session.force_attempts <- session.force_attempts + 1
+                session.state <- ProcessTerminationState.ForceRequested
+            elif event == ProcessTerminationEvent.ForceAck:
+                raise ProcessTerminationError.ForceNotReady if session.state != ProcessTerminationState.ForceRequested
+                session.state <- ProcessTerminationState.Reaping
+            elif event == ProcessTerminationEvent.ReportReaped:
+                raise ProcessTerminationError.ReapNotReady if session.state != ProcessTerminationState.GracefulWaiting and session.state != ProcessTerminationState.Reaping
+                raise ProcessTerminationError.ReapCountInvalid if reaped_members < session.reaped_members or reaped_members > session.members.count
+                session.reaped_members <- reaped_members
+                session.state <- ProcessTerminationState.Reaped if session.reaped_members == session.members.count else ProcessTerminationState.Reaping
+            elif event == ProcessTerminationEvent.Timeout:
+                raise ProcessTerminationError.TimeoutNotReady if not process_termination_active(session.state)
+                session.state <- ProcessTerminationState.TimedOut
+            elif event == ProcessTerminationEvent.Fail:
+                raise ProcessTerminationError.InvalidTransition if not process_termination_active(session.state)
+                session.state <- ProcessTerminationState.Failed
+            return session.state

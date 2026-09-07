@@ -1553,6 +1553,18 @@ requested; stdout and stderr progress charge one shared output ceiling,
 polls charge a bounded polling budget, and only typed exit/failure/timeout or
 cancellation events may terminate the session. The session never performs
 fork/exec or signal operations itself.
+
+`EsProcessTermination::ProcessTerminationSession` is the process-group
+cleanup boundary. A host supervisor must first publish the exact root and
+member identities (including start tokens), then acknowledge a graceful group
+request before polling or escalating. Force attempts and polls are bounded;
+reaped-member counts are monotonic and `Reaped` is impossible until every
+owned member is accounted for. `Cancel` records cancellation intent without
+weakening the same graceful/force/reap sequence, while timeout and failure
+remain distinct terminal outcomes. The contract never sends signals or calls
+`waitpid`; it prevents a host adapter from targeting an unowned PID or
+claiming cleanup before all descendants are reaped.
+
 `EsTask::TaskScope` and `TaskChannel` define the corresponding concurrency
 boundary. A scope caps active children, records completed/failed children, and
 requires explicit close or cancellation acknowledgement; channels cap both

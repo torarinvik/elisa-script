@@ -463,6 +463,16 @@ bounded polls, typed terminal outcomes, and explicit timeout/cancellation
 edges. The focused IR fixture and check_process_session.sh audit are static
 evidence; fork/exec, signal escalation, and child reaping remain host work.
 
+ES-SCRIPT-037 | EsProcessTermination supplies bounded process-group
+termination/reaping ownership. It requires a nonzero owner, group, root, and
+start-token identity for every member; records graceful request/ack, bounded
+polls, force escalation, monotonic reaped counts, cancellation intent,
+timeout, and failure as explicit state-machine edges; and refuses `Reaped`
+until every owned member is accounted for. The focused IR fixture, namespace
+inclusion, documentation, and check_process_termination.sh audit are static
+evidence; platform signal delivery, PID-generation lookup, wait/reap calls,
+descendant races, and executed cleanup evidence remain host work.
+
 ES-SCRIPT-008 | EsCliWorkflow maps every accepted launcher mode to a fixed
 typed step sequence, validates mode-specific ordering, and exposes explicit
 step completion, failure, and cancellation transitions. The focused IR
