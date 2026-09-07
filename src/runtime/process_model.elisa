@@ -48,6 +48,32 @@ module EsProcess:
             error_text: sview = ""
 
 
+        const enum ProcessJobState of u8:
+            Created
+            Running
+            Cancelling
+            Succeeded
+            Failed
+            TimedOut
+            Cancelled
+
+
+        const enum ProcessJobEvent of u8:
+            Start
+            Complete
+            Fail
+            Timeout
+            Cancel
+            CancelAck
+            Retry
+
+
+        struct ProcessJob:
+            state: ProcessJobState = ProcessJobState.Created
+            attempts: usize = 0
+            max_attempts: usize = 1
+
+
         # Environment entries are an alternating name/value vector. Keeping
         # the representation flat makes duplicate-name checks deterministic
         # and lets host adapters preserve insertion order without a map-order
@@ -93,7 +119,22 @@ module EsProcess:
             AggregateTextLimitExceeded
 
 
+        error ProcessJobError:
+            InvalidState
+            InvalidEvent
+            InvalidAttemptLimit
+            RetryLimitExceeded
+
+
         private:
+            def process_job_state_valid(state: ProcessJobState) -> bool:
+                return state in {ProcessJobState.Created, ProcessJobState.Running, ProcessJobState.Cancelling, ProcessJobState.Succeeded, ProcessJobState.Failed, ProcessJobState.TimedOut, ProcessJobState.Cancelled}
+
+
+            def process_job_event_valid(event: ProcessJobEvent) -> bool:
+                return event in {ProcessJobEvent.Start, ProcessJobEvent.Complete, ProcessJobEvent.Fail, ProcessJobEvent.Timeout, ProcessJobEvent.Cancel, ProcessJobEvent.CancelAck, ProcessJobEvent.Retry}
+
+
             def process_result_kind_valid(kind: ProcessResultKind) -> bool:
                 return kind in {ProcessResultKind.Exited, ProcessResultKind.Signaled, ProcessResultKind.SpawnFailure, ProcessResultKind.TimedOut, ProcessResultKind.Cancelled, ProcessResultKind.OutputLimit, ProcessResultKind.HostIoFailure}
 
@@ -203,3 +244,37 @@ module EsProcess:
                     raise ProcessResultError.AggregateTextLimitExceeded if not process_result_text_add_fits(total, value)
                     total <- total + sview_len(value) + 1
                 return true
+
+
+            # Advance a background job through one explicit supervision edge.
+            # Retry never reuses a running child: terminal failure must first
+            # return to Created, and Start consumes the next attempt.
+            def advance_process_job(job: mutable ProcessJob&, event: ProcessJobEvent) -> ProcessJobState error[ProcessJobError]:
+                raise ProcessJobError.InvalidState if not process_job_state_valid(job.state)
+                raise ProcessJobError.InvalidEvent if not process_job_event_valid(event)
+                raise ProcessJobError.InvalidAttemptLimit if job.max_attempts == 0 or job.max_attempts > PROCESS_COMMAND_MAX_ARGUMENTS
+                if event == ProcessJobEvent.Start:
+                    raise ProcessJobError.InvalidState if job.state != ProcessJobState.Created
+                    raise ProcessJobError.RetryLimitExceeded if job.attempts >= job.max_attempts
+                    job.attempts <- job.attempts + 1
+                    job.state <- ProcessJobState.Running
+                elif event == ProcessJobEvent.Complete:
+                    raise ProcessJobError.InvalidState if job.state != ProcessJobState.Running
+                    job.state <- ProcessJobState.Succeeded
+                elif event == ProcessJobEvent.Fail:
+                    raise ProcessJobError.InvalidState if job.state != ProcessJobState.Running
+                    job.state <- ProcessJobState.Failed
+                elif event == ProcessJobEvent.Timeout:
+                    raise ProcessJobError.InvalidState if job.state != ProcessJobState.Running
+                    job.state <- ProcessJobState.TimedOut
+                elif event == ProcessJobEvent.Cancel:
+                    raise ProcessJobError.InvalidState if job.state != ProcessJobState.Running
+                    job.state <- ProcessJobState.Cancelling
+                elif event == ProcessJobEvent.CancelAck:
+                    raise ProcessJobError.InvalidState if job.state != ProcessJobState.Cancelling
+                    job.state <- ProcessJobState.Cancelled
+                elif event == ProcessJobEvent.Retry:
+                    raise ProcessJobError.InvalidState if job.state != ProcessJobState.Failed and job.state != ProcessJobState.TimedOut
+                    raise ProcessJobError.RetryLimitExceeded if job.attempts >= job.max_attempts
+                    job.state <- ProcessJobState.Created
+                return job.state

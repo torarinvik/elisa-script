@@ -376,6 +376,10 @@ creation, background jobs, and streaming callback execution remain open.
 normal exits, signal death, spawn/timeout/cancellation/output-limit/host-I/O
 failures, with bounded stdout/stderr/error payloads and signal consistency
 validation through `error[ProcessResultError]`.
+`ProcessJob` adds a typed background-supervision state machine with bounded
+attempts, explicit cancellation acknowledgement, and typed invalid-transition
+or retry-exhaustion errors; actual scheduling, fan-out, and platform signal
+escalation remain open.
 
 `EsRecord::RecordStreamPolicy`, `Record`, and `RecordField` now define a bounded
 Perl/AWK-style record boundary: separator and field modes are explicit, fixed

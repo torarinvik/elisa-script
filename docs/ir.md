@@ -1140,6 +1140,13 @@ kind requires a nonzero signal while every other kind rejects one. Captured
 stdout, stderr, and adapter error text receive length-first NUL admission and a
 shared terminated-byte ceiling through `error[ProcessResultError]`, so a failed
 child cannot be silently reclassified as an ordinary exit status.
+`ProcessJob` and `advance_process_job` define the background-supervision state
+machine (`Created`, `Running`, `Cancelling`, terminal success/failure/timeout,
+or cancellation). Start consumes an attempt, retry is permitted only from a
+terminal failure and returns to `Created`, and cancellation requires an explicit
+acknowledgement edge. Invalid transitions, zero/oversized retry ceilings, and
+retries beyond `max_attempts` raise `error[ProcessJobError]`; the scheduler,
+parallel-map limits, and platform signal escalation remain host integrations.
 The argv terminator is cleared using `size_of(uintptr)`, matching the target
 pointer width rather than assuming an 8-byte slot.
 Before reserving argv pointers or owned argument strings, the interpreter
