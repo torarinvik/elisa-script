@@ -8,10 +8,13 @@ repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 model="$repo_root/src/runtime/process_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
+differential_source="$repo_root/src/testing/differential.elisa"
+differential_fixture="$repo_root/test/differential/elisascript_differential_test.elisa"
+differential_docs="$repo_root/docs/differential-testing.md"
 docs="$repo_root/docs/ir.md"
 plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$ir" "$fixture" "$docs" "$plan"; do
+for required_file in "$model" "$ir" "$fixture" "$differential_source" "$differential_fixture" "$differential_docs" "$docs" "$plan"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'process command audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -48,5 +51,11 @@ rg -q 'PROCESS_COMMAND_MAX_ARGUMENTS' "$docs"
 rg -q 'validate_process_command' "$docs"
 rg -q 'shell-free' "$docs"
 rg -q 'P10 typed-command follow-up' "$plan"
+rg -q 'using EsProcess' "$differential_source"
+rg -q 'def differential_process_command_valid\(' "$differential_source"
+rg -q 'validate_process_command\(command\)' "$differential_source"
+rg -q 'not differential_process_command_valid\(invocation\)' "$differential_source"
+rg -q 'differential_process_execution_reuses_typed_command_environment_contract' "$differential_fixture"
+rg -q 'EsProcess::ProcessCommand' "$differential_docs"
 
 printf 'process command audit: typed shell-free command values, bounded vectors, and error[...] validation are present\n'

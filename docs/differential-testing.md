@@ -77,6 +77,14 @@ Process invocations also distinguish text stdin from an owned binary stdin buffe
 and the same 64 MiB input ceiling applies before a child is launched. The host
 adapter writes the bounded byte buffer by length, so embedded NULs and other
 binary values never pass through a C-string conversion.
+Before host execution, each `DifferentialProcessInvocation` is also adapted to
+`EsProcess::ProcessCommand`. The shared validator rechecks the executable, ordered
+argv, working directory, flattened environment names/values, explicit capture modes,
+and failure policy using `error[ProcessCommandError]`; a direct adapter caller cannot
+bypass duplicate-environment or aggregate terminated-byte admission. Binary stdin
+remains an explicit length-delimited side channel rather than being misrepresented as
+shell text. This keeps native and legacy-language oracle runners on the same typed
+shell-free command boundary.
 The runner's optional `working_directory` is admitted separately as a POSIX
 pathname: non-empty values must fit the shared 4 KiB path envelope before any
 NUL scan, aggregate C-string accounting, or child-side `chdir`. Executable,
