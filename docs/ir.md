@@ -253,6 +253,10 @@ policy, while their existing host bridges continue enforcing their specialized
 ceilings. `interpret_with_resource_policy`,
 `execute_bytecode_with_resource_policy`, and
 `execute_bytecode_direct_only_with_resource_policy` make this boundary explicit;
+the policy-aware bytecode facade routes caller-specific output/regex limits
+through the reference interpreter (which owns those counters), while strict
+direct-only entrypoints reject policies with unaccounted dimensions instead of
+silently ignoring them;
 the bytecode loop receives the retained-trace limit before each `Observe`
 append, so a custom zero/one/boundary policy cannot allocate the default trace
 pool first;

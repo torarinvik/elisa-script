@@ -2866,6 +2866,19 @@ module EsBytecode:
             return execution
 
 
+        # The packed loop currently owns step and retained-trace accounting;
+        # output and regex budgets are enforced by the reference interpreter,
+        # while the remaining host dimensions have no backend-wide accounting
+        # yet. Keep that boundary explicit so a policy cannot be silently
+        # accepted and then ignored by direct bytecode.
+        def bytecode_policy_requires_reference(policy: RuntimeResourcePolicy&) -> bool:
+            return policy.output_bytes != ES_RUNTIME_DEFAULT_MAX_OUTPUT_BYTES or policy.regex_work != ES_RUNTIME_DEFAULT_MAX_REGEX_WORK
+
+
+        def bytecode_policy_has_unsupported_dimensions(policy: RuntimeResourcePolicy&) -> bool:
+            return policy.elapsed_micros != ES_RUNTIME_DEFAULT_MAX_ELAPSED_MICROS or policy.memory_bytes != ES_RUNTIME_DEFAULT_MAX_MEMORY_BYTES or policy.open_handles != ES_RUNTIME_DEFAULT_MAX_OPEN_HANDLES or policy.processes != ES_RUNTIME_DEFAULT_MAX_PROCESSES or policy.concurrent_tasks != ES_RUNTIME_DEFAULT_MAX_CONCURRENT_TASKS
+
+
     private:
         def bytecode_prepare_guard_instruction(instruction: Instruction, guards: mutable darray[BytecodeErrorGuard]&) -> void error[InterpretError]:
             if instruction.opcode == Opcode.ErrorGuardPush:
@@ -3113,7 +3126,16 @@ module EsBytecode:
         # orchestration even while host-bridge counters are still specialized.
         def execute_bytecode_with_resource_policy(module: BytecodeModule&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, policy: RuntimeResourcePolicy) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             raise InterpretError.OutputLimit if not runtime_resource_policy_valid(policy)
-            result: mutable Execution = try execute_bytecode(module, entry, arguments, observations, storage, policy.steps, policy.retained_traces)
+            raise InterpretError.UnsupportedInstruction if bytecode_policy_has_unsupported_dimensions(policy)
+            result: mutable Execution = Execution{value: runtime_void(), steps: 0}
+            if bytecode_policy_requires_reference(policy):
+                ir_module: Module = bytecode_to_ir(module)
+                raise InterpretError.VerificationFailed if verify(ir_module).count != 0
+                fallback: mutable Execution = try interpret_with_resource_policy(ir_module, entry, arguments, observations, storage, policy)
+                fallback.engine <- ExecutionEngine.BytecodeInterpreterFallback
+                result <- annotate_bytecode_execution(fallback, bytecode_capability_report(module))
+            else:
+                result <- try execute_bytecode(module, entry, arguments, observations, storage, policy.steps, policy.retained_traces)
             raise InterpretError.OutputLimit if not runtime_resource_usage_within_policy(result.usage, policy)
             result.policy <- policy
             return result
@@ -3137,6 +3159,7 @@ module EsBytecode:
 
         def execute_bytecode_direct_only_with_resource_policy(module: BytecodeModule&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, policy: RuntimeResourcePolicy) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             raise InterpretError.OutputLimit if not runtime_resource_policy_valid(policy)
+            raise InterpretError.UnsupportedInstruction if bytecode_policy_requires_reference(policy) or bytecode_policy_has_unsupported_dimensions(policy)
             result: mutable Execution = try execute_bytecode_direct_only(module, entry, arguments, observations, storage, policy.steps, policy.retained_traces)
             raise InterpretError.OutputLimit if not runtime_resource_usage_within_policy(result.usage, policy)
             result.policy <- policy
