@@ -252,6 +252,13 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            regex_count)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Regex,text" and registry_spec\.opcode == "RegexFind" and registry_spec\.lowering_steps == "RegexFind,Length"' "$lowerer_file" || \
+                   ! rg -q 'def lower_regex_namespace_count\(arguments: darray\[Ast::Expr\]' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven regex count composition\n' >&2
+                    exit 1
+                fi
+                ;;
             regex_split)
                 if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Regex,text" and registry_spec\.opcode == "RegexSplit"' "$lowerer_file"; then
                     printf 'builtin registry audit: lowerer has no registry-driven regex split dispatch\n' >&2
@@ -1420,6 +1427,7 @@ if ! rg -q 'name: "regex_search", receiver: "global".*argument_types: "Regex,tex
    ! rg -q 'name: "regex_match", receiver: "global".*argument_types: "Regex,text".*return_type: "bool".*opcode: "RegexSearch".*lowering_mode: 1' "$registry_file" || \
    ! rg -q 'name: "regex_fullmatch", receiver: "global".*argument_types: "Regex,text".*return_type: "bool".*opcode: "RegexSearch".*lowering_mode: 2' "$registry_file" || \
    ! rg -q 'name: "regex_findall", receiver: "global".*argument_types: "Regex,text".*return_type: "darray\[text\]".*opcode: "RegexFind"' "$registry_file" || \
+   ! rg -q 'name: "regex_count", receiver: "global".*argument_types: "Regex,text".*return_type: "usize".*opcode: "RegexFind".*lowering_steps: "RegexFind,Length"' "$registry_file" || \
    ! rg -q 'name: "regex_split", receiver: "global".*argument_types: "Regex,text".*return_type: "darray\[text\]".*opcode: "RegexSplit"' "$registry_file" || \
    ! rg -q 'name: "regex_sub", receiver: "global".*argument_types: "Regex,text,text".*return_type: "sview".*opcode: "RegexReplace"' "$registry_file"; then
     printf 'builtin registry audit: regex namespace alias rows are incomplete\n' >&2
@@ -1428,6 +1436,7 @@ fi
 if ! rg -q 'lowering_mode: i64' "$registry_file" || \
    ! rg -q 'def lower_regex_namespace_search\(arguments: darray\[Ast::Expr\].*spec: EsBuiltin::BuiltinSpec\)' "$lowerer_file" || \
    ! rg -q 'def lower_regex_namespace_find\(arguments: darray\[Ast::Expr\].*spec: EsBuiltin::BuiltinSpec\)' "$lowerer_file" || \
+   ! rg -q 'def lower_regex_namespace_count\(arguments: darray\[Ast::Expr\].*spec: EsBuiltin::BuiltinSpec\)' "$lowerer_file" || \
    ! rg -q 'def lower_regex_namespace_split\(arguments: darray\[Ast::Expr\].*spec: EsBuiltin::BuiltinSpec\)' "$lowerer_file" || \
    ! rg -q 'def lower_regex_namespace_sub\(arguments: darray\[Ast::Expr\].*spec: EsBuiltin::BuiltinSpec\)' "$lowerer_file" || \
    ! rg -q 'typed_builtin_result_type\(spec\)' "$lowerer_file" || \
@@ -1436,11 +1445,13 @@ if ! rg -q 'lowering_mode: i64' "$registry_file" || \
     printf 'builtin registry audit: regex namespace aliases do not consume registry result/shape/mode metadata\n' >&2
     exit 1
 fi
-if ! rg -q 'Regex,text' "$receiver_semantic_file" || ! rg -q 'Regex,text,text' "$receiver_semantic_file" || ! rg -q 'def registry_regex_namespace_aliases_check_pattern_first_shapes\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
+if ! rg -q 'Regex,text' "$receiver_semantic_file" || ! rg -q 'Regex,text,text' "$receiver_semantic_file" || ! rg -q 'def registry_regex_namespace_aliases_check_pattern_first_shapes\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'regex_count\(pattern, value\)' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
     printf 'builtin registry audit: regex namespace descriptors lack semantic coverage\n' >&2
     exit 1
 fi
 if ! rg -q 'def lowers_registry_regex_namespace_aliases_with_modes\(' "$repo_root/test/ir/elisascript_lowering_test.elisa" || \
+   ! rg -q 'def interpreter_counts_global_regex_matches\(' "$interpreter_test_file" || \
+   ! rg -q 'def bytecode_direct_global_regex_count_matches_reference_interpreter\(' "$bytecode_test_file" || \
    ! rg -q 'spec\.known and spec\.return_type == "darray\[text\]"' "$inference_file" || \
    ! rg -q 'spec\.known and spec\.return_type == "sview"' "$inference_file"; then
     printf 'builtin registry audit: regex namespace lowering/inference coverage is missing\n' >&2

@@ -26,7 +26,7 @@ The source-declaration test intentionally ignores line-zero registry seed rows;
 otherwise a seeded global such as `contains` would incorrectly suppress its
 receiver contract.
 
-The compact registry currently contains 202 global spellings, 42 Text receiver,
+The compact registry currently contains 203 global spellings, 42 Text receiver,
 11 Regex receiver, 9 Map receiver, 4 Set receiver, and 14 Array receiver spellings. The table below names the strict
 scalar/text/regex core; filesystem, directory, process, environment, stream,
 and time families use the same row format and are covered by the registry
@@ -60,13 +60,14 @@ inference, variadic shape, and f-string lowerer all consume the same
 | Boolean quantifiers | `any`, `all` | one iterable/range with short-circuit state-machine lowering; registry rows select the `Equal` result primitive and preserve boolean output |
 | Numeric parsing/formatting | `parse_int`, `format_int`, `parse_float`, `format_float` | checked `i64`/`f64` conversions; parsers require `ParseError` |
 | Scalar formatting | `format_bool`, `format_char` | one scalar to `sview` |
-| Regex facades | `matches`, `replace_regex`, `split_regex`, `find_regex`, `capture_regex`, `captures_regex` | text/`Regex` operands; `bool`, `sview`, or `darray[sview]` result |
+| Regex facades | `matches`, `replace_regex`, `split_regex`, `find_regex`, `capture_regex`, `captures_regex`, `regex_count` | text/`Regex` operands; `bool`, `sview`, `usize`, or `darray[sview]` result |
 
 The global regex facades `matches`, `replace_regex`, `split_regex`,
-`find_regex`, `capture_regex`, and `captures_regex` are registry-backed as
+`find_regex`, `capture_regex`, `captures_regex`, and `regex_count` are registry-backed as
 well. Their descriptors distinguish text haystacks, nominal `Regex` patterns,
 and replacement text; the aggregate forms preserve a `darray[sview]` result
-through structural inference.
+through structural inference, while `regex_count` returns the `usize` length of
+the bounded `RegexFind` result.
 
 The receiver-aware `Text` rows currently cover `len`, `lower`, `upper`, `casefold`,
 `starts_with`/`startswith`, `ends_with`/`endswith`, `replace`, `strip`,

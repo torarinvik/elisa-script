@@ -755,6 +755,8 @@ unsupported layouts and missing matches return an empty array.
 `Regex.count(text)` is a registry-described `RegexFind,Length` composition and
 returns the exact `usize` count of non-overlapping matches, including the
 single zero-width match at an anchored start and zero for a missing pattern.
+The pattern-first global `regex_count(pattern, text)` uses the same composition
+and operand ordering as the other `regex_*` facades.
 
 `Map` is the closed aggregate counterpart to `Array`. Its `Type` descriptor carries
 one exact scalar key type and one recursively represented value type within the
