@@ -464,3 +464,9 @@ typed step sequence, validates mode-specific ordering, and exposes explicit
 step completion, failure, and cancellation transitions. The focused IR
 fixture and check_cli_workflow.sh audit are static evidence; host execution of
 check/test/fmt/doc remains open.
+
+ES-SCRIPT-009 | EsCsvMaterialize supplies bounded source field spans, contiguous
+record layout, quote markers, shared field/record ceilings, and validated slice
+lookup for CSV/TSV adapters. The focused IR fixture and
+check_csv_materializer.sh audit are static evidence; quote unescaping,
+newline policy, and typed row construction remain open.

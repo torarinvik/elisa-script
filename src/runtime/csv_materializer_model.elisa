@@ -1,0 +1,146 @@
+# Typed CSV/TSV field materialization boundary.
+#
+# The streaming parser owns quote/separator recognition; this layer owns
+# bounded source slices and record layout. Fields remain borrowed spans into
+# the validated source, so no adapter can hand a consumer an unbounded or
+# cross-record slice. Quote unescaping and typed schema conversion remain
+# separate phases.
+
+module EsCsvMaterialize:
+    using EsData
+
+    public:
+        const CSV_MATERIALIZER_MAX_FIELDS: usize = DATA_MAX_FIELDS
+        const CSV_MATERIALIZER_MAX_RECORDS: usize = DATA_MAX_RECORDS
+
+
+        const enum CsvMaterializerState of u8:
+            Ready
+            Building
+            Complete
+            Failed
+            Cancelled
+
+
+        const enum CsvMaterializerEvent of u8:
+            Begin
+            Field
+            Record
+            End
+            Fail
+            Cancel
+
+
+        struct CsvFieldSpan:
+            start: usize
+            end: usize
+            quoted: bool = false
+
+
+        struct CsvRecordSpan:
+            first_field: usize
+            field_count: usize
+
+
+        struct CsvMaterializer:
+            source: sview
+            state: CsvMaterializerState = CsvMaterializerState.Ready
+            fields: darray[CsvFieldSpan] = []
+            records: darray[CsvRecordSpan] = []
+            next_field: usize = 0
+            record_field_cursor: usize = 0
+            source_bytes: usize = 0
+
+
+        error CsvMaterializerError:
+            InvalidState
+            InvalidEvent
+            SourceInvalid
+            FieldLimitExceeded
+            RecordLimitExceeded
+            FieldIndexInvalid
+            FieldRangeInvalid
+            FieldOrderInvalid
+            EmptyRecord
+            RecordOrderInvalid
+            SourceAccountingInvalid
+            EndNotReady
+            CancelNotReady
+
+
+    private:
+        def materializer_state_valid(state: CsvMaterializerState) -> bool:
+            return state in {CsvMaterializerState.Ready, CsvMaterializerState.Building, CsvMaterializerState.Complete, CsvMaterializerState.Failed, CsvMaterializerState.Cancelled}
+
+
+        def materializer_event_valid(event: CsvMaterializerEvent) -> bool:
+            return event in {CsvMaterializerEvent.Begin, CsvMaterializerEvent.Field, CsvMaterializerEvent.Record, CsvMaterializerEvent.End, CsvMaterializerEvent.Fail, CsvMaterializerEvent.Cancel}
+
+
+        def materializer_source_valid(source: sview) -> bool:
+            return sview_len(source) < DATA_MAX_INPUT_BYTES and not sview_contains_byte(source, 0)
+
+
+        def materializer_field_range_valid(materializer: CsvMaterializer&, span: CsvFieldSpan) -> bool:
+            return span.start <= span.end and span.end <= sview_len(materializer.source) and span.end - span.start < DATA_MAX_FIELD_BYTES
+
+
+    public:
+        def validate_csv_materializer(materializer: CsvMaterializer&) -> bool error[CsvMaterializerError]:
+            raise CsvMaterializerError.InvalidState if not materializer_state_valid(materializer.state)
+            raise CsvMaterializerError.SourceInvalid if not materializer_source_valid(materializer.source)
+            raise CsvMaterializerError.FieldLimitExceeded if materializer.fields.count > CSV_MATERIALIZER_MAX_FIELDS
+            raise CsvMaterializerError.RecordLimitExceeded if materializer.records.count > CSV_MATERIALIZER_MAX_RECORDS
+            raise CsvMaterializerError.SourceAccountingInvalid if materializer.state != CsvMaterializerState.Ready and materializer.source_bytes != sview_len(materializer.source)
+            raise CsvMaterializerError.RecordOrderInvalid if materializer.next_field > materializer.fields.count
+            raise CsvMaterializerError.RecordOrderInvalid if materializer.record_field_cursor > materializer.fields.count
+            for index in 0..<materializer.fields.count |materializer|:
+                span: CsvFieldSpan = materializer.fields[index]
+                raise CsvMaterializerError.FieldRangeInvalid if not materializer_field_range_valid(materializer, span)
+                raise CsvMaterializerError.FieldOrderInvalid if index != 0 and span.start < materializer.fields[index - 1].end
+            for record in materializer.records:
+                raise CsvMaterializerError.EmptyRecord if record.field_count == 0
+                raise CsvMaterializerError.RecordOrderInvalid if record.first_field > materializer.fields.count or record.field_count > materializer.fields.count - record.first_field
+            return true
+
+
+        def csv_materialized_field(materializer: CsvMaterializer&, field_index: usize) -> sview error[CsvMaterializerError]:
+            try validate_csv_materializer(materializer)
+            raise CsvMaterializerError.FieldIndexInvalid if field_index >= materializer.fields.count
+            span: CsvFieldSpan = materializer.fields[field_index]
+            return materializer.source[span.start:span.end]
+
+
+        def advance_csv_materializer(materializer: mutable CsvMaterializer&, event: CsvMaterializerEvent, start: usize = 0, end: usize = 0, quoted: bool = false, first_field: usize = 0, field_count: usize = 0) -> CsvMaterializerState error[CsvMaterializerError]:
+            try validate_csv_materializer(materializer)
+            raise CsvMaterializerError.InvalidEvent if not materializer_event_valid(event)
+            if event == CsvMaterializerEvent.Begin:
+                raise CsvMaterializerError.InvalidState if materializer.state != CsvMaterializerState.Ready
+                materializer.source_bytes <- sview_len(materializer.source)
+                materializer.state <- CsvMaterializerState.Building
+            elif event == CsvMaterializerEvent.Field:
+                raise CsvMaterializerError.InvalidState if materializer.state != CsvMaterializerState.Building
+                raise CsvMaterializerError.FieldLimitExceeded if materializer.fields.count >= CSV_MATERIALIZER_MAX_FIELDS
+                span: CsvFieldSpan = CsvFieldSpan{start: start, end: end, quoted: quoted}
+                raise CsvMaterializerError.FieldRangeInvalid if not materializer_field_range_valid(materializer, span)
+                materializer.fields.push(span)
+                materializer.next_field <- materializer.next_field + 1
+            elif event == CsvMaterializerEvent.Record:
+                raise CsvMaterializerError.InvalidState if materializer.state != CsvMaterializerState.Building
+                raise CsvMaterializerError.RecordLimitExceeded if materializer.records.count >= CSV_MATERIALIZER_MAX_RECORDS
+                raise CsvMaterializerError.EmptyRecord if field_count == 0
+                raise CsvMaterializerError.RecordOrderInvalid if first_field != materializer.record_field_cursor
+                raise CsvMaterializerError.RecordOrderInvalid if field_count > materializer.fields.count - first_field
+                materializer.records.push(CsvRecordSpan{first_field: first_field, field_count: field_count})
+                materializer.record_field_cursor <- materializer.record_field_cursor + field_count
+            elif event == CsvMaterializerEvent.End:
+                raise CsvMaterializerError.EndNotReady if materializer.state != CsvMaterializerState.Building
+                raise CsvMaterializerError.RecordOrderInvalid if materializer.record_field_cursor != materializer.fields.count
+                materializer.state <- CsvMaterializerState.Complete
+            elif event == CsvMaterializerEvent.Fail:
+                raise CsvMaterializerError.InvalidState if materializer.state != CsvMaterializerState.Building
+                materializer.state <- CsvMaterializerState.Failed
+            elif event == CsvMaterializerEvent.Cancel:
+                raise CsvMaterializerError.CancelNotReady if materializer.state != CsvMaterializerState.Building
+                materializer.state <- CsvMaterializerState.Cancelled
+            return materializer.state

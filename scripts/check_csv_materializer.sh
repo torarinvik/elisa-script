@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+
+# Compiler-free audit for bounded CSV/TSV field-span materialization.
+set -euo pipefail
+
+script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
+model="$repo_root/src/runtime/csv_materializer_model.elisa"
+csv_model="$repo_root/src/runtime/csv_model.elisa"
+ir="$repo_root/src/ir/ir.elisa"
+fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
+docs="$repo_root/docs/ir.md"
+ledger="$repo_root/docs/capabilities/ledger.md"
+plan="$repo_root/IMPLEMENTATION_PLAN.md"
+
+for required_file in "$model" "$csv_model" "$ir" "$fixture" "$docs" "$ledger" "$plan"; do
+    [[ -f "$required_file" ]] || { printf 'csv materializer audit: missing %s\n' "$required_file" >&2; exit 1; }
+done
+
+for declaration in \
+    'module EsCsvMaterialize:' \
+    'CSV_MATERIALIZER_MAX_FIELDS' \
+    'CSV_MATERIALIZER_MAX_RECORDS' \
+    'const enum CsvMaterializerState of u8:' \
+    'const enum CsvMaterializerEvent of u8:' \
+    'struct CsvFieldSpan:' \
+    'struct CsvRecordSpan:' \
+    'struct CsvMaterializer:' \
+    'error CsvMaterializerError:' \
+    'def validate_csv_materializer(' \
+    'def csv_materialized_field(' \
+    'def advance_csv_materializer('; do
+    rg -Fq "$declaration" "$model"
+done
+
+for boundary in \
+    'materializer_field_range_valid' \
+    'record_field_cursor' \
+    'FieldLimitExceeded' \
+    'RecordLimitExceeded' \
+    'FieldRangeInvalid' \
+    'FieldOrderInvalid' \
+    'RecordOrderInvalid' \
+    'SourceAccountingInvalid' \
+    'EndNotReady'; do
+    rg -Fq "$boundary" "$model"
+done
+
+rg -Fq 'include "../runtime/csv_materializer_model.elisa"' "$ir"
+rg -Fq 'using EsCsvMaterialize' "$fixture"
+for fixture_pattern in \
+    'typed_csv_materializer_contract_preserves_bounded_field_spans' \
+    'CsvMaterializerEvent.Field' \
+    'CsvMaterializerEvent.Record' \
+    'csv_materialized_field' \
+    'CsvMaterializerError.FieldIndexInvalid'; do
+    rg -Fq "$fixture_pattern" "$fixture"
+done
+
+rg -Fq 'EsCsvMaterialize gives CSV/TSV adapters an explicit borrowed-span boundary' "$docs"
+rg -Fq 'ES-SCRIPT-009 | EsCsvMaterialize' "$ledger"
+rg -Fq 'explicit EsCsvMaterialize' "$plan"
+
+printf 'csv materializer audit: bounded field spans, contiguous records, quote markers, shared ceilings, and validated slices are present\n'
