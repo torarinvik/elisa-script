@@ -19,6 +19,11 @@ if [[ ! -f "$roots_file" ]]; then
     exit 2
 fi
 
+canonical_coding_projects_root="$(CDPATH= cd -- "$coding_projects_root" && pwd -P)" || {
+    printf 'migration roots audit: unable to canonicalize coding-projects root\n' >&2
+    exit 2
+}
+
 if ! awk -F '\t' '
     NR == 1 {
         if ($0 != "# name\trelative_path\towner\treview_status") bad = 1
@@ -52,6 +57,18 @@ while IFS="$tab" read -r root_name relative_path owner review_status; do
         printf 'migration roots audit: declared root is missing: %s\n' "$root_path" >&2
         exit 1
     fi
+    canonical_root_path="$(CDPATH= cd -- "$root_path" && pwd -P)" || {
+        printf 'migration roots audit: unable to canonicalize declared root: %s\n' "$root_path" >&2
+        exit 1
+    }
+    case "$canonical_root_path" in
+        "$canonical_coding_projects_root"|"$canonical_coding_projects_root"/*)
+            ;;
+        *)
+            printf 'migration roots audit: declared root escapes coding-projects tree through a symlink: %s\n' "$root_path" >&2
+            exit 1
+            ;;
+    esac
 done < "$roots_file"
 
 printf 'migration roots audit: manifest shape, ownership, and declared directories are valid\n'

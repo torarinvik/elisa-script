@@ -76,4 +76,10 @@ if ! rg -q 'check_migration_roots\.sh' "$roots_audit" "$schema_file"; then
     printf 'migration inventory audit: root ownership audit is not documented\n' >&2
     exit 1
 fi
+for containment_file in "$coordinator" "$roots_audit"; do
+    if ! rg -q 'pwd -P' "$containment_file" || ! rg -q 'canonical_root_path' "$containment_file" || ! rg -q 'escapes coding-projects tree' "$containment_file"; then
+        printf 'migration inventory audit: %s lacks canonical root containment checks\n' "$containment_file" >&2
+        exit 1
+    fi
+done
 printf 'migration inventory audit: partition manifest and bounded read-only scanners present\n'

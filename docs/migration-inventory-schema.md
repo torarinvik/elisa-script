@@ -19,6 +19,10 @@ row. A malformed row, missing root, or per-root budget failure terminates the
 coordinator; it never silently skips a declared project. Partitioning keeps
 discovery within the measured resource envelope after a broad traversal proved
 too expensive.
+Both tools canonicalize the configured root and every declared directory with
+`pwd -P`, reject a symlink-resolved path that escapes the coding-projects tree,
+and pass only the canonical in-tree path to scanners. Report metadata retains
+the declared manifest path for review.
 
 The first row is the exact header. Every later row has these fields:
 

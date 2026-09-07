@@ -26,6 +26,10 @@ if [ ! -f "$roots_tsv" ]; then
     echo "inventory_project_roots: root manifest does not exist: $roots_tsv" >&2
     exit 2
 fi
+canonical_coding_projects_root="$(CDPATH= cd -- "$coding_projects_root" && pwd -P)" || {
+    echo "inventory_project_roots: unable to canonicalize coding-projects root" >&2
+    exit 2
+}
 
 workspace_tmp="$(mktemp -d "${TMPDIR:-/tmp}/elisascript-inventory-roots.XXXXXX")" || {
     echo "inventory_project_roots: unable to create private temporary directory" >&2
@@ -62,14 +66,26 @@ while IFS="$tab" read -r root_name relative_path owner review_status; do
         echo "inventory_project_roots: declared root is missing: $root_path" >&2
         exit 3
     fi
+    canonical_root_path="$(CDPATH= cd -- "$root_path" && pwd -P)" || {
+        echo "inventory_project_roots: unable to canonicalize declared root: $root_path" >&2
+        exit 3
+    }
+    case "$canonical_root_path" in
+        "$canonical_coding_projects_root"|"$canonical_coding_projects_root"/*)
+            ;;
+        *)
+            echo "inventory_project_roots: declared root escapes coding-projects tree through a symlink: $root_path" >&2
+            exit 3
+            ;;
+    esac
 
     candidate_output="$workspace_tmp/candidates.$line_number.tsv"
     signal_output="$workspace_tmp/signals.$line_number.tsv"
-    if ! "$script_dir/inventory_candidates.sh" "$root_path" >"$candidate_output"; then
+    if ! "$script_dir/inventory_candidates.sh" "$canonical_root_path" >"$candidate_output"; then
         echo "inventory_project_roots: candidate scan failed for $root_name" >&2
         exit 3
     fi
-    if ! "$script_dir/inventory_signals.sh" "$root_path" >"$signal_output"; then
+    if ! "$script_dir/inventory_signals.sh" "$canonical_root_path" >"$signal_output"; then
         echo "inventory_project_roots: signal scan failed for $root_name" >&2
         exit 3
     fi
