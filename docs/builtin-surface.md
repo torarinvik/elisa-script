@@ -27,7 +27,7 @@ otherwise a seeded global such as `contains` would incorrectly suppress its
 receiver contract.
 
 The compact registry currently contains 202 global spellings, 42 Text receiver,
-9 Regex receiver, 9 Map receiver, 4 Set receiver, and 14 Array receiver spellings. The table below names the strict
+10 Regex receiver, 9 Map receiver, 4 Set receiver, and 14 Array receiver spellings. The table below names the strict
 scalar/text/regex core; filesystem, directory, process, environment, stream,
 and time families use the same row format and are covered by the registry
 audit.
@@ -90,13 +90,15 @@ verified `Length` operation as global `len(text)`; `split` and
 while both line-splitting aliases take no arguments and return `darray[sview]`.
 
 The receiver-aware `Regex` rows cover `search`, `match`, `fullmatch`,
-`findall`/`find_all`, `capture`/`captures`, `split`, and `sub`. Matching,
-finding, capturing, and splitting take one positional text haystack and return
-`bool` or `darray[sview]` as declared; `sub` takes positional replacement and
-haystack text and returns `sview`. Regex rows exclude the receiver from arity,
-reject named arguments, reuse the existing `RegexSearch`, `RegexFind`,
-`RegexCapture`, `RegexSplit`, and `RegexReplace` opcodes, and preserve the same
-source-declaration precedence in semantic checking, inference, and lowering.
+`findall`/`find_all`, `capture`/`captures`, `capture_names`, `split`, and `sub`.
+Matching, finding, capturing, and splitting take one positional text haystack
+and return `bool` or `darray[sview]` as declared; `capture_names` returns the
+first match's positional group-name descriptors (empty text for unnamed
+groups), while `sub` takes positional replacement and haystack text and returns
+`sview`. Regex rows exclude the receiver from arity, reject named arguments,
+reuse the existing `RegexSearch`, `RegexFind`, `RegexCapture`, `RegexSplit`,
+and `RegexReplace` opcodes, and preserve the same source-declaration precedence
+in semantic checking, inference, and lowering.
 
 Semantic builtin seeding consults `EsBuiltin::typed_builtin_spec` and stores
 the row's `arity_min`, `arity_max`, `return_type`, `effects`, `errors`, and

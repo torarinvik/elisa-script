@@ -17,6 +17,8 @@ literal_argument_file="$repo_root/vendor/elisa-compiler/src/semantic/check_liter
 inference_file="$repo_root/vendor/elisa-compiler/src/semantic/resolve_types_infer.elisa"
 structural_inference_file="$repo_root/vendor/elisa-compiler/src/semantic/resolve_types.elisa"
 lowerer_file="$repo_root/src/ir/lower_ast.elisa"
+interpreter_file="$repo_root/src/ir/interpret.elisa"
+bytecode_file="$repo_root/src/bytecode/bytecode.elisa"
 opcode_file="$repo_root/src/ir/ir_model.elisa"
 verifier_file="$repo_root/src/ir/ir_verify.elisa"
 lowering_test_file="$repo_root/test/ir/elisascript_lowering_test.elisa"
@@ -24,7 +26,7 @@ semantic_test_file="$repo_root/test/semantic/elisascript_semantic_test.elisa"
 surface_doc="$repo_root/docs/builtin-surface.md"
 ledger_doc="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$registry_file" "$semantic_file" "$receiver_semantic_file" "$firm_argument_file" "$literal_argument_file" "$inference_file" "$structural_inference_file" "$lowerer_file" "$opcode_file" "$verifier_file" "$lowering_test_file" "$semantic_test_file" "$surface_doc" "$ledger_doc"; do
+for required_file in "$registry_file" "$semantic_file" "$receiver_semantic_file" "$firm_argument_file" "$literal_argument_file" "$inference_file" "$structural_inference_file" "$lowerer_file" "$interpreter_file" "$bytecode_file" "$opcode_file" "$verifier_file" "$lowering_test_file" "$semantic_test_file" "$surface_doc" "$ledger_doc"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'builtin registry audit: missing file: %s\n' "$required_file" >&2
         exit 2
@@ -2228,6 +2230,14 @@ for regex_search_pair in search:0 match:1 fullmatch:2; do
         exit 1
     fi
 done
+if ! rg -q 'name: "capture_names", receiver: "Regex".*argument_types: "text".*return_type: "darray\[text\]".*effects: "".*errors: "".*opcode: "RegexCapture".*lowering_mode: 1' "$registry_file" || \
+   ! rg -q 'def evaluate_regex_capture\(machine: mutable Machine&.*mode: i64 = 0' "$interpreter_file" || \
+   ! rg -q 'mode == 1' "$interpreter_file" || \
+   ! rg -q 'regex_capture_value\(storage, regex_text\.text, regex_pattern\.text, instruction\.integer\)' "$bytecode_file" || \
+   ! rg -q 'valid_mode: bool = instruction\.integer in \{0, 1\}' "$verifier_file"; then
+    printf 'builtin registry audit: Regex.capture_names mode contract is incomplete\n' >&2
+    exit 1
+fi
 if ! rg -q 'def lower_regex_method\(receiver_expression: Ast::Expr, method_name: sview, arguments:' "$lowerer_file" || \
    ! rg -q 'method_spec\.known and \(method_spec\.opcode == "RegexSearch" or method_spec\.opcode == "RegexFind" or method_spec\.opcode == "RegexCapture"\)' "$lowerer_file" || \
    ! rg -q 'mode: i64 = method_spec\.lowering_mode' "$lowerer_file" || \
