@@ -46,7 +46,8 @@ outside the pinned StructPy `compiler/bin/elisac` suffix and fail closed unless
 
 The checked-in wrappers now require an absolute `setsid` helper, launch each
 future compiler in a private process group, aggregate RSS by process group, and
-retain descendant snapshot cleanup as a fallback. This is a static contract
+retain descendant snapshot cleanup as a fallback. The scoped emergency stopper
+also signals only private child groups found in its verified snapshot. This is a static contract
 change only; no wrapper or compiler process was launched for this record, and
 synthetic watchdog coverage remains outstanding.
 

@@ -37,4 +37,7 @@ done
 rg -q 'emergency-stop latch' "$stopper"
 rg -q 'owner\.start' "$stopper"
 rg -q 'process_tree_snapshot' "$stopper"
+rg -q 'process_group_for_pid' "$stopper"
+rg -q 'kill -TERM -- "-\$process_group_id"' "$stopper"
+rg -q 'kill -KILL -- "-\$process_group_id"' "$stopper"
 printf 'validation wrapper audit: disabled gate, StructPy pin, RSS guard, lease, and owned stop path present\n'

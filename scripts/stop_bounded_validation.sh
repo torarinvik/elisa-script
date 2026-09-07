@@ -72,13 +72,38 @@ process_tree_pids() {
     done
 }
 
+process_group_for_pid() {
+    ps -o pgid= -p "$1" 2>/dev/null | tr -d '[:space:]'
+}
+
+owner_group_id="$(process_group_for_pid "$owner_pid")"
+case "$owner_group_id" in
+    ''|*[!0-9]*)
+        echo "stop_bounded_validation: wrapper process group is unverifiable; refusing to signal" >&2
+        exit 125
+        ;;
+esac
 process_tree_snapshot="$(process_tree_pids "$owner_pid")"
+for process_tree_pid in $process_tree_snapshot; do
+    process_group_id="$(process_group_for_pid "$process_tree_pid")"
+    case "$process_group_id" in
+        ''|*[!0-9]*|"$owner_group_id") ;;
+        *) kill -TERM -- "-$process_group_id" 2>/dev/null || true ;;
+    esac
+done
 for process_tree_pid in $process_tree_snapshot; do
     kill -TERM "$process_tree_pid" 2>/dev/null || true
 done
 sleep 1
 for process_tree_pid in $process_tree_snapshot; do
+    process_group_id="$(process_group_for_pid "$process_tree_pid")"
+    case "$process_group_id" in
+        ''|*[!0-9]*|"$owner_group_id") ;;
+        *) kill -KILL -- "-$process_group_id" 2>/dev/null || true ;;
+    esac
+done
+for process_tree_pid in $process_tree_snapshot; do
     kill -KILL "$process_tree_pid" 2>/dev/null || true
 done
 
-echo "stop_bounded_validation: emergency stop sent to the verified wrapper tree; latch remains set"
+echo "stop_bounded_validation: emergency stop sent to the verified wrapper tree and private child groups; latch remains set"

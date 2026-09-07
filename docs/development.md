@@ -63,8 +63,9 @@ the lease does not turn the polling RSS guard into an instantaneous OS-enforced
 cap. `scripts/stop_bounded_validation.sh` is the scoped emergency stop: it
 atomically creates the directory `${TMPDIR:-/tmp}/elisascript-validation.disabled`, verifies the live lease
 owner's PID, start identity, and wrapper command, then terminates only that
-wrapper's snapshotted process tree. Any RSS, timeout, or diagnostic-log guard
-trip also sets this latch. Both validation wrappers refuse to relaunch while
+wrapper's snapshotted process tree and the private child groups represented in
+that snapshot, never the wrapper's own group. Any RSS, timeout, or diagnostic-log
+guard trip also sets this latch. Both validation wrappers refuse to relaunch while
 the latch exists; remove it manually only after reviewing the failure and
 deciding to reauthorize a smaller bounded run.
 
