@@ -650,6 +650,15 @@ The focused IR fixture, namespace inclusion, documentation, and
 check_process_batch.sh audit are static evidence; scheduler ownership, actual
 pipe/process adapters, signal escalation, and execution evidence remain open.
 
+ES-SCRIPT-034 | EsRecordSpill supplies a bounded external-sort run contract.
+Distinct staging/run/destination paths, stable run ordinals, per-run and
+aggregate record/byte ceilings, explicit `SealRun → BeginMerge → MergeRun* →
+Commit` ordering, ordered merge indices, and failure/cancellation cleanup
+edges are validated through `error[RecordSpillError]`. The focused IR fixture,
+namespace inclusion, documentation, and check_record_spill.sh audit are static
+evidence; sorting, fsync/rename, cleanup, crash recovery, and host execution
+remain open.
+
 ES-SCRIPT-029 | EsRecordControl supplies explicit bounded `next`/`nextfile`/
 exit transitions for pattern-action adapters. It closes record/file ownership
 on skips, rejects record events outside files and premature file closure, caps

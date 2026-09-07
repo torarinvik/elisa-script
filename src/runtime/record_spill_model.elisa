@@ -1,0 +1,197 @@
+# Bounded external-sort spill and merge contract for record streams.
+#
+# The host owns temporary files and actual sorting. This state machine owns run
+# order, byte/record ceilings, staging-path identity, merge admission, and
+# cleanup-safe terminal transitions.
+
+module EsRecordSpill:
+    public:
+        const RECORD_SPILL_MAX_RUNS: usize = 4096
+        const RECORD_SPILL_MAX_RECORDS_PER_RUN: usize = 1048576
+        const RECORD_SPILL_MAX_TOTAL_RECORDS: usize = 16777216
+        const RECORD_SPILL_MAX_RUN_BYTES: usize = 67108864
+        const RECORD_SPILL_MAX_TOTAL_BYTES: usize = 268435456
+        const RECORD_SPILL_MAX_PATH_BYTES: usize = 4096
+
+
+        const enum RecordSpillState of u8:
+            Planned
+            Spilling
+            Ready
+            Merging
+            Sealed
+            Failed
+            Cancelled
+
+
+        const enum RecordSpillEvent of u8:
+            Begin
+            StartRun
+            Append
+            SealRun
+            BeginMerge
+            MergeRun
+            Commit
+            Fail
+            Cancel
+
+
+        struct RecordSpillPolicy:
+            max_runs: usize = RECORD_SPILL_MAX_RUNS
+            max_records_per_run: usize = RECORD_SPILL_MAX_RECORDS_PER_RUN
+            max_total_records: usize = RECORD_SPILL_MAX_TOTAL_RECORDS
+            max_run_bytes: usize = RECORD_SPILL_MAX_RUN_BYTES
+            max_total_bytes: usize = RECORD_SPILL_MAX_TOTAL_BYTES
+            staging_directory: sview
+            destination: sview
+
+
+        struct RecordSpillRun:
+            ordinal: usize
+            path: sview
+            records: usize = 0
+            bytes: usize = 0
+            sealed: bool = false
+
+
+        struct RecordSpillSession:
+            policy: RecordSpillPolicy
+            state: RecordSpillState = RecordSpillState.Planned
+            runs: darray[RecordSpillRun] = []
+            active_run: usize = 0
+            has_active_run: bool = false
+            merged_runs: usize = 0
+            total_records: usize = 0
+            total_bytes: usize = 0
+
+
+        error RecordSpillError:
+            InvalidState
+            InvalidEvent
+            InvalidPolicy
+            InvalidPath
+            EmbeddedNul
+            PathLimitExceeded
+            RunLimitExceeded
+            RecordLimitExceeded
+            ByteLimitExceeded
+            InvalidOrdinal
+            RunIndexInvalid
+            RunNotActive
+            RunNotSealed
+            RunAlreadySealed
+            MergeOrderInvalid
+            DestinationCollision
+            AccountingInvalid
+            CancelNotReady
+
+
+    private:
+        def record_spill_state_valid(state: RecordSpillState) -> bool:
+            return state in {RecordSpillState.Planned, RecordSpillState.Spilling, RecordSpillState.Ready, RecordSpillState.Merging, RecordSpillState.Sealed, RecordSpillState.Failed, RecordSpillState.Cancelled}
+
+
+        def record_spill_event_valid(event: RecordSpillEvent) -> bool:
+            return event in {RecordSpillEvent.Begin, RecordSpillEvent.StartRun, RecordSpillEvent.Append, RecordSpillEvent.SealRun, RecordSpillEvent.BeginMerge, RecordSpillEvent.MergeRun, RecordSpillEvent.Commit, RecordSpillEvent.Fail, RecordSpillEvent.Cancel}
+
+
+        def record_spill_policy_valid(policy: RecordSpillPolicy) -> bool:
+            return policy.max_runs != 0 and policy.max_runs <= RECORD_SPILL_MAX_RUNS and policy.max_records_per_run != 0 and policy.max_records_per_run <= RECORD_SPILL_MAX_RECORDS_PER_RUN and policy.max_total_records != 0 and policy.max_total_records <= RECORD_SPILL_MAX_TOTAL_RECORDS and policy.max_run_bytes != 0 and policy.max_run_bytes <= RECORD_SPILL_MAX_RUN_BYTES and policy.max_total_bytes != 0 and policy.max_total_bytes <= RECORD_SPILL_MAX_TOTAL_BYTES and sview_len(policy.staging_directory) != 0 and sview_len(policy.destination) != 0 and sview_len(policy.staging_directory) < RECORD_SPILL_MAX_PATH_BYTES and sview_len(policy.destination) < RECORD_SPILL_MAX_PATH_BYTES and not sview_contains_byte(policy.staging_directory, 0) and not sview_contains_byte(policy.destination, 0) and policy.staging_directory != policy.destination
+
+
+        def record_spill_path_valid(path: sview) -> bool:
+            return sview_len(path) != 0 and sview_len(path) < RECORD_SPILL_MAX_PATH_BYTES and not sview_contains_byte(path, 0)
+
+
+        def record_spill_bounded_add(current: usize, delta: usize, limit: usize) -> bool:
+            return current <= limit and delta <= limit - current
+
+
+    public:
+        def validate_record_spill(session: RecordSpillSession&) -> bool error[RecordSpillError]:
+            raise RecordSpillError.InvalidState if not record_spill_state_valid(session.state)
+            raise RecordSpillError.InvalidPolicy if not record_spill_policy_valid(session.policy)
+            raise RecordSpillError.RunLimitExceeded if session.runs.count > session.policy.max_runs
+            raise RecordSpillError.RecordLimitExceeded if session.total_records > session.policy.max_total_records
+            raise RecordSpillError.ByteLimitExceeded if session.total_bytes > session.policy.max_total_bytes
+            raise RecordSpillError.AccountingInvalid if session.merged_runs > session.runs.count
+            if session.has_active_run:
+                raise RecordSpillError.RunIndexInvalid if session.active_run >= session.runs.count
+                raise RecordSpillError.RunAlreadySealed if session.runs[session.active_run].sealed
+            accounted_records: mutable usize = 0
+            accounted_bytes: mutable usize = 0
+            for index in 0..<session.runs.count |session, accounted_records, accounted_bytes|:
+                run: RecordSpillRun = session.runs[index]
+                raise RecordSpillError.InvalidOrdinal if run.ordinal != index
+                raise RecordSpillError.InvalidPath if not record_spill_path_valid(run.path)
+                raise RecordSpillError.RecordLimitExceeded if run.records > session.policy.max_records_per_run
+                raise RecordSpillError.ByteLimitExceeded if run.bytes > session.policy.max_run_bytes
+                raise RecordSpillError.RecordLimitExceeded if not record_spill_bounded_add(accounted_records, run.records, session.policy.max_total_records)
+                raise RecordSpillError.ByteLimitExceeded if not record_spill_bounded_add(accounted_bytes, run.bytes, session.policy.max_total_bytes)
+                accounted_records <- accounted_records + run.records
+                accounted_bytes <- accounted_bytes + run.bytes
+                for earlier in 0..<index |session, run|:
+                    raise RecordSpillError.DestinationCollision if session.runs[earlier].path == run.path
+            raise RecordSpillError.AccountingInvalid if accounted_records != session.total_records or accounted_bytes != session.total_bytes
+            return true
+
+
+        def advance_record_spill(session: mutable RecordSpillSession&, event: RecordSpillEvent, path: sview = "", run_index: usize = 0, records: usize = 1, bytes: usize = 0) -> RecordSpillState error[RecordSpillError]:
+            try validate_record_spill(session)
+            raise RecordSpillError.InvalidEvent if not record_spill_event_valid(event)
+            if event == RecordSpillEvent.Begin:
+                raise RecordSpillError.InvalidState if session.state != RecordSpillState.Planned
+                session.state <- RecordSpillState.Spilling
+            elif event == RecordSpillEvent.StartRun:
+                raise RecordSpillError.InvalidState if session.state != RecordSpillState.Spilling and session.state != RecordSpillState.Ready
+                raise RecordSpillError.RunNotActive if session.has_active_run
+                raise RecordSpillError.RunLimitExceeded if session.runs.count >= session.policy.max_runs
+                raise RecordSpillError.InvalidPath if not record_spill_path_valid(path)
+                raise RecordSpillError.DestinationCollision if path == session.policy.destination or path == session.policy.staging_directory
+                for run in session.runs:
+                    raise RecordSpillError.DestinationCollision if run.path == path
+                session.runs.push(RecordSpillRun{ordinal: session.runs.count, path: path})
+                session.active_run <- session.runs.count - 1
+                session.has_active_run <- true
+            elif event == RecordSpillEvent.Append:
+                raise RecordSpillError.InvalidState if session.state != RecordSpillState.Spilling
+                raise RecordSpillError.RunNotActive if not session.has_active_run
+                raise RecordSpillError.RecordLimitExceeded if records == 0 or records > session.policy.max_records_per_run - session.runs[session.active_run].records
+                raise RecordSpillError.ByteLimitExceeded if not record_spill_bounded_add(session.runs[session.active_run].bytes, bytes, session.policy.max_run_bytes)
+                raise RecordSpillError.RecordLimitExceeded if not record_spill_bounded_add(session.total_records, records, session.policy.max_total_records)
+                raise RecordSpillError.ByteLimitExceeded if not record_spill_bounded_add(session.total_bytes, bytes, session.policy.max_total_bytes)
+                session.runs[session.active_run].records <- session.runs[session.active_run].records + records
+                session.runs[session.active_run].bytes <- session.runs[session.active_run].bytes + bytes
+                session.total_records <- session.total_records + records
+                session.total_bytes <- session.total_bytes + bytes
+            elif event == RecordSpillEvent.SealRun:
+                raise RecordSpillError.InvalidState if session.state != RecordSpillState.Spilling
+                raise RecordSpillError.RunNotActive if not session.has_active_run
+                session.runs[session.active_run].sealed <- true
+                session.has_active_run <- false
+                session.state <- RecordSpillState.Ready
+            elif event == RecordSpillEvent.BeginMerge:
+                raise RecordSpillError.InvalidState if session.state != RecordSpillState.Ready and session.state != RecordSpillState.Spilling
+                raise RecordSpillError.RunNotActive if session.has_active_run
+                raise RecordSpillError.RunLimitExceeded if session.runs.count == 0
+                for run in session.runs:
+                    raise RecordSpillError.RunNotSealed if not run.sealed
+                session.state <- RecordSpillState.Merging
+            elif event == RecordSpillEvent.MergeRun:
+                raise RecordSpillError.InvalidState if session.state != RecordSpillState.Merging
+                raise RecordSpillError.MergeOrderInvalid if run_index != session.merged_runs or run_index >= session.runs.count
+                raise RecordSpillError.RunNotSealed if not session.runs[run_index].sealed
+                session.merged_runs <- session.merged_runs + 1
+            elif event == RecordSpillEvent.Commit:
+                raise RecordSpillError.InvalidState if session.state != RecordSpillState.Merging
+                raise RecordSpillError.MergeOrderInvalid if session.merged_runs != session.runs.count
+                session.state <- RecordSpillState.Sealed
+            elif event == RecordSpillEvent.Fail:
+                raise RecordSpillError.InvalidState if session.state == RecordSpillState.Sealed or session.state == RecordSpillState.Failed or session.state == RecordSpillState.Cancelled
+                session.state <- RecordSpillState.Failed
+                session.has_active_run <- false
+            elif event == RecordSpillEvent.Cancel:
+                raise RecordSpillError.CancelNotReady if session.state == RecordSpillState.Sealed or session.state == RecordSpillState.Failed or session.state == RecordSpillState.Cancelled
+                session.state <- RecordSpillState.Cancelled
+                session.has_active_run <- false
+            return session.state

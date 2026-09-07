@@ -1022,6 +1022,15 @@ violations, missing/symlink policy, duplicate entries, accounting drift, and
 terminal misuse; native stat/lstat, chmod, hardlink, and race-safe traversal
 remain host responsibilities.
 
+`EsRecordSpill::RecordSpillSession` is the external-sort staging boundary.
+Runs receive stable ordinals and distinct sibling paths, append only within
+per-run and aggregate record/byte ceilings, and must cross `SealRun` before
+`BeginMerge`. Merge runs are consumed in ordinal order; `Commit` is accepted
+only after every sealed run has been merged. Destination/staging collisions,
+duplicate run paths, active-run misuse, accounting drift, and cancellation or
+failure transitions are typed through `error[RecordSpillError]`; the host owns
+sorting, temporary-file creation, fsync/rename, cleanup, and crash recovery.
+
 `EsRecordControl::RecordControlSession` makes AWK-style control keywords
 explicit: `NextRecord` closes the current record and advances to the next one,
 `NextFile` closes both record and file scopes, and `Exit` terminates cleanly from
