@@ -752,6 +752,10 @@ bytecode facade. The receiver `capture_names(text)` uses the same proven layout
 and returns positional group names, including empty text for unnamed groups;
 unsupported layouts and missing matches return an empty array.
 
+`Regex.count(text)` is a registry-described `RegexFind,Length` composition and
+returns the exact `usize` count of non-overlapping matches, including the
+single zero-width match at an anchored start and zero for a missing pattern.
+
 `Map` is the closed aggregate counterpart to `Array`. Its `Type` descriptor carries
 one exact scalar key type and one recursively represented value type within the
 inline descriptor limit; `MakeMap` consumes an even key/value

@@ -2267,6 +2267,20 @@ if ! rg -q 'name: "split", receiver: "Regex".*argument_types: "text".*return_typ
     printf 'builtin registry audit: Regex split receiver lowerer does not consume registry opcode metadata\n' >&2
     exit 1
 fi
+if ! rg -q 'name: "count", receiver: "Regex".*argument_types: "text".*return_type: "usize".*effects: "".*errors: "".*opcode: "RegexFind".*lowering_steps: "RegexFind,Length"' "$registry_file" || \
+   ! rg -q 'def lower_regex_count_method\(receiver_expression: Ast::Expr' "$lowerer_file" || \
+   ! rg -q 'method_spec\.opcode == "RegexFind" and method_spec\.lowering_steps == "RegexFind,Length"' "$lowerer_file" || \
+   ! rg -q 'opcode: Opcode\.RegexFind' "$lowerer_file" || \
+   ! rg -q 'opcode: Opcode\.Length' "$lowerer_file" || \
+   ! rg -q 'def scripting_regex_registry_return_type\(method: sview\)' "$inference_file" || \
+   ! rg -q 'return type_of_name\("usize"\) if spec\.known and spec\.return_type == "usize"' "$inference_file" || \
+   ! rg -q 'is_regex_receiver_expression\(Expr\.Ident\(receiver_name, receiver_pos\), state\) and scripting_regex_builtin_available\(state, method_name\) and method_name == "count"' "$lowerer_file" || \
+   ! rg -q 'is_regex_receiver_expression\(receiver_expression, state\) and scripting_regex_builtin_available\(state, method_name\) and method_name == "count"' "$lowerer_file" || \
+   ! rg -q 'def lowers_regex_receiver_count_as_find_then_length\(' "$lowering_test_file" || \
+   ! rg -q 'def regex_count_receiver_preserves_usize_result_shape\(' "$semantic_test_file"; then
+    printf 'builtin registry audit: Regex count composition is incomplete\n' >&2
+    exit 1
+fi
 
 if ! rg -q 'typed_builtin_spec\(builtin_name\)' "$semantic_file"; then
     printf 'builtin registry audit: semantic seed table does not consume typed_builtin_spec\n' >&2
