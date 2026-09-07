@@ -498,7 +498,7 @@ evidence; cryptographic implementation, streaming adapters, package/archive
 integration, and cross-platform digest parity remain open.
 
 ES-SCRIPT-052 | EsBinary supplies a bounded binary-cursor contract. Input and
-read-count ceilings, explicit little/big endianness, checked u8/u16/u32 reads,
+read-count ceilings, explicit little/big endianness, checked u8/u16/u32/u64 reads,
 bounded skips, truncation and state errors, and explicit no-trailing-bytes
 finish are represented through `error[BinaryError]`. The focused IR fixture,
 namespace inclusion, documentation, and check_binary.sh audit are

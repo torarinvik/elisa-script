@@ -29,6 +29,7 @@ for declaration in \
     'def binary_read_u8\(' \
     'def binary_read_u16\(' \
     'def binary_read_u32\(' \
+    'def binary_read_u64\(' \
     'def advance_binary\('; do
     rg -q "$declaration" "$model"
 done
@@ -50,6 +51,7 @@ for fixture_pattern in \
     'typed_binary_contract_checks_endianness_and_trailing_bytes' \
     'BinaryByteOrder.Little' \
     'BinaryByteOrder.Big' \
+    'binary_read_u64' \
     'BinaryError.Truncated'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
