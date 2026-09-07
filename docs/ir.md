@@ -154,6 +154,15 @@ duplicate source names, out-of-range node references, and kind mismatches are
 reported through `error[SchemaContractError]` before application code receives
 a value. CSV/TSV row adapters and generated record constructors remain open.
 
+`EsCsv` turns the `CsvPolicy` into a quote-aware streaming state machine.
+`CsvStream` counts input bytes, fields, field bytes, and records against the
+shared limits while distinguishing unquoted, quoted, escaped, and post-quote
+states. Separators inside quotes are data; doubled quotes and configured escape
+bytes are explicit transitions; malformed post-quote bytes, unterminated
+quotes, and cancellation become typed `CsvContractError` values. Field
+materialization, newline variants, and external-spill aggregation remain
+adapter work.
+
 `EsInstall` makes release publication a typed state machine. An
 `InstallPlan` names the package version, workspace/user/system scope, source,
 bytecode, or native artifact targets, destination paths, executable intent, and

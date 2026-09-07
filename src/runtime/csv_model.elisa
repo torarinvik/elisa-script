@@ -1,0 +1,176 @@
+# Quote-aware CSV/TSV streaming state machine.
+#
+# This is a parser-facing contract, not a convenience split operation. It
+# counts every input byte before interpreting separators, preserves quoted
+# delimiters, and requires an explicit terminal transition. A host adapter can
+# attach field buffers or `EsRecord` views after these transitions succeed.
+
+module EsCsv:
+    using EsData
+
+    public:
+        const CSV_MAX_RECORDS: usize = 16777216
+        const CSV_MAX_FIELDS: usize = 1048576
+        const CSV_MAX_FIELD_BYTES: usize = 67108864
+
+
+        const enum CsvStreamState of u8:
+            Ready
+            Unquoted
+            Quoted
+            Escaped
+            AfterQuote
+            Complete
+            Failed
+            Cancelled
+
+
+        const enum CsvStreamEvent of u8:
+            Begin
+            Byte
+            End
+            Fail
+            Cancel
+
+
+        struct CsvStream:
+            policy: CsvPolicy
+            limits: DataDecodeLimits = DataDecodeLimits{}
+            state: CsvStreamState = CsvStreamState.Ready
+            input_bytes: usize = 0
+            records: usize = 0
+            fields_total: usize = 0
+            fields_in_record: usize = 0
+            field_bytes: usize = 0
+
+
+        error CsvContractError:
+            InvalidState
+            InvalidEvent
+            InvalidPolicy
+            InputLimitExceeded
+            RecordLimitExceeded
+            FieldLimitExceeded
+            FieldBytesLimitExceeded
+            UnexpectedQuote
+            UnexpectedCharacterAfterQuote
+            UnexpectedEnd
+            Cancelled
+
+
+    private:
+        def csv_state_valid(state: CsvStreamState) -> bool:
+            return state in {CsvStreamState.Ready, CsvStreamState.Unquoted, CsvStreamState.Quoted, CsvStreamState.Escaped, CsvStreamState.AfterQuote, CsvStreamState.Complete, CsvStreamState.Failed, CsvStreamState.Cancelled}
+
+
+        def csv_event_valid(event: CsvStreamEvent) -> bool:
+            return event in {CsvStreamEvent.Begin, CsvStreamEvent.Byte, CsvStreamEvent.End, CsvStreamEvent.Fail, CsvStreamEvent.Cancel}
+
+
+        def csv_bounded_add(current: usize, delta: usize, limit: usize) -> bool:
+            return current <= limit and delta <= limit - current
+
+
+        def csv_limits_valid(limits: DataDecodeLimits) -> bool error[CsvContractError]:
+            raise CsvContractError.InputLimitExceeded if limits.input_bytes == 0 or limits.input_bytes > DATA_MAX_INPUT_BYTES
+            raise CsvContractError.FieldLimitExceeded if limits.fields == 0 or limits.fields > DATA_MAX_FIELDS or limits.fields > CSV_MAX_FIELDS
+            raise CsvContractError.FieldBytesLimitExceeded if limits.field_bytes == 0 or limits.field_bytes > DATA_MAX_FIELD_BYTES or limits.field_bytes > CSV_MAX_FIELD_BYTES
+            raise CsvContractError.RecordLimitExceeded if limits.records == 0 or limits.records > DATA_MAX_RECORDS or limits.records > CSV_MAX_RECORDS
+            return true
+
+
+        def csv_finish_field(stream: mutable CsvStream&) -> bool error[CsvContractError]:
+            raise CsvContractError.FieldLimitExceeded if stream.fields_in_record >= stream.limits.fields
+            raise CsvContractError.FieldLimitExceeded if not csv_bounded_add(stream.fields_total, 1, stream.limits.fields)
+            stream.fields_in_record <- stream.fields_in_record + 1
+            stream.fields_total <- stream.fields_total + 1
+            stream.field_bytes <- 0
+            return true
+
+
+        def csv_finish_record(stream: mutable CsvStream&) -> bool error[CsvContractError]:
+            try csv_finish_field(stream)
+            raise CsvContractError.RecordLimitExceeded if stream.records >= stream.limits.records
+            stream.records <- stream.records + 1
+            stream.fields_in_record <- 0
+            return true
+
+
+        def csv_add_field_byte(stream: mutable CsvStream&) -> bool error[CsvContractError]:
+            raise CsvContractError.FieldBytesLimitExceeded if not csv_bounded_add(stream.field_bytes, 1, stream.limits.field_bytes)
+            stream.field_bytes <- stream.field_bytes + 1
+            return true
+
+
+    public:
+        def validate_csv_stream(stream: CsvStream&) -> bool error[CsvContractError]:
+            raise CsvContractError.InvalidState if not csv_state_valid(stream.state)
+            try validate_csv_policy(stream.policy)
+            try csv_limits_valid(stream.limits)
+            raise CsvContractError.InputLimitExceeded if stream.input_bytes > stream.limits.input_bytes
+            raise CsvContractError.RecordLimitExceeded if stream.records > stream.limits.records
+            raise CsvContractError.FieldLimitExceeded if stream.fields_total > stream.limits.fields
+            raise CsvContractError.FieldLimitExceeded if stream.fields_in_record > stream.limits.fields
+            raise CsvContractError.FieldBytesLimitExceeded if stream.field_bytes > stream.limits.field_bytes
+            return true
+
+
+        def advance_csv_stream(stream: mutable CsvStream&, event: CsvStreamEvent, byte: u8 = 0) -> CsvStreamState error[CsvContractError]:
+            try validate_csv_stream(stream)
+            raise CsvContractError.InvalidEvent if not csv_event_valid(event)
+            if event == CsvStreamEvent.Begin:
+                raise CsvContractError.InvalidState if stream.state != CsvStreamState.Ready
+                stream.state <- CsvStreamState.Unquoted
+            elif event == CsvStreamEvent.Byte:
+                raise CsvContractError.InvalidState if stream.state != CsvStreamState.Unquoted and stream.state != CsvStreamState.Quoted and stream.state != CsvStreamState.Escaped and stream.state != CsvStreamState.AfterQuote
+                raise CsvContractError.InputLimitExceeded if not csv_bounded_add(stream.input_bytes, 1, stream.limits.input_bytes)
+                stream.input_bytes <- stream.input_bytes + 1
+                if stream.state == CsvStreamState.Unquoted:
+                    if byte == stream.policy.quote and stream.field_bytes == 0:
+                        stream.state <- CsvStreamState.Quoted
+                    elif byte == stream.policy.quote:
+                        raise CsvContractError.UnexpectedQuote
+                    elif byte == stream.policy.separator:
+                        try csv_finish_field(stream)
+                    elif byte == stream.policy.record_separator:
+                        try csv_finish_record(stream)
+                    else:
+                        try csv_add_field_byte(stream)
+                elif stream.state == CsvStreamState.Quoted:
+                    if byte == stream.policy.escape and stream.policy.escape != stream.policy.quote:
+                        stream.state <- CsvStreamState.Escaped
+                    elif byte == stream.policy.quote:
+                        stream.state <- CsvStreamState.AfterQuote
+                    else:
+                        try csv_add_field_byte(stream)
+                elif stream.state == CsvStreamState.Escaped:
+                    try csv_add_field_byte(stream)
+                    stream.state <- CsvStreamState.Quoted
+                else:
+                    if byte == stream.policy.separator:
+                        try csv_finish_field(stream)
+                        stream.state <- CsvStreamState.Unquoted
+                    elif byte == stream.policy.record_separator:
+                        try csv_finish_record(stream)
+                        stream.state <- CsvStreamState.Unquoted
+                    elif byte == stream.policy.quote and stream.policy.escape == stream.policy.quote:
+                        try csv_add_field_byte(stream)
+                        stream.state <- CsvStreamState.Quoted
+                    else:
+                        raise CsvContractError.UnexpectedCharacterAfterQuote
+            elif event == CsvStreamEvent.End:
+                raise CsvContractError.InvalidState if stream.state == CsvStreamState.Ready or stream.state == CsvStreamState.Complete or stream.state == CsvStreamState.Failed or stream.state == CsvStreamState.Cancelled
+                raise CsvContractError.UnexpectedEnd if stream.state == CsvStreamState.Quoted or stream.state == CsvStreamState.Escaped
+                if stream.state == CsvStreamState.Unquoted and stream.fields_in_record == 0 and stream.field_bytes == 0 and stream.records != 0:
+                    pass
+                else:
+                    try csv_finish_record(stream)
+                stream.state <- CsvStreamState.Complete
+            elif event == CsvStreamEvent.Fail:
+                raise CsvContractError.InvalidState if stream.state == CsvStreamState.Ready or stream.state == CsvStreamState.Complete or stream.state == CsvStreamState.Failed or stream.state == CsvStreamState.Cancelled
+                stream.state <- CsvStreamState.Failed
+            elif event == CsvStreamEvent.Cancel:
+                raise CsvContractError.InvalidState if stream.state == CsvStreamState.Ready or stream.state == CsvStreamState.Complete or stream.state == CsvStreamState.Failed or stream.state == CsvStreamState.Cancelled
+                stream.state <- CsvStreamState.Cancelled
+                raise CsvContractError.Cancelled
+            return stream.state
