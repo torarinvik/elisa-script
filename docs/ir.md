@@ -295,6 +295,12 @@ explicit due-fire transition, cancellation is terminal for that wait, and a
 clock cannot seal while pending waits remain. Backward time and oversized
 advances fail through `error[DeadlineError]`.
 
+`EsDebugger::DebuggerSession` bounds source breakpoints, stack frames, handler
+and continuation-depth metadata, and replay branches. Attach/pause/continue/
+step, frame push/pop, branch selection, termination, and failure are explicit
+state transitions; locations and names are bounded before publication, and a
+terminated session cannot resume through `error[DebuggerError]`.
+
 EsHandle supplies the host-handle table that those adapters consume. Raw
 handle identity is distinct from the logical resource id and owner token;
 duplicate identities are rejected, ownership transfer requires a new owner,

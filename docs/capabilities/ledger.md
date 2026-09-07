@@ -471,6 +471,15 @@ documentation, and check_deadline.sh audit are compiler-free static evidence;
 platform clock sampling, timer integration, and cross-host wakeup parity remain
 open.
 
+ES-SCRIPT-049 | EsDebugger supplies a bounded debugger-session contract.
+Breakpoints, source locations, stack frames, handler/continuation depths,
+replay branches, attach/pause/continue/step, frame push/pop, branch selection,
+termination, and failure are explicitly validated state-machine edges.
+Terminated sessions cannot resume, and names/locations/depths are bounded before
+publication. The focused IR fixture, namespace inclusion, documentation, and
+check_debugger.sh audit are compiler-free static evidence; source-map/runtime
+value adapters, pause delivery, and interactive execution remain open.
+
 ES-SCRIPT-040 | EsTaskTransfer supplies a bounded ownership protocol for
 copyable values, linear values, and dynamic handler contexts crossing task
 boundaries. Copy/move/borrow modes, source/target owners, generation updates,

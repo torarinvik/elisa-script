@@ -1,0 +1,210 @@
+# Bounded debugger/session contract for source execution and replay branches.
+#
+# Adapters provide source maps and runtime values; this model owns only stable
+# identities, stop/step state, stack metadata, and replay-branch selection.
+
+module EsDebugger:
+    public:
+        const DEBUGGER_MAX_BREAKPOINTS: usize = 65536
+        const DEBUGGER_MAX_FRAMES: usize = 4096
+        const DEBUGGER_MAX_BRANCHES: usize = 65536
+        const DEBUGGER_MAX_NAME_BYTES: usize = 4096
+
+
+        const enum DebuggerState of u8:
+            Detached
+            Running
+            Paused
+            Stepping
+            Terminated
+            Failed
+
+
+        const enum DebuggerEvent of u8:
+            Attach
+            Continue
+            Step
+            Pause
+            PushFrame
+            PopFrame
+            SelectBranch
+            Terminate
+            Fail
+
+
+        struct DebuggerPolicy:
+            max_breakpoints: usize = DEBUGGER_MAX_BREAKPOINTS
+            max_frames: usize = DEBUGGER_MAX_FRAMES
+            max_branches: usize = DEBUGGER_MAX_BRANCHES
+            max_name_bytes: usize = DEBUGGER_MAX_NAME_BYTES
+
+
+        struct DebuggerBreakpoint:
+            breakpoint_id: u64
+            file: sview
+            line: usize
+            column: usize
+            enabled: bool = true
+
+
+        struct DebuggerFrame:
+            frame_id: u64
+            function: sview
+            file: sview
+            line: usize
+            column: usize
+            handler_depth: usize = 0
+            continuation_depth: usize = 0
+
+
+        struct DebuggerBranch:
+            branch_id: u64
+            parent_id: u64 = 0
+            choice_count: usize = 0
+
+
+        struct DebuggerSession:
+            policy: DebuggerPolicy
+            state: DebuggerState = DebuggerState.Detached
+            breakpoints: darray[DebuggerBreakpoint] = []
+            frames: darray[DebuggerFrame] = []
+            branches: darray[DebuggerBranch] = []
+            selected_branch: u64 = 0
+
+
+        error DebuggerError:
+            InvalidPolicy
+            InvalidState
+            InvalidEvent
+            InvalidId
+            DuplicateId
+            BreakpointIndexInvalid
+            FrameIndexInvalid
+            BranchIndexInvalid
+            BreakpointLimitExceeded
+            FrameLimitExceeded
+            BranchLimitExceeded
+            InvalidLocation
+            NameLimitExceeded
+            InvalidDepth
+            BranchParentMissing
+            BranchSelectionInvalid
+            InvalidTransition
+
+
+    private:
+        def debugger_state_valid(state: DebuggerState) -> bool:
+            return state in {DebuggerState.Detached, DebuggerState.Running, DebuggerState.Paused, DebuggerState.Stepping, DebuggerState.Terminated, DebuggerState.Failed}
+
+
+        def debugger_event_valid(event: DebuggerEvent) -> bool:
+            return event in {DebuggerEvent.Attach, DebuggerEvent.Continue, DebuggerEvent.Step, DebuggerEvent.Pause, DebuggerEvent.PushFrame, DebuggerEvent.PopFrame, DebuggerEvent.SelectBranch, DebuggerEvent.Terminate, DebuggerEvent.Fail}
+
+
+        def debugger_name_valid(value: sview, policy: DebuggerPolicy) -> bool:
+            return value != "" and sview_len(value) < policy.max_name_bytes and not sview_contains_byte(value, 0)
+
+
+        def debugger_breakpoint_index(session: DebuggerSession&, breakpoint_id: u64) -> usize:
+            for index in 0..<session.breakpoints.count |session, breakpoint_id|:
+                return index if session.breakpoints[index].breakpoint_id == breakpoint_id
+            return session.breakpoints.count
+
+
+        def debugger_frame_index(session: DebuggerSession&, frame_id: u64) -> usize:
+            for index in 0..<session.frames.count |session, frame_id|:
+                return index if session.frames[index].frame_id == frame_id
+            return session.frames.count
+
+
+        def debugger_branch_index(session: DebuggerSession&, branch_id: u64) -> usize:
+            for index in 0..<session.branches.count |session, branch_id|:
+                return index if session.branches[index].branch_id == branch_id
+            return session.branches.count
+
+
+    public:
+        def validate_debugger_session(session: DebuggerSession&) -> bool error[DebuggerError]:
+            raise DebuggerError.InvalidPolicy if session.policy.max_breakpoints == 0 or session.policy.max_breakpoints > DEBUGGER_MAX_BREAKPOINTS or session.policy.max_frames == 0 or session.policy.max_frames > DEBUGGER_MAX_FRAMES or session.policy.max_branches == 0 or session.policy.max_branches > DEBUGGER_MAX_BRANCHES or session.policy.max_name_bytes == 0 or session.policy.max_name_bytes > DEBUGGER_MAX_NAME_BYTES
+            raise DebuggerError.InvalidState if not debugger_state_valid(session.state)
+            raise DebuggerError.BreakpointLimitExceeded if session.breakpoints.count > session.policy.max_breakpoints
+            raise DebuggerError.FrameLimitExceeded if session.frames.count > session.policy.max_frames
+            raise DebuggerError.BranchLimitExceeded if session.branches.count > session.policy.max_branches
+            for index in 0..<session.breakpoints.count |session|:
+                breakpoint: DebuggerBreakpoint = session.breakpoints[index]
+                raise DebuggerError.InvalidId if breakpoint.breakpoint_id == 0
+                raise DebuggerError.InvalidLocation if breakpoint.line == 0 or breakpoint.column == 0
+                raise DebuggerError.NameLimitExceeded if not debugger_name_valid(breakpoint.file, session.policy)
+                for earlier in 0..<index |session, breakpoint|:
+                    raise DebuggerError.DuplicateId if session.breakpoints[earlier].breakpoint_id == breakpoint.breakpoint_id
+            for index in 0..<session.frames.count |session|:
+                frame: DebuggerFrame = session.frames[index]
+                raise DebuggerError.InvalidId if frame.frame_id == 0
+                raise DebuggerError.InvalidLocation if frame.line == 0 or frame.column == 0
+                raise DebuggerError.NameLimitExceeded if not debugger_name_valid(frame.function, session.policy) or not debugger_name_valid(frame.file, session.policy)
+                raise DebuggerError.InvalidDepth if frame.continuation_depth > session.policy.max_frames or frame.handler_depth > session.policy.max_frames
+                for earlier in 0..<index |session, frame|:
+                    raise DebuggerError.DuplicateId if session.frames[earlier].frame_id == frame.frame_id
+            for index in 0..<session.branches.count |session|:
+                branch: DebuggerBranch = session.branches[index]
+                raise DebuggerError.InvalidId if branch.branch_id == 0
+                for earlier in 0..<index |session, branch|:
+                    raise DebuggerError.DuplicateId if session.branches[earlier].branch_id == branch.branch_id
+                if branch.parent_id != 0:
+                    raise DebuggerError.BranchParentMissing if debugger_branch_index(session, branch.parent_id) == session.branches.count
+            raise DebuggerError.BranchSelectionInvalid if session.selected_branch != 0 and debugger_branch_index(session, session.selected_branch) == session.branches.count
+            return true
+
+
+        def debugger_set_breakpoint(session: mutable DebuggerSession&, breakpoint: DebuggerBreakpoint) -> bool error[DebuggerError]:
+            try validate_debugger_session(session)
+            raise DebuggerError.InvalidTransition if session.state == DebuggerState.Terminated or session.state == DebuggerState.Failed
+            raise DebuggerError.BreakpointLimitExceeded if session.breakpoints.count >= session.policy.max_breakpoints
+            raise DebuggerError.DuplicateId if breakpoint.breakpoint_id == 0 or debugger_breakpoint_index(session, breakpoint.breakpoint_id) != session.breakpoints.count
+            raise DebuggerError.InvalidLocation if breakpoint.line == 0 or breakpoint.column == 0
+            raise DebuggerError.NameLimitExceeded if not debugger_name_valid(breakpoint.file, session.policy)
+            session.breakpoints.push(breakpoint)
+            return true
+
+
+        def debugger_push_frame(session: mutable DebuggerSession&, frame: DebuggerFrame) -> bool error[DebuggerError]:
+            try validate_debugger_session(session)
+            raise DebuggerError.InvalidTransition if session.state != DebuggerState.Running and session.state != DebuggerState.Stepping
+            raise DebuggerError.FrameLimitExceeded if session.frames.count >= session.policy.max_frames
+            raise DebuggerError.DuplicateId if frame.frame_id == 0 or debugger_frame_index(session, frame.frame_id) != session.frames.count
+            raise DebuggerError.InvalidLocation if frame.line == 0 or frame.column == 0
+            raise DebuggerError.NameLimitExceeded if not debugger_name_valid(frame.function, session.policy) or not debugger_name_valid(frame.file, session.policy)
+            session.frames.push(frame)
+            return true
+
+
+        def advance_debugger(session: mutable DebuggerSession&, event: DebuggerEvent, branch_id: u64 = 0) -> DebuggerState error[DebuggerError]:
+            try validate_debugger_session(session)
+            raise DebuggerError.InvalidEvent if not debugger_event_valid(event)
+            if event == DebuggerEvent.Attach:
+                raise DebuggerError.InvalidTransition if session.state != DebuggerState.Detached
+                session.state <- DebuggerState.Paused
+            elif event == DebuggerEvent.Continue:
+                raise DebuggerError.InvalidTransition if session.state != DebuggerState.Paused
+                session.state <- DebuggerState.Running
+            elif event == DebuggerEvent.Step:
+                raise DebuggerError.InvalidTransition if session.state != DebuggerState.Paused
+                session.state <- DebuggerState.Stepping
+            elif event == DebuggerEvent.Pause:
+                raise DebuggerError.InvalidTransition if session.state != DebuggerState.Running and session.state != DebuggerState.Stepping
+                session.state <- DebuggerState.Paused
+            elif event == DebuggerEvent.PopFrame:
+                raise DebuggerError.InvalidTransition if session.state != DebuggerState.Running and session.state != DebuggerState.Stepping
+                raise DebuggerError.FrameIndexInvalid if session.frames.count == 0
+                session.frames.pop()
+            elif event == DebuggerEvent.SelectBranch:
+                raise DebuggerError.InvalidTransition if session.state != DebuggerState.Paused
+                raise DebuggerError.BranchSelectionInvalid if branch_id == 0 or debugger_branch_index(session, branch_id) == session.branches.count
+                session.selected_branch <- branch_id
+            elif event == DebuggerEvent.Terminate:
+                raise DebuggerError.InvalidTransition if session.state == DebuggerState.Detached or session.state == DebuggerState.Terminated
+                session.state <- DebuggerState.Terminated
+            elif event == DebuggerEvent.Fail:
+                raise DebuggerError.InvalidTransition if session.state == DebuggerState.Terminated
+                session.state <- DebuggerState.Failed
+            return session.state
