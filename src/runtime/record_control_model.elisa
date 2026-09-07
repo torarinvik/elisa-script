@@ -1,0 +1,152 @@
+# Explicit next/nextfile/exit control for record-stream adapters.
+#
+# Pattern-action callbacks decide which event to submit; this state machine
+# ensures a callback cannot leave a record or file half-open when it skips or
+# exits early.
+
+module EsRecordControl:
+    public:
+        const RECORD_CONTROL_MAX_FILES: usize = 1048576
+        const RECORD_CONTROL_MAX_RECORDS: usize = 1048576
+
+
+        const enum RecordControlState of u8:
+            Planned
+            Running
+            RecordSkipped
+            FileSkipped
+            Exited
+            Completed
+            Failed
+            Cancelled
+
+
+        const enum RecordControlEvent of u8:
+            Begin
+            FileBegin
+            RecordBegin
+            RecordEnd
+            NextRecord
+            NextFile
+            FileEnd
+            End
+            Exit
+            Fail
+            Cancel
+
+
+        struct RecordControlPolicy:
+            max_files: usize = RECORD_CONTROL_MAX_FILES
+            max_records: usize = RECORD_CONTROL_MAX_RECORDS
+
+
+        struct RecordControlSession:
+            policy: RecordControlPolicy
+            state: RecordControlState = RecordControlState.Planned
+            file_open: bool = false
+            record_open: bool = false
+            file_count: usize = 0
+            record_count: usize = 0
+
+
+        error RecordControlError:
+            InvalidState
+            InvalidEvent
+            PolicyInvalid
+            FileLimitExceeded
+            RecordLimitExceeded
+            FileNotOpen
+            RecordNotOpen
+            FileAlreadyOpen
+            RecordAlreadyOpen
+            FileNotClosed
+            ExitNotReady
+            CancelNotReady
+
+
+    private:
+        def record_control_state_valid(state: RecordControlState) -> bool:
+            return state in {RecordControlState.Planned, RecordControlState.Running, RecordControlState.RecordSkipped, RecordControlState.FileSkipped, RecordControlState.Exited, RecordControlState.Completed, RecordControlState.Failed, RecordControlState.Cancelled}
+
+
+        def record_control_event_valid(event: RecordControlEvent) -> bool:
+            return event in {RecordControlEvent.Begin, RecordControlEvent.FileBegin, RecordControlEvent.RecordBegin, RecordControlEvent.RecordEnd, RecordControlEvent.NextRecord, RecordControlEvent.NextFile, RecordControlEvent.FileEnd, RecordControlEvent.End, RecordControlEvent.Exit, RecordControlEvent.Fail, RecordControlEvent.Cancel}
+
+
+        def record_control_policy_valid(policy: RecordControlPolicy) -> bool:
+            return policy.max_files != 0 and policy.max_files <= RECORD_CONTROL_MAX_FILES and policy.max_records != 0 and policy.max_records <= RECORD_CONTROL_MAX_RECORDS
+
+
+    public:
+        def validate_record_control(session: RecordControlSession&) -> bool error[RecordControlError]:
+            raise RecordControlError.InvalidState if not record_control_state_valid(session.state)
+            raise RecordControlError.PolicyInvalid if not record_control_policy_valid(session.policy)
+            raise RecordControlError.FileLimitExceeded if session.file_count > session.policy.max_files
+            raise RecordControlError.RecordLimitExceeded if session.record_count > session.policy.max_records
+            raise RecordControlError.InvalidState if session.record_open and not session.file_open
+            raise RecordControlError.InvalidState if session.state in {RecordControlState.Planned, RecordControlState.Exited, RecordControlState.Completed, RecordControlState.Failed, RecordControlState.Cancelled} and (session.file_open or session.record_open)
+            return true
+
+
+        def advance_record_control(session: mutable RecordControlSession&, event: RecordControlEvent) -> RecordControlState error[RecordControlError]:
+            try validate_record_control(session)
+            raise RecordControlError.InvalidEvent if not record_control_event_valid(event)
+            if event == RecordControlEvent.Begin:
+                raise RecordControlError.InvalidState if session.state != RecordControlState.Planned
+                session.state <- RecordControlState.Running
+            elif event == RecordControlEvent.FileBegin:
+                raise RecordControlError.InvalidState if session.state != RecordControlState.Running and session.state != RecordControlState.RecordSkipped and session.state != RecordControlState.FileSkipped
+                raise RecordControlError.FileAlreadyOpen if session.file_open
+                raise RecordControlError.FileLimitExceeded if session.file_count >= session.policy.max_files
+                session.file_open <- true
+                session.file_count <- session.file_count + 1
+                session.state <- RecordControlState.Running
+            elif event == RecordControlEvent.RecordBegin:
+                raise RecordControlError.InvalidState if session.state != RecordControlState.Running
+                raise RecordControlError.FileNotOpen if not session.file_open
+                raise RecordControlError.RecordAlreadyOpen if session.record_open
+                raise RecordControlError.RecordLimitExceeded if session.record_count >= session.policy.max_records
+                session.record_open <- true
+            elif event == RecordControlEvent.RecordEnd:
+                raise RecordControlError.InvalidState if session.state != RecordControlState.Running
+                raise RecordControlError.RecordNotOpen if not session.record_open
+                session.record_open <- false
+                session.record_count <- session.record_count + 1
+            elif event == RecordControlEvent.NextRecord:
+                raise RecordControlError.InvalidState if session.state != RecordControlState.Running
+                raise RecordControlError.RecordNotOpen if not session.record_open
+                session.record_open <- false
+                session.record_count <- session.record_count + 1
+                session.state <- RecordControlState.RecordSkipped
+            elif event == RecordControlEvent.NextFile:
+                raise RecordControlError.InvalidState if session.state != RecordControlState.Running and session.state != RecordControlState.RecordSkipped
+                raise RecordControlError.FileNotOpen if not session.file_open
+                session.record_open <- false
+                session.file_open <- false
+                session.state <- RecordControlState.FileSkipped
+            elif event == RecordControlEvent.FileEnd:
+                raise RecordControlError.InvalidState if session.state != RecordControlState.Running and session.state != RecordControlState.RecordSkipped
+                raise RecordControlError.FileNotOpen if not session.file_open
+                raise RecordControlError.FileNotClosed if session.record_open
+                session.file_open <- false
+                session.state <- RecordControlState.Running
+            elif event == RecordControlEvent.End:
+                raise RecordControlError.InvalidState if session.state != RecordControlState.Running and session.state != RecordControlState.RecordSkipped and session.state != RecordControlState.FileSkipped
+                raise RecordControlError.FileNotClosed if session.file_open or session.record_open
+                session.state <- RecordControlState.Completed
+            elif event == RecordControlEvent.Exit:
+                raise RecordControlError.ExitNotReady if session.state != RecordControlState.Running and session.state != RecordControlState.RecordSkipped and session.state != RecordControlState.FileSkipped
+                session.file_open <- false
+                session.record_open <- false
+                session.state <- RecordControlState.Exited
+            elif event == RecordControlEvent.Fail:
+                raise RecordControlError.InvalidState if session.state != RecordControlState.Running and session.state != RecordControlState.RecordSkipped and session.state != RecordControlState.FileSkipped
+                session.file_open <- false
+                session.record_open <- false
+                session.state <- RecordControlState.Failed
+            elif event == RecordControlEvent.Cancel:
+                raise RecordControlError.CancelNotReady if session.state != RecordControlState.Planned and session.state != RecordControlState.Running and session.state != RecordControlState.RecordSkipped and session.state != RecordControlState.FileSkipped
+                session.file_open <- false
+                session.record_open <- false
+                session.state <- RecordControlState.Cancelled
+            return session.state

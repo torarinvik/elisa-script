@@ -975,6 +975,14 @@ duplicate internal groups, event/group overflow, and terminal mutation return
 `error[RecordAggregateError]`. Sum/average/join payloads can build on this
 contract only after choosing explicit numeric overflow and ordering policies.
 
+`EsRecordControl::RecordControlSession` makes AWK-style control keywords
+explicit: `NextRecord` closes the current record and advances to the next one,
+`NextFile` closes both record and file scopes, and `Exit` terminates cleanly from
+any running scope. The bounded state machine rejects calls outside an open file,
+double-open records, file closure with a live record, and post-terminal events;
+failure and cancellation clear ownership state so a host callback cannot leave a
+half-open traversal.
+
 `EsNetwork::NetworkRequest` and `NetworkResponse` define a transport-neutral
 HTTP/TLS boundary. Requests carry an explicit method, URL, ordered header pairs,
 binary body, positive timeout, response ceiling, and redirect policy; responses

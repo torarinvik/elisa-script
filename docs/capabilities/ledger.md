@@ -607,6 +607,14 @@ ordinals, and exposes lookup only after sealing through typed
 documentation, and check_record_aggregate.sh audit are static evidence; typed
 sums/joins, spill-to-disk aggregation, and host execution remain open.
 
+ES-SCRIPT-029 | EsRecordControl supplies explicit bounded `next`/`nextfile`/
+exit transitions for pattern-action adapters. It closes record/file ownership
+on skips, rejects record events outside files and premature file closure, caps
+file/record counts, and clears scopes on failure/cancel/exit. The focused IR
+fixture, namespace inclusion, documentation, and check_record_control.sh audit
+are static evidence; callback dispatch and multi-file host traversal remain
+open.
+
 ES-SCRIPT-028 | EsDifferentialTimeout supplies a bounded timeout/termination
 shrink evidence session. It records reference/candidate side identity,
 strictly decreasing timeout candidates, ordinal order, preserved mismatch kind,
