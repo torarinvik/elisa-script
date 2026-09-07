@@ -302,9 +302,11 @@ iterator, idempotent closed-state transitions, and a one-shot
 `FileStreamCleanupGuard` commit/abort state machine. Chunk writes now expose a
 public transition contract that retries positive short `fwrite` progress from
 the advanced offset and rejects zero or over-counted host reports before
-publication. Its static audit covers the shared byte-budget admission and
-state-machine syntax; compiler-enforced lexical cleanup/lifetime, platform
-adapters, and executed large-file evidence remain open.
+publication. Record reads now expose explicit LF-only, universal-newline, and
+retained-delimiter modes with a bounded pending-byte slot for lone-CR handling.
+Its static audit covers the shared byte-budget admission and state-machine
+syntax; compiler-enforced lexical cleanup/lifetime, platform adapters, and
+executed large-file evidence remain open.
 
 The direct bytecode resource slice now shares one mutable output ledger through
 nested calls, including child output emitted before a recoverable error. The

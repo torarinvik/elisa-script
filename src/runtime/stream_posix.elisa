@@ -18,6 +18,7 @@ error FileStreamError:
     LimitExceeded(path: cstr)
     PathTooLong(path: cstr)
     LineTooLong(path: cstr)
+    InvalidLineMode(path: cstr)
 
 
 extend EsRuntime:
@@ -40,6 +41,12 @@ extend EsRuntime:
         const enum FileStreamState of u8:
             Open
             Closed
+
+
+        const enum FileStreamLineMode of u8:
+            Lf
+            Universal
+            Retain
 
 
         struct FileStreamRead:
@@ -81,6 +88,8 @@ extend EsRuntime:
             byte_budget: usize
             bytes_read: usize = 0
             bytes_written: usize = 0
+            pending_byte: u8 = 0
+            pending_valid: bool = false
 
 
         const enum FileStreamCleanupState of u8:
@@ -134,7 +143,7 @@ extend EsRuntime:
         const FILE_STREAM_MAX_PATH_BYTES: usize = 4096
 
 
-        const enum FileStreamLineReadState of u8:
+        const enum FileStreamRecordState of u8:
             Progress
             Done
             End
@@ -143,21 +152,68 @@ extend EsRuntime:
             Error
 
 
-        def file_stream_read_line_next(stream: mutable FileStream&, line: mutable darray[u8]&, max_line_bytes: usize, byte: mutable u8&) -> FileStreamLineReadState can[Blocking.IO]:
-            # The budget check belongs immediately before the host probe. A
-            # line may consume the final permitted byte without a delimiter;
-            # the next state transition must fail closed instead of probing
-            # EOF after the stream is exhausted.
-            return FileStreamLineReadState.Limit if stream.bytes_read >= stream.byte_budget
+        const enum FileStreamByteState of u8:
+            Byte
+            End
+            Limit
+            Error
+
+
+        def file_stream_read_byte(stream: mutable FileStream&, byte: mutable u8&) -> FileStreamByteState can[Blocking.IO]:
+            if stream.pending_valid:
+                byte <- stream.pending_byte
+                stream.pending_valid <- false
+                return FileStreamByteState.Byte
+            return FileStreamByteState.Limit if stream.bytes_read >= stream.byte_budget
             handle: mutable heap void& = stream.handle
             amount: usize = fread((&byte).cast[mutable void&], 1, 1, handle)
-            return FileStreamLineReadState.Error if amount > 1 or amount == 0 and ferror(handle) != 0
-            return FileStreamLineReadState.End if amount == 0
+            return FileStreamByteState.Error if amount > 1 or amount == 0 and ferror(handle) != 0
+            return FileStreamByteState.End if amount == 0
             stream.bytes_read <- stream.bytes_read + 1
-            return FileStreamLineReadState.Done if byte == 10
-            return FileStreamLineReadState.LineTooLong if line.count >= max_line_bytes
+            return FileStreamByteState.Byte
+
+
+        def file_stream_record_append(line: mutable darray[u8]&, byte: u8, max_line_bytes: usize) -> FileStreamRecordState:
+            return FileStreamRecordState.LineTooLong if line.count >= max_line_bytes
             line.push(byte)
-            return FileStreamLineReadState.Progress
+            return FileStreamRecordState.Progress
+
+
+        def file_stream_record_next(stream: mutable FileStream&, line: mutable darray[u8]&, max_line_bytes: usize, mode: FileStreamLineMode, byte: mutable u8&) -> FileStreamRecordState can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            state: FileStreamByteState = file_stream_read_byte(stream, byte)
+            return FileStreamRecordState.Limit if state == FileStreamByteState.Limit
+            return FileStreamRecordState.Error if state == FileStreamByteState.Error
+            return FileStreamRecordState.End if state == FileStreamByteState.End and line.count == 0
+            return FileStreamRecordState.Done if state == FileStreamByteState.End
+            if mode == FileStreamLineMode.Lf:
+                return FileStreamRecordState.Done if byte == 10
+                return file_stream_record_append(line, byte, max_line_bytes)
+            if byte == 10:
+                if mode == FileStreamLineMode.Retain:
+                    result: FileStreamRecordState = file_stream_record_append(line, byte, max_line_bytes)
+                    return FileStreamRecordState.LineTooLong if result == FileStreamRecordState.LineTooLong else FileStreamRecordState.Done
+                return FileStreamRecordState.Done
+            if byte != 13:
+                return file_stream_record_append(line, byte, max_line_bytes)
+            if stream.bytes_read >= stream.byte_budget:
+                if mode == FileStreamLineMode.Retain:
+                    result: FileStreamRecordState = file_stream_record_append(line, byte, max_line_bytes)
+                    return FileStreamRecordState.LineTooLong if result == FileStreamRecordState.LineTooLong else FileStreamRecordState.Done
+                return FileStreamRecordState.Done
+            lookahead: mutable u8 = 0
+            next_state: FileStreamByteState = file_stream_read_byte(stream, lookahead)
+            if next_state == FileStreamByteState.Error:
+                return FileStreamRecordState.Error
+            if next_state == FileStreamByteState.Byte and lookahead != 10:
+                stream.pending_byte <- lookahead
+                stream.pending_valid <- true
+            if mode == FileStreamLineMode.Retain:
+                result: FileStreamRecordState = file_stream_record_append(line, byte, max_line_bytes)
+                return FileStreamRecordState.LineTooLong if result == FileStreamRecordState.LineTooLong
+                if next_state == FileStreamByteState.Byte and lookahead == 10:
+                    result <- file_stream_record_append(line, lookahead, max_line_bytes)
+                    return FileStreamRecordState.LineTooLong if result == FileStreamRecordState.LineTooLong
+            return FileStreamRecordState.Done
 
 
         # `file_stream_open` accepts an already-terminated host pointer for
@@ -237,36 +293,44 @@ extend EsRuntime:
             return true
 
 
-        # Read one logical line without retaining the newline byte.  A caller
-        # supplies the maximum line size, so a hostile unbounded line fails
-        # before the destination grows without limit.  CR bytes are preserved;
-        # callers that need CRLF normalization can make that policy explicit.
-        def file_stream_read_line(stream: mutable FileStream&, line: mutable darray[u8]&, max_line_bytes: usize) -> FileStreamRead error[FileStreamError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+        # Read one logical record with an explicit newline policy. `Lf` keeps
+        # the historical LF-only behavior and preserves CR as data;
+        # `Universal` treats LF, CRLF, and lone CR as delimiters; `Retain`
+        # includes the delimiter bytes in the returned record.
+        def file_stream_read_line_mode(stream: mutable FileStream&, line: mutable darray[u8]&, max_line_bytes: usize, mode: FileStreamLineMode) -> FileStreamRead error[FileStreamError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
             raise FileStreamError.Closed(stream.path) if stream.state != FileStreamState.Open or stream.handle == null
             raise FileStreamError.WrongMode(stream.path) if stream.mode != FileStreamMode.ReadText and stream.mode != FileStreamMode.ReadBinary
             raise FileStreamError.LineTooLong(stream.path) if max_line_bytes == 0
+            raise FileStreamError.InvalidLineMode(stream.path) if mode not in {FileStreamLineMode.Lf, FileStreamLineMode.Universal, FileStreamLineMode.Retain}
             line.truncate(0)
             byte: mutable u8 = 0
             result: mutable FileStreamRead = FileStreamRead{count: 0, eof: false}
-            machine over file_stream_read_line_next(stream, line, max_line_bytes, byte) while true:
+            machine over file_stream_record_next(stream, line, max_line_bytes, mode, byte) while true:
                 state Read
                 start Read
 
-                Read, FileStreamLineReadState.Progress:
+                Read, FileStreamRecordState.Progress:
                     -> Read
-                Read, FileStreamLineReadState.Done:
+                Read, FileStreamRecordState.Done:
                     result <- FileStreamRead{count: line.count, eof: false}
                     break
-                Read, FileStreamLineReadState.End:
+                Read, FileStreamRecordState.End:
                     result <- FileStreamRead{count: line.count, eof: true}
                     break
-                Read, FileStreamLineReadState.Limit:
+                Read, FileStreamRecordState.Limit:
                     raise FileStreamError.LimitExceeded(stream.path)
-                Read, FileStreamLineReadState.LineTooLong:
+                Read, FileStreamRecordState.LineTooLong:
                     raise FileStreamError.LineTooLong(stream.path)
-                Read, FileStreamLineReadState.Error:
+                Read, FileStreamRecordState.Error:
                     raise FileStreamError.ReadFailed(stream.path)
             return result
+
+
+        # Backward-compatible LF-only spelling. Callers that need Python-like
+        # universal-newline records or retained delimiters use the explicit
+        # mode API above.
+        def file_stream_read_line(stream: mutable FileStream&, line: mutable darray[u8]&, max_line_bytes: usize) -> FileStreamRead error[FileStreamError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            return file_stream_read_line_mode(stream, line, max_line_bytes, FileStreamLineMode.Lf)
 
 
         def file_stream_close(stream: mutable FileStream&) -> bool error[FileStreamError] can[Blocking.IO, Memory.Release]:

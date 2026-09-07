@@ -23,15 +23,18 @@ for required_file in "$lowerer" "$interpreter" "$bytecode" "$lowering_tests" "$s
     fi
 done
 
-rg -q 'callee_name == "read_lines"' "$lowerer"
-rg -q 'method_name == "read_lines"' "$lowerer"
+rg -q 'def is_path_global_array_io_spec\(' "$lowerer"
+rg -q 'spec\.argument_types == "Path" and spec\.opcode == "ReadText" and spec\.return_type == "darray\[text\]"' "$lowerer"
+rg -q 'path_spec\.known and path_spec\.opcode == "ReadText"' "$lowerer"
+rg -q 'path_spec\.return_type == "darray\[text\]"' "$lowerer"
 rg -q 'Opcode.ReadText' "$lowerer"
 rg -q 'Opcode.Split' "$lowerer"
-rg -q 'method_name == "write_lines" or method_name == "append_lines"' "$lowerer"
+rg -q 'path_spec\.known and \(path_spec\.opcode == "WriteText" or path_spec\.opcode == "AppendText"\)' "$lowerer"
 rg -q 'Opcode.Join' "$lowerer"
-rg -q 'Opcode.WriteText if method_name == "write_lines" else Opcode.AppendText' "$lowerer"
+rg -q 'Opcode.AppendText if path_spec\.opcode == "AppendText" else Opcode.WriteText' "$lowerer"
 rg -q 'read_lines requires a nominal Path operand' "$lowerer"
-rg -q 'write_lines and Path.append_lines require a darray\[sview\] value' "$lowerer"
+rg -q 'Path line writer requires a darray\[sview\] value' "$lowerer"
+rg -q 'append_lines requires a nominal Path and darray\[sview\] operands' "$lowerer"
 rg -q 'def evaluate_split_lines' "$interpreter"
 rg -q -i 'trailing delimiter does not' "$interpreter"
 rg -q -i 'trailing line breaks do not add an' "$semantics"
