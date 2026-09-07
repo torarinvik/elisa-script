@@ -85,6 +85,12 @@ bypass duplicate-environment or aggregate terminated-byte admission. Binary stdi
 remains an explicit length-delimited side channel rather than being misrepresented as
 shell text. This keeps native and legacy-language oracle runners on the same typed
 shell-free command boundary.
+After the child is reaped and both streams are admitted, the adapter materializes
+`EsProcess::ProcessResult` so a normal exit and signal death retain distinct typed
+outcomes before conversion to the differential artifact. Spawn, timeout,
+cancellation, output-limit, and host-I/O failures remain typed
+`DifferentialRunnerError` paths until their corresponding terminal-result
+materializers are wired into the host supervisor.
 The runner's optional `working_directory` is admitted separately as a POSIX
 pathname: non-empty values must fit the shared 4 KiB path envelope before any
 NUL scan, aggregate C-string accounting, or child-side `chdir`. Executable,
