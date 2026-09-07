@@ -1051,6 +1051,15 @@ output limits, malformed spans, cancellation, and premature end use
 `error[RegexCallbackError]`; callback invocation and capture materialization
 remain host/interpreter work.
 
+`EsJsonStream::JsonStreamSession` is the JSON/JSONL framing layer before value
+materialization. It bounds total input, per-record bytes, record count, and
+bracket depth while tracking quoted strings and escapes. Newline boundaries are
+recognized only outside strings and balanced containers; final partial records
+are accepted at `End`, while empty records, unterminated strings/values,
+underflow, and cancellation are explicit typed errors. A full parser consumes
+one sealed record at a time, so this contract does not claim JSON semantic
+validation or whole-document allocation.
+
 `EsRecordControl::RecordControlSession` makes AWK-style control keywords
 explicit: `NextRecord` closes the current record and advances to the next one,
 `NextFile` closes both record and file scopes, and `Exit` terminates cleanly from

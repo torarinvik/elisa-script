@@ -1,0 +1,151 @@
+# Bounded JSON/JSONL streaming envelope.
+#
+# This is the framing layer before a full JSON value parser. It recognizes
+# strings, escapes, bracket depth, and newline record boundaries without
+# allocating a whole input document; a JSON parser consumes one sealed record
+# at a time after these limits and lexical boundaries succeed.
+
+module EsJsonStream:
+    public:
+        const JSON_STREAM_MAX_INPUT_BYTES: usize = 268435456
+        const JSON_STREAM_MAX_RECORD_BYTES: usize = 67108864
+        const JSON_STREAM_MAX_RECORDS: usize = 16777216
+        const JSON_STREAM_MAX_DEPTH: usize = 1024
+
+
+        const enum JsonStreamState of u8:
+            Ready
+            Reading
+            Complete
+            Failed
+            Cancelled
+
+
+        const enum JsonStreamEvent of u8:
+            Begin
+            Byte
+            RecordEnd
+            End
+            Fail
+            Cancel
+
+
+        struct JsonStreamPolicy:
+            max_input_bytes: usize = JSON_STREAM_MAX_INPUT_BYTES
+            max_record_bytes: usize = JSON_STREAM_MAX_RECORD_BYTES
+            max_records: usize = JSON_STREAM_MAX_RECORDS
+            max_depth: usize = JSON_STREAM_MAX_DEPTH
+            allow_empty_records: bool = false
+
+
+        struct JsonStreamSession:
+            policy: JsonStreamPolicy
+            state: JsonStreamState = JsonStreamState.Ready
+            input_bytes: usize = 0
+            record_bytes: usize = 0
+            records: usize = 0
+            depth: usize = 0
+            in_string: bool = false
+            escaped: bool = false
+
+
+        error JsonStreamError:
+            InvalidState
+            InvalidEvent
+            InvalidPolicy
+            InputLimitExceeded
+            RecordLimitExceeded
+            RecordBytesLimitExceeded
+            DepthLimitExceeded
+            DepthUnderflow
+            EmptyRecord
+            UnterminatedString
+            UnterminatedValue
+            CancelNotReady
+
+
+    private:
+        def json_stream_state_valid(state: JsonStreamState) -> bool:
+            return state in {JsonStreamState.Ready, JsonStreamState.Reading, JsonStreamState.Complete, JsonStreamState.Failed, JsonStreamState.Cancelled}
+
+
+        def json_stream_event_valid(event: JsonStreamEvent) -> bool:
+            return event in {JsonStreamEvent.Begin, JsonStreamEvent.Byte, JsonStreamEvent.RecordEnd, JsonStreamEvent.End, JsonStreamEvent.Fail, JsonStreamEvent.Cancel}
+
+
+        def json_stream_policy_valid(policy: JsonStreamPolicy) -> bool:
+            return policy.max_input_bytes != 0 and policy.max_input_bytes <= JSON_STREAM_MAX_INPUT_BYTES and policy.max_record_bytes != 0 and policy.max_record_bytes <= JSON_STREAM_MAX_RECORD_BYTES and policy.max_records != 0 and policy.max_records <= JSON_STREAM_MAX_RECORDS and policy.max_depth != 0 and policy.max_depth <= JSON_STREAM_MAX_DEPTH
+
+
+        def json_stream_increment(current: usize, limit: usize) -> bool:
+            return current < limit
+
+
+        def json_stream_finish_record(session: mutable JsonStreamSession&) -> bool error[JsonStreamError]:
+            raise JsonStreamError.EmptyRecord if session.record_bytes == 0 and not session.policy.allow_empty_records
+            raise JsonStreamError.RecordLimitExceeded if session.records >= session.policy.max_records
+            session.records <- session.records + 1
+            session.record_bytes <- 0
+            return true
+
+
+    public:
+        def validate_json_stream(session: JsonStreamSession&) -> bool error[JsonStreamError]:
+            raise JsonStreamError.InvalidState if not json_stream_state_valid(session.state)
+            raise JsonStreamError.InvalidPolicy if not json_stream_policy_valid(session.policy)
+            raise JsonStreamError.InputLimitExceeded if session.input_bytes > session.policy.max_input_bytes
+            raise JsonStreamError.RecordBytesLimitExceeded if session.record_bytes > session.policy.max_record_bytes
+            raise JsonStreamError.RecordLimitExceeded if session.records > session.policy.max_records
+            raise JsonStreamError.DepthLimitExceeded if session.depth > session.policy.max_depth
+            raise JsonStreamError.UnterminatedString if session.escaped and not session.in_string
+            return true
+
+
+        def advance_json_stream(session: mutable JsonStreamSession&, event: JsonStreamEvent, byte: u8 = 0) -> JsonStreamState error[JsonStreamError]:
+            try validate_json_stream(session)
+            raise JsonStreamError.InvalidEvent if not json_stream_event_valid(event)
+            if event == JsonStreamEvent.Begin:
+                raise JsonStreamError.InvalidState if session.state != JsonStreamState.Ready
+                session.state <- JsonStreamState.Reading
+            elif event == JsonStreamEvent.Byte:
+                raise JsonStreamError.InvalidState if session.state != JsonStreamState.Reading
+                raise JsonStreamError.InputLimitExceeded if not json_stream_increment(session.input_bytes, session.policy.max_input_bytes)
+                raise JsonStreamError.RecordBytesLimitExceeded if not json_stream_increment(session.record_bytes, session.policy.max_record_bytes)
+                session.input_bytes <- session.input_bytes + 1
+                if byte == 10 and not session.in_string and session.depth == 0:
+                    try json_stream_finish_record(session)
+                else:
+                    session.record_bytes <- session.record_bytes + 1
+                    if session.in_string:
+                        if session.escaped:
+                            session.escaped <- false
+                        elif byte == 92:
+                            session.escaped <- true
+                        elif byte == 34:
+                            session.in_string <- false
+                    elif byte == 34:
+                        session.in_string <- true
+                    elif byte == 123 or byte == 91:
+                        raise JsonStreamError.DepthLimitExceeded if session.depth >= session.policy.max_depth
+                        session.depth <- session.depth + 1
+                    elif byte == 125 or byte == 93:
+                        raise JsonStreamError.DepthUnderflow if session.depth == 0
+                        session.depth <- session.depth - 1
+            elif event == JsonStreamEvent.RecordEnd:
+                raise JsonStreamError.InvalidState if session.state != JsonStreamState.Reading
+                raise JsonStreamError.UnterminatedString if session.in_string or session.escaped
+                raise JsonStreamError.UnterminatedValue if session.depth != 0
+                try json_stream_finish_record(session)
+            elif event == JsonStreamEvent.End:
+                raise JsonStreamError.InvalidState if session.state != JsonStreamState.Reading
+                raise JsonStreamError.UnterminatedString if session.in_string or session.escaped
+                raise JsonStreamError.UnterminatedValue if session.depth != 0
+                try json_stream_finish_record(session) if session.record_bytes != 0
+                session.state <- JsonStreamState.Complete
+            elif event == JsonStreamEvent.Fail:
+                raise JsonStreamError.InvalidState if session.state != JsonStreamState.Reading
+                session.state <- JsonStreamState.Failed
+            elif event == JsonStreamEvent.Cancel:
+                raise JsonStreamError.CancelNotReady if session.state != JsonStreamState.Reading
+                session.state <- JsonStreamState.Cancelled
+            return session.state
