@@ -1,0 +1,217 @@
+# Typed ownership-transfer contract for task values and dynamic handler contexts.
+#
+# A scheduler may implement these transitions with move tables or message
+# passing, but it cannot duplicate linear values, borrow without a lease, or
+# mutate ownership before the transfer reaches its commit edge.
+
+module EsTaskTransfer:
+    public:
+        const TASK_TRANSFER_MAX_ITEMS: usize = 1024
+        const TASK_TRANSFER_MAX_BYTES: usize = 67108864
+        const TASK_TRANSFER_MAX_BORROW_TICKS: u64 = 1048576
+
+
+        const enum TaskTransferState of u8:
+            Planned
+            Validating
+            Committing
+            Committed
+            Failed
+            Cancelled
+
+
+        const enum TaskTransferEvent of u8:
+            Begin
+            Admit
+            Commit
+            Fail
+            Cancel
+
+
+        const enum TaskTransferValueKind of u8:
+            Copyable
+            Linear
+            HandlerContext
+
+
+        const enum TaskTransferMode of u8:
+            Copy
+            Move
+            Borrow
+
+
+        const enum TaskTransferItemState of u8:
+            Pending
+            Admitted
+            Committed
+
+
+        struct TaskTransferResource:
+            resource_id: u64
+            owner_task: u64
+            generation: u64 = 1
+            kind: TaskTransferValueKind = TaskTransferValueKind.Copyable
+            bytes: usize = 0
+
+
+        struct TaskTransferItem:
+            resource: TaskTransferResource
+            mode: TaskTransferMode = TaskTransferMode.Copy
+            borrow_duration: u64 = 0
+
+
+        struct TaskTransferPolicy:
+            max_items: usize = TASK_TRANSFER_MAX_ITEMS
+            max_bytes: usize = TASK_TRANSFER_MAX_BYTES
+            max_borrow_ticks: u64 = TASK_TRANSFER_MAX_BORROW_TICKS
+
+
+        struct TaskTransferRequest:
+            source_task: u64
+            target_task: u64
+            policy: TaskTransferPolicy
+            items: darray[TaskTransferItem] = []
+
+
+        struct TaskTransferSession:
+            request: TaskTransferRequest
+            state: TaskTransferState = TaskTransferState.Planned
+            item_states: darray[TaskTransferItemState] = []
+            admitted_items: usize = 0
+            admitted_bytes: usize = 0
+            committed_items: usize = 0
+
+
+        error TaskTransferError:
+            InvalidState
+            InvalidEvent
+            InvalidPolicy
+            InvalidTask
+            InvalidResource
+            InvalidGeneration
+            InvalidValueKind
+            InvalidMode
+            BorrowLeaseInvalid
+            ItemLimitExceeded
+            ByteLimitExceeded
+            DuplicateResource
+            ItemStateInvalid
+            AdmissionNotReady
+            CommitNotReady
+            CancelNotReady
+
+
+    private:
+        def task_transfer_state_valid(state: TaskTransferState) -> bool:
+            return state in {TaskTransferState.Planned, TaskTransferState.Validating, TaskTransferState.Committing, TaskTransferState.Committed, TaskTransferState.Failed, TaskTransferState.Cancelled}
+
+
+        def task_transfer_event_valid(event: TaskTransferEvent) -> bool:
+            return event in {TaskTransferEvent.Begin, TaskTransferEvent.Admit, TaskTransferEvent.Commit, TaskTransferEvent.Fail, TaskTransferEvent.Cancel}
+
+
+        def task_transfer_kind_valid(kind: TaskTransferValueKind) -> bool:
+            return kind in {TaskTransferValueKind.Copyable, TaskTransferValueKind.Linear, TaskTransferValueKind.HandlerContext}
+
+
+        def task_transfer_mode_valid(mode: TaskTransferMode) -> bool:
+            return mode in {TaskTransferMode.Copy, TaskTransferMode.Move, TaskTransferMode.Borrow}
+
+
+        def task_transfer_item_state_valid(item_state: TaskTransferItemState) -> bool:
+            return item_state in {TaskTransferItemState.Pending, TaskTransferItemState.Admitted, TaskTransferItemState.Committed}
+
+
+        def task_transfer_policy_valid(policy: TaskTransferPolicy) -> bool:
+            return policy.max_items != 0 and policy.max_items <= TASK_TRANSFER_MAX_ITEMS and policy.max_bytes != 0 and policy.max_bytes <= TASK_TRANSFER_MAX_BYTES and policy.max_borrow_ticks != 0 and policy.max_borrow_ticks <= TASK_TRANSFER_MAX_BORROW_TICKS
+
+
+        def task_transfer_item_valid(item: TaskTransferItem, request: TaskTransferRequest) -> bool error[TaskTransferError]:
+            raise TaskTransferError.InvalidResource if item.resource.resource_id == 0 or item.resource.bytes > request.policy.max_bytes
+            raise TaskTransferError.InvalidGeneration if item.resource.generation == 0
+            raise TaskTransferError.InvalidValueKind if not task_transfer_kind_valid(item.resource.kind)
+            raise TaskTransferError.InvalidMode if not task_transfer_mode_valid(item.mode)
+            if item.mode == TaskTransferMode.Copy:
+                raise TaskTransferError.InvalidMode if item.resource.kind != TaskTransferValueKind.Copyable
+                raise TaskTransferError.BorrowLeaseInvalid if item.borrow_duration != 0
+            elif item.mode == TaskTransferMode.Move:
+                raise TaskTransferError.BorrowLeaseInvalid if item.borrow_duration != 0
+            elif item.mode == TaskTransferMode.Borrow:
+                raise TaskTransferError.InvalidMode if item.resource.kind == TaskTransferValueKind.Linear
+                raise TaskTransferError.BorrowLeaseInvalid if item.borrow_duration == 0 or item.borrow_duration > request.policy.max_borrow_ticks
+            return true
+
+
+    public:
+        def validate_task_transfer(session: TaskTransferSession&) -> bool error[TaskTransferError]:
+            raise TaskTransferError.InvalidState if not task_transfer_state_valid(session.state)
+            raise TaskTransferError.InvalidTask if session.request.source_task == 0 or session.request.target_task == 0 or session.request.source_task == session.request.target_task
+            raise TaskTransferError.InvalidPolicy if not task_transfer_policy_valid(session.request.policy)
+            raise TaskTransferError.ItemLimitExceeded if session.request.items.count == 0 or session.request.items.count > session.request.policy.max_items
+            raise TaskTransferError.ItemLimitExceeded if session.admitted_items > session.request.items.count or session.committed_items > session.admitted_items
+            raise TaskTransferError.ByteLimitExceeded if session.admitted_bytes > session.request.policy.max_bytes
+            raise TaskTransferError.ItemStateInvalid if session.item_states.count != 0 and session.item_states.count != session.request.items.count
+            accounted_bytes: mutable usize = 0
+            for index in 0..<session.request.items.count |session, accounted_bytes|:
+                item: TaskTransferItem = session.request.items[index]
+                try task_transfer_item_valid(item, session.request)
+                owner_ok: mutable bool = item.resource.owner_task == session.request.source_task
+                if session.state == TaskTransferState.Committed and session.item_states.count == session.request.items.count and session.item_states[index] == TaskTransferItemState.Committed and item.mode == TaskTransferMode.Move:
+                    owner_ok <- item.resource.owner_task == session.request.target_task
+                raise TaskTransferError.InvalidResource if not owner_ok
+                raise TaskTransferError.ByteLimitExceeded if item.resource.bytes > session.request.policy.max_bytes - accounted_bytes
+                accounted_bytes <- accounted_bytes + item.resource.bytes
+                for earlier in 0..<index |session, item|:
+                    raise TaskTransferError.DuplicateResource if session.request.items[earlier].resource.resource_id == item.resource.resource_id
+            raise TaskTransferError.ByteLimitExceeded if accounted_bytes > session.request.policy.max_bytes
+            for item_state in session.item_states:
+                raise TaskTransferError.ItemStateInvalid if not task_transfer_item_state_valid(item_state)
+                raise TaskTransferError.ItemStateInvalid if session.state == TaskTransferState.Validating and item_state == TaskTransferItemState.Committed
+                raise TaskTransferError.ItemStateInvalid if session.state == TaskTransferState.Committed and item_state != TaskTransferItemState.Committed
+            return true
+
+
+        def task_transfer_owner(session: TaskTransferSession&, index: usize) -> u64 error[TaskTransferError]:
+            try validate_task_transfer(session)
+            raise TaskTransferError.InvalidResource if index >= session.request.items.count
+            return session.request.items[index].resource.owner_task
+
+
+        def advance_task_transfer(session: mutable TaskTransferSession&, event: TaskTransferEvent, item_index: usize = 0) -> TaskTransferState error[TaskTransferError]:
+            try validate_task_transfer(session)
+            raise TaskTransferError.InvalidEvent if not task_transfer_event_valid(event)
+            if event == TaskTransferEvent.Begin:
+                raise TaskTransferError.InvalidState if session.state != TaskTransferState.Planned
+                session.item_states <- []
+                for item in session.request.items:
+                    session.item_states.push(TaskTransferItemState.Pending)
+                session.state <- TaskTransferState.Validating
+            elif event == TaskTransferEvent.Admit:
+                raise TaskTransferError.InvalidState if session.state != TaskTransferState.Validating
+                raise TaskTransferError.InvalidResource if item_index >= session.request.items.count
+                raise TaskTransferError.ItemStateInvalid if session.item_states[item_index] != TaskTransferItemState.Pending
+                item: TaskTransferItem = session.request.items[item_index]
+                raise TaskTransferError.ByteLimitExceeded if item.resource.bytes > session.request.policy.max_bytes - session.admitted_bytes
+                session.item_states[item_index] <- TaskTransferItemState.Admitted
+                session.admitted_items <- session.admitted_items + 1
+                session.admitted_bytes <- session.admitted_bytes + item.resource.bytes
+            elif event == TaskTransferEvent.Commit:
+                raise TaskTransferError.CommitNotReady if session.state != TaskTransferState.Validating or session.admitted_items != session.request.items.count
+                for index in 0..<session.request.items.count |session|:
+                    raise TaskTransferError.InvalidGeneration if session.request.items[index].mode == TaskTransferMode.Move and session.request.items[index].resource.generation == 18446744073709551615u64
+                session.state <- TaskTransferState.Committing
+                for index in 0..<session.request.items.count |session|:
+                    raise TaskTransferError.ItemStateInvalid if session.item_states[index] != TaskTransferItemState.Admitted
+                    if session.request.items[index].mode == TaskTransferMode.Move:
+                        session.request.items[index].resource.owner_task <- session.request.target_task
+                        session.request.items[index].resource.generation <- session.request.items[index].resource.generation + 1
+                    session.item_states[index] <- TaskTransferItemState.Committed
+                    session.committed_items <- session.committed_items + 1
+                session.state <- TaskTransferState.Committed
+            elif event == TaskTransferEvent.Fail:
+                raise TaskTransferError.InvalidState if session.state != TaskTransferState.Validating
+                session.state <- TaskTransferState.Failed
+            elif event == TaskTransferEvent.Cancel:
+                raise TaskTransferError.CancelNotReady if session.state != TaskTransferState.Planned and session.state != TaskTransferState.Validating
+                session.state <- TaskTransferState.Cancelled
+            return session.state

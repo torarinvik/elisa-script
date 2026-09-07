@@ -1592,7 +1592,13 @@ requires explicit close or cancellation acknowledgement; channels cap both
 message count and bytes, reject sends while closing/cancelled, and transition
 to `Closed` only after queued messages drain. `error[TaskContractError]`
 distinguishes invalid transitions, child accounting, full buffers, and empty
-receives. Scheduler threads, event loops, and cross-task ownership remain host
+receives. `EsTaskTransfer::TaskTransferSession` makes cross-task ownership
+explicit: copy is limited to copyable values, move changes the owner only at a
+commit edge and advances the generation, and borrow is limited to copyable or
+handler-context values with a bounded lease. Duplicate resources, stale
+generations, mismatched owners, invalid leases, partial admission, and
+mid-commit cancellation are rejected through `error[TaskTransferError]`.
+Scheduler threads, event loops, and the actual message transport remain host
 integrations.
 The argv terminator is cleared using `size_of(uintptr)`, matching the target
 pointer width rather than assuming an 8-byte slot.

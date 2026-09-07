@@ -390,7 +390,21 @@ explicit stage/cancel transitions; concurrent pipe draining and reaping remain
 open.
 `EsTask::TaskScope` and `TaskChannel` add bounded child accounting and
 message-level backpressure with explicit close/cancel acknowledgement edges;
-thread/event-loop scheduling and ownership transfer remain open.
+thread/event-loop scheduling remains open. `EsTaskTransfer` adds a bounded
+copy/move/borrow ownership contract for values and dynamic handler contexts;
+linear values cannot be copied or borrowed, move updates ownership only at
+commit, and handler-context borrows require a finite lease. The focused IR
+fixture, namespace inclusion, documentation, and check_task_transfer.sh audit
+are static evidence; scheduler integration and runtime transport remain open.
+
+ES-SCRIPT-040 | EsTaskTransfer supplies a bounded ownership protocol for
+copyable values, linear values, and dynamic handler contexts crossing task
+boundaries. Copy/move/borrow modes, source/target owners, generation updates,
+finite borrow leases, duplicate-resource rejection, admission accounting, and
+all-items commit/cancel edges are explicit under `error[TaskTransferError]`.
+The focused IR fixture, namespace inclusion, documentation, and
+check_task_transfer.sh audit are static evidence; scheduler integration,
+message transport, and runtime ownership tables remain open.
 
 `EsRecord::RecordStreamPolicy`, `Record`, and `RecordField` now define a bounded
 Perl/AWK-style record boundary: separator and field modes are explicit, fixed
