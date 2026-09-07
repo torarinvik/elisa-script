@@ -294,6 +294,13 @@ preserves a trailing empty field through `ReadText + Split`) and `split_lines`
 (which follows delimiter-oriented Python behavior). Interpreter and direct
 bytecode fixtures cover a file ending in a newline, recorded in `8e69ada`.
 
+Recursive tree-copy admission now rejects a source-equal or normalized lexical
+descendant destination before filesystem mutation. This closes self-expanding
+copy traversal while keeping the 128-level depth guard as defense in depth; the
+interpreter/direct-bytecode parity fixtures and path contract audit record the
+boundary (`WORKTREE`). Destination-parent symlink aliases remain open for the
+host-canonical filesystem adapter.
+
 Recent static increments are committed as `72f3325` (Path line semantics audit),
 `0739d4c` (typed cleanup guard), `b0ecf06` (cache cleanup integration),
 `9873d8c` (all resource-policy ceiling admission), `3bd7152` (typed resource
