@@ -396,8 +396,10 @@ TLS, transport, timeout, protocol, status, decode, and cancellation outcomes.
 `NetworkRetryPolicy` makes retries explicit and bounded: `Never` is one-shot,
 `IdempotentOnly` admits only GET/HEAD/PUT/DELETE, and mutation retries require
 `Explicit` mode plus nonzero backoff. The IR fixture and network-model audit
-cover URL/header/body/status/retry admission; socket/TLS implementations,
-streaming, and live service adapters remain open.
+cover URL/header/body/status/retry admission plus a
+`Planned → Resolving → Connecting → Securing → Sending → Receiving → Completed`
+request lifecycle with explicit cancellation and retry edges; socket/TLS
+implementations, streaming, and live service adapters remain open.
 
 ## Evidence record template
 

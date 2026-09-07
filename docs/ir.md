@@ -779,6 +779,11 @@ GET/HEAD/PUT/DELETE, and `Explicit` is required for mutation retries. Every
 multi-attempt policy carries nonzero bounded backoff ceilings; TLS roots, socket
 ownership, total deadlines, and streaming/cancellation adapters remain explicit
 host responsibilities.
+`NetworkRequestJob` supplies the corresponding lifecycle state machine:
+`Planned → Resolving → Connecting → Securing → Sending → Receiving → Completed`,
+with explicit `Failed`, `Cancelling`, `Cancelled`, and bounded `Retry` edges.
+Adapters cannot acknowledge cancellation or reuse a failed attempt without the
+matching state transition.
 
 Before any regex opcode executes, both backends enforce a shared input-size
 boundary: haystack text is at most 64 MiB, the compiled-pattern payload is at

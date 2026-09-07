@@ -47,6 +47,38 @@ module EsNetwork:
             max_backoff_micros: u64 = 0
 
 
+        const enum NetworkRequestState of u8:
+            Planned
+            Resolving
+            Connecting
+            Securing
+            Sending
+            Receiving
+            Completed
+            Failed
+            Cancelling
+            Cancelled
+
+
+        const enum NetworkRequestEvent of u8:
+            Begin
+            DnsReady
+            ConnectReady
+            TlsReady
+            SendComplete
+            ReceiveComplete
+            Fail
+            Cancel
+            CancelAck
+            Retry
+
+
+        struct NetworkRequestJob:
+            state: NetworkRequestState = NetworkRequestState.Planned
+            attempts: usize = 0
+            max_attempts: usize = 1
+
+
         struct NetworkRequest:
             url: sview
             method: NetworkMethod = NetworkMethod.Get
@@ -83,6 +115,9 @@ module EsNetwork:
             InvalidRetryAttempts
             InvalidRetryBackoff
             NonIdempotentRetry
+            InvalidRequestState
+            InvalidRequestEvent
+            RetryLimitExceeded
             InvalidStatus
             ErrorTextInvalid
 
@@ -102,6 +137,18 @@ module EsNetwork:
 
         def network_method_is_idempotent(method: NetworkMethod) -> bool:
             return method in {NetworkMethod.Get, NetworkMethod.Head, NetworkMethod.Put, NetworkMethod.Delete}
+
+
+        def network_request_state_valid(state: NetworkRequestState) -> bool:
+            return state in {NetworkRequestState.Planned, NetworkRequestState.Resolving, NetworkRequestState.Connecting, NetworkRequestState.Securing, NetworkRequestState.Sending, NetworkRequestState.Receiving, NetworkRequestState.Completed, NetworkRequestState.Failed, NetworkRequestState.Cancelling, NetworkRequestState.Cancelled}
+
+
+        def network_request_event_valid(event: NetworkRequestEvent) -> bool:
+            return event in {NetworkRequestEvent.Begin, NetworkRequestEvent.DnsReady, NetworkRequestEvent.ConnectReady, NetworkRequestEvent.TlsReady, NetworkRequestEvent.SendComplete, NetworkRequestEvent.ReceiveComplete, NetworkRequestEvent.Fail, NetworkRequestEvent.Cancel, NetworkRequestEvent.CancelAck, NetworkRequestEvent.Retry}
+
+
+        def network_request_state_is_active(state: NetworkRequestState) -> bool:
+            return state in {NetworkRequestState.Resolving, NetworkRequestState.Connecting, NetworkRequestState.Securing, NetworkRequestState.Sending, NetworkRequestState.Receiving}
 
 
         def network_text_length_valid(value: sview, limit: usize) -> bool:
@@ -133,6 +180,49 @@ module EsNetwork:
 
 
         public:
+            def advance_network_request(job: mutable NetworkRequestJob&, event: NetworkRequestEvent) -> NetworkRequestState error[NetworkContractError]:
+                raise NetworkContractError.InvalidRequestState if not network_request_state_valid(job.state)
+                raise NetworkContractError.InvalidRequestEvent if not network_request_event_valid(event)
+                raise NetworkContractError.InvalidRetryAttempts if job.max_attempts == 0 or job.max_attempts > NETWORK_MAX_RETRY_ATTEMPTS
+                if event == NetworkRequestEvent.Begin:
+                    raise NetworkContractError.InvalidRequestState if job.state != NetworkRequestState.Planned
+                    raise NetworkContractError.RetryLimitExceeded if job.attempts >= job.max_attempts
+                    job.attempts <- job.attempts + 1
+                    job.state <- NetworkRequestState.Resolving
+                elif event == NetworkRequestEvent.DnsReady:
+                    raise NetworkContractError.InvalidRequestState if job.state != NetworkRequestState.Resolving
+                    job.state <- NetworkRequestState.Connecting
+                elif event == NetworkRequestEvent.ConnectReady:
+                    raise NetworkContractError.InvalidRequestState if job.state != NetworkRequestState.Connecting
+                    job.state <- NetworkRequestState.Securing
+                elif event == NetworkRequestEvent.TlsReady:
+                    raise NetworkContractError.InvalidRequestState if job.state != NetworkRequestState.Securing
+                    job.state <- NetworkRequestState.Sending
+                elif event == NetworkRequestEvent.SendComplete:
+                    raise NetworkContractError.InvalidRequestState if job.state != NetworkRequestState.Sending
+                    job.state <- NetworkRequestState.Receiving
+                elif event == NetworkRequestEvent.ReceiveComplete:
+                    raise NetworkContractError.InvalidRequestState if job.state != NetworkRequestState.Receiving
+                    job.state <- NetworkRequestState.Completed
+                elif event == NetworkRequestEvent.Fail:
+                    raise NetworkContractError.InvalidRequestState if not network_request_state_is_active(job.state)
+                    job.state <- NetworkRequestState.Failed
+                elif event == NetworkRequestEvent.Cancel:
+                    if job.state == NetworkRequestState.Planned:
+                        job.state <- NetworkRequestState.Cancelled
+                    else:
+                        raise NetworkContractError.InvalidRequestState if not network_request_state_is_active(job.state)
+                        job.state <- NetworkRequestState.Cancelling
+                elif event == NetworkRequestEvent.CancelAck:
+                    raise NetworkContractError.InvalidRequestState if job.state != NetworkRequestState.Cancelling
+                    job.state <- NetworkRequestState.Cancelled
+                elif event == NetworkRequestEvent.Retry:
+                    raise NetworkContractError.InvalidRequestState if job.state != NetworkRequestState.Failed
+                    raise NetworkContractError.RetryLimitExceeded if job.attempts >= job.max_attempts
+                    job.state <- NetworkRequestState.Planned
+                return job.state
+
+
             def validate_network_retry_policy(policy: NetworkRetryPolicy&, method: NetworkMethod) -> bool error[NetworkContractError]:
                 raise NetworkContractError.InvalidRetryMode if not network_retry_mode_valid(policy.mode)
                 raise NetworkContractError.InvalidRetryAttempts if policy.max_attempts == 0 or policy.max_attempts > NETWORK_MAX_RETRY_ATTEMPTS

@@ -25,10 +25,14 @@ for declaration in \
     'const enum NetworkOutcome of u8:' \
     'const enum NetworkRetryMode of u8:' \
     'struct NetworkRetryPolicy:' \
+    'const enum NetworkRequestState of u8:' \
+    'const enum NetworkRequestEvent of u8:' \
+    'struct NetworkRequestJob:' \
     'struct NetworkRequest:' \
     'struct NetworkResponse:' \
     'error NetworkContractError:' \
     'def validate_network_retry_policy(' \
+    'def advance_network_request(' \
     'def validate_network_request(' \
     'def validate_network_response('; do
     rg -Fq "$declaration" "$model"
@@ -48,6 +52,9 @@ for boundary in \
     'InvalidRetryAttempts' \
     'InvalidRetryBackoff' \
     'NonIdempotentRetry' \
+    'network_request_state_is_active' \
+    'NetworkRequestEvent.CancelAck' \
+    'NetworkRequestEvent.Retry' \
     'response.outcome in {NetworkOutcome.Success, NetworkOutcome.StatusFailure}' \
     'response.status != 0'; do
     rg -Fq "$boundary" "$model"
@@ -59,6 +66,8 @@ for fixture_pattern in \
     'NetworkOutcome.TlsFailure' \
     'NetworkRetryMode.IdempotentOnly' \
     'NetworkContractError.NonIdempotentRetry' \
+    'NetworkRequestState.Cancelling' \
+    'NetworkRequestState.Cancelled' \
     'NetworkContractError.DuplicateHeaderName' \
     'NetworkContractError.InvalidTimeout' \
     'NetworkContractError.InvalidStatus'; do
@@ -70,5 +79,6 @@ rg -Fq 'error[NetworkContractError]' "$docs"
 rg -Fq 'EsNetwork::NetworkRequest' "$ledger"
 rg -Fq 'P12 network follow-up' "$plan"
 rg -Fq 'P12 retry follow-up' "$plan"
+rg -Fq 'P12 lifecycle follow-up' "$plan"
 
-printf 'network model audit: bounded request/response, header, timeout, and outcome contracts are present\n'
+printf 'network model audit: bounded request/response, retry, cancellation, and lifecycle contracts are present\n'
