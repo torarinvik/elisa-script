@@ -304,9 +304,11 @@ public transition contract that retries positive short `fwrite` progress from
 the advanced offset and rejects zero or over-counted host reports before
 publication. Record reads now expose explicit LF-only, universal-newline, and
 retained-delimiter modes with a bounded pending-byte slot for lone-CR handling.
-Its static audit covers the shared byte-budget admission and state-machine
-syntax; compiler-enforced lexical cleanup/lifetime, platform adapters, and
-executed large-file evidence remain open.
+Chunk reads consume that pending slot before any host probe, preserving bytes
+when callers switch between record and chunk APIs. Its static audit covers the
+shared byte-budget admission and state-machine syntax; compiler-enforced
+lexical cleanup/lifetime, platform adapters, and executed large-file evidence
+remain open.
 
 The direct bytecode resource slice now shares one mutable output ledger through
 nested calls, including child output emitted before a recoverable error. The

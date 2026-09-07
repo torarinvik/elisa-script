@@ -358,6 +358,10 @@ and `Retain` includes delimiter bytes in the record. Its state machine uses a
 one-byte pending slot to avoid losing the byte after a lone CR, checks the byte
 budget before every host `fread`, rejects exhaustion without an extra EOF probe,
 and rejects a record before its destination grows past the caller's maximum.
+If a universal/retained record read consumes a non-delimiter lookahead, the
+next chunk read publishes that pending byte before probing the host again, so
+switching between record and byte APIs cannot drop data or bypass the shared
+budget.
 `file_stream_read_line` remains the bounded LF-only compatibility spelling.
 `file_stream_close` is idempotent only for a self-consistent terminal state:
 `Closed` must carry a null handle, while an `Open` stream must carry a live
