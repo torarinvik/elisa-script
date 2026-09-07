@@ -1,0 +1,137 @@
+# Bounded lockstep sequence and checkpoint contract for differential testing.
+#
+# A sequence runner records one ordered step for the reference and candidate,
+# optional checkpoints, and the first divergence. It is intentionally
+# execution-engine neutral: adapters supply fingerprints after each step.
+
+module EsDifferentialSequence:
+    public:
+        const DIFFERENTIAL_SEQUENCE_MAX_STEPS: usize = 1048576
+        const DIFFERENTIAL_SEQUENCE_MAX_CHECKPOINTS: usize = 65536
+        const DIFFERENTIAL_SEQUENCE_MAX_OBSERVATIONS: usize = 16777216
+
+
+        const enum DifferentialSequenceState of u8:
+            Planned
+            Running
+            Diverged
+            Completed
+            Cancelled
+
+
+        const enum DifferentialSequenceEvent of u8:
+            Start
+            Step
+            Checkpoint
+            Complete
+            Cancel
+
+
+        struct DifferentialSequenceStep:
+            index: usize
+            reference_fingerprint: u64
+            candidate_fingerprint: u64
+            equal: bool
+            observation_count: usize = 0
+
+
+        struct DifferentialSequenceCheckpoint:
+            index: usize
+            reference_state: u64
+            candidate_state: u64
+
+
+        struct DifferentialSequence:
+            max_steps: usize = DIFFERENTIAL_SEQUENCE_MAX_STEPS
+            state: DifferentialSequenceState = DifferentialSequenceState.Planned
+            next_index: usize = 0
+            steps: darray[DifferentialSequenceStep] = []
+            checkpoints: darray[DifferentialSequenceCheckpoint] = []
+            observation_count: usize = 0
+            has_first_divergence: bool = false
+            first_divergence: usize = 0
+
+
+        error DifferentialSequenceError:
+            InvalidState
+            InvalidEvent
+            StepLimitExceeded
+            CheckpointLimitExceeded
+            ObservationLimitExceeded
+            StepOrderInvalid
+            CheckpointOrderInvalid
+            FingerprintMissing
+            DivergenceStateInvalid
+            CompletionNotReady
+            IndexInvalid
+            CancelNotReady
+
+
+    private:
+        def differential_sequence_state_valid(state: DifferentialSequenceState) -> bool:
+            return state in {DifferentialSequenceState.Planned, DifferentialSequenceState.Running, DifferentialSequenceState.Diverged, DifferentialSequenceState.Completed, DifferentialSequenceState.Cancelled}
+
+
+        def differential_sequence_event_valid(event: DifferentialSequenceEvent) -> bool:
+            return event in {DifferentialSequenceEvent.Start, DifferentialSequenceEvent.Step, DifferentialSequenceEvent.Checkpoint, DifferentialSequenceEvent.Complete, DifferentialSequenceEvent.Cancel}
+
+
+        def sequence_fingerprint_valid(value: u64) -> bool:
+            return value != 0
+
+
+    public:
+        def validate_differential_sequence(sequence: DifferentialSequence&) -> bool error[DifferentialSequenceError]:
+            raise DifferentialSequenceError.InvalidState if not differential_sequence_state_valid(sequence.state)
+            raise DifferentialSequenceError.StepLimitExceeded if sequence.max_steps == 0 or sequence.max_steps > DIFFERENTIAL_SEQUENCE_MAX_STEPS
+            raise DifferentialSequenceError.StepLimitExceeded if sequence.steps.count > sequence.max_steps
+            raise DifferentialSequenceError.CheckpointLimitExceeded if sequence.checkpoints.count > DIFFERENTIAL_SEQUENCE_MAX_CHECKPOINTS
+            raise DifferentialSequenceError.ObservationLimitExceeded if sequence.observation_count > DIFFERENTIAL_SEQUENCE_MAX_OBSERVATIONS
+            raise DifferentialSequenceError.StepOrderInvalid if sequence.next_index > sequence.steps.count
+            for index in 0..<sequence.steps.count |sequence|:
+                step: DifferentialSequenceStep = sequence.steps[index]
+                raise DifferentialSequenceError.StepOrderInvalid if step.index != index
+                raise DifferentialSequenceError.FingerprintMissing if not sequence_fingerprint_valid(step.reference_fingerprint) or not sequence_fingerprint_valid(step.candidate_fingerprint)
+                raise DifferentialSequenceError.ObservationLimitExceeded if step.observation_count > DIFFERENTIAL_SEQUENCE_MAX_OBSERVATIONS
+            for index in 1..<sequence.checkpoints.count |sequence|:
+                raise DifferentialSequenceError.CheckpointOrderInvalid if sequence.checkpoints[index].index <= sequence.checkpoints[index - 1].index
+            if sequence.has_first_divergence:
+                raise DifferentialSequenceError.DivergenceStateInvalid if sequence.state != DifferentialSequenceState.Diverged or sequence.first_divergence >= sequence.steps.count
+            raise DifferentialSequenceError.DivergenceStateInvalid if sequence.state == DifferentialSequenceState.Diverged and not sequence.has_first_divergence
+            return true
+
+
+        def advance_differential_sequence(sequence: mutable DifferentialSequence&, event: DifferentialSequenceEvent, step: DifferentialSequenceStep = DifferentialSequenceStep{index: 0, reference_fingerprint: 1, candidate_fingerprint: 1, equal: true}, checkpoint: DifferentialSequenceCheckpoint = DifferentialSequenceCheckpoint{index: 0, reference_state: 1, candidate_state: 1}) -> DifferentialSequenceState error[DifferentialSequenceError]:
+            try validate_differential_sequence(sequence)
+            raise DifferentialSequenceError.InvalidEvent if not differential_sequence_event_valid(event)
+            if event == DifferentialSequenceEvent.Start:
+                raise DifferentialSequenceError.InvalidState if sequence.state != DifferentialSequenceState.Planned
+                sequence.state <- DifferentialSequenceState.Running
+            elif event == DifferentialSequenceEvent.Step:
+                raise DifferentialSequenceError.InvalidState if sequence.state != DifferentialSequenceState.Running
+                raise DifferentialSequenceError.StepLimitExceeded if sequence.steps.count >= sequence.max_steps
+                raise DifferentialSequenceError.StepOrderInvalid if step.index != sequence.next_index
+                raise DifferentialSequenceError.FingerprintMissing if not sequence_fingerprint_valid(step.reference_fingerprint) or not sequence_fingerprint_valid(step.candidate_fingerprint)
+                raise DifferentialSequenceError.ObservationLimitExceeded if step.observation_count > DIFFERENTIAL_SEQUENCE_MAX_OBSERVATIONS - sequence.observation_count
+                sequence.steps.push(step)
+                sequence.next_index <- sequence.next_index + 1
+                sequence.observation_count <- sequence.observation_count + step.observation_count
+                if not step.equal:
+                    sequence.state <- DifferentialSequenceState.Diverged
+                    sequence.has_first_divergence <- true
+                    sequence.first_divergence <- step.index
+            elif event == DifferentialSequenceEvent.Checkpoint:
+                raise DifferentialSequenceError.InvalidState if sequence.state != DifferentialSequenceState.Running
+                raise DifferentialSequenceError.CheckpointLimitExceeded if sequence.checkpoints.count >= DIFFERENTIAL_SEQUENCE_MAX_CHECKPOINTS
+                raise DifferentialSequenceError.IndexInvalid if checkpoint.index != sequence.next_index
+                raise DifferentialSequenceError.FingerprintMissing if not sequence_fingerprint_valid(checkpoint.reference_state) or not sequence_fingerprint_valid(checkpoint.candidate_state)
+                if sequence.checkpoints.count > 0:
+                    raise DifferentialSequenceError.CheckpointOrderInvalid if checkpoint.index <= sequence.checkpoints[sequence.checkpoints.count - 1].index
+                sequence.checkpoints.push(checkpoint)
+            elif event == DifferentialSequenceEvent.Complete:
+                raise DifferentialSequenceError.CompletionNotReady if sequence.state != DifferentialSequenceState.Running or sequence.next_index != sequence.steps.count
+                sequence.state <- DifferentialSequenceState.Completed
+            elif event == DifferentialSequenceEvent.Cancel:
+                raise DifferentialSequenceError.CancelNotReady if sequence.state != DifferentialSequenceState.Planned and sequence.state != DifferentialSequenceState.Running
+                sequence.state <- DifferentialSequenceState.Cancelled
+            return sequence.state

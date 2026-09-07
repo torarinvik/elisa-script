@@ -705,6 +705,15 @@ capability snapshots require a known engine, direct-bytecode identity requires
 value comparator continues to ignore engine metadata so external references can
 remain unqualified compatibility inputs.
 
+`EsDifferentialSequence::DifferentialSequence` is the bounded stateful/lockstep
+boundary. Each step has an ordered index, independent reference/candidate
+fingerprints, an observation count, and an explicit equality decision;
+checkpoints carry both state identities. The state machine records the first
+non-equal step as `Diverged`, seals only after every step is complete, and
+rejects out-of-order steps, duplicate checkpoint order, zero identities, and
+observation growth beyond the shared ceiling before an adapter can retain a
+trace.
+
 ## Generation and shrinking
 
 Differential cases should integrate property-based generation and deterministic
