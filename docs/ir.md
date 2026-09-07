@@ -119,6 +119,16 @@ loading; `advance_package_resolution` exposes the explicit
 selection, signature verification, cache storage, and publishing still belong
 to separately qualified host adapters.
 
+`EsData` is the format-neutral boundary for the P8 structured-data libraries.
+`DataDecodeLimits` caps input bytes, tokens, nesting, records, fields, and field
+bytes; `JsonPolicy` makes duplicate-key, trailing-comma, comment, and numeric
+behavior explicit; and `CsvPolicy` makes separators, quoting, escaping, headers,
+and trimming explicit. `DataDecoder` advances through `Ready → Decoding →
+Complete|Failed|Cancelled` with bounded token/record accounting, so JSON,
+JSONL, CSV, and TSV adapters share the same cancellation and limit semantics
+instead of inheriting host parser defaults. Schema conversion and streaming
+parser implementations remain separate work.
+
 Every verified module also has canonical structural bytes through
 `canonical_module_bytes(module)` and a compact fingerprint through
 `module_fingerprint(module)` (with `canonical_module_hash` as the explicit

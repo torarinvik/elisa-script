@@ -1,0 +1,209 @@
+# Typed structured-data format and streaming decoder contracts.
+#
+# Parsers for JSON/JSONL/CSV/TSV must consume this contract rather than
+# allocating unbounded trees or silently choosing host-language defaults. The
+# decoder state is deliberately format-neutral so the same budgets and
+# cancellation edges apply to all data adapters.
+
+module EsData:
+    public:
+        const DATA_MAX_INPUT_BYTES: usize = 268435456
+        const DATA_MAX_TOKENS: usize = 16777216
+        const DATA_MAX_DEPTH: usize = 1024
+        const DATA_MAX_RECORDS: usize = 16777216
+        const DATA_MAX_FIELDS: usize = 1048576
+        const DATA_MAX_FIELD_BYTES: usize = 67108864
+
+
+        const enum DataFormat of u8:
+            Json
+            JsonLines
+            Csv
+            Tsv
+
+
+        const enum JsonDuplicateKeyPolicy of u8:
+            Reject
+            KeepFirst
+            KeepLast
+
+
+        const enum JsonTrailingCommaPolicy of u8:
+            Reject
+            Allow
+
+
+        const enum DataNumberPolicy of u8:
+            ExactInteger
+            Decimal
+            BinaryFloat
+
+
+        const enum DataDecoderState of u8:
+            Ready
+            Decoding
+            Complete
+            Failed
+            Cancelled
+
+
+        const enum DataDecoderEvent of u8:
+            Begin
+            Token
+            Record
+            End
+            Fail
+            Cancel
+
+
+        struct DataDecodeLimits:
+            input_bytes: usize = DATA_MAX_INPUT_BYTES
+            tokens: usize = DATA_MAX_TOKENS
+            depth: usize = DATA_MAX_DEPTH
+            records: usize = DATA_MAX_RECORDS
+            fields: usize = DATA_MAX_FIELDS
+            field_bytes: usize = DATA_MAX_FIELD_BYTES
+
+
+        struct JsonPolicy:
+            duplicate_keys: JsonDuplicateKeyPolicy = JsonDuplicateKeyPolicy.Reject
+            trailing_commas: JsonTrailingCommaPolicy = JsonTrailingCommaPolicy.Reject
+            numbers: DataNumberPolicy = DataNumberPolicy.ExactInteger
+            allow_comments: bool = false
+
+
+        struct CsvPolicy:
+            separator: u8 = 44
+            quote: u8 = 34
+            escape: u8 = 34
+            record_separator: u8 = 10
+            header: bool = false
+            trim_unquoted: bool = false
+
+
+        struct DataDecoder:
+            format: DataFormat
+            state: DataDecoderState = DataDecoderState.Ready
+            limits: DataDecodeLimits = DataDecodeLimits{}
+            input_bytes: usize = 0
+            tokens: usize = 0
+            records: usize = 0
+            fields: usize = 0
+            depth: usize = 0
+            offset: usize = 0
+
+
+        error DataContractError:
+            InvalidFormat
+            InvalidDuplicateKeyPolicy
+            InvalidTrailingCommaPolicy
+            InvalidNumberPolicy
+            InvalidDecoderState
+            InvalidDecoderEvent
+            InvalidLimit
+            InputLimitExceeded
+            TokenLimitExceeded
+            DepthLimitExceeded
+            RecordLimitExceeded
+            FieldLimitExceeded
+            FieldBytesLimitExceeded
+            InvalidCsvPolicy
+            UnexpectedEnd
+            Cancelled
+
+
+    private:
+        def data_format_valid(format: DataFormat) -> bool:
+            return format in {DataFormat.Json, DataFormat.JsonLines, DataFormat.Csv, DataFormat.Tsv}
+
+
+        def data_decoder_state_valid(state: DataDecoderState) -> bool:
+            return state in {DataDecoderState.Ready, DataDecoderState.Decoding, DataDecoderState.Complete, DataDecoderState.Failed, DataDecoderState.Cancelled}
+
+
+        def data_decoder_event_valid(event: DataDecoderEvent) -> bool:
+            return event in {DataDecoderEvent.Begin, DataDecoderEvent.Token, DataDecoderEvent.Record, DataDecoderEvent.End, DataDecoderEvent.Fail, DataDecoderEvent.Cancel}
+
+
+        def data_limits_valid(limits: DataDecodeLimits) -> bool error[DataContractError]:
+            raise DataContractError.InvalidLimit if limits.input_bytes == 0 or limits.input_bytes > DATA_MAX_INPUT_BYTES
+            raise DataContractError.InvalidLimit if limits.tokens == 0 or limits.tokens > DATA_MAX_TOKENS
+            raise DataContractError.InvalidLimit if limits.depth == 0 or limits.depth > DATA_MAX_DEPTH
+            raise DataContractError.InvalidLimit if limits.records == 0 or limits.records > DATA_MAX_RECORDS
+            raise DataContractError.InvalidLimit if limits.fields == 0 or limits.fields > DATA_MAX_FIELDS
+            raise DataContractError.InvalidLimit if limits.field_bytes == 0 or limits.field_bytes > DATA_MAX_FIELD_BYTES
+            return true
+
+
+        def data_csv_policy_valid(policy: CsvPolicy) -> bool error[DataContractError]:
+            raise DataContractError.InvalidCsvPolicy if policy.separator == 0 or policy.quote == 0 or policy.escape == 0 or policy.record_separator == 0
+            raise DataContractError.InvalidCsvPolicy if policy.separator == policy.record_separator or policy.quote == policy.record_separator
+            raise DataContractError.InvalidCsvPolicy if policy.separator == policy.quote and policy.escape != policy.quote
+            return true
+
+
+        def data_limit_add(current: usize, delta: usize, limit: usize) -> bool:
+            return delta <= limit - current if current <= limit else false
+
+
+    public:
+        def validate_data_decoder(decoder: DataDecoder&) -> bool error[DataContractError]:
+            raise DataContractError.InvalidFormat if not data_format_valid(decoder.format)
+            raise DataContractError.InvalidDecoderState if not data_decoder_state_valid(decoder.state)
+            try data_limits_valid(decoder.limits)
+            raise DataContractError.InputLimitExceeded if decoder.input_bytes > decoder.limits.input_bytes
+            raise DataContractError.TokenLimitExceeded if decoder.tokens > decoder.limits.tokens
+            raise DataContractError.DepthLimitExceeded if decoder.depth > decoder.limits.depth
+            raise DataContractError.RecordLimitExceeded if decoder.records > decoder.limits.records
+            raise DataContractError.FieldLimitExceeded if decoder.fields > decoder.limits.fields
+            return true
+
+
+        def advance_data_decoder(decoder: mutable DataDecoder&, event: DataDecoderEvent, bytes_delta: usize = 0, fields_delta: usize = 0, depth: usize = 0) -> DataDecoderState error[DataContractError]:
+            try validate_data_decoder(decoder)
+            raise DataContractError.InvalidDecoderEvent if not data_decoder_event_valid(event)
+            if event == DataDecoderEvent.Begin:
+                raise DataContractError.InvalidDecoderState if decoder.state != DataDecoderState.Ready
+                decoder.state <- DataDecoderState.Decoding
+            elif event == DataDecoderEvent.Token:
+                raise DataContractError.InvalidDecoderState if decoder.state != DataDecoderState.Decoding
+                raise DataContractError.InputLimitExceeded if not data_limit_add(decoder.input_bytes, bytes_delta, decoder.limits.input_bytes)
+                raise DataContractError.TokenLimitExceeded if not data_limit_add(decoder.tokens, 1, decoder.limits.tokens)
+                raise DataContractError.FieldLimitExceeded if not data_limit_add(decoder.fields, fields_delta, decoder.limits.fields)
+                raise DataContractError.DepthLimitExceeded if depth > decoder.limits.depth
+                decoder.input_bytes <- decoder.input_bytes + bytes_delta
+                decoder.tokens <- decoder.tokens + 1
+                decoder.fields <- decoder.fields + fields_delta
+                decoder.depth <- depth
+                decoder.offset <- decoder.offset + bytes_delta
+            elif event == DataDecoderEvent.Record:
+                raise DataContractError.InvalidDecoderState if decoder.state != DataDecoderState.Decoding
+                raise DataContractError.RecordLimitExceeded if not data_limit_add(decoder.records, 1, decoder.limits.records)
+                raise DataContractError.FieldLimitExceeded if fields_delta > decoder.limits.fields
+                decoder.records <- decoder.records + 1
+                decoder.fields <- fields_delta
+                decoder.depth <- depth
+            elif event == DataDecoderEvent.End:
+                raise DataContractError.InvalidDecoderState if decoder.state != DataDecoderState.Decoding
+                raise DataContractError.UnexpectedEnd if decoder.depth != 0
+                decoder.state <- DataDecoderState.Complete
+            elif event == DataDecoderEvent.Fail:
+                raise DataContractError.InvalidDecoderState if decoder.state != DataDecoderState.Decoding
+                decoder.state <- DataDecoderState.Failed
+            elif event == DataDecoderEvent.Cancel:
+                raise DataContractError.InvalidDecoderState if decoder.state != DataDecoderState.Decoding
+                decoder.state <- DataDecoderState.Cancelled
+                raise DataContractError.Cancelled
+            return decoder.state
+
+
+        def validate_json_policy(policy: JsonPolicy) -> bool error[DataContractError]:
+            raise DataContractError.InvalidDuplicateKeyPolicy if policy.duplicate_keys not in {JsonDuplicateKeyPolicy.Reject, JsonDuplicateKeyPolicy.KeepFirst, JsonDuplicateKeyPolicy.KeepLast}
+            raise DataContractError.InvalidTrailingCommaPolicy if policy.trailing_commas not in {JsonTrailingCommaPolicy.Reject, JsonTrailingCommaPolicy.Allow}
+            raise DataContractError.InvalidNumberPolicy if policy.numbers not in {DataNumberPolicy.ExactInteger, DataNumberPolicy.Decimal, DataNumberPolicy.BinaryFloat}
+            return true
+
+
+        def validate_csv_policy(policy: CsvPolicy) -> bool error[DataContractError]:
+            try data_csv_policy_valid(policy)
+            return true
