@@ -660,6 +660,15 @@ anchor record is required before sealing, and each record is classified as
 fingerprint suitable for an artifact sidecar, while full trace collection stays
 with the adapter.
 
+`EsDifferentialEffectTrace::DifferentialEffectTrace` preserves the observable
+part of algebraic-effect behavior for parity cases. Each ordered event carries
+the effect family and operation identity, payload/result fingerprints, and an
+explicit resumption count plus multishot marker. Event count, operation text,
+fingerprints, and resumption count are bounded before sealing. The comparator
+reports the first family, operation, payload, result, or resumption difference;
+an effect trace is never treated as equal merely because the final return value
+matches.
+
 The directory publication protocol is modeled separately from the host I/O
 adapter by `DifferentialArtifactDirectoryPlan`. A plan has a bounded parent
 path and two single-component names: a private staging directory and a distinct
