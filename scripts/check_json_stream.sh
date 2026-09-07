@@ -38,6 +38,8 @@ for boundary in \
     'in_string' \
     'escaped' \
     'JsonStreamError.DepthUnderflow' \
+    'JsonStreamError.MismatchedDelimiter' \
+    'container_stack' \
     'JsonStreamError.UnterminatedString' \
     'JsonStreamError.UnterminatedValue' \
     'JsonStreamEvent.RecordEnd' \

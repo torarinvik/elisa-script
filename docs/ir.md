@@ -1183,7 +1183,7 @@ remain host/interpreter work.
 
 `EsJsonStream::JsonStreamSession` is the JSON/JSONL framing layer before value
 materialization. It bounds total input, per-record bytes, record count, and
-bracket depth while tracking quoted strings and escapes. Newline boundaries are
+bracket depth while tracking a typed delimiter stack, quoted strings, and escapes. Newline boundaries are
 recognized only outside strings and balanced containers; final partial records
 are accepted at `End`, while empty records, unterminated strings/values,
 underflow, and cancellation are explicit typed errors. A full parser consumes
