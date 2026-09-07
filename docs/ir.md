@@ -1066,6 +1066,17 @@ collected failure is retained in the completed report rather than silently
 converted into success. The host owns mkdir/copy/unlink/rmdir calls, canonical
 source/destination checks, permissions, race handling, and rollback.
 
+`EsWorkingDirectory::WorkingDirectoryTable` serializes process-global cwd
+ownership for adapters that cannot use a descriptor or child-specific cwd.
+Each invocation records an original path and owner token; `Begin` admits one
+active context, `Change`/`ChangeAck` makes host movement explicit and bounded,
+and `Restore`/`RestoreAck` must return to the original path before the lease is
+released. A second active owner is rejected, changing/restoring operations
+cannot be cancelled mid-flight, and failed contexts remain recorded as failed
+rather than silently releasing an unknown cwd. Hosts should prefer descriptor
+or child-cwd APIs where available; this contract is the conservative fallback
+for unavoidable process-global changes.
+
 `EsRegexCallback::RegexCallbackSession` is the callback-aware replacement
 boundary. The matcher submits non-overlapping spans and capture counts; the
 session accounts unmatched prefixes, callback replacement bytes, and the final

@@ -683,6 +683,17 @@ fixture, namespace inclusion, documentation, and check_directory_mutation.sh
 audit are static evidence; mkdir/copy/unlink/rmdir adapters, canonical path
 containment, permissions, rollback, and race fixtures remain host work.
 
+ES-FS-006 | EsWorkingDirectory supplies an exclusive per-invocation cwd
+ownership contract for the unavoidable process-global chdir fallback. It
+records the original/current/pending paths, owner token, bounded change count,
+and explicit `Begin → Change → ChangeAck → Restore → RestoreAck` lifecycle;
+concurrent owners, unacknowledged changes, mid-flight cancellation, and failed
+restore ownership are rejected or retained as typed
+`error[WorkingDirectoryError]`. The focused IR fixture, namespace inclusion,
+documentation, and check_working_directory.sh audit are static evidence;
+descriptor-based adapters, platform cwd races, and executed failure/recovery
+fixtures remain host work.
+
 ES-SCRIPT-029 | EsRecordControl supplies explicit bounded `next`/`nextfile`/
 exit transitions for pattern-action adapters. It closes record/file ownership
 on skips, rejects record events outside files and premature file closure, caps

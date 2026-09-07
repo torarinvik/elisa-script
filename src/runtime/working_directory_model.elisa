@@ -1,0 +1,255 @@
+# Bounded per-invocation working-directory ownership boundary.
+#
+# POSIX chdir is process-global.  Host adapters may instead pass a directory
+# descriptor or child cwd, but when a global cwd must be changed this contract
+# serializes ownership, requires an acknowledged restore to the invocation's
+# original path, and rejects concurrent or leaked contexts.
+
+module EsWorkingDirectory:
+    public:
+        const WORKING_DIRECTORY_MAX_CONTEXTS: usize = 1048576
+        const WORKING_DIRECTORY_MAX_PATH_BYTES: usize = 4096
+        const WORKING_DIRECTORY_MAX_CHANGES: usize = 1048576
+
+
+        const enum WorkingDirectoryLeaseState of u8:
+            Held
+            Changing
+            Restoring
+            Restored
+            Failed
+
+
+        const enum WorkingDirectoryState of u8:
+            Planned
+            Held
+            Changing
+            Restoring
+            Restored
+            Cancelling
+            Cancelled
+            Failed
+
+
+        const enum WorkingDirectoryEvent of u8:
+            Begin
+            Change
+            ChangeAck
+            Restore
+            RestoreAck
+            Cancel
+            CancelAck
+            Fail
+
+
+        struct WorkingDirectoryPolicy:
+            max_contexts: usize = WORKING_DIRECTORY_MAX_CONTEXTS
+            max_path_bytes: usize = WORKING_DIRECTORY_MAX_PATH_BYTES
+            max_changes: usize = WORKING_DIRECTORY_MAX_CHANGES
+
+
+        struct WorkingDirectoryRequest:
+            initial_path: sview
+            owner_token: u64
+            max_changes: usize = WORKING_DIRECTORY_MAX_CHANGES
+
+
+        struct WorkingDirectoryLease:
+            lease_id: u64
+            owner_token: u64
+            initial_path: sview
+            current_path: sview
+            pending_path: sview = ""
+            changes: usize = 0
+            state: WorkingDirectoryLeaseState = WorkingDirectoryLeaseState.Held
+
+
+        struct WorkingDirectoryTable:
+            policy: WorkingDirectoryPolicy
+            leases: darray[WorkingDirectoryLease] = []
+            active_contexts: usize = 0
+            next_lease_id: u64 = 1
+
+
+        struct WorkingDirectorySession:
+            request: WorkingDirectoryRequest
+            state: WorkingDirectoryState = WorkingDirectoryState.Planned
+            lease_id: u64 = 0
+            changes: usize = 0
+
+
+        error WorkingDirectoryError:
+            InvalidState
+            InvalidEvent
+            InvalidPolicy
+            InvalidPath
+            EmbeddedNul
+            InvalidOwner
+            InvalidLeaseId
+            LeaseLimitExceeded
+            DuplicateLeaseId
+            DuplicateOwner
+            LeaseIndexInvalid
+            LeaseMismatch
+            AccountingInvalid
+            ConcurrentOwner
+            ChangeLimitExceeded
+            ChangeNotReady
+            RestoreNotReady
+            CancelNotReady
+            InvalidTransition
+
+
+    private:
+        def working_directory_state_valid(state: WorkingDirectoryState) -> bool:
+            return state in {WorkingDirectoryState.Planned, WorkingDirectoryState.Held, WorkingDirectoryState.Changing, WorkingDirectoryState.Restoring, WorkingDirectoryState.Restored, WorkingDirectoryState.Cancelling, WorkingDirectoryState.Cancelled, WorkingDirectoryState.Failed}
+
+
+        def working_directory_lease_state_valid(state: WorkingDirectoryLeaseState) -> bool:
+            return state in {WorkingDirectoryLeaseState.Held, WorkingDirectoryLeaseState.Changing, WorkingDirectoryLeaseState.Restoring, WorkingDirectoryLeaseState.Restored, WorkingDirectoryLeaseState.Failed}
+
+
+        def working_directory_event_valid(event: WorkingDirectoryEvent) -> bool:
+            return event in {WorkingDirectoryEvent.Begin, WorkingDirectoryEvent.Change, WorkingDirectoryEvent.ChangeAck, WorkingDirectoryEvent.Restore, WorkingDirectoryEvent.RestoreAck, WorkingDirectoryEvent.Cancel, WorkingDirectoryEvent.CancelAck, WorkingDirectoryEvent.Fail}
+
+
+        def working_directory_path_valid(path: sview, limit: usize) -> bool:
+            return sview_len(path) != 0 and sview_len(path) < limit and not sview_contains_byte(path, 0)
+
+
+        def working_directory_policy_valid(policy: WorkingDirectoryPolicy) -> bool:
+            return policy.max_contexts != 0 and policy.max_contexts <= WORKING_DIRECTORY_MAX_CONTEXTS and policy.max_path_bytes != 0 and policy.max_path_bytes <= WORKING_DIRECTORY_MAX_PATH_BYTES and policy.max_changes != 0 and policy.max_changes <= WORKING_DIRECTORY_MAX_CHANGES
+
+
+        def working_directory_active(state: WorkingDirectoryLeaseState) -> bool:
+            return state == WorkingDirectoryLeaseState.Held or state == WorkingDirectoryLeaseState.Changing or state == WorkingDirectoryLeaseState.Restoring
+
+
+        def working_directory_index(table: WorkingDirectoryTable&, lease_id: u64) -> usize:
+            for index in 0..<table.leases.count |table, lease_id|:
+                return index if table.leases[index].lease_id == lease_id
+            return table.leases.count
+
+
+        def working_directory_session_matches(table: WorkingDirectoryTable&, session: WorkingDirectorySession&, expected: WorkingDirectoryLeaseState) -> bool:
+            index: usize = working_directory_index(table, session.lease_id)
+            return index != table.leases.count and table.leases[index].owner_token == session.request.owner_token and table.leases[index].initial_path == session.request.initial_path and table.leases[index].state == expected and table.leases[index].changes == session.changes
+
+
+    public:
+        def validate_working_directory_table(table: WorkingDirectoryTable&) -> bool error[WorkingDirectoryError]:
+            raise WorkingDirectoryError.InvalidPolicy if not working_directory_policy_valid(table.policy)
+            raise WorkingDirectoryError.LeaseLimitExceeded if table.leases.count > table.policy.max_contexts
+            raise WorkingDirectoryError.InvalidLeaseId if table.next_lease_id == 0
+            active: mutable usize = 0
+            for index in 0..<table.leases.count |table, active|:
+                lease: WorkingDirectoryLease = table.leases[index]
+                raise WorkingDirectoryError.InvalidLeaseId if lease.lease_id == 0
+                raise WorkingDirectoryError.InvalidOwner if lease.owner_token == 0
+                raise WorkingDirectoryError.InvalidPath if not working_directory_path_valid(lease.initial_path, table.policy.max_path_bytes) or not working_directory_path_valid(lease.current_path, table.policy.max_path_bytes)
+                raise WorkingDirectoryError.InvalidPath if lease.pending_path != "" and not working_directory_path_valid(lease.pending_path, table.policy.max_path_bytes)
+                raise WorkingDirectoryError.InvalidState if not working_directory_lease_state_valid(lease.state)
+                raise WorkingDirectoryError.ChangeLimitExceeded if lease.changes > table.policy.max_changes
+                active <- active + 1 if working_directory_active(lease.state)
+                for earlier in 0..<index |table, lease|:
+                    raise WorkingDirectoryError.DuplicateLeaseId if table.leases[earlier].lease_id == lease.lease_id
+                    raise WorkingDirectoryError.DuplicateOwner if table.leases[earlier].owner_token == lease.owner_token and working_directory_active(table.leases[earlier].state) and working_directory_active(lease.state)
+            raise WorkingDirectoryError.AccountingInvalid if active != table.active_contexts
+            raise WorkingDirectoryError.ConcurrentOwner if active > 1
+            return true
+
+
+        def validate_working_directory_session(table: WorkingDirectoryTable&, session: WorkingDirectorySession&) -> bool error[WorkingDirectoryError]:
+            try validate_working_directory_table(table)
+            raise WorkingDirectoryError.InvalidState if not working_directory_state_valid(session.state)
+            raise WorkingDirectoryError.InvalidPath if not working_directory_path_valid(session.request.initial_path, table.policy.max_path_bytes)
+            raise WorkingDirectoryError.EmbeddedNul if sview_contains_byte(session.request.initial_path, 0)
+            raise WorkingDirectoryError.InvalidOwner if session.request.owner_token == 0
+            raise WorkingDirectoryError.ChangeLimitExceeded if session.request.max_changes == 0 or session.request.max_changes > table.policy.max_changes or session.changes > session.request.max_changes
+            if session.state == WorkingDirectoryState.Held:
+                raise WorkingDirectoryError.LeaseMismatch if session.lease_id == 0 or not working_directory_session_matches(table, session, WorkingDirectoryLeaseState.Held)
+            elif session.state == WorkingDirectoryState.Changing:
+                raise WorkingDirectoryError.LeaseMismatch if session.lease_id == 0 or not working_directory_session_matches(table, session, WorkingDirectoryLeaseState.Changing)
+            elif session.state == WorkingDirectoryState.Restoring:
+                raise WorkingDirectoryError.LeaseMismatch if session.lease_id == 0 or not working_directory_session_matches(table, session, WorkingDirectoryLeaseState.Restoring)
+            elif session.state == WorkingDirectoryState.Restored:
+                raise WorkingDirectoryError.LeaseMismatch if session.lease_id == 0 or not working_directory_session_matches(table, session, WorkingDirectoryLeaseState.Restored)
+            elif session.state == WorkingDirectoryState.Failed and session.lease_id != 0:
+                index: usize = working_directory_index(table, session.lease_id)
+                raise WorkingDirectoryError.LeaseMismatch if index == table.leases.count or table.leases[index].state != WorkingDirectoryLeaseState.Failed
+            else:
+                raise WorkingDirectoryError.LeaseMismatch if session.lease_id != 0
+            return true
+
+
+        def advance_working_directory(table: mutable WorkingDirectoryTable&, session: mutable WorkingDirectorySession&, event: WorkingDirectoryEvent, path: sview = "") -> WorkingDirectoryState error[WorkingDirectoryError]:
+            try validate_working_directory_session(table, session)
+            raise WorkingDirectoryError.InvalidEvent if not working_directory_event_valid(event)
+            if event == WorkingDirectoryEvent.Begin:
+                raise WorkingDirectoryError.InvalidTransition if session.state != WorkingDirectoryState.Planned
+                raise WorkingDirectoryError.ConcurrentOwner if table.active_contexts != 0
+                raise WorkingDirectoryError.LeaseLimitExceeded if table.leases.count >= table.policy.max_contexts
+                raise WorkingDirectoryError.InvalidLeaseId if table.next_lease_id == 0
+                session.lease_id <- table.next_lease_id
+                table.leases.push(WorkingDirectoryLease{lease_id: table.next_lease_id, owner_token: session.request.owner_token, initial_path: session.request.initial_path, current_path: session.request.initial_path})
+                table.next_lease_id <- table.next_lease_id + 1
+                table.active_contexts <- table.active_contexts + 1
+                session.state <- WorkingDirectoryState.Held
+            elif event == WorkingDirectoryEvent.Change:
+                raise WorkingDirectoryError.ChangeNotReady if session.state != WorkingDirectoryState.Held
+                raise WorkingDirectoryError.InvalidPath if not working_directory_path_valid(path, table.policy.max_path_bytes)
+                raise WorkingDirectoryError.EmbeddedNul if sview_contains_byte(path, 0)
+                raise WorkingDirectoryError.ChangeLimitExceeded if session.changes >= session.request.max_changes
+                index: usize = working_directory_index(table, session.lease_id)
+                raise WorkingDirectoryError.LeaseMismatch if index == table.leases.count or table.leases[index].state != WorkingDirectoryLeaseState.Held
+                raise WorkingDirectoryError.ChangeNotReady if path == table.leases[index].current_path
+                table.leases[index].pending_path <- path
+                table.leases[index].state <- WorkingDirectoryLeaseState.Changing
+                session.state <- WorkingDirectoryState.Changing
+            elif event == WorkingDirectoryEvent.ChangeAck:
+                raise WorkingDirectoryError.ChangeNotReady if session.state != WorkingDirectoryState.Changing
+                index: usize = working_directory_index(table, session.lease_id)
+                raise WorkingDirectoryError.LeaseMismatch if index == table.leases.count or table.leases[index].state != WorkingDirectoryLeaseState.Changing or table.leases[index].pending_path == ""
+                table.leases[index].current_path <- table.leases[index].pending_path
+                table.leases[index].pending_path <- ""
+                table.leases[index].changes <- table.leases[index].changes + 1
+                session.changes <- session.changes + 1
+                table.leases[index].state <- WorkingDirectoryLeaseState.Held
+                session.state <- WorkingDirectoryState.Held
+            elif event == WorkingDirectoryEvent.Restore:
+                raise WorkingDirectoryError.RestoreNotReady if session.state != WorkingDirectoryState.Held or session.changes == 0
+                index: usize = working_directory_index(table, session.lease_id)
+                raise WorkingDirectoryError.LeaseMismatch if index == table.leases.count or table.leases[index].state != WorkingDirectoryLeaseState.Held
+                table.leases[index].pending_path <- session.request.initial_path
+                table.leases[index].state <- WorkingDirectoryLeaseState.Restoring
+                session.state <- WorkingDirectoryState.Restoring
+            elif event == WorkingDirectoryEvent.RestoreAck:
+                raise WorkingDirectoryError.RestoreNotReady if session.state != WorkingDirectoryState.Restoring
+                index: usize = working_directory_index(table, session.lease_id)
+                raise WorkingDirectoryError.LeaseMismatch if index == table.leases.count or table.leases[index].state != WorkingDirectoryLeaseState.Restoring or table.leases[index].pending_path != session.request.initial_path
+                table.leases[index].current_path <- session.request.initial_path
+                table.leases[index].pending_path <- ""
+                table.leases[index].state <- WorkingDirectoryLeaseState.Restored
+                table.active_contexts <- table.active_contexts - 1
+                session.state <- WorkingDirectoryState.Restored
+            elif event == WorkingDirectoryEvent.Cancel:
+                raise WorkingDirectoryError.CancelNotReady if session.state != WorkingDirectoryState.Held or session.changes != 0
+                index: usize = working_directory_index(table, session.lease_id)
+                raise WorkingDirectoryError.LeaseMismatch if index == table.leases.count or table.leases[index].state != WorkingDirectoryLeaseState.Held
+                table.leases[index].state <- WorkingDirectoryLeaseState.Failed
+                table.active_contexts <- table.active_contexts - 1
+                session.lease_id <- 0
+                session.state <- WorkingDirectoryState.Cancelling
+            elif event == WorkingDirectoryEvent.CancelAck:
+                raise WorkingDirectoryError.CancelNotReady if session.state != WorkingDirectoryState.Cancelling
+                session.state <- WorkingDirectoryState.Cancelled
+            elif event == WorkingDirectoryEvent.Fail:
+                raise WorkingDirectoryError.InvalidTransition if session.state == WorkingDirectoryState.Planned or session.state == WorkingDirectoryState.Restored or session.state == WorkingDirectoryState.Cancelled or session.state == WorkingDirectoryState.Failed
+                if session.state == WorkingDirectoryState.Held or session.state == WorkingDirectoryState.Changing or session.state == WorkingDirectoryState.Restoring:
+                    index: usize = working_directory_index(table, session.lease_id)
+                    raise WorkingDirectoryError.LeaseMismatch if index == table.leases.count
+                    raise WorkingDirectoryError.LeaseMismatch if not working_directory_active(table.leases[index].state)
+                    table.leases[index].state <- WorkingDirectoryLeaseState.Failed
+                    table.active_contexts <- table.active_contexts - 1
+                session.state <- WorkingDirectoryState.Failed
+            return session.state
