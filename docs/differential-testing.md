@@ -657,7 +657,9 @@ In-process runs also copy the shared `RuntimeResourcePolicy` and
 `resource_policy_known` false because the adapter cannot observe their memory,
 handle, process, regex, or concurrency counters. This keeps resource metadata
 available for later artifact publication without pretending that a process
-boundary has been measured.
+boundary has been measured. Direct-bytecode nested calls carry their parent's
+output ledger through the call chain, so the copied usage snapshot includes
+completed child captures exactly once.
 
 `compare_differential_runs` remains a value/observation comparator and therefore
 does not reject an unknown engine by default. Backend qualification must use
