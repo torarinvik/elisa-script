@@ -90,6 +90,7 @@ rg -q 'runtime_resource_add_retained_traces' "$repo_root/test/ir/elisascript_ir_
 rg -q 'partial_usage: RuntimeResourceUsage' "$repo_root/test/ir/elisascript_ir_test.elisa"
 rg -q 'runtime_resource_remaining_policy\(partial_usage, policy\)' "$repo_root/test/ir/elisascript_ir_test.elisa"
 rg -q 'exhausted_remaining: RuntimeResourcePolicy' "$repo_root/test/ir/elisascript_ir_test.elisa"
+rg -q 'unattached_usage: RuntimeResourceUsage' "$repo_root/test/ir/elisascript_ir_test.elisa"
 rg -q 'tiny_policy: RuntimeResourcePolicy' "$repo_root/test/ir/elisascript_ir_test.elisa"
 rg -q 'tiny_usage: mutable RuntimeResourceUsage' "$repo_root/test/ir/elisascript_ir_test.elisa"
 rg -q 'not runtime_resource_acquire\(tiny_usage' "$repo_root/test/ir/elisascript_ir_test.elisa"

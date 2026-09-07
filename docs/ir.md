@@ -227,7 +227,8 @@ nested call or backend fallback has an explicit place to inherit the parent
 contract. `runtime_resource_policy_valid` now caps every declared resource
 dimension against the shared host ceilings before execution. `runtime_resource_usage_within_policy` uses subtraction-free
 comparisons and treats only the elapsed-time field's zero as "timer not
-attached"; a zero in every other field is an exact zero budget. The current
+attached"; a zero in every other field is an exact zero budget, and a usage
+record cannot claim elapsed time while that timer sentinel remains zero. The current
 `runtime_resource_acquire`/`runtime_resource_release` counter edges provide
 typed overflow/underflow-safe admission for handles, child processes, and
 concurrent tasks. The corresponding `runtime_resource_add_*` helpers apply the
