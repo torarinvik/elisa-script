@@ -129,6 +129,16 @@ JSONL, CSV, and TSV adapters share the same cancellation and limit semantics
 instead of inheriting host parser defaults. Schema conversion and streaming
 parser implementations remain separate work.
 
+`EsInstall` makes release publication a typed state machine. An
+`InstallPlan` names the package version, workspace/user/system scope, source,
+bytecode, or native artifact targets, destination paths, executable intent, and
+four-word integrity identity. `validate_install_plan` rejects duplicate
+destinations, non-`.elisascript` source artifacts, oversized payloads, and
+missing identity words; `advance_install_plan` requires
+`Planned → Staged → Verified → Published` and exposes explicit failure and
+rollback edges. The host installer still owns filesystem permissions, atomic
+replacement, signatures, and platform-specific executable layout.
+
 Every verified module also has canonical structural bytes through
 `canonical_module_bytes(module)` and a compact fingerprint through
 `module_fingerprint(module)` (with `canonical_module_hash` as the explicit

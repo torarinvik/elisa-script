@@ -1,0 +1,155 @@
+# Typed installation and release-artifact contract.
+#
+# Installation is a publication protocol, not a collection of shell copy
+# commands. The plan names the exact artifact targets, destination paths,
+# integrity identity, scope, and rollback state before a host adapter mutates
+# the filesystem.
+
+module EsInstall:
+    using EsPackage
+
+    public:
+        const INSTALL_FORMAT_VERSION: u8 = 1
+        const INSTALL_MAX_ARTIFACTS: usize = 256
+        const INSTALL_MAX_PATH_BYTES: usize = 4096
+        const INSTALL_MAX_PACKAGE_NAME_BYTES: usize = 256
+        const INSTALL_MAX_ARTIFACT_BYTES: usize = 268435456
+
+
+        const enum InstallTarget of u8:
+            Source
+            Bytecode
+            Native
+
+
+        const enum InstallScope of u8:
+            Workspace
+            User
+            System
+
+
+        const enum InstallState of u8:
+            Planned
+            Staged
+            Verified
+            Published
+            Failed
+
+
+        const enum InstallEvent of u8:
+            Stage
+            Verify
+            Publish
+            Fail
+            Rollback
+
+
+        struct InstallArtifact:
+            target: InstallTarget
+            source_path: sview
+            destination_path: sview
+            byte_count: usize
+            fingerprint: u64
+            digest_0: u64
+            digest_1: u64
+            digest_2: u64
+            digest_3: u64
+            executable: bool = false
+
+
+        struct InstallPlan:
+            format_version: u8 = INSTALL_FORMAT_VERSION
+            package_name: sview
+            package_version: PackageVersion
+            scope: InstallScope = InstallScope.User
+            artifacts: darray[InstallArtifact] = []
+            offline_only: bool = false
+            state: InstallState = InstallState.Planned
+
+
+        error InstallContractError:
+            InvalidFormatVersion
+            InvalidTarget
+            InvalidScope
+            InvalidState
+            InvalidEvent
+            PackageNameInvalid
+            PathInvalid
+            SourceExtensionInvalid
+            ArtifactLimitExceeded
+            ArtifactBytesExceeded
+            IntegrityMissing
+            DuplicateDestination
+            InvalidExecutableFlag
+            RollbackNotReady
+
+
+    private:
+        def install_target_valid(target: InstallTarget) -> bool:
+            return target in {InstallTarget.Source, InstallTarget.Bytecode, InstallTarget.Native}
+
+
+        def install_scope_valid(scope: InstallScope) -> bool:
+            return scope in {InstallScope.Workspace, InstallScope.User, InstallScope.System}
+
+
+        def install_state_valid(state: InstallState) -> bool:
+            return state in {InstallState.Planned, InstallState.Staged, InstallState.Verified, InstallState.Published, InstallState.Failed}
+
+
+        def install_event_valid(event: InstallEvent) -> bool:
+            return event in {InstallEvent.Stage, InstallEvent.Verify, InstallEvent.Publish, InstallEvent.Fail, InstallEvent.Rollback}
+
+
+        def install_path_valid(path: sview) -> bool:
+            return sview_len(path) != 0 and sview_len(path) < INSTALL_MAX_PATH_BYTES and not sview_contains_byte(path, 0)
+
+
+        def install_package_name_valid(name: sview) -> bool:
+            return sview_len(name) != 0 and sview_len(name) < INSTALL_MAX_PACKAGE_NAME_BYTES and not sview_contains_byte(name, 0)
+
+
+        def install_artifact_valid(artifact: InstallArtifact) -> bool error[InstallContractError]:
+            raise InstallContractError.InvalidTarget if not install_target_valid(artifact.target)
+            raise InstallContractError.PathInvalid if not install_path_valid(artifact.source_path) or not install_path_valid(artifact.destination_path)
+            raise InstallContractError.SourceExtensionInvalid if artifact.target == InstallTarget.Source and not sview_ends_with(artifact.source_path, ".elisascript")
+            raise InstallContractError.ArtifactBytesExceeded if artifact.byte_count == 0 or artifact.byte_count > INSTALL_MAX_ARTIFACT_BYTES
+            raise InstallContractError.IntegrityMissing if artifact.fingerprint == 0 or artifact.digest_0 == 0 or artifact.digest_1 == 0 or artifact.digest_2 == 0 or artifact.digest_3 == 0
+            return true
+
+
+    public:
+        def validate_install_plan(plan: InstallPlan&) -> bool error[InstallContractError]:
+            raise InstallContractError.InvalidFormatVersion if plan.format_version != INSTALL_FORMAT_VERSION
+            raise InstallContractError.PackageNameInvalid if not install_package_name_valid(plan.package_name)
+            raise InstallContractError.InvalidScope if not install_scope_valid(plan.scope)
+            raise InstallContractError.InvalidState if not install_state_valid(plan.state)
+            raise InstallContractError.ArtifactLimitExceeded if plan.artifacts.count > INSTALL_MAX_ARTIFACTS
+            for artifact in plan.artifacts:
+                try install_artifact_valid(artifact)
+            for index in 0..<plan.artifacts.count |plan|:
+                artifact: InstallArtifact = plan.artifacts[index]
+                for earlier in 0..<index |plan, artifact|:
+                    raise InstallContractError.DuplicateDestination if plan.artifacts[earlier].destination_path == artifact.destination_path
+            return true
+
+
+        def advance_install_plan(plan: mutable InstallPlan&, event: InstallEvent) -> InstallState error[InstallContractError]:
+            try validate_install_plan(plan)
+            raise InstallContractError.InvalidEvent if not install_event_valid(event)
+            if event == InstallEvent.Stage:
+                raise InstallContractError.InvalidState if plan.state != InstallState.Planned
+                plan.state <- InstallState.Staged
+            elif event == InstallEvent.Verify:
+                raise InstallContractError.InvalidState if plan.state != InstallState.Staged
+                plan.state <- InstallState.Verified
+            elif event == InstallEvent.Publish:
+                raise InstallContractError.InvalidState if plan.state != InstallState.Verified
+                plan.state <- InstallState.Published
+            elif event == InstallEvent.Fail:
+                raise InstallContractError.InvalidState if plan.state == InstallState.Failed
+                plan.state <- InstallState.Failed
+            elif event == InstallEvent.Rollback:
+                raise InstallContractError.RollbackNotReady if plan.state != InstallState.Published and plan.state != InstallState.Verified and plan.state != InstallState.Staged
+                plan.state <- InstallState.Failed
+            return plan.state
