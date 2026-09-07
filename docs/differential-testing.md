@@ -708,6 +708,16 @@ remain unqualified compatibility inputs.
 `EsDifferentialSequence::DifferentialSequence` is the bounded stateful/lockstep
 boundary. Each step has an ordered index, independent reference/candidate
 fingerprints, an observation count, and an explicit equality decision;
+`EsDifferentialStability::DifferentialStabilitySession` is the bounded repeat
+boundary for adapters whose output may vary between runs. A policy declares a
+minimum and maximum repeat count (capped at sixteen) and explicitly chooses
+whether nondeterminism is rejected or reported. Every repeat records reference,
+candidate, and comparison fingerprints plus the equality decision. Repeated
+tuples classify as `StableEqual` or `StableMismatch`; any changed tuple is
+classified as `Nondeterministic` and can never be converted into an equality
+result. The state machine requires the minimum repeat count before completion,
+rejects out-of-order or missing fingerprints, and leaves execution, scheduler
+seeds, and host adapters outside the typed contract.
 checkpoints carry both state identities. The state machine records the first
 non-equal step as `Diverged`, seals only after every step is complete, and
 rejects out-of-order steps, duplicate checkpoint order, zero identities, and

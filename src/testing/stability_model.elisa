@@ -1,0 +1,170 @@
+# Bounded repeat and nondeterminism contract for differential testing.
+#
+# A differential case may be run more than once to distinguish a stable
+# mismatch from an unstable adapter or world. This module records only typed
+# fingerprints; host execution, scheduling, and report rendering remain
+# adapter responsibilities. Nondeterminism can be reported explicitly, but
+# it can never be converted into an equality result by this contract.
+
+module EsDifferentialStability:
+    public:
+        const DIFFERENTIAL_STABILITY_MAX_REPEATS: usize = 16
+
+
+        const enum DifferentialStabilityState of u8:
+            Planned
+            Running
+            Completed
+            Failed
+            Cancelled
+
+
+        const enum DifferentialStabilityEvent of u8:
+            Start
+            Observation
+            Complete
+            Fail
+            Cancel
+
+
+        const enum DifferentialStabilityClassification of u8:
+            Unknown
+            StableEqual
+            StableMismatch
+            Nondeterministic
+
+
+        const enum DifferentialNondeterminismPolicy of u8:
+            Reject
+            Report
+
+
+        struct DifferentialStabilityPolicy:
+            minimum_repeats: usize = 2
+            maximum_repeats: usize = 2
+            nondeterminism: DifferentialNondeterminismPolicy = DifferentialNondeterminismPolicy.Reject
+
+
+        struct DifferentialStabilityObservation:
+            repeat_index: usize
+            reference_fingerprint: u64
+            candidate_fingerprint: u64
+            comparison_fingerprint: u64
+            equal: bool
+
+
+        struct DifferentialStabilitySession:
+            policy: DifferentialStabilityPolicy = DifferentialStabilityPolicy{}
+            state: DifferentialStabilityState = DifferentialStabilityState.Planned
+            classification: DifferentialStabilityClassification = DifferentialStabilityClassification.Unknown
+            next_repeat: usize = 0
+            observations: darray[DifferentialStabilityObservation] = []
+            has_baseline: bool = false
+            baseline_reference_fingerprint: u64 = 0
+            baseline_candidate_fingerprint: u64 = 0
+            baseline_comparison_fingerprint: u64 = 0
+            baseline_equal: bool = false
+            stable_repeats: usize = 0
+            has_nondeterminism: bool = false
+
+
+        error DifferentialStabilityError:
+            InvalidState
+            InvalidEvent
+            InvalidPolicy
+            RepeatLimitExceeded
+            RepeatOrderInvalid
+            FingerprintMissing
+            ClassificationInvalid
+            AccountingInvalid
+            CompleteNotReady
+            NondeterministicRejected
+            CancelNotReady
+
+
+    private:
+        def differential_stability_state_valid(state: DifferentialStabilityState) -> bool:
+            return state in {DifferentialStabilityState.Planned, DifferentialStabilityState.Running, DifferentialStabilityState.Completed, DifferentialStabilityState.Failed, DifferentialStabilityState.Cancelled}
+
+
+        def differential_stability_event_valid(event: DifferentialStabilityEvent) -> bool:
+            return event in {DifferentialStabilityEvent.Start, DifferentialStabilityEvent.Observation, DifferentialStabilityEvent.Complete, DifferentialStabilityEvent.Fail, DifferentialStabilityEvent.Cancel}
+
+
+        def differential_stability_classification_valid(classification: DifferentialStabilityClassification) -> bool:
+            return classification in {DifferentialStabilityClassification.Unknown, DifferentialStabilityClassification.StableEqual, DifferentialStabilityClassification.StableMismatch, DifferentialStabilityClassification.Nondeterministic}
+
+
+        def differential_nondeterminism_policy_valid(policy: DifferentialNondeterminismPolicy) -> bool:
+            return policy in {DifferentialNondeterminismPolicy.Reject, DifferentialNondeterminismPolicy.Report}
+
+
+        def differential_stability_fingerprint_valid(value: u64) -> bool:
+            return value != 0
+
+
+        def differential_stability_policy_valid(policy: DifferentialStabilityPolicy) -> bool:
+            return policy.minimum_repeats >= 2 and policy.minimum_repeats <= policy.maximum_repeats and policy.maximum_repeats <= DIFFERENTIAL_STABILITY_MAX_REPEATS and differential_nondeterminism_policy_valid(policy.nondeterminism)
+
+
+    public:
+        def validate_differential_stability(session: DifferentialStabilitySession&) -> bool error[DifferentialStabilityError]:
+            raise DifferentialStabilityError.InvalidState if not differential_stability_state_valid(session.state)
+            raise DifferentialStabilityError.InvalidPolicy if not differential_stability_policy_valid(session.policy)
+            raise DifferentialStabilityError.ClassificationInvalid if not differential_stability_classification_valid(session.classification)
+            raise DifferentialStabilityError.RepeatLimitExceeded if session.observations.count > session.policy.maximum_repeats
+            raise DifferentialStabilityError.RepeatOrderInvalid if session.next_repeat != session.observations.count
+            raise DifferentialStabilityError.AccountingInvalid if session.stable_repeats > session.observations.count
+            if session.has_baseline:
+                raise DifferentialStabilityError.FingerprintMissing if not differential_stability_fingerprint_valid(session.baseline_reference_fingerprint) or not differential_stability_fingerprint_valid(session.baseline_candidate_fingerprint) or not differential_stability_fingerprint_valid(session.baseline_comparison_fingerprint)
+                raise DifferentialStabilityError.RepeatOrderInvalid if session.observations.count == 0
+            else:
+                raise DifferentialStabilityError.AccountingInvalid if session.observations.count != 0 or session.stable_repeats != 0
+            for index in 0..<session.observations.count |session|:
+                observation: DifferentialStabilityObservation = session.observations[index]
+                raise DifferentialStabilityError.RepeatOrderInvalid if observation.repeat_index != index
+                raise DifferentialStabilityError.FingerprintMissing if not differential_stability_fingerprint_valid(observation.reference_fingerprint) or not differential_stability_fingerprint_valid(observation.candidate_fingerprint) or not differential_stability_fingerprint_valid(observation.comparison_fingerprint)
+            if session.classification == DifferentialStabilityClassification.Nondeterministic:
+                raise DifferentialStabilityError.ClassificationInvalid if not session.has_nondeterminism or session.state != DifferentialStabilityState.Completed
+            if session.classification == DifferentialStabilityClassification.StableEqual or session.classification == DifferentialStabilityClassification.StableMismatch:
+                raise DifferentialStabilityError.ClassificationInvalid if session.state != DifferentialStabilityState.Completed or session.has_nondeterminism
+            raise DifferentialStabilityError.ClassificationInvalid if session.state == DifferentialStabilityState.Completed and session.classification == DifferentialStabilityClassification.Unknown
+            return true
+
+
+        def advance_differential_stability(session: mutable DifferentialStabilitySession&, event: DifferentialStabilityEvent, observation: DifferentialStabilityObservation = DifferentialStabilityObservation{repeat_index: 0, reference_fingerprint: 1, candidate_fingerprint: 1, comparison_fingerprint: 1, equal: true}) -> DifferentialStabilityState error[DifferentialStabilityError]:
+            try validate_differential_stability(session)
+            raise DifferentialStabilityError.InvalidEvent if not differential_stability_event_valid(event)
+            if event == DifferentialStabilityEvent.Start:
+                raise DifferentialStabilityError.InvalidState if session.state != DifferentialStabilityState.Planned
+                session.state <- DifferentialStabilityState.Running
+            elif event == DifferentialStabilityEvent.Observation:
+                raise DifferentialStabilityError.InvalidState if session.state != DifferentialStabilityState.Running
+                raise DifferentialStabilityError.RepeatLimitExceeded if session.observations.count >= session.policy.maximum_repeats
+                raise DifferentialStabilityError.RepeatOrderInvalid if observation.repeat_index != session.next_repeat
+                raise DifferentialStabilityError.FingerprintMissing if not differential_stability_fingerprint_valid(observation.reference_fingerprint) or not differential_stability_fingerprint_valid(observation.candidate_fingerprint) or not differential_stability_fingerprint_valid(observation.comparison_fingerprint)
+                if not session.has_baseline:
+                    session.has_baseline <- true
+                    session.baseline_reference_fingerprint <- observation.reference_fingerprint
+                    session.baseline_candidate_fingerprint <- observation.candidate_fingerprint
+                    session.baseline_comparison_fingerprint <- observation.comparison_fingerprint
+                    session.baseline_equal <- observation.equal
+                    session.stable_repeats <- 1
+                elif observation.reference_fingerprint == session.baseline_reference_fingerprint and observation.candidate_fingerprint == session.baseline_candidate_fingerprint and observation.comparison_fingerprint == session.baseline_comparison_fingerprint and observation.equal == session.baseline_equal:
+                    session.stable_repeats <- session.stable_repeats + 1
+                else:
+                    session.has_nondeterminism <- true
+                session.observations.push(observation)
+                session.next_repeat <- session.next_repeat + 1
+            elif event == DifferentialStabilityEvent.Complete:
+                raise DifferentialStabilityError.CompleteNotReady if session.state != DifferentialStabilityState.Running or session.observations.count < session.policy.minimum_repeats
+                raise DifferentialStabilityError.NondeterministicRejected if session.has_nondeterminism and session.policy.nondeterminism == DifferentialNondeterminismPolicy.Reject
+                session.classification <- DifferentialStabilityClassification.Nondeterministic if session.has_nondeterminism else DifferentialStabilityClassification.StableEqual if session.baseline_equal else DifferentialStabilityClassification.StableMismatch
+                session.state <- DifferentialStabilityState.Completed
+            elif event == DifferentialStabilityEvent.Fail:
+                raise DifferentialStabilityError.InvalidState if session.state != DifferentialStabilityState.Running
+                session.state <- DifferentialStabilityState.Failed
+            elif event == DifferentialStabilityEvent.Cancel:
+                raise DifferentialStabilityError.CancelNotReady if session.state != DifferentialStabilityState.Planned and session.state != DifferentialStabilityState.Running
+                session.state <- DifferentialStabilityState.Cancelled
+            return session.state

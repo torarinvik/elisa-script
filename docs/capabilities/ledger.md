@@ -488,3 +488,10 @@ record layout, quote markers, shared field/record ceilings, and validated slice
 lookup for CSV/TSV adapters. The focused IR fixture and
 check_csv_materializer.sh audit are static evidence; quote unescaping,
 newline policy, and typed row construction remain open.
+
+ES-SCRIPT-013 | EsDifferentialStability supplies a bounded repeat session with
+minimum/maximum repeat policy, baseline fingerprint accounting, stable-equal and
+stable-mismatch classifications, and explicit nondeterminism rejection/reporting.
+The focused differential fixture, namespace inclusion, documentation, and
+check_differential_stability.sh audit are static evidence; scheduler-seed
+control, host repeat execution, and fresh-environment qualification remain open.
