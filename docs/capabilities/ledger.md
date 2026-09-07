@@ -421,3 +421,10 @@ working directory; fixture/oracle revision and seed; backend identity; result;
 stdout/stderr/error/observation digests; peak RSS and elapsed time; child
 process-tree outcome; and any known polling or measurement limitation. A
 successful static diff check is recorded as static review, never as execution.
+
+ES-SCRIPT-002 | EsBuildScheduler supplies deterministic dependency-ready
+queues, exact fingerprint cache admission, bounded parallel dispatch,
+completion/failure accounting, and cancellation transitions over EsBuild.
+The focused IR fixture, namespace inclusion, documentation, and
+check_build_scheduler.sh audit are static evidence; process launch, cache
+persistence, and host cancellation adapters remain open.

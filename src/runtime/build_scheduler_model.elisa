@@ -1,0 +1,198 @@
+# Deterministic build-graph scheduler contract.
+#
+# `EsBuild` describes nodes and dependencies; this module describes the
+# scheduler that may dispatch them. Readiness is derived from completed
+# dependency states, cache identity is an exact fingerprint match, and every
+# mutation is bounded by the graph's declared parallelism.
+
+module EsBuildScheduler:
+    using EsBuild
+
+    public:
+        const BUILD_SCHEDULER_MAX_CACHE: usize = BUILD_MAX_NODES
+
+
+        const enum BuildSchedulerState of u8:
+            Ready
+            Running
+            Cancelling
+            Complete
+            Failed
+            Cancelled
+
+
+        const enum BuildSchedulerEvent of u8:
+            Begin
+            Refresh
+            Dispatch
+            CacheHit
+            NodeComplete
+            NodeFail
+            Complete
+            Cancel
+            CancelAck
+
+
+        struct BuildCacheEntry:
+            node_name: sview
+            fingerprint: u64
+
+
+        struct BuildScheduler:
+            graph: BuildGraph
+            cache: darray[BuildCacheEntry] = []
+            ready_queue: darray[usize] = []
+            state: BuildSchedulerState = BuildSchedulerState.Ready
+            active_nodes: usize = 0
+            completed_nodes: usize = 0
+            cache_hits: usize = 0
+
+
+        error BuildSchedulerError:
+            InvalidState
+            InvalidEvent
+            CacheLimitExceeded
+            CacheEntryInvalid
+            DuplicateCacheEntry
+            QueueLimitExceeded
+            QueueEntryInvalid
+            DuplicateQueueEntry
+            NodeIndexInvalid
+            NodeNotReady
+            DependencyNotReady
+            CacheMiss
+            ActiveLimitExceeded
+            NodeAccountingInvalid
+            CompleteNotReady
+            CancelNotReady
+
+
+    private:
+        def scheduler_state_valid(state: BuildSchedulerState) -> bool:
+            return state in {BuildSchedulerState.Ready, BuildSchedulerState.Running, BuildSchedulerState.Cancelling, BuildSchedulerState.Complete, BuildSchedulerState.Failed, BuildSchedulerState.Cancelled}
+
+
+        def scheduler_event_valid(event: BuildSchedulerEvent) -> bool:
+            return event in {BuildSchedulerEvent.Begin, BuildSchedulerEvent.Refresh, BuildSchedulerEvent.Dispatch, BuildSchedulerEvent.CacheHit, BuildSchedulerEvent.NodeComplete, BuildSchedulerEvent.NodeFail, BuildSchedulerEvent.Complete, BuildSchedulerEvent.Cancel, BuildSchedulerEvent.CancelAck}
+
+
+        def scheduler_name_valid(name: sview) -> bool:
+            return sview_len(name) != 0 and sview_len(name) < PROCESS_COMMAND_MAX_TEXT_BYTES and not sview_contains_byte(name, 0)
+
+
+        def scheduler_node_index(scheduler: BuildScheduler&, name: sview) -> usize:
+            for index in 0..<scheduler.graph.nodes.count |scheduler, name|:
+                return index if scheduler.graph.nodes[index].name == name
+            return scheduler.graph.nodes.count
+
+
+        def scheduler_queue_contains(scheduler: BuildScheduler&, node_index: usize) -> bool:
+            for queued in scheduler.ready_queue:
+                return true if queued == node_index
+            return false
+
+
+        def scheduler_dependency_ready(scheduler: BuildScheduler&, node_index: usize) -> bool error[BuildSchedulerError]:
+            raise BuildSchedulerError.NodeIndexInvalid if node_index >= scheduler.graph.nodes.count
+            for dependency in scheduler.graph.nodes[node_index].dependencies:
+                dependency_index: usize = scheduler_node_index(scheduler, dependency)
+                raise BuildSchedulerError.DependencyNotReady if dependency_index == scheduler.graph.nodes.count
+                return false if scheduler.graph.nodes[dependency_index].state != BuildNodeState.Succeeded
+            return true
+
+
+        def scheduler_cache_matches(scheduler: BuildScheduler&, node_index: usize) -> bool:
+            for entry in scheduler.cache:
+                if entry.node_name == scheduler.graph.nodes[node_index].name and entry.fingerprint == scheduler.graph.nodes[node_index].fingerprint:
+                    return true
+            return false
+
+
+        def scheduler_refresh_ready(scheduler: mutable BuildScheduler&) -> bool error[BuildSchedulerError]:
+            for index in 0..<scheduler.graph.nodes.count |scheduler|:
+                node: BuildNode = scheduler.graph.nodes[index]
+                if node.state == BuildNodeState.Planned and not scheduler_queue_contains(scheduler, index):
+                    ready: bool = try scheduler_dependency_ready(scheduler, index)
+                    if ready:
+                        raise BuildSchedulerError.QueueLimitExceeded if scheduler.ready_queue.count >= BUILD_MAX_NODES
+                        scheduler.ready_queue.push(index)
+            return true
+
+
+        def scheduler_rebuild_ready(scheduler: mutable BuildScheduler&) -> bool error[BuildSchedulerError]:
+            scheduler.ready_queue <- []
+            return try scheduler_refresh_ready(scheduler)
+
+
+    public:
+        def validate_build_scheduler(scheduler: BuildScheduler&) -> bool error[BuildSchedulerError]:
+            try validate_build_graph(scheduler.graph)
+            raise BuildSchedulerError.InvalidState if not scheduler_state_valid(scheduler.state)
+            raise BuildSchedulerError.CacheLimitExceeded if scheduler.cache.count > BUILD_SCHEDULER_MAX_CACHE
+            raise BuildSchedulerError.QueueLimitExceeded if scheduler.ready_queue.count > BUILD_MAX_NODES
+            raise BuildSchedulerError.ActiveLimitExceeded if scheduler.active_nodes > scheduler.graph.max_parallel
+            raise BuildSchedulerError.NodeAccountingInvalid if scheduler.completed_nodes > scheduler.graph.nodes.count or scheduler.cache_hits > scheduler.completed_nodes
+            raise BuildSchedulerError.NodeAccountingInvalid if scheduler.active_nodes > scheduler.graph.nodes.count - scheduler.completed_nodes
+            for index in 0..<scheduler.cache.count |scheduler|:
+                entry: BuildCacheEntry = scheduler.cache[index]
+                raise BuildSchedulerError.CacheEntryInvalid if not scheduler_name_valid(entry.node_name) or entry.fingerprint == 0
+                for earlier in 0..<index |scheduler, entry|:
+                    raise BuildSchedulerError.DuplicateCacheEntry if scheduler.cache[earlier].node_name == entry.node_name
+            for index in 0..<scheduler.ready_queue.count |scheduler|:
+                queued: usize = scheduler.ready_queue[index]
+                raise BuildSchedulerError.QueueEntryInvalid if queued >= scheduler.graph.nodes.count or scheduler.graph.nodes[queued].state != BuildNodeState.Planned
+                for earlier in 0..<index |scheduler, queued|:
+                    raise BuildSchedulerError.DuplicateQueueEntry if scheduler.ready_queue[earlier] == queued
+            return true
+
+
+        def advance_build_scheduler(scheduler: mutable BuildScheduler&, event: BuildSchedulerEvent, node_index: usize = 0) -> BuildSchedulerState error[BuildSchedulerError]:
+            try validate_build_scheduler(scheduler)
+            raise BuildSchedulerError.InvalidEvent if not scheduler_event_valid(event)
+            if event == BuildSchedulerEvent.Begin:
+                raise BuildSchedulerError.InvalidState if scheduler.state != BuildSchedulerState.Ready
+                scheduler.state <- BuildSchedulerState.Running
+                try scheduler_rebuild_ready(scheduler)
+            elif event == BuildSchedulerEvent.Refresh:
+                raise BuildSchedulerError.InvalidState if scheduler.state != BuildSchedulerState.Running
+                try scheduler_rebuild_ready(scheduler)
+            elif event == BuildSchedulerEvent.Dispatch:
+                raise BuildSchedulerError.InvalidState if scheduler.state != BuildSchedulerState.Running
+                raise BuildSchedulerError.NodeIndexInvalid if node_index >= scheduler.graph.nodes.count
+                raise BuildSchedulerError.ActiveLimitExceeded if scheduler.active_nodes >= scheduler.graph.max_parallel
+                raise BuildSchedulerError.NodeNotReady if scheduler.graph.nodes[node_index].state != BuildNodeState.Planned or not scheduler_queue_contains(scheduler, node_index)
+                ready: bool = try scheduler_dependency_ready(scheduler, node_index)
+                raise BuildSchedulerError.DependencyNotReady if not ready
+                scheduler.graph.nodes[node_index].state <- BuildNodeState.Running
+                scheduler.active_nodes <- scheduler.active_nodes + 1
+                try scheduler_rebuild_ready(scheduler)
+            elif event == BuildSchedulerEvent.CacheHit:
+                raise BuildSchedulerError.InvalidState if scheduler.state != BuildSchedulerState.Running
+                raise BuildSchedulerError.NodeIndexInvalid if node_index >= scheduler.graph.nodes.count
+                raise BuildSchedulerError.NodeNotReady if scheduler.graph.nodes[node_index].state != BuildNodeState.Planned
+                raise BuildSchedulerError.CacheMiss if not scheduler_cache_matches(scheduler, node_index)
+                ready: bool = try scheduler_dependency_ready(scheduler, node_index)
+                raise BuildSchedulerError.DependencyNotReady if not ready
+                scheduler.graph.nodes[node_index].state <- BuildNodeState.Succeeded
+                scheduler.completed_nodes <- scheduler.completed_nodes + 1
+                scheduler.cache_hits <- scheduler.cache_hits + 1
+                try scheduler_rebuild_ready(scheduler)
+            elif event == BuildSchedulerEvent.NodeComplete or event == BuildSchedulerEvent.NodeFail:
+                raise BuildSchedulerError.InvalidState if scheduler.state != BuildSchedulerState.Running
+                raise BuildSchedulerError.NodeIndexInvalid if node_index >= scheduler.graph.nodes.count
+                raise BuildSchedulerError.NodeAccountingInvalid if scheduler.active_nodes == 0 or scheduler.graph.nodes[node_index].state != BuildNodeState.Running
+                scheduler.graph.nodes[node_index].state <- BuildNodeState.Succeeded if event == BuildSchedulerEvent.NodeComplete else BuildNodeState.Failed
+                scheduler.active_nodes <- scheduler.active_nodes - 1
+                scheduler.completed_nodes <- scheduler.completed_nodes + 1
+                scheduler.state <- BuildSchedulerState.Failed if event == BuildSchedulerEvent.NodeFail
+                try scheduler_rebuild_ready(scheduler) if event == BuildSchedulerEvent.NodeComplete
+            elif event == BuildSchedulerEvent.Complete:
+                raise BuildSchedulerError.CompleteNotReady if scheduler.state != BuildSchedulerState.Running or scheduler.active_nodes != 0 or scheduler.completed_nodes != scheduler.graph.nodes.count
+                scheduler.state <- BuildSchedulerState.Complete
+            elif event == BuildSchedulerEvent.Cancel:
+                raise BuildSchedulerError.CancelNotReady if scheduler.state != BuildSchedulerState.Running
+                scheduler.state <- BuildSchedulerState.Cancelling
+            elif event == BuildSchedulerEvent.CancelAck:
+                raise BuildSchedulerError.CancelNotReady if scheduler.state != BuildSchedulerState.Cancelling
+                scheduler.state <- BuildSchedulerState.Cancelled
+            return scheduler.state

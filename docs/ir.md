@@ -2328,3 +2328,10 @@ terminated source path and suppresses echoing an overlong borrowed path in that
 failure diagnostic. The raw `argv` collector uses the same ceiling for the
 source slot, avoiding a long host-memory scan before rejection and retaining
 the source-phase filename-limit detail.
+
+EsBuildScheduler adds the execution-facing queue contract over EsBuild. It
+rebuilds a deterministic ready queue from planned nodes and succeeded
+dependencies, admits at most the graph's declared parallelism, records exact
+fingerprint cache hits, and turns dispatch, completion, failure, and
+cancellation into explicit state-machine events. Queue entries are rebuilt
+after every mutation so completed or running nodes cannot remain dispatchable.
