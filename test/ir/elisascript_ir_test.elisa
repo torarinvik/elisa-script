@@ -45,6 +45,7 @@ using EsRegexCallback
 using EsNetwork
 using EsNetworkSession
 using EsFileMetadata
+using EsFileLock
 using EsDirectoryTree
 
 
@@ -290,6 +291,71 @@ def typed_file_metadata_contract_is_bounded_and_symlink_explicit() -> void:
             assert failure == FileMetadataError.SymlinkTargetInvalid
             bad_target <- true
     assert bad_target
+
+
+@test
+def typed_file_lock_contract_distinguishes_shared_exclusive_and_waits() -> void:
+    policy: FileLockPolicy = FileLockPolicy{max_leases: 8, max_path_bytes: 64, max_attempts: 4}
+    table: mutable FileLockTable = FileLockTable{policy: policy}
+    shared_one: mutable FileLockSession = FileLockSession{request: FileLockRequest{path: "state.db", owner_token: 1, mode: FileLockMode.Shared}}
+    shared_two: mutable FileLockSession = FileLockSession{request: FileLockRequest{path: "state.db", owner_token: 2, mode: FileLockMode.Shared}}
+    assert validate_file_lock_session(table, shared_one)
+    assert advance_file_lock(table, shared_one, FileLockEvent.Begin) == FileLockState.Waiting
+    assert advance_file_lock(table, shared_one, FileLockEvent.Acquire) == FileLockState.Held
+    assert advance_file_lock(table, shared_two, FileLockEvent.Begin) == FileLockState.Waiting
+    assert advance_file_lock(table, shared_two, FileLockEvent.Acquire) == FileLockState.Held
+    assert validate_file_lock_table(table)
+    reentrant: mutable FileLockSession = FileLockSession{request: FileLockRequest{path: "state.db", owner_token: 1, mode: FileLockMode.Shared}}
+    _ = advance_file_lock(table, reentrant, FileLockEvent.Begin)
+    reentrant_rejected: mutable bool = false
+    catch advance_file_lock(table, reentrant, FileLockEvent.Acquire):
+        ok value:
+            assert false
+        error failure:
+            assert failure == FileLockError.Conflict
+            reentrant_rejected <- true
+    assert reentrant_rejected
+    assert advance_file_lock(table, reentrant, FileLockEvent.Cancel) == FileLockState.Cancelling
+    assert advance_file_lock(table, reentrant, FileLockEvent.CancelAck) == FileLockState.Cancelled
+    exclusive: mutable FileLockSession = FileLockSession{request: FileLockRequest{path: "state.db", owner_token: 3, mode: FileLockMode.Exclusive}}
+    _ = advance_file_lock(table, exclusive, FileLockEvent.Begin)
+    conflict: mutable bool = false
+    catch advance_file_lock(table, exclusive, FileLockEvent.Acquire):
+        ok value:
+            assert false
+        error failure:
+            assert failure == FileLockError.Conflict
+            conflict <- true
+    assert conflict
+    assert advance_file_lock(table, shared_one, FileLockEvent.Release) == FileLockState.Releasing
+    assert advance_file_lock(table, shared_one, FileLockEvent.ReleaseAck) == FileLockState.Released
+    assert advance_file_lock(table, shared_two, FileLockEvent.Release) == FileLockState.Releasing
+    assert advance_file_lock(table, shared_two, FileLockEvent.ReleaseAck) == FileLockState.Released
+    assert advance_file_lock(table, exclusive, FileLockEvent.Acquire) == FileLockState.Held
+    bounded: mutable FileLockSession = FileLockSession{request: FileLockRequest{path: "state.db", owner_token: 4, mode: FileLockMode.Shared, wait_mode: FileLockWaitMode.Bounded, max_attempts: 2}}
+    assert advance_file_lock(table, bounded, FileLockEvent.Begin) == FileLockState.Waiting
+    would_block: mutable bool = false
+    catch advance_file_lock(table, bounded, FileLockEvent.Acquire):
+        ok value:
+            assert false
+        error failure:
+            assert failure == FileLockError.WouldBlock
+            would_block <- true
+    assert would_block
+    assert advance_file_lock(table, bounded, FileLockEvent.Retry) == FileLockState.Waiting
+    assert advance_file_lock(table, bounded, FileLockEvent.Acquire) == FileLockState.TimedOut
+    assert advance_file_lock(table, exclusive, FileLockEvent.Release) == FileLockState.Releasing
+    assert advance_file_lock(table, exclusive, FileLockEvent.ReleaseAck) == FileLockState.Released
+    failed: mutable FileLockSession = FileLockSession{request: FileLockRequest{path: "state.db", owner_token: 6, mode: FileLockMode.Exclusive}}
+    _ = advance_file_lock(table, failed, FileLockEvent.Begin)
+    assert advance_file_lock(table, failed, FileLockEvent.Acquire) == FileLockState.Held
+    assert advance_file_lock(table, failed, FileLockEvent.Fail) == FileLockState.Failed
+    assert table.active_leases == 0
+    assert validate_file_lock_table(table)
+    cancelled: mutable FileLockSession = FileLockSession{request: FileLockRequest{path: "state.db", owner_token: 5, mode: FileLockMode.Exclusive, wait_mode: FileLockWaitMode.Bounded, max_attempts: 2}}
+    _ = advance_file_lock(table, cancelled, FileLockEvent.Begin)
+    assert advance_file_lock(table, cancelled, FileLockEvent.Cancel) == FileLockState.Cancelling
+    assert advance_file_lock(table, cancelled, FileLockEvent.CancelAck) == FileLockState.Cancelled
 
 
 @test

@@ -662,6 +662,17 @@ namespace inclusion, documentation, and check_record_spill.sh audit are static
 evidence; sorting, fsync/rename, cleanup, crash recovery, and host execution
 remain open.
 
+ES-FS-004 | EsFileLock supplies a bounded advisory file-lock ownership
+contract. Requests carry explicit shared/exclusive mode, owner token, path and
+bounded-wait policy; same-path shared leases may coexist, while exclusive and
+same-owner re-entry conflicts are rejected. Acquisition attempts, retry,
+timeout, cancellation acknowledgement, release acknowledgement, failed leases,
+and active-lease accounting are explicit state-machine edges under
+`error[FileLockError]`. The focused IR fixture, namespace inclusion,
+documentation, and check_file_lock.sh audit are static evidence; platform
+flock/LockFileEx calls, fairness, mandatory-locking differences, and race
+fixtures remain host work.
+
 ES-SCRIPT-029 | EsRecordControl supplies explicit bounded `next`/`nextfile`/
 exit transitions for pattern-action adapters. It closes record/file ownership
 on skips, rejects record events outside files and premature file closure, caps

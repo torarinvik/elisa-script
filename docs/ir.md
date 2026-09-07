@@ -1022,6 +1022,19 @@ violations, missing/symlink policy, duplicate entries, accounting drift, and
 terminal misuse; native stat/lstat, chmod, hardlink, and race-safe traversal
 remain host responsibilities.
 
+`EsFileLock::FileLockTable` is the portable advisory-lock ownership boundary.
+Requests name a bounded path, nonzero owner token, and explicit `Shared` or
+`Exclusive` mode; only shared holders of the same path may coexist, and a
+single owner cannot implicitly re-enter a path. `Begin`, `Acquire`, `Retry`,
+`Timeout`, `Cancel`/`CancelAck`, `Release`/`ReleaseAck`, and `Fail` are explicit
+state-machine edges. Nonblocking conflicts return `error[FileLockError.Conflict]`;
+bounded waits return `WouldBlock` until a finite attempt budget is exhausted,
+then become `TimedOut`. A held lease remains active through `Releasing` until
+the host acknowledges release, while failures decrement active accounting and
+retain a failed lease record. The contract is deliberately advisory-only:
+platform lock calls, mandatory-locking behavior, fairness, and race handling
+remain host-adapter responsibilities.
+
 `EsRecordSpill::RecordSpillSession` is the external-sort staging boundary.
 Runs receive stable ordinals and distinct sibling paths, append only within
 per-run and aggregate record/byte ceilings, and must cross `SealRun` before

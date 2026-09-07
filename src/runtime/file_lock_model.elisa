@@ -1,0 +1,280 @@
+# Bounded typed advisory file-lock ownership boundary.
+#
+# Host adapters perform the platform-specific lock call.  This module keeps
+# the portable contract independent of flock/LockFileEx semantics: paths and
+# owner identities are bounded, shared/exclusive compatibility is explicit,
+# acquisition attempts are finite, and a held lease cannot disappear without
+# an acknowledged release or a recorded failure.
+
+module EsFileLock:
+    public:
+        const FILE_LOCK_MAX_LEASES: usize = 1048576
+        const FILE_LOCK_MAX_PATH_BYTES: usize = 4096
+        const FILE_LOCK_MAX_ATTEMPTS: usize = 1048576
+
+
+        const enum FileLockMode of u8:
+            Shared
+            Exclusive
+
+
+        const enum FileLockWaitMode of u8:
+            NonBlocking
+            Bounded
+
+
+        const enum FileLockLeaseState of u8:
+            Held
+            Releasing
+            Released
+            Failed
+
+
+        const enum FileLockState of u8:
+            Planned
+            Waiting
+            Held
+            Releasing
+            Released
+            TimedOut
+            Cancelling
+            Cancelled
+            Failed
+
+
+        const enum FileLockEvent of u8:
+            Begin
+            Acquire
+            Retry
+            Release
+            ReleaseAck
+            Timeout
+            Cancel
+            CancelAck
+            Fail
+
+
+        struct FileLockPolicy:
+            max_leases: usize = FILE_LOCK_MAX_LEASES
+            max_path_bytes: usize = FILE_LOCK_MAX_PATH_BYTES
+            max_attempts: usize = FILE_LOCK_MAX_ATTEMPTS
+
+
+        struct FileLockRequest:
+            path: sview
+            owner_token: u64
+            mode: FileLockMode
+            wait_mode: FileLockWaitMode = FileLockWaitMode.NonBlocking
+            max_attempts: usize = 1
+
+
+        struct FileLockLease:
+            lease_id: u64
+            path: sview
+            owner_token: u64
+            mode: FileLockMode
+            state: FileLockLeaseState = FileLockLeaseState.Held
+
+
+        struct FileLockTable:
+            policy: FileLockPolicy
+            leases: darray[FileLockLease] = []
+            active_leases: usize = 0
+            next_lease_id: u64 = 1
+
+
+        struct FileLockSession:
+            request: FileLockRequest
+            state: FileLockState = FileLockState.Planned
+            attempts: usize = 0
+            lease_id: u64 = 0
+
+
+        error FileLockError:
+            InvalidState
+            InvalidEvent
+            InvalidPolicy
+            InvalidMode
+            InvalidWaitMode
+            InvalidPath
+            EmbeddedNul
+            PathLimitExceeded
+            InvalidOwner
+            InvalidLeaseId
+            LeaseLimitExceeded
+            DuplicateLeaseId
+            DuplicateOwnerPath
+            LeaseIndexInvalid
+            LeaseMismatch
+            AccountingInvalid
+            Conflict
+            WouldBlock
+            AttemptsExceeded
+            RetryNotAllowed
+            InvalidTransition
+            ReleaseNotReady
+            CancelNotReady
+
+
+    private:
+        def file_lock_state_valid(state: FileLockState) -> bool:
+            return state in {FileLockState.Planned, FileLockState.Waiting, FileLockState.Held, FileLockState.Releasing, FileLockState.Released, FileLockState.TimedOut, FileLockState.Cancelling, FileLockState.Cancelled, FileLockState.Failed}
+
+
+        def file_lock_event_valid(event: FileLockEvent) -> bool:
+            return event in {FileLockEvent.Begin, FileLockEvent.Acquire, FileLockEvent.Retry, FileLockEvent.Release, FileLockEvent.ReleaseAck, FileLockEvent.Timeout, FileLockEvent.Cancel, FileLockEvent.CancelAck, FileLockEvent.Fail}
+
+
+        def file_lock_mode_valid(mode: FileLockMode) -> bool:
+            return mode in {FileLockMode.Shared, FileLockMode.Exclusive}
+
+
+        def file_lock_wait_mode_valid(mode: FileLockWaitMode) -> bool:
+            return mode in {FileLockWaitMode.NonBlocking, FileLockWaitMode.Bounded}
+
+
+        def file_lock_lease_state_valid(state: FileLockLeaseState) -> bool:
+            return state in {FileLockLeaseState.Held, FileLockLeaseState.Releasing, FileLockLeaseState.Released, FileLockLeaseState.Failed}
+
+
+        def file_lock_path_valid(path: sview, limit: usize) -> bool:
+            return sview_len(path) != 0 and sview_len(path) < limit and not sview_contains_byte(path, 0)
+
+
+        def file_lock_policy_valid(policy: FileLockPolicy) -> bool:
+            return policy.max_leases != 0 and policy.max_leases <= FILE_LOCK_MAX_LEASES and policy.max_path_bytes != 0 and policy.max_path_bytes <= FILE_LOCK_MAX_PATH_BYTES and policy.max_attempts != 0 and policy.max_attempts <= FILE_LOCK_MAX_ATTEMPTS
+
+
+        def file_lock_request_valid(request: FileLockRequest, policy: FileLockPolicy) -> bool:
+            return file_lock_path_valid(request.path, policy.max_path_bytes) and request.owner_token != 0 and file_lock_mode_valid(request.mode) and file_lock_wait_mode_valid(request.wait_mode) and request.max_attempts != 0 and request.max_attempts <= policy.max_attempts and (request.wait_mode == FileLockWaitMode.Bounded or request.max_attempts == 1)
+
+
+        def file_lock_lease_active(state: FileLockLeaseState) -> bool:
+            return state == FileLockLeaseState.Held or state == FileLockLeaseState.Releasing
+
+
+        def file_lock_index(table: FileLockTable&, lease_id: u64) -> usize:
+            for index in 0..<table.leases.count |table, lease_id|:
+                return index if table.leases[index].lease_id == lease_id
+            return table.leases.count
+
+
+        def file_lock_conflicts(table: FileLockTable&, request: FileLockRequest) -> bool:
+            for lease in table.leases:
+                if lease.path == request.path and file_lock_lease_active(lease.state):
+                    return true if lease.owner_token == request.owner_token
+                    return true if lease.mode == FileLockMode.Exclusive or request.mode == FileLockMode.Exclusive
+            return false
+
+
+        def file_lock_session_lease_matches(table: FileLockTable&, session: FileLockSession, expected: FileLockLeaseState) -> bool:
+            index: usize = file_lock_index(table, session.lease_id)
+            return index != table.leases.count and table.leases[index].path == session.request.path and table.leases[index].owner_token == session.request.owner_token and table.leases[index].mode == session.request.mode and table.leases[index].state == expected
+
+
+    public:
+        def validate_file_lock_table(table: FileLockTable&) -> bool error[FileLockError]:
+            raise FileLockError.InvalidPolicy if not file_lock_policy_valid(table.policy)
+            raise FileLockError.LeaseLimitExceeded if table.leases.count > table.policy.max_leases
+            raise FileLockError.InvalidLeaseId if table.next_lease_id == 0
+            active: mutable usize = 0
+            for index in 0..<table.leases.count |table, active|:
+                lease: FileLockLease = table.leases[index]
+                raise FileLockError.InvalidLeaseId if lease.lease_id == 0
+                raise FileLockError.InvalidPath if not file_lock_path_valid(lease.path, table.policy.max_path_bytes)
+                raise FileLockError.EmbeddedNul if sview_contains_byte(lease.path, 0)
+                raise FileLockError.InvalidOwner if lease.owner_token == 0
+                raise FileLockError.InvalidMode if not file_lock_mode_valid(lease.mode)
+                raise FileLockError.InvalidState if not file_lock_lease_state_valid(lease.state)
+                active <- active + 1 if file_lock_lease_active(lease.state)
+                for earlier in 0..<index |table, lease|:
+                    raise FileLockError.DuplicateLeaseId if table.leases[earlier].lease_id == lease.lease_id
+                    raise FileLockError.DuplicateOwnerPath if table.leases[earlier].owner_token == lease.owner_token and table.leases[earlier].path == lease.path and file_lock_lease_active(table.leases[earlier].state) and file_lock_lease_active(lease.state)
+            raise FileLockError.AccountingInvalid if active != table.active_leases
+            return true
+
+
+        def validate_file_lock_session(table: FileLockTable&, session: FileLockSession&) -> bool error[FileLockError]:
+            try validate_file_lock_table(table)
+            raise FileLockError.InvalidState if not file_lock_state_valid(session.state)
+            raise FileLockError.InvalidPath if not file_lock_path_valid(session.request.path, table.policy.max_path_bytes)
+            raise FileLockError.EmbeddedNul if sview_contains_byte(session.request.path, 0)
+            raise FileLockError.InvalidOwner if session.request.owner_token == 0
+            raise FileLockError.InvalidMode if not file_lock_mode_valid(session.request.mode)
+            raise FileLockError.InvalidWaitMode if not file_lock_wait_mode_valid(session.request.wait_mode)
+            raise FileLockError.AttemptsExceeded if session.request.max_attempts == 0 or session.request.max_attempts > table.policy.max_attempts or session.attempts > session.request.max_attempts
+            raise FileLockError.InvalidPolicy if not file_lock_request_valid(session.request, table.policy)
+            if session.state == FileLockState.Held:
+                raise FileLockError.LeaseMismatch if session.lease_id == 0 or not file_lock_session_lease_matches(table, session, FileLockLeaseState.Held)
+            elif session.state == FileLockState.Releasing:
+                raise FileLockError.LeaseMismatch if session.lease_id == 0 or not file_lock_session_lease_matches(table, session, FileLockLeaseState.Releasing)
+            elif session.state == FileLockState.Released:
+                raise FileLockError.LeaseMismatch if session.lease_id == 0 or not file_lock_session_lease_matches(table, session, FileLockLeaseState.Released)
+            elif session.state == FileLockState.Failed and session.lease_id != 0:
+                raise FileLockError.LeaseMismatch if not file_lock_session_lease_matches(table, session, FileLockLeaseState.Failed)
+            else:
+                raise FileLockError.LeaseMismatch if session.lease_id != 0
+            return true
+
+
+        def advance_file_lock(table: mutable FileLockTable&, session: mutable FileLockSession&, event: FileLockEvent) -> FileLockState error[FileLockError]:
+            try validate_file_lock_session(table, session)
+            raise FileLockError.InvalidEvent if not file_lock_event_valid(event)
+            if event == FileLockEvent.Begin:
+                raise FileLockError.InvalidTransition if session.state != FileLockState.Planned
+                session.state <- FileLockState.Waiting
+            elif event == FileLockEvent.Acquire:
+                raise FileLockError.InvalidTransition if session.state != FileLockState.Waiting
+                raise FileLockError.AttemptsExceeded if session.attempts >= session.request.max_attempts
+                session.attempts <- session.attempts + 1
+                if file_lock_conflicts(table, session.request):
+                    if session.request.wait_mode == FileLockWaitMode.NonBlocking:
+                        raise FileLockError.Conflict
+                    if session.attempts >= session.request.max_attempts:
+                        session.state <- FileLockState.TimedOut
+                        return session.state
+                    raise FileLockError.WouldBlock
+                raise FileLockError.LeaseLimitExceeded if table.leases.count >= table.policy.max_leases
+                raise FileLockError.InvalidLeaseId if table.next_lease_id == 0
+                session.lease_id <- table.next_lease_id
+                table.leases.push(FileLockLease{lease_id: table.next_lease_id, path: session.request.path, owner_token: session.request.owner_token, mode: session.request.mode})
+                table.next_lease_id <- table.next_lease_id + 1
+                table.active_leases <- table.active_leases + 1
+                session.state <- FileLockState.Held
+            elif event == FileLockEvent.Retry:
+                raise FileLockError.InvalidTransition if session.state != FileLockState.Waiting
+                raise FileLockError.RetryNotAllowed if session.request.wait_mode != FileLockWaitMode.Bounded
+                raise FileLockError.AttemptsExceeded if session.attempts >= session.request.max_attempts
+            elif event == FileLockEvent.Release:
+                raise FileLockError.ReleaseNotReady if session.state != FileLockState.Held
+                raise FileLockError.LeaseMismatch if not file_lock_session_lease_matches(table, session, FileLockLeaseState.Held)
+                index: usize = file_lock_index(table, session.lease_id)
+                table.leases[index].state <- FileLockLeaseState.Releasing
+                session.state <- FileLockState.Releasing
+            elif event == FileLockEvent.ReleaseAck:
+                raise FileLockError.ReleaseNotReady if session.state != FileLockState.Releasing
+                raise FileLockError.LeaseMismatch if not file_lock_session_lease_matches(table, session, FileLockLeaseState.Releasing)
+                index: usize = file_lock_index(table, session.lease_id)
+                table.leases[index].state <- FileLockLeaseState.Released
+                table.active_leases <- table.active_leases - 1
+                session.state <- FileLockState.Released
+            elif event == FileLockEvent.Timeout:
+                raise FileLockError.InvalidTransition if session.state != FileLockState.Waiting
+                raise FileLockError.RetryNotAllowed if session.request.wait_mode != FileLockWaitMode.Bounded
+                session.state <- FileLockState.TimedOut
+            elif event == FileLockEvent.Cancel:
+                raise FileLockError.CancelNotReady if session.state != FileLockState.Waiting
+                session.state <- FileLockState.Cancelling
+            elif event == FileLockEvent.CancelAck:
+                raise FileLockError.CancelNotReady if session.state != FileLockState.Cancelling
+                session.state <- FileLockState.Cancelled
+            elif event == FileLockEvent.Fail:
+                raise FileLockError.InvalidTransition if session.state == FileLockState.Planned or session.state == FileLockState.Released or session.state == FileLockState.TimedOut or session.state == FileLockState.Cancelled or session.state == FileLockState.Failed
+                if session.state == FileLockState.Held or session.state == FileLockState.Releasing:
+                    index: usize = file_lock_index(table, session.lease_id)
+                    raise FileLockError.LeaseMismatch if index == table.leases.count
+                    raise FileLockError.LeaseMismatch if not file_lock_lease_active(table.leases[index].state)
+                    table.leases[index].state <- FileLockLeaseState.Failed
+                    table.active_leases <- table.active_leases - 1
+                session.state <- FileLockState.Failed
+            return session.state
