@@ -26,6 +26,7 @@ for required_text in \
     'runtime_resource_policy_valid' \
     'runtime_resource_usage_within_policy' \
     'runtime_resource_policy_with_step_limit' \
+    'runtime_resource_remaining_policy' \
     'runtime_resource_policy_has_unaccounted_dimensions' \
     'runtime_resource_acquire' \
     'runtime_resource_release' \
@@ -86,6 +87,9 @@ rg -q 'runtime_resource_add_memory' "$repo_root/test/ir/elisascript_ir_test.elis
 rg -q 'runtime_resource_add_output' "$repo_root/test/ir/elisascript_ir_test.elisa"
 rg -q 'runtime_resource_add_regex_work' "$repo_root/test/ir/elisascript_ir_test.elisa"
 rg -q 'runtime_resource_add_retained_traces' "$repo_root/test/ir/elisascript_ir_test.elisa"
+rg -q 'partial_usage: RuntimeResourceUsage' "$repo_root/test/ir/elisascript_ir_test.elisa"
+rg -q 'runtime_resource_remaining_policy\(partial_usage, policy\)' "$repo_root/test/ir/elisascript_ir_test.elisa"
+rg -q 'exhausted_remaining: RuntimeResourcePolicy' "$repo_root/test/ir/elisascript_ir_test.elisa"
 rg -q 'tiny_policy: RuntimeResourcePolicy' "$repo_root/test/ir/elisascript_ir_test.elisa"
 rg -q 'tiny_usage: mutable RuntimeResourceUsage' "$repo_root/test/ir/elisascript_ir_test.elisa"
 rg -q 'not runtime_resource_acquire\(tiny_usage' "$repo_root/test/ir/elisascript_ir_test.elisa"
@@ -97,6 +101,7 @@ rg -q 'bytecode_strict_direct_entrypoint_rejects_unaccounted_resource_dimensions
 rg -q 'reference\.usage\.output_bytes == 3' "$repo_root/test/ir/elisascript_bytecode_test.elisa"
 rg -q 'compiled\.usage\.output_bytes == reference\.usage\.output_bytes' "$repo_root/test/ir/elisascript_bytecode_test.elisa"
 rg -q 'runtime_resource_policy_with_step_limit' "$bytecode"
+rg -q 'runtime_resource_remaining_policy' "$runtime_model"
 rg -q 'def execute_bytecode_with_resource_policy' "$bytecode"
 rg -q 'def execute_bytecode_direct_only_with_resource_policy' "$bytecode"
 rg -q 'def bytecode_policy_requires_reference' "$bytecode"

@@ -236,6 +236,12 @@ traces. `runtime_resource_add_elapsed` applies the same bounded edge while
 preserving `elapsed_micros == 0` as the explicit “timer not attached” sentinel;
 host bridges still need to sample a monotonic clock and thread these edges
 through every nested path.
+`runtime_resource_remaining_policy` derives a child, callback, or replay
+admission policy from already-consumed usage with saturating subtraction across
+every bounded dimension; an exhausted parent therefore gives the child zero
+remaining capacity, while an unattached elapsed timer remains the explicit zero
+sentinel. This is a pure admission calculation and does not claim that a host
+bridge has started accounting an otherwise unaccounted dimension.
 Until those host-wide edges exist, the shared
 `runtime_resource_policy_has_unaccounted_dimensions` predicate makes both the
 reference interpreter and bytecode facade reject non-default elapsed, memory,

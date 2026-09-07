@@ -357,6 +357,14 @@ counter edges), `614ad2e` (bounded additive resource edges), `cc418d6`
 current lock-scoped publication, lock-transition, and checked elapsed-resource
 increment. They remain compiler-free evidence while validation is paused.
 
+The runtime policy slice also exposes `runtime_resource_remaining_policy`, a
+pure saturating subtraction helper for child, callback, and replay admission.
+It preserves the zero elapsed-time "timer not attached" sentinel and returns
+zero capacity for every exhausted dimension, so a nested boundary cannot turn
+an already-consumed parent budget into a wrapped child allowance. This remains
+static policy evidence until every host bridge actually consumes the derived
+policy and execution tests are reauthorized.
+
 ## Evidence record template
 
 Every future executed or differential-verified entry must append a dated record
