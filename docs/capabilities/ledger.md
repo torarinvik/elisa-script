@@ -315,7 +315,8 @@ flushes the stdio buffer before descriptor durability and rejects read-mode
 sync requests; libc flush and descriptor failures are separate typed paths.
 The stream now also carries an explicit `Auto`/`Bytes`/`Utf8` encoding policy,
 with incremental strict-UTF-8 validation for text streams and byte-preserving
-binary operation; invalid or incomplete sequences remain typed failures.
+binary operation; split three- and four-byte continuation bounds are explicit
+in the IR fixture, and invalid or incomplete sequences remain typed failures.
 
 The direct bytecode resource slice now shares one mutable output ledger through
 nested calls, including child output emitted before a recoverable error. The

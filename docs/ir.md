@@ -351,6 +351,8 @@ bounded by the shared runtime memory ceiling. Its encoding policy is explicit:
 binary modes, `Utf8` validates incrementally across chunk boundaries, and
 `Bytes` preserves arbitrary byte sequences. Invalid UTF-8 is a typed error at
 the stream boundary, including an incomplete sequence at EOF or sync.
+The IR fixture records the continuation bounds for split three- and four-byte
+sequences so chunk boundaries cannot silently reset decoder state.
 `file_stream_read_chunk` and
 `file_stream_write_chunk` admit each request with subtraction-before-addition,
 return typed progress records, and reject closed handles, wrong directions,
