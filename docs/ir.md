@@ -966,6 +966,15 @@ state machine is deliberately callback-neutral so a host can dispatch typed
 begin/per-file/per-record/end functions without weakening ordering or early
 exit cleanup.
 
+`EsRecordAggregate::RecordAggregateSession` provides a bounded associative
+count operation for AWK/Perl-style keyed aggregation. Keys retain insertion
+order, duplicate keys increment their count without changing that order, and
+new groups plus aggregate key bytes are admitted against explicit ceilings.
+`record_aggregate_group_count` is available only after `Seal`; malformed keys,
+duplicate internal groups, event/group overflow, and terminal mutation return
+`error[RecordAggregateError]`. Sum/average/join payloads can build on this
+contract only after choosing explicit numeric overflow and ordering policies.
+
 `EsNetwork::NetworkRequest` and `NetworkResponse` define a transport-neutral
 HTTP/TLS boundary. Requests carry an explicit method, URL, ordered header pairs,
 binary body, positive timeout, response ceiling, and redirect policy; responses
