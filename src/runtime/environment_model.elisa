@@ -1,0 +1,147 @@
+# Typed process-environment snapshot and overlay boundary.
+#
+# Environment mutation is data until a host adapter explicitly applies a
+# sealed snapshot to a child. Tombstones make unset deterministic without
+# exposing process-global state or relying on map iteration order.
+
+module EsEnvironment:
+    using EsProcess
+
+    public:
+        const ENVIRONMENT_MAX_ENTRIES: usize = PROCESS_COMMAND_MAX_ARGUMENTS
+        const ENVIRONMENT_MAX_TEXT_BYTES: usize = PROCESS_COMMAND_MAX_TEXT_BYTES
+
+
+        const enum EnvironmentState of u8:
+            Ready
+            Building
+            Sealed
+            Failed
+
+
+        const enum EnvironmentEvent of u8:
+            Begin
+            Set
+            Unset
+            Seal
+            Fail
+            Reset
+
+
+        struct EnvironmentEntry:
+            name: sview
+            value: sview
+            present: bool = true
+
+
+        struct EnvironmentSnapshot:
+            entries: darray[EnvironmentEntry] = []
+            state: EnvironmentState = EnvironmentState.Ready
+            text_bytes: usize = 0
+
+
+        error EnvironmentContractError:
+            InvalidState
+            InvalidEvent
+            EntryLimitExceeded
+            NameInvalid
+            ValueInvalid
+            DuplicateName
+            NameMissing
+            TextLimitExceeded
+            AccountingInvalid
+            LookupNotReady
+            ResetNotReady
+
+
+    private:
+        def environment_state_valid(state: EnvironmentState) -> bool:
+            return state in {EnvironmentState.Ready, EnvironmentState.Building, EnvironmentState.Sealed, EnvironmentState.Failed}
+
+
+        def environment_event_valid(event: EnvironmentEvent) -> bool:
+            return event in {EnvironmentEvent.Begin, EnvironmentEvent.Set, EnvironmentEvent.Unset, EnvironmentEvent.Seal, EnvironmentEvent.Fail, EnvironmentEvent.Reset}
+
+
+        def environment_name_valid(name: sview) -> bool:
+            return sview_len(name) != 0 and sview_len(name) < ENVIRONMENT_MAX_TEXT_BYTES and not sview_contains_byte(name, 0) and not sview_contains_byte(name, 61)
+
+
+        def environment_value_valid(value: sview) -> bool:
+            return sview_len(value) < ENVIRONMENT_MAX_TEXT_BYTES and not sview_contains_byte(value, 0)
+
+
+        def environment_index(snapshot: EnvironmentSnapshot&, name: sview) -> usize:
+            for index in 0..<snapshot.entries.count |snapshot, name|:
+                return index if snapshot.entries[index].name == name
+            return snapshot.entries.count
+
+
+        def environment_add_fits(current: usize, name: sview, value: sview) -> bool:
+            return current <= ENVIRONMENT_MAX_TEXT_BYTES and sview_len(name) < ENVIRONMENT_MAX_TEXT_BYTES - current and sview_len(value) < ENVIRONMENT_MAX_TEXT_BYTES - current - sview_len(name)
+
+
+    public:
+        def validate_environment_snapshot(snapshot: EnvironmentSnapshot&) -> bool error[EnvironmentContractError]:
+            raise EnvironmentContractError.InvalidState if not environment_state_valid(snapshot.state)
+            raise EnvironmentContractError.EntryLimitExceeded if snapshot.entries.count > ENVIRONMENT_MAX_ENTRIES
+            total: mutable usize = 0
+            for index in 0..<snapshot.entries.count |snapshot|:
+                entry: EnvironmentEntry = snapshot.entries[index]
+                raise EnvironmentContractError.NameInvalid if not environment_name_valid(entry.name)
+                raise EnvironmentContractError.ValueInvalid if not environment_value_valid(entry.value)
+                raise EnvironmentContractError.TextLimitExceeded if not environment_add_fits(total, entry.name, entry.value)
+                total <- total + sview_len(entry.name) + sview_len(entry.value) + 2
+                for earlier in 0..<index |snapshot, entry|:
+                    raise EnvironmentContractError.DuplicateName if snapshot.entries[earlier].name == entry.name
+            raise EnvironmentContractError.AccountingInvalid if total != snapshot.text_bytes
+            return true
+
+
+        def environment_lookup(snapshot: EnvironmentSnapshot&, name: sview) -> usize error[EnvironmentContractError]:
+            try validate_environment_snapshot(snapshot)
+            raise EnvironmentContractError.LookupNotReady if snapshot.state != EnvironmentState.Sealed
+            raise EnvironmentContractError.NameInvalid if not environment_name_valid(name)
+            index: usize = environment_index(snapshot, name)
+            raise EnvironmentContractError.NameMissing if index == snapshot.entries.count or not snapshot.entries[index].present
+            return index
+
+
+        def advance_environment_snapshot(snapshot: mutable EnvironmentSnapshot&, event: EnvironmentEvent, name: sview = "", value: sview = "") -> EnvironmentState error[EnvironmentContractError]:
+            try validate_environment_snapshot(snapshot)
+            raise EnvironmentContractError.InvalidEvent if not environment_event_valid(event)
+            if event == EnvironmentEvent.Begin:
+                raise EnvironmentContractError.InvalidState if snapshot.state != EnvironmentState.Ready
+                snapshot.state <- EnvironmentState.Building
+            elif event == EnvironmentEvent.Set:
+                raise EnvironmentContractError.InvalidState if snapshot.state != EnvironmentState.Building
+                raise EnvironmentContractError.NameInvalid if not environment_name_valid(name)
+                raise EnvironmentContractError.ValueInvalid if not environment_value_valid(value)
+                index: usize = environment_index(snapshot, name)
+                if index == snapshot.entries.count:
+                    raise EnvironmentContractError.EntryLimitExceeded if snapshot.entries.count >= ENVIRONMENT_MAX_ENTRIES
+                    snapshot.entries.push(EnvironmentEntry{name: name, value: value})
+                    snapshot.text_bytes <- snapshot.text_bytes + sview_len(name) + sview_len(value) + 2
+                else:
+                    previous: EnvironmentEntry = snapshot.entries[index]
+                    raise EnvironmentContractError.TextLimitExceeded if sview_len(value) > ENVIRONMENT_MAX_TEXT_BYTES
+                    snapshot.text_bytes <- snapshot.text_bytes - sview_len(previous.value) + sview_len(value)
+                    snapshot.entries[index].value <- value
+                    snapshot.entries[index].present <- true
+            elif event == EnvironmentEvent.Unset:
+                raise EnvironmentContractError.InvalidState if snapshot.state != EnvironmentState.Building
+                index: usize = environment_index(snapshot, name)
+                raise EnvironmentContractError.NameMissing if index == snapshot.entries.count or not snapshot.entries[index].present
+                snapshot.entries[index].present <- false
+            elif event == EnvironmentEvent.Seal:
+                raise EnvironmentContractError.InvalidState if snapshot.state != EnvironmentState.Building
+                snapshot.state <- EnvironmentState.Sealed
+            elif event == EnvironmentEvent.Fail:
+                raise EnvironmentContractError.InvalidState if snapshot.state != EnvironmentState.Building
+                snapshot.state <- EnvironmentState.Failed
+            elif event == EnvironmentEvent.Reset:
+                raise EnvironmentContractError.ResetNotReady if snapshot.state != EnvironmentState.Failed
+                snapshot.entries <- []
+                snapshot.text_bytes <- 0
+                snapshot.state <- EnvironmentState.Ready
+            return snapshot.state

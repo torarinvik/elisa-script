@@ -1495,6 +1495,13 @@ The scripting-profile `get_environment_or(name, fallback)` lowers to the same
 `GetEnvironment` operation wrapped by `ErrorGuardPush`/`ErrorGuardPop` and a typed
 merge block, so a missing variable follows the fallback edge without evaluating the
 fallback on successful reads.
+
+EsEnvironment provides the child-facing data boundary for those operations.
+EnvironmentEntry names are validated and unique, values remain NUL-free and
+bounded, and a sealed EnvironmentSnapshot can be looked up without touching
+the parent process environment. Set updates an existing entry deterministically
+and Unset leaves a bounded tombstone, so an adapter can apply the exact overlay
+to one child without map-order or global-state leakage.
 `CreateDirectory`, `CreateDirectories`, `RemoveDirectory`, and `ChangeDirectory` verify as
 `Named(Path) -> Bool` with `Directory.Write` and `DirectoryError`.
 The legacy `CreateDirectory` form takes one path operand. `Path.mkdir` may use

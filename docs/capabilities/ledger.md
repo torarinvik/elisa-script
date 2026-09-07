@@ -465,6 +465,12 @@ step completion, failure, and cancellation transitions. The focused IR
 fixture and check_cli_workflow.sh audit are static evidence; host execution of
 check/test/fmt/doc remains open.
 
+ES-SCRIPT-010 | EsEnvironment supplies bounded unique name/value entries,
+sealed lookup, deterministic set updates, tombstone unsets, aggregate text
+accounting, and explicit failure/reset transitions without mutating parent
+process state. The focused IR fixture and check_environment_model.sh audit are
+static evidence; host environment snapshot/apply adapters remain open.
+
 ES-SCRIPT-009 | EsCsvMaterialize supplies bounded source field spans, contiguous
 record layout, quote markers, shared field/record ceilings, and validated slice
 lookup for CSV/TSV adapters. The focused IR fixture and
