@@ -1,0 +1,182 @@
+# Typed package registry/index boundary.
+#
+# A registry is an ordered, verified candidate table. Network and filesystem
+# adapters populate it through the state machine; resolution consumes only a
+# sealed table and never invents candidate ordering or integrity identity.
+
+module EsPackageRegistry:
+    using EsPackage
+
+    public:
+        const PACKAGE_REGISTRY_MAX_ENTRIES: usize = PACKAGE_MAX_LOCK_ENTRIES
+
+
+        const enum PackageRegistryState of u8:
+            Empty
+            Loading
+            Ready
+            Failed
+            Cancelled
+
+
+        const enum PackageRegistryEvent of u8:
+            Begin
+            Add
+            Seal
+            Fail
+            Cancel
+            CancelAck
+
+
+        struct PackageCandidate:
+            name: sview
+            version: PackageVersion
+            source: PackageSourceKind = PackageSourceKind.Registry
+            locator: sview
+            integrity_0: u64
+            integrity_1: u64
+            integrity_2: u64
+            integrity_3: u64
+
+
+        struct PackageRegistry:
+            entries: darray[PackageCandidate] = []
+            state: PackageRegistryState = PackageRegistryState.Empty
+
+
+        error PackageRegistryError:
+            InvalidState
+            InvalidEvent
+            EntryLimitExceeded
+            CandidateInvalid
+            DuplicateCandidate
+            OrderInvalid
+            IntegrityMissing
+            RegistryNotReady
+            ConstraintNoMatch
+            CancelNotReady
+
+
+    private:
+        def registry_state_valid(state: PackageRegistryState) -> bool:
+            return state in {PackageRegistryState.Empty, PackageRegistryState.Loading, PackageRegistryState.Ready, PackageRegistryState.Failed, PackageRegistryState.Cancelled}
+
+
+        def registry_event_valid(event: PackageRegistryEvent) -> bool:
+            return event in {PackageRegistryEvent.Begin, PackageRegistryEvent.Add, PackageRegistryEvent.Seal, PackageRegistryEvent.Fail, PackageRegistryEvent.Cancel, PackageRegistryEvent.CancelAck}
+
+
+        def registry_name_valid(name: sview) -> bool:
+            return sview_len(name) != 0 and sview_len(name) < PACKAGE_MAX_NAME_BYTES and not sview_contains_byte(name, 0)
+
+
+        def registry_locator_valid(locator: sview) -> bool:
+            return sview_len(locator) != 0 and sview_len(locator) < PACKAGE_MAX_PATH_BYTES and not sview_contains_byte(locator, 0)
+
+
+        def registry_version_valid(version: PackageVersion) -> bool:
+            return sview_len(version.pre_release) < PACKAGE_MAX_VERSION_TEXT_BYTES and not sview_contains_byte(version.pre_release, 0)
+
+
+        def registry_source_valid(source: PackageSourceKind) -> bool:
+            return source in {PackageSourceKind.Workspace, PackageSourceKind.Path, PackageSourceKind.Registry, PackageSourceKind.Git}
+
+
+        def registry_source_rank(source: PackageSourceKind) -> u8:
+            return 0 if source == PackageSourceKind.Workspace else 1 if source == PackageSourceKind.Path else 2 if source == PackageSourceKind.Registry else 3
+
+
+        def registry_version_equal(left: PackageVersion, right: PackageVersion) -> bool:
+            return left.major == right.major and left.minor == right.minor and left.patch == right.patch and left.pre_release == right.pre_release
+
+
+        def registry_text_before(left: sview, right: sview) -> bool:
+            left_length: usize = sview_len(left)
+            right_length: usize = sview_len(right)
+            common: usize = left_length if left_length < right_length else right_length
+            for index in 0..<common |left, right|:
+                return sview_at(left, index) < sview_at(right, index) if sview_at(left, index) != sview_at(right, index)
+            return left_length < right_length
+
+
+        def registry_version_before(left: PackageVersion, right: PackageVersion) -> bool:
+            return left.major < right.major if left.major != right.major else left.minor < right.minor if left.minor != right.minor else left.patch < right.patch if left.patch != right.patch else registry_text_before(left.pre_release, right.pre_release)
+
+
+        def registry_candidate_before(left: PackageCandidate, right: PackageCandidate) -> bool:
+            return true if left.name != right.name and registry_text_before(left.name, right.name)
+            return true if left.name == right.name and not registry_version_equal(left.version, right.version) and registry_version_before(left.version, right.version)
+            return true if left.name == right.name and registry_version_equal(left.version, right.version) and registry_source_rank(left.source) < registry_source_rank(right.source)
+            return registry_text_before(left.locator, right.locator) if left.name == right.name and registry_version_equal(left.version, right.version) and left.source == right.source and left.locator != right.locator else false
+
+
+        def registry_candidate_equal(left: PackageCandidate, right: PackageCandidate) -> bool:
+            return left.name == right.name and registry_version_equal(left.version, right.version) and left.source == right.source and left.locator == right.locator
+
+
+        def registry_candidate_valid(candidate: PackageCandidate) -> bool error[PackageRegistryError]:
+            raise PackageRegistryError.CandidateInvalid if not registry_name_valid(candidate.name) or not registry_version_valid(candidate.version) or not registry_source_valid(candidate.source) or not registry_locator_valid(candidate.locator)
+            raise PackageRegistryError.IntegrityMissing if candidate.integrity_0 == 0 or candidate.integrity_1 == 0 or candidate.integrity_2 == 0 or candidate.integrity_3 == 0
+            return true
+
+
+        def registry_constraint_satisfied(version: PackageVersion, constraint: PackageConstraint) -> bool:
+            return false if constraint.has_min and (registry_version_before(version, constraint.min_version) or not constraint.include_min and registry_version_equal(version, constraint.min_version))
+            return false if constraint.has_max and (registry_version_before(constraint.max_version, version) or not constraint.include_max and registry_version_equal(version, constraint.max_version))
+            return true
+
+
+    public:
+        def validate_package_registry(registry: PackageRegistry&) -> bool error[PackageRegistryError]:
+            raise PackageRegistryError.InvalidState if not registry_state_valid(registry.state)
+            raise PackageRegistryError.EntryLimitExceeded if registry.entries.count > PACKAGE_REGISTRY_MAX_ENTRIES
+            for candidate in registry.entries:
+                try registry_candidate_valid(candidate)
+            for index in 1..<registry.entries.count |registry|:
+                previous: PackageCandidate = registry.entries[index - 1]
+                current: PackageCandidate = registry.entries[index]
+                raise PackageRegistryError.DuplicateCandidate if registry_candidate_equal(previous, current)
+                raise PackageRegistryError.OrderInvalid if not registry_candidate_before(previous, current)
+            return true
+
+
+        def package_registry_find(registry: PackageRegistry&, name: sview, constraint: PackageConstraint) -> usize error[PackageRegistryError]:
+            try validate_package_registry(registry)
+            raise PackageRegistryError.RegistryNotReady if registry.state != PackageRegistryState.Ready
+            raise PackageRegistryError.CandidateInvalid if not registry_name_valid(name)
+            try package_constraint_valid(constraint)
+            for index in 0..<registry.entries.count |registry, name, constraint|:
+                candidate: PackageCandidate = registry.entries[index]
+                if candidate.name == name and registry_constraint_satisfied(candidate.version, constraint):
+                    return index
+            raise PackageRegistryError.ConstraintNoMatch
+
+
+        def advance_package_registry(registry: mutable PackageRegistry&, event: PackageRegistryEvent, candidate: PackageCandidate = PackageCandidate{name: "", version: PackageVersion{major: 0, minor: 0, patch: 0}, locator: ""}) -> PackageRegistryState error[PackageRegistryError]:
+            try validate_package_registry(registry)
+            raise PackageRegistryError.InvalidEvent if not registry_event_valid(event)
+            if event == PackageRegistryEvent.Begin:
+                raise PackageRegistryError.InvalidState if registry.state != PackageRegistryState.Empty
+                registry.state <- PackageRegistryState.Loading
+            elif event == PackageRegistryEvent.Add:
+                raise PackageRegistryError.InvalidState if registry.state != PackageRegistryState.Loading
+                raise PackageRegistryError.EntryLimitExceeded if registry.entries.count >= PACKAGE_REGISTRY_MAX_ENTRIES
+                try registry_candidate_valid(candidate)
+                if registry.entries.count != 0:
+                    previous: PackageCandidate = registry.entries[registry.entries.count - 1]
+                    raise PackageRegistryError.DuplicateCandidate if registry_candidate_equal(previous, candidate)
+                    raise PackageRegistryError.OrderInvalid if not registry_candidate_before(previous, candidate)
+                registry.entries.push(candidate)
+            elif event == PackageRegistryEvent.Seal:
+                raise PackageRegistryError.InvalidState if registry.state != PackageRegistryState.Loading
+                registry.state <- PackageRegistryState.Ready
+            elif event == PackageRegistryEvent.Fail:
+                raise PackageRegistryError.InvalidState if registry.state == PackageRegistryState.Failed
+                registry.state <- PackageRegistryState.Failed
+            elif event == PackageRegistryEvent.Cancel:
+                raise PackageRegistryError.CancelNotReady if registry.state != PackageRegistryState.Loading
+                registry.state <- PackageRegistryState.Cancelled
+            elif event == PackageRegistryEvent.CancelAck:
+                raise PackageRegistryError.CancelNotReady if registry.state != PackageRegistryState.Cancelled
+                registry.state <- PackageRegistryState.Cancelled
+            return registry.state

@@ -125,6 +125,13 @@ loading; `advance_package_resolution` exposes the explicit
 selection, signature verification, cache storage, and publishing still belong
 to separately qualified host adapters.
 
+EsPackageRegistry makes that adapter boundary explicit. PackageCandidate rows
+must carry bounded names, versions, locators, source kinds, and four-word
+integrity identities; a registry accepts them only in deterministic
+name/version/source/locator order and exposes lookup only after sealing.
+Constraint-aware lookup therefore cannot consume an unverified or
+out-of-order index, while fail and cancellation edges remain explicit.
+
 `EsData` is the format-neutral boundary for the P8 structured-data libraries.
 `DataDecodeLimits` caps input bytes, tokens, nesting, records, fields, and field
 bytes; `JsonPolicy` makes duplicate-key, trailing-comma, comment, and numeric
