@@ -758,6 +758,13 @@ single zero-width match at an anchored start and zero for a missing pattern.
 The pattern-first global `regex_count(pattern, text)` uses the same composition
 and operand ordering as the other `regex_*` facades.
 
+`Regex.capture_named(text, name)` and the pattern-first
+`regex_capture_named(pattern, name, text)` use the verified
+`RegexCaptureNamed` operation. The operation returns the unique participating
+named capture from the first match, or empty text when the name is missing,
+ambiguous, or non-participating; both reference and direct-bytecode execution
+share the same bounded flat-layout proof.
+
 `Map` is the closed aggregate counterpart to `Array`. Its `Type` descriptor carries
 one exact scalar key type and one recursively represented value type within the
 inline descriptor limit; `MakeMap` consumes an even key/value

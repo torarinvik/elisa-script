@@ -4975,6 +4975,8 @@ extend EsIr:
                                 return lower_text_partition_expression(Expr.Ident(receiver_name, receiver_pos), method_name, arguments, argument_names, pos, state)
                             if scripting_text_builtin_available(state, method_name) and (method_name == "isdigit" or method_name == "isdecimal" or method_name == "isnumeric" or method_name == "isalpha" or method_name == "isalnum" or method_name == "isspace" or method_name == "islower" or method_name == "isupper" or method_name == "isascii" or method_name == "isprintable"):
                                 return lower_text_predicate_expression(Expr.Ident(receiver_name, receiver_pos), method_name, arguments, argument_names, pos, state)
+                            if is_regex_receiver_expression(Expr.Ident(receiver_name, receiver_pos), state) and scripting_regex_builtin_available(state, method_name) and method_name == "capture_named":
+                                return lower_regex_capture_named_method(Expr.Ident(receiver_name, receiver_pos), arguments, argument_names, pos, state)
                             if scripting_regex_builtin_available(state, method_name) and (method_name == "search" or method_name == "match" or method_name == "fullmatch" or method_name == "findall" or method_name == "find_all" or method_name == "capture" or method_name == "captures" or method_name == "capture_names"):
                                 return lower_regex_method(Expr.Ident(receiver_name, receiver_pos), method_name, arguments, argument_names, pos, state)
                             if scripting_regex_builtin_available(state, method_name) and method_name == "sub":
@@ -5055,6 +5057,8 @@ extend EsIr:
                                 return lower_collection_copy_expression(receiver_expression, arguments, argument_names, pos, state)
                             if scripting_text_builtin_available(state, method_name) and (method_name == "isdigit" or method_name == "isdecimal" or method_name == "isnumeric" or method_name == "isalpha" or method_name == "isalnum" or method_name == "isspace" or method_name == "islower" or method_name == "isupper" or method_name == "isascii" or method_name == "isprintable"):
                                 return lower_text_predicate_expression(receiver_expression, method_name, arguments, argument_names, pos, state)
+                            if is_regex_receiver_expression(receiver_expression, state) and scripting_regex_builtin_available(state, method_name) and method_name == "capture_named":
+                                return lower_regex_capture_named_method(receiver_expression, arguments, argument_names, pos, state)
                             if scripting_regex_builtin_available(state, method_name) and (method_name == "search" or method_name == "match" or method_name == "fullmatch" or method_name == "findall" or method_name == "find_all" or method_name == "capture" or method_name == "captures" or method_name == "capture_names"):
                                 return lower_regex_method(receiver_expression, method_name, arguments, argument_names, pos, state)
                             if scripting_regex_builtin_available(state, method_name) and method_name == "sub":
@@ -5620,6 +5624,10 @@ extend EsIr:
                         regex_split_spec: EsBuiltin::BuiltinSpec = registry_spec
                         if regex_split_spec.opcode == "RegexSplit":
                             return lower_regex_namespace_split(arguments, argument_names, pos, state, regex_split_spec)
+                    if callee_index == state.function_names.count and registry_spec.receiver == "global" and registry_spec.argument_types == "Regex,text,text" and registry_spec.opcode == "RegexCaptureNamed":
+                        regex_capture_named_spec: EsBuiltin::BuiltinSpec = registry_spec
+                        if regex_capture_named_spec.opcode == "RegexCaptureNamed":
+                            return lower_regex_namespace_capture_named(arguments, argument_names, pos, state, regex_capture_named_spec)
                     if callee_index == state.function_names.count and registry_spec.receiver == "global" and registry_spec.argument_types == "Regex,text,text" and registry_spec.opcode == "RegexReplace":
                         regex_sub_spec: EsBuiltin::BuiltinSpec = registry_spec
                         if regex_sub_spec.opcode == "RegexReplace":
@@ -7949,6 +7957,32 @@ extend EsIr:
             return LoweredValue{valid: true, value: result, type: result_type}
 
 
+        # `regex_capture_named(pattern, name, text)` returns the first
+        # participating capture with the unique requested name, or empty text
+        # for a missing/ambiguous/non-participating group.
+        def lower_regex_namespace_capture_named(arguments: darray[Ast::Expr]&, argument_names: darray[sview]&, pos: Ast::Pos&, state: mutable LowerState&, spec: EsBuiltin::BuiltinSpec) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+            result_type: Type = typed_builtin_result_type(spec)
+            invalid: LoweredValue = LoweredValue{valid: false, value: 0, type: result_type}
+            valid_shape: bool = spec.opcode == "RegexCaptureNamed" and typed_builtin_call_shape(spec.name, arguments, argument_names)
+            if not valid_shape:
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "regex_capture_named requires Regex pattern, capture name, and sview text values")
+                return invalid
+            pattern_value: LoweredValue = lower_expression(arguments[0], state)
+            name_value: LoweredValue = lower_expression(arguments[1], state)
+            text_value: LoweredValue = lower_expression(arguments[2], state)
+            valid_types: bool = pattern_value.valid and name_value.valid and text_value.valid and pattern_value.type.kind == TypeKind.Named and pattern_value.type.name == "Regex" and name_value.type.kind == TypeKind.Text and text_value.type.kind == TypeKind.Text
+            if not valid_types:
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "regex_capture_named requires a Regex pattern, sview name, and sview text")
+                return invalid
+            operand_start: u32 = state.operand_pool.count.u32()
+            state.operand_pool.push(text_value.value)
+            state.operand_pool.push(pattern_value.value)
+            state.operand_pool.push(name_value.value)
+            result: u32 = fresh_value(state)
+            state.instructions.push(Instruction{opcode: Opcode.RegexCaptureNamed, result: result, result_type: result_type, operand_start: operand_start, operand_count: 3, span: ir_span(pos)})
+            return LoweredValue{valid: true, value: result, type: result_type}
+
+
         # `re.split(pattern, text)` retains the same deterministic empty-field
         # and zero-width progress rules as `split_regex(text, pattern)`.
         def lower_regex_namespace_split(arguments: darray[Ast::Expr]&, argument_names: darray[sview]&, pos: Ast::Pos&, state: mutable LowerState&, spec: EsBuiltin::BuiltinSpec) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
@@ -8027,6 +8061,30 @@ extend EsIr:
             state.operand_pool.push(matches)
             result: u32 = fresh_value(state)
             state.instructions.push(Instruction{opcode: Opcode.Length, result: result, result_type: result_type, operand_start: length_start, operand_count: 1, span: ir_span(pos)})
+            return LoweredValue{valid: true, value: result, type: result_type}
+
+
+        def lower_regex_capture_named_method(receiver_expression: Ast::Expr, arguments: darray[Ast::Expr]&, argument_names: darray[sview]&, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+            method_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_method_spec("Regex", "capture_named")
+            result_type: Type = typed_builtin_result_type(method_spec)
+            invalid: LoweredValue = LoweredValue{valid: false, value: 0, type: result_type}
+            valid_shape: bool = method_spec.known and method_spec.opcode == "RegexCaptureNamed" and typed_builtin_method_call_shape("Regex", "capture_named", arguments, argument_names)
+            if not valid_shape:
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "Regex.capture_named requires positional capture name and text values")
+                return invalid
+            pattern_value: LoweredValue = lower_expression(receiver_expression, state)
+            name_value: LoweredValue = lower_expression(arguments[0], state)
+            text_value: LoweredValue = lower_expression(arguments[1], state)
+            valid_types: bool = pattern_value.valid and name_value.valid and text_value.valid and pattern_value.type.kind == TypeKind.Named and pattern_value.type.name == "Regex" and name_value.type.kind == TypeKind.Text and text_value.type.kind == TypeKind.Text
+            if not valid_types:
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "Regex.capture_named requires a Regex receiver, sview name, and sview text")
+                return invalid
+            operand_start: u32 = state.operand_pool.count.u32()
+            state.operand_pool.push(text_value.value)
+            state.operand_pool.push(pattern_value.value)
+            state.operand_pool.push(name_value.value)
+            result: u32 = fresh_value(state)
+            state.instructions.push(Instruction{opcode: Opcode.RegexCaptureNamed, result: result, result_type: result_type, operand_start: operand_start, operand_count: 3, span: ir_span(pos)})
             return LoweredValue{valid: true, value: result, type: result_type}
 
 

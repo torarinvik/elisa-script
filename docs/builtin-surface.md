@@ -26,8 +26,8 @@ The source-declaration test intentionally ignores line-zero registry seed rows;
 otherwise a seeded global such as `contains` would incorrectly suppress its
 receiver contract.
 
-The compact registry currently contains 203 global spellings, 42 Text receiver,
-11 Regex receiver, 9 Map receiver, 4 Set receiver, and 14 Array receiver spellings. The table below names the strict
+The compact registry currently contains 204 global spellings, 42 Text receiver,
+12 Regex receiver, 9 Map receiver, 4 Set receiver, and 14 Array receiver spellings. The table below names the strict
 scalar/text/regex core; filesystem, directory, process, environment, stream,
 and time families use the same row format and are covered by the registry
 audit.
@@ -60,14 +60,16 @@ inference, variadic shape, and f-string lowerer all consume the same
 | Boolean quantifiers | `any`, `all` | one iterable/range with short-circuit state-machine lowering; registry rows select the `Equal` result primitive and preserve boolean output |
 | Numeric parsing/formatting | `parse_int`, `format_int`, `parse_float`, `format_float` | checked `i64`/`f64` conversions; parsers require `ParseError` |
 | Scalar formatting | `format_bool`, `format_char` | one scalar to `sview` |
-| Regex facades | `matches`, `replace_regex`, `split_regex`, `find_regex`, `capture_regex`, `captures_regex`, `regex_count` | text/`Regex` operands; `bool`, `sview`, `usize`, or `darray[sview]` result |
+| Regex facades | `matches`, `replace_regex`, `split_regex`, `find_regex`, `capture_regex`, `captures_regex`, `regex_count`, `regex_capture_named` | text/`Regex` operands; `bool`, `sview`, `usize`, or `darray[sview]` result |
 
 The global regex facades `matches`, `replace_regex`, `split_regex`,
-`find_regex`, `capture_regex`, `captures_regex`, and `regex_count` are registry-backed as
-well. Their descriptors distinguish text haystacks, nominal `Regex` patterns,
-and replacement text; the aggregate forms preserve a `darray[sview]` result
-through structural inference, while `regex_count` returns the `usize` length of
-the bounded `RegexFind` result.
+`find_regex`, `capture_regex`, `captures_regex`, `regex_count`, and
+`regex_capture_named` are registry-backed as well. Their descriptors distinguish
+text haystacks, nominal `Regex` patterns, and replacement/capture-name text; the
+aggregate forms preserve a `darray[sview]` result through structural inference,
+while `regex_count` returns the `usize` length of the bounded `RegexFind` result
+and `regex_capture_named` returns the unique named capture from the first match
+or empty text.
 
 The receiver-aware `Text` rows currently cover `len`, `lower`, `upper`, `casefold`,
 `starts_with`/`startswith`, `ends_with`/`endswith`, `replace`, `strip`,
@@ -91,16 +93,20 @@ verified `Length` operation as global `len(text)`; `split` and
 while both line-splitting aliases take no arguments and return `darray[sview]`.
 
 The receiver-aware `Regex` rows cover `search`, `match`, `fullmatch`,
-`findall`/`find_all`, `capture`/`captures`, `capture_names`, `count`, `split`, and `sub`.
+`findall`/`find_all`, `capture`/`captures`, `capture_names`, `capture_named`,
+`count`, `split`, and `sub`.
 Matching, finding, capturing, and splitting take one positional text haystack
 and return `bool` or `darray[sview]` as declared; `capture`/`captures` preserve
 empty slots for proven `?`-optional groups, and `capture_names` returns the
 first match's positional group-name descriptors (empty text for unnamed
-groups), `count` returns the `usize` number of non-overlapping matches, while
+groups), `capture_named` takes a capture name and haystack and returns the
+unique participating named capture (or empty text for missing, ambiguous, or
+non-participating names), `count` returns the `usize` number of non-overlapping matches, while
 `sub` takes positional replacement and haystack text and returns
 `sview`. Regex rows exclude the receiver from arity, reject named arguments,
 reuse the existing `RegexSearch`, `RegexFind`, `RegexCapture`, `RegexSplit`,
-and `RegexReplace` opcodes (with `count` composing `RegexFind` and `Length`),
+`RegexCaptureNamed`, and `RegexReplace` opcodes (with `count` composing
+`RegexFind` and `Length`),
 and preserve the same source-declaration precedence
 in semantic checking, inference, and lowering.
 

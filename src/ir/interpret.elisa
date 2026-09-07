@@ -3412,6 +3412,52 @@ extend EsIr:
             return runtime_array(result_start, storage.count.u32() - result_start)
 
 
+        # Named capture lookup shares the conservative flat-layout proof used
+        # by RegexCapture. Unknown, duplicate, absent, or non-participating
+        # names return empty text rather than guessing a capture identity.
+        def evaluate_regex_capture_named(machine: mutable Machine&, storage: mutable darray[RuntimeValue]&, text: RuntimeValue, pattern: RuntimeValue, name: RuntimeValue) -> RuntimeValue:
+            if text.kind != RuntimeValueKind.Text or pattern.kind != RuntimeValueKind.Text or name.kind != RuntimeValueKind.Text:
+                machine.failure <- InterpretFailure.TypeMismatch
+                return runtime_void()
+            if not regex_input_within_budget(text.text, pattern.text):
+                machine.failure <- InterpretFailure.OutputLimit
+                return runtime_void()
+            if not runtime_storage_text_fields_u32_valid(storage, sview_len(pattern.text)):
+                machine.failure <- InterpretFailure.IntegerOverflow
+                return runtime_void()
+            budget: mutable RegexWorkBudget = RegexWorkBudget{remaining: regex_work_budget_limit(machine)}
+            if not regex_work_bytes(budget, sview_len(name.text)):
+                machine.failure <- InterpretFailure.OutputLimit
+                return runtime_void()
+            span: RegexMatchSpan = regex_find_match(text.text, pattern.text, 0, budget)
+            if regex_work_account(machine, budget):
+                machine.failure <- InterpretFailure.OutputLimit
+                return runtime_void()
+            return runtime_text("") if not span.found
+            captures: mutable darray[RegexMatchSpan] = []
+            names: mutable darray[sview] = []
+            captures_found: bool = regex_capture_spans_for_match(text.text, pattern.text, span, captures, names, budget)
+            if regex_work_account(machine, budget):
+                machine.failure <- InterpretFailure.OutputLimit
+                return runtime_void()
+            return runtime_text("") if not captures_found
+            match_index: mutable usize = names.count
+            matches: mutable usize = 0
+            for index in 0..<names.count.usize() |names, name, match_index, matches, budget|:
+                if not regex_work_step(budget):
+                    machine.failure <- InterpretFailure.OutputLimit
+                    return runtime_void()
+                if names[index] == name.text:
+                    match_index <- index
+                    matches <- matches + 1
+            if regex_work_account(machine, budget):
+                machine.failure <- InterpretFailure.OutputLimit
+                return runtime_void()
+            return runtime_text("") if matches != 1 or match_index >= captures.count.usize() or not captures[match_index].found
+            capture: RegexMatchSpan = captures[match_index]
+            return runtime_text(text.text[capture.start:capture.end])
+
+
         # RegexSearch carries a small mode in Instruction.integer so the
         # existing verified opcode can serve Python-shaped receiver methods:
         # 0 = unanchored search, 1 = match at the beginning, 2 = full match.
@@ -7110,6 +7156,13 @@ extend EsIr:
                             dispatch.value <- evaluate_regex_capture(machine, storage, text_value, pattern_value, instruction.integer)
                             break
 
+                        Dispatch, Opcode.RegexCaptureNamed:
+                            text_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
+                            pattern_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1], machine)
+                            name_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 2], machine)
+                            dispatch.value <- evaluate_regex_capture_named(machine, storage, text_value, pattern_value, name_value)
+                            break
+
                         Dispatch, Opcode.Split if instruction.operand_count >= 2:
                             text_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
                             separator_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1], machine)
@@ -8469,6 +8522,13 @@ extend EsIr:
         def regex_capture_value(storage: mutable darray[RuntimeValue]&, text: sview, pattern: sview, mode: i64 = 0) -> RuntimeValue error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             machine: mutable Machine = Machine{steps: 0, step_limit: 1, failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void()}
             value: RuntimeValue = evaluate_regex_capture(machine, storage, runtime_text(text), runtime_text(pattern), mode)
+            try raise_interpret_failure(machine.failure) if machine.failure != InterpretFailure.None
+            return value
+
+
+        def regex_capture_named_value(storage: mutable darray[RuntimeValue]&, text: sview, pattern: sview, name: sview) -> RuntimeValue error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+            machine: mutable Machine = Machine{steps: 0, step_limit: 1, failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void()}
+            value: RuntimeValue = evaluate_regex_capture_named(machine, storage, runtime_text(text), runtime_text(pattern), runtime_text(name))
             try raise_interpret_failure(machine.failure) if machine.failure != InterpretFailure.None
             return value
 

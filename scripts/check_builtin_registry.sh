@@ -259,6 +259,13 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
+            regex_capture_named)
+                if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Regex,text,text" and registry_spec\.opcode == "RegexCaptureNamed"' "$lowerer_file" || \
+                   ! rg -q 'def lower_regex_namespace_capture_named\(arguments: darray\[Ast::Expr\]' "$lowerer_file"; then
+                    printf 'builtin registry audit: lowerer has no registry-driven named regex capture dispatch\n' >&2
+                    exit 1
+                fi
+                ;;
             regex_split)
                 if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Regex,text" and registry_spec\.opcode == "RegexSplit"' "$lowerer_file"; then
                     printf 'builtin registry audit: lowerer has no registry-driven regex split dispatch\n' >&2
@@ -1428,6 +1435,7 @@ if ! rg -q 'name: "regex_search", receiver: "global".*argument_types: "Regex,tex
    ! rg -q 'name: "regex_fullmatch", receiver: "global".*argument_types: "Regex,text".*return_type: "bool".*opcode: "RegexSearch".*lowering_mode: 2' "$registry_file" || \
    ! rg -q 'name: "regex_findall", receiver: "global".*argument_types: "Regex,text".*return_type: "darray\[text\]".*opcode: "RegexFind"' "$registry_file" || \
    ! rg -q 'name: "regex_count", receiver: "global".*argument_types: "Regex,text".*return_type: "usize".*opcode: "RegexFind".*lowering_steps: "RegexFind,Length"' "$registry_file" || \
+   ! rg -q 'name: "regex_capture_named", receiver: "global".*argument_types: "Regex,text,text".*return_type: "sview".*opcode: "RegexCaptureNamed"' "$registry_file" || \
    ! rg -q 'name: "regex_split", receiver: "global".*argument_types: "Regex,text".*return_type: "darray\[text\]".*opcode: "RegexSplit"' "$registry_file" || \
    ! rg -q 'name: "regex_sub", receiver: "global".*argument_types: "Regex,text,text".*return_type: "sview".*opcode: "RegexReplace"' "$registry_file"; then
     printf 'builtin registry audit: regex namespace alias rows are incomplete\n' >&2
@@ -1437,6 +1445,7 @@ if ! rg -q 'lowering_mode: i64' "$registry_file" || \
    ! rg -q 'def lower_regex_namespace_search\(arguments: darray\[Ast::Expr\].*spec: EsBuiltin::BuiltinSpec\)' "$lowerer_file" || \
    ! rg -q 'def lower_regex_namespace_find\(arguments: darray\[Ast::Expr\].*spec: EsBuiltin::BuiltinSpec\)' "$lowerer_file" || \
    ! rg -q 'def lower_regex_namespace_count\(arguments: darray\[Ast::Expr\].*spec: EsBuiltin::BuiltinSpec\)' "$lowerer_file" || \
+   ! rg -q 'def lower_regex_namespace_capture_named\(arguments: darray\[Ast::Expr\].*spec: EsBuiltin::BuiltinSpec\)' "$lowerer_file" || \
    ! rg -q 'def lower_regex_namespace_split\(arguments: darray\[Ast::Expr\].*spec: EsBuiltin::BuiltinSpec\)' "$lowerer_file" || \
    ! rg -q 'def lower_regex_namespace_sub\(arguments: darray\[Ast::Expr\].*spec: EsBuiltin::BuiltinSpec\)' "$lowerer_file" || \
    ! rg -q 'typed_builtin_result_type\(spec\)' "$lowerer_file" || \
@@ -1445,13 +1454,16 @@ if ! rg -q 'lowering_mode: i64' "$registry_file" || \
     printf 'builtin registry audit: regex namespace aliases do not consume registry result/shape/mode metadata\n' >&2
     exit 1
 fi
-if ! rg -q 'Regex,text' "$receiver_semantic_file" || ! rg -q 'Regex,text,text' "$receiver_semantic_file" || ! rg -q 'def registry_regex_namespace_aliases_check_pattern_first_shapes\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'regex_count\(pattern, value\)' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
+if ! rg -q 'Regex,text' "$receiver_semantic_file" || ! rg -q 'Regex,text,text' "$receiver_semantic_file" || ! rg -q 'def registry_regex_namespace_aliases_check_pattern_first_shapes\(' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'regex_count\(pattern, value\)' "$repo_root/test/semantic/elisascript_semantic_test.elisa" || ! rg -q 'regex_capture_named' "$repo_root/test/semantic/elisascript_semantic_test.elisa"; then
     printf 'builtin registry audit: regex namespace descriptors lack semantic coverage\n' >&2
     exit 1
 fi
 if ! rg -q 'def lowers_registry_regex_namespace_aliases_with_modes\(' "$repo_root/test/ir/elisascript_lowering_test.elisa" || \
+   ! rg -q 'def lowers_regex_named_capture_lookup\(' "$lowering_test_file" || \
    ! rg -q 'def interpreter_counts_global_regex_matches\(' "$interpreter_test_file" || \
+   ! rg -q 'def interpreter_named_regex_capture_lookup\(' "$interpreter_test_file" || \
    ! rg -q 'def bytecode_direct_global_regex_count_matches_reference_interpreter\(' "$bytecode_test_file" || \
+   ! rg -q 'def bytecode_direct_named_regex_capture_matches_reference_interpreter\(' "$bytecode_test_file" || \
    ! rg -q 'spec\.known and spec\.return_type == "darray\[text\]"' "$inference_file" || \
    ! rg -q 'spec\.known and spec\.return_type == "sview"' "$inference_file"; then
     printf 'builtin registry audit: regex namespace lowering/inference coverage is missing\n' >&2
@@ -1474,6 +1486,13 @@ if ! rg -q 'matches_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file
    ! rg -q 'capture_regex_spec\.opcode == "RegexCapture"' "$lowerer_file" || \
    ! rg -q 'integer: capture_regex_spec\.lowering_mode' "$lowerer_file"; then
     printf 'builtin registry audit: pattern-first regex lowerers do not consume registry shape/result/opcode metadata\n' >&2
+    exit 1
+fi
+if ! rg -q 'regex_capture_named_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Regex,text,text" and registry_spec\.opcode == "RegexCaptureNamed"' "$lowerer_file" || \
+   ! rg -q 'regex_capture_named_spec\.opcode == "RegexCaptureNamed"' "$lowerer_file" || \
+   ! rg -q 'opcode: Opcode\.RegexCaptureNamed' "$lowerer_file"; then
+    printf 'builtin registry audit: global named regex capture lowerer does not consume registry metadata\n' >&2
     exit 1
 fi
 if ! rg -q 'expected == "Executable"' "$receiver_semantic_file" || ! rg -q 'expected == "ProcessCapture"' "$receiver_semantic_file" || ! rg -q 'Executable,darray\[text\]' "$receiver_semantic_file" || ! rg -q 'Executable,darray\[text\],sview' "$receiver_semantic_file"; then
@@ -2255,6 +2274,16 @@ if ! rg -q 'name: "capture_names", receiver: "Regex".*argument_types: "text".*re
    ! rg -q 'def interpreter_preserves_optional_regex_capture_slots\(' "$interpreter_test_file" || \
    ! rg -q 'def bytecode_direct_optional_regex_capture_matches_reference_interpreter\(' "$bytecode_test_file"; then
     printf 'builtin registry audit: Regex.capture_names mode contract is incomplete\n' >&2
+    exit 1
+fi
+if ! rg -q 'name: "capture_named", receiver: "Regex".*argument_types: "text,text".*return_type: "sview".*effects: "".*errors: "".*opcode: "RegexCaptureNamed"' "$registry_file" || \
+   ! rg -q 'def lower_regex_capture_named_method\(receiver_expression: Ast::Expr' "$lowerer_file" || \
+   ! rg -q 'method_spec\.known and method_spec\.opcode == "RegexCaptureNamed"' "$lowerer_file" || \
+   ! rg -q 'is_regex_receiver_expression\(Expr\.Ident\(receiver_name, receiver_pos\), state\).*method_name == "capture_named"' "$lowerer_file" || \
+   ! rg -q 'is_regex_receiver_expression\(receiver_expression, state\).*method_name == "capture_named"' "$lowerer_file" || \
+   ! rg -q 'regex_capture_named_value\(storage, regex_text\.text, regex_pattern\.text, regex_capture_name\.text\)' "$bytecode_file" || \
+   ! rg -q 'Opcode\.RegexCaptureNamed' "$verifier_file"; then
+    printf 'builtin registry audit: Regex.capture_named contract is incomplete\n' >&2
     exit 1
 fi
 if ! rg -q 'def lower_regex_method\(receiver_expression: Ast::Expr, method_name: sview, arguments:' "$lowerer_file" || \
