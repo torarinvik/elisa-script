@@ -103,6 +103,13 @@ unsupported-mode diagnostic rather than silently taking the run path; source
 arguments and the `--` boundary are copied into the typed runner request only
 for an actual run.
 
+EsCliWorkflow separates planning from host execution. Each accepted mode maps
+to a fixed step sequence: run/test load, lower, verify, execute, and render;
+check omits execution; fmt and doc select their dedicated transformation;
+help/version render directly. The workflow consumes steps in order and exposes
+explicit failure and cancellation transitions, so unsupported host adapters
+cannot masquerade as a successful run.
+
 `EsModule` supplies the source/package-facing identity boundary. A
 `ModuleDescriptor` carries explicit public and private symbol sets, ordered
 imports with aliases and visibility, and a bounded source path; duplicate

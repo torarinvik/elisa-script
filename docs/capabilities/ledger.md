@@ -458,3 +458,9 @@ distinct spawn handle identities, bounded stdout/stderr aggregate accounting,
 bounded polls, typed terminal outcomes, and explicit timeout/cancellation
 edges. The focused IR fixture and check_process_session.sh audit are static
 evidence; fork/exec, signal escalation, and child reaping remain host work.
+
+ES-SCRIPT-008 | EsCliWorkflow maps every accepted launcher mode to a fixed
+typed step sequence, validates mode-specific ordering, and exposes explicit
+step completion, failure, and cancellation transitions. The focused IR
+fixture and check_cli_workflow.sh audit are static evidence; host execution of
+check/test/fmt/doc remains open.
