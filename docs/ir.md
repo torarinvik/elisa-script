@@ -1041,6 +1041,16 @@ completion require a balanced walk; malformed paths, non-directories, denied
 symlink descent, limits, and identity/accounting failures use
 `error[DirectoryTreeError]`.
 
+`EsRegexCallback::RegexCallbackSession` is the callback-aware replacement
+boundary. The matcher submits non-overlapping spans and capture counts; the
+session accounts unmatched prefixes, callback replacement bytes, and the final
+suffix under one output ceiling. Global versus single replacement is explicit,
+zero-width matches must advance (including the EOF non-progress guard), and a
+callback cannot be re-entered while a replacement is pending. Match/capture/
+output limits, malformed spans, cancellation, and premature end use
+`error[RegexCallbackError]`; callback invocation and capture materialization
+remain host/interpreter work.
+
 `EsRecordControl::RecordControlSession` makes AWK-style control keywords
 explicit: `NextRecord` closes the current record and advances to the next one,
 `NextFile` closes both record and file scopes, and `Exit` terminates cleanly from

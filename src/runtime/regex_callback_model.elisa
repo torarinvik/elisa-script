@@ -1,0 +1,144 @@
+# Bounded regex replacement-callback contract.
+#
+# Matching remains engine-owned. The callback adapter submits validated spans
+# and replacement lengths here, so unmatched bytes, output ceilings, capture
+# budgets, and zero-width progress cannot be bypassed by user callback code.
+
+module EsRegexCallback:
+    public:
+        const REGEX_CALLBACK_MAX_MATCHES: usize = 1048576
+        const REGEX_CALLBACK_MAX_CAPTURES: usize = 1048576
+        const REGEX_CALLBACK_MAX_OUTPUT_BYTES: usize = 67108864
+
+
+        const enum RegexCallbackState of u8:
+            Planned
+            Matching
+            Complete
+            Failed
+            Cancelled
+
+
+        const enum RegexCallbackEvent of u8:
+            Begin
+            Match
+            Replace
+            End
+            Fail
+            Cancel
+
+
+        struct RegexCallbackPolicy:
+            max_matches: usize = REGEX_CALLBACK_MAX_MATCHES
+            max_captures: usize = REGEX_CALLBACK_MAX_CAPTURES
+            max_output_bytes: usize = REGEX_CALLBACK_MAX_OUTPUT_BYTES
+            global: bool = true
+
+
+        struct RegexCallbackSession:
+            policy: RegexCallbackPolicy
+            input_bytes: usize
+            state: RegexCallbackState = RegexCallbackState.Planned
+            cursor: usize = 0
+            matches: usize = 0
+            captures: usize = 0
+            output_bytes: usize = 0
+            pending: bool = false
+            pending_start: usize = 0
+            pending_end: usize = 0
+            has_last_zero: bool = false
+            last_zero_start: usize = 0
+
+
+        error RegexCallbackError:
+            InvalidState
+            InvalidEvent
+            InvalidPolicy
+            InputLimitExceeded
+            MatchLimitExceeded
+            CaptureLimitExceeded
+            OutputLimitExceeded
+            SpanInvalid
+            NonProgress
+            ReplacementNotReady
+            ReplacementLimitExceeded
+            EndNotReady
+            CancelNotReady
+
+
+    private:
+        def regex_callback_state_valid(state: RegexCallbackState) -> bool:
+            return state in {RegexCallbackState.Planned, RegexCallbackState.Matching, RegexCallbackState.Complete, RegexCallbackState.Failed, RegexCallbackState.Cancelled}
+
+
+        def regex_callback_event_valid(event: RegexCallbackEvent) -> bool:
+            return event in {RegexCallbackEvent.Begin, RegexCallbackEvent.Match, RegexCallbackEvent.Replace, RegexCallbackEvent.End, RegexCallbackEvent.Fail, RegexCallbackEvent.Cancel}
+
+
+        def regex_callback_policy_valid(policy: RegexCallbackPolicy) -> bool:
+            return policy.max_matches != 0 and policy.max_matches <= REGEX_CALLBACK_MAX_MATCHES and policy.max_captures <= REGEX_CALLBACK_MAX_CAPTURES and policy.max_output_bytes != 0 and policy.max_output_bytes <= REGEX_CALLBACK_MAX_OUTPUT_BYTES
+
+
+        def regex_callback_add_fits(current: usize, delta: usize, limit: usize) -> bool:
+            return current <= limit and delta <= limit - current
+
+
+    public:
+        def validate_regex_callback(session: RegexCallbackSession&) -> bool error[RegexCallbackError]:
+            raise RegexCallbackError.InvalidState if not regex_callback_state_valid(session.state)
+            raise RegexCallbackError.InvalidPolicy if not regex_callback_policy_valid(session.policy)
+            raise RegexCallbackError.InputLimitExceeded if session.input_bytes > REGEX_CALLBACK_MAX_OUTPUT_BYTES
+            raise RegexCallbackError.MatchLimitExceeded if session.matches > session.policy.max_matches
+            raise RegexCallbackError.CaptureLimitExceeded if session.captures > session.policy.max_captures
+            raise RegexCallbackError.OutputLimitExceeded if session.output_bytes > session.policy.max_output_bytes
+            raise RegexCallbackError.SpanInvalid if session.cursor > session.input_bytes or session.pending_start > session.pending_end or session.pending_end > session.input_bytes
+            return true
+
+
+        def advance_regex_callback(session: mutable RegexCallbackSession&, event: RegexCallbackEvent, start: usize = 0, end: usize = 0, captures: usize = 0, replacement_bytes: usize = 0) -> RegexCallbackState error[RegexCallbackError]:
+            try validate_regex_callback(session)
+            raise RegexCallbackError.InvalidEvent if not regex_callback_event_valid(event)
+            if event == RegexCallbackEvent.Begin:
+                raise RegexCallbackError.InvalidState if session.state != RegexCallbackState.Planned
+                session.state <- RegexCallbackState.Matching
+            elif event == RegexCallbackEvent.Match:
+                raise RegexCallbackError.InvalidState if session.state != RegexCallbackState.Matching
+                raise RegexCallbackError.ReplacementNotReady if session.pending
+                raise RegexCallbackError.MatchLimitExceeded if session.matches >= session.policy.max_matches
+                raise RegexCallbackError.MatchLimitExceeded if not session.policy.global and session.matches != 0
+                raise RegexCallbackError.SpanInvalid if start > end or end > session.input_bytes or start < session.cursor
+                raise RegexCallbackError.NonProgress if start == end and session.has_last_zero and start == session.last_zero_start
+                raise RegexCallbackError.CaptureLimitExceeded if captures > session.policy.max_captures - session.captures
+                prefix: usize = start - session.cursor
+                raise RegexCallbackError.OutputLimitExceeded if not regex_callback_add_fits(session.output_bytes, prefix, session.policy.max_output_bytes)
+                session.output_bytes <- session.output_bytes + prefix
+                session.captures <- session.captures + captures
+                session.pending <- true
+                session.pending_start <- start
+                session.pending_end <- end
+                session.matches <- session.matches + 1
+                session.has_last_zero <- true if start == end
+                session.last_zero_start <- start if start == end
+            elif event == RegexCallbackEvent.Replace:
+                raise RegexCallbackError.InvalidState if session.state != RegexCallbackState.Matching
+                raise RegexCallbackError.ReplacementNotReady if not session.pending
+                raise RegexCallbackError.ReplacementLimitExceeded if replacement_bytes > session.policy.max_output_bytes
+                raise RegexCallbackError.OutputLimitExceeded if not regex_callback_add_fits(session.output_bytes, replacement_bytes, session.policy.max_output_bytes)
+                session.output_bytes <- session.output_bytes + replacement_bytes
+                session.cursor <- session.pending_end if session.pending_end > session.pending_start else session.pending_start + 1 if session.pending_start < session.input_bytes else session.input_bytes
+                session.pending <- false
+            elif event == RegexCallbackEvent.End:
+                raise RegexCallbackError.EndNotReady if session.state != RegexCallbackState.Matching or session.pending
+                suffix: usize = session.input_bytes - session.cursor
+                raise RegexCallbackError.OutputLimitExceeded if not regex_callback_add_fits(session.output_bytes, suffix, session.policy.max_output_bytes)
+                session.output_bytes <- session.output_bytes + suffix
+                session.state <- RegexCallbackState.Complete
+            elif event == RegexCallbackEvent.Fail:
+                raise RegexCallbackError.InvalidState if session.state != RegexCallbackState.Matching
+                session.state <- RegexCallbackState.Failed
+                session.pending <- false
+            elif event == RegexCallbackEvent.Cancel:
+                raise RegexCallbackError.CancelNotReady if session.state != RegexCallbackState.Matching
+                session.state <- RegexCallbackState.Cancelled
+                session.pending <- false
+            return session.state
