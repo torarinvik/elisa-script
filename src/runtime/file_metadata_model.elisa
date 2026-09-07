@@ -1,0 +1,197 @@
+# Bounded typed filesystem metadata snapshots.
+#
+# POSIX/Windows adapters may fill these records from stat/lstat equivalents,
+# but publication is independent of platform structs. Paths and symlink targets
+# remain borrowed text and are admitted before any host metadata call crosses
+# the boundary.
+
+module EsFileMetadata:
+    public:
+        const FILE_METADATA_MAX_ENTRIES: usize = 1048576
+        const FILE_METADATA_MAX_PATH_BYTES: usize = 4096
+        const FILE_METADATA_MAX_TARGET_BYTES: usize = 4096
+        const FILE_METADATA_MAX_TOTAL_BYTES: usize = 67108864
+
+
+        const enum FileMetadataKind of u8:
+            Regular
+            Directory
+            Symlink
+            Other
+            Missing
+
+
+        const enum FileMetadataState of u8:
+            Planned
+            Reading
+            Sealed
+            Failed
+            Cancelled
+
+
+        const enum FileMetadataEvent of u8:
+            Begin
+            Entry
+            Seal
+            Fail
+            Cancel
+
+
+        struct FileMetadataPolicy:
+            max_entries: usize = FILE_METADATA_MAX_ENTRIES
+            max_path_bytes: usize = FILE_METADATA_MAX_PATH_BYTES
+            max_target_bytes: usize = FILE_METADATA_MAX_TARGET_BYTES
+            max_total_bytes: usize = FILE_METADATA_MAX_TOTAL_BYTES
+            allow_missing: bool = false
+            preserve_symlink: bool = true
+
+
+        struct FileMetadataEntry:
+            ordinal: usize
+            path: sview
+            kind: FileMetadataKind
+            mode: u16 = 0
+            size: u64 = 0
+            inode: u64 = 0
+            device: u64 = 0
+            link_count: u64 = 1
+            access_seconds: i64 = 0
+            modify_seconds: i64 = 0
+            change_seconds: i64 = 0
+            target: sview = ""
+
+
+        struct FileMetadataSnapshot:
+            policy: FileMetadataPolicy
+            state: FileMetadataState = FileMetadataState.Planned
+            entries: darray[FileMetadataEntry] = []
+            total_bytes: usize = 0
+
+
+        error FileMetadataError:
+            InvalidState
+            InvalidEvent
+            InvalidPolicy
+            InvalidKind
+            InvalidPath
+            EmbeddedNul
+            PathLimitExceeded
+            TargetLimitExceeded
+            TotalLimitExceeded
+            EntryLimitExceeded
+            InvalidOrdinal
+            InvalidMode
+            InvalidSize
+            InvalidIdentity
+            MissingNotAllowed
+            SymlinkTargetInvalid
+            DuplicatePath
+            LookupNotReady
+            EntryMissing
+            CancelNotReady
+
+
+    private:
+        def file_metadata_state_valid(state: FileMetadataState) -> bool:
+            return state in {FileMetadataState.Planned, FileMetadataState.Reading, FileMetadataState.Sealed, FileMetadataState.Failed, FileMetadataState.Cancelled}
+
+
+        def file_metadata_event_valid(event: FileMetadataEvent) -> bool:
+            return event in {FileMetadataEvent.Begin, FileMetadataEvent.Entry, FileMetadataEvent.Seal, FileMetadataEvent.Fail, FileMetadataEvent.Cancel}
+
+
+        def file_metadata_kind_valid(kind: FileMetadataKind) -> bool:
+            return kind in {FileMetadataKind.Regular, FileMetadataKind.Directory, FileMetadataKind.Symlink, FileMetadataKind.Other, FileMetadataKind.Missing}
+
+
+        def file_metadata_policy_valid(policy: FileMetadataPolicy) -> bool:
+            return policy.max_entries != 0 and policy.max_entries <= FILE_METADATA_MAX_ENTRIES and policy.max_path_bytes != 0 and policy.max_path_bytes <= FILE_METADATA_MAX_PATH_BYTES and policy.max_target_bytes != 0 and policy.max_target_bytes <= FILE_METADATA_MAX_TARGET_BYTES and policy.max_total_bytes != 0 and policy.max_total_bytes <= FILE_METADATA_MAX_TOTAL_BYTES
+
+
+        def file_metadata_path_valid(path: sview, limit: usize) -> bool:
+            return sview_len(path) != 0 and sview_len(path) < limit and not sview_contains_byte(path, 0)
+
+
+        def file_metadata_target_valid(target: sview, limit: usize) -> bool:
+            return sview_len(target) < limit and not sview_contains_byte(target, 0)
+
+
+        def file_metadata_index(snapshot: FileMetadataSnapshot&, path: sview) -> usize:
+            for index in 0..<snapshot.entries.count |snapshot, path|:
+                return index if snapshot.entries[index].path == path
+            return snapshot.entries.count
+
+
+        def file_metadata_entry_valid(entry: FileMetadataEntry, policy: FileMetadataPolicy, expected_ordinal: usize) -> bool error[FileMetadataError]:
+            raise FileMetadataError.InvalidKind if not file_metadata_kind_valid(entry.kind)
+            raise FileMetadataError.InvalidOrdinal if entry.ordinal != expected_ordinal
+            raise FileMetadataError.InvalidPath if not file_metadata_path_valid(entry.path, policy.max_path_bytes)
+            raise FileMetadataError.EmbeddedNul if sview_contains_byte(entry.path, 0)
+            raise FileMetadataError.PathLimitExceeded if sview_len(entry.path) >= policy.max_path_bytes
+            raise FileMetadataError.TargetLimitExceeded if not file_metadata_target_valid(entry.target, policy.max_target_bytes)
+            raise FileMetadataError.InvalidMode if entry.mode > 8191
+            raise FileMetadataError.InvalidSize if entry.size > FILE_METADATA_MAX_TOTAL_BYTES
+            raise FileMetadataError.InvalidIdentity if entry.kind != FileMetadataKind.Missing and (entry.inode == 0 or entry.link_count == 0)
+            raise FileMetadataError.MissingNotAllowed if entry.kind == FileMetadataKind.Missing and not policy.allow_missing
+            if entry.kind == FileMetadataKind.Symlink:
+                raise FileMetadataError.SymlinkTargetInvalid if not policy.preserve_symlink or entry.target == ""
+            else:
+                raise FileMetadataError.SymlinkTargetInvalid if entry.target != ""
+            return true
+
+
+    public:
+        def validate_file_metadata_snapshot(snapshot: FileMetadataSnapshot&) -> bool error[FileMetadataError]:
+            raise FileMetadataError.InvalidState if not file_metadata_state_valid(snapshot.state)
+            raise FileMetadataError.InvalidPolicy if not file_metadata_policy_valid(snapshot.policy)
+            raise FileMetadataError.EntryLimitExceeded if snapshot.entries.count > snapshot.policy.max_entries
+            raise FileMetadataError.TotalLimitExceeded if snapshot.total_bytes > snapshot.policy.max_total_bytes
+            accounted: mutable usize = 0
+            for index in 0..<snapshot.entries.count |snapshot, accounted|:
+                entry: FileMetadataEntry = snapshot.entries[index]
+                try file_metadata_entry_valid(entry, snapshot.policy, index)
+                raise FileMetadataError.TotalLimitExceeded if sview_len(entry.path) > snapshot.policy.max_total_bytes - accounted
+                accounted <- accounted + sview_len(entry.path)
+                raise FileMetadataError.TotalLimitExceeded if sview_len(entry.target) > snapshot.policy.max_total_bytes - accounted
+                accounted <- accounted + sview_len(entry.target)
+                for earlier in 0..<index |snapshot, entry|:
+                    raise FileMetadataError.DuplicatePath if snapshot.entries[earlier].path == entry.path
+            raise FileMetadataError.TotalLimitExceeded if accounted != snapshot.total_bytes
+            return true
+
+
+        def file_metadata_lookup(snapshot: FileMetadataSnapshot&, path: sview) -> usize error[FileMetadataError]:
+            try validate_file_metadata_snapshot(snapshot)
+            raise FileMetadataError.LookupNotReady if snapshot.state != FileMetadataState.Sealed
+            raise FileMetadataError.InvalidPath if not file_metadata_path_valid(path, snapshot.policy.max_path_bytes)
+            index: usize = file_metadata_index(snapshot, path)
+            raise FileMetadataError.EntryMissing if index == snapshot.entries.count
+            return index
+
+
+        def advance_file_metadata(snapshot: mutable FileMetadataSnapshot&, event: FileMetadataEvent, entry: FileMetadataEntry = FileMetadataEntry{ordinal: 0, path: "", kind: FileMetadataKind.Other}) -> FileMetadataState error[FileMetadataError]:
+            try validate_file_metadata_snapshot(snapshot)
+            raise FileMetadataError.InvalidEvent if not file_metadata_event_valid(event)
+            if event == FileMetadataEvent.Begin:
+                raise FileMetadataError.InvalidState if snapshot.state != FileMetadataState.Planned
+                snapshot.state <- FileMetadataState.Reading
+            elif event == FileMetadataEvent.Entry:
+                raise FileMetadataError.InvalidState if snapshot.state != FileMetadataState.Reading
+                raise FileMetadataError.EntryLimitExceeded if snapshot.entries.count >= snapshot.policy.max_entries
+                try file_metadata_entry_valid(entry, snapshot.policy, snapshot.entries.count)
+                raise FileMetadataError.DuplicatePath if file_metadata_index(snapshot, entry.path) != snapshot.entries.count
+                raise FileMetadataError.TotalLimitExceeded if sview_len(entry.path) > snapshot.policy.max_total_bytes - snapshot.total_bytes
+                next_total: usize = snapshot.total_bytes + sview_len(entry.path)
+                raise FileMetadataError.TotalLimitExceeded if sview_len(entry.target) > snapshot.policy.max_total_bytes - next_total
+                snapshot.entries.push(entry)
+                snapshot.total_bytes <- next_total + sview_len(entry.target)
+            elif event == FileMetadataEvent.Seal:
+                raise FileMetadataError.InvalidState if snapshot.state != FileMetadataState.Reading
+                snapshot.state <- FileMetadataState.Sealed
+            elif event == FileMetadataEvent.Fail:
+                raise FileMetadataError.InvalidState if snapshot.state != FileMetadataState.Reading
+                snapshot.state <- FileMetadataState.Failed
+            elif event == FileMetadataEvent.Cancel:
+                raise FileMetadataError.CancelNotReady if snapshot.state != FileMetadataState.Planned and snapshot.state != FileMetadataState.Reading
+                snapshot.state <- FileMetadataState.Cancelled
+            return snapshot.state
