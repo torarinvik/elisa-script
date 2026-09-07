@@ -906,7 +906,7 @@ surfaces lower to this opcode.
 `File.Read`, `File.Write`, and `FileIoError`. Both execute bounded recursive
 walks in the reference helper, use `lstat` to avoid following symlink entries,
 and are eligible for direct bytecode dispatch. `CopyTree` normalizes the source
-and destination to absolute lexical paths before mutation and rejects a
+and destination lexically before mutation and rejects a
 source-equal or descendant destination, preventing the recursive walk from
 discovering its own output; the depth bound remains defense in depth.
 `PathJoin`, `PathParent`, `PathName`, `PathExtension`, and `PathStem` are pure typed path-shape operations.
