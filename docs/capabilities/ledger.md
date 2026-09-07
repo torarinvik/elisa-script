@@ -318,6 +318,9 @@ The stream now also carries an explicit `Auto`/`Bytes`/`Utf8` encoding policy,
 with incremental strict-UTF-8 validation for text streams and byte-preserving
 binary operation; split three- and four-byte continuation bounds are explicit
 in the IR fixture, and invalid or incomplete sequences remain typed failures.
+Staged publication now has a reusable typed rename edge with optional parent
+directory sync; rename and directory-sync failures remain separate, and the
+caller retains ownership of staging cleanup.
 
 The direct bytecode resource slice now shares one mutable output ledger through
 nested calls, including child output emitted before a recoverable error. The

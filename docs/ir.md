@@ -378,6 +378,10 @@ offset, while all successful seeks clear the pending slot.
 `file_stream_sync` is write/append-only and flushes the libc stream before
 calling descriptor `fsync`; flush and descriptor failures remain distinct
 typed errors.
+`file_stream_publish_staged` provides the generic atomic publication edge for a
+caller-created sibling staging file and can sync the destination parent after
+rename; it reports rename and directory-sync failures separately and leaves
+staging cleanup policy with the caller.
 `file_stream_close` is idempotent only for a self-consistent terminal state:
 `Closed` must carry a null handle, while an `Open` stream must carry a live
 handle. Split-brain handles assembled outside the adapter fail with the typed
