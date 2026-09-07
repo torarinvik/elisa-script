@@ -1,0 +1,169 @@
+# Typed network-session adapter boundary.
+#
+# NetworkRequest describes policy; NetworkSession describes one bounded
+# transport attempt. DNS, connect, TLS, send, receive, retry, and cancellation
+# are explicit events, while sockets and TLS libraries remain host adapters.
+
+module EsNetworkSession:
+    using EsNetwork
+
+    public:
+        const NETWORK_SESSION_MAX_POLLS: usize = 1048576
+        const NETWORK_SESSION_MAX_REDIRECTS: usize = 32
+
+
+        const enum NetworkSessionState of u8:
+            Planned
+            Resolving
+            Connecting
+            Securing
+            Sending
+            Receiving
+            Completed
+            Failed
+            Cancelling
+            Cancelled
+
+
+        const enum NetworkSessionEvent of u8:
+            Begin
+            DnsReady
+            ConnectReady
+            TlsReady
+            SendChunk
+            SendComplete
+            ReceiveChunk
+            ReceiveComplete
+            Poll
+            Fail
+            Retry
+            Cancel
+            CancelAck
+
+
+        struct NetworkSession:
+            request: NetworkRequest
+            state: NetworkSessionState = NetworkSessionState.Planned
+            attempts: usize = 0
+            redirects: usize = 0
+            polls: usize = 0
+            sent_bytes: usize = 0
+            received_bytes: usize = 0
+            outcome: NetworkOutcome = NetworkOutcome.Success
+            status: u16 = 0
+
+
+        error NetworkSessionError:
+            InvalidState
+            InvalidEvent
+            InvalidRequest
+            AttemptLimitExceeded
+            RedirectLimitExceeded
+            PollLimitExceeded
+            SendAccountingInvalid
+            ReceiveLimitExceeded
+            InvalidStatus
+            InvalidOutcome
+            RetryNotReady
+            CancelNotReady
+            AccountingInvalid
+
+
+    private:
+        def session_state_valid(state: NetworkSessionState) -> bool:
+            return state in {NetworkSessionState.Planned, NetworkSessionState.Resolving, NetworkSessionState.Connecting, NetworkSessionState.Securing, NetworkSessionState.Sending, NetworkSessionState.Receiving, NetworkSessionState.Completed, NetworkSessionState.Failed, NetworkSessionState.Cancelling, NetworkSessionState.Cancelled}
+
+
+        def session_event_valid(event: NetworkSessionEvent) -> bool:
+            return event in {NetworkSessionEvent.Begin, NetworkSessionEvent.DnsReady, NetworkSessionEvent.ConnectReady, NetworkSessionEvent.TlsReady, NetworkSessionEvent.SendChunk, NetworkSessionEvent.SendComplete, NetworkSessionEvent.ReceiveChunk, NetworkSessionEvent.ReceiveComplete, NetworkSessionEvent.Poll, NetworkSessionEvent.Fail, NetworkSessionEvent.Retry, NetworkSessionEvent.Cancel, NetworkSessionEvent.CancelAck}
+
+
+        def session_state_active(state: NetworkSessionState) -> bool:
+            return state in {NetworkSessionState.Resolving, NetworkSessionState.Connecting, NetworkSessionState.Securing, NetworkSessionState.Sending, NetworkSessionState.Receiving}
+
+
+        def session_outcome_valid(outcome: NetworkOutcome) -> bool:
+            return outcome in {NetworkOutcome.Success, NetworkOutcome.DnsFailure, NetworkOutcome.TlsFailure, NetworkOutcome.TransportFailure, NetworkOutcome.Timeout, NetworkOutcome.ProtocolFailure, NetworkOutcome.StatusFailure, NetworkOutcome.DecodeFailure, NetworkOutcome.Cancelled}
+
+
+    public:
+        def validate_network_session(session: NetworkSession&) -> bool error[NetworkSessionError]:
+            raise NetworkSessionError.InvalidState if not session_state_valid(session.state)
+            valid_request: mutable bool = false
+            catch validate_network_request(session.request):
+                ok:
+                    valid_request <- true
+                error failure:
+                    valid_request <- false
+            raise NetworkSessionError.InvalidRequest if not valid_request
+            raise NetworkSessionError.AttemptLimitExceeded if session.attempts > session.request.retry.max_attempts
+            raise NetworkSessionError.RedirectLimitExceeded if session.redirects > NETWORK_SESSION_MAX_REDIRECTS
+            raise NetworkSessionError.PollLimitExceeded if session.polls > NETWORK_SESSION_MAX_POLLS
+            raise NetworkSessionError.SendAccountingInvalid if session.sent_bytes > session.request.body.count
+            raise NetworkSessionError.ReceiveLimitExceeded if session.received_bytes > session.request.max_response_bytes
+            raise NetworkSessionError.InvalidOutcome if not session_outcome_valid(session.outcome)
+            raise NetworkSessionError.InvalidStatus if session.status != 0 and (session.status < 100 or session.status > 599)
+            raise NetworkSessionError.AccountingInvalid if session.state == NetworkSessionState.Completed and session.outcome != NetworkOutcome.Success and session.outcome != NetworkOutcome.StatusFailure
+            return true
+
+
+        def advance_network_session(session: mutable NetworkSession&, event: NetworkSessionEvent, bytes_delta: usize = 0, outcome: NetworkOutcome = NetworkOutcome.Success, status: u16 = 0) -> NetworkSessionState error[NetworkSessionError]:
+            try validate_network_session(session)
+            raise NetworkSessionError.InvalidEvent if not session_event_valid(event)
+            if event == NetworkSessionEvent.Begin:
+                raise NetworkSessionError.InvalidState if session.state != NetworkSessionState.Planned
+                raise NetworkSessionError.AttemptLimitExceeded if session.attempts >= session.request.retry.max_attempts
+                session.attempts <- session.attempts + 1
+                session.sent_bytes <- 0
+                session.received_bytes <- 0
+                session.status <- 0
+                session.outcome <- NetworkOutcome.Success
+                session.state <- NetworkSessionState.Resolving
+            elif event == NetworkSessionEvent.DnsReady:
+                raise NetworkSessionError.InvalidState if session.state != NetworkSessionState.Resolving
+                session.state <- NetworkSessionState.Connecting
+            elif event == NetworkSessionEvent.ConnectReady:
+                raise NetworkSessionError.InvalidState if session.state != NetworkSessionState.Connecting
+                session.state <- NetworkSessionState.Securing
+            elif event == NetworkSessionEvent.TlsReady:
+                raise NetworkSessionError.InvalidState if session.state != NetworkSessionState.Securing
+                session.state <- NetworkSessionState.Sending
+            elif event == NetworkSessionEvent.SendChunk:
+                raise NetworkSessionError.InvalidState if session.state != NetworkSessionState.Sending
+                raise NetworkSessionError.SendAccountingInvalid if bytes_delta > session.request.body.count - session.sent_bytes
+                session.sent_bytes <- session.sent_bytes + bytes_delta
+            elif event == NetworkSessionEvent.SendComplete:
+                raise NetworkSessionError.InvalidState if session.state != NetworkSessionState.Sending
+                raise NetworkSessionError.SendAccountingInvalid if session.sent_bytes != session.request.body.count
+                session.state <- NetworkSessionState.Receiving
+            elif event == NetworkSessionEvent.ReceiveChunk:
+                raise NetworkSessionError.InvalidState if session.state != NetworkSessionState.Receiving
+                raise NetworkSessionError.ReceiveLimitExceeded if bytes_delta > session.request.max_response_bytes - session.received_bytes
+                session.received_bytes <- session.received_bytes + bytes_delta
+            elif event == NetworkSessionEvent.ReceiveComplete:
+                raise NetworkSessionError.InvalidState if session.state != NetworkSessionState.Receiving
+                raise NetworkSessionError.InvalidStatus if status < 100 or status > 599
+                session.status <- status
+                session.outcome <- NetworkOutcome.Success if status >= 200 and status <= 399 else NetworkOutcome.StatusFailure
+                session.state <- NetworkSessionState.Completed
+            elif event == NetworkSessionEvent.Poll:
+                raise NetworkSessionError.InvalidState if not session_state_active(session.state)
+                raise NetworkSessionError.PollLimitExceeded if session.polls >= NETWORK_SESSION_MAX_POLLS
+                session.polls <- session.polls + 1
+            elif event == NetworkSessionEvent.Fail:
+                raise NetworkSessionError.InvalidState if not session_state_active(session.state)
+                raise NetworkSessionError.InvalidOutcome if not session_outcome_valid(outcome) or outcome == NetworkOutcome.Success
+                session.outcome <- outcome
+                session.state <- NetworkSessionState.Failed
+            elif event == NetworkSessionEvent.Retry:
+                raise NetworkSessionError.RetryNotReady if session.state != NetworkSessionState.Failed
+                raise NetworkSessionError.AttemptLimitExceeded if session.attempts >= session.request.retry.max_attempts
+                session.state <- NetworkSessionState.Planned
+            elif event == NetworkSessionEvent.Cancel:
+                raise NetworkSessionError.CancelNotReady if not session_state_active(session.state)
+                session.outcome <- NetworkOutcome.Cancelled
+                session.state <- NetworkSessionState.Cancelling
+            elif event == NetworkSessionEvent.CancelAck:
+                raise NetworkSessionError.CancelNotReady if session.state != NetworkSessionState.Cancelling
+                session.state <- NetworkSessionState.Cancelled
+            return session.state

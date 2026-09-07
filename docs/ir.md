@@ -954,6 +954,12 @@ drain requirements, and cancellation/failure states. Enqueueing cannot exceed
 the configured in-flight ceiling or occur after a final chunk; a stream cannot
 finish until the final chunk has been observed and all buffered bytes consumed.
 
+EsNetworkSession binds those policies to one transport attempt. It requires
+the DNS/connect/TLS/send/receive order, charges request and response bytes
+before advancing, caps polls and redirects, preserves status failures as
+typed completed outcomes, and exposes retry/failure/cancellation edges without
+opening sockets itself.
+
 Before any regex opcode executes, both backends enforce a shared input-size
 boundary: haystack text is at most 64 MiB, the compiled-pattern payload is at
 most 64 KiB, and replacement text is at most 64 MiB. Oversized operands fail

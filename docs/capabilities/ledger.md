@@ -465,6 +465,12 @@ step completion, failure, and cancellation transitions. The focused IR
 fixture and check_cli_workflow.sh audit are static evidence; host execution of
 check/test/fmt/doc remains open.
 
+ES-SCRIPT-011 | EsNetworkSession binds validated NetworkRequest policies to
+ordered DNS/connect/TLS/send/receive phases, request/response byte accounting,
+poll/redirect ceilings, typed status outcomes, retries, and cancellation. The
+focused IR fixture and check_network_session.sh audit are static evidence;
+socket/TLS/redirect and deadline adapters remain open.
+
 ES-SCRIPT-010 | EsEnvironment supplies bounded unique name/value entries,
 sealed lookup, deterministic set updates, tombstone unsets, aggregate text
 accounting, and explicit failure/reset transitions without mutating parent
