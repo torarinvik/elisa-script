@@ -1,0 +1,248 @@
+# Typed runtime value ownership, borrowing, and reclamation contract.
+#
+# The VM may store payloads in arenas, but this ledger keeps the semantic
+# ownership proof independent of allocator addresses. Moves advance a
+# generation, borrows carry an explicit expiry token, and reclamation cannot
+# race an active borrow or silently resurrect a dropped value.
+
+module EsValueOwnership:
+    public:
+        const VALUE_OWNERSHIP_MAX_VALUES: usize = 1048576
+        const VALUE_OWNERSHIP_MAX_BORROWS: usize = 1048576
+        const VALUE_OWNERSHIP_MAX_BYTES: usize = 268435456
+
+
+        const enum ValueOwnershipKind of u8:
+            Copyable
+            Linear
+            BorrowedView
+
+
+        const enum ValueOwnershipState of u8:
+            Owned
+            Borrowed
+            Dropped
+
+
+        const enum BorrowLeaseState of u8:
+            Active
+            Ended
+
+
+        const enum ValueOwnershipEvent of u8:
+            BeginBorrow
+            EndBorrow
+            Move
+            Drop
+
+
+        struct ValueOwnershipPolicy:
+            max_values: usize = VALUE_OWNERSHIP_MAX_VALUES
+            max_borrows: usize = VALUE_OWNERSHIP_MAX_BORROWS
+            max_bytes: usize = VALUE_OWNERSHIP_MAX_BYTES
+
+
+        struct ValueLease:
+            value_id: u64
+            arena_id: u64
+            owner_token: u64
+            generation: u64 = 1
+            kind: ValueOwnershipKind = ValueOwnershipKind.Copyable
+            bytes: usize = 0
+            state: ValueOwnershipState = ValueOwnershipState.Owned
+
+
+        struct BorrowLease:
+            borrow_id: u64 = 0
+            value_id: u64 = 0
+            borrower_token: u64 = 0
+            source_generation: u64 = 0
+            expires_at: u64 = 0
+            state: BorrowLeaseState = BorrowLeaseState.Active
+
+
+        struct ValueOwnershipLedger:
+            policy: ValueOwnershipPolicy
+            values: darray[ValueLease] = []
+            borrows: darray[BorrowLease] = []
+            active_values: usize = 0
+            active_borrows: usize = 0
+            retained_bytes: usize = 0
+
+
+        error ValueOwnershipError:
+            InvalidPolicy
+            InvalidKind
+            InvalidState
+            InvalidEvent
+            InvalidId
+            InvalidArena
+            InvalidOwner
+            InvalidGeneration
+            InvalidExpiry
+            ValueLimitExceeded
+            BorrowLimitExceeded
+            ByteLimitExceeded
+            DuplicateValue
+            DuplicateBorrow
+            ValueIndexInvalid
+            BorrowIndexInvalid
+            OwnerMismatch
+            BorrowerMismatch
+            BorrowConflict
+            MoveNotReady
+            DropNotReady
+            AccountingInvalid
+
+
+    private:
+        def value_ownership_policy_valid(policy: ValueOwnershipPolicy) -> bool:
+            return policy.max_values != 0 and policy.max_values <= VALUE_OWNERSHIP_MAX_VALUES and policy.max_borrows != 0 and policy.max_borrows <= VALUE_OWNERSHIP_MAX_BORROWS and policy.max_bytes != 0 and policy.max_bytes <= VALUE_OWNERSHIP_MAX_BYTES
+
+
+        def value_ownership_kind_valid(kind: ValueOwnershipKind) -> bool:
+            return kind in {ValueOwnershipKind.Copyable, ValueOwnershipKind.Linear, ValueOwnershipKind.BorrowedView}
+
+
+        def value_ownership_state_valid(state: ValueOwnershipState) -> bool:
+            return state in {ValueOwnershipState.Owned, ValueOwnershipState.Borrowed, ValueOwnershipState.Dropped}
+
+
+        def borrow_lease_state_valid(state: BorrowLeaseState) -> bool:
+            return state in {BorrowLeaseState.Active, BorrowLeaseState.Ended}
+
+
+        def value_ownership_event_valid(event: ValueOwnershipEvent) -> bool:
+            return event in {ValueOwnershipEvent.BeginBorrow, ValueOwnershipEvent.EndBorrow, ValueOwnershipEvent.Move, ValueOwnershipEvent.Drop}
+
+
+        def value_ownership_index(ledger: ValueOwnershipLedger&, value_id: u64) -> usize:
+            for index in 0..<ledger.values.count |ledger, value_id|:
+                return index if ledger.values[index].value_id == value_id
+            return ledger.values.count
+
+
+        def borrow_ownership_index(ledger: ValueOwnershipLedger&, borrow_id: u64) -> usize:
+            for index in 0..<ledger.borrows.count |ledger, borrow_id|:
+                return index if ledger.borrows[index].borrow_id == borrow_id
+            return ledger.borrows.count
+
+
+        def value_ownership_active(state: ValueOwnershipState) -> bool:
+            return state == ValueOwnershipState.Owned or state == ValueOwnershipState.Borrowed
+
+
+        def value_ownership_active_borrow(lease: BorrowLease) -> bool:
+            return lease.state == BorrowLeaseState.Active
+
+
+    public:
+        def validate_value_ownership(ledger: ValueOwnershipLedger&) -> bool error[ValueOwnershipError]:
+            raise ValueOwnershipError.InvalidPolicy if not value_ownership_policy_valid(ledger.policy)
+            raise ValueOwnershipError.ValueLimitExceeded if ledger.values.count > ledger.policy.max_values
+            raise ValueOwnershipError.BorrowLimitExceeded if ledger.borrows.count > ledger.policy.max_borrows
+            raise ValueOwnershipError.ByteLimitExceeded if ledger.retained_bytes > ledger.policy.max_bytes
+            active_values: mutable usize = 0
+            active_borrows: mutable usize = 0
+            accounted_bytes: mutable usize = 0
+            for index in 0..<ledger.values.count |ledger, active_values, accounted_bytes|:
+                value: ValueLease = ledger.values[index]
+                raise ValueOwnershipError.InvalidId if value.value_id == 0
+                raise ValueOwnershipError.InvalidArena if value.arena_id == 0
+                raise ValueOwnershipError.InvalidOwner if value.owner_token == 0
+                raise ValueOwnershipError.InvalidGeneration if value.generation == 0
+                raise ValueOwnershipError.InvalidKind if not value_ownership_kind_valid(value.kind)
+                raise ValueOwnershipError.InvalidState if not value_ownership_state_valid(value.state)
+                raise ValueOwnershipError.ByteLimitExceeded if value.bytes > ledger.policy.max_bytes - accounted_bytes
+                accounted_bytes <- accounted_bytes + value.bytes
+                active_values <- active_values + 1 if value_ownership_active(value.state)
+                for earlier in 0..<index |ledger, value|:
+                    raise ValueOwnershipError.DuplicateValue if ledger.values[earlier].value_id == value.value_id
+            for index in 0..<ledger.borrows.count |ledger, active_borrows|:
+                borrow: BorrowLease = ledger.borrows[index]
+                raise ValueOwnershipError.InvalidId if borrow.borrow_id == 0 or borrow.value_id == 0 or borrow.borrower_token == 0
+                raise ValueOwnershipError.InvalidGeneration if borrow.source_generation == 0
+                raise ValueOwnershipError.InvalidExpiry if borrow.expires_at == 0
+                raise ValueOwnershipError.InvalidState if not borrow_lease_state_valid(borrow.state)
+                value_index: usize = value_ownership_index(ledger, borrow.value_id)
+                raise ValueOwnershipError.ValueIndexInvalid if value_index == ledger.values.count
+                raise ValueOwnershipError.InvalidGeneration if borrow.source_generation != ledger.values[value_index].generation and borrow.state == BorrowLeaseState.Active
+                active_borrows <- active_borrows + 1 if value_ownership_active_borrow(borrow)
+                for earlier in 0..<index |ledger, borrow|:
+                    raise ValueOwnershipError.DuplicateBorrow if ledger.borrows[earlier].borrow_id == borrow.borrow_id
+            raise ValueOwnershipError.AccountingInvalid if active_values != ledger.active_values or active_borrows != ledger.active_borrows or accounted_bytes != ledger.retained_bytes
+            return true
+
+
+        def value_ownership_acquire(ledger: mutable ValueOwnershipLedger&, value: ValueLease) -> bool error[ValueOwnershipError]:
+            try validate_value_ownership(ledger)
+            raise ValueOwnershipError.InvalidId if value.value_id == 0
+            raise ValueOwnershipError.InvalidArena if value.arena_id == 0
+            raise ValueOwnershipError.InvalidOwner if value.owner_token == 0
+            raise ValueOwnershipError.InvalidGeneration if value.generation == 0
+            raise ValueOwnershipError.InvalidKind if not value_ownership_kind_valid(value.kind)
+            raise ValueOwnershipError.ValueLimitExceeded if ledger.values.count >= ledger.policy.max_values
+            raise ValueOwnershipError.ByteLimitExceeded if value.bytes > ledger.policy.max_bytes - ledger.retained_bytes
+            raise ValueOwnershipError.DuplicateValue if value_ownership_index(ledger, value.value_id) != ledger.values.count
+            ledger.values.push(value)
+            ledger.active_values <- ledger.active_values + 1
+            ledger.retained_bytes <- ledger.retained_bytes + value.bytes
+            return true
+
+
+        def advance_value_ownership(ledger: mutable ValueOwnershipLedger&, event: ValueOwnershipEvent, value_id: u64 = 0, owner_token: u64 = 0, borrow: BorrowLease = BorrowLease{borrow_id: 0, value_id: 0, borrower_token: 0, source_generation: 0, expires_at: 0}, new_owner_token: u64 = 0) -> ValueOwnershipState error[ValueOwnershipError]:
+            try validate_value_ownership(ledger)
+            raise ValueOwnershipError.InvalidEvent if not value_ownership_event_valid(event)
+            if event == ValueOwnershipEvent.BeginBorrow:
+                value_index: usize = value_ownership_index(ledger, value_id)
+                raise ValueOwnershipError.ValueIndexInvalid if value_index == ledger.values.count
+                raise ValueOwnershipError.InvalidOwner if owner_token == 0
+                raise ValueOwnershipError.BorrowLimitExceeded if ledger.borrows.count >= ledger.policy.max_borrows
+                raise ValueOwnershipError.DuplicateBorrow if borrow.borrow_id == 0 or borrow_ownership_index(ledger, borrow.borrow_id) != ledger.borrows.count
+                raise ValueOwnershipError.BorrowerMismatch if borrow.borrower_token == 0 or borrow.borrower_token == owner_token
+                raise ValueOwnershipError.InvalidExpiry if borrow.expires_at == 0
+                raise ValueOwnershipError.OwnerMismatch if ledger.values[value_index].owner_token != owner_token
+                raise ValueOwnershipError.BorrowConflict if ledger.values[value_index].state == ValueOwnershipState.Dropped or ledger.values[value_index].kind == ValueOwnershipKind.BorrowedView
+                if ledger.values[value_index].kind == ValueOwnershipKind.Linear:
+                    for existing in ledger.borrows:
+                        raise ValueOwnershipError.BorrowConflict if existing.value_id == value_id and existing.state == BorrowLeaseState.Active
+                borrow.value_id <- value_id
+                borrow.source_generation <- ledger.values[value_index].generation
+                ledger.borrows.push(borrow)
+                ledger.active_borrows <- ledger.active_borrows + 1
+                ledger.values[value_index].state <- ValueOwnershipState.Borrowed
+                return ledger.values[value_index].state
+            elif event == ValueOwnershipEvent.EndBorrow:
+                borrow_index: usize = borrow_ownership_index(ledger, borrow.borrow_id)
+                raise ValueOwnershipError.BorrowIndexInvalid if borrow_index == ledger.borrows.count
+                raise ValueOwnershipError.BorrowerMismatch if ledger.borrows[borrow_index].borrower_token != owner_token or owner_token == 0
+                raise ValueOwnershipError.InvalidState if ledger.borrows[borrow_index].state != BorrowLeaseState.Active
+                value_index: usize = value_ownership_index(ledger, ledger.borrows[borrow_index].value_id)
+                raise ValueOwnershipError.ValueIndexInvalid if value_index == ledger.values.count
+                ledger.borrows[borrow_index].state <- BorrowLeaseState.Ended
+                ledger.active_borrows <- ledger.active_borrows - 1
+                active_for_value: mutable bool = false
+                for existing in ledger.borrows:
+                    active_for_value <- true if existing.value_id == ledger.borrows[borrow_index].value_id and existing.state == BorrowLeaseState.Active
+                ledger.values[value_index].state <- ValueOwnershipState.Owned if not active_for_value
+                return ledger.values[value_index].state
+            elif event == ValueOwnershipEvent.Move:
+                value_index: usize = value_ownership_index(ledger, value_id)
+                raise ValueOwnershipError.ValueIndexInvalid if value_index == ledger.values.count
+                raise ValueOwnershipError.OwnerMismatch if owner_token == 0 or ledger.values[value_index].owner_token != owner_token
+                raise ValueOwnershipError.MoveNotReady if ledger.values[value_index].state != ValueOwnershipState.Owned or new_owner_token == 0 or new_owner_token == owner_token or ledger.values[value_index].generation == 18446744073709551615u64
+                ledger.values[value_index].owner_token <- new_owner_token
+                ledger.values[value_index].generation <- ledger.values[value_index].generation + 1
+                ledger.values[value_index].state <- ValueOwnershipState.Owned
+                return ledger.values[value_index].state
+            elif event == ValueOwnershipEvent.Drop:
+                value_index: usize = value_ownership_index(ledger, value_id)
+                raise ValueOwnershipError.ValueIndexInvalid if value_index == ledger.values.count
+                raise ValueOwnershipError.OwnerMismatch if owner_token == 0 or ledger.values[value_index].owner_token != owner_token
+                raise ValueOwnershipError.DropNotReady if ledger.values[value_index].state != ValueOwnershipState.Owned or ledger.values[value_index].kind == ValueOwnershipKind.BorrowedView
+                ledger.retained_bytes <- ledger.retained_bytes - ledger.values[value_index].bytes
+                ledger.values[value_index].bytes <- 0
+                ledger.values[value_index].state <- ValueOwnershipState.Dropped
+                ledger.active_values <- ledger.active_values - 1
+                return ledger.values[value_index].state
+            return ValueOwnershipState.Dropped

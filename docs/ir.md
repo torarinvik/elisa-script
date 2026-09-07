@@ -241,6 +241,15 @@ terminal `Failed` lease; owner mismatches and double-close attempts fail through
 `error[ResourceContractError]`. OS handle acquisition, actual cleanup, and
 cross-thread transfer still require adapter evidence.
 
+`EsValueOwnership::ValueOwnershipLedger` is the allocator-independent runtime
+ownership boundary. Values carry arena identity, owner token, generation, kind,
+and retained bytes; linear values allow at most one active borrow, borrowed
+views cannot be reborrowed, moves require an unborrowed owned value and advance
+the generation, and drops reclaim retained bytes without deleting provenance.
+Borrow leases record borrower identity, source generation, and an expiry token;
+duplicate ids, stale leases, owner mismatches, double-end, accounting drift,
+and reclamation while borrowed raise `error[ValueOwnershipError]`.
+
 EsHandle supplies the host-handle table that those adapters consume. Raw
 handle identity is distinct from the logical resource id and owner token;
 duplicate identities are rejected, ownership transfer requires a new owner,

@@ -403,6 +403,16 @@ commit, and handler-context borrows require a finite lease. The focused IR
 fixture, namespace inclusion, documentation, and check_task_transfer.sh audit
 are static evidence; scheduler integration and runtime transport remain open.
 
+ES-SCRIPT-042 | EsValueOwnership supplies a bounded arena-independent runtime
+ownership ledger. It tracks value/arena/owner/generation identities, linear and
+borrowed-view kinds, finite borrow leases, active-value/borrow counts, retained
+bytes, generation-checked moves, and byte-reclaiming drops. Borrow conflicts,
+stale generations, duplicate ids, owner mismatches, double-end, and accounting
+drift are explicit under `error[ValueOwnershipError]`. The focused IR fixture,
+namespace inclusion, documentation, and check_value_ownership.sh audit are
+static evidence; allocator integration, compiler-enforced lifetimes, and
+adverse-resource execution remain open.
+
 ES-SCRIPT-040 | EsTaskTransfer supplies a bounded ownership protocol for
 copyable values, linear values, and dynamic handler contexts crossing task
 boundaries. Copy/move/borrow modes, source/target owners, generation updates,
