@@ -1,0 +1,129 @@
+# Typed, bounded network request/response contracts.
+#
+# This module is transport-neutral: it validates the data and policy that an
+# HTTP/TLS adapter must honor without opening sockets or silently retrying a
+# mutation. Headers remain ordered flat pairs so canonicalization is explicit.
+
+module EsNetwork:
+    public:
+        const NETWORK_MAX_URL_BYTES: usize = 16384
+        const NETWORK_MAX_HEADER_BYTES: usize = 1048576
+        const NETWORK_MAX_BODY_BYTES: usize = 67108864
+
+
+        const enum NetworkMethod of u8:
+            Get
+            Head
+            Post
+            Put
+            Patch
+            Delete
+
+
+        const enum NetworkOutcome of u8:
+            Success
+            DnsFailure
+            TlsFailure
+            TransportFailure
+            Timeout
+            ProtocolFailure
+            StatusFailure
+            DecodeFailure
+            Cancelled
+
+
+        struct NetworkRequest:
+            url: sview
+            method: NetworkMethod = NetworkMethod.Get
+            headers: darray[sview] = []
+            body: darray[u8] = []
+            timeout_micros: u64 = 0
+            max_response_bytes: usize = NETWORK_MAX_BODY_BYTES
+            follow_redirects: bool = false
+
+
+        struct NetworkResponse:
+            outcome: NetworkOutcome = NetworkOutcome.Success
+            status: u16 = 200
+            headers: darray[sview] = []
+            body: darray[u8] = []
+            error_text: sview = ""
+
+
+        error NetworkContractError:
+            InvalidMethod
+            InvalidOutcome
+            MissingUrl
+            EmbeddedNul
+            UrlLimitExceeded
+            HeaderVectorMalformed
+            HeaderNameInvalid
+            DuplicateHeaderName
+            HeaderLimitExceeded
+            BodyLimitExceeded
+            InvalidTimeout
+            InvalidResponseLimit
+            InvalidStatus
+            ErrorTextInvalid
+
+
+    private:
+        def network_method_valid(method: NetworkMethod) -> bool:
+            return method in {NetworkMethod.Get, NetworkMethod.Head, NetworkMethod.Post, NetworkMethod.Put, NetworkMethod.Patch, NetworkMethod.Delete}
+
+
+        def network_outcome_valid(outcome: NetworkOutcome) -> bool:
+            return outcome in {NetworkOutcome.Success, NetworkOutcome.DnsFailure, NetworkOutcome.TlsFailure, NetworkOutcome.TransportFailure, NetworkOutcome.Timeout, NetworkOutcome.ProtocolFailure, NetworkOutcome.StatusFailure, NetworkOutcome.DecodeFailure, NetworkOutcome.Cancelled}
+
+
+        def network_text_length_valid(value: sview, limit: usize) -> bool:
+            return sview_len(value) < limit
+
+
+        def network_text_valid(value: sview, limit: usize) -> bool:
+            return network_text_length_valid(value, limit) and not sview_contains_byte(value, 0)
+
+
+        def network_header_name_valid(name: sview) -> bool:
+            return sview_len(name) != 0 and network_text_valid(name, NETWORK_MAX_HEADER_BYTES) and not sview_contains_byte(name, 58) and not sview_contains_byte(name, 32)
+
+
+        def network_headers_valid(headers: darray[sview]) -> bool error[NetworkContractError]:
+            raise NetworkContractError.HeaderVectorMalformed if headers.count % 2 != 0
+            total: mutable usize = 0
+            for offset in 0..<headers.count |headers, total|:
+                entry: sview = headers[offset]
+                raise NetworkContractError.HeaderLimitExceeded if not network_text_length_valid(entry, NETWORK_MAX_HEADER_BYTES)
+                raise NetworkContractError.EmbeddedNul if sview_contains_byte(entry, 0)
+                if offset % 2 == 0:
+                    raise NetworkContractError.HeaderNameInvalid if not network_header_name_valid(entry)
+                    for earlier in 0..<offset |headers, entry|:
+                        raise NetworkContractError.DuplicateHeaderName if earlier % 2 == 0 and headers[earlier] == entry
+                raise NetworkContractError.HeaderLimitExceeded if total > NETWORK_MAX_HEADER_BYTES - sview_len(entry) - 1
+                total <- total + sview_len(entry) + 1
+            return true
+
+
+        public:
+            def validate_network_request(request: NetworkRequest&) -> bool error[NetworkContractError]:
+                raise NetworkContractError.InvalidMethod if not network_method_valid(request.method)
+                raise NetworkContractError.MissingUrl if request.url == ""
+                raise NetworkContractError.UrlLimitExceeded if not network_text_length_valid(request.url, NETWORK_MAX_URL_BYTES)
+                raise NetworkContractError.EmbeddedNul if sview_contains_byte(request.url, 0)
+                raise NetworkContractError.HeaderVectorMalformed if not network_headers_valid(request.headers)
+                raise NetworkContractError.BodyLimitExceeded if request.body.count > NETWORK_MAX_BODY_BYTES
+                raise NetworkContractError.InvalidTimeout if request.timeout_micros == 0
+                raise NetworkContractError.InvalidResponseLimit if request.max_response_bytes == 0 or request.max_response_bytes > NETWORK_MAX_BODY_BYTES
+                return true
+
+
+            def validate_network_response(response: NetworkResponse&) -> bool error[NetworkContractError]:
+                raise NetworkContractError.InvalidOutcome if not network_outcome_valid(response.outcome)
+                raise NetworkContractError.HeaderVectorMalformed if not network_headers_valid(response.headers)
+                raise NetworkContractError.BodyLimitExceeded if response.body.count > NETWORK_MAX_BODY_BYTES
+                raise NetworkContractError.ErrorTextInvalid if not network_text_valid(response.error_text, NETWORK_MAX_BODY_BYTES)
+                if response.outcome in {NetworkOutcome.Success, NetworkOutcome.StatusFailure}:
+                    raise NetworkContractError.InvalidStatus if response.status < 100 or response.status > 599
+                else:
+                    raise NetworkContractError.InvalidStatus if response.status != 0
+                return true

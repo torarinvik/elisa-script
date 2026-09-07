@@ -389,6 +389,14 @@ compiler-free IR fixture and record-model audit cover NUL/length/range admission
 stream readers, external sort, lifecycle hooks, and transactional in-place edits
 remain open.
 
+`EsNetwork::NetworkRequest` and `NetworkResponse` now define a bounded,
+transport-neutral HTTP/TLS contract with explicit methods, ordered headers,
+binary bodies, timeout/response ceilings, redirect policy, and distinct DNS,
+TLS, transport, timeout, protocol, status, decode, and cancellation outcomes.
+The IR fixture and network-model audit cover URL/header/body/status admission;
+socket/TLS implementations, retry/idempotency policy, streaming, and live
+service adapters remain open.
+
 ## Evidence record template
 
 Every future executed or differential-verified entry must append a dated record

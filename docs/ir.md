@@ -765,6 +765,17 @@ numbers, out-of-range field slices, and inconsistent field payloads through
 is allocated. This is a reusable contract; record I/O, external sort, and
 transactional in-place rewriting remain host adapters.
 
+`EsNetwork::NetworkRequest` and `NetworkResponse` define a transport-neutral
+HTTP/TLS boundary. Requests carry an explicit method, URL, ordered header pairs,
+binary body, positive timeout, response ceiling, and redirect policy; responses
+carry a closed outcome (`Success`, DNS/TLS/transport failure, timeout, protocol,
+status, decode, or cancellation), status, headers, body, and bounded error text.
+`validate_network_request` and `validate_network_response` reject malformed or
+duplicate headers, embedded NULs, oversized URL/header/body payloads, zero
+timeouts, invalid response ceilings, and status/outcome contradictions through
+`error[NetworkContractError]`. Retry policy, TLS roots, socket ownership, and
+streaming/cancellation adapters remain explicit host responsibilities.
+
 Before any regex opcode executes, both backends enforce a shared input-size
 boundary: haystack text is at most 64 MiB, the compiled-pattern payload is at
 most 64 KiB, and replacement text is at most 64 MiB. Oversized operands fail
