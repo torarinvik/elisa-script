@@ -9,6 +9,8 @@ module EsNetwork:
         const NETWORK_MAX_URL_BYTES: usize = 16384
         const NETWORK_MAX_HEADER_BYTES: usize = 1048576
         const NETWORK_MAX_BODY_BYTES: usize = 67108864
+        const NETWORK_MAX_RETRY_ATTEMPTS: usize = 8
+        const NETWORK_MAX_BACKOFF_MICROS: u64 = 60000000
 
 
         const enum NetworkMethod of u8:
@@ -32,6 +34,19 @@ module EsNetwork:
             Cancelled
 
 
+        const enum NetworkRetryMode of u8:
+            Never
+            IdempotentOnly
+            Explicit
+
+
+        struct NetworkRetryPolicy:
+            mode: NetworkRetryMode = NetworkRetryMode.Never
+            max_attempts: usize = 1
+            initial_backoff_micros: u64 = 0
+            max_backoff_micros: u64 = 0
+
+
         struct NetworkRequest:
             url: sview
             method: NetworkMethod = NetworkMethod.Get
@@ -40,6 +55,7 @@ module EsNetwork:
             timeout_micros: u64 = 0
             max_response_bytes: usize = NETWORK_MAX_BODY_BYTES
             follow_redirects: bool = false
+            retry: NetworkRetryPolicy = NetworkRetryPolicy{}
 
 
         struct NetworkResponse:
@@ -63,6 +79,10 @@ module EsNetwork:
             BodyLimitExceeded
             InvalidTimeout
             InvalidResponseLimit
+            InvalidRetryMode
+            InvalidRetryAttempts
+            InvalidRetryBackoff
+            NonIdempotentRetry
             InvalidStatus
             ErrorTextInvalid
 
@@ -74,6 +94,14 @@ module EsNetwork:
 
         def network_outcome_valid(outcome: NetworkOutcome) -> bool:
             return outcome in {NetworkOutcome.Success, NetworkOutcome.DnsFailure, NetworkOutcome.TlsFailure, NetworkOutcome.TransportFailure, NetworkOutcome.Timeout, NetworkOutcome.ProtocolFailure, NetworkOutcome.StatusFailure, NetworkOutcome.DecodeFailure, NetworkOutcome.Cancelled}
+
+
+        def network_retry_mode_valid(mode: NetworkRetryMode) -> bool:
+            return mode in {NetworkRetryMode.Never, NetworkRetryMode.IdempotentOnly, NetworkRetryMode.Explicit}
+
+
+        def network_method_is_idempotent(method: NetworkMethod) -> bool:
+            return method in {NetworkMethod.Get, NetworkMethod.Head, NetworkMethod.Put, NetworkMethod.Delete}
 
 
         def network_text_length_valid(value: sview, limit: usize) -> bool:
@@ -105,6 +133,22 @@ module EsNetwork:
 
 
         public:
+            def validate_network_retry_policy(policy: NetworkRetryPolicy&, method: NetworkMethod) -> bool error[NetworkContractError]:
+                raise NetworkContractError.InvalidRetryMode if not network_retry_mode_valid(policy.mode)
+                raise NetworkContractError.InvalidRetryAttempts if policy.max_attempts == 0 or policy.max_attempts > NETWORK_MAX_RETRY_ATTEMPTS
+                raise NetworkContractError.InvalidRetryBackoff if policy.initial_backoff_micros > NETWORK_MAX_BACKOFF_MICROS or policy.max_backoff_micros > NETWORK_MAX_BACKOFF_MICROS
+                raise NetworkContractError.InvalidRetryBackoff if policy.initial_backoff_micros > policy.max_backoff_micros
+                if policy.max_attempts == 1:
+                    raise NetworkContractError.InvalidRetryBackoff if policy.initial_backoff_micros != 0 or policy.max_backoff_micros != 0
+                else:
+                    raise NetworkContractError.InvalidRetryBackoff if policy.initial_backoff_micros == 0 or policy.max_backoff_micros == 0
+                if policy.mode == NetworkRetryMode.Never:
+                    raise NetworkContractError.InvalidRetryAttempts if policy.max_attempts != 1
+                elif policy.mode == NetworkRetryMode.IdempotentOnly:
+                    raise NetworkContractError.NonIdempotentRetry if not network_method_is_idempotent(method) and policy.max_attempts > 1
+                return true
+
+
             def validate_network_request(request: NetworkRequest&) -> bool error[NetworkContractError]:
                 raise NetworkContractError.InvalidMethod if not network_method_valid(request.method)
                 raise NetworkContractError.MissingUrl if request.url == ""
@@ -114,6 +158,7 @@ module EsNetwork:
                 raise NetworkContractError.BodyLimitExceeded if request.body.count > NETWORK_MAX_BODY_BYTES
                 raise NetworkContractError.InvalidTimeout if request.timeout_micros == 0
                 raise NetworkContractError.InvalidResponseLimit if request.max_response_bytes == 0 or request.max_response_bytes > NETWORK_MAX_BODY_BYTES
+                try validate_network_retry_policy(request.retry, request.method)
                 return true
 
 

@@ -773,8 +773,12 @@ status, decode, or cancellation), status, headers, body, and bounded error text.
 `validate_network_request` and `validate_network_response` reject malformed or
 duplicate headers, embedded NULs, oversized URL/header/body payloads, zero
 timeouts, invalid response ceilings, and status/outcome contradictions through
-`error[NetworkContractError]`. Retry policy, TLS roots, socket ownership, and
-streaming/cancellation adapters remain explicit host responsibilities.
+`error[NetworkContractError]`. `NetworkRetryPolicy` makes retry intent explicit:
+`Never` permits one attempt, `IdempotentOnly` permits bounded retries only for
+GET/HEAD/PUT/DELETE, and `Explicit` is required for mutation retries. Every
+multi-attempt policy carries nonzero bounded backoff ceilings; TLS roots, socket
+ownership, total deadlines, and streaming/cancellation adapters remain explicit
+host responsibilities.
 
 Before any regex opcode executes, both backends enforce a shared input-size
 boundary: haystack text is at most 64 MiB, the compiled-pattern payload is at

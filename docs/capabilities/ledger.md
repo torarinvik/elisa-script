@@ -393,9 +393,11 @@ remain open.
 transport-neutral HTTP/TLS contract with explicit methods, ordered headers,
 binary bodies, timeout/response ceilings, redirect policy, and distinct DNS,
 TLS, transport, timeout, protocol, status, decode, and cancellation outcomes.
-The IR fixture and network-model audit cover URL/header/body/status admission;
-socket/TLS implementations, retry/idempotency policy, streaming, and live
-service adapters remain open.
+`NetworkRetryPolicy` makes retries explicit and bounded: `Never` is one-shot,
+`IdempotentOnly` admits only GET/HEAD/PUT/DELETE, and mutation retries require
+`Explicit` mode plus nonzero backoff. The IR fixture and network-model audit
+cover URL/header/body/status/retry admission; socket/TLS implementations,
+streaming, and live service adapters remain open.
 
 ## Evidence record template
 
