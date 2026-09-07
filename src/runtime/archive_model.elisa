@@ -1,0 +1,262 @@
+# Bounded archive-entry admission and safe extraction planning.
+#
+# Tar/zip adapters must validate every entry through this model before touching
+# the destination filesystem. Paths are relative, normalized segments; links
+# are an explicit policy choice, never an implicit extraction capability.
+
+module EsArchive:
+    public:
+        const ARCHIVE_MAX_ENTRIES: usize = 1048576
+        const ARCHIVE_MAX_PATH_BYTES: usize = 4096
+        const ARCHIVE_MAX_ENTRY_BYTES: usize = 1073741824
+        const ARCHIVE_MAX_TOTAL_BYTES: usize = 1099511627776
+
+
+        const enum ArchiveKind of u8:
+            Tar
+            Zip
+
+
+        const enum ArchiveLinkPolicy of u8:
+            Reject
+            Preserve
+
+
+        const enum ArchiveOverwritePolicy of u8:
+            Fail
+            Replace
+
+
+        const enum ArchiveSessionState of u8:
+            Planned
+            Extracting
+            Committed
+            Failed
+            Cancelled
+
+
+        const enum ArchiveEvent of u8:
+            Begin
+            Commit
+            Fail
+            Cancel
+
+
+        const enum ArchiveEntryKind of u8:
+            File
+            Directory
+            Symlink
+            Hardlink
+
+
+        const enum ArchiveEntryState of u8:
+            Accepted
+            Skipped
+
+
+        struct ArchivePolicy:
+            kind: ArchiveKind = ArchiveKind.Tar
+            max_entries: usize = ARCHIVE_MAX_ENTRIES
+            max_path_bytes: usize = ARCHIVE_MAX_PATH_BYTES
+            max_entry_bytes: usize = ARCHIVE_MAX_ENTRY_BYTES
+            max_total_bytes: usize = ARCHIVE_MAX_TOTAL_BYTES
+            links: ArchiveLinkPolicy = ArchiveLinkPolicy.Reject
+            overwrite: ArchiveOverwritePolicy = ArchiveOverwritePolicy.Fail
+
+
+        struct ArchiveEntry:
+            entry_id: u64
+            path: sview
+            kind: ArchiveEntryKind
+            size: usize = 0
+            target: sview = ""
+            state: ArchiveEntryState = ArchiveEntryState.Accepted
+
+
+        struct ArchiveSession:
+            policy: ArchivePolicy
+            state: ArchiveSessionState = ArchiveSessionState.Planned
+            entries: darray[ArchiveEntry] = []
+            total_bytes: usize = 0
+            skipped_entries: usize = 0
+
+
+        error ArchiveError:
+            InvalidPolicy
+            InvalidKind
+            InvalidLinkPolicy
+            InvalidOverwritePolicy
+            InvalidState
+            InvalidEvent
+            InvalidEntryKind
+            InvalidEntryState
+            InvalidId
+            DuplicateEntryId
+            DuplicatePath
+            EntryLimitExceeded
+            PathLimitExceeded
+            EmptyPath
+            EmbeddedNul
+            AbsolutePath
+            TraversalPath
+            BackslashPath
+            EntryLimitBytesExceeded
+            TotalLimitBytesExceeded
+            LinkRejected
+            TargetInvalid
+            AccountingInvalid
+            InvalidTransition
+
+
+    private:
+        def archive_kind_valid(kind: ArchiveKind) -> bool:
+            return kind in {ArchiveKind.Tar, ArchiveKind.Zip}
+
+
+        def archive_link_policy_valid(policy: ArchiveLinkPolicy) -> bool:
+            return policy in {ArchiveLinkPolicy.Reject, ArchiveLinkPolicy.Preserve}
+
+
+        def archive_overwrite_policy_valid(policy: ArchiveOverwritePolicy) -> bool:
+            return policy in {ArchiveOverwritePolicy.Fail, ArchiveOverwritePolicy.Replace}
+
+
+        def archive_state_valid(state: ArchiveSessionState) -> bool:
+            return state in {ArchiveSessionState.Planned, ArchiveSessionState.Extracting, ArchiveSessionState.Committed, ArchiveSessionState.Failed, ArchiveSessionState.Cancelled}
+
+
+        def archive_event_valid(event: ArchiveEvent) -> bool:
+            return event in {ArchiveEvent.Begin, ArchiveEvent.Commit, ArchiveEvent.Fail, ArchiveEvent.Cancel}
+
+
+        def archive_entry_kind_valid(kind: ArchiveEntryKind) -> bool:
+            return kind in {ArchiveEntryKind.File, ArchiveEntryKind.Directory, ArchiveEntryKind.Symlink, ArchiveEntryKind.Hardlink}
+
+
+        def archive_entry_state_valid(state: ArchiveEntryState) -> bool:
+            return state in {ArchiveEntryState.Accepted, ArchiveEntryState.Skipped}
+
+
+        def archive_policy_valid(policy: ArchivePolicy) -> bool:
+            return archive_kind_valid(policy.kind) and policy.max_entries != 0 and policy.max_entries <= ARCHIVE_MAX_ENTRIES and policy.max_path_bytes != 0 and policy.max_path_bytes <= ARCHIVE_MAX_PATH_BYTES and policy.max_entry_bytes != 0 and policy.max_entry_bytes <= ARCHIVE_MAX_ENTRY_BYTES and policy.max_total_bytes != 0 and policy.max_total_bytes <= ARCHIVE_MAX_TOTAL_BYTES and archive_link_policy_valid(policy.links) and archive_overwrite_policy_valid(policy.overwrite)
+
+
+        def archive_segment_safe(segment: sview) -> bool:
+            return segment != "" and segment != "." and segment != ".."
+
+
+        const enum ArchivePathIssue of u8:
+            Safe
+            Empty
+            TooLong
+            EmbeddedNul
+            Absolute
+            Backslash
+            Traversal
+
+
+        def archive_path_issue(path: sview, policy: ArchivePolicy) -> ArchivePathIssue:
+            length: usize = sview_len(path)
+            return ArchivePathIssue.Empty if length == 0
+            return ArchivePathIssue.TooLong if length >= policy.max_path_bytes
+            return ArchivePathIssue.EmbeddedNul if sview_contains_byte(path, 0)
+            return ArchivePathIssue.Absolute if sview_at(path, 0) == 47 or sview_at(path, 0) == 92 or length > 1 and sview_at(path, 1) == 58
+            start: mutable usize = 0
+            while start < length:
+                cursor: mutable usize = start
+                while cursor < length and sview_at(path, cursor) != 47:
+                    return ArchivePathIssue.Backslash if sview_at(path, cursor) == 92
+                    cursor <- cursor + 1
+                return ArchivePathIssue.Traversal if not archive_segment_safe(path[start:cursor])
+                return ArchivePathIssue.Empty if cursor == length - 1 and sview_at(path, cursor) == 47
+                start <- cursor + 1
+            return ArchivePathIssue.Safe
+
+
+        def archive_relative_path_safe(path: sview, policy: ArchivePolicy) -> bool:
+            return archive_path_issue(path, policy) == ArchivePathIssue.Safe
+
+
+        def archive_entry_index(session: ArchiveSession&, entry_id: u64) -> usize:
+            for index in 0..<session.entries.count |session, entry_id|:
+                return index if session.entries[index].entry_id == entry_id
+            return session.entries.count
+
+
+    public:
+        def validate_archive_session(session: ArchiveSession&) -> bool error[ArchiveError]:
+            raise ArchiveError.InvalidPolicy if not archive_policy_valid(session.policy)
+            raise ArchiveError.InvalidState if not archive_state_valid(session.state)
+            raise ArchiveError.EntryLimitExceeded if session.entries.count > session.policy.max_entries
+            raise ArchiveError.TotalLimitBytesExceeded if session.total_bytes > session.policy.max_total_bytes
+            skipped: mutable usize = 0
+            accounted: mutable usize = 0
+            for index in 0..<session.entries.count |session|:
+                entry: ArchiveEntry = session.entries[index]
+                raise ArchiveError.InvalidId if entry.entry_id == 0
+                raise ArchiveError.InvalidEntryKind if not archive_entry_kind_valid(entry.kind)
+                raise ArchiveError.InvalidEntryState if not archive_entry_state_valid(entry.state)
+                path_issue: ArchivePathIssue = archive_path_issue(entry.path, session.policy)
+                raise ArchiveError.EmptyPath if path_issue == ArchivePathIssue.Empty
+                raise ArchiveError.PathLimitExceeded if path_issue == ArchivePathIssue.TooLong
+                raise ArchiveError.EmbeddedNul if path_issue == ArchivePathIssue.EmbeddedNul
+                raise ArchiveError.AbsolutePath if path_issue == ArchivePathIssue.Absolute
+                raise ArchiveError.BackslashPath if path_issue == ArchivePathIssue.Backslash
+                raise ArchiveError.TraversalPath if path_issue == ArchivePathIssue.Traversal
+                raise ArchiveError.EntryLimitBytesExceeded if entry.size > session.policy.max_entry_bytes
+                raise ArchiveError.TargetInvalid if (entry.kind == ArchiveEntryKind.Symlink or entry.kind == ArchiveEntryKind.Hardlink) and not archive_relative_path_safe(entry.target, session.policy)
+                raise ArchiveError.LinkRejected if (entry.kind == ArchiveEntryKind.Symlink or entry.kind == ArchiveEntryKind.Hardlink) and session.policy.links == ArchiveLinkPolicy.Reject
+                for earlier in 0..<index |session, entry|:
+                    raise ArchiveError.DuplicateEntryId if session.entries[earlier].entry_id == entry.entry_id
+                    raise ArchiveError.DuplicatePath if session.entries[earlier].path == entry.path and entry.state == ArchiveEntryState.Accepted
+                skipped <- skipped + 1 if entry.state == ArchiveEntryState.Skipped
+                accounted <- accounted + entry.size if entry.state == ArchiveEntryState.Accepted
+            raise ArchiveError.AccountingInvalid if skipped != session.skipped_entries or accounted != session.total_bytes
+            return true
+
+
+        def archive_admit_entry(session: mutable ArchiveSession&, entry: ArchiveEntry) -> bool error[ArchiveError]:
+            try validate_archive_session(session)
+            raise ArchiveError.InvalidTransition if session.state != ArchiveSessionState.Extracting
+            raise ArchiveError.EntryLimitExceeded if session.entries.count >= session.policy.max_entries
+            raise ArchiveError.InvalidId if entry.entry_id == 0
+            raise ArchiveError.InvalidEntryKind if not archive_entry_kind_valid(entry.kind)
+            raise ArchiveError.InvalidEntryState if not archive_entry_state_valid(entry.state)
+            raise ArchiveError.DuplicateEntryId if archive_entry_index(session, entry.entry_id) != session.entries.count
+            path_issue: ArchivePathIssue = archive_path_issue(entry.path, session.policy)
+            raise ArchiveError.EmptyPath if path_issue == ArchivePathIssue.Empty
+            raise ArchiveError.PathLimitExceeded if path_issue == ArchivePathIssue.TooLong
+            raise ArchiveError.EmbeddedNul if path_issue == ArchivePathIssue.EmbeddedNul
+            raise ArchiveError.AbsolutePath if path_issue == ArchivePathIssue.Absolute
+            raise ArchiveError.BackslashPath if path_issue == ArchivePathIssue.Backslash
+            raise ArchiveError.TraversalPath if path_issue == ArchivePathIssue.Traversal
+            raise ArchiveError.EntryLimitBytesExceeded if entry.size > session.policy.max_entry_bytes
+            raise ArchiveError.LinkRejected if (entry.kind == ArchiveEntryKind.Symlink or entry.kind == ArchiveEntryKind.Hardlink) and session.policy.links == ArchiveLinkPolicy.Reject
+            raise ArchiveError.TargetInvalid if (entry.kind == ArchiveEntryKind.Symlink or entry.kind == ArchiveEntryKind.Hardlink) and not archive_relative_path_safe(entry.target, session.policy)
+            for existing in session.entries:
+                raise ArchiveError.DuplicatePath if existing.path == entry.path and existing.state == ArchiveEntryState.Accepted
+            if entry.state == ArchiveEntryState.Skipped:
+                session.skipped_entries <- session.skipped_entries + 1
+            else:
+                raise ArchiveError.TotalLimitBytesExceeded if entry.size > session.policy.max_total_bytes - session.total_bytes
+                session.total_bytes <- session.total_bytes + entry.size
+            session.entries.push(entry)
+            return true
+
+
+        def advance_archive(session: mutable ArchiveSession&, event: ArchiveEvent) -> ArchiveSessionState error[ArchiveError]:
+            try validate_archive_session(session)
+            raise ArchiveError.InvalidEvent if not archive_event_valid(event)
+            if event == ArchiveEvent.Begin:
+                raise ArchiveError.InvalidTransition if session.state != ArchiveSessionState.Planned
+                session.state <- ArchiveSessionState.Extracting
+            elif event == ArchiveEvent.Commit:
+                raise ArchiveError.InvalidTransition if session.state != ArchiveSessionState.Extracting
+                session.state <- ArchiveSessionState.Committed
+            elif event == ArchiveEvent.Fail:
+                raise ArchiveError.InvalidTransition if session.state == ArchiveSessionState.Committed or session.state == ArchiveSessionState.Cancelled
+                session.state <- ArchiveSessionState.Failed
+            elif event == ArchiveEvent.Cancel:
+                raise ArchiveError.InvalidTransition if session.state != ArchiveSessionState.Extracting and session.state != ArchiveSessionState.Planned
+                session.state <- ArchiveSessionState.Cancelled
+            return session.state

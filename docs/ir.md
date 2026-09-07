@@ -301,6 +301,13 @@ step, frame push/pop, branch selection, termination, and failure are explicit
 state transitions; locations and names are bounded before publication, and a
 terminated session cannot resume through `error[DebuggerError]`.
 
+`EsArchive::ArchiveSession` is the admission boundary for tar/zip extraction.
+Relative path segments reject absolute paths, backslashes, empty/dot/traversal
+segments, embedded NULs, and overlong names before publication. Entry count,
+per-entry bytes, aggregate bytes, duplicate ids/paths, link policy, and
+planned/extracting/committed/failed/cancelled states are bounded through
+`error[ArchiveError]`; filesystem writes remain host-adapter work.
+
 EsHandle supplies the host-handle table that those adapters consume. Raw
 handle identity is distinct from the logical resource id and owner token;
 duplicate identities are rejected, ownership transfer requires a new owner,
