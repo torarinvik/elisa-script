@@ -40,6 +40,7 @@ for boundary in \
     'DepthLimitExceeded' \
     'RecordLimitExceeded' \
     'FieldLimitExceeded' \
+    'OffsetAccountingInvalid' \
     'InvalidCsvPolicy' \
     'UnexpectedEnd' \
     'Cancelled'; do

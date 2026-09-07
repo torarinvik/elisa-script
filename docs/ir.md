@@ -150,7 +150,8 @@ typed; host reads, writes, and atomic replacement remain outside the IR.
 bytes; `JsonPolicy` makes duplicate-key, trailing-comma, comment, and numeric
 behavior explicit; and `CsvPolicy` makes separators, quoting, escaping, headers,
 and trimming explicit. `DataDecoder` advances through `Ready → Decoding →
-Complete|Failed|Cancelled` with bounded token/record accounting, so JSON,
+Complete|Failed|Cancelled` with bounded token/record accounting and requires
+its byte offset to equal accounted input bytes, so JSON,
 JSONL, CSV, and TSV adapters share the same cancellation and limit semantics
 instead of inheriting host parser defaults. Schema conversion and streaming
 parser implementations remain separate work.
