@@ -1,0 +1,152 @@
+# Typed executable discovery contract for shell-free process invocation.
+#
+# The host adapter performs PATH lookup and permission/stat calls, then submits
+# bounded candidate observations. The typed process layer receives a selected
+# executable path or a distinct Missing result; a Path is never silently used
+# as an Executable.
+
+module EsExecutable:
+    public:
+        const EXECUTABLE_MAX_NAME_BYTES: usize = 4096
+        const EXECUTABLE_MAX_PATH_ENTRIES: usize = 4096
+        const EXECUTABLE_MAX_CANDIDATES: usize = 4096
+        const EXECUTABLE_MAX_PATH_BYTES: usize = 4096
+
+
+        const enum ExecutableDiscoveryState of u8:
+            Planned
+            Searching
+            Found
+            Missing
+            Failed
+            Cancelled
+
+
+        const enum ExecutableDiscoveryEvent of u8:
+            Begin
+            Candidate
+            Missing
+            Fail
+            Cancel
+
+
+        struct ExecutableDiscoveryPolicy:
+            max_path_entries: usize = EXECUTABLE_MAX_PATH_ENTRIES
+            max_candidates: usize = EXECUTABLE_MAX_CANDIDATES
+            allow_empty_path_entry: bool = false
+
+
+        struct ExecutableDiscoveryRequest:
+            name: sview
+            path_entries: darray[sview] = []
+            policy: ExecutableDiscoveryPolicy
+
+
+        struct ExecutableCandidate:
+            path: sview
+            path_index: usize
+            regular_file: bool = false
+            executable: bool = false
+
+
+        struct Executable:
+            path: sview
+            path_index: usize
+
+
+        struct ExecutableDiscoverySession:
+            request: ExecutableDiscoveryRequest
+            state: ExecutableDiscoveryState = ExecutableDiscoveryState.Planned
+            examined_candidates: usize = 0
+            selected: Executable = Executable{path: "", path_index: 0}
+
+
+        error ExecutableDiscoveryError:
+            InvalidState
+            InvalidEvent
+            InvalidPolicy
+            InvalidName
+            EmbeddedNul
+            PathLimitExceeded
+            CandidateLimitExceeded
+            CandidateOrderInvalid
+            CandidateInvalid
+            MissingNotReady
+            ResultNotReady
+            CancelNotReady
+
+
+    private:
+        def executable_discovery_state_valid(state: ExecutableDiscoveryState) -> bool:
+            return state in {ExecutableDiscoveryState.Planned, ExecutableDiscoveryState.Searching, ExecutableDiscoveryState.Found, ExecutableDiscoveryState.Missing, ExecutableDiscoveryState.Failed, ExecutableDiscoveryState.Cancelled}
+
+
+        def executable_discovery_event_valid(event: ExecutableDiscoveryEvent) -> bool:
+            return event in {ExecutableDiscoveryEvent.Begin, ExecutableDiscoveryEvent.Candidate, ExecutableDiscoveryEvent.Missing, ExecutableDiscoveryEvent.Fail, ExecutableDiscoveryEvent.Cancel}
+
+
+        def executable_discovery_policy_valid(policy: ExecutableDiscoveryPolicy) -> bool:
+            return policy.max_path_entries != 0 and policy.max_path_entries <= EXECUTABLE_MAX_PATH_ENTRIES and policy.max_candidates != 0 and policy.max_candidates <= EXECUTABLE_MAX_CANDIDATES
+
+
+        def executable_discovery_text_valid(value: sview, limit: usize, allow_empty: bool) -> bool:
+            return (allow_empty or value != "") and sview_len(value) < limit and not sview_contains_byte(value, 0)
+
+
+        def executable_discovery_request_valid(request: ExecutableDiscoveryRequest) -> bool error[ExecutableDiscoveryError]:
+            raise ExecutableDiscoveryError.InvalidPolicy if not executable_discovery_policy_valid(request.policy)
+            raise ExecutableDiscoveryError.InvalidName if not executable_discovery_text_valid(request.name, EXECUTABLE_MAX_NAME_BYTES, false)
+            raise ExecutableDiscoveryError.InvalidName if request.name == "." or request.name == ".."
+            raise ExecutableDiscoveryError.PathLimitExceeded if request.path_entries.count > request.policy.max_path_entries
+            for path in request.path_entries:
+                raise ExecutableDiscoveryError.EmbeddedNul if sview_contains_byte(path, 0)
+                raise ExecutableDiscoveryError.PathLimitExceeded if not executable_discovery_text_valid(path, EXECUTABLE_MAX_PATH_BYTES, request.policy.allow_empty_path_entry)
+            return true
+
+
+        def executable_candidate_valid(candidate: ExecutableCandidate) -> bool:
+            return executable_discovery_text_valid(candidate.path, EXECUTABLE_MAX_PATH_BYTES, false)
+
+
+    public:
+        def validate_executable_discovery(session: ExecutableDiscoverySession&) -> bool error[ExecutableDiscoveryError]:
+            raise ExecutableDiscoveryError.InvalidState if not executable_discovery_state_valid(session.state)
+            try executable_discovery_request_valid(session.request)
+            raise ExecutableDiscoveryError.CandidateLimitExceeded if session.examined_candidates > session.request.policy.max_candidates
+            raise ExecutableDiscoveryError.CandidateInvalid if session.state == ExecutableDiscoveryState.Found and session.selected.path == ""
+            raise ExecutableDiscoveryError.CandidateInvalid if session.state == ExecutableDiscoveryState.Missing and session.selected.path != ""
+            raise ExecutableDiscoveryError.CandidateInvalid if session.selected.path != "" and not executable_discovery_text_valid(session.selected.path, EXECUTABLE_MAX_PATH_BYTES, false)
+            return true
+
+
+        def executable_discovery_result(session: ExecutableDiscoverySession&) -> Executable error[ExecutableDiscoveryError]:
+            try validate_executable_discovery(session)
+            raise ExecutableDiscoveryError.ResultNotReady if session.state != ExecutableDiscoveryState.Found
+            return session.selected
+
+
+        def advance_executable_discovery(session: mutable ExecutableDiscoverySession&, event: ExecutableDiscoveryEvent, candidate: ExecutableCandidate = ExecutableCandidate{path: "", path_index: 0}) -> ExecutableDiscoveryState error[ExecutableDiscoveryError]:
+            try validate_executable_discovery(session)
+            raise ExecutableDiscoveryError.InvalidEvent if not executable_discovery_event_valid(event)
+            if event == ExecutableDiscoveryEvent.Begin:
+                raise ExecutableDiscoveryError.InvalidState if session.state != ExecutableDiscoveryState.Planned
+                session.state <- ExecutableDiscoveryState.Searching
+            elif event == ExecutableDiscoveryEvent.Candidate:
+                raise ExecutableDiscoveryError.InvalidState if session.state != ExecutableDiscoveryState.Searching
+                raise ExecutableDiscoveryError.CandidateLimitExceeded if session.examined_candidates >= session.request.policy.max_candidates
+                raise ExecutableDiscoveryError.CandidateOrderInvalid if candidate.path_index != session.examined_candidates
+                raise ExecutableDiscoveryError.CandidateInvalid if not executable_candidate_valid(candidate)
+                session.examined_candidates <- session.examined_candidates + 1
+                if candidate.regular_file and candidate.executable:
+                    session.selected <- Executable{path: candidate.path, path_index: candidate.path_index}
+                    session.state <- ExecutableDiscoveryState.Found
+            elif event == ExecutableDiscoveryEvent.Missing:
+                raise ExecutableDiscoveryError.MissingNotReady if session.state != ExecutableDiscoveryState.Searching or session.examined_candidates != session.request.path_entries.count
+                session.state <- ExecutableDiscoveryState.Missing
+            elif event == ExecutableDiscoveryEvent.Fail:
+                raise ExecutableDiscoveryError.InvalidState if session.state != ExecutableDiscoveryState.Searching
+                session.state <- ExecutableDiscoveryState.Failed
+            elif event == ExecutableDiscoveryEvent.Cancel:
+                raise ExecutableDiscoveryError.CancelNotReady if session.state != ExecutableDiscoveryState.Planned and session.state != ExecutableDiscoveryState.Searching
+                session.state <- ExecutableDiscoveryState.Cancelled
+            return session.state

@@ -406,6 +406,14 @@ The focused IR fixture, namespace inclusion, documentation, and
 check_task_transfer.sh audit are static evidence; scheduler integration,
 message transport, and runtime ownership tables remain open.
 
+ES-SCRIPT-041 | EsExecutable supplies a bounded shell-free executable-discovery
+contract. It keeps command names, PATH entries, candidate indices, regular-file
+and executable observations, selected executable identity, and exhausted Missing
+outcomes distinct under `error[ExecutableDiscoveryError]`. The focused IR
+fixture, namespace inclusion, documentation, and check_executable.sh audit are
+static evidence; PATH access, permission/stat calls, platform search rules, and
+process-launch integration remain open.
+
 `EsRecord::RecordStreamPolicy`, `Record`, and `RecordField` now define a bounded
 Perl/AWK-style record boundary: separator and field modes are explicit, fixed
 widths and schema names are validated, and source/filename/record-number/

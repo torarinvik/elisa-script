@@ -1600,6 +1600,15 @@ generations, mismatched owners, invalid leases, partial admission, and
 mid-commit cancellation are rejected through `error[TaskTransferError]`.
 Scheduler threads, event loops, and the actual message transport remain host
 integrations.
+
+`EsExecutable::ExecutableDiscoverySession` keeps shell-free command lookup
+typed. A bounded PATH-entry search submits candidate observations with stable
+indices; only a regular, executable candidate becomes an `Executable` result.
+The result is distinct from an arbitrary `Path`, while exhausted search emits
+`Missing`, and invalid candidate order, names, NULs, limits, cancellation, and
+premature missing results use `error[ExecutableDiscoveryError]`. PATH access,
+permission checks, and platform executable rules remain host adapter work.
+
 The argv terminator is cleared using `size_of(uintptr)`, matching the target
 pointer width rather than assuming an 8-byte slot.
 Before reserving argv pointers or owned argument strings, the interpreter
