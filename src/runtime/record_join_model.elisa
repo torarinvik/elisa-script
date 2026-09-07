@@ -1,0 +1,207 @@
+# Deterministic bounded keyed joins for record streams.
+#
+# Rows retain insertion order and side-local ordinals. Pair counting uses the
+# same nested-key semantics for an in-memory adapter or a future sorted/spill
+# adapter, including duplicate-key Cartesian matches and explicit outer rows.
+
+module EsRecordJoin:
+    public:
+        const RECORD_JOIN_MAX_ROWS: usize = 1048576
+        const RECORD_JOIN_MAX_PAIRS: usize = 16777216
+        const RECORD_JOIN_MAX_KEY_BYTES: usize = 268435456
+        const RECORD_JOIN_MAX_VALUE_BYTES: usize = 67108864
+
+
+        const enum RecordJoinState of u8:
+            Planned
+            Collecting
+            Sealed
+            Failed
+            Cancelled
+
+
+        const enum RecordJoinEvent of u8:
+            Begin
+            Add
+            Seal
+            Fail
+            Cancel
+
+
+        const enum RecordJoinSide of u8:
+            Left
+            Right
+
+
+        const enum RecordJoinKind of u8:
+            Inner
+            Left
+            Right
+            Full
+
+
+        struct RecordJoinPolicy:
+            kind: RecordJoinKind = RecordJoinKind.Inner
+            max_rows: usize = RECORD_JOIN_MAX_ROWS
+            max_pairs: usize = RECORD_JOIN_MAX_PAIRS
+            max_key_bytes: usize = RECORD_JOIN_MAX_KEY_BYTES
+            max_value_bytes: usize = RECORD_JOIN_MAX_VALUE_BYTES
+
+
+        struct RecordJoinRow:
+            side: RecordJoinSide
+            ordinal: usize
+            key: sview
+            value: sview
+
+
+        struct RecordJoinSession:
+            policy: RecordJoinPolicy
+            state: RecordJoinState = RecordJoinState.Planned
+            rows: darray[RecordJoinRow] = []
+            left_count: usize = 0
+            right_count: usize = 0
+            key_bytes: usize = 0
+            value_bytes: usize = 0
+
+
+        error RecordJoinError:
+            InvalidState
+            InvalidEvent
+            InvalidPolicy
+            InvalidSide
+            InvalidKind
+            InvalidOrdinal
+            EmptyKey
+            EmbeddedNul
+            KeyLimitExceeded
+            ValueLimitExceeded
+            RowLimitExceeded
+            PairLimitExceeded
+            AccountingInvalid
+            LookupNotReady
+            CancelNotReady
+
+
+    private:
+        def record_join_state_valid(state: RecordJoinState) -> bool:
+            return state in {RecordJoinState.Planned, RecordJoinState.Collecting, RecordJoinState.Sealed, RecordJoinState.Failed, RecordJoinState.Cancelled}
+
+
+        def record_join_event_valid(event: RecordJoinEvent) -> bool:
+            return event in {RecordJoinEvent.Begin, RecordJoinEvent.Add, RecordJoinEvent.Seal, RecordJoinEvent.Fail, RecordJoinEvent.Cancel}
+
+
+        def record_join_side_valid(side: RecordJoinSide) -> bool:
+            return side in {RecordJoinSide.Left, RecordJoinSide.Right}
+
+
+        def record_join_kind_valid(kind: RecordJoinKind) -> bool:
+            return kind in {RecordJoinKind.Inner, RecordJoinKind.Left, RecordJoinKind.Right, RecordJoinKind.Full}
+
+
+        def record_join_policy_valid(policy: RecordJoinPolicy) -> bool:
+            return record_join_kind_valid(policy.kind) and policy.max_rows != 0 and policy.max_rows <= RECORD_JOIN_MAX_ROWS and policy.max_pairs != 0 and policy.max_pairs <= RECORD_JOIN_MAX_PAIRS and policy.max_key_bytes != 0 and policy.max_key_bytes <= RECORD_JOIN_MAX_KEY_BYTES and policy.max_value_bytes != 0 and policy.max_value_bytes <= RECORD_JOIN_MAX_VALUE_BYTES
+
+
+        def record_join_text_valid(value: sview, limit: usize, allow_empty: bool) -> bool:
+            return (allow_empty or sview_len(value) != 0) and sview_len(value) < limit and not sview_contains_byte(value, 0)
+
+
+        def record_join_bounded_add(current: usize, delta: usize, limit: usize) -> bool:
+            return current <= limit and delta <= limit - current
+
+
+        def record_join_pair_add(current: mutable usize&, limit: usize) -> bool error[RecordJoinError]:
+            raise RecordJoinError.PairLimitExceeded if current >= limit
+            current <- current + 1
+            return true
+
+
+    public:
+        def validate_record_join(session: RecordJoinSession&) -> bool error[RecordJoinError]:
+            raise RecordJoinError.InvalidState if not record_join_state_valid(session.state)
+            raise RecordJoinError.InvalidPolicy if not record_join_policy_valid(session.policy)
+            raise RecordJoinError.RowLimitExceeded if session.rows.count > session.policy.max_rows
+            raise RecordJoinError.AccountingInvalid if session.left_count + session.right_count != session.rows.count
+            raise RecordJoinError.KeyLimitExceeded if session.key_bytes > session.policy.max_key_bytes
+            raise RecordJoinError.ValueLimitExceeded if session.value_bytes > session.policy.max_value_bytes
+            left_ordinal: mutable usize = 0
+            right_ordinal: mutable usize = 0
+            accounted_keys: mutable usize = 0
+            accounted_values: mutable usize = 0
+            for row in session.rows |session, left_ordinal, right_ordinal, accounted_keys, accounted_values|:
+                raise RecordJoinError.InvalidSide if not record_join_side_valid(row.side)
+                raise RecordJoinError.InvalidOrdinal if row.ordinal != left_ordinal and row.side == RecordJoinSide.Left
+                raise RecordJoinError.InvalidOrdinal if row.ordinal != right_ordinal and row.side == RecordJoinSide.Right
+                raise RecordJoinError.EmptyKey if not record_join_text_valid(row.key, session.policy.max_key_bytes, false)
+                raise RecordJoinError.EmbeddedNul if sview_contains_byte(row.value, 0)
+                raise RecordJoinError.ValueLimitExceeded if not record_join_text_valid(row.value, session.policy.max_value_bytes, true)
+                raise RecordJoinError.KeyLimitExceeded if not record_join_bounded_add(accounted_keys, sview_len(row.key), session.policy.max_key_bytes)
+                raise RecordJoinError.ValueLimitExceeded if not record_join_bounded_add(accounted_values, sview_len(row.value), session.policy.max_value_bytes)
+                accounted_keys <- accounted_keys + sview_len(row.key)
+                accounted_values <- accounted_values + sview_len(row.value)
+                left_ordinal <- left_ordinal + 1 if row.side == RecordJoinSide.Left
+                right_ordinal <- right_ordinal + 1 if row.side == RecordJoinSide.Right
+            raise RecordJoinError.AccountingInvalid if left_ordinal != session.left_count or right_ordinal != session.right_count or accounted_keys != session.key_bytes or accounted_values != session.value_bytes
+            return true
+
+
+        def record_join_pair_count(session: RecordJoinSession&) -> usize error[RecordJoinError]:
+            try validate_record_join(session)
+            raise RecordJoinError.LookupNotReady if session.state != RecordJoinState.Sealed
+            pairs: mutable usize = 0
+            for left_index in 0..<session.rows.count |session, pairs|:
+                left: RecordJoinRow = session.rows[left_index]
+                if left.side == RecordJoinSide.Left:
+                    matches: mutable usize = 0
+                    for right_index in 0..<session.rows.count |session, left, matches, pairs|:
+                        right: RecordJoinRow = session.rows[right_index]
+                        if right.side == RecordJoinSide.Right and right.key == left.key:
+                            matches <- matches + 1
+                            try record_join_pair_add(pairs, session.policy.max_pairs)
+                    if matches == 0 and (session.policy.kind == RecordJoinKind.Left or session.policy.kind == RecordJoinKind.Full):
+                        try record_join_pair_add(pairs, session.policy.max_pairs)
+            for right_index in 0..<session.rows.count |session, pairs|:
+                right: RecordJoinRow = session.rows[right_index]
+                if right.side == RecordJoinSide.Right:
+                    matches: mutable usize = 0
+                    for left_index in 0..<session.rows.count |session, right, matches, pairs|:
+                        left: RecordJoinRow = session.rows[left_index]
+                        if left.side == RecordJoinSide.Left and left.key == right.key:
+                            matches <- matches + 1
+                    if matches == 0 and (session.policy.kind == RecordJoinKind.Right or session.policy.kind == RecordJoinKind.Full):
+                        try record_join_pair_add(pairs, session.policy.max_pairs)
+            return pairs
+
+
+        def advance_record_join(session: mutable RecordJoinSession&, event: RecordJoinEvent, side: RecordJoinSide = RecordJoinSide.Left, key: sview = "", value: sview = "") -> RecordJoinState error[RecordJoinError]:
+            try validate_record_join(session)
+            raise RecordJoinError.InvalidEvent if not record_join_event_valid(event)
+            if event == RecordJoinEvent.Begin:
+                raise RecordJoinError.InvalidState if session.state != RecordJoinState.Planned
+                session.state <- RecordJoinState.Collecting
+            elif event == RecordJoinEvent.Add:
+                raise RecordJoinError.InvalidState if session.state != RecordJoinState.Collecting
+                raise RecordJoinError.RowLimitExceeded if session.rows.count >= session.policy.max_rows
+                raise RecordJoinError.InvalidSide if not record_join_side_valid(side)
+                raise RecordJoinError.EmptyKey if not record_join_text_valid(key, session.policy.max_key_bytes, false)
+                raise RecordJoinError.ValueLimitExceeded if not record_join_text_valid(value, session.policy.max_value_bytes, true)
+                raise RecordJoinError.KeyLimitExceeded if not record_join_bounded_add(session.key_bytes, sview_len(key), session.policy.max_key_bytes)
+                raise RecordJoinError.ValueLimitExceeded if not record_join_bounded_add(session.value_bytes, sview_len(value), session.policy.max_value_bytes)
+                ordinal: usize = session.left_count if side == RecordJoinSide.Left else session.right_count
+                session.rows.push(RecordJoinRow{side: side, ordinal: ordinal, key: key, value: value})
+                session.left_count <- session.left_count + 1 if side == RecordJoinSide.Left else session.left_count
+                session.right_count <- session.right_count + 1 if side == RecordJoinSide.Right else session.right_count
+                session.key_bytes <- session.key_bytes + sview_len(key)
+                session.value_bytes <- session.value_bytes + sview_len(value)
+            elif event == RecordJoinEvent.Seal:
+                raise RecordJoinError.InvalidState if session.state != RecordJoinState.Collecting
+                session.state <- RecordJoinState.Sealed
+            elif event == RecordJoinEvent.Fail:
+                raise RecordJoinError.InvalidState if session.state != RecordJoinState.Collecting
+                session.state <- RecordJoinState.Failed
+            elif event == RecordJoinEvent.Cancel:
+                raise RecordJoinError.CancelNotReady if session.state != RecordJoinState.Planned and session.state != RecordJoinState.Collecting
+                session.state <- RecordJoinState.Cancelled
+            return session.state

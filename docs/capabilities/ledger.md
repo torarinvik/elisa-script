@@ -630,6 +630,17 @@ eviction, accounting, event, and sum transitions return
 documentation, and check_record_window.sh audit are static evidence; keyed
 windows, signed/decimal values, and host execution remain open.
 
+ES-SCRIPT-032 | EsRecordJoin supplies a deterministic bounded keyed-join
+contract. Left/right rows retain side-local ordinals and borrowed key/value
+views; row/key/value byte ceilings are checked before mutation; inner, left,
+right, and full outer policies are explicit; duplicate keys produce bounded
+Cartesian pair counts and unmatched outer rows contribute one pair each. The
+sealed pair-count query and all invalid lifecycle, key, ordinal, accounting,
+and pair-limit paths use `error[RecordJoinError]`. The focused IR fixture,
+namespace inclusion, documentation, and check_record_join.sh audit are static
+evidence; pair materialization, spill/merge adapters, and host execution remain
+open.
+
 ES-SCRIPT-029 | EsRecordControl supplies explicit bounded `next`/`nextfile`/
 exit transitions for pattern-action adapters. It closes record/file ownership
 on skips, rejects record events outside files and premature file closure, caps

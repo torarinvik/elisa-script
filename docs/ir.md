@@ -1000,6 +1000,16 @@ window accounting drift, and event/sum overflow return
 `error[RecordWindowError]`. Keyed windows and signed/decimal numeric policies
 remain explicit extensions rather than implicit conversions.
 
+`EsRecordJoin::RecordJoinSession` is the deterministic keyed-join boundary.
+Rows carry a side-local ordinal plus borrowed key/value views; admission caps
+row, key, and value bytes before mutation. `Inner`, `Left`, `Right`, and `Full`
+policies are explicit. After `Seal`, `record_join_pair_count` counts duplicate
+key Cartesian matches in insertion order and adds one pair for each unmatched
+outer row where requested, all under a pair ceiling. Empty/NUL keys, broken
+ordinals, accounting drift, and post-terminal mutation return
+`error[RecordJoinError]`; materializing the paired rows and external sort/merge
+remain host responsibilities.
+
 `EsRecordControl::RecordControlSession` makes AWK-style control keywords
 explicit: `NextRecord` closes the current record and advances to the next one,
 `NextFile` closes both record and file scopes, and `Exit` terminates cleanly from
