@@ -1,0 +1,222 @@
+# Bounded optional metrics and tracing for one Elisascript run.
+#
+# The ledger stores caller-owned names and numeric payload sizes only. Sampling
+# and explicit event ceilings keep observability overhead bounded; Disabled
+# mode rejects recording rather than allocating a hidden trace buffer.
+
+module EsTelemetry:
+    public:
+        const TELEMETRY_MAX_METRICS: usize = 4096
+        const TELEMETRY_MAX_EVENTS: usize = 1048576
+        const TELEMETRY_MAX_NAME_BYTES: usize = 256
+        const TELEMETRY_MAX_PAYLOAD_BYTES: usize = 1048576
+        const TELEMETRY_MAX_SPANS: usize = 4096
+
+
+        const enum TelemetryMode of u8:
+            Disabled
+            CountersOnly
+            Events
+
+
+        const enum TelemetryState of u8:
+            Ready
+            Running
+            Sealed
+            Failed
+
+
+        const enum TelemetryEventKind of u8:
+            RunBegin
+            RunEnd
+            Metric
+            SpanBegin
+            SpanEnd
+            Error
+            Cancellation
+
+
+        const enum TelemetryEvent of u8:
+            BeginRun
+            EndRun
+            Seal
+            Fail
+
+
+        const enum TelemetryRecordOutcome of u8:
+            Recorded
+            Sampled
+
+
+        struct TelemetryPolicy:
+            mode: TelemetryMode = TelemetryMode.Disabled
+            max_metrics: usize = TELEMETRY_MAX_METRICS
+            max_events: usize = TELEMETRY_MAX_EVENTS
+            max_name_bytes: usize = TELEMETRY_MAX_NAME_BYTES
+            max_payload_bytes: usize = TELEMETRY_MAX_PAYLOAD_BYTES
+            max_spans: usize = TELEMETRY_MAX_SPANS
+            sample_every: u64 = 1
+
+
+        struct TelemetryMetric:
+            metric_id: u64
+            name: sview
+            value: u64 = 0
+            samples: usize = 0
+
+
+        struct TelemetryTraceEvent:
+            sequence: u64
+            trace_id: u64
+            parent_id: u64 = 0
+            kind: TelemetryEventKind
+            name: sview
+            tick: u64 = 0
+            payload_bytes: usize = 0
+
+
+        struct TelemetryLedger:
+            policy: TelemetryPolicy
+            state: TelemetryState = TelemetryState.Ready
+            metrics: darray[TelemetryMetric] = []
+            events: darray[TelemetryTraceEvent] = []
+            next_sequence: u64 = 1
+            active_spans: usize = 0
+            sampled_events: usize = 0
+
+
+        error TelemetryError:
+            InvalidPolicy
+            InvalidMode
+            InvalidState
+            InvalidEvent
+            InvalidKind
+            InvalidId
+            DuplicateMetric
+            MetricIndexInvalid
+            MetricLimitExceeded
+            EventLimitExceeded
+            SpanLimitExceeded
+            SpanAccountingInvalid
+            NameLimitExceeded
+            PayloadLimitExceeded
+            SamplingInvalid
+            TelemetryDisabled
+            SequenceExhausted
+            InvalidTransition
+
+
+    private:
+        def telemetry_mode_valid(mode: TelemetryMode) -> bool:
+            return mode in {TelemetryMode.Disabled, TelemetryMode.CountersOnly, TelemetryMode.Events}
+
+
+        def telemetry_state_valid(state: TelemetryState) -> bool:
+            return state in {TelemetryState.Ready, TelemetryState.Running, TelemetryState.Sealed, TelemetryState.Failed}
+
+
+        def telemetry_kind_valid(kind: TelemetryEventKind) -> bool:
+            return kind in {TelemetryEventKind.RunBegin, TelemetryEventKind.RunEnd, TelemetryEventKind.Metric, TelemetryEventKind.SpanBegin, TelemetryEventKind.SpanEnd, TelemetryEventKind.Error, TelemetryEventKind.Cancellation}
+
+
+        def telemetry_event_valid(event: TelemetryEvent) -> bool:
+            return event in {TelemetryEvent.BeginRun, TelemetryEvent.EndRun, TelemetryEvent.Seal, TelemetryEvent.Fail}
+
+
+        def telemetry_policy_valid(policy: TelemetryPolicy) -> bool:
+            return telemetry_mode_valid(policy.mode) and policy.max_metrics != 0 and policy.max_metrics <= TELEMETRY_MAX_METRICS and policy.max_events != 0 and policy.max_events <= TELEMETRY_MAX_EVENTS and policy.max_name_bytes != 0 and policy.max_name_bytes <= TELEMETRY_MAX_NAME_BYTES and policy.max_payload_bytes <= TELEMETRY_MAX_PAYLOAD_BYTES and policy.max_spans != 0 and policy.max_spans <= TELEMETRY_MAX_SPANS and policy.sample_every != 0
+
+
+        def telemetry_name_valid(name: sview, policy: TelemetryPolicy) -> bool:
+            return name != "" and sview_len(name) < policy.max_name_bytes and not sview_contains_byte(name, 0)
+
+
+        def telemetry_metric_index(ledger: TelemetryLedger&, metric_id: u64) -> usize:
+            for index in 0..<ledger.metrics.count |ledger, metric_id|:
+                return index if ledger.metrics[index].metric_id == metric_id
+            return ledger.metrics.count
+
+
+    public:
+        def validate_telemetry_ledger(ledger: TelemetryLedger&) -> bool error[TelemetryError]:
+            raise TelemetryError.InvalidPolicy if not telemetry_policy_valid(ledger.policy)
+            raise TelemetryError.InvalidState if not telemetry_state_valid(ledger.state)
+            raise TelemetryError.MetricLimitExceeded if ledger.metrics.count > ledger.policy.max_metrics
+            raise TelemetryError.EventLimitExceeded if ledger.events.count > ledger.policy.max_events
+            raise TelemetryError.SpanAccountingInvalid if ledger.active_spans > ledger.policy.max_spans
+            raise TelemetryError.InvalidId if ledger.next_sequence == 0
+            for index in 0..<ledger.metrics.count |ledger|:
+                metric: TelemetryMetric = ledger.metrics[index]
+                raise TelemetryError.InvalidId if metric.metric_id == 0
+                raise TelemetryError.NameLimitExceeded if not telemetry_name_valid(metric.name, ledger.policy)
+                for earlier in 0..<index |ledger, metric|:
+                    raise TelemetryError.DuplicateMetric if ledger.metrics[earlier].metric_id == metric.metric_id
+            for index in 0..<ledger.events.count |ledger|:
+                event: TelemetryTraceEvent = ledger.events[index]
+                raise TelemetryError.InvalidId if event.sequence == 0 or event.trace_id == 0
+                raise TelemetryError.InvalidKind if not telemetry_kind_valid(event.kind)
+                raise TelemetryError.NameLimitExceeded if not telemetry_name_valid(event.name, ledger.policy)
+                raise TelemetryError.PayloadLimitExceeded if event.payload_bytes > ledger.policy.max_payload_bytes
+                raise TelemetryError.SequenceExhausted if index != 0 and event.sequence <= ledger.events[index - 1].sequence
+            return true
+
+
+        def advance_telemetry(ledger: mutable TelemetryLedger&, event: TelemetryEvent) -> TelemetryState error[TelemetryError]:
+            try validate_telemetry_ledger(ledger)
+            raise TelemetryError.InvalidEvent if not telemetry_event_valid(event)
+            if event == TelemetryEvent.BeginRun:
+                raise TelemetryError.InvalidTransition if ledger.state != TelemetryState.Ready
+                ledger.state <- TelemetryState.Running
+            elif event == TelemetryEvent.EndRun:
+                raise TelemetryError.InvalidTransition if ledger.state != TelemetryState.Running
+                raise TelemetryError.SpanAccountingInvalid if ledger.active_spans != 0
+                ledger.state <- TelemetryState.Sealed
+            elif event == TelemetryEvent.Seal:
+                raise TelemetryError.InvalidTransition if ledger.state != TelemetryState.Running
+                raise TelemetryError.SpanAccountingInvalid if ledger.active_spans != 0
+                ledger.state <- TelemetryState.Sealed
+            elif event == TelemetryEvent.Fail:
+                raise TelemetryError.InvalidTransition if ledger.state == TelemetryState.Sealed
+                ledger.state <- TelemetryState.Failed
+            return ledger.state
+
+
+        def telemetry_record_metric(ledger: mutable TelemetryLedger&, metric_id: u64, name: sview, amount: u64) -> bool error[TelemetryError]:
+            try validate_telemetry_ledger(ledger)
+            raise TelemetryError.TelemetryDisabled if ledger.policy.mode == TelemetryMode.Disabled
+            raise TelemetryError.InvalidState if ledger.state != TelemetryState.Running
+            raise TelemetryError.InvalidId if metric_id == 0
+            raise TelemetryError.NameLimitExceeded if not telemetry_name_valid(name, ledger.policy)
+            index: usize = telemetry_metric_index(ledger, metric_id)
+            if index == ledger.metrics.count:
+                raise TelemetryError.MetricLimitExceeded if ledger.metrics.count >= ledger.policy.max_metrics
+                ledger.metrics.push(TelemetryMetric{metric_id: metric_id, name: name, value: amount, samples: 1})
+                return true
+            raise TelemetryError.NameLimitExceeded if ledger.metrics[index].name != name
+            raise TelemetryError.InvalidId if amount > 18446744073709551615u64 - ledger.metrics[index].value
+            ledger.metrics[index].value <- ledger.metrics[index].value + amount
+            ledger.metrics[index].samples <- ledger.metrics[index].samples + 1
+            return true
+
+
+        def telemetry_append_event(ledger: mutable TelemetryLedger&, trace_id: u64, parent_id: u64, kind: TelemetryEventKind, name: sview, tick: u64, payload_bytes: usize) -> TelemetryRecordOutcome error[TelemetryError]:
+            try validate_telemetry_ledger(ledger)
+            raise TelemetryError.TelemetryDisabled if ledger.policy.mode != TelemetryMode.Events
+            raise TelemetryError.InvalidState if ledger.state != TelemetryState.Running
+            raise TelemetryError.InvalidId if trace_id == 0
+            raise TelemetryError.InvalidKind if not telemetry_kind_valid(kind)
+            raise TelemetryError.NameLimitExceeded if not telemetry_name_valid(name, ledger.policy)
+            raise TelemetryError.PayloadLimitExceeded if payload_bytes > ledger.policy.max_payload_bytes
+            raise TelemetryError.SpanLimitExceeded if kind == TelemetryEventKind.SpanBegin and ledger.active_spans >= ledger.policy.max_spans
+            raise TelemetryError.SpanAccountingInvalid if kind == TelemetryEventKind.SpanEnd and ledger.active_spans == 0
+            raise TelemetryError.EventLimitExceeded if ledger.events.count >= ledger.policy.max_events
+            raise TelemetryError.SequenceExhausted if ledger.next_sequence == 18446744073709551615u64
+            sequence: u64 = ledger.next_sequence
+            ledger.next_sequence <- ledger.next_sequence + 1
+            ledger.active_spans <- ledger.active_spans + 1 if kind == TelemetryEventKind.SpanBegin
+            ledger.active_spans <- ledger.active_spans - 1 if kind == TelemetryEventKind.SpanEnd
+            if sequence % ledger.policy.sample_every != 0:
+                ledger.sampled_events <- ledger.sampled_events + 1
+                return TelemetryRecordOutcome.Sampled
+            ledger.events.push(TelemetryTraceEvent{sequence: sequence, trace_id: trace_id, parent_id: parent_id, kind: kind, name: name, tick: tick, payload_bytes: payload_bytes})
+            return TelemetryRecordOutcome.Recorded

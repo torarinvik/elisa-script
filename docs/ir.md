@@ -267,6 +267,13 @@ VM checkpoint propagates cancellation; polling before a blocking host wait
 raises `HostBlockDenied`, while acknowledgement is admitted only after a
 cleanup or completed-block checkpoint through `error[CancellationError]`.
 
+`EsTelemetry::TelemetryLedger` provides optional bounded observability. Disabled
+mode rejects recording; counter mode stores fixed metric identities, while
+event mode admits sampled run/error/cancellation/span events with bounded names,
+payload sizes, event count, span depth, and monotonic sequence numbers. Span
+begin/end accounting remains active even for sampled-out events, and a run may
+seal only after all spans close through `error[TelemetryError]`.
+
 EsHandle supplies the host-handle table that those adapters consume. Raw
 handle identity is distinct from the logical resource id and owner token;
 duplicate identities are rejected, ownership transfer requires a new owner,
