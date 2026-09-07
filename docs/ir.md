@@ -346,7 +346,12 @@ it.
 
 `EsRuntime::FileStream` is the first typed large-file vertical slice. A handle
 is opened with an explicit read/text/binary/write/append mode and a byte budget
-bounded by the shared runtime memory ceiling. `file_stream_read_chunk` and
+bounded by the shared runtime memory ceiling. Its encoding policy is explicit:
+`Auto` selects strict UTF-8 for text modes and byte-preserving reads/writes for
+binary modes, `Utf8` validates incrementally across chunk boundaries, and
+`Bytes` preserves arbitrary byte sequences. Invalid UTF-8 is a typed error at
+the stream boundary, including an incomplete sequence at EOF or sync.
+`file_stream_read_chunk` and
 `file_stream_write_chunk` admit each request with subtraction-before-addition,
 return typed progress records, and reject closed handles, wrong directions,
 and budget overflow. A write state machine retries positive short `fwrite`

@@ -11,6 +11,8 @@ error FileStreamError:
     ReadFailed(path: cstr)
     WriteFailed(path: cstr)
     FlushFailed(path: cstr)
+    InvalidEncoding(path: cstr)
+    InvalidUtf8(path: cstr)
     SyncFailed(path: cstr)
     CloseFailed(path: cstr)
     SeekFailed(path: cstr)
@@ -49,6 +51,12 @@ extend EsRuntime:
             Lf
             Universal
             Retain
+
+
+        const enum FileStreamEncoding of u8:
+            Auto
+            Bytes
+            Utf8
 
 
         const enum FileStreamSeekOrigin of u8:
@@ -92,12 +100,16 @@ extend EsRuntime:
             handle: mutable heap void&?
             path: cstr
             mode: FileStreamMode
+            encoding: FileStreamEncoding = FileStreamEncoding.Bytes
             state: FileStreamState
             byte_budget: usize
             bytes_read: usize = 0
             bytes_written: usize = 0
             pending_byte: u8 = 0
             pending_valid: bool = false
+            utf8_remaining: u8 = 0
+            utf8_lower: u8 = 128
+            utf8_upper: u8 = 191
 
 
         const enum FileStreamCleanupState of u8:
@@ -157,6 +169,7 @@ extend EsRuntime:
             End
             Limit
             LineTooLong
+            EncodingError
             Error
 
 
@@ -164,7 +177,68 @@ extend EsRuntime:
             Byte
             End
             Limit
+            EncodingError
             Error
+
+
+        def file_stream_mode_is_text(mode: FileStreamMode) -> bool:
+            return mode == FileStreamMode.ReadText or mode == FileStreamMode.WriteText or mode == FileStreamMode.AppendText
+
+
+        def file_stream_encoding_valid(mode: FileStreamMode, encoding: FileStreamEncoding) -> bool:
+            return encoding == FileStreamEncoding.Auto or encoding == FileStreamEncoding.Bytes or (encoding == FileStreamEncoding.Utf8 and file_stream_mode_is_text(mode))
+
+
+        def file_stream_utf8_feed(byte: u8, remaining: mutable u8&, lower: mutable u8&, upper: mutable u8&) -> bool:
+            if remaining == 0:
+                return true if byte <= 127
+                if byte >= 194 and byte <= 223:
+                    remaining <- 1
+                    lower <- 128
+                    upper <- 191
+                    return true
+                if byte == 224:
+                    remaining <- 2
+                    lower <- 160
+                    upper <- 191
+                    return true
+                if byte >= 225 and byte <= 236 or byte >= 238 and byte <= 239:
+                    remaining <- 2
+                    lower <- 128
+                    upper <- 191
+                    return true
+                if byte == 237:
+                    remaining <- 2
+                    lower <- 128
+                    upper <- 159
+                    return true
+                if byte == 240:
+                    remaining <- 3
+                    lower <- 144
+                    upper <- 191
+                    return true
+                if byte >= 241 and byte <= 243:
+                    remaining <- 3
+                    lower <- 128
+                    upper <- 191
+                    return true
+                if byte == 244:
+                    remaining <- 3
+                    lower <- 128
+                    upper <- 143
+                    return true
+                return false
+            return false if byte < lower or byte > upper
+            remaining <- remaining - 1
+            lower <- 128
+            upper <- 191
+            return true
+
+
+        def file_stream_utf8_validate(buffer: u8&, count: usize, remaining: mutable u8&, lower: mutable u8&, upper: mutable u8&) -> bool:
+            for index in 0..<count |buffer, remaining, lower, upper|:
+                return false if not file_stream_utf8_feed(buffer[index], remaining, lower, upper)
+            return true
 
 
         def file_stream_read_byte(stream: mutable FileStream&, byte: mutable u8&) -> FileStreamByteState can[Blocking.IO]:
@@ -176,8 +250,10 @@ extend EsRuntime:
             handle: mutable heap void& = stream.handle
             amount: usize = fread((&byte).cast[mutable void&], 1, 1, handle)
             return FileStreamByteState.Error if amount > 1 or amount == 0 and ferror(handle) != 0
+            return FileStreamByteState.EncodingError if amount == 0 and stream.encoding == FileStreamEncoding.Utf8 and stream.utf8_remaining != 0
             return FileStreamByteState.End if amount == 0
             stream.bytes_read <- stream.bytes_read + 1
+            return FileStreamByteState.EncodingError if stream.encoding == FileStreamEncoding.Utf8 and not file_stream_utf8_feed(byte, stream.utf8_remaining, stream.utf8_lower, stream.utf8_upper)
             return FileStreamByteState.Byte
 
 
@@ -190,6 +266,7 @@ extend EsRuntime:
         def file_stream_record_next(stream: mutable FileStream&, line: mutable darray[u8]&, max_line_bytes: usize, mode: FileStreamLineMode, byte: mutable u8&) -> FileStreamRecordState can[Blocking.IO, Memory.Allocate, Abort.Panic]:
             state: FileStreamByteState = file_stream_read_byte(stream, byte)
             return FileStreamRecordState.Limit if state == FileStreamByteState.Limit
+            return FileStreamRecordState.EncodingError if state == FileStreamByteState.EncodingError
             return FileStreamRecordState.Error if state == FileStreamByteState.Error
             return FileStreamRecordState.End if state == FileStreamByteState.End and line.count == 0
             return FileStreamRecordState.Done if state == FileStreamByteState.End
@@ -210,6 +287,8 @@ extend EsRuntime:
                 return FileStreamRecordState.Done
             lookahead: mutable u8 = 0
             next_state: FileStreamByteState = file_stream_read_byte(stream, lookahead)
+            if next_state == FileStreamByteState.EncodingError:
+                return FileStreamRecordState.EncodingError
             if next_state == FileStreamByteState.Error:
                 return FileStreamRecordState.Error
             if next_state == FileStreamByteState.Byte and lookahead != 10:
@@ -237,9 +316,11 @@ extend EsRuntime:
 
 
     public:
-        def file_stream_open(path: cstr, mode: FileStreamMode, byte_budget: usize = FILE_STREAM_DEFAULT_MAX_BYTES) -> FileStream error[FileStreamError] can[Blocking.IO, Memory.Allocate, Memory.Release]:
+        def file_stream_open(path: cstr, mode: FileStreamMode, byte_budget: usize = FILE_STREAM_DEFAULT_MAX_BYTES, encoding: FileStreamEncoding = FileStreamEncoding.Auto) -> FileStream error[FileStreamError] can[Blocking.IO, Memory.Allocate, Memory.Release]:
             raise FileStreamError.PathTooLong(path) if not file_stream_path_terminated(path)
             raise FileStreamError.LimitExceeded(path) if byte_budget == 0 or byte_budget > FILE_STREAM_DEFAULT_MAX_BYTES
+            raise FileStreamError.InvalidEncoding(path) if not file_stream_encoding_valid(mode, encoding)
+            resolved_encoding: FileStreamEncoding = FileStreamEncoding.Utf8 if encoding == FileStreamEncoding.Auto and file_stream_mode_is_text(mode) else FileStreamEncoding.Bytes if encoding == FileStreamEncoding.Auto else encoding
             mode_bytes: u8& = "rb"
             if mode == FileStreamMode.ReadText:
                 mode_bytes <- "r"
@@ -255,7 +336,7 @@ extend EsRuntime:
                 raise FileStreamError.OpenFailed(path)
             opened: mutable heap void&? = fopen(path.cast[u8&], mode_bytes)
             raise FileStreamError.OpenFailed(path) if opened == null
-            return FileStream{handle: opened, path: path, mode: mode, state: FileStreamState.Open, byte_budget: byte_budget}
+            return FileStream{handle: opened, path: path, mode: mode, encoding: resolved_encoding, state: FileStreamState.Open, byte_budget: byte_budget}
 
 
         def file_stream_read_chunk(stream: mutable FileStream&, buffer: mutable u8&, capacity: usize) -> FileStreamRead error[FileStreamError] can[Blocking.IO]:
@@ -281,6 +362,9 @@ extend EsRuntime:
             raise FileStreamError.ReadFailed(stream.path) if read_count > remaining or read_count == 0 and ferror(handle) != 0
             raise FileStreamError.LimitExceeded(stream.path) if read_count > stream.byte_budget - stream.bytes_read
             stream.bytes_read <- stream.bytes_read + read_count
+            if stream.encoding == FileStreamEncoding.Utf8:
+                raise FileStreamError.InvalidUtf8(stream.path) if not file_stream_utf8_validate(cursor, read_count, stream.utf8_remaining, stream.utf8_lower, stream.utf8_upper)
+                raise FileStreamError.InvalidUtf8(stream.path) if read_count == 0 and count == 0 and stream.utf8_remaining != 0
             return FileStreamRead{count: count + read_count, eof: read_count == 0 and count == 0}
 
 
@@ -294,12 +378,19 @@ extend EsRuntime:
             while offset < capacity:
                 remaining: usize = capacity - offset
                 cursor: mutable u8& = buffer + offset
+                if stream.encoding == FileStreamEncoding.Utf8:
+                    next_remaining: mutable u8 = stream.utf8_remaining
+                    next_lower: mutable u8 = stream.utf8_lower
+                    next_upper: mutable u8 = stream.utf8_upper
+                    raise FileStreamError.InvalidUtf8(stream.path) if not file_stream_utf8_validate(cursor, remaining, next_remaining, next_lower, next_upper)
                 write_count: usize = fwrite(cursor.cast[void&], 1, remaining, handle)
                 state: FileStreamWriteState = file_stream_write_transition(offset, capacity, write_count, stream.byte_budget - stream.bytes_written - offset)
                 # A short positive write is recoverable; zero progress is a
                 # terminal host failure even when libc has not set ferror.
                 raise FileStreamError.WriteFailed(stream.path) if state == FileStreamWriteState.Error
                 raise FileStreamError.LimitExceeded(stream.path) if state == FileStreamWriteState.Limit
+                if stream.encoding == FileStreamEncoding.Utf8 and write_count > 0:
+                    raise FileStreamError.InvalidUtf8(stream.path) if not file_stream_utf8_validate(cursor, write_count, stream.utf8_remaining, stream.utf8_lower, stream.utf8_upper)
                 offset <- offset + write_count
                 break if state == FileStreamWriteState.Done
             stream.bytes_written <- stream.bytes_written + offset
@@ -309,6 +400,7 @@ extend EsRuntime:
         def file_stream_sync(stream: mutable FileStream&) -> bool error[FileStreamError] can[Blocking.IO]:
             raise FileStreamError.Closed(stream.path) if stream.state != FileStreamState.Open or stream.handle == null
             raise FileStreamError.WrongMode(stream.path) if stream.mode != FileStreamMode.WriteText and stream.mode != FileStreamMode.WriteBinary and stream.mode != FileStreamMode.AppendText and stream.mode != FileStreamMode.AppendBinary
+            raise FileStreamError.InvalidUtf8(stream.path) if stream.encoding == FileStreamEncoding.Utf8 and stream.utf8_remaining != 0
             handle: mutable heap void& = stream.handle
             raise FileStreamError.FlushFailed(stream.path) if fflush(handle) != 0
             descriptor: int = elisascript_posix_fileno(handle)
@@ -338,6 +430,9 @@ extend EsRuntime:
             raise FileStreamError.SeekFailed(stream.path) if fseek(handle, offset, whence) != 0
             stream.pending_valid <- false
             stream.pending_byte <- 0
+            stream.utf8_remaining <- 0
+            stream.utf8_lower <- 128
+            stream.utf8_upper <- 191
             return file_stream_tell(stream)
 
 
@@ -369,6 +464,8 @@ extend EsRuntime:
                     raise FileStreamError.LimitExceeded(stream.path)
                 Read, FileStreamRecordState.LineTooLong:
                     raise FileStreamError.LineTooLong(stream.path)
+                Read, FileStreamRecordState.EncodingError:
+                    raise FileStreamError.InvalidUtf8(stream.path)
                 Read, FileStreamRecordState.Error:
                     raise FileStreamError.ReadFailed(stream.path)
             return result
@@ -392,7 +489,9 @@ extend EsRuntime:
             raise FileStreamError.CleanupStateInvalid(stream.path) if stream.handle == null
             handle: mutable heap void& = stream.handle
             status: int = fclose(handle)
+            incomplete_utf8: bool = stream.encoding == FileStreamEncoding.Utf8 and stream.utf8_remaining != 0
             stream.handle <- null
             stream.state <- FileStreamState.Closed
             raise FileStreamError.CloseFailed(stream.path) if status != 0
+            raise FileStreamError.InvalidUtf8(stream.path) if incomplete_utf8
             return true
