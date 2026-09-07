@@ -310,7 +310,9 @@ shared byte-budget admission and state-machine syntax; compiler-enforced
 lexical cleanup/lifetime, platform adapters, and executed large-file evidence
 remain open. Typed `tell`/`seek` now correct logical positions around pending
 lookahead and make begin/current/end origin semantics explicit; host seek
-failure and cross-platform text-position qualification remain open.
+failure and cross-platform text-position qualification remain open. Sync now
+flushes the stdio buffer before descriptor durability and rejects read-mode
+sync requests; libc flush and descriptor failures are separate typed paths.
 
 The direct bytecode resource slice now shares one mutable output ledger through
 nested calls, including child output emitted before a recoverable error. The
