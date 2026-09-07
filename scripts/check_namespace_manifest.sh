@@ -29,6 +29,27 @@ for extension in $extension_names; do
     fi
 done
 
+# `using` is a namespace import, not a spelling escape hatch. Every imported
+# Elisascript module must be declared in this source tree; only the two
+# vendored frontend namespaces are allowed as external dependencies. This
+# catches typoed imports before they can silently bind a global or a private
+# implementation fragment.
+using_names="$(rg --no-filename '^using [A-Za-z_][A-Za-z0-9_]*$' "$source_root" -g '*.elisa' 2>/dev/null | awk '{print $2}' | sort -u)"
+for using_name in $using_names; do
+    if printf '%s\n' "$module_names" | grep -F -x "$using_name" >/dev/null 2>&1; then
+        continue
+    fi
+    case "$using_name" in
+        Ast|Lexer)
+            continue
+            ;;
+        *)
+            echo "check_namespace_manifest: using imports undeclared module: $using_name" >&2
+            exit 1
+            ;;
+    esac
+done
+
 # POSIX ABI declarations are implementation details of the qualified runtime
 # namespace. Keep every link-name/extern pair inside an `EsRuntime` extension
 # and its `private:` section, and reject direct `_impl` calls from higher-level
