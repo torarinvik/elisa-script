@@ -1,0 +1,148 @@
+# Typed host-handle ownership boundary.
+#
+# Host adapters may attach raw descriptors, sockets, process handles, and
+# temporary resources here without exposing platform-specific values to the
+# language. Every entry has a stable resource identity and owner token; close,
+# transfer, failure, and abandonment are explicit state-machine transitions.
+
+module EsHandle:
+    using EsResource
+
+    public:
+        const HANDLE_MAX_ENTRIES: usize = RESOURCE_MAX_ENTRIES
+
+
+        const enum HostHandleState of u8:
+            Owned
+            Closing
+            Released
+            Failed
+
+
+        const enum HostHandleEvent of u8:
+            BeginClose
+            CompleteClose
+            Transfer
+            Fail
+            Abandon
+
+
+        struct HostHandle:
+            resource_id: u64
+            raw_handle: u64
+            kind: ResourceKind
+            owner_token: u64
+            state: HostHandleState = HostHandleState.Owned
+
+
+        struct HostHandleTable:
+            max_entries: usize = HANDLE_MAX_ENTRIES
+            handles: darray[HostHandle] = []
+            active_entries: usize = 0
+            failed_entries: usize = 0
+
+
+        error HostHandleError:
+            InvalidState
+            InvalidEvent
+            InvalidLimit
+            InvalidResourceId
+            InvalidRawHandle
+            InvalidOwner
+            InvalidKind
+            DuplicateResource
+            DuplicateRawHandle
+            HandleLimitExceeded
+            HandleIndexInvalid
+            OwnerMismatch
+            InvalidTransition
+            TransferInvalid
+            AccountingInvalid
+
+
+    private:
+        def handle_state_valid(state: HostHandleState) -> bool:
+            return state in {HostHandleState.Owned, HostHandleState.Closing, HostHandleState.Released, HostHandleState.Failed}
+
+
+        def handle_event_valid(event: HostHandleEvent) -> bool:
+            return event in {HostHandleEvent.BeginClose, HostHandleEvent.CompleteClose, HostHandleEvent.Transfer, HostHandleEvent.Fail, HostHandleEvent.Abandon}
+
+
+        def handle_kind_valid(kind: ResourceKind) -> bool:
+            return kind in {ResourceKind.File, ResourceKind.Socket, ResourceKind.Process, ResourceKind.Lock, ResourceKind.Temporary}
+
+
+        def handle_active(state: HostHandleState) -> bool:
+            return state == HostHandleState.Owned or state == HostHandleState.Closing
+
+
+        def handle_index(table: HostHandleTable&, resource_id: u64) -> usize:
+            for index in 0..<table.handles.count |table, resource_id|:
+                return index if table.handles[index].resource_id == resource_id
+            return table.handles.count
+
+
+    public:
+        def validate_host_handle_table(table: HostHandleTable&) -> bool error[HostHandleError]:
+            raise HostHandleError.InvalidLimit if table.max_entries == 0 or table.max_entries > HANDLE_MAX_ENTRIES
+            raise HostHandleError.HandleLimitExceeded if table.handles.count > table.max_entries
+            raise HostHandleError.AccountingInvalid if table.active_entries > table.handles.count or table.failed_entries > table.handles.count
+            active: mutable usize = 0
+            failed: mutable usize = 0
+            for index in 0..<table.handles.count |table|:
+                handle: HostHandle = table.handles[index]
+                raise HostHandleError.InvalidResourceId if handle.resource_id == 0
+                raise HostHandleError.InvalidRawHandle if handle.raw_handle == 0
+                raise HostHandleError.InvalidOwner if handle.owner_token == 0
+                raise HostHandleError.InvalidKind if not handle_kind_valid(handle.kind)
+                raise HostHandleError.InvalidState if not handle_state_valid(handle.state)
+                active <- active + 1 if handle_active(handle.state)
+                failed <- failed + 1 if handle.state == HostHandleState.Failed
+                for earlier in 0..<index |table, handle|:
+                    raise HostHandleError.DuplicateResource if table.handles[earlier].resource_id == handle.resource_id
+                    raise HostHandleError.DuplicateRawHandle if table.handles[earlier].raw_handle == handle.raw_handle
+            raise HostHandleError.AccountingInvalid if active != table.active_entries or failed != table.failed_entries
+            return true
+
+
+        def host_handle_acquire(table: mutable HostHandleTable&, resource_id: u64, raw_handle: u64, kind: ResourceKind, owner_token: u64) -> bool error[HostHandleError]:
+            try validate_host_handle_table(table)
+            raise HostHandleError.InvalidResourceId if resource_id == 0
+            raise HostHandleError.InvalidRawHandle if raw_handle == 0
+            raise HostHandleError.InvalidOwner if owner_token == 0
+            raise HostHandleError.InvalidKind if not handle_kind_valid(kind)
+            raise HostHandleError.HandleLimitExceeded if table.handles.count >= table.max_entries
+            raise HostHandleError.DuplicateResource if handle_index(table, resource_id) != table.handles.count
+            for handle in table.handles:
+                raise HostHandleError.DuplicateRawHandle if handle.raw_handle == raw_handle
+            table.handles.push(HostHandle{resource_id: resource_id, raw_handle: raw_handle, kind: kind, owner_token: owner_token})
+            table.active_entries <- table.active_entries + 1
+            return true
+
+
+        def advance_host_handle(table: mutable HostHandleTable&, resource_id: u64, owner_token: u64, event: HostHandleEvent, new_owner_token: u64 = 0) -> HostHandleState error[HostHandleError]:
+            try validate_host_handle_table(table)
+            raise HostHandleError.InvalidResourceId if resource_id == 0
+            raise HostHandleError.InvalidOwner if owner_token == 0
+            raise HostHandleError.InvalidEvent if not handle_event_valid(event)
+            index: usize = handle_index(table, resource_id)
+            raise HostHandleError.HandleIndexInvalid if index == table.handles.count
+            raise HostHandleError.OwnerMismatch if table.handles[index].owner_token != owner_token
+            handle_state: HostHandleState = table.handles[index].state
+            if event == HostHandleEvent.BeginClose:
+                raise HostHandleError.InvalidTransition if handle_state != HostHandleState.Owned
+                table.handles[index].state <- HostHandleState.Closing
+            elif event == HostHandleEvent.CompleteClose:
+                raise HostHandleError.InvalidTransition if handle_state != HostHandleState.Closing
+                table.handles[index].state <- HostHandleState.Released
+                table.active_entries <- table.active_entries - 1
+            elif event == HostHandleEvent.Transfer:
+                raise HostHandleError.TransferInvalid if handle_state != HostHandleState.Owned or new_owner_token == 0 or new_owner_token == owner_token
+                table.handles[index].owner_token <- new_owner_token
+            elif event == HostHandleEvent.Fail or event == HostHandleEvent.Abandon:
+                raise HostHandleError.InvalidTransition if handle_state != HostHandleState.Owned and handle_state != HostHandleState.Closing
+                table.handles[index].state <- HostHandleState.Failed
+                table.active_entries <- table.active_entries - 1
+                table.failed_entries <- table.failed_entries + 1
+            return table.handles[index].state

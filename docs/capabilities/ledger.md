@@ -446,3 +446,9 @@ byte admission, integrity/fingerprint identity, sealed exact lookup, explicit
 invalidation, and typed cache-miss/reset transitions. The focused IR fixture
 and check_package_cache.sh audit are static evidence; atomic host persistence
 and crash recovery remain open.
+
+ES-SCRIPT-006 | EsHandle separates raw host-handle identity from logical
+resource ids and owner tokens, rejects duplicate identities, bounds table
+accounting, and exposes transfer/close/release/failure/abandonment edges.
+The focused IR fixture and check_handle_model.sh audit are static evidence;
+platform descriptor acquisition and actual close calls remain host adapters.

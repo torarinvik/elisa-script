@@ -227,6 +227,12 @@ terminal `Failed` lease; owner mismatches and double-close attempts fail through
 `error[ResourceContractError]`. OS handle acquisition, actual cleanup, and
 cross-thread transfer still require adapter evidence.
 
+EsHandle supplies the host-handle table that those adapters consume. Raw
+handle identity is distinct from the logical resource id and owner token;
+duplicate identities are rejected, ownership transfer requires a new owner,
+and close, release, failure, and abandonment update bounded accounting before
+the next operation. No platform descriptor is exposed to source code.
+
 Every verified module also has canonical structural bytes through
 `canonical_module_bytes(module)` and a compact fingerprint through
 `module_fingerprint(module)` (with `canonical_module_hash` as the explicit
