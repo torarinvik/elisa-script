@@ -516,3 +516,10 @@ ES-SCRIPT-016 | EsDifferentialTraceWindow supplies bounded pre/anchor/post
  fingerprints. The focused differential fixture, namespace inclusion,
  documentation, and check_differential_trace_window.sh audit are static
  evidence; adapter trace collection and execution evidence remain open.
+
+ES-SCRIPT-017 | EsDifferential compares known in-process resource policy and
+usage snapshots across steps, elapsed time, memory, open handles, processes,
+output, regex work, retained traces, and concurrent tasks, while classifying
+unknown external snapshots explicitly. The focused differential fixture,
+documentation, and check_differential_resources.sh audit are static evidence;
+host resource sampling and adverse-resource execution remain open.

@@ -718,6 +718,15 @@ output ledger through the call chain, so the copied usage snapshot includes
 completed child captures exactly once, even when a child fails after a partial
 capture and the parent resumes through an error guard.
 
+`compare_differential_resource_usage` is the explicit resource-parity gate for
+known in-process runs. It rejects unknown snapshots as `Unknown`, requires the
+same bounded policy, and then compares steps, elapsed time, memory, open handles,
+processes, output, regex work, retained traces, and concurrent tasks in a fixed
+order. An open-handle/process/task difference therefore remains a typed cleanup
+failure instead of disappearing behind equal stdout or return values. External
+processes remain eligible for ordinary behavioral comparison, but cannot claim
+resource equivalence without an adapter-owned snapshot.
+
 `compare_differential_runs` remains a value/observation comparator and therefore
 does not reject an unknown engine by default. Backend qualification must use
 `compare_differential_runs_with_engine_requirement` with an explicit
