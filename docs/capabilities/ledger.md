@@ -302,7 +302,8 @@ iterator, idempotent closed-state transitions, and a one-shot
 `FileStreamCleanupGuard` commit/abort state machine. Chunk writes now expose a
 public transition contract that retries positive short `fwrite` progress from
 the advanced offset and rejects zero or over-counted host reports before
-publication. Record reads now expose explicit LF-only, universal-newline, and
+publication. A positive count accompanied by the stdio error indicator is also
+typed as a write failure instead of being retried. Record reads now expose explicit LF-only, universal-newline, and
 retained-delimiter modes with a bounded pending-byte slot for lone-CR handling.
 Chunk reads consume that pending slot before any host probe, preserving bytes
 when callers switch between record and chunk APIs. Its static audit covers the

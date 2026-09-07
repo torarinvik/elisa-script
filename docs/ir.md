@@ -357,9 +357,10 @@ sequences so chunk boundaries cannot silently reset decoder state.
 `file_stream_write_chunk` admit each request with subtraction-before-addition,
 return typed progress records, and reject closed handles, wrong directions,
 and budget overflow. A write state machine retries positive short `fwrite`
-progress from the advanced buffer offset; zero or over-counted host progress
-is a typed write failure, so a partial write cannot be reported as complete or
-spin forever. `file_stream_read_line_mode` makes newline policy explicit:
+progress from the advanced buffer offset; zero or over-counted host progress,
+or a positive count accompanied by the stdio error indicator, is a typed write
+failure, so a partial write cannot be reported as complete or spin forever.
+`file_stream_read_line_mode` makes newline policy explicit:
 `Lf` keeps CR as data, `Universal` treats LF, CRLF, and lone CR as delimiters,
 and `Retain` includes delimiter bytes in the record. Its state machine uses a
 one-byte pending slot to avoid losing the byte after a lone CR, checks the byte
