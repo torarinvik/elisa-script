@@ -1,0 +1,163 @@
+# Bounded field mutation and reconstruction for Perl/AWK-style records.
+#
+# RecordField values are borrowed views.  The edit session owns only the
+# mutation plan and its accounting; a host adapter may materialize the final
+# joined text after the session reaches Ready.  Missing fields are represented
+# as empty values deliberately, preserving field positions and separators.
+
+module EsRecordFields:
+    using EsRecord
+
+    public:
+        const RECORD_FIELD_EDIT_MAX_EDITS: usize = 1048576
+
+
+        const enum RecordFieldEditState of u8:
+            Planned
+            Editing
+            Ready
+            Failed
+            Cancelled
+
+
+        const enum RecordFieldEditEvent of u8:
+            Begin
+            Set
+            Reconstruct
+            Fail
+            Cancel
+
+
+        struct RecordFieldEditPolicy:
+            max_fields: usize = RECORD_MAX_FIELDS
+            max_edits: usize = RECORD_FIELD_EDIT_MAX_EDITS
+            max_output_bytes: usize = RECORD_MAX_TEXT_BYTES - 1
+            output_separator: sview = " "
+            trailing_separator: bool = false
+            allow_append: bool = false
+
+
+        struct RecordFieldEdit:
+            index: usize
+            value: sview
+            present: bool = true
+
+
+        struct RecordFieldEditSession:
+            policy: RecordFieldEditPolicy
+            state: RecordFieldEditState = RecordFieldEditState.Planned
+            fields: darray[sview] = []
+            edits: darray[RecordFieldEdit] = []
+            output_bytes: usize = 0
+
+
+        error RecordFieldEditError:
+            InvalidState
+            InvalidEvent
+            InvalidPolicy
+            InvalidFieldIndex
+            InvalidFieldText
+            FieldLimitExceeded
+            EditLimitExceeded
+            OutputLimitExceeded
+            ReconstructionNotReady
+            Cancelled
+
+
+    private:
+        def record_field_edit_state_valid(state: RecordFieldEditState) -> bool:
+            return state in {RecordFieldEditState.Planned, RecordFieldEditState.Editing, RecordFieldEditState.Ready, RecordFieldEditState.Failed, RecordFieldEditState.Cancelled}
+
+
+        def record_field_edit_event_valid(event: RecordFieldEditEvent) -> bool:
+            return event in {RecordFieldEditEvent.Begin, RecordFieldEditEvent.Set, RecordFieldEditEvent.Reconstruct, RecordFieldEditEvent.Fail, RecordFieldEditEvent.Cancel}
+
+
+        def record_field_edit_text_valid(value: sview) -> bool:
+            return sview_len(value) < RECORD_MAX_TEXT_BYTES and not sview_contains_byte(value, 0)
+
+
+        def record_field_edit_policy_valid(policy: RecordFieldEditPolicy) -> bool:
+            return policy.max_fields != 0 and policy.max_fields <= RECORD_MAX_FIELDS and policy.max_edits != 0 and policy.max_edits <= RECORD_FIELD_EDIT_MAX_EDITS and policy.max_output_bytes != 0 and policy.max_output_bytes < RECORD_MAX_TEXT_BYTES and record_field_edit_text_valid(policy.output_separator)
+
+
+        def record_field_edit_bounded_add(current: usize, delta: usize, limit: usize) -> bool:
+            return current <= limit and delta <= limit - current
+
+
+        def record_field_edit_length(fields: darray[sview], policy: RecordFieldEditPolicy) -> usize error[RecordFieldEditError]:
+            raise RecordFieldEditError.InvalidPolicy if not record_field_edit_policy_valid(policy)
+            raise RecordFieldEditError.FieldLimitExceeded if fields.count > policy.max_fields
+            total: mutable usize = 0
+            for index in 0..<fields.count |fields, policy, total|:
+                value: sview = fields[index]
+                raise RecordFieldEditError.InvalidFieldText if not record_field_edit_text_valid(value)
+                raise RecordFieldEditError.OutputLimitExceeded if not record_field_edit_bounded_add(total, sview_len(value), policy.max_output_bytes)
+                total <- total + sview_len(value)
+                if index + 1 < fields.count:
+                    raise RecordFieldEditError.OutputLimitExceeded if not record_field_edit_bounded_add(total, sview_len(policy.output_separator), policy.max_output_bytes)
+                    total <- total + sview_len(policy.output_separator)
+            if policy.trailing_separator and fields.count != 0:
+                raise RecordFieldEditError.OutputLimitExceeded if not record_field_edit_bounded_add(total, sview_len(policy.output_separator), policy.max_output_bytes)
+                total <- total + sview_len(policy.output_separator)
+            return total
+
+
+    public:
+        def validate_record_field_edit_session(session: RecordFieldEditSession&) -> bool error[RecordFieldEditError]:
+            raise RecordFieldEditError.InvalidState if not record_field_edit_state_valid(session.state)
+            raise RecordFieldEditError.InvalidPolicy if not record_field_edit_policy_valid(session.policy)
+            raise RecordFieldEditError.FieldLimitExceeded if session.fields.count > session.policy.max_fields
+            raise RecordFieldEditError.EditLimitExceeded if session.edits.count > session.policy.max_edits
+            for field in session.fields:
+                raise RecordFieldEditError.InvalidFieldText if not record_field_edit_text_valid(field)
+            for edit in session.edits:
+                raise RecordFieldEditError.InvalidFieldText if not record_field_edit_text_valid(edit.value)
+                raise RecordFieldEditError.InvalidFieldIndex if edit.index >= session.fields.count
+            raise RecordFieldEditError.OutputLimitExceeded if session.output_bytes > session.policy.max_output_bytes
+            return true
+
+
+        def record_field_edit_reconstruct_length(session: RecordFieldEditSession&) -> usize error[RecordFieldEditError]:
+            try validate_record_field_edit_session(session)
+            return try record_field_edit_length(session.fields, session.policy)
+
+
+        def record_field_reconstruct(session: RecordFieldEditSession&) -> sview error[RecordFieldEditError] can[Memory.Allocate, Abort.Panic]:
+            try validate_record_field_edit_session(session)
+            raise RecordFieldEditError.ReconstructionNotReady if session.state != RecordFieldEditState.Ready
+            result: mutable sview = join(session.fields, session.policy.output_separator)
+            if session.policy.trailing_separator and session.fields.count != 0:
+                result <- result + session.policy.output_separator
+            return result
+
+
+        def advance_record_field_edit(session: mutable RecordFieldEditSession&, event: RecordFieldEditEvent, edit: RecordFieldEdit = RecordFieldEdit{index: 0, value: ""}) -> RecordFieldEditState error[RecordFieldEditError] can[Memory.Allocate, Abort.Panic]:
+            try validate_record_field_edit_session(session)
+            raise RecordFieldEditError.InvalidEvent if not record_field_edit_event_valid(event)
+            if event == RecordFieldEditEvent.Begin:
+                raise RecordFieldEditError.InvalidState if session.state != RecordFieldEditState.Planned
+                session.state <- RecordFieldEditState.Editing
+            elif event == RecordFieldEditEvent.Set:
+                raise RecordFieldEditError.InvalidState if session.state != RecordFieldEditState.Editing
+                raise RecordFieldEditError.EditLimitExceeded if session.edits.count >= session.policy.max_edits
+                raise RecordFieldEditError.InvalidFieldText if not record_field_edit_text_valid(edit.value)
+                if edit.index == session.fields.count:
+                    raise RecordFieldEditError.InvalidFieldIndex if not session.policy.allow_append
+                    raise RecordFieldEditError.FieldLimitExceeded if session.fields.count >= session.policy.max_fields
+                    session.fields.push(edit.value if edit.present else "")
+                else:
+                    raise RecordFieldEditError.InvalidFieldIndex if edit.index > session.fields.count
+                    session.fields[edit.index] <- edit.value if edit.present else ""
+                session.edits.push(edit)
+            elif event == RecordFieldEditEvent.Reconstruct:
+                raise RecordFieldEditError.InvalidState if session.state != RecordFieldEditState.Editing
+                session.output_bytes <- try record_field_edit_length(session.fields, session.policy)
+                session.state <- RecordFieldEditState.Ready
+            elif event == RecordFieldEditEvent.Fail:
+                raise RecordFieldEditError.InvalidState if session.state != RecordFieldEditState.Editing
+                session.state <- RecordFieldEditState.Failed
+            elif event == RecordFieldEditEvent.Cancel:
+                raise RecordFieldEditError.InvalidState if session.state != RecordFieldEditState.Planned and session.state != RecordFieldEditState.Editing
+                session.state <- RecordFieldEditState.Cancelled
+            return session.state

@@ -607,6 +607,17 @@ ordinals, and exposes lookup only after sealing through typed
 documentation, and check_record_aggregate.sh audit are static evidence; typed
 sums/joins, spill-to-disk aggregation, and host execution remain open.
 
+ES-SCRIPT-030 | EsRecordFields supplies a bounded field mutation and
+reconstruction session for AWK `$N` and Perl-style record rewrites. It enforces
+field/edit/output ceilings, explicit output separators and trailing-newline
+policy, optional append-at-NF behavior, stable field positions, and
+subtraction-safe reconstruction accounting. Missing edits clear a value to the
+empty field rather than silently renumbering it; `Ready`-only joining and
+post-terminal rejection are typed through `error[RecordFieldEditError]`. The
+focused IR fixture, namespace inclusion, documentation, and
+check_record_fields.sh audit are static evidence; scanner integration, typed
+numeric conversion, and host execution remain open.
+
 ES-SCRIPT-029 | EsRecordControl supplies explicit bounded `next`/`nextfile`/
 exit transitions for pattern-action adapters. It closes record/file ownership
 on skips, rejects record events outside files and premature file closure, caps

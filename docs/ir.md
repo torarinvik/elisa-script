@@ -975,6 +975,18 @@ duplicate internal groups, event/group overflow, and terminal mutation return
 `error[RecordAggregateError]`. Sum/average/join payloads can build on this
 contract only after choosing explicit numeric overflow and ordering policies.
 
+`EsRecordFields::RecordFieldEditSession` is the bounded mutation boundary for
+AWK `$N` updates and Perl-style record rewrites. A policy fixes the maximum
+field/edit counts, output bytes, output separator, trailing-separator behavior,
+and whether assigning at the next index may append a field. `Set` preserves
+field positions; an edit with `present: false` clears a field to the empty
+value instead of silently changing `NF`. `record_field_edit_reconstruct_length`
+performs subtraction-safe output accounting before allocation, and
+`record_field_reconstruct` joins only a `Ready` session. The state machine
+rejects post-terminal mutation, invalid indices, malformed/NUL-bearing text,
+and output overflows through `error[RecordFieldEditError]`; host adapters own
+the borrowed field storage and any subsequent file publication.
+
 `EsRecordControl::RecordControlSession` makes AWK-style control keywords
 explicit: `NextRecord` closes the current record and advances to the next one,
 `NextFile` closes both record and file scopes, and `Exit` terminates cleanly from
