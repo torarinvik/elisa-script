@@ -97,6 +97,12 @@ argument, NUL, and text ceilings through `error[CliContractError]`, while
 `parse_cli_arguments` rejects unknown options, duplicate modes/options, and
 missing option values before source loading.
 
+`EsDriver::run` now consumes that typed invocation directly. Help/version exit
+before source allocation, while check/test/fmt/doc currently return an explicit
+unsupported-mode diagnostic rather than silently taking the run path; source
+arguments and the `--` boundary are copied into the typed runner request only
+for an actual run.
+
 `EsModule` supplies the source/package-facing identity boundary. A
 `ModuleDescriptor` carries explicit public and private symbol sets, ordered
 imports with aliases and visibility, and a bounded source path; duplicate

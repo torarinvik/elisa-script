@@ -10,8 +10,10 @@ ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 plan="$repo_root/IMPLEMENTATION_PLAN.md"
+driver="$repo_root/src/driver/elisascript.elisa"
+runner="$repo_root/src/ir/runner.elisa"
 
-for required_file in "$model" "$ir" "$fixture" "$docs" "$plan"; do
+for required_file in "$model" "$ir" "$fixture" "$docs" "$plan" "$driver" "$runner"; do
     [[ -f "$required_file" ]] || { printf 'cli model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -53,6 +55,10 @@ for fixture_pattern in \
 done
 
 rg -Fq '`EsCli::CliInvocation`' "$docs"
+rg -Fq 'using EsCli' "$driver"
+rg -Fq 'request.mode <- invocation.mode' "$driver"
+rg -Fq 'requested launcher mode is not implemented' "$driver"
+rg -Fq 'mode: mutable CliMode' "$runner"
 rg -Fq 'P14 CLI follow-up' "$plan"
 
 printf 'cli model audit: typed modes, option boundaries, script-argument preservation, and bounded validation are present\n'
