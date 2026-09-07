@@ -259,6 +259,14 @@ state transitions; forwarding cannot reclassify the origin, future/self causes
 are rejected, cause depth and retained text are bounded, and handled errors
 cannot be cancelled again through `error[ErrorProvenanceError]`.
 
+`EsCancellation::CancellationLedger` is the cooperative cancellation boundary
+for VM safe points and blocking host adapters. Tokens have bounded parent/child
+trees, owner identity, polling counts, and explicit `Request → Propagate →
+Acknowledge → Complete` or `Fail` transitions. Polling a requested token at a
+VM checkpoint propagates cancellation; polling before a blocking host wait
+raises `HostBlockDenied`, while acknowledgement is admitted only after a
+cleanup or completed-block checkpoint through `error[CancellationError]`.
+
 EsHandle supplies the host-handle table that those adapters consume. Raw
 handle identity is distinct from the logical resource id and owner token;
 duplicate identities are rejected, ownership transfer requires a new owner,

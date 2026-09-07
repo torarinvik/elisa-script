@@ -1,0 +1,249 @@
+# Typed cooperative cancellation tokens and boundary checkpoints.
+#
+# VM safe points and blocking host adapters must poll this contract before
+# entering work that can wait. A requested token is propagated explicitly,
+# acknowledged only from cleanup/after-block checkpoints, and never silently
+# converted into ordinary success.
+
+module EsCancellation:
+    public:
+        const CANCELLATION_MAX_TOKENS: usize = 65536
+        const CANCELLATION_MAX_CHILDREN: usize = 1024
+        const CANCELLATION_MAX_POLLS: usize = 1048576
+        const CANCELLATION_MAX_REASON_BYTES: usize = 4096
+
+
+        const enum CancellationTokenState of u8:
+            Active
+            Requested
+            Propagating
+            Acknowledged
+            Completed
+            Failed
+
+
+        const enum CancellationEvent of u8:
+            Request
+            Propagate
+            Acknowledge
+            Complete
+            Fail
+
+
+        const enum CancellationPoint of u8:
+            VmSafePoint
+            HostBeforeBlock
+            HostAfterBlock
+            Cleanup
+
+
+        struct CancellationPolicy:
+            max_tokens: usize = CANCELLATION_MAX_TOKENS
+            max_children: usize = CANCELLATION_MAX_CHILDREN
+            max_polls_per_token: usize = CANCELLATION_MAX_POLLS
+            max_reason_bytes: usize = CANCELLATION_MAX_REASON_BYTES
+
+
+        struct CancellationToken:
+            id: u64
+            parent_id: u64 = 0
+            owner_token: u64
+            state: CancellationTokenState = CancellationTokenState.Active
+            last_point: CancellationPoint = CancellationPoint.VmSafePoint
+            poll_count: usize = 0
+            children: usize = 0
+            reason: sview = ""
+
+
+        struct CancellationLedger:
+            policy: CancellationPolicy
+            tokens: darray[CancellationToken] = []
+            active_tokens: usize = 0
+            requested_tokens: usize = 0
+            propagating_tokens: usize = 0
+            acknowledged_tokens: usize = 0
+            terminal_tokens: usize = 0
+
+
+        error CancellationError:
+            InvalidPolicy
+            InvalidState
+            InvalidEvent
+            InvalidPoint
+            InvalidId
+            InvalidOwner
+            DuplicateId
+            TokenIndexInvalid
+            ParentMissing
+            ParentCycle
+            ParentOwnerMismatch
+            ChildLimitExceeded
+            PollLimitExceeded
+            ReasonLimitExceeded
+            EmbeddedNul
+            AccountingInvalid
+            InvalidTransition
+            HostBlockDenied
+
+
+    private:
+        def cancellation_state_valid(state: CancellationTokenState) -> bool:
+            return state in {CancellationTokenState.Active, CancellationTokenState.Requested, CancellationTokenState.Propagating, CancellationTokenState.Acknowledged, CancellationTokenState.Completed, CancellationTokenState.Failed}
+
+
+        def cancellation_event_valid(event: CancellationEvent) -> bool:
+            return event in {CancellationEvent.Request, CancellationEvent.Propagate, CancellationEvent.Acknowledge, CancellationEvent.Complete, CancellationEvent.Fail}
+
+
+        def cancellation_point_valid(point: CancellationPoint) -> bool:
+            return point in {CancellationPoint.VmSafePoint, CancellationPoint.HostBeforeBlock, CancellationPoint.HostAfterBlock, CancellationPoint.Cleanup}
+
+
+        def cancellation_policy_valid(policy: CancellationPolicy) -> bool:
+            return policy.max_tokens != 0 and policy.max_tokens <= CANCELLATION_MAX_TOKENS and policy.max_children != 0 and policy.max_children <= CANCELLATION_MAX_CHILDREN and policy.max_polls_per_token != 0 and policy.max_polls_per_token <= CANCELLATION_MAX_POLLS and policy.max_reason_bytes != 0 and policy.max_reason_bytes <= CANCELLATION_MAX_REASON_BYTES
+
+
+        def cancellation_reason_valid(reason: sview, policy: CancellationPolicy) -> bool:
+            return sview_len(reason) < policy.max_reason_bytes and not sview_contains_byte(reason, 0)
+
+
+        def cancellation_index(ledger: CancellationLedger&, id: u64) -> usize:
+            for index in 0..<ledger.tokens.count |ledger, id|:
+                return index if ledger.tokens[index].id == id
+            return ledger.tokens.count
+
+
+        def cancellation_terminal(state: CancellationTokenState) -> bool:
+            return state == CancellationTokenState.Completed or state == CancellationTokenState.Failed
+
+
+        def cancellation_parent_depth(ledger: CancellationLedger&, id: u64) -> usize error[CancellationError]:
+            depth: mutable usize = 0
+            current: mutable u64 = id
+            while current != 0:
+                index: usize = cancellation_index(ledger, current)
+                raise CancellationError.ParentMissing if index == ledger.tokens.count
+                depth <- depth + 1
+                raise CancellationError.ParentCycle if depth > ledger.tokens.count
+                current <- ledger.tokens[index].parent_id
+            return depth
+
+
+    public:
+        def validate_cancellation_ledger(ledger: CancellationLedger&) -> bool error[CancellationError]:
+            raise CancellationError.InvalidPolicy if not cancellation_policy_valid(ledger.policy)
+            raise CancellationError.ChildLimitExceeded if ledger.tokens.count > ledger.policy.max_tokens
+            active: mutable usize = 0
+            requested: mutable usize = 0
+            propagating: mutable usize = 0
+            acknowledged: mutable usize = 0
+            terminal: mutable usize = 0
+            for index in 0..<ledger.tokens.count |ledger|:
+                token: CancellationToken = ledger.tokens[index]
+                raise CancellationError.InvalidId if token.id == 0
+                raise CancellationError.InvalidOwner if token.owner_token == 0
+                raise CancellationError.InvalidState if not cancellation_state_valid(token.state)
+                raise CancellationError.InvalidPoint if not cancellation_point_valid(token.last_point)
+                raise CancellationError.PollLimitExceeded if token.poll_count > ledger.policy.max_polls_per_token
+                raise CancellationError.ChildLimitExceeded if token.children > ledger.policy.max_children
+                raise CancellationError.ReasonLimitExceeded if not cancellation_reason_valid(token.reason, ledger.policy)
+                for earlier in 0..<index |ledger, token|:
+                    raise CancellationError.DuplicateId if ledger.tokens[earlier].id == token.id
+                if token.parent_id != 0:
+                    parent_index: usize = cancellation_index(ledger, token.parent_id)
+                    raise CancellationError.ParentMissing if parent_index == ledger.tokens.count
+                    raise CancellationError.ParentOwnerMismatch if ledger.tokens[parent_index].owner_token != token.owner_token
+                    try cancellation_parent_depth(ledger, token.id)
+                active <- active + 1 if token.state == CancellationTokenState.Active
+                requested <- requested + 1 if token.state == CancellationTokenState.Requested
+                propagating <- propagating + 1 if token.state == CancellationTokenState.Propagating
+                acknowledged <- acknowledged + 1 if token.state == CancellationTokenState.Acknowledged
+                terminal <- terminal + 1 if cancellation_terminal(token.state)
+                child_count: mutable usize = 0
+                for child in 0..<ledger.tokens.count |ledger, token|:
+                    child_count <- child_count + 1 if ledger.tokens[child].parent_id == token.id
+                raise CancellationError.AccountingInvalid if child_count != token.children
+            raise CancellationError.AccountingInvalid if active != ledger.active_tokens or requested != ledger.requested_tokens or propagating != ledger.propagating_tokens or acknowledged != ledger.acknowledged_tokens or terminal != ledger.terminal_tokens
+            return true
+
+
+        def cancellation_register(ledger: mutable CancellationLedger&, id: u64, parent_id: u64, owner_token: u64, reason: sview) -> bool error[CancellationError]:
+            try validate_cancellation_ledger(ledger)
+            raise CancellationError.InvalidId if id == 0
+            raise CancellationError.InvalidOwner if owner_token == 0
+            raise CancellationError.ChildLimitExceeded if ledger.tokens.count >= ledger.policy.max_tokens
+            raise CancellationError.DuplicateId if cancellation_index(ledger, id) != ledger.tokens.count
+            raise CancellationError.ReasonLimitExceeded if not cancellation_reason_valid(reason, ledger.policy)
+            if parent_id != 0:
+                parent_index: usize = cancellation_index(ledger, parent_id)
+                raise CancellationError.ParentMissing if parent_index == ledger.tokens.count
+                raise CancellationError.ParentOwnerMismatch if ledger.tokens[parent_index].owner_token != owner_token
+                raise CancellationError.ChildLimitExceeded if ledger.tokens[parent_index].children >= ledger.policy.max_children
+                raise CancellationError.ParentCycle if parent_id == id
+                ledger.tokens[parent_index].children <- ledger.tokens[parent_index].children + 1
+            ledger.tokens.push(CancellationToken{id: id, parent_id: parent_id, owner_token: owner_token, reason: reason})
+            ledger.active_tokens <- ledger.active_tokens + 1
+            return true
+
+
+        def poll_cancellation(ledger: mutable CancellationLedger&, id: u64, owner_token: u64, point: CancellationPoint) -> CancellationTokenState error[CancellationError]:
+            try validate_cancellation_ledger(ledger)
+            raise CancellationError.InvalidOwner if owner_token == 0
+            raise CancellationError.InvalidPoint if not cancellation_point_valid(point)
+            index: usize = cancellation_index(ledger, id)
+            raise CancellationError.TokenIndexInvalid if index == ledger.tokens.count
+            raise CancellationError.ParentOwnerMismatch if ledger.tokens[index].owner_token != owner_token
+            raise CancellationError.InvalidTransition if cancellation_terminal(ledger.tokens[index].state)
+            raise CancellationError.PollLimitExceeded if ledger.tokens[index].poll_count >= ledger.policy.max_polls_per_token
+            ledger.tokens[index].poll_count <- ledger.tokens[index].poll_count + 1
+            ledger.tokens[index].last_point <- point
+            if ledger.tokens[index].state == CancellationTokenState.Requested:
+                ledger.requested_tokens <- ledger.requested_tokens - 1
+                ledger.propagating_tokens <- ledger.propagating_tokens + 1
+                ledger.tokens[index].state <- CancellationTokenState.Propagating
+            raise CancellationError.HostBlockDenied if point == CancellationPoint.HostBeforeBlock and ledger.tokens[index].state == CancellationTokenState.Propagating
+            return ledger.tokens[index].state
+
+
+        def advance_cancellation(ledger: mutable CancellationLedger&, id: u64, owner_token: u64, event: CancellationEvent) -> CancellationTokenState error[CancellationError]:
+            try validate_cancellation_ledger(ledger)
+            raise CancellationError.InvalidOwner if owner_token == 0
+            raise CancellationError.InvalidEvent if not cancellation_event_valid(event)
+            index: usize = cancellation_index(ledger, id)
+            raise CancellationError.TokenIndexInvalid if index == ledger.tokens.count
+            raise CancellationError.ParentOwnerMismatch if ledger.tokens[index].owner_token != owner_token
+            current: CancellationTokenState = ledger.tokens[index].state
+            if event == CancellationEvent.Request:
+                raise CancellationError.InvalidTransition if current != CancellationTokenState.Active
+                ledger.active_tokens <- ledger.active_tokens - 1
+                ledger.requested_tokens <- ledger.requested_tokens + 1
+                ledger.tokens[index].state <- CancellationTokenState.Requested
+            elif event == CancellationEvent.Propagate:
+                raise CancellationError.InvalidTransition if current != CancellationTokenState.Requested
+                if ledger.tokens[index].parent_id != 0:
+                    parent_index: usize = cancellation_index(ledger, ledger.tokens[index].parent_id)
+                    raise CancellationError.ParentMissing if parent_index == ledger.tokens.count
+                    raise CancellationError.InvalidTransition if ledger.tokens[parent_index].state != CancellationTokenState.Requested and ledger.tokens[parent_index].state != CancellationTokenState.Propagating
+                ledger.requested_tokens <- ledger.requested_tokens - 1
+                ledger.propagating_tokens <- ledger.propagating_tokens + 1
+                ledger.tokens[index].state <- CancellationTokenState.Propagating
+            elif event == CancellationEvent.Acknowledge:
+                raise CancellationError.InvalidTransition if current != CancellationTokenState.Propagating
+                raise CancellationError.InvalidTransition if ledger.tokens[index].last_point != CancellationPoint.Cleanup and ledger.tokens[index].last_point != CancellationPoint.HostAfterBlock
+                ledger.propagating_tokens <- ledger.propagating_tokens - 1
+                ledger.acknowledged_tokens <- ledger.acknowledged_tokens + 1
+                ledger.tokens[index].state <- CancellationTokenState.Acknowledged
+            elif event == CancellationEvent.Complete:
+                raise CancellationError.InvalidTransition if current != CancellationTokenState.Acknowledged
+                ledger.acknowledged_tokens <- ledger.acknowledged_tokens - 1
+                ledger.terminal_tokens <- ledger.terminal_tokens + 1
+                ledger.tokens[index].state <- CancellationTokenState.Completed
+            elif event == CancellationEvent.Fail:
+                raise CancellationError.InvalidTransition if cancellation_terminal(current)
+                ledger.active_tokens <- ledger.active_tokens - 1 if current == CancellationTokenState.Active
+                ledger.requested_tokens <- ledger.requested_tokens - 1 if current == CancellationTokenState.Requested
+                ledger.propagating_tokens <- ledger.propagating_tokens - 1 if current == CancellationTokenState.Propagating
+                ledger.acknowledged_tokens <- ledger.acknowledged_tokens - 1 if current == CancellationTokenState.Acknowledged
+                ledger.terminal_tokens <- ledger.terminal_tokens + 1
+                ledger.tokens[index].state <- CancellationTokenState.Failed
+            return ledger.tokens[index].state

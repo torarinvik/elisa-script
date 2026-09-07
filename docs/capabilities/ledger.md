@@ -422,6 +422,17 @@ typed under `error[ErrorProvenanceError]`. The focused IR fixture, namespace
 inclusion, documentation, and check_error_provenance.sh audit are static
 evidence; driver/host adapter integration and executed diagnostics remain open.
 
+ES-SCRIPT-044 | EsCancellation supplies a bounded cooperative-cancellation
+contract for VM safe points and blocking host boundaries. Parent/child token
+ownership, reason text, poll counts, and per-state accounting are validated;
+`Request → Propagate → Acknowledge → Complete` and `Fail` transitions are
+explicit, requested tokens propagate at VM checkpoints, and a
+`HostBeforeBlock` poll rejects blocking work with `HostBlockDenied`. The
+focused IR fixture, namespace inclusion, documentation, and
+check_cancellation.sh audit are compiler-free static evidence; scheduler
+propagation, signal adapters, blocking I/O interruption, and runtime evidence
+remain open.
+
 ES-SCRIPT-040 | EsTaskTransfer supplies a bounded ownership protocol for
 copyable values, linear values, and dynamic handler contexts crossing task
 boundaries. Copy/move/borrow modes, source/target owners, generation updates,
