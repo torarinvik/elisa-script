@@ -1,0 +1,189 @@
+# Bounded execution-order contamination contract for differential testing.
+#
+# Host adapters may execute the reference and candidate in either order, but a
+# parity claim must not depend on that order or on leaked world state. This
+# module records both orderings, the before/after world fingerprints, and the
+# comparison fingerprint without performing execution or filesystem reset.
+
+module EsDifferentialOrder:
+    public:
+        const DIFFERENTIAL_ORDER_MAX_OBSERVATIONS: usize = 2
+
+
+        const enum DifferentialExecutionOrder of u8:
+            ReferenceThenCandidate
+            CandidateThenReference
+
+
+        const enum DifferentialOrderState of u8:
+            Planned
+            Running
+            Completed
+            Failed
+            Cancelled
+
+
+        const enum DifferentialOrderEvent of u8:
+            Start
+            Observation
+            Complete
+            Fail
+            Cancel
+
+
+        const enum DifferentialOrderClassification of u8:
+            Unknown
+            OrderIndependent
+            OrderDependent
+            WorldContaminated
+
+
+        const enum DifferentialContaminationPolicy of u8:
+            Reject
+            Report
+
+
+        struct DifferentialOrderPolicy:
+            require_both_orders: bool = true
+            contamination: DifferentialContaminationPolicy = DifferentialContaminationPolicy.Reject
+
+
+        struct DifferentialOrderObservation:
+            execution_order: DifferentialExecutionOrder
+            initial_world_fingerprint: u64
+            final_world_fingerprint: u64
+            comparison_fingerprint: u64
+            equal: bool
+
+
+        struct DifferentialOrderSession:
+            policy: DifferentialOrderPolicy = DifferentialOrderPolicy{}
+            state: DifferentialOrderState = DifferentialOrderState.Planned
+            classification: DifferentialOrderClassification = DifferentialOrderClassification.Unknown
+            next_observation: usize = 0
+            observations: darray[DifferentialOrderObservation] = []
+            seen_reference_then_candidate: bool = false
+            seen_candidate_then_reference: bool = false
+            has_baseline: bool = false
+            baseline_initial_world_fingerprint: u64 = 0
+            baseline_comparison_fingerprint: u64 = 0
+            baseline_equal: bool = false
+            has_order_dependency: bool = false
+            has_world_contamination: bool = false
+
+
+        error DifferentialOrderError:
+            InvalidState
+            InvalidEvent
+            InvalidPolicy
+            InvalidOrder
+            DuplicateOrder
+            ObservationLimitExceeded
+            FingerprintMissing
+            CompletionNotReady
+            OrderContaminationRejected
+            ClassificationInvalid
+            CancelNotReady
+
+
+    private:
+        def differential_order_state_valid(state: DifferentialOrderState) -> bool:
+            return state in {DifferentialOrderState.Planned, DifferentialOrderState.Running, DifferentialOrderState.Completed, DifferentialOrderState.Failed, DifferentialOrderState.Cancelled}
+
+
+        def differential_order_event_valid(event: DifferentialOrderEvent) -> bool:
+            return event in {DifferentialOrderEvent.Start, DifferentialOrderEvent.Observation, DifferentialOrderEvent.Complete, DifferentialOrderEvent.Fail, DifferentialOrderEvent.Cancel}
+
+
+        def differential_execution_order_valid(order: DifferentialExecutionOrder) -> bool:
+            return order in {DifferentialExecutionOrder.ReferenceThenCandidate, DifferentialExecutionOrder.CandidateThenReference}
+
+
+        def differential_order_classification_valid(classification: DifferentialOrderClassification) -> bool:
+            return classification in {DifferentialOrderClassification.Unknown, DifferentialOrderClassification.OrderIndependent, DifferentialOrderClassification.OrderDependent, DifferentialOrderClassification.WorldContaminated}
+
+
+        def differential_contamination_policy_valid(policy: DifferentialContaminationPolicy) -> bool:
+            return policy in {DifferentialContaminationPolicy.Reject, DifferentialContaminationPolicy.Report}
+
+
+        def differential_order_fingerprint_valid(value: u64) -> bool:
+            return value != 0
+
+
+        def differential_order_policy_valid(policy: DifferentialOrderPolicy) -> bool:
+            return differential_contamination_policy_valid(policy.contamination)
+
+
+    public:
+        def validate_differential_order_session(session: DifferentialOrderSession&) -> bool error[DifferentialOrderError]:
+            raise DifferentialOrderError.InvalidState if not differential_order_state_valid(session.state)
+            raise DifferentialOrderError.InvalidPolicy if not differential_order_policy_valid(session.policy)
+            raise DifferentialOrderError.ClassificationInvalid if not differential_order_classification_valid(session.classification)
+            raise DifferentialOrderError.ObservationLimitExceeded if session.observations.count > DIFFERENTIAL_ORDER_MAX_OBSERVATIONS
+            raise DifferentialOrderError.InvalidOrder if session.next_observation != session.observations.count
+            if session.has_baseline:
+                raise DifferentialOrderError.FingerprintMissing if not differential_order_fingerprint_valid(session.baseline_initial_world_fingerprint) or not differential_order_fingerprint_valid(session.baseline_comparison_fingerprint)
+            else:
+                raise DifferentialOrderError.InvalidOrder if session.observations.count != 0
+            reference_count: usize = 0
+            candidate_count: usize = 0
+            for index in 0..<session.observations.count |session, reference_count, candidate_count|:
+                observation: DifferentialOrderObservation = session.observations[index]
+                raise DifferentialOrderError.InvalidOrder if not differential_execution_order_valid(observation.execution_order)
+                raise DifferentialOrderError.FingerprintMissing if not differential_order_fingerprint_valid(observation.initial_world_fingerprint) or not differential_order_fingerprint_valid(observation.final_world_fingerprint) or not differential_order_fingerprint_valid(observation.comparison_fingerprint)
+                if observation.execution_order == DifferentialExecutionOrder.ReferenceThenCandidate:
+                    reference_count <- reference_count + 1
+                else:
+                    candidate_count <- candidate_count + 1
+                for prior in 0..<index |session, observation|:
+                    raise DifferentialOrderError.DuplicateOrder if session.observations[prior].execution_order == observation.execution_order
+            raise DifferentialOrderError.InvalidOrder if (session.seen_reference_then_candidate and reference_count != 1) or (not session.seen_reference_then_candidate and reference_count != 0)
+            raise DifferentialOrderError.InvalidOrder if (session.seen_candidate_then_reference and candidate_count != 1) or (not session.seen_candidate_then_reference and candidate_count != 0)
+            if session.classification == DifferentialOrderClassification.OrderIndependent:
+                raise DifferentialOrderError.ClassificationInvalid if session.state != DifferentialOrderState.Completed or session.has_order_dependency or session.has_world_contamination
+            if session.classification == DifferentialOrderClassification.OrderDependent:
+                raise DifferentialOrderError.ClassificationInvalid if session.state != DifferentialOrderState.Completed or not session.has_order_dependency or session.has_world_contamination
+            if session.classification == DifferentialOrderClassification.WorldContaminated:
+                raise DifferentialOrderError.ClassificationInvalid if session.state != DifferentialOrderState.Completed or not session.has_world_contamination
+            raise DifferentialOrderError.ClassificationInvalid if session.state == DifferentialOrderState.Completed and session.classification == DifferentialOrderClassification.Unknown
+            return true
+
+
+        def advance_differential_order_session(session: mutable DifferentialOrderSession&, event: DifferentialOrderEvent, observation: DifferentialOrderObservation = DifferentialOrderObservation{execution_order: DifferentialExecutionOrder.ReferenceThenCandidate, initial_world_fingerprint: 1, final_world_fingerprint: 1, comparison_fingerprint: 1, equal: true}) -> DifferentialOrderState error[DifferentialOrderError]:
+            try validate_differential_order_session(session)
+            raise DifferentialOrderError.InvalidEvent if not differential_order_event_valid(event)
+            if event == DifferentialOrderEvent.Start:
+                raise DifferentialOrderError.InvalidState if session.state != DifferentialOrderState.Planned
+                session.state <- DifferentialOrderState.Running
+            elif event == DifferentialOrderEvent.Observation:
+                raise DifferentialOrderError.InvalidState if session.state != DifferentialOrderState.Running
+                raise DifferentialOrderError.ObservationLimitExceeded if session.observations.count >= DIFFERENTIAL_ORDER_MAX_OBSERVATIONS
+                raise DifferentialOrderError.InvalidOrder if not differential_execution_order_valid(observation.execution_order)
+                raise DifferentialOrderError.DuplicateOrder if observation.execution_order == DifferentialExecutionOrder.ReferenceThenCandidate and session.seen_reference_then_candidate or observation.execution_order == DifferentialExecutionOrder.CandidateThenReference and session.seen_candidate_then_reference
+                raise DifferentialOrderError.FingerprintMissing if not differential_order_fingerprint_valid(observation.initial_world_fingerprint) or not differential_order_fingerprint_valid(observation.final_world_fingerprint) or not differential_order_fingerprint_valid(observation.comparison_fingerprint)
+                if not session.has_baseline:
+                    session.has_baseline <- true
+                    session.baseline_initial_world_fingerprint <- observation.initial_world_fingerprint
+                    session.baseline_comparison_fingerprint <- observation.comparison_fingerprint
+                    session.baseline_equal <- observation.equal
+                else:
+                    session.has_order_dependency <- observation.comparison_fingerprint != session.baseline_comparison_fingerprint or observation.equal != session.baseline_equal
+                    session.has_world_contamination <- observation.initial_world_fingerprint != session.baseline_initial_world_fingerprint
+                session.has_world_contamination <- true if observation.final_world_fingerprint != observation.initial_world_fingerprint
+                session.seen_reference_then_candidate <- true if observation.execution_order == DifferentialExecutionOrder.ReferenceThenCandidate
+                session.seen_candidate_then_reference <- true if observation.execution_order == DifferentialExecutionOrder.CandidateThenReference
+                session.observations.push(observation)
+                session.next_observation <- session.next_observation + 1
+            elif event == DifferentialOrderEvent.Complete:
+                raise DifferentialOrderError.CompletionNotReady if session.state != DifferentialOrderState.Running or session.observations.count == 0 or session.policy.require_both_orders and (not session.seen_reference_then_candidate or not session.seen_candidate_then_reference)
+                raise DifferentialOrderError.OrderContaminationRejected if (session.has_order_dependency or session.has_world_contamination) and session.policy.contamination == DifferentialContaminationPolicy.Reject
+                session.classification <- DifferentialOrderClassification.WorldContaminated if session.has_world_contamination else DifferentialOrderClassification.OrderDependent if session.has_order_dependency else DifferentialOrderClassification.OrderIndependent
+                session.state <- DifferentialOrderState.Completed
+            elif event == DifferentialOrderEvent.Fail:
+                raise DifferentialOrderError.InvalidState if session.state != DifferentialOrderState.Running
+                session.state <- DifferentialOrderState.Failed
+            elif event == DifferentialOrderEvent.Cancel:
+                raise DifferentialOrderError.CancelNotReady if session.state != DifferentialOrderState.Planned and session.state != DifferentialOrderState.Running
+                session.state <- DifferentialOrderState.Cancelled
+            return session.state

@@ -502,3 +502,10 @@ fingerprints, and first-difference comparison for kind/content/size/mode and
 executable metadata. The focused differential fixture, namespace inclusion,
 documentation, and check_differential_filesystem.sh audit are static evidence;
 filesystem enumeration/materialization and crash-safe restore remain host work.
+
+ES-SCRIPT-015 | EsDifferentialOrder supplies a bounded dual-order execution
+session, initial/final world fingerprints, duplicate-order rejection, and typed
+order-independent, order-dependent, or world-contaminated classifications with
+reject/report policy. The focused differential fixture, namespace inclusion,
+documentation, and check_differential_order.sh audit are static evidence;
+actual world reset and repeated host execution remain open.

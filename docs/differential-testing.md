@@ -641,6 +641,16 @@ for the sealed ordered record. This contract performs no filesystem I/O; host
 materializers remain responsible for collecting entries and preserving the
 world lifecycle.
 
+`EsDifferentialOrder::DifferentialOrderSession` makes order-contamination checks
+explicit. A bounded session records at most one `ReferenceThenCandidate` and one
+`CandidateThenReference` observation, including the initial and final world
+fingerprints and the comparison fingerprint. Completion requires both orders by
+default. A changed final world is `WorldContaminated`; a changed comparison is
+`OrderDependent`; stable fingerprints in both orders are `OrderIndependent`.
+The policy either rejects contamination before completion or reports the typed
+classification for an inconclusive artifact. The contract does not execute or
+restore a world; adapters must perform those operations around each run.
+
 The directory publication protocol is modeled separately from the host I/O
 adapter by `DifferentialArtifactDirectoryPlan`. A plan has a bounded parent
 path and two single-component names: a private staging directory and a distinct
