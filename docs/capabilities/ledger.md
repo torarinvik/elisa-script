@@ -620,6 +620,16 @@ focused IR fixture, namespace inclusion, documentation, and
 check_record_fields.sh audit are static evidence; scanner integration, typed
 numeric conversion, and host execution remain open.
 
+ES-SCRIPT-031 | EsRecordWindow supplies a bounded rolling unsigned-sum window
+for streaming record actions. It retains at most `max_events`, exposes an
+active suffix no wider than `width`, evicts the oldest value before each new
+admission, and validates sum accounting against an explicit ceiling. Count and
+sum reads are allowed only while collecting or after sealing; invalid lifecycle,
+eviction, accounting, event, and sum transitions return
+`error[RecordWindowError]`. The focused IR fixture, namespace inclusion,
+documentation, and check_record_window.sh audit are static evidence; keyed
+windows, signed/decimal values, and host execution remain open.
+
 ES-SCRIPT-029 | EsRecordControl supplies explicit bounded `next`/`nextfile`/
 exit transitions for pattern-action adapters. It closes record/file ownership
 on skips, rejects record events outside files and premature file closure, caps

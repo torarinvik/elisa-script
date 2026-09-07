@@ -1,0 +1,130 @@
+# Bounded rolling-window state for streaming record aggregations.
+#
+# The session retains a bounded event history and a logical active window. A
+# host adapter may attach record keys or typed numeric conversion; this core
+# keeps the eviction order, sum accounting, and terminal lifecycle explicit.
+
+module EsRecordWindow:
+    public:
+        const RECORD_WINDOW_MAX_WIDTH: usize = 1048576
+        const RECORD_WINDOW_MAX_EVENTS: usize = 1048576
+        const RECORD_WINDOW_MAX_SUM: u64 = 67108864
+
+
+        const enum RecordWindowState of u8:
+            Planned
+            Collecting
+            Sealed
+            Failed
+            Cancelled
+
+
+        const enum RecordWindowEvent of u8:
+            Begin
+            Push
+            Seal
+            Fail
+            Cancel
+
+
+        struct RecordWindowPolicy:
+            width: usize = 1
+            max_events: usize = RECORD_WINDOW_MAX_EVENTS
+            max_sum: u64 = RECORD_WINDOW_MAX_SUM
+
+
+        struct RecordWindowSession:
+            policy: RecordWindowPolicy
+            state: RecordWindowState = RecordWindowState.Planned
+            values: darray[u64] = []
+            active_start: usize = 0
+            sum: u64 = 0
+
+
+        error RecordWindowError:
+            InvalidState
+            InvalidEvent
+            InvalidPolicy
+            EventLimitExceeded
+            WidthExceeded
+            SumLimitExceeded
+            AccountingInvalid
+            WindowNotReady
+            CancelNotReady
+
+
+    private:
+        def record_window_state_valid(state: RecordWindowState) -> bool:
+            return state in {RecordWindowState.Planned, RecordWindowState.Collecting, RecordWindowState.Sealed, RecordWindowState.Failed, RecordWindowState.Cancelled}
+
+
+        def record_window_event_valid(event: RecordWindowEvent) -> bool:
+            return event in {RecordWindowEvent.Begin, RecordWindowEvent.Push, RecordWindowEvent.Seal, RecordWindowEvent.Fail, RecordWindowEvent.Cancel}
+
+
+        def record_window_policy_valid(policy: RecordWindowPolicy) -> bool:
+            return policy.width != 0 and policy.width <= RECORD_WINDOW_MAX_WIDTH and policy.max_events != 0 and policy.max_events <= RECORD_WINDOW_MAX_EVENTS and policy.max_sum != 0 and policy.max_sum <= RECORD_WINDOW_MAX_SUM and policy.width <= policy.max_events
+
+
+        def record_window_sum_valid(session: RecordWindowSession&) -> bool error[RecordWindowError]:
+            raise RecordWindowError.AccountingInvalid if session.active_start > session.values.count
+            raise RecordWindowError.WidthExceeded if session.values.count - session.active_start > session.policy.width
+            total: mutable u64 = 0
+            for index in session.active_start..<session.values.count |session, total|:
+                value: u64 = session.values[index]
+                raise RecordWindowError.SumLimitExceeded if value > session.policy.max_sum
+                raise RecordWindowError.SumLimitExceeded if total > session.policy.max_sum - value
+                total <- total + value
+            raise RecordWindowError.SumLimitExceeded if total != session.sum
+            return true
+
+
+    public:
+        def validate_record_window(session: RecordWindowSession&) -> bool error[RecordWindowError]:
+            raise RecordWindowError.InvalidState if not record_window_state_valid(session.state)
+            raise RecordWindowError.InvalidPolicy if not record_window_policy_valid(session.policy)
+            raise RecordWindowError.EventLimitExceeded if session.values.count > session.policy.max_events
+            try record_window_sum_valid(session)
+            return true
+
+
+        def record_window_count(session: RecordWindowSession&) -> usize error[RecordWindowError]:
+            try validate_record_window(session)
+            raise RecordWindowError.WindowNotReady if session.state != RecordWindowState.Collecting and session.state != RecordWindowState.Sealed
+            return session.values.count - session.active_start
+
+
+        def record_window_sum(session: RecordWindowSession&) -> u64 error[RecordWindowError]:
+            try validate_record_window(session)
+            raise RecordWindowError.WindowNotReady if session.state != RecordWindowState.Collecting and session.state != RecordWindowState.Sealed
+            return session.sum
+
+
+        def advance_record_window(session: mutable RecordWindowSession&, event: RecordWindowEvent, value: u64 = 0) -> RecordWindowState error[RecordWindowError]:
+            try validate_record_window(session)
+            raise RecordWindowError.InvalidEvent if not record_window_event_valid(event)
+            if event == RecordWindowEvent.Begin:
+                raise RecordWindowError.InvalidState if session.state != RecordWindowState.Planned
+                session.state <- RecordWindowState.Collecting
+            elif event == RecordWindowEvent.Push:
+                raise RecordWindowError.InvalidState if session.state != RecordWindowState.Collecting
+                raise RecordWindowError.EventLimitExceeded if session.values.count >= session.policy.max_events
+                raise RecordWindowError.SumLimitExceeded if value > session.policy.max_sum
+                if session.values.count - session.active_start >= session.policy.width:
+                    evicted: u64 = session.values[session.active_start]
+                    raise RecordWindowError.AccountingInvalid if evicted > session.sum
+                    session.sum <- session.sum - evicted
+                    session.active_start <- session.active_start + 1
+                raise RecordWindowError.SumLimitExceeded if session.sum > session.policy.max_sum - value
+                session.values.push(value)
+                session.sum <- session.sum + value
+            elif event == RecordWindowEvent.Seal:
+                raise RecordWindowError.InvalidState if session.state != RecordWindowState.Collecting
+                session.state <- RecordWindowState.Sealed
+            elif event == RecordWindowEvent.Fail:
+                raise RecordWindowError.InvalidState if session.state != RecordWindowState.Collecting
+                session.state <- RecordWindowState.Failed
+            elif event == RecordWindowEvent.Cancel:
+                raise RecordWindowError.CancelNotReady if session.state != RecordWindowState.Planned and session.state != RecordWindowState.Collecting
+                session.state <- RecordWindowState.Cancelled
+            return session.state

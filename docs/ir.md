@@ -990,6 +990,16 @@ rejects post-terminal mutation, invalid indices, malformed/NUL-bearing text,
 and output overflows through `error[RecordFieldEditError]`; host adapters own
 the borrowed field storage and any subsequent file publication.
 
+`EsRecordWindow::RecordWindowSession` supplies a bounded rolling numeric
+window for streaming actions. It retains an event history capped by
+`max_events`, tracks an active suffix capped by `width`, evicts the oldest
+value before admitting a new one, and maintains a subtraction-safe unsigned
+sum under an explicit ceiling. `record_window_count` and `record_window_sum`
+are available while collecting or after sealing; invalid terminal transitions,
+window accounting drift, and event/sum overflow return
+`error[RecordWindowError]`. Keyed windows and signed/decimal numeric policies
+remain explicit extensions rather than implicit conversions.
+
 `EsRecordControl::RecordControlSession` makes AWK-style control keywords
 explicit: `NextRecord` closes the current record and advances to the next one,
 `NextFile` closes both record and file scopes, and `Exit` terminates cleanly from
