@@ -428,3 +428,9 @@ completion/failure accounting, and cancellation transitions over EsBuild.
 The focused IR fixture, namespace inclusion, documentation, and
 check_build_scheduler.sh audit are static evidence; process launch, cache
 persistence, and host cancellation adapters remain open.
+
+ES-SCRIPT-003 | EsOutputRender supplies sealed-document admission, ordered
+record consumption, format framing, JSON/XML escape expansion accounting,
+shared output-budget enforcement, and explicit failure/cancellation edges.
+The focused IR fixture and check_output_renderer.sh audit are static evidence;
+actual stdout/stderr writes remain a host-adapter follow-up.

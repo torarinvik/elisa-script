@@ -1,0 +1,183 @@
+# Typed output rendering boundary.
+#
+# This module accounts the exact escaped byte cost of each output format while
+# keeping host writes outside the IR contract. A renderer must consume sealed
+# OutputDocuments in record order; no formatter may silently truncate a record
+# or emit a footer before every record has been admitted.
+
+module EsOutputRender:
+    using EsOutput
+
+    public:
+        const OUTPUT_RENDER_MAX_CHUNKS: usize = OUTPUT_MAX_RECORDS + 2
+
+
+        const enum OutputRenderState of u8:
+            Ready
+            Rendering
+            Complete
+            Failed
+            Cancelling
+            Cancelled
+
+
+        const enum OutputRenderEvent of u8:
+            Begin
+            Emit
+            Finish
+            Fail
+            Cancel
+            CancelAck
+
+
+        struct OutputRender:
+            document: OutputDocument
+            state: OutputRenderState = OutputRenderState.Ready
+            next_record: usize = 0
+            emitted_bytes: usize = 0
+            chunks: usize = 0
+
+
+        error OutputRenderError:
+            InvalidState
+            InvalidEvent
+            DocumentNotSealed
+            RecordIndexInvalid
+            RecordOrderInvalid
+            ChunkLimitExceeded
+            RenderLimitExceeded
+            Incomplete
+            CancelNotReady
+
+
+    private:
+        def output_render_state_valid(state: OutputRenderState) -> bool:
+            return state in {OutputRenderState.Ready, OutputRenderState.Rendering, OutputRenderState.Complete, OutputRenderState.Failed, OutputRenderState.Cancelling, OutputRenderState.Cancelled}
+
+
+        def output_render_event_valid(event: OutputRenderEvent) -> bool:
+            return event in {OutputRenderEvent.Begin, OutputRenderEvent.Emit, OutputRenderEvent.Finish, OutputRenderEvent.Fail, OutputRenderEvent.Cancel, OutputRenderEvent.CancelAck}
+
+
+        def output_render_add(current: usize, addition: usize, limit: usize) -> bool:
+            return current <= limit and addition <= limit - current
+
+
+        def output_render_json_escaped_bytes(value: sview, limit: usize) -> usize error[OutputRenderError]:
+            total: mutable usize = 0
+            for index in 0..<sview_len(value) |value, limit|:
+                byte: u8 = sview_at(value, index)
+                addition: usize = 2 if byte in {8, 9, 10, 12, 13} else 6 if byte < 32 else 2 if byte == 34 or byte == 92 else 1
+                raise OutputRenderError.RenderLimitExceeded if not output_render_add(total, addition, limit)
+                total <- total + addition
+            return total
+
+
+        def output_render_xml_escaped_bytes(value: sview, limit: usize) -> usize error[OutputRenderError]:
+            total: mutable usize = 0
+            for index in 0..<sview_len(value) |value, limit|:
+                byte: u8 = sview_at(value, index)
+                addition: usize = 5 if byte == 38 else 4 if byte == 60 or byte == 62 else 6 if byte == 34 or byte == 39 else 1
+                raise OutputRenderError.RenderLimitExceeded if not output_render_add(total, addition, limit)
+                total <- total + addition
+            return total
+
+
+        def output_render_status_bytes(status: OutputStatus) -> usize error[OutputRenderError]:
+            return 4 if status == OutputStatus.Pass else 4 if status == OutputStatus.Fail else 5 if status == OutputStatus.Error else 4 if status == OutputStatus.Skip else raise OutputRenderError.InvalidState
+
+
+        def output_render_record_bytes(document: OutputDocument&, record: OutputRecord, first: bool) -> usize error[OutputRenderError]:
+            limit: usize = document.options.max_bytes
+            separator: usize = 0 if first else 1
+            if document.options.format == OutputFormat.Human:
+                status_bytes: usize = try output_render_status_bytes(record.status)
+                total: mutable usize = 8 + separator + status_bytes
+                total <- total + sview_len(record.name)
+                total <- total + sview_len(record.message)
+                total <- total + sview_len(record.stdout)
+                total <- total + sview_len(record.stderr)
+                total <- total + 3 if sview_len(record.message) != 0 else total
+                total <- total + 8 if sview_len(record.stdout) != 0 else total
+                total <- total + 8 if sview_len(record.stderr) != 0 else total
+                raise OutputRenderError.RenderLimitExceeded if total > limit
+                return total
+            elif document.options.format == OutputFormat.Json:
+                total: mutable usize = 14 + separator
+                total <- total + output_render_json_escaped_bytes(record.name, limit)
+                total <- total + output_render_status_bytes(record.status)
+                total <- total + output_render_json_escaped_bytes(record.message, limit)
+                total <- total + output_render_json_escaped_bytes(record.stdout, limit)
+                total <- total + output_render_json_escaped_bytes(record.stderr, limit)
+                raise OutputRenderError.RenderLimitExceeded if total > limit
+                return total
+            elif document.options.format == OutputFormat.Junit:
+                total: mutable usize = 26 + separator
+                total <- total + output_render_xml_escaped_bytes(record.name, limit)
+                total <- total + output_render_xml_escaped_bytes(record.message, limit)
+                total <- total + output_render_xml_escaped_bytes(record.stdout, limit)
+                total <- total + output_render_xml_escaped_bytes(record.stderr, limit)
+                raise OutputRenderError.RenderLimitExceeded if total > limit
+                return total
+            raise OutputRenderError.InvalidState
+
+
+        def output_render_header_bytes(document: OutputDocument&) -> usize error[OutputRenderError]:
+            return 1 if document.options.format == OutputFormat.Json else 11 if document.options.format == OutputFormat.Junit else 0
+
+
+        def output_render_footer_bytes(document: OutputDocument&) -> usize error[OutputRenderError]:
+            return 1 if document.options.format == OutputFormat.Json else 12 if document.options.format == OutputFormat.Junit else 0
+
+
+    public:
+        def validate_output_render(render: OutputRender&) -> bool error[OutputRenderError]:
+            raise OutputRenderError.InvalidState if not output_render_state_valid(render.state)
+            try validate_output_document(render.document)
+            raise OutputRenderError.RecordIndexInvalid if render.next_record > render.document.records.count
+            raise OutputRenderError.ChunkLimitExceeded if render.chunks > OUTPUT_RENDER_MAX_CHUNKS
+            raise OutputRenderError.RenderLimitExceeded if render.emitted_bytes > render.document.options.max_bytes
+            return true
+
+
+        def advance_output_render(render: mutable OutputRender&, event: OutputRenderEvent, record_index: usize = 0) -> OutputRenderState error[OutputRenderError]:
+            try validate_output_render(render)
+            raise OutputRenderError.InvalidEvent if not output_render_event_valid(event)
+            if event == OutputRenderEvent.Begin:
+                raise OutputRenderError.InvalidState if render.state != OutputRenderState.Ready
+                raise OutputRenderError.DocumentNotSealed if render.document.state != OutputDocumentState.Sealed
+                header: usize = try output_render_header_bytes(render.document)
+                raise OutputRenderError.ChunkLimitExceeded if render.chunks >= OUTPUT_RENDER_MAX_CHUNKS
+                raise OutputRenderError.RenderLimitExceeded if not output_render_add(render.emitted_bytes, header, render.document.options.max_bytes)
+                render.emitted_bytes <- render.emitted_bytes + header
+                render.chunks <- render.chunks + 1
+                render.state <- OutputRenderState.Rendering
+            elif event == OutputRenderEvent.Emit:
+                raise OutputRenderError.InvalidState if render.state != OutputRenderState.Rendering
+                raise OutputRenderError.RecordIndexInvalid if record_index >= render.document.records.count
+                raise OutputRenderError.RecordOrderInvalid if record_index != render.next_record
+                chunk_bytes: usize = try output_render_record_bytes(render.document, render.document.records[record_index], record_index == 0)
+                raise OutputRenderError.ChunkLimitExceeded if render.chunks >= OUTPUT_RENDER_MAX_CHUNKS
+                raise OutputRenderError.RenderLimitExceeded if not output_render_add(render.emitted_bytes, chunk_bytes, render.document.options.max_bytes)
+                render.emitted_bytes <- render.emitted_bytes + chunk_bytes
+                render.chunks <- render.chunks + 1
+                render.next_record <- render.next_record + 1
+            elif event == OutputRenderEvent.Finish:
+                raise OutputRenderError.InvalidState if render.state != OutputRenderState.Rendering
+                raise OutputRenderError.Incomplete if render.next_record != render.document.records.count
+                footer: usize = try output_render_footer_bytes(render.document)
+                raise OutputRenderError.ChunkLimitExceeded if render.chunks >= OUTPUT_RENDER_MAX_CHUNKS
+                raise OutputRenderError.RenderLimitExceeded if not output_render_add(render.emitted_bytes, footer, render.document.options.max_bytes)
+                render.emitted_bytes <- render.emitted_bytes + footer
+                render.chunks <- render.chunks + 1
+                render.state <- OutputRenderState.Complete
+            elif event == OutputRenderEvent.Fail:
+                raise OutputRenderError.InvalidState if render.state != OutputRenderState.Rendering
+                render.state <- OutputRenderState.Failed
+            elif event == OutputRenderEvent.Cancel:
+                raise OutputRenderError.CancelNotReady if render.state != OutputRenderState.Rendering
+                render.state <- OutputRenderState.Cancelling
+            elif event == OutputRenderEvent.CancelAck:
+                raise OutputRenderError.CancelNotReady if render.state != OutputRenderState.Cancelling
+                render.state <- OutputRenderState.Cancelled
+            return render.state
