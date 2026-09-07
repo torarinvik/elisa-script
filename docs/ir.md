@@ -736,6 +736,11 @@ numeric `\g<1>` through `\g<9>` aliases for `$1` through `$9`, and named
 token is consumed atomically and unknown forms remain literal. Named references
 with unknown or duplicate names are also kept literal rather than selecting an
 ambiguous capture.
+`regex_quote_replacement` is the explicit literal-replacement helper: it
+escapes backslashes, dollar references, and AWK/sed ampersands before the
+replacement scanner sees them. A doubled backslash is consumed as one literal
+backslash, so quoted user text cannot accidentally become `$1`, `&`, `\1`, or
+`\&`; the helper applies the same 64 MiB replacement ceiling as substitution.
 `RegexSplit` has signature `Text × Named(Regex) -> Array[Text]`. It uses those same
 spans as field boundaries, preserves empty fields, and applies an explicit one-byte
 advance for zero-width matches. The result is materialized in caller-owned flat
