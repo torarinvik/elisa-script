@@ -43,6 +43,8 @@ rg -q 'interpreter_read_lines_preserves_trailing_empty_field' "$interpreter_test
 rg -q 'bytecode_direct_text_split_lines_matches_reference_interpreter' "$bytecode_tests"
 rg -q 'bytecode_direct_read_lines_preserves_trailing_empty_field' "$bytecode_tests"
 rg -q 'copy_tree_destination_overlaps_source' "$interpreter"
+rg -q 'normalized_source: dstr = Fs::normalize\(&perm_arena, source\)' "$interpreter"
+rg -q 'without adding an undeclared current-directory read' "$interpreter"
 rg -q 'interpreter_rejects_tree_destination_inside_source_before_mutation' "$interpreter_tests"
 rg -q 'bytecode_direct_tree_overlap_rejection_matches_reference_interpreter' "$bytecode_tests"
 rg -q 'read_lines\(path\).*equivalent' "$semantics"
