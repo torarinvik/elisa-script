@@ -1095,6 +1095,20 @@ filesystem path as well as the reference interpreter.
 requires `Process.Run` plus `ProcessError`. The interpreter executes it directly as
 a POSIX `fork`/`execvp`/`waitpid` state transition with a NUL-terminated argv. No
 command string or shell expansion exists between typed IR and the operating system.
+`EsProcess::ProcessCommand` is the higher-level shell-free command value for
+adapters that need more than the primitive opcode: it keeps the executable,
+ordered argv, child working directory, ordered environment overrides, stdio
+modes, timeout budget, and failure policy in one typed record. Its
+`validate_process_command` boundary rejects empty/NUL/oversized text, vectors
+that exceed the `PROCESS_COMMAND_MAX_ARGUMENTS` one-million-argument or
+64 MiB terminated-byte ceilings,
+odd environment pairs, empty or `=`-containing names, duplicate overrides,
+unknown policy ordinals, and unsupported stdio modes with
+`error[ProcessCommandError]`. The environment vector is intentionally flat so
+insertion order is explicit and host adapters cannot inherit map-order or shell
+assignment semantics. This model is a validated adapter boundary; fork/exec,
+Windows process creation, background scheduling, and streaming callbacks remain
+host integrations rather than hidden behavior in the value itself.
 The argv terminator is cleared using `size_of(uintptr)`, matching the target
 pointer width rather than assuming an 8-byte slot.
 Before reserving argv pointers or owned argument strings, the interpreter

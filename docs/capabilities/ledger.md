@@ -365,6 +365,12 @@ an already-consumed parent budget into a wrapped child allowance. This remains
 static policy evidence until every host bridge actually consumes the derived
 policy and execution tests are reauthorized.
 
+`EsProcess::ProcessCommand` now supplies a typed shell-free command record with
+ordered argv/environment vectors, child cwd, explicit stdio modes, timeout and
+failure policy fields, and a bounded `error[ProcessCommandError]` validator.
+It is static adapter-boundary evidence only; platform process creation,
+background jobs, and streaming callback execution remain open.
+
 ## Evidence record template
 
 Every future executed or differential-verified entry must append a dated record
