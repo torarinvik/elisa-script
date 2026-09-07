@@ -560,6 +560,16 @@ manifest's engine/artifact/comparator policies and by the process, value-pool,
 and index sidecars, so reserved or non-contiguous future ordinals fail closed
 before they can default to the first constructor.
 
+`EsDifferentialReport::DifferentialReport` is the renderer-neutral report
+boundary. It accepts Human, JSON, or JUnit format requests but keeps status and
+failure category typed: a pass must use `None` and be deterministic, a failure
+must identify a concrete mismatch/process/timeout/crash/artifact category, and
+an inconclusive result is limited to flaky or infrastructure causes. Case and
+engine identities, bounded summaries/messages, repeat counts, and optional
+artifact paths are length/NUL checked before a renderer emits text. Renderers
+must preserve these fields rather than reclassify failures from free-form
+stdout or exit codes.
+
 Each side's complete bounded process-facing payload can be persisted separately
 as an `ESPS` process-stream artifact with `make_differential_process_stream_artifact`.
 It binds the reference/candidate side, terminal outcome, signed exit status, and
