@@ -1031,6 +1031,16 @@ duplicate run paths, active-run misuse, accounting drift, and cancellation or
 failure transitions are typed through `error[RecordSpillError]`; the host owns
 sorting, temporary-file creation, fsync/rename, cleanup, and crash recovery.
 
+`EsDirectoryTree::DirectoryTreeSession` makes recursive filesystem traversal
+policy explicit. A walk caps depth, entries, retained identities, and bytes;
+each visited path has a nonzero identity and stable depth, and duplicate
+identities fail closed as cycle/alias protection. `DoNotFollow`, `FollowFiles`,
+and `FollowDirectories` symlink policies plus fail-fast/collect behavior are
+typed, and `Descend`/`Leave` maintain an explicit depth stack. Cancellation and
+completion require a balanced walk; malformed paths, non-directories, denied
+symlink descent, limits, and identity/accounting failures use
+`error[DirectoryTreeError]`.
+
 `EsRecordControl::RecordControlSession` makes AWK-style control keywords
 explicit: `NextRecord` closes the current record and advances to the next one,
 `NextFile` closes both record and file scopes, and `Exit` terminates cleanly from

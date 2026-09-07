@@ -1,0 +1,203 @@
+# Bounded recursive filesystem traversal policy.
+#
+# Host adapters perform readdir/stat/remove/copy operations; this module keeps
+# traversal order, symlink policy, identity/cycle accounting, and cancellation
+# explicit before any recursive walk is allowed to grow.
+
+module EsDirectoryTree:
+    public:
+        const DIRECTORY_TREE_MAX_DEPTH: usize = 1024
+        const DIRECTORY_TREE_MAX_ENTRIES: usize = 1048576
+        const DIRECTORY_TREE_MAX_BYTES: usize = 268435456
+        const DIRECTORY_TREE_MAX_IDENTITIES: usize = 1048576
+        const DIRECTORY_TREE_MAX_PATH_BYTES: usize = 4096
+
+
+        const enum DirectoryTreeSymlinkPolicy of u8:
+            DoNotFollow
+            FollowFiles
+            FollowDirectories
+
+
+        const enum DirectoryTreeFailureMode of u8:
+            FailFast
+            Collect
+
+
+        const enum DirectoryTreeEntryKind of u8:
+            Directory
+            Regular
+            Symlink
+            Other
+
+
+        const enum DirectoryTreeState of u8:
+            Planned
+            Walking
+            Complete
+            Failed
+            Cancelled
+
+
+        const enum DirectoryTreeEvent of u8:
+            Begin
+            Visit
+            Descend
+            Leave
+            Fail
+            Cancel
+            Complete
+
+
+        struct DirectoryTreePolicy:
+            max_depth: usize = DIRECTORY_TREE_MAX_DEPTH
+            max_entries: usize = DIRECTORY_TREE_MAX_ENTRIES
+            max_bytes: usize = DIRECTORY_TREE_MAX_BYTES
+            max_identities: usize = DIRECTORY_TREE_MAX_IDENTITIES
+            max_path_bytes: usize = DIRECTORY_TREE_MAX_PATH_BYTES
+            symlink_policy: DirectoryTreeSymlinkPolicy = DirectoryTreeSymlinkPolicy.DoNotFollow
+            failure_mode: DirectoryTreeFailureMode = DirectoryTreeFailureMode.FailFast
+
+
+        struct DirectoryTreeEntry:
+            path: sview
+            identity: u64
+            depth: usize
+            kind: DirectoryTreeEntryKind
+            bytes: usize = 0
+
+
+        struct DirectoryTreeSession:
+            policy: DirectoryTreePolicy
+            state: DirectoryTreeState = DirectoryTreeState.Planned
+            entries: darray[DirectoryTreeEntry] = []
+            identities: darray[u64] = []
+            active_depth: usize = 0
+            total_bytes: usize = 0
+            failures: usize = 0
+
+
+        error DirectoryTreeError:
+            InvalidState
+            InvalidEvent
+            InvalidPolicy
+            InvalidSymlinkPolicy
+            InvalidFailureMode
+            InvalidKind
+            InvalidPath
+            EmbeddedNul
+            InvalidIdentity
+            DepthLimitExceeded
+            EntryLimitExceeded
+            ByteLimitExceeded
+            IdentityLimitExceeded
+            CycleDetected
+            ParentDepthMismatch
+            NotDirectory
+            SymlinkTraversalDenied
+            WalkNotOpen
+            FailureLimitExceeded
+            CancelNotReady
+
+
+    private:
+        def directory_tree_state_valid(state: DirectoryTreeState) -> bool:
+            return state in {DirectoryTreeState.Planned, DirectoryTreeState.Walking, DirectoryTreeState.Complete, DirectoryTreeState.Failed, DirectoryTreeState.Cancelled}
+
+
+        def directory_tree_event_valid(event: DirectoryTreeEvent) -> bool:
+            return event in {DirectoryTreeEvent.Begin, DirectoryTreeEvent.Visit, DirectoryTreeEvent.Descend, DirectoryTreeEvent.Leave, DirectoryTreeEvent.Fail, DirectoryTreeEvent.Cancel, DirectoryTreeEvent.Complete}
+
+
+        def directory_tree_symlink_policy_valid(policy: DirectoryTreeSymlinkPolicy) -> bool:
+            return policy in {DirectoryTreeSymlinkPolicy.DoNotFollow, DirectoryTreeSymlinkPolicy.FollowFiles, DirectoryTreeSymlinkPolicy.FollowDirectories}
+
+
+        def directory_tree_failure_mode_valid(mode: DirectoryTreeFailureMode) -> bool:
+            return mode in {DirectoryTreeFailureMode.FailFast, DirectoryTreeFailureMode.Collect}
+
+
+        def directory_tree_kind_valid(kind: DirectoryTreeEntryKind) -> bool:
+            return kind in {DirectoryTreeEntryKind.Directory, DirectoryTreeEntryKind.Regular, DirectoryTreeEntryKind.Symlink, DirectoryTreeEntryKind.Other}
+
+
+        def directory_tree_policy_valid(policy: DirectoryTreePolicy) -> bool:
+            return policy.max_depth != 0 and policy.max_depth <= DIRECTORY_TREE_MAX_DEPTH and policy.max_entries != 0 and policy.max_entries <= DIRECTORY_TREE_MAX_ENTRIES and policy.max_bytes != 0 and policy.max_bytes <= DIRECTORY_TREE_MAX_BYTES and policy.max_identities != 0 and policy.max_identities <= DIRECTORY_TREE_MAX_IDENTITIES and policy.max_path_bytes != 0 and policy.max_path_bytes <= DIRECTORY_TREE_MAX_PATH_BYTES and directory_tree_symlink_policy_valid(policy.symlink_policy) and directory_tree_failure_mode_valid(policy.failure_mode)
+
+
+        def directory_tree_path_valid(path: sview, limit: usize) -> bool:
+            return sview_len(path) != 0 and sview_len(path) < limit and not sview_contains_byte(path, 0)
+
+
+        def directory_tree_identity_index(session: DirectoryTreeSession&, identity: u64) -> usize:
+            for index in 0..<session.identities.count |session, identity|:
+                return index if session.identities[index] == identity
+            return session.identities.count
+
+
+        def directory_tree_symlink_allowed(session: DirectoryTreeSession&, kind: DirectoryTreeEntryKind, descend: bool) -> bool:
+            return true if not descend or kind != DirectoryTreeEntryKind.Symlink
+            return session.policy.symlink_policy == DirectoryTreeSymlinkPolicy.FollowDirectories
+
+
+    public:
+        def validate_directory_tree(session: DirectoryTreeSession&) -> bool error[DirectoryTreeError]:
+            raise DirectoryTreeError.InvalidState if not directory_tree_state_valid(session.state)
+            raise DirectoryTreeError.InvalidPolicy if not directory_tree_policy_valid(session.policy)
+            raise DirectoryTreeError.EntryLimitExceeded if session.entries.count > session.policy.max_entries
+            raise DirectoryTreeError.IdentityLimitExceeded if session.identities.count > session.policy.max_identities
+            raise DirectoryTreeError.ByteLimitExceeded if session.total_bytes > session.policy.max_bytes
+            raise DirectoryTreeError.DepthLimitExceeded if session.active_depth > session.policy.max_depth
+            raise DirectoryTreeError.FailureLimitExceeded if session.failures > session.policy.max_entries
+            for entry in session.entries:
+                raise DirectoryTreeError.InvalidKind if not directory_tree_kind_valid(entry.kind)
+                raise DirectoryTreeError.InvalidPath if not directory_tree_path_valid(entry.path, session.policy.max_path_bytes)
+                raise DirectoryTreeError.InvalidIdentity if entry.identity == 0
+                raise DirectoryTreeError.DepthLimitExceeded if entry.depth > session.policy.max_depth
+            return true
+
+
+        def advance_directory_tree(session: mutable DirectoryTreeSession&, event: DirectoryTreeEvent, entry: DirectoryTreeEntry = DirectoryTreeEntry{path: "", identity: 0, depth: 0, kind: DirectoryTreeEntryKind.Other}) -> DirectoryTreeState error[DirectoryTreeError]:
+            try validate_directory_tree(session)
+            raise DirectoryTreeError.InvalidEvent if not directory_tree_event_valid(event)
+            if event == DirectoryTreeEvent.Begin:
+                raise DirectoryTreeError.InvalidState if session.state != DirectoryTreeState.Planned
+                session.state <- DirectoryTreeState.Walking
+            elif event == DirectoryTreeEvent.Visit:
+                raise DirectoryTreeError.WalkNotOpen if session.state != DirectoryTreeState.Walking
+                raise DirectoryTreeError.EntryLimitExceeded if session.entries.count >= session.policy.max_entries
+                raise DirectoryTreeError.InvalidKind if not directory_tree_kind_valid(entry.kind)
+                raise DirectoryTreeError.InvalidPath if not directory_tree_path_valid(entry.path, session.policy.max_path_bytes)
+                raise DirectoryTreeError.InvalidIdentity if entry.identity == 0
+                raise DirectoryTreeError.DepthLimitExceeded if entry.depth > session.policy.max_depth
+                raise DirectoryTreeError.ParentDepthMismatch if entry.depth > session.active_depth + 1
+                raise DirectoryTreeError.CycleDetected if directory_tree_identity_index(session, entry.identity) != session.identities.count
+                raise DirectoryTreeError.IdentityLimitExceeded if session.identities.count >= session.policy.max_identities
+                raise DirectoryTreeError.ByteLimitExceeded if entry.bytes > session.policy.max_bytes - session.total_bytes
+                session.entries.push(entry)
+                session.identities.push(entry.identity)
+                session.total_bytes <- session.total_bytes + entry.bytes
+            elif event == DirectoryTreeEvent.Descend:
+                raise DirectoryTreeError.WalkNotOpen if session.state != DirectoryTreeState.Walking
+                raise DirectoryTreeError.EntryLimitExceeded if session.entries.count == 0
+                last: DirectoryTreeEntry = session.entries[session.entries.count - 1]
+                raise DirectoryTreeError.NotDirectory if last.kind != DirectoryTreeEntryKind.Directory
+                raise DirectoryTreeError.SymlinkTraversalDenied if not directory_tree_symlink_allowed(session, last.kind, true)
+                raise DirectoryTreeError.DepthLimitExceeded if last.depth >= session.policy.max_depth
+                session.active_depth <- last.depth + 1
+            elif event == DirectoryTreeEvent.Leave:
+                raise DirectoryTreeError.WalkNotOpen if session.state != DirectoryTreeState.Walking
+                raise DirectoryTreeError.ParentDepthMismatch if session.active_depth == 0
+                session.active_depth <- session.active_depth - 1
+            elif event == DirectoryTreeEvent.Fail:
+                raise DirectoryTreeError.WalkNotOpen if session.state != DirectoryTreeState.Walking
+                session.failures <- session.failures + 1
+                session.state <- DirectoryTreeState.Failed if session.policy.failure_mode == DirectoryTreeFailureMode.FailFast else session.state
+            elif event == DirectoryTreeEvent.Cancel:
+                raise DirectoryTreeError.CancelNotReady if session.state != DirectoryTreeState.Planned and session.state != DirectoryTreeState.Walking
+                session.state <- DirectoryTreeState.Cancelled
+            elif event == DirectoryTreeEvent.Complete:
+                raise DirectoryTreeError.WalkNotOpen if session.state != DirectoryTreeState.Walking
+                raise DirectoryTreeError.ParentDepthMismatch if session.active_depth != 0
+                session.state <- DirectoryTreeState.Complete
+            return session.state
