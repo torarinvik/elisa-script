@@ -440,3 +440,9 @@ ordering, integrity admission, sealed-state lookup by PackageConstraint, and
 explicit failure/cancellation transitions. The focused IR fixture and
 check_package_registry.sh audit are static evidence; network, signature, and
 cache persistence adapters remain open.
+
+ES-SCRIPT-005 | EsPackageCache supplies bounded ordered entries, aggregate
+byte admission, integrity/fingerprint identity, sealed exact lookup, explicit
+invalidation, and typed cache-miss/reset transitions. The focused IR fixture
+and check_package_cache.sh audit are static evidence; atomic host persistence
+and crash recovery remain open.

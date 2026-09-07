@@ -1,0 +1,185 @@
+# Typed package artifact-cache boundary.
+#
+# Cache entries are immutable identity records until an explicit invalidation
+# transition. Lookup is available only from a sealed cache and requires an
+# exact package/version/fingerprint/locator match; host file reads and writes
+# remain adapter responsibilities.
+
+module EsPackageCache:
+    using EsPackage
+
+    public:
+        const PACKAGE_CACHE_MAX_ENTRIES: usize = PACKAGE_MAX_LOCK_ENTRIES
+        const PACKAGE_CACHE_MAX_BYTES: usize = 268435456
+
+
+        const enum PackageCacheState of u8:
+            Empty
+            Updating
+            Ready
+            Failed
+
+
+        const enum PackageCacheEvent of u8:
+            Begin
+            Store
+            Seal
+            Invalidate
+            Fail
+            Reset
+
+
+        struct PackageCacheEntry:
+            name: sview
+            version: PackageVersion
+            locator: sview
+            byte_count: usize
+            fingerprint: u64
+            integrity_0: u64
+            integrity_1: u64
+            integrity_2: u64
+            integrity_3: u64
+            valid: bool = true
+
+
+        struct PackageCache:
+            entries: darray[PackageCacheEntry] = []
+            state: PackageCacheState = PackageCacheState.Empty
+            bytes: usize = 0
+
+
+        error PackageCacheError:
+            InvalidState
+            InvalidEvent
+            EntryLimitExceeded
+            EntryInvalid
+            ByteLimitExceeded
+            DuplicateEntry
+            OrderInvalid
+            CacheNotReady
+            CacheMiss
+            EntryIndexInvalid
+            InvalidateNotReady
+            ResetNotReady
+
+
+    private:
+        def cache_state_valid(state: PackageCacheState) -> bool:
+            return state in {PackageCacheState.Empty, PackageCacheState.Updating, PackageCacheState.Ready, PackageCacheState.Failed}
+
+
+        def cache_event_valid(event: PackageCacheEvent) -> bool:
+            return event in {PackageCacheEvent.Begin, PackageCacheEvent.Store, PackageCacheEvent.Seal, PackageCacheEvent.Invalidate, PackageCacheEvent.Fail, PackageCacheEvent.Reset}
+
+
+        def cache_name_valid(name: sview) -> bool:
+            return sview_len(name) != 0 and sview_len(name) < PACKAGE_MAX_NAME_BYTES and not sview_contains_byte(name, 0)
+
+
+        def cache_locator_valid(locator: sview) -> bool:
+            return sview_len(locator) != 0 and sview_len(locator) < PACKAGE_MAX_PATH_BYTES and not sview_contains_byte(locator, 0)
+
+
+        def cache_version_valid(version: PackageVersion) -> bool:
+            return sview_len(version.pre_release) < PACKAGE_MAX_VERSION_TEXT_BYTES and not sview_contains_byte(version.pre_release, 0)
+
+
+        def cache_version_equal(left: PackageVersion, right: PackageVersion) -> bool:
+            return left.major == right.major and left.minor == right.minor and left.patch == right.patch and left.pre_release == right.pre_release
+
+
+        def cache_text_before(left: sview, right: sview) -> bool:
+            left_length: usize = sview_len(left)
+            right_length: usize = sview_len(right)
+            common: usize = left_length if left_length < right_length else right_length
+            for index in 0..<common |left, right|:
+                return sview_at(left, index) < sview_at(right, index) if sview_at(left, index) != sview_at(right, index)
+            return left_length < right_length
+
+
+        def cache_version_before(left: PackageVersion, right: PackageVersion) -> bool:
+            return left.major < right.major if left.major != right.major else left.minor < right.minor if left.minor != right.minor else left.patch < right.patch if left.patch != right.patch else cache_text_before(left.pre_release, right.pre_release)
+
+
+        def cache_entry_before(left: PackageCacheEntry, right: PackageCacheEntry) -> bool:
+            return true if left.name != right.name and cache_text_before(left.name, right.name)
+            return true if left.name == right.name and not cache_version_equal(left.version, right.version) and cache_version_before(left.version, right.version)
+            return cache_text_before(left.locator, right.locator) if left.name == right.name and cache_version_equal(left.version, right.version) and left.locator != right.locator else false
+
+
+        def cache_entry_equal(left: PackageCacheEntry, right: PackageCacheEntry) -> bool:
+            return left.name == right.name and cache_version_equal(left.version, right.version) and left.locator == right.locator
+
+
+        def cache_entry_valid(entry: PackageCacheEntry) -> bool error[PackageCacheError]:
+            raise PackageCacheError.EntryInvalid if not cache_name_valid(entry.name) or not cache_version_valid(entry.version) or not cache_locator_valid(entry.locator)
+            raise PackageCacheError.EntryInvalid if entry.byte_count == 0 or entry.byte_count > PACKAGE_CACHE_MAX_BYTES or entry.fingerprint == 0
+            raise PackageCacheError.EntryInvalid if entry.integrity_0 == 0 or entry.integrity_1 == 0 or entry.integrity_2 == 0 or entry.integrity_3 == 0
+            return true
+
+
+    public:
+        def validate_package_cache(cache: PackageCache&) -> bool error[PackageCacheError]:
+            raise PackageCacheError.InvalidState if not cache_state_valid(cache.state)
+            raise PackageCacheError.EntryLimitExceeded if cache.entries.count > PACKAGE_CACHE_MAX_ENTRIES
+            raise PackageCacheError.ByteLimitExceeded if cache.bytes > PACKAGE_CACHE_MAX_BYTES
+            total: mutable usize = 0
+            for entry in cache.entries:
+                try cache_entry_valid(entry)
+                raise PackageCacheError.ByteLimitExceeded if total > PACKAGE_CACHE_MAX_BYTES
+                raise PackageCacheError.ByteLimitExceeded if entry.byte_count > PACKAGE_CACHE_MAX_BYTES - total
+                total <- total + entry.byte_count
+            raise PackageCacheError.ByteLimitExceeded if total != cache.bytes
+            for index in 1..<cache.entries.count |cache|:
+                previous: PackageCacheEntry = cache.entries[index - 1]
+                current: PackageCacheEntry = cache.entries[index]
+                raise PackageCacheError.DuplicateEntry if cache_entry_equal(previous, current)
+                raise PackageCacheError.OrderInvalid if not cache_entry_before(previous, current)
+            return true
+
+
+        def package_cache_lookup(cache: PackageCache&, name: sview, version: PackageVersion, fingerprint: u64) -> usize error[PackageCacheError]:
+            try validate_package_cache(cache)
+            raise PackageCacheError.CacheNotReady if cache.state != PackageCacheState.Ready
+            raise PackageCacheError.EntryInvalid if not cache_name_valid(name) or not cache_version_valid(version) or fingerprint == 0
+            for index in 0..<cache.entries.count |cache, name, version, fingerprint|:
+                entry: PackageCacheEntry = cache.entries[index]
+                return index if entry.valid and entry.name == name and cache_version_equal(entry.version, version) and entry.fingerprint == fingerprint
+            raise PackageCacheError.CacheMiss
+
+
+        def advance_package_cache(cache: mutable PackageCache&, event: PackageCacheEvent, entry: PackageCacheEntry = PackageCacheEntry{name: "", version: PackageVersion{major: 0, minor: 0, patch: 0}, locator: ""}, entry_index: usize = 0) -> PackageCacheState error[PackageCacheError]:
+            try validate_package_cache(cache)
+            raise PackageCacheError.InvalidEvent if not cache_event_valid(event)
+            if event == PackageCacheEvent.Begin:
+                raise PackageCacheError.InvalidState if cache.state != PackageCacheState.Empty
+                cache.state <- PackageCacheState.Updating
+            elif event == PackageCacheEvent.Store:
+                raise PackageCacheError.InvalidState if cache.state != PackageCacheState.Updating
+                raise PackageCacheError.EntryLimitExceeded if cache.entries.count >= PACKAGE_CACHE_MAX_ENTRIES
+                try cache_entry_valid(entry)
+                raise PackageCacheError.ByteLimitExceeded if entry.byte_count > PACKAGE_CACHE_MAX_BYTES - cache.bytes
+                if cache.entries.count != 0:
+                    previous: PackageCacheEntry = cache.entries[cache.entries.count - 1]
+                    raise PackageCacheError.DuplicateEntry if cache_entry_equal(previous, entry)
+                    raise PackageCacheError.OrderInvalid if not cache_entry_before(previous, entry)
+                cache.entries.push(entry)
+                cache.bytes <- cache.bytes + entry.byte_count
+            elif event == PackageCacheEvent.Seal:
+                raise PackageCacheError.InvalidState if cache.state != PackageCacheState.Updating
+                cache.state <- PackageCacheState.Ready
+            elif event == PackageCacheEvent.Invalidate:
+                raise PackageCacheError.InvalidateNotReady if cache.state != PackageCacheState.Ready
+                raise PackageCacheError.EntryIndexInvalid if entry_index >= cache.entries.count
+                raise PackageCacheError.EntryInvalid if not cache.entries[entry_index].valid
+                cache.entries[entry_index].valid <- false
+                cache.state <- PackageCacheState.Updating
+            elif event == PackageCacheEvent.Fail:
+                raise PackageCacheError.InvalidState if cache.state == PackageCacheState.Failed
+                cache.state <- PackageCacheState.Failed
+            elif event == PackageCacheEvent.Reset:
+                raise PackageCacheError.ResetNotReady if cache.state != PackageCacheState.Failed
+                cache.entries <- []
+                cache.bytes <- 0
+                cache.state <- PackageCacheState.Empty
+            return cache.state
