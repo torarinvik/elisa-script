@@ -321,6 +321,9 @@ in the IR fixture, and invalid or incomplete sequences remain typed failures.
 Staged publication now has a reusable typed rename edge with optional parent
 directory sync; rename and directory-sync failures remain separate, and the
 caller retains ownership of staging cleanup.
+Source loading and text streams now share the public `EsEncoding::Utf8Cursor`
+validator; invalid or incomplete source bytes fail before parser allocation as
+`ElisascriptSourceError.InvalidUtf8`, while binary stream modes remain raw bytes.
 
 The direct bytecode resource slice now shares one mutable output ledger through
 nested calls, including child output emitted before a recoverable error. The

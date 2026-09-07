@@ -61,7 +61,9 @@ same pipeline after reading the file. It validates the suffix before opening the
 path, copies both the filename and source bytes into permanent runtime storage,
 and raises `ElisascriptSourceError.FileIo` for open, seek, read, or close
 failures. Embedded NUL bytes are rejected as `ElisascriptSourceError.EmbeddedNul`
-before parsing, rather than silently truncating a C-string source. The permanent
+before parsing, rather than silently truncating a C-string source. Invalid or
+incomplete UTF-8 is rejected as `ElisascriptSourceError.InvalidUtf8` before
+parser allocation. The permanent
 backing keeps source spans and text constants valid after the loader returns.
 
 Hosts that install dynamic effect handlers can use

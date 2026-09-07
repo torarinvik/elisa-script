@@ -1993,6 +1993,10 @@ dispatch when supported and otherwise preserves interpreter semantics for dynami
 effects and continuations.
 The file-backed boundary also rejects embedded NUL bytes before tokenization;
 source cannot be silently truncated by the C-string compatibility boundary.
+Source bytes are strict UTF-8 at that boundary as well: incomplete, overlong,
+surrogate, and out-of-range sequences raise `ElisascriptSourceError.InvalidUtf8`
+before parser allocation. The same `EsEncoding::Utf8Cursor` contract is reused
+by typed text streams, while binary stream modes remain byte-preserving.
 It also rejects source files larger than 4 MiB before allocating the parser arena,
 keeping source-size arithmetic and compiler memory use bounded at the host
 boundary. Hosts that need to process generated code should split it into several
