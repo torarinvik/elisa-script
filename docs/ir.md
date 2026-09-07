@@ -238,6 +238,11 @@ host bridges still need to sample a monotonic clock and thread these edges
 through every nested path.
 The reference interpreter's `tick` uses the step edge directly, keeping its
 live usage ledger aligned with the step-limit failure path.
+Console writes and completed process-capture streams now charge their admitted
+byte counts through the shared output edge before returning a value, so a
+caller-supplied output budget cannot be bypassed by switching between console
+and child-process adapters. Host-side process polling still keeps its separate
+capture ceiling and bounded overshoot contract.
 interpreter and direct bytecode paths populate the step/retained-trace limits
 and returned usage snapshot, rejecting a trace pool that exceeds the caller's
 policy, while their existing host bridges continue enforcing their specialized
