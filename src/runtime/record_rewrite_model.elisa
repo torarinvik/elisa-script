@@ -1,0 +1,159 @@
+# Transactional in-place rewrite contract for record/regex adapters.
+#
+# A rewrite never truncates the source directly. The host adapter creates a
+# sibling staging file, appends bounded output, syncs it, and performs one
+# explicit commit edge. Rollback remains visible for backup-aware adapters.
+
+module EsRecordRewrite:
+    public:
+        const RECORD_REWRITE_MAX_PATH_BYTES: usize = 4096
+        const RECORD_REWRITE_MAX_OUTPUT_BYTES: usize = 268435456
+        const RECORD_REWRITE_MAX_APPENDS: usize = 1048576
+
+
+        const enum RecordRewriteSymlinkMode of u8:
+            Reject
+            FollowSource
+            ReplaceLink
+
+
+        const enum RecordRewriteState of u8:
+            Planned
+            Staging
+            Ready
+            Committing
+            Committed
+            RollingBack
+            RolledBack
+            Failed
+            Cancelled
+
+
+        const enum RecordRewriteEvent of u8:
+            Begin
+            Append
+            Sync
+            DirectorySync
+            Commit
+            CommitAck
+            BeginRollback
+            RollbackAck
+            Fail
+            Cancel
+
+
+        struct RecordRewritePlan:
+            source_path: sview
+            destination_path: sview
+            staging_path: sview
+            backup_path: sview = ""
+            symlink_mode: RecordRewriteSymlinkMode = RecordRewriteSymlinkMode.Reject
+            preserve_mode: bool = true
+            require_directory_sync: bool = true
+            max_output_bytes: usize = RECORD_REWRITE_MAX_OUTPUT_BYTES
+
+
+        struct RecordRewriteSession:
+            plan: RecordRewritePlan
+            state: RecordRewriteState = RecordRewriteState.Planned
+            output_bytes: usize = 0
+            append_count: usize = 0
+            staged_synced: bool = false
+            directory_synced: bool = false
+            commit_acknowledged: bool = false
+            rollback_acknowledged: bool = false
+
+
+        error RecordRewriteError:
+            InvalidState
+            InvalidEvent
+            PlanInvalid
+            PathInvalid
+            PathCollision
+            OutputLimitExceeded
+            AppendLimitExceeded
+            SyncNotReady
+            DirectorySyncNotReady
+            CommitNotReady
+            CommitAckNotReady
+            RollbackNotReady
+            RollbackAckNotReady
+            CancelNotReady
+
+
+    private:
+        def record_rewrite_state_valid(state: RecordRewriteState) -> bool:
+            return state in {RecordRewriteState.Planned, RecordRewriteState.Staging, RecordRewriteState.Ready, RecordRewriteState.Committing, RecordRewriteState.Committed, RecordRewriteState.RollingBack, RecordRewriteState.RolledBack, RecordRewriteState.Failed, RecordRewriteState.Cancelled}
+
+
+        def record_rewrite_event_valid(event: RecordRewriteEvent) -> bool:
+            return event in {RecordRewriteEvent.Begin, RecordRewriteEvent.Append, RecordRewriteEvent.Sync, RecordRewriteEvent.Commit, RecordRewriteEvent.CommitAck, RecordRewriteEvent.BeginRollback, RecordRewriteEvent.RollbackAck, RecordRewriteEvent.Fail, RecordRewriteEvent.Cancel}
+
+
+        def record_rewrite_path_valid(path: sview) -> bool:
+            return path != "" and sview_len(path) < RECORD_REWRITE_MAX_PATH_BYTES and not sview_contains_byte(path, 0) and path != "." and path != ".."
+
+
+        def record_rewrite_plan_valid(plan: RecordRewritePlan) -> bool:
+            return false if not record_rewrite_path_valid(plan.source_path) or not record_rewrite_path_valid(plan.destination_path) or not record_rewrite_path_valid(plan.staging_path)
+            return false if plan.source_path == plan.staging_path or plan.destination_path == plan.staging_path
+            return false if plan.backup_path != "" and (not record_rewrite_path_valid(plan.backup_path) or plan.backup_path == plan.source_path or plan.backup_path == plan.destination_path or plan.backup_path == plan.staging_path)
+            return false if plan.max_output_bytes == 0 or plan.max_output_bytes > RECORD_REWRITE_MAX_OUTPUT_BYTES
+            return true
+
+
+    public:
+        def validate_record_rewrite_session(session: RecordRewriteSession&) -> bool error[RecordRewriteError]:
+            raise RecordRewriteError.InvalidState if not record_rewrite_state_valid(session.state)
+            raise RecordRewriteError.PathInvalid if not record_rewrite_path_valid(session.plan.source_path) or not record_rewrite_path_valid(session.plan.destination_path) or not record_rewrite_path_valid(session.plan.staging_path) or (session.plan.backup_path != "" and not record_rewrite_path_valid(session.plan.backup_path))
+            raise RecordRewriteError.PathCollision if session.plan.source_path == session.plan.staging_path or session.plan.destination_path == session.plan.staging_path or (session.plan.backup_path != "" and (session.plan.backup_path == session.plan.source_path or session.plan.backup_path == session.plan.destination_path or session.plan.backup_path == session.plan.staging_path))
+            raise RecordRewriteError.PlanInvalid if not record_rewrite_plan_valid(session.plan)
+            raise RecordRewriteError.OutputLimitExceeded if session.output_bytes > session.plan.max_output_bytes
+            raise RecordRewriteError.AppendLimitExceeded if session.append_count > RECORD_REWRITE_MAX_APPENDS
+            raise RecordRewriteError.InvalidState if session.state == RecordRewriteState.Planned and (session.output_bytes != 0 or session.append_count != 0 or session.staged_synced or session.directory_synced or session.commit_acknowledged or session.rollback_acknowledged)
+            raise RecordRewriteError.InvalidState if session.state == RecordRewriteState.Ready and not session.staged_synced
+            raise RecordRewriteError.InvalidState if session.state == RecordRewriteState.Committing and not session.staged_synced
+            raise RecordRewriteError.InvalidState if session.state == RecordRewriteState.Committed and not session.commit_acknowledged
+            raise RecordRewriteError.InvalidState if session.state == RecordRewriteState.RolledBack and not session.rollback_acknowledged
+            return true
+
+
+        def advance_record_rewrite(session: mutable RecordRewriteSession&, event: RecordRewriteEvent, appended_bytes: usize = 0) -> RecordRewriteState error[RecordRewriteError]:
+            try validate_record_rewrite_session(session)
+            raise RecordRewriteError.InvalidEvent if not record_rewrite_event_valid(event)
+            if event == RecordRewriteEvent.Begin:
+                raise RecordRewriteError.InvalidState if session.state != RecordRewriteState.Planned
+                session.state <- RecordRewriteState.Staging
+            elif event == RecordRewriteEvent.Append:
+                raise RecordRewriteError.InvalidState if session.state != RecordRewriteState.Staging
+                raise RecordRewriteError.AppendLimitExceeded if appended_bytes == 0 or session.append_count >= RECORD_REWRITE_MAX_APPENDS or appended_bytes > session.plan.max_output_bytes - session.output_bytes
+                session.output_bytes <- session.output_bytes + appended_bytes
+                session.append_count <- session.append_count + 1
+            elif event == RecordRewriteEvent.Sync:
+                raise RecordRewriteError.SyncNotReady if session.state != RecordRewriteState.Staging
+                session.staged_synced <- true
+                session.state <- RecordRewriteState.Ready
+            elif event == RecordRewriteEvent.DirectorySync:
+                raise RecordRewriteError.DirectorySyncNotReady if session.state != RecordRewriteState.Ready or not session.staged_synced
+                session.directory_synced <- true
+            elif event == RecordRewriteEvent.Commit:
+                raise RecordRewriteError.CommitNotReady if session.state != RecordRewriteState.Ready or not session.staged_synced or (session.plan.require_directory_sync and not session.directory_synced)
+                session.state <- RecordRewriteState.Committing
+            elif event == RecordRewriteEvent.CommitAck:
+                raise RecordRewriteError.CommitAckNotReady if session.state != RecordRewriteState.Committing
+                session.commit_acknowledged <- true
+                session.state <- RecordRewriteState.Committed
+            elif event == RecordRewriteEvent.BeginRollback:
+                raise RecordRewriteError.RollbackNotReady if session.state != RecordRewriteState.Committing and session.state != RecordRewriteState.Committed and session.state != RecordRewriteState.Failed
+                session.state <- RecordRewriteState.RollingBack
+            elif event == RecordRewriteEvent.RollbackAck:
+                raise RecordRewriteError.RollbackAckNotReady if session.state != RecordRewriteState.RollingBack
+                session.rollback_acknowledged <- true
+                session.state <- RecordRewriteState.RolledBack
+            elif event == RecordRewriteEvent.Fail:
+                raise RecordRewriteError.InvalidState if session.state != RecordRewriteState.Staging and session.state != RecordRewriteState.Ready and session.state != RecordRewriteState.Committing
+                session.state <- RecordRewriteState.Failed
+            elif event == RecordRewriteEvent.Cancel:
+                raise RecordRewriteError.CancelNotReady if session.state != RecordRewriteState.Planned and session.state != RecordRewriteState.Staging and session.state != RecordRewriteState.Ready
+                session.state <- RecordRewriteState.Cancelled
+            return session.state

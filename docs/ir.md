@@ -947,6 +947,16 @@ the same lexicographic order for in-memory sorting and disk-run merging, while
 ordinal gaps, over-budget text, and post-terminal transitions. Disk runs,
 atomic spill files, and merge I/O remain host responsibilities.
 
+`EsRecordRewrite::RecordRewriteSession` is the safe in-place transformation
+boundary for Perl `-pi`, sed-like, and record/regex rewrite adapters. A plan
+requires distinct source, destination, and sibling staging paths, an optional
+non-colliding backup, a symlink policy, and a bounded output ceiling. The
+session admits `Begin → Append* → Sync → DirectorySync? → Commit → CommitAck`, with explicit
+failure, cancellation, and `BeginRollback → RollbackAck` recovery edges; an
+empty staged output is valid, but commit is impossible before the sync edge.
+The typed contract performs no rename or fsync itself, leaving platform error
+mapping, permissions, crash recovery, and multi-file traversal to host code.
+
 `EsNetwork::NetworkRequest` and `NetworkResponse` define a transport-neutral
 HTTP/TLS boundary. Requests carry an explicit method, URL, ordered header pairs,
 binary body, positive timeout, response ceiling, and redirect policy; responses
