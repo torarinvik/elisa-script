@@ -162,6 +162,15 @@ while accounting failed records and rejecting budget overflow before mutation.
 Renderers can therefore remain format-specific without changing result
 semantics or truncating machine output silently.
 
+`EsBuild` is the shell-replacement boundary for build and test recipes.
+`BuildGraph` contains typed `ProcessCommand` nodes, stable fingerprints,
+bounded per-node/aggregate logs, and explicit dependency names. Validation
+requires a deterministic topological order (dependencies precede consumers),
+rejects missing/duplicate/cyclic dependencies, and preserves process-command
+errors. `advance_build_graph` limits active nodes, records per-node completion
+or failure, and exposes cancellation acknowledgement so a scheduler cannot
+silently overrun parallelism or abandon children.
+
 Every verified module also has canonical structural bytes through
 `canonical_module_bytes(module)` and a compact fingerprint through
 `module_fingerprint(module)` (with `canonical_module_hash` as the explicit
