@@ -107,6 +107,18 @@ or symbol sets fail through `error[ModuleContractError]`. Resolution advances
 The graph contract is independent of host path lookup and leaves package roots,
 lockfiles, and filesystem canonicalization to the launcher/adapter.
 
+`EsPackage` supplies that package-facing contract without letting a registry or
+filesystem adapter invent semantics. `PackageManifest` declares a bounded
+versioned root, typed runtime/development/build/native dependencies, native
+dependency names, and an offline-only policy. `PackageLock` records exact
+ordered entries with source kind, locator, four-word integrity identity, and
+bounded transitive dependency names. `validate_package_resolution` checks root
+identity, every manifest constraint, and every lock dependency before source
+loading; `advance_package_resolution` exposes the explicit
+`Declared → Locked → Verified` state machine with fail/reset edges. Registry
+selection, signature verification, cache storage, and publishing still belong
+to separately qualified host adapters.
+
 Every verified module also has canonical structural bytes through
 `canonical_module_bytes(module)` and a compact fingerprint through
 `module_fingerprint(module)` (with `canonical_module_hash` as the explicit
