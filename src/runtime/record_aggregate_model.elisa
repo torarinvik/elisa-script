@@ -9,6 +9,7 @@ module EsRecordAggregate:
         const RECORD_AGGREGATE_MAX_GROUPS: usize = 1048576
         const RECORD_AGGREGATE_MAX_EVENTS: usize = 1048576
         const RECORD_AGGREGATE_MAX_KEY_BYTES: usize = 268435456
+        const RECORD_AGGREGATE_MAX_SUM: u64 = 67108864
 
 
         const enum RecordAggregateState of u8:
@@ -22,6 +23,7 @@ module EsRecordAggregate:
         const enum RecordAggregateEvent of u8:
             Begin
             Add
+            AddValue
             Seal
             Fail
             Cancel
@@ -31,12 +33,14 @@ module EsRecordAggregate:
             max_groups: usize = RECORD_AGGREGATE_MAX_GROUPS
             max_events: usize = RECORD_AGGREGATE_MAX_EVENTS
             max_key_bytes: usize = RECORD_AGGREGATE_MAX_KEY_BYTES
+            max_sum: u64 = RECORD_AGGREGATE_MAX_SUM
 
 
         struct RecordAggregateGroup:
             key: sview
             count: usize = 0
             first_ordinal: usize = 0
+            sum: u64 = 0
 
 
         struct RecordAggregateSession:
@@ -58,6 +62,7 @@ module EsRecordAggregate:
             OrdinalInvalid
             GroupIndexInvalid
             LookupNotReady
+            SumLimitExceeded
             CancelNotReady
 
 
@@ -67,11 +72,11 @@ module EsRecordAggregate:
 
 
         def record_aggregate_event_valid(event: RecordAggregateEvent) -> bool:
-            return event in {RecordAggregateEvent.Begin, RecordAggregateEvent.Add, RecordAggregateEvent.Seal, RecordAggregateEvent.Fail, RecordAggregateEvent.Cancel}
+            return event in {RecordAggregateEvent.Begin, RecordAggregateEvent.Add, RecordAggregateEvent.AddValue, RecordAggregateEvent.Seal, RecordAggregateEvent.Fail, RecordAggregateEvent.Cancel}
 
 
         def record_aggregate_policy_valid(policy: RecordAggregatePolicy) -> bool:
-            return policy.max_groups != 0 and policy.max_groups <= RECORD_AGGREGATE_MAX_GROUPS and policy.max_events != 0 and policy.max_events <= RECORD_AGGREGATE_MAX_EVENTS and policy.max_key_bytes != 0 and policy.max_key_bytes <= RECORD_AGGREGATE_MAX_KEY_BYTES
+            return policy.max_groups != 0 and policy.max_groups <= RECORD_AGGREGATE_MAX_GROUPS and policy.max_events != 0 and policy.max_events <= RECORD_AGGREGATE_MAX_EVENTS and policy.max_key_bytes != 0 and policy.max_key_bytes <= RECORD_AGGREGATE_MAX_KEY_BYTES and policy.max_sum != 0 and policy.max_sum <= RECORD_AGGREGATE_MAX_SUM
 
 
         def record_aggregate_key_valid(key: sview, policy: RecordAggregatePolicy) -> bool:
@@ -97,6 +102,7 @@ module EsRecordAggregate:
                 raise RecordAggregateError.KeyInvalid if not record_aggregate_key_valid(group.key, session.policy)
                 raise RecordAggregateError.OrdinalInvalid if group.first_ordinal >= session.event_count and session.event_count != 0
                 raise RecordAggregateError.EventLimitExceeded if group.count == 0 or group.count > session.event_count
+                raise RecordAggregateError.SumLimitExceeded if group.sum > session.policy.max_sum
                 for earlier in 0..<index |session, group|:
                     raise RecordAggregateError.KeyInvalid if session.groups[earlier].key == group.key
                 raise RecordAggregateError.KeyBytesLimitExceeded if sview_len(group.key) > session.policy.max_key_bytes - accounted_keys
@@ -114,24 +120,37 @@ module EsRecordAggregate:
             return session.groups[index].count
 
 
-        def advance_record_aggregate(session: mutable RecordAggregateSession&, event: RecordAggregateEvent, key: sview = "") -> RecordAggregateState error[RecordAggregateError]:
+        def record_aggregate_group_sum(session: RecordAggregateSession&, key: sview) -> u64 error[RecordAggregateError]:
+            try validate_record_aggregate(session)
+            raise RecordAggregateError.LookupNotReady if session.state != RecordAggregateState.Sealed
+            raise RecordAggregateError.KeyInvalid if not record_aggregate_key_valid(key, session.policy)
+            index: usize = record_aggregate_index(session, key)
+            raise RecordAggregateError.GroupIndexInvalid if index == session.groups.count
+            return session.groups[index].sum
+
+
+        def advance_record_aggregate(session: mutable RecordAggregateSession&, event: RecordAggregateEvent, key: sview = "", value: u64 = 0) -> RecordAggregateState error[RecordAggregateError]:
             try validate_record_aggregate(session)
             raise RecordAggregateError.InvalidEvent if not record_aggregate_event_valid(event)
             if event == RecordAggregateEvent.Begin:
                 raise RecordAggregateError.InvalidState if session.state != RecordAggregateState.Planned
                 session.state <- RecordAggregateState.Collecting
-            elif event == RecordAggregateEvent.Add:
+            elif event == RecordAggregateEvent.Add or event == RecordAggregateEvent.AddValue:
                 raise RecordAggregateError.InvalidState if session.state != RecordAggregateState.Collecting
                 raise RecordAggregateError.EventLimitExceeded if session.event_count >= session.policy.max_events
                 raise RecordAggregateError.KeyInvalid if not record_aggregate_key_valid(key, session.policy)
+                raise RecordAggregateError.SumLimitExceeded if event == RecordAggregateEvent.AddValue and value > session.policy.max_sum
                 index: usize = record_aggregate_index(session, key)
                 if index == session.groups.count:
                     raise RecordAggregateError.GroupLimitExceeded if session.groups.count >= session.policy.max_groups
                     raise RecordAggregateError.KeyBytesLimitExceeded if sview_len(key) > session.policy.max_key_bytes - session.key_bytes
-                    session.groups.push(RecordAggregateGroup{key: key, count: 1, first_ordinal: session.event_count})
+                    session.groups.push(RecordAggregateGroup{key: key, count: 1, first_ordinal: session.event_count, sum: value if event == RecordAggregateEvent.AddValue else 0})
                     session.key_bytes <- session.key_bytes + sview_len(key)
                 else:
                     raise RecordAggregateError.EventLimitExceeded if session.groups[index].count >= session.policy.max_events
+                    if event == RecordAggregateEvent.AddValue:
+                        raise RecordAggregateError.SumLimitExceeded if session.groups[index].sum > session.policy.max_sum - value
+                        session.groups[index].sum <- session.groups[index].sum + value
                     session.groups[index].count <- session.groups[index].count + 1
                 session.event_count <- session.event_count + 1
             elif event == RecordAggregateEvent.Seal:

@@ -970,10 +970,13 @@ exit cleanup.
 count operation for AWK/Perl-style keyed aggregation. Keys retain insertion
 order, duplicate keys increment their count without changing that order, and
 new groups plus aggregate key bytes are admitted against explicit ceilings.
-`record_aggregate_group_count` is available only after `Seal`; malformed keys,
-duplicate internal groups, event/group overflow, and terminal mutation return
-`error[RecordAggregateError]`. Sum/average/join payloads can build on this
-contract only after choosing explicit numeric overflow and ordering policies.
+`AddValue` adds a bounded unsigned value to the same stable group, with an
+explicit per-session sum ceiling; `record_aggregate_group_count` and
+`record_aggregate_group_sum` are available only after `Seal`. Malformed keys,
+duplicate internal groups, event/group/sum overflow, and terminal mutation
+return `error[RecordAggregateError]`. Signed sums, averages, joins, and
+spill-to-disk aggregation remain separate policies rather than implicit numeric
+conversions.
 
 `EsRecordFields::RecordFieldEditSession` is the bounded mutation boundary for
 AWK `$N` updates and Perl-style record rewrites. A policy fixes the maximum

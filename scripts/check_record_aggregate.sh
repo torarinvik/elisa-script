@@ -27,6 +27,7 @@ for declaration in \
     'error RecordAggregateError:' \
     'def validate_record_aggregate\(' \
     'def record_aggregate_group_count\(' \
+    'def record_aggregate_group_sum\(' \
     'def advance_record_aggregate\('; do
     rg -q "$declaration" "$model"
 done
@@ -35,12 +36,15 @@ for boundary in \
     'RECORD_AGGREGATE_MAX_GROUPS' \
     'RECORD_AGGREGATE_MAX_EVENTS' \
     'RECORD_AGGREGATE_MAX_KEY_BYTES' \
+    'RECORD_AGGREGATE_MAX_SUM' \
     'record_aggregate_key_valid' \
     'RecordAggregateError.GroupLimitExceeded' \
     'RecordAggregateError.EventLimitExceeded' \
     'RecordAggregateError.KeyBytesLimitExceeded' \
     'RecordAggregateError.GroupIndexInvalid' \
     'RecordAggregateEvent.Add' \
+    'RecordAggregateEvent.AddValue' \
+    'SumLimitExceeded' \
     'RecordAggregateEvent.Seal'; do
     rg -q "$boundary" "$model"
 done
