@@ -957,6 +957,15 @@ empty staged output is valid, but commit is impossible before the sync edge.
 The typed contract performs no rename or fsync itself, leaving platform error
 mapping, permissions, crash recovery, and multi-file traversal to host code.
 
+`EsRecordLifecycle::RecordLifecycleSession` defines the hook order around a
+stream and its files: `Begin`, `FileBegin`, `RecordBegin`, `RecordEnd`,
+`FileEnd`, and `End`, with typed failure and cancellation exits. It counts files
+and records, rejects records outside a file, prevents closing a file with an
+open record, and can require every file to contain at least one record. The
+state machine is deliberately callback-neutral so a host can dispatch typed
+begin/per-file/per-record/end functions without weakening ordering or early
+exit cleanup.
+
 `EsNetwork::NetworkRequest` and `NetworkResponse` define a transport-neutral
 HTTP/TLS boundary. Requests carry an explicit method, URL, ordered header pairs,
 binary body, positive timeout, response ceiling, and redirect policy; responses

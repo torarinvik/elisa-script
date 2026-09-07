@@ -1,0 +1,143 @@
+# Ordered lifecycle contract for record-stream adapters.
+#
+# Hook dispatch remains a host callback concern; this module makes the allowed
+# begin/file/record/end ordering and early-failure behavior explicit data.
+
+module EsRecordLifecycle:
+    public:
+        const RECORD_LIFECYCLE_MAX_FILES: usize = 1048576
+        const RECORD_LIFECYCLE_MAX_RECORDS: usize = 1048576
+        const RECORD_LIFECYCLE_MAX_NAME_BYTES: usize = 4096
+
+
+        const enum RecordLifecycleState of u8:
+            Planned
+            Running
+            Completed
+            Failed
+            Cancelled
+
+
+        const enum RecordLifecycleEvent of u8:
+            Begin
+            FileBegin
+            RecordBegin
+            RecordEnd
+            FileEnd
+            End
+            Fail
+            Cancel
+
+
+        struct RecordLifecyclePolicy:
+            max_files: usize = RECORD_LIFECYCLE_MAX_FILES
+            max_records: usize = RECORD_LIFECYCLE_MAX_RECORDS
+            allow_empty_files: bool = true
+
+
+        struct RecordLifecycleSession:
+            policy: RecordLifecyclePolicy
+            state: RecordLifecycleState = RecordLifecycleState.Planned
+            file_open: bool = false
+            record_open: bool = false
+            file_count: usize = 0
+            record_count: usize = 0
+            file_record_count: usize = 0
+            current_file: sview = ""
+
+
+        error RecordLifecycleError:
+            InvalidState
+            InvalidEvent
+            PolicyInvalid
+            NameInvalid
+            FileLimitExceeded
+            RecordLimitExceeded
+            FileAlreadyOpen
+            FileNotOpen
+            RecordAlreadyOpen
+            RecordNotOpen
+            FileNotClosed
+            EmptyFileNotAllowed
+            EndNotReady
+            CancelNotReady
+
+
+    private:
+        def record_lifecycle_state_valid(state: RecordLifecycleState) -> bool:
+            return state in {RecordLifecycleState.Planned, RecordLifecycleState.Running, RecordLifecycleState.Completed, RecordLifecycleState.Failed, RecordLifecycleState.Cancelled}
+
+
+        def record_lifecycle_event_valid(event: RecordLifecycleEvent) -> bool:
+            return event in {RecordLifecycleEvent.Begin, RecordLifecycleEvent.FileBegin, RecordLifecycleEvent.RecordBegin, RecordLifecycleEvent.RecordEnd, RecordLifecycleEvent.FileEnd, RecordLifecycleEvent.End, RecordLifecycleEvent.Fail, RecordLifecycleEvent.Cancel}
+
+
+        def record_lifecycle_policy_valid(policy: RecordLifecyclePolicy) -> bool:
+            return policy.max_files != 0 and policy.max_files <= RECORD_LIFECYCLE_MAX_FILES and policy.max_records != 0 and policy.max_records <= RECORD_LIFECYCLE_MAX_RECORDS
+
+
+        def record_lifecycle_name_valid(name: sview) -> bool:
+            return name != "" and sview_len(name) < RECORD_LIFECYCLE_MAX_NAME_BYTES and not sview_contains_byte(name, 0)
+
+
+    public:
+        def validate_record_lifecycle(session: RecordLifecycleSession&) -> bool error[RecordLifecycleError]:
+            raise RecordLifecycleError.InvalidState if not record_lifecycle_state_valid(session.state)
+            raise RecordLifecycleError.PolicyInvalid if not record_lifecycle_policy_valid(session.policy)
+            raise RecordLifecycleError.FileLimitExceeded if session.file_count > session.policy.max_files
+            raise RecordLifecycleError.RecordLimitExceeded if session.record_count > session.policy.max_records
+            raise RecordLifecycleError.InvalidState if session.record_open and not session.file_open
+            raise RecordLifecycleError.InvalidState if session.state != RecordLifecycleState.Running and (session.file_open or session.record_open)
+            return true
+
+
+        def advance_record_lifecycle(session: mutable RecordLifecycleSession&, event: RecordLifecycleEvent, file_name: sview = "") -> RecordLifecycleState error[RecordLifecycleError]:
+            try validate_record_lifecycle(session)
+            raise RecordLifecycleError.InvalidEvent if not record_lifecycle_event_valid(event)
+            if event == RecordLifecycleEvent.Begin:
+                raise RecordLifecycleError.InvalidState if session.state != RecordLifecycleState.Planned
+                session.state <- RecordLifecycleState.Running
+            elif event == RecordLifecycleEvent.FileBegin:
+                raise RecordLifecycleError.InvalidState if session.state != RecordLifecycleState.Running
+                raise RecordLifecycleError.FileAlreadyOpen if session.file_open
+                raise RecordLifecycleError.NameInvalid if not record_lifecycle_name_valid(file_name)
+                raise RecordLifecycleError.FileLimitExceeded if session.file_count >= session.policy.max_files
+                session.file_open <- true
+                session.file_count <- session.file_count + 1
+                session.file_record_count <- 0
+                session.current_file <- file_name
+            elif event == RecordLifecycleEvent.RecordBegin:
+                raise RecordLifecycleError.InvalidState if session.state != RecordLifecycleState.Running
+                raise RecordLifecycleError.FileNotOpen if not session.file_open
+                raise RecordLifecycleError.RecordAlreadyOpen if session.record_open
+                raise RecordLifecycleError.RecordLimitExceeded if session.record_count >= session.policy.max_records
+                session.record_open <- true
+            elif event == RecordLifecycleEvent.RecordEnd:
+                raise RecordLifecycleError.InvalidState if session.state != RecordLifecycleState.Running
+                raise RecordLifecycleError.RecordNotOpen if not session.record_open
+                session.record_open <- false
+                session.record_count <- session.record_count + 1
+                session.file_record_count <- session.file_record_count + 1
+            elif event == RecordLifecycleEvent.FileEnd:
+                raise RecordLifecycleError.InvalidState if session.state != RecordLifecycleState.Running
+                raise RecordLifecycleError.FileNotOpen if not session.file_open
+                raise RecordLifecycleError.RecordNotOpen if session.record_open
+                raise RecordLifecycleError.EmptyFileNotAllowed if not session.policy.allow_empty_files and session.file_record_count == 0
+                session.file_open <- false
+                session.current_file <- ""
+            elif event == RecordLifecycleEvent.End:
+                raise RecordLifecycleError.EndNotReady if session.state != RecordLifecycleState.Running or session.file_open or session.record_open
+                session.state <- RecordLifecycleState.Completed
+            elif event == RecordLifecycleEvent.Fail:
+                raise RecordLifecycleError.InvalidState if session.state != RecordLifecycleState.Running
+                session.file_open <- false
+                session.record_open <- false
+                session.current_file <- ""
+                session.state <- RecordLifecycleState.Failed
+            elif event == RecordLifecycleEvent.Cancel:
+                raise RecordLifecycleError.CancelNotReady if session.state != RecordLifecycleState.Planned and session.state != RecordLifecycleState.Running
+                session.file_open <- false
+                session.record_open <- false
+                session.current_file <- ""
+                session.state <- RecordLifecycleState.Cancelled
+            return session.state
