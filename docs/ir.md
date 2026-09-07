@@ -153,6 +153,15 @@ explicit `Empty → Building → Sealed` protocol (with invalidation), while
 `source_map_lookup` returns a bounded entry index or the table-count sentinel;
 no consumer scans an unvalidated or path-inferred map.
 
+`EsOutput` gives launcher, test, and differential renderers one bounded
+document contract. `OutputOptions` fixes human/JSON/JUnit format, color policy,
+quiet/fail-fast behavior, and a total text budget; `OutputRecord` carries a
+typed pass/fail/error/skip status with bounded name and channel text.
+`advance_output_document` appends records through `Empty → Building → Sealed`
+while accounting failed records and rejecting budget overflow before mutation.
+Renderers can therefore remain format-specific without changing result
+semantics or truncating machine output silently.
+
 Every verified module also has canonical structural bytes through
 `canonical_module_bytes(module)` and a compact fingerprint through
 `module_fingerprint(module)` (with `canonical_module_hash` as the explicit

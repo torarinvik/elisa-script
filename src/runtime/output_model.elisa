@@ -1,0 +1,165 @@
+# Typed human/machine output contract for CLI, tests, and differential tools.
+#
+# Renderers consume validated records and options; they do not infer status,
+# color, truncation, or ordering from arbitrary host strings.
+
+module EsOutput:
+    public:
+        const OUTPUT_MAX_RECORDS: usize = 1048576
+        const OUTPUT_MAX_TEXT_BYTES: usize = 67108864
+        const OUTPUT_MAX_NAME_BYTES: usize = 4096
+
+
+        const enum OutputFormat of u8:
+            Human
+            Json
+            Junit
+
+
+        const enum OutputColorMode of u8:
+            Auto
+            Always
+            Never
+
+
+        const enum OutputStatus of u8:
+            Pass
+            Fail
+            Error
+            Skip
+
+
+        const enum OutputDocumentState of u8:
+            Empty
+            Building
+            Sealed
+
+
+        const enum OutputDocumentEvent of u8:
+            Begin
+            Append
+            Seal
+
+
+        struct OutputOptions:
+            format: OutputFormat = OutputFormat.Human
+            color: OutputColorMode = OutputColorMode.Auto
+            quiet: bool = false
+            fail_fast: bool = false
+            max_bytes: usize = OUTPUT_MAX_TEXT_BYTES
+
+
+        struct OutputRecord:
+            name: sview
+            status: OutputStatus
+            message: sview = ""
+            stdout: sview = ""
+            stderr: sview = ""
+            duration_ms: u64 = 0
+
+
+        struct OutputDocument:
+            options: OutputOptions = OutputOptions{}
+            records: darray[OutputRecord] = []
+            state: OutputDocumentState = OutputDocumentState.Empty
+            text_bytes: usize = 0
+            failed_records: usize = 0
+
+
+        error OutputContractError:
+            InvalidFormat
+            InvalidColorMode
+            InvalidStatus
+            InvalidState
+            InvalidEvent
+            RecordLimitExceeded
+            TextLimitExceeded
+            NameInvalid
+            MessageInvalid
+            OutputLimitInvalid
+            AppendNotReady
+            SealNotReady
+
+
+    private:
+        def output_format_valid(format: OutputFormat) -> bool:
+            return format in {OutputFormat.Human, OutputFormat.Json, OutputFormat.Junit}
+
+
+        def output_color_valid(color: OutputColorMode) -> bool:
+            return color in {OutputColorMode.Auto, OutputColorMode.Always, OutputColorMode.Never}
+
+
+        def output_status_valid(status: OutputStatus) -> bool:
+            return status in {OutputStatus.Pass, OutputStatus.Fail, OutputStatus.Error, OutputStatus.Skip}
+
+
+        def output_state_valid(state: OutputDocumentState) -> bool:
+            return state in {OutputDocumentState.Empty, OutputDocumentState.Building, OutputDocumentState.Sealed}
+
+
+        def output_event_valid(event: OutputDocumentEvent) -> bool:
+            return event in {OutputDocumentEvent.Begin, OutputDocumentEvent.Append, OutputDocumentEvent.Seal}
+
+
+        def output_text_valid(value: sview, limit: usize, allow_empty: bool = true) -> bool:
+            return false if not allow_empty and sview_len(value) == 0
+            return sview_len(value) < limit and not sview_contains_byte(value, 0)
+
+
+        def output_record_valid(record: OutputRecord) -> bool error[OutputContractError]:
+            raise OutputContractError.NameInvalid if not output_text_valid(record.name, OUTPUT_MAX_NAME_BYTES, false)
+            raise OutputContractError.InvalidStatus if not output_status_valid(record.status)
+            raise OutputContractError.MessageInvalid if not output_text_valid(record.message, OUTPUT_MAX_TEXT_BYTES) or not output_text_valid(record.stdout, OUTPUT_MAX_TEXT_BYTES) or not output_text_valid(record.stderr, OUTPUT_MAX_TEXT_BYTES)
+            return true
+
+
+        def output_add_bounded(current: usize, addition: usize, limit: usize) -> bool:
+            return current <= limit and addition <= limit - current
+
+
+    public:
+        def validate_output_options(options: OutputOptions&) -> bool error[OutputContractError]:
+            raise OutputContractError.InvalidFormat if not output_format_valid(options.format)
+            raise OutputContractError.InvalidColorMode if not output_color_valid(options.color)
+            raise OutputContractError.OutputLimitInvalid if options.max_bytes == 0 or options.max_bytes > OUTPUT_MAX_TEXT_BYTES
+            return true
+
+
+        def validate_output_document(document: OutputDocument&) -> bool error[OutputContractError]:
+            try validate_output_options(document.options)
+            raise OutputContractError.InvalidState if not output_state_valid(document.state)
+            raise OutputContractError.RecordLimitExceeded if document.records.count > OUTPUT_MAX_RECORDS
+            raise OutputContractError.TextLimitExceeded if document.text_bytes > document.options.max_bytes
+            for record in document.records:
+                try output_record_valid(record)
+            return true
+
+
+        def advance_output_document(document: mutable OutputDocument&, event: OutputDocumentEvent, record: OutputRecord = OutputRecord{name: "", status: OutputStatus.Pass}) -> OutputDocumentState error[OutputContractError]:
+            try validate_output_document(document)
+            raise OutputContractError.InvalidEvent if not output_event_valid(event)
+            if event == OutputDocumentEvent.Begin:
+                raise OutputContractError.InvalidState if document.state != OutputDocumentState.Empty
+                document.state <- OutputDocumentState.Building
+            elif event == OutputDocumentEvent.Append:
+                raise OutputContractError.AppendNotReady if document.state != OutputDocumentState.Building
+                raise OutputContractError.RecordLimitExceeded if document.records.count >= OUTPUT_MAX_RECORDS
+                try output_record_valid(record)
+                record_bytes: mutable usize = 0
+                raise OutputContractError.TextLimitExceeded if not output_add_bounded(record_bytes, sview_len(record.name), document.options.max_bytes)
+                record_bytes <- record_bytes + sview_len(record.name)
+                raise OutputContractError.TextLimitExceeded if not output_add_bounded(record_bytes, sview_len(record.message), document.options.max_bytes)
+                record_bytes <- record_bytes + sview_len(record.message)
+                raise OutputContractError.TextLimitExceeded if not output_add_bounded(record_bytes, sview_len(record.stdout), document.options.max_bytes)
+                record_bytes <- record_bytes + sview_len(record.stdout)
+                raise OutputContractError.TextLimitExceeded if not output_add_bounded(record_bytes, sview_len(record.stderr), document.options.max_bytes)
+                record_bytes <- record_bytes + sview_len(record.stderr)
+                raise OutputContractError.TextLimitExceeded if not output_add_bounded(document.text_bytes, record_bytes, document.options.max_bytes)
+                document.records.push(record)
+                document.text_bytes <- document.text_bytes + record_bytes
+                document.failed_records <- document.failed_records + 1 if record.status == OutputStatus.Fail or record.status == OutputStatus.Error
+            elif event == OutputDocumentEvent.Seal:
+                raise OutputContractError.SealNotReady if document.state != OutputDocumentState.Building
+                document.state <- OutputDocumentState.Sealed
+            return document.state
