@@ -630,6 +630,17 @@ performing I/O. A future adapter must perform fixture creation, cwd/environment
 setup, cleanup, and restoration around these states and must not report
 `Restored` until `validate_differential_world_snapshot` succeeds.
 
+`EsDifferentialFilesystem::DifferentialFilesystemSnapshot` is the post-run file
+tree boundary. Adapters submit relative file, directory, and symlink entries in
+strict byte order with bounded path lengths, content fingerprints, modes, and
+sizes; aggregate bytes and entry count are capped before publication. A snapshot
+must be sealed before comparison, and `compare_differential_filesystem_snapshots`
+merges the ordered streams to report the first missing path, kind, content, size,
+mode, or executable-bit difference. The compact snapshot fingerprint is stable
+for the sealed ordered record. This contract performs no filesystem I/O; host
+materializers remain responsible for collecting entries and preserving the
+world lifecycle.
+
 The directory publication protocol is modeled separately from the host I/O
 adapter by `DifferentialArtifactDirectoryPlan`. A plan has a bounded parent
 path and two single-component names: a private staging directory and a distinct

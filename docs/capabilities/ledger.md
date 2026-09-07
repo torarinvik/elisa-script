@@ -495,3 +495,10 @@ stable-mismatch classifications, and explicit nondeterminism rejection/reporting
 The focused differential fixture, namespace inclusion, documentation, and
 check_differential_stability.sh audit are static evidence; scheduler-seed
 control, host repeat execution, and fresh-environment qualification remain open.
+
+ES-SCRIPT-014 | EsDifferentialFilesystem supplies bounded sealed post-run file
+tree snapshots with strict path ordering, aggregate byte accounting, stable
+fingerprints, and first-difference comparison for kind/content/size/mode and
+executable metadata. The focused differential fixture, namespace inclusion,
+documentation, and check_differential_filesystem.sh audit are static evidence;
+filesystem enumeration/materialization and crash-safe restore remain host work.
