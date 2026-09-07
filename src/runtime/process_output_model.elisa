@@ -1,0 +1,155 @@
+# Typed output-routing contract for shell replacement.
+#
+# Redirection, append, capture, and tee are represented as explicit destinations
+# rather than shell syntax. The host writer owns file descriptors; this module
+# owns destination validity, chunk order, fan-out policy, and output ceilings.
+
+module EsProcessOutput:
+    public:
+        const PROCESS_OUTPUT_MAX_DESTINATIONS: usize = 4
+        const PROCESS_OUTPUT_MAX_CHUNKS: usize = 1048576
+        const PROCESS_OUTPUT_MAX_BYTES: usize = 67108864
+        const PROCESS_OUTPUT_MAX_PATH_BYTES: usize = 4096
+
+
+        const enum ProcessOutputDestinationKind of u8:
+            Inherit
+            Null
+            Capture
+            TruncateFile
+            AppendFile
+
+
+        const enum ProcessOutputState of u8:
+            Planned
+            Open
+            Streaming
+            Closed
+            Failed
+            Cancelled
+
+
+        const enum ProcessOutputEvent of u8:
+            Begin
+            Chunk
+            End
+            Fail
+            Cancel
+
+
+        struct ProcessOutputDestination:
+            kind: ProcessOutputDestinationKind = ProcessOutputDestinationKind.Capture
+            path: sview = ""
+
+
+        struct ProcessOutputRoute:
+            destinations: darray[ProcessOutputDestination] = []
+            tee: bool = false
+
+
+        struct ProcessOutputPolicy:
+            max_destinations: usize = PROCESS_OUTPUT_MAX_DESTINATIONS
+            max_chunks: usize = PROCESS_OUTPUT_MAX_CHUNKS
+            max_bytes: usize = PROCESS_OUTPUT_MAX_BYTES
+            max_path_bytes: usize = PROCESS_OUTPUT_MAX_PATH_BYTES
+
+
+        struct ProcessOutputChunk:
+            sequence: usize
+            bytes: usize
+            final_chunk: bool = false
+
+
+        struct ProcessOutputSession:
+            route: ProcessOutputRoute
+            policy: ProcessOutputPolicy
+            state: ProcessOutputState = ProcessOutputState.Planned
+            next_sequence: usize = 0
+            chunk_count: usize = 0
+            total_bytes: usize = 0
+
+
+        error ProcessOutputError:
+            InvalidState
+            InvalidEvent
+            InvalidPolicy
+            InvalidDestination
+            InvalidPath
+            DestinationLimitExceeded
+            DuplicateDestination
+            TeeNotReady
+            ChunkLimitExceeded
+            ByteLimitExceeded
+            ChunkOrderInvalid
+            FinalChunkInvalid
+            EndNotReady
+            CancelNotReady
+
+
+    private:
+        def process_output_destination_kind_valid(kind: ProcessOutputDestinationKind) -> bool:
+            return kind in {ProcessOutputDestinationKind.Inherit, ProcessOutputDestinationKind.Null, ProcessOutputDestinationKind.Capture, ProcessOutputDestinationKind.TruncateFile, ProcessOutputDestinationKind.AppendFile}
+
+
+        def process_output_state_valid(state: ProcessOutputState) -> bool:
+            return state in {ProcessOutputState.Planned, ProcessOutputState.Open, ProcessOutputState.Streaming, ProcessOutputState.Closed, ProcessOutputState.Failed, ProcessOutputState.Cancelled}
+
+
+        def process_output_event_valid(event: ProcessOutputEvent) -> bool:
+            return event in {ProcessOutputEvent.Begin, ProcessOutputEvent.Chunk, ProcessOutputEvent.End, ProcessOutputEvent.Fail, ProcessOutputEvent.Cancel}
+
+
+        def process_output_policy_valid(policy: ProcessOutputPolicy) -> bool:
+            return policy.max_destinations != 0 and policy.max_destinations <= PROCESS_OUTPUT_MAX_DESTINATIONS and policy.max_chunks != 0 and policy.max_chunks <= PROCESS_OUTPUT_MAX_CHUNKS and policy.max_bytes != 0 and policy.max_bytes <= PROCESS_OUTPUT_MAX_BYTES and policy.max_path_bytes != 0 and policy.max_path_bytes <= PROCESS_OUTPUT_MAX_PATH_BYTES
+
+
+        def process_output_destination_valid(destination: ProcessOutputDestination, policy: ProcessOutputPolicy) -> bool error[ProcessOutputError]:
+            raise ProcessOutputError.InvalidDestination if not process_output_destination_kind_valid(destination.kind)
+            if destination.kind == ProcessOutputDestinationKind.TruncateFile or destination.kind == ProcessOutputDestinationKind.AppendFile:
+                raise ProcessOutputError.InvalidPath if destination.path == "" or sview_len(destination.path) >= policy.max_path_bytes or sview_contains_byte(destination.path, 0)
+            else:
+                raise ProcessOutputError.InvalidPath if destination.path != ""
+            return true
+
+
+    public:
+        def validate_process_output_session(session: ProcessOutputSession&) -> bool error[ProcessOutputError]:
+            raise ProcessOutputError.InvalidState if not process_output_state_valid(session.state)
+            raise ProcessOutputError.InvalidPolicy if not process_output_policy_valid(session.policy)
+            raise ProcessOutputError.DestinationLimitExceeded if session.route.destinations.count == 0 or session.route.destinations.count > session.policy.max_destinations
+            raise ProcessOutputError.TeeNotReady if session.route.destinations.count > 1 and not session.route.tee
+            raise ProcessOutputError.TeeNotReady if session.route.tee and session.route.destinations.count < 2
+            for index in 0..<session.route.destinations.count |session|:
+                try process_output_destination_valid(session.route.destinations[index], session.policy)
+                for earlier in 0..<index |session|:
+                    raise ProcessOutputError.DuplicateDestination if session.route.destinations[earlier].kind == session.route.destinations[index].kind and session.route.destinations[earlier].path == session.route.destinations[index].path
+            raise ProcessOutputError.ChunkLimitExceeded if session.chunk_count > session.policy.max_chunks
+            raise ProcessOutputError.ByteLimitExceeded if session.total_bytes > session.policy.max_bytes
+            return true
+
+
+        def advance_process_output(session: mutable ProcessOutputSession&, event: ProcessOutputEvent, chunk: ProcessOutputChunk = ProcessOutputChunk{sequence: 0, bytes: 0}) -> ProcessOutputState error[ProcessOutputError]:
+            try validate_process_output_session(session)
+            raise ProcessOutputError.InvalidEvent if not process_output_event_valid(event)
+            if event == ProcessOutputEvent.Begin:
+                raise ProcessOutputError.InvalidState if session.state != ProcessOutputState.Planned
+                session.state <- ProcessOutputState.Open
+            elif event == ProcessOutputEvent.Chunk:
+                raise ProcessOutputError.InvalidState if session.state != ProcessOutputState.Open and session.state != ProcessOutputState.Streaming
+                raise ProcessOutputError.ChunkOrderInvalid if chunk.sequence != session.next_sequence
+                raise ProcessOutputError.ChunkLimitExceeded if session.chunk_count >= session.policy.max_chunks
+                raise ProcessOutputError.ByteLimitExceeded if chunk.bytes > session.policy.max_bytes - session.total_bytes
+                session.chunk_count <- session.chunk_count + 1
+                session.next_sequence <- session.next_sequence + 1
+                session.total_bytes <- session.total_bytes + chunk.bytes
+                session.state <- ProcessOutputState.Closed if chunk.final_chunk else ProcessOutputState.Streaming
+            elif event == ProcessOutputEvent.End:
+                raise ProcessOutputError.EndNotReady if session.state != ProcessOutputState.Open and session.state != ProcessOutputState.Streaming
+                session.state <- ProcessOutputState.Closed
+            elif event == ProcessOutputEvent.Fail:
+                raise ProcessOutputError.InvalidState if session.state != ProcessOutputState.Open and session.state != ProcessOutputState.Streaming
+                session.state <- ProcessOutputState.Failed
+            elif event == ProcessOutputEvent.Cancel:
+                raise ProcessOutputError.CancelNotReady if session.state != ProcessOutputState.Planned and session.state != ProcessOutputState.Open and session.state != ProcessOutputState.Streaming
+                session.state <- ProcessOutputState.Cancelled
+            return session.state

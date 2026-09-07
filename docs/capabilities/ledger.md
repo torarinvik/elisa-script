@@ -388,6 +388,12 @@ escalation remain open. `ProcessPipeline` now validates ordered stage commands,
 bounded stage/buffer limits, fail-fast versus aggregate failure policy, and
 explicit stage/cancel transitions; concurrent pipe draining and reaping remain
 open.
+`EsProcessOutput` adds a bounded shell-redirection contract for inherit/null,
+capture, truncate, append, and explicit tee fan-out. Destination paths,
+duplicate routes, chunk sequencing, final markers, and output ceilings are
+validated under `error[ProcessOutputError]`; the focused IR fixture, namespace
+inclusion, documentation, and check_process_output.sh audit are static
+evidence, while descriptor writes and concurrent drains remain host work.
 `EsTask::TaskScope` and `TaskChannel` add bounded child accounting and
 message-level backpressure with explicit close/cancel acknowledgement edges;
 thread/event-loop scheduling remains open. `EsTaskTransfer` adds a bounded

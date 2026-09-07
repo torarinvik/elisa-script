@@ -1568,6 +1568,15 @@ and invalid stage commands or transitions raise `error[ProcessPipelineError]`.
 Pipe draining, SIGPIPE behavior, concurrent I/O, and child reaping remain host
 responsibilities.
 
+`EsProcessOutput::ProcessOutputSession` makes shell redirection explicit. A
+route contains bounded `Inherit`, `Null`, `Capture`, `TruncateFile`, or
+`AppendFile` destinations; multiple destinations require an explicit tee flag.
+Chunks carry monotonically increasing sequence numbers and a final marker, and
+the session accounts chunk count and bytes before a host writer fans data out.
+Duplicate destinations, missing file paths, out-of-order chunks, overflow,
+premature end, failure, and cancellation use `error[ProcessOutputError]`;
+descriptor writes and concurrent drain behavior remain host work.
+
 EsProcessSession binds that command value to an adapter lifecycle. Spawn must
 provide distinct child/stdout/stderr handle identities when capture is
 requested; stdout and stderr progress charge one shared output ceiling,
