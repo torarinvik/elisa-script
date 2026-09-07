@@ -1457,7 +1457,8 @@ if ! rg -q 'matches_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file
    ! rg -q 'find_regex_spec\.opcode == "RegexFind"' "$lowerer_file" || \
    ! rg -q 'capture_regex_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_file" || \
    ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "text,Regex" and registry_spec\.opcode == "RegexCapture"' "$lowerer_file" || \
-   ! rg -q 'capture_regex_spec\.opcode == "RegexCapture"' "$lowerer_file"; then
+   ! rg -q 'capture_regex_spec\.opcode == "RegexCapture"' "$lowerer_file" || \
+   ! rg -q 'integer: capture_regex_spec\.lowering_mode' "$lowerer_file"; then
     printf 'builtin registry audit: pattern-first regex lowerers do not consume registry shape/result/opcode metadata\n' >&2
     exit 1
 fi
