@@ -135,6 +135,17 @@ JSONL, CSV, and TSV adapters share the same cancellation and limit semantics
 instead of inheriting host parser defaults. Schema conversion and streaming
 parser implementations remain separate work.
 
+`EsJson` is the namespaced adapter boundary for the vendor JSON parser. A
+`JsonDocument` owns a bounded table of non-recursive `JsonNode` values,
+source ranges, object members, and roots, while `JsonPolicy` and
+`DataDecodeLimits` remain explicit inputs. `advance_json_document` requires
+`Empty → Building → Sealed` (or `Failed`) transitions and rejects out-of-range
+children, duplicate object keys, oversized source/token/node/member tables, and
+malformed ranges before a renderer or schema decoder can consume the table.
+The adapter is intentionally separate from the vendor's global parser names so
+public Elisascript modules retain namespace hygiene; parser translation,
+streaming JSONL, typed schema conversion, and encoding remain open.
+
 `EsInstall` makes release publication a typed state machine. An
 `InstallPlan` names the package version, workspace/user/system scope, source,
 bytecode, or native artifact targets, destination paths, executable intent, and
