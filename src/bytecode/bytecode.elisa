@@ -2422,7 +2422,7 @@ module EsBytecode:
                 for offset in 0..<instruction.operand_count.usize() |module, instruction, fn, ids, values, call_arguments|:
                     call_arguments.push(bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + offset]))
                 remaining: u64 = step_limit - steps
-                nested: Execution = try execute_bytecode_direct(module, instruction.symbol, call_arguments, observations, storage, remaining, call_depth + 1, observation_limit, output_bytes)
+                nested: Execution = try execute_bytecode_direct_with_ledger(module, instruction.symbol, call_arguments, observations, storage, remaining, call_depth + 1, observation_limit, output_bytes)
                 steps <- steps + nested.steps
                 # Child calls share the parent's output ledger.  Without this
                 # hand-off, nested stdout/process capture could exceed the
@@ -2913,7 +2913,7 @@ module EsBytecode:
             return function.blocks.count
 
 
-        def execute_bytecode_direct(module: BytecodeModule&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, step_limit: u64 = 1000000, call_depth: usize = 0, observation_limit: usize = EsIr::ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS, output_base: usize = 0) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+        def execute_bytecode_direct_with_ledger(module: BytecodeModule&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, step_limit: u64, call_depth: usize, observation_limit: usize, output_ledger: mutable usize&) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             raise InterpretError.OutputLimit if step_limit > EsIr::ES_RUNTIME_DEFAULT_MAX_STEPS
             raise InterpretError.OutputLimit if observation_limit > EsIr::ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS
             raise InterpretError.OutputLimit if call_depth >= ES_RUNTIME_DEFAULT_MAX_EXECUTION_CALL_DEPTH
@@ -2927,8 +2927,8 @@ module EsBytecode:
             for index in 0..<arguments.count |fn, arguments, ids, values|:
                 ids.push(fn.parameters[index].value)
                 values.push(arguments[index])
-            raise InterpretError.OutputLimit if output_base > EsIr::ES_RUNTIME_DEFAULT_MAX_OUTPUT_BYTES
-            cursor: mutable BytecodeExecutionCursor = BytecodeExecutionCursor{state: BytecodeExecutionState.EnterBlock, control: BytecodeControlCursor{state: BytecodeControlState.Instruction, block_index: bytecode_block_index(fn, fn.entry), instruction_index: 0, action: BytecodeControlAction.Invalid, target: 0, edge_start: 0, edge_count: 0}, entered: true, branch_condition: false, target_index: fn.blocks.count, edge_offset: 0, pending: [], value: runtime_void(), result: runtime_void(), steps: 0, output_bytes: output_base, recovered: false, recovery_target: 0}
+            raise InterpretError.OutputLimit if output_ledger > EsIr::ES_RUNTIME_DEFAULT_MAX_OUTPUT_BYTES
+            cursor: mutable BytecodeExecutionCursor = BytecodeExecutionCursor{state: BytecodeExecutionState.EnterBlock, control: BytecodeControlCursor{state: BytecodeControlState.Instruction, block_index: bytecode_block_index(fn, fn.entry), instruction_index: 0, action: BytecodeControlAction.Invalid, target: 0, edge_start: 0, edge_count: 0}, entered: true, branch_condition: false, target_index: fn.blocks.count, edge_offset: 0, pending: [], value: runtime_void(), result: runtime_void(), steps: 0, output_bytes: output_ledger, recovered: false, recovery_target: 0}
             error_guards: mutable darray[BytecodeErrorGuard] = []
             machine over cursor.state:
                 state Execute
@@ -2997,7 +2997,13 @@ module EsBytecode:
                     cursor.steps <- cursor.steps + 1
                     instruction: Instruction = fn.instructions[instruction_index]
                     try bytecode_prepare_guard_instruction(instruction, error_guards)
-                    cursor.value <- try bytecode_direct_instruction_guarded(module, instruction, fn, ids, values, storage, observations, step_limit, cursor.steps, error_guards, cursor.recovered, cursor.recovery_target, call_depth, cursor.output_bytes, observation_limit)
+                    # A nested call can charge output before returning a
+                    # recoverable error. Synchronize the frame snapshot both
+                    # before and after the guarded instruction so recovery
+                    # cannot discard those already-emitted bytes.
+                    cursor.output_bytes <- output_ledger
+                    cursor.value <- try bytecode_direct_instruction_guarded(module, instruction, fn, ids, values, storage, observations, step_limit, cursor.steps, error_guards, cursor.recovered, cursor.recovery_target, call_depth, output_ledger, observation_limit)
+                    cursor.output_bytes <- output_ledger
                     produced_output: usize = 0
                     if instruction.opcode == Opcode.WriteStdout or instruction.opcode == Opcode.WriteStderr:
                         if cursor.value.kind == RuntimeValueKind.Int and cursor.value.integer >= 0:
@@ -3012,6 +3018,7 @@ module EsBytecode:
                             produced_output <- stdout_length + stderr_length
                     raise InterpretError.OutputLimit if produced_output > ES_RUNTIME_DEFAULT_MAX_OUTPUT_BYTES - cursor.output_bytes
                     cursor.output_bytes <- cursor.output_bytes + produced_output
+                    output_ledger <- cursor.output_bytes
                     cursor.state <- BytecodeExecutionState.Recover if cursor.recovered else BytecodeExecutionState.StoreInstruction
                     -> Execute
 
@@ -3075,6 +3082,14 @@ module EsBytecode:
             usage.retained_traces <- observations.count
             raise InterpretError.OutputLimit if not runtime_resource_usage_within_policy(usage, policy)
             return Execution{value: cursor.result, steps: cursor.steps, policy: policy, usage: usage, engine: ExecutionEngine.DirectBytecode}
+
+
+        # Compatibility wrapper for callers that start a fresh direct run.
+        # Nested calls use the ledger-sharing helper above so partial output
+        # remains charged even when an inner frame is recovered or fails.
+        def execute_bytecode_direct(module: BytecodeModule&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, step_limit: u64 = 1000000, call_depth: usize = 0, observation_limit: usize = EsIr::ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS, output_base: usize = 0) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+            output_ledger: mutable usize = output_base
+            return try execute_bytecode_direct_with_ledger(module, entry, arguments, observations, storage, step_limit, call_depth, observation_limit, output_ledger)
 
 
     public:
