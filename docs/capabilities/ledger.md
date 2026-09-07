@@ -452,3 +452,9 @@ resource ids and owner tokens, rejects duplicate identities, bounds table
 accounting, and exposes transfer/close/release/failure/abandonment edges.
 The focused IR fixture and check_handle_model.sh audit are static evidence;
 platform descriptor acquisition and actual close calls remain host adapters.
+
+ES-SCRIPT-007 | EsProcessSession binds validated ProcessCommand values to
+distinct spawn handle identities, bounded stdout/stderr aggregate accounting,
+bounded polls, typed terminal outcomes, and explicit timeout/cancellation
+edges. The focused IR fixture and check_process_session.sh audit are static
+evidence; fork/exec, signal escalation, and child reaping remain host work.

@@ -1330,6 +1330,13 @@ must name the next stage, aggregate mode records failures without losing order,
 and invalid stage commands or transitions raise `error[ProcessPipelineError]`.
 Pipe draining, SIGPIPE behavior, concurrent I/O, and child reaping remain host
 responsibilities.
+
+EsProcessSession binds that command value to an adapter lifecycle. Spawn must
+provide distinct child/stdout/stderr handle identities when capture is
+requested; stdout and stderr progress charge one shared output ceiling,
+polls charge a bounded polling budget, and only typed exit/failure/timeout or
+cancellation events may terminate the session. The session never performs
+fork/exec or signal operations itself.
 `EsTask::TaskScope` and `TaskChannel` define the corresponding concurrency
 boundary. A scope caps active children, records completed/failed children, and
 requires explicit close or cancellation acknowledgement; channels cap both

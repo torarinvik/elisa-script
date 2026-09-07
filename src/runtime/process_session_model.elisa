@@ -1,0 +1,169 @@
+# Typed process-session adapter boundary.
+#
+# A ProcessCommand is a recipe; a ProcessSession is its bounded lifecycle.
+# Host adapters attach acquired handle identities at Spawn and report stream
+# progress, polls, and terminal outcomes through explicit events. No shell
+# command string or unbounded pipe buffer enters this contract.
+
+module EsProcessSession:
+    using EsProcess
+
+    public:
+        const PROCESS_SESSION_MAX_POLLS: usize = 1048576
+        const PROCESS_SESSION_MAX_OUTPUT_BYTES: usize = PROCESS_PIPELINE_MAX_BUFFER_BYTES
+
+
+        const enum ProcessSessionState of u8:
+            Created
+            Running
+            Collecting
+            Exited
+            Failed
+            TimedOut
+            Cancelling
+            Cancelled
+
+
+        const enum ProcessSessionEvent of u8:
+            Spawn
+            Stdout
+            Stderr
+            Poll
+            Exit
+            Fail
+            Timeout
+            Cancel
+            CancelAck
+
+
+        struct ProcessSession:
+            command: ProcessCommand
+            state: ProcessSessionState = ProcessSessionState.Created
+            child_resource_id: u64 = 0
+            stdout_resource_id: u64 = 0
+            stderr_resource_id: u64 = 0
+            max_output_bytes: usize = PROCESS_SESSION_MAX_OUTPUT_BYTES
+            max_polls: usize = PROCESS_SESSION_MAX_POLLS
+            stdout_bytes: usize = 0
+            stderr_bytes: usize = 0
+            output_bytes: usize = 0
+            polls: usize = 0
+            result_kind: ProcessResultKind = ProcessResultKind.SpawnFailure
+            exit_status: i64 = 0
+
+
+        error ProcessSessionError:
+            InvalidState
+            InvalidEvent
+            InvalidCommand
+            InvalidLimit
+            HandleIdentityInvalid
+            DuplicateHandleIdentity
+            OutputLimitExceeded
+            PollLimitExceeded
+            InvalidOutcome
+            ExitNotReady
+            CancelNotReady
+            AccountingInvalid
+
+
+    private:
+        def session_state_valid(state: ProcessSessionState) -> bool:
+            return state in {ProcessSessionState.Created, ProcessSessionState.Running, ProcessSessionState.Collecting, ProcessSessionState.Exited, ProcessSessionState.Failed, ProcessSessionState.TimedOut, ProcessSessionState.Cancelling, ProcessSessionState.Cancelled}
+
+
+        def session_event_valid(event: ProcessSessionEvent) -> bool:
+            return event in {ProcessSessionEvent.Spawn, ProcessSessionEvent.Stdout, ProcessSessionEvent.Stderr, ProcessSessionEvent.Poll, ProcessSessionEvent.Exit, ProcessSessionEvent.Fail, ProcessSessionEvent.Timeout, ProcessSessionEvent.Cancel, ProcessSessionEvent.CancelAck}
+
+
+        def session_result_kind_valid(kind: ProcessResultKind) -> bool:
+            return kind in {ProcessResultKind.Exited, ProcessResultKind.Signaled, ProcessResultKind.SpawnFailure, ProcessResultKind.TimedOut, ProcessResultKind.Cancelled, ProcessResultKind.OutputLimit, ProcessResultKind.HostIoFailure}
+
+
+        def session_output_add(current: usize, delta: usize, limit: usize) -> bool:
+            return current <= limit and delta <= limit - current
+
+
+        def session_handle_id_valid(id: u64) -> bool:
+            return id != 0
+
+
+        def session_handle_ids_distinct(child: u64, stdout: u64, stderr: u64) -> bool:
+            return (child == 0 or stdout == 0 or child != stdout) and (child == 0 or stderr == 0 or child != stderr) and (stdout == 0 or stderr == 0 or stdout != stderr)
+
+
+        def session_stream_handle_valid(mode: ProcessStdioMode, resource_id: u64) -> bool:
+            return resource_id != 0 if mode == ProcessStdioMode.Capture else resource_id == 0
+
+
+    public:
+        def validate_process_session(session: ProcessSession&) -> bool error[ProcessSessionError]:
+            raise ProcessSessionError.InvalidState if not session_state_valid(session.state)
+            valid_command: mutable bool = false
+            catch validate_process_command(session.command):
+                ok:
+                    valid_command <- true
+                error failure:
+                    valid_command <- false
+            raise ProcessSessionError.InvalidCommand if not valid_command
+            raise ProcessSessionError.InvalidLimit if session.max_output_bytes == 0 or session.max_output_bytes > PROCESS_SESSION_MAX_OUTPUT_BYTES or session.max_polls == 0 or session.max_polls > PROCESS_SESSION_MAX_POLLS
+            raise ProcessSessionError.OutputLimitExceeded if session.stdout_bytes > session.max_output_bytes or session.stderr_bytes > session.max_output_bytes or session.output_bytes > session.max_output_bytes
+            raise ProcessSessionError.AccountingInvalid if session.output_bytes != session.stdout_bytes + session.stderr_bytes
+            raise ProcessSessionError.PollLimitExceeded if session.polls > session.max_polls
+            raise ProcessSessionError.HandleIdentityInvalid if session.state != ProcessSessionState.Created and not session_handle_id_valid(session.child_resource_id)
+            raise ProcessSessionError.HandleIdentityInvalid if session.state != ProcessSessionState.Created and not session_stream_handle_valid(session.command.stdout_mode, session.stdout_resource_id)
+            raise ProcessSessionError.HandleIdentityInvalid if session.state != ProcessSessionState.Created and not session_stream_handle_valid(session.command.stderr_mode, session.stderr_resource_id)
+            raise ProcessSessionError.DuplicateHandleIdentity if not session_handle_ids_distinct(session.child_resource_id, session.stdout_resource_id, session.stderr_resource_id)
+            raise ProcessSessionError.InvalidOutcome if not session_result_kind_valid(session.result_kind)
+            return true
+
+
+        def advance_process_session(session: mutable ProcessSession&, event: ProcessSessionEvent, bytes_delta: usize = 0, result_kind: ProcessResultKind = ProcessResultKind.Exited, child_resource_id: u64 = 0, stdout_resource_id: u64 = 0, stderr_resource_id: u64 = 0) -> ProcessSessionState error[ProcessSessionError]:
+            try validate_process_session(session)
+            raise ProcessSessionError.InvalidEvent if not session_event_valid(event)
+            if event == ProcessSessionEvent.Spawn:
+                raise ProcessSessionError.InvalidState if session.state != ProcessSessionState.Created
+                raise ProcessSessionError.HandleIdentityInvalid if not session_handle_id_valid(child_resource_id)
+                raise ProcessSessionError.DuplicateHandleIdentity if not session_handle_ids_distinct(child_resource_id, stdout_resource_id, stderr_resource_id)
+                raise ProcessSessionError.HandleIdentityInvalid if not session_stream_handle_valid(session.command.stdout_mode, stdout_resource_id) or not session_stream_handle_valid(session.command.stderr_mode, stderr_resource_id)
+                session.child_resource_id <- child_resource_id
+                session.stdout_resource_id <- stdout_resource_id
+                session.stderr_resource_id <- stderr_resource_id
+                session.state <- ProcessSessionState.Running
+            elif event == ProcessSessionEvent.Stdout or event == ProcessSessionEvent.Stderr:
+                raise ProcessSessionError.InvalidState if session.state != ProcessSessionState.Running and session.state != ProcessSessionState.Collecting
+                raise ProcessSessionError.OutputLimitExceeded if not session_output_add(session.output_bytes, bytes_delta, session.max_output_bytes)
+                if event == ProcessSessionEvent.Stdout:
+                    raise ProcessSessionError.OutputLimitExceeded if not session_output_add(session.stdout_bytes, bytes_delta, session.max_output_bytes)
+                    session.stdout_bytes <- session.stdout_bytes + bytes_delta
+                else:
+                    raise ProcessSessionError.OutputLimitExceeded if not session_output_add(session.stderr_bytes, bytes_delta, session.max_output_bytes)
+                    session.stderr_bytes <- session.stderr_bytes + bytes_delta
+                session.output_bytes <- session.output_bytes + bytes_delta
+                session.state <- ProcessSessionState.Collecting
+            elif event == ProcessSessionEvent.Poll:
+                raise ProcessSessionError.InvalidState if session.state != ProcessSessionState.Running and session.state != ProcessSessionState.Collecting
+                raise ProcessSessionError.PollLimitExceeded if session.polls >= session.max_polls
+                session.polls <- session.polls + 1
+            elif event == ProcessSessionEvent.Exit:
+                raise ProcessSessionError.ExitNotReady if session.state != ProcessSessionState.Running and session.state != ProcessSessionState.Collecting
+                raise ProcessSessionError.InvalidOutcome if result_kind != ProcessResultKind.Exited and result_kind != ProcessResultKind.Signaled
+                session.result_kind <- result_kind
+                session.state <- ProcessSessionState.Exited
+            elif event == ProcessSessionEvent.Fail:
+                raise ProcessSessionError.InvalidState if session.state != ProcessSessionState.Running and session.state != ProcessSessionState.Collecting
+                raise ProcessSessionError.InvalidOutcome if result_kind != ProcessResultKind.SpawnFailure and result_kind != ProcessResultKind.HostIoFailure and result_kind != ProcessResultKind.OutputLimit
+                session.result_kind <- result_kind
+                session.state <- ProcessSessionState.Failed
+            elif event == ProcessSessionEvent.Timeout:
+                raise ProcessSessionError.InvalidState if session.state != ProcessSessionState.Running and session.state != ProcessSessionState.Collecting
+                session.result_kind <- ProcessResultKind.TimedOut
+                session.state <- ProcessSessionState.TimedOut
+            elif event == ProcessSessionEvent.Cancel:
+                raise ProcessSessionError.CancelNotReady if session.state != ProcessSessionState.Running and session.state != ProcessSessionState.Collecting
+                session.result_kind <- ProcessResultKind.Cancelled
+                session.state <- ProcessSessionState.Cancelling
+            elif event == ProcessSessionEvent.CancelAck:
+                raise ProcessSessionError.CancelNotReady if session.state != ProcessSessionState.Cancelling
+                session.state <- ProcessSessionState.Cancelled
+            return session.state
