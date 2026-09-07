@@ -1,0 +1,212 @@
+# Typed error provenance boundary for runner, driver, and host adapters.
+#
+# An error's origin and phase are part of its identity. Forwarding may wrap an
+# envelope but may not reclassify a script error as a host failure or discard
+# the source payload. Cause ids point only to earlier retained envelopes.
+
+module EsErrorProvenance:
+    public:
+        const ERROR_PROVENANCE_MAX_ENVELOPES: usize = 65536
+        const ERROR_PROVENANCE_MAX_TEXT_BYTES: usize = 1048576
+        const ERROR_PROVENANCE_MAX_CAUSE_DEPTH: usize = 64
+
+
+        const enum ErrorOrigin of u8:
+            Script
+            Host
+            InvalidCompilerOutput
+            Cancelled
+            LimitExceeded
+
+
+        const enum ErrorPhase of u8:
+            Source
+            Semantic
+            Lowering
+            Verification
+            Runtime
+            HostBoundary
+            Driver
+
+
+        const enum ErrorEnvelopeState of u8:
+            Captured
+            Forwarded
+            Handled
+            Cancelled
+
+
+        const enum ErrorProvenanceEvent of u8:
+            Forward
+            Handle
+            Cancel
+
+
+        struct ErrorProvenancePolicy:
+            max_envelopes: usize = ERROR_PROVENANCE_MAX_ENVELOPES
+            max_text_bytes: usize = ERROR_PROVENANCE_MAX_TEXT_BYTES
+            max_cause_depth: usize = ERROR_PROVENANCE_MAX_CAUSE_DEPTH
+            preserve_cause: bool = true
+
+
+        struct ErrorProvenance:
+            origin: ErrorOrigin = ErrorOrigin.Script
+            phase: ErrorPhase = ErrorPhase.Runtime
+            code: u32 = 1
+            message: sview
+            source_file: sview = ""
+            line: usize = 0
+            column: usize = 0
+            cause_id: u64 = 0
+            retryable: bool = false
+
+
+        struct ErrorEnvelope:
+            envelope_id: u64
+            provenance: ErrorProvenance
+            state: ErrorEnvelopeState = ErrorEnvelopeState.Captured
+            forward_count: usize = 0
+
+
+        struct ErrorProvenanceLedger:
+            policy: ErrorProvenancePolicy
+            envelopes: darray[ErrorEnvelope] = []
+            retained_bytes: usize = 0
+
+
+        error ErrorProvenanceError:
+            InvalidPolicy
+            InvalidOrigin
+            InvalidPhase
+            InvalidState
+            InvalidEvent
+            InvalidCode
+            InvalidMessage
+            EmbeddedNul
+            InvalidSourceLocation
+            InvalidCause
+            CauseDepthExceeded
+            EnvelopeLimitExceeded
+            TextLimitExceeded
+            EnvelopeIndexInvalid
+            DuplicateEnvelope
+            ForwardLimitExceeded
+            InvalidTransition
+            CancelNotReady
+
+
+    private:
+        def error_origin_valid(origin: ErrorOrigin) -> bool:
+            return origin in {ErrorOrigin.Script, ErrorOrigin.Host, ErrorOrigin.InvalidCompilerOutput, ErrorOrigin.Cancelled, ErrorOrigin.LimitExceeded}
+
+
+        def error_phase_valid(phase: ErrorPhase) -> bool:
+            return phase in {ErrorPhase.Source, ErrorPhase.Semantic, ErrorPhase.Lowering, ErrorPhase.Verification, ErrorPhase.Runtime, ErrorPhase.HostBoundary, ErrorPhase.Driver}
+
+
+        def error_envelope_state_valid(state: ErrorEnvelopeState) -> bool:
+            return state in {ErrorEnvelopeState.Captured, ErrorEnvelopeState.Forwarded, ErrorEnvelopeState.Handled, ErrorEnvelopeState.Cancelled}
+
+
+        def error_provenance_event_valid(event: ErrorProvenanceEvent) -> bool:
+            return event in {ErrorProvenanceEvent.Forward, ErrorProvenanceEvent.Handle, ErrorProvenanceEvent.Cancel}
+
+
+        def error_provenance_policy_valid(policy: ErrorProvenancePolicy) -> bool:
+            return policy.max_envelopes != 0 and policy.max_envelopes <= ERROR_PROVENANCE_MAX_ENVELOPES and policy.max_text_bytes != 0 and policy.max_text_bytes <= ERROR_PROVENANCE_MAX_TEXT_BYTES and policy.max_cause_depth != 0 and policy.max_cause_depth <= ERROR_PROVENANCE_MAX_CAUSE_DEPTH
+
+
+        def error_provenance_text_valid(value: sview, policy: ErrorProvenancePolicy, allow_empty: bool) -> bool:
+            return (allow_empty or value != "") and sview_len(value) < policy.max_text_bytes and not sview_contains_byte(value, 0)
+
+
+        def error_provenance_valid(provenance: ErrorProvenance, policy: ErrorProvenancePolicy) -> bool error[ErrorProvenanceError]:
+            raise ErrorProvenanceError.InvalidOrigin if not error_origin_valid(provenance.origin)
+            raise ErrorProvenanceError.InvalidPhase if not error_phase_valid(provenance.phase)
+            raise ErrorProvenanceError.InvalidCode if provenance.code == 0
+            raise ErrorProvenanceError.InvalidMessage if not error_provenance_text_valid(provenance.message, policy, false)
+            raise ErrorProvenanceError.InvalidMessage if not error_provenance_text_valid(provenance.source_file, policy, true)
+            raise ErrorProvenanceError.TextLimitExceeded if sview_len(provenance.message) > policy.max_text_bytes - sview_len(provenance.source_file)
+            raise ErrorProvenanceError.EmbeddedNul if sview_contains_byte(provenance.message, 0) or sview_contains_byte(provenance.source_file, 0)
+            raise ErrorProvenanceError.InvalidSourceLocation if provenance.line == 0 and provenance.column != 0
+            raise ErrorProvenanceError.InvalidSourceLocation if provenance.line != 0 and provenance.column == 0
+            return true
+
+
+        def error_provenance_index(ledger: ErrorProvenanceLedger&, envelope_id: u64) -> usize:
+            for index in 0..<ledger.envelopes.count |ledger, envelope_id|:
+                return index if ledger.envelopes[index].envelope_id == envelope_id
+            return ledger.envelopes.count
+
+
+        def error_provenance_cause_depth(ledger: ErrorProvenanceLedger&, envelope_id: u64) -> usize error[ErrorProvenanceError]:
+            depth: mutable usize = 0
+            current: mutable u64 = envelope_id
+            while current != 0:
+                index: usize = error_provenance_index(ledger, current)
+                raise ErrorProvenanceError.InvalidCause if index == ledger.envelopes.count
+                depth <- depth + 1
+                raise ErrorProvenanceError.CauseDepthExceeded if depth > ledger.policy.max_cause_depth
+                current <- ledger.envelopes[index].provenance.cause_id
+            return depth
+
+
+    public:
+        def validate_error_provenance(ledger: ErrorProvenanceLedger&) -> bool error[ErrorProvenanceError]:
+            raise ErrorProvenanceError.InvalidPolicy if not error_provenance_policy_valid(ledger.policy)
+            raise ErrorProvenanceError.EnvelopeLimitExceeded if ledger.envelopes.count > ledger.policy.max_envelopes
+            raise ErrorProvenanceError.TextLimitExceeded if ledger.retained_bytes > ledger.policy.max_text_bytes
+            accounted: mutable usize = 0
+            for index in 0..<ledger.envelopes.count |ledger, accounted|:
+                envelope: ErrorEnvelope = ledger.envelopes[index]
+                raise ErrorProvenanceError.DuplicateEnvelope if envelope.envelope_id == 0
+                for earlier in 0..<index |ledger, envelope|:
+                    raise ErrorProvenanceError.DuplicateEnvelope if ledger.envelopes[earlier].envelope_id == envelope.envelope_id
+                raise ErrorProvenanceError.InvalidState if not error_envelope_state_valid(envelope.state)
+                raise ErrorProvenanceError.ForwardLimitExceeded if envelope.forward_count > ledger.policy.max_cause_depth
+                try error_provenance_valid(envelope.provenance, ledger.policy)
+                envelope_text: usize = sview_len(envelope.provenance.message) + sview_len(envelope.provenance.source_file)
+                raise ErrorProvenanceError.TextLimitExceeded if envelope_text > ledger.policy.max_text_bytes - accounted
+                accounted <- accounted + envelope_text
+                if envelope.provenance.cause_id != 0:
+                    raise ErrorProvenanceError.InvalidCause if not ledger.policy.preserve_cause
+                    raise ErrorProvenanceError.InvalidCause if envelope.provenance.cause_id >= envelope.envelope_id
+                    try error_provenance_cause_depth(ledger, envelope.provenance.cause_id)
+            raise ErrorProvenanceError.TextLimitExceeded if accounted != ledger.retained_bytes
+            return true
+
+
+        def error_provenance_capture(ledger: mutable ErrorProvenanceLedger&, envelope_id: u64, provenance: ErrorProvenance) -> bool error[ErrorProvenanceError]:
+            try validate_error_provenance(ledger)
+            raise ErrorProvenanceError.EnvelopeLimitExceeded if ledger.envelopes.count >= ledger.policy.max_envelopes
+            raise ErrorProvenanceError.DuplicateEnvelope if envelope_id == 0 or error_provenance_index(ledger, envelope_id) != ledger.envelopes.count
+            try error_provenance_valid(provenance, ledger.policy)
+            provenance_text: usize = sview_len(provenance.message) + sview_len(provenance.source_file)
+            raise ErrorProvenanceError.TextLimitExceeded if provenance_text > ledger.policy.max_text_bytes - ledger.retained_bytes
+            if provenance.cause_id != 0:
+                raise ErrorProvenanceError.InvalidCause if not ledger.policy.preserve_cause or provenance.cause_id >= envelope_id
+                raise ErrorProvenanceError.InvalidCause if error_provenance_index(ledger, provenance.cause_id) == ledger.envelopes.count
+                try error_provenance_cause_depth(ledger, provenance.cause_id)
+            ledger.envelopes.push(ErrorEnvelope{envelope_id: envelope_id, provenance: provenance})
+            ledger.retained_bytes <- ledger.retained_bytes + provenance_text
+            return true
+
+
+        def advance_error_provenance(ledger: mutable ErrorProvenanceLedger&, event: ErrorProvenanceEvent, envelope_id: u64) -> ErrorEnvelopeState error[ErrorProvenanceError]:
+            try validate_error_provenance(ledger)
+            raise ErrorProvenanceError.InvalidEvent if not error_provenance_event_valid(event)
+            index: usize = error_provenance_index(ledger, envelope_id)
+            raise ErrorProvenanceError.EnvelopeIndexInvalid if index == ledger.envelopes.count
+            current: ErrorEnvelopeState = ledger.envelopes[index].state
+            if event == ErrorProvenanceEvent.Forward:
+                raise ErrorProvenanceError.InvalidTransition if current != ErrorEnvelopeState.Captured and current != ErrorEnvelopeState.Forwarded
+                raise ErrorProvenanceError.ForwardLimitExceeded if ledger.envelopes[index].forward_count >= ledger.policy.max_cause_depth
+                ledger.envelopes[index].forward_count <- ledger.envelopes[index].forward_count + 1
+                ledger.envelopes[index].state <- ErrorEnvelopeState.Forwarded
+            elif event == ErrorProvenanceEvent.Handle:
+                raise ErrorProvenanceError.InvalidTransition if current != ErrorEnvelopeState.Captured and current != ErrorEnvelopeState.Forwarded
+                ledger.envelopes[index].state <- ErrorEnvelopeState.Handled
+            elif event == ErrorProvenanceEvent.Cancel:
+                raise ErrorProvenanceError.CancelNotReady if current == ErrorEnvelopeState.Handled or current == ErrorEnvelopeState.Cancelled
+                ledger.envelopes[index].state <- ErrorEnvelopeState.Cancelled
+            return ledger.envelopes[index].state

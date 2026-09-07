@@ -250,6 +250,15 @@ Borrow leases record borrower identity, source generation, and an expiry token;
 duplicate ids, stale leases, owner mismatches, double-end, accounting drift,
 and reclamation while borrowed raise `error[ValueOwnershipError]`.
 
+`EsErrorProvenance::ErrorProvenanceLedger` preserves operational error identity
+across runner and driver boundaries. Each envelope records a closed origin
+(`Script`, `Host`, `InvalidCompilerOutput`, `Cancelled`, or `LimitExceeded`),
+phase, nonzero code, bounded message, optional source location, retryability,
+and an earlier cause id. Capture, forward, handle, and cancel are explicit
+state transitions; forwarding cannot reclassify the origin, future/self causes
+are rejected, cause depth and retained text are bounded, and handled errors
+cannot be cancelled again through `error[ErrorProvenanceError]`.
+
 EsHandle supplies the host-handle table that those adapters consume. Raw
 handle identity is distinct from the logical resource id and owner token;
 duplicate identities are rejected, ownership transfer requires a new owner,

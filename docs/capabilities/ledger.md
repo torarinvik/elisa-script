@@ -413,6 +413,15 @@ namespace inclusion, documentation, and check_value_ownership.sh audit are
 static evidence; allocator integration, compiler-enforced lifetimes, and
 adverse-resource execution remain open.
 
+ES-SCRIPT-043 | EsErrorProvenance supplies a bounded cross-boundary error
+envelope. It preserves origin, phase, code, source coordinates, bounded text,
+retryability, and earlier cause identity across capture/forward/handle/cancel
+edges; future/self causes, cause-depth overflow, duplicate envelopes, origin
+reclassification, retained-text overflow, and post-terminal transitions are
+typed under `error[ErrorProvenanceError]`. The focused IR fixture, namespace
+inclusion, documentation, and check_error_provenance.sh audit are static
+evidence; driver/host adapter integration and executed diagnostics remain open.
+
 ES-SCRIPT-040 | EsTaskTransfer supplies a bounded ownership protocol for
 copyable values, linear values, and dynamic handler contexts crossing task
 boundaries. Copy/move/borrow modes, source/target owners, generation updates,
