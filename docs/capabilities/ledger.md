@@ -570,3 +570,12 @@ post-terminal mutation through typed `error[RecordMaterializerError]`. The
 focused IR fixture, namespace inclusion, documentation, and
 check_record_materializer.sh audit are static evidence; byte-stream adapters,
 regex scanning, external sort, and transactional rewrite execution remain open.
+
+ES-SCRIPT-024 | EsRecordSort supplies a bounded external-sort ordering contract
+with unique typed text/integer key positions, ascending/descending direction,
+missing-key placement, stable ordinals, and subtraction-safe aggregate text
+accounting. Its session admits ordered entries through explicit begin/record/
+seal, failure, and cancellation transitions, and its pure comparator is shared
+by in-memory and disk-merge adapters. The focused IR fixture, namespace
+inclusion, documentation, and check_record_sort.sh audit are static evidence;
+spill files, atomic publication, and merge I/O remain host work.

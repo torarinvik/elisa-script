@@ -1,0 +1,245 @@
+# Bounded, deterministic external-sort contract for record streams.
+#
+# The typed core validates sort keys and ordering metadata. Host adapters may
+# spill sealed entries to disk and perform a merge, but they cannot change key
+# direction, stable ordinal order, or resource ceilings behind this boundary.
+
+module EsRecordSort:
+    using EsRecord
+
+    public:
+        const RECORD_SORT_MAX_KEYS: usize = 256
+        const RECORD_SORT_MAX_RECORDS: usize = 1048576
+        const RECORD_SORT_MAX_TEXT_BYTES: usize = 268435456
+
+
+        const enum RecordSortKeyKind of u8:
+            Text
+            Integer
+
+
+        const enum RecordSortDirection of u8:
+            Ascending
+            Descending
+
+
+        const enum RecordSortOrder of u8:
+            Before
+            Equal
+            After
+
+
+        const enum RecordSortState of u8:
+            Planned
+            Collecting
+            Sealed
+            Failed
+            Cancelled
+
+
+        const enum RecordSortEvent of u8:
+            Begin
+            Record
+            Seal
+            Fail
+            Cancel
+
+
+        struct RecordSortKeySpec:
+            field_index: usize
+            kind: RecordSortKeyKind = RecordSortKeyKind.Text
+            direction: RecordSortDirection = RecordSortDirection.Ascending
+            missing_last: bool = true
+
+
+        struct RecordSortPolicy:
+            record_policy: RecordStreamPolicy
+            keys: darray[RecordSortKeySpec]
+            stable: bool = true
+            unique: bool = false
+
+
+        struct RecordSortKey:
+            spec_index: usize
+            kind: RecordSortKeyKind
+            present: bool = true
+            text: sview = ""
+            integer: i64 = 0
+
+
+        struct RecordSortEntry:
+            record: Record
+            keys: darray[RecordSortKey]
+            ordinal: usize
+
+
+        struct RecordSortSession:
+            policy: RecordSortPolicy
+            state: RecordSortState = RecordSortState.Planned
+            entries: darray[RecordSortEntry] = []
+            text_bytes: usize = 0
+
+
+        error RecordSortError:
+            InvalidState
+            InvalidEvent
+            PolicyInvalid
+            RecordInvalid
+            KeyInvalid
+            KeyOrderInvalid
+            KeyKindInvalid
+            KeyLimitExceeded
+            RecordLimitExceeded
+            TextLimitExceeded
+            OrdinalInvalid
+            SealNotReady
+            CancelNotReady
+
+
+    private:
+        def record_sort_key_kind_valid(kind: RecordSortKeyKind) -> bool:
+            return kind in {RecordSortKeyKind.Text, RecordSortKeyKind.Integer}
+
+
+        def record_sort_direction_valid(direction: RecordSortDirection) -> bool:
+            return direction in {RecordSortDirection.Ascending, RecordSortDirection.Descending}
+
+
+        def record_sort_state_valid(state: RecordSortState) -> bool:
+            return state in {RecordSortState.Planned, RecordSortState.Collecting, RecordSortState.Sealed, RecordSortState.Failed, RecordSortState.Cancelled}
+
+
+        def record_sort_event_valid(event: RecordSortEvent) -> bool:
+            return event in {RecordSortEvent.Begin, RecordSortEvent.Record, RecordSortEvent.Seal, RecordSortEvent.Fail, RecordSortEvent.Cancel}
+
+
+        def record_sort_text_valid(value: sview) -> bool:
+            return sview_len(value) < RECORD_SORT_MAX_TEXT_BYTES and not sview_contains_byte(value, 0)
+
+
+        def record_sort_policy_valid(policy: RecordSortPolicy) -> bool:
+            return false if policy.keys.count == 0 or policy.keys.count > RECORD_SORT_MAX_KEYS
+            catch validate_record_stream_policy(policy.record_policy):
+                ok:
+                    for index in 0..<policy.keys.count |policy|:
+                        spec: RecordSortKeySpec = policy.keys[index]
+                        return false if spec.field_index >= policy.record_policy.max_fields
+                        return false if not record_sort_key_kind_valid(spec.kind) or not record_sort_direction_valid(spec.direction)
+                        for earlier in 0..<index |policy, spec|:
+                            return false if policy.keys[earlier].field_index == spec.field_index
+                    return true
+                error failure:
+                    return false
+
+
+        def record_sort_key_valid(key: RecordSortKey, spec: RecordSortKeySpec) -> bool:
+            return false if key.spec_index >= RECORD_SORT_MAX_KEYS
+            return false if key.kind != spec.kind or not record_sort_key_kind_valid(key.kind)
+            return record_sort_text_valid(key.text) if key.kind == RecordSortKeyKind.Text
+            return true
+
+
+        def record_sort_entry_valid(entry: RecordSortEntry, policy: RecordSortPolicy) -> bool:
+            catch validate_record(entry.record, policy.record_policy):
+                ok:
+                    return false if entry.keys.count != policy.keys.count
+                    return false if entry.ordinal >= RECORD_SORT_MAX_RECORDS
+                    for index in 0..<policy.keys.count |entry, policy|:
+                        return false if entry.keys[index].spec_index != index
+                        return false if not record_sort_key_valid(entry.keys[index], policy.keys[index])
+                    return true
+                error failure:
+                    return false
+
+
+        def record_sort_text_order(left: sview, right: sview) -> RecordSortOrder:
+            limit: usize = sview_len(left) if sview_len(left) < sview_len(right) else sview_len(right)
+            for index in 0..<limit |left, right|:
+                return RecordSortOrder.Before if sview_at(left, index) < sview_at(right, index)
+                return RecordSortOrder.After if sview_at(left, index) > sview_at(right, index)
+            return RecordSortOrder.Before if sview_len(left) < sview_len(right)
+            return RecordSortOrder.After if sview_len(left) > sview_len(right)
+            return RecordSortOrder.Equal
+
+
+        def record_sort_reverse(order: RecordSortOrder) -> RecordSortOrder:
+            return RecordSortOrder.After if order == RecordSortOrder.Before
+            return RecordSortOrder.Before if order == RecordSortOrder.After
+            return RecordSortOrder.Equal
+
+
+    public:
+        def validate_record_sort_session(session: RecordSortSession&) -> bool error[RecordSortError]:
+            raise RecordSortError.InvalidState if not record_sort_state_valid(session.state)
+            raise RecordSortError.PolicyInvalid if not record_sort_policy_valid(session.policy)
+            raise RecordSortError.RecordLimitExceeded if session.entries.count > RECORD_SORT_MAX_RECORDS
+            raise RecordSortError.TextLimitExceeded if session.text_bytes > RECORD_SORT_MAX_TEXT_BYTES
+            previous_ordinal: mutable usize = 0
+            accounted_text: mutable usize = 0
+            for entry in session.entries |session, previous_ordinal, accounted_text|:
+                raise RecordSortError.OrdinalInvalid if entry.ordinal != previous_ordinal
+                raise RecordSortError.KeyOrderInvalid if entry.keys.count != session.policy.keys.count
+                for index in 0..<entry.keys.count |entry|:
+                    raise RecordSortError.KeyOrderInvalid if entry.keys[index].spec_index != index
+                raise RecordSortError.RecordInvalid if not record_sort_entry_valid(entry, session.policy)
+                raise RecordSortError.TextLimitExceeded if sview_len(entry.record.raw) > RECORD_SORT_MAX_TEXT_BYTES - accounted_text
+                accounted_text <- accounted_text + sview_len(entry.record.raw)
+                for key in entry.keys |session, accounted_text|:
+                    if key.kind == RecordSortKeyKind.Text:
+                        raise RecordSortError.TextLimitExceeded if sview_len(key.text) > RECORD_SORT_MAX_TEXT_BYTES - accounted_text
+                        accounted_text <- accounted_text + sview_len(key.text)
+                previous_ordinal <- previous_ordinal + 1
+            raise RecordSortError.TextLimitExceeded if accounted_text != session.text_bytes
+            return true
+
+
+        def compare_record_sort_entries(left: RecordSortEntry, right: RecordSortEntry, policy: RecordSortPolicy) -> RecordSortOrder error[RecordSortError]:
+            raise RecordSortError.PolicyInvalid if not record_sort_policy_valid(policy)
+            raise RecordSortError.RecordInvalid if not record_sort_entry_valid(left, policy) or not record_sort_entry_valid(right, policy)
+            for index in 0..<policy.keys.count |left, right, policy|:
+                spec: RecordSortKeySpec = policy.keys[index]
+                left_key: RecordSortKey = left.keys[index]
+                right_key: RecordSortKey = right.keys[index]
+                if not left_key.present or not right_key.present:
+                    return RecordSortOrder.After if not left_key.present and right_key.present and spec.missing_last
+                    return RecordSortOrder.Before if not left_key.present and right_key.present
+                    return RecordSortOrder.Before if left_key.present and not right_key.present and spec.missing_last
+                    return RecordSortOrder.After if left_key.present and not right_key.present
+                order: RecordSortOrder = record_sort_text_order(left_key.text, right_key.text) if spec.kind == RecordSortKeyKind.Text else RecordSortOrder.Before if left_key.integer < right_key.integer else RecordSortOrder.After if left_key.integer > right_key.integer else RecordSortOrder.Equal
+                order <- record_sort_reverse(order) if spec.direction == RecordSortDirection.Descending
+                return order if order != RecordSortOrder.Equal
+            if policy.stable:
+                return RecordSortOrder.Before if left.ordinal < right.ordinal
+                return RecordSortOrder.After if left.ordinal > right.ordinal
+            return RecordSortOrder.Equal
+
+
+        def advance_record_sort(session: mutable RecordSortSession&, event: RecordSortEvent, entry: RecordSortEntry = RecordSortEntry{record: Record{source: ""}, keys: [], ordinal: 0}) -> RecordSortState error[RecordSortError]:
+            try validate_record_sort_session(session)
+            raise RecordSortError.InvalidEvent if not record_sort_event_valid(event)
+            if event == RecordSortEvent.Begin:
+                raise RecordSortError.InvalidState if session.state != RecordSortState.Planned
+                session.state <- RecordSortState.Collecting
+            elif event == RecordSortEvent.Record:
+                raise RecordSortError.InvalidState if session.state != RecordSortState.Collecting
+                raise RecordSortError.RecordLimitExceeded if session.entries.count >= RECORD_SORT_MAX_RECORDS
+                raise RecordSortError.OrdinalInvalid if entry.ordinal != session.entries.count
+                raise RecordSortError.RecordInvalid if not record_sort_entry_valid(entry, session.policy)
+                total: mutable usize = sview_len(entry.record.raw)
+                for key in entry.keys:
+                    if key.kind == RecordSortKeyKind.Text:
+                        raise RecordSortError.TextLimitExceeded if sview_len(key.text) > RECORD_SORT_MAX_TEXT_BYTES - total
+                        total <- total + sview_len(key.text)
+                raise RecordSortError.TextLimitExceeded if total > RECORD_SORT_MAX_TEXT_BYTES - session.text_bytes
+                session.entries.push(entry)
+                session.text_bytes <- session.text_bytes + total
+            elif event == RecordSortEvent.Seal:
+                raise RecordSortError.SealNotReady if session.state != RecordSortState.Collecting
+                session.state <- RecordSortState.Sealed
+            elif event == RecordSortEvent.Fail:
+                raise RecordSortError.InvalidState if session.state != RecordSortState.Collecting
+                session.state <- RecordSortState.Failed
+            elif event == RecordSortEvent.Cancel:
+                raise RecordSortError.CancelNotReady if session.state != RecordSortState.Planned and session.state != RecordSortState.Collecting
+                session.state <- RecordSortState.Cancelled
+            return session.state

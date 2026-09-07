@@ -936,6 +936,17 @@ cancellation through `error[RecordMaterializerError]`. This makes Perl/AWK-style
 regex scanning, external sort, and transactional rewrite effects outside the
 typed core.
 
+`EsRecordSort::RecordSortSession` is the deterministic ordering boundary for
+external-sort adapters. A policy declares one or more unique field positions,
+text or signed-integer key kinds, direction, missing-key placement, and stable
+tie behavior. Entries carry validated records, typed keys, and a monotonic
+ordinal; the session admits them through `Planned → Collecting → Sealed` with
+bounded record and key-text accounting. `compare_record_sort_entries` provides
+the same lexicographic order for in-memory sorting and disk-run merging, while
+`error[RecordSortError]` rejects duplicate key positions, malformed key kinds,
+ordinal gaps, over-budget text, and post-terminal transitions. Disk runs,
+atomic spill files, and merge I/O remain host responsibilities.
+
 `EsNetwork::NetworkRequest` and `NetworkResponse` define a transport-neutral
 HTTP/TLS boundary. Requests carry an explicit method, URL, ordered header pairs,
 binary body, positive timeout, response ceiling, and redirect policy; responses
