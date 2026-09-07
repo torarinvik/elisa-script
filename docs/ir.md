@@ -306,8 +306,11 @@ return both borrowed bytes and a current/migratable/invalid decision. Its
 publication helpers write through `FileStream` to a staging path, close the
 handle, sync the file descriptor, remove the staging file on a write/sync/close
 failure, and publish only with one `rename` edge after `Empty → Staged →
-Committed` admission. Restart-before-commit remains non-committed. Directory
-fsync, crash recovery, concurrent
+Committed` admission. Restart-before-commit remains non-committed. The pure
+`artifact_cache_recovery_action` state machine now tells a host adapter whether
+to keep a digest-validated publication, remove stale staging bytes, rebuild a
+missing/invalid destination, or do nothing; it never promotes bytes merely
+because a destination path exists. Directory fsync, crash recovery, concurrent
 writer arbitration, and corruption-repair execution evidence remain open host
 qualification work. `ArtifactCacheWriterLease` adds a typed nonzero-owner
 admission state machine (`Available → Held → Published/Aborted`) so stale or

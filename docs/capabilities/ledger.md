@@ -260,7 +260,11 @@ on-disk cache rewrite/restart evidence remains pending. `EsArtifactCache` now
 provides bounded file loads plus staged-file/sync/close/rename publication around the
 current/migration/invalid admission classifier and explicit
 staged/committed/aborted/restart state machine. Directory fsync, crash recovery,
-and concurrent-writer evidence remain pending.
+and concurrent-writer evidence remain pending. The pure
+`artifact_cache_recovery_action` state machine now makes restart choices
+explicit (keep only a validated commit, remove uncommitted staging, rebuild a
+missing/invalid destination, or no-op) without performing filesystem mutation;
+host recovery and executed evidence remain pending.
 The typed `ArtifactCacheWriterLease` now rejects zero, competing, and stale
 owner tokens before publication; an OS lock and crash-recovery qualification are
 still required. Publication can additionally receive a parent directory and
