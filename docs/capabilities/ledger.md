@@ -557,7 +557,9 @@ ES-SCRIPT-022 | EsDifferential shrink traces record bounded reduction ordinals,
 candidate fingerprints, reduction kinds, preserved mismatch categories, and an
 explicit exhausted-budget minimality proof. The focused differential fixture,
 documentation, and check_differential_shrink_trace.sh audit are static
-evidence; aggregate-value reducers and rerun-backed minimality remain open.
+evidence; bounded aggregate-value slot reducers now preserve valid roots and
+the original mismatch category; process termination/timeout reducers and
+rerun-backed minimality remain open.
 
 ES-SCRIPT-023 | EsRecordMaterialize supplies a bounded Perl/AWK-style record
 materialization session with explicit begin-record/field/end-record/seal,

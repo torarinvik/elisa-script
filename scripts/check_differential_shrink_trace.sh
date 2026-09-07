@@ -31,14 +31,20 @@ for boundary in \
     'MismatchCategory' \
     'MinimalityUnproven' \
     'candidate_fingerprint' \
-    'preserved_kind'; do
+    'preserved_kind' \
+    'ClearReferenceValueSlot' \
+    'ClearCandidateValueSlot' \
+    'differential_run_with_value_slot_cleared'; do
     rg -Fq "$boundary" "$source_file"
 done
 
 for fixture_pattern in \
     'differential_shrink_trace_contract_records_preserved_category_and_minimality' \
+    'differential_run_shrinker_preserves_first_difference_and_order' \
     'DifferentialShrinkTraceEvent.Record' \
     'DifferentialShrinkTraceError.MismatchCategory' \
+    'ClearReferenceValueSlot' \
+    'ClearCandidateValueSlot' \
     'exhausted: true'; do
     rg -Fq "$fixture_pattern" "$fixture_file"
 done
