@@ -301,6 +301,10 @@ interpreter/direct-bytecode parity fixtures and path contract audit record the
 boundary (`WORKTREE`). Destination-parent symlink aliases remain open for the
 host-canonical filesystem adapter.
 
+The semantic registry now has a dedicated negative fixture for `copy_tree`'s two
+nominal `Path` operands, keeping recursive-copy aliases aligned with the existing
+`copy_path` diagnostics (`WORKTREE`).
+
 Recent static increments are committed as `72f3325` (Path line semantics audit),
 `0739d4c` (typed cleanup guard), `b0ecf06` (cache cleanup integration),
 `9873d8c` (all resource-policy ceiling admission), `3bd7152` (typed resource
