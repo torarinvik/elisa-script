@@ -88,6 +88,16 @@ ABI shim that forwards directly to that function. This keeps host-facing ABI
 code small while preventing driver implementation helpers from entering the
 program-wide namespace.
 
+`EsModule` supplies the source/package-facing identity boundary. A
+`ModuleDescriptor` carries explicit public and private symbol sets, ordered
+imports with aliases and visibility, and a bounded source path; duplicate
+imports, public/private collisions, malformed identities, and oversized import
+or symbol sets fail through `error[ModuleContractError]`. Resolution advances
+`Planned → Resolving → Resolved/Failed` one event at a time, while
+`ModuleResolutionStack` rejects recursive identities before a loader can loop.
+The graph contract is independent of host path lookup and leaves package roots,
+lockfiles, and filesystem canonicalization to the launcher/adapter.
+
 Every verified module also has canonical structural bytes through
 `canonical_module_bytes(module)` and a compact fingerprint through
 `module_fingerprint(module)` (with `canonical_module_hash` as the explicit

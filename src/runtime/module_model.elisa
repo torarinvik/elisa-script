@@ -1,0 +1,175 @@
+# Typed module and import-graph contracts.
+#
+# Module resolution is separate from parsing and host filesystem lookup. The
+# resolver receives validated identities and advances one explicit state edge;
+# visibility and alias policy are never inferred from path spelling.
+
+module EsModule:
+    public:
+        const MODULE_MAX_NAME_BYTES: usize = 256
+        const MODULE_MAX_PATH_BYTES: usize = 4096
+        const MODULE_MAX_IMPORTS: usize = 1024
+        const MODULE_MAX_SYMBOLS: usize = 16384
+        const MODULE_MAX_MODULES: usize = 1024
+
+
+        const enum ModuleVisibility of u8:
+            Public
+            Private
+
+
+        const enum ModuleResolutionState of u8:
+            Planned
+            Resolving
+            Resolved
+            Failed
+
+
+        const enum ModuleResolutionEvent of u8:
+            Begin
+            ImportResolved
+            Complete
+            Fail
+
+
+        struct ModuleImport:
+            module_name: sview
+            alias: sview = ""
+            visibility: ModuleVisibility = ModuleVisibility.Private
+
+
+        struct ModuleDescriptor:
+            module_name: sview
+            source_path: sview
+            imports: darray[ModuleImport] = []
+            public_symbols: darray[sview] = []
+            private_symbols: darray[sview] = []
+            state: ModuleResolutionState = ModuleResolutionState.Planned
+            resolved_imports: usize = 0
+
+
+        struct ModuleGraph:
+            modules: darray[ModuleDescriptor] = []
+
+
+        struct ModuleResolutionStack:
+            modules: darray[sview] = []
+
+
+        error ModuleContractError:
+            ModuleNameInvalid
+            SourcePathInvalid
+            ImportLimitExceeded
+            DuplicateModule
+            SymbolLimitExceeded
+            InvalidVisibility
+            InvalidResolutionState
+            InvalidResolutionEvent
+            ImportAccountingInvalid
+            DuplicateImport
+            DuplicateSymbol
+            PublicPrivateCollision
+            ModuleNotFound
+            ResolutionCycle
+            ResolutionStackLimitExceeded
+            ResolutionNotReady
+
+
+    private:
+        def module_visibility_valid(visibility: ModuleVisibility) -> bool:
+            return visibility in {ModuleVisibility.Public, ModuleVisibility.Private}
+
+
+        def module_resolution_state_valid(state: ModuleResolutionState) -> bool:
+            return state in {ModuleResolutionState.Planned, ModuleResolutionState.Resolving, ModuleResolutionState.Resolved, ModuleResolutionState.Failed}
+
+
+        def module_resolution_event_valid(event: ModuleResolutionEvent) -> bool:
+            return event in {ModuleResolutionEvent.Begin, ModuleResolutionEvent.ImportResolved, ModuleResolutionEvent.Complete, ModuleResolutionEvent.Fail}
+
+
+        def module_name_valid(name: sview) -> bool:
+            return sview_len(name) != 0 and sview_len(name) < MODULE_MAX_NAME_BYTES and not sview_contains_byte(name, 0)
+
+
+        def module_path_valid(path: sview) -> bool:
+            return sview_len(path) != 0 and sview_len(path) < MODULE_MAX_PATH_BYTES and not sview_contains_byte(path, 0)
+
+
+        def module_symbol_vector_valid(symbols: darray[sview]) -> bool error[ModuleContractError]:
+            raise ModuleContractError.SymbolLimitExceeded if symbols.count > MODULE_MAX_SYMBOLS
+            for index in 0..<symbols.count |symbols|:
+                symbol: sview = symbols[index]
+                raise ModuleContractError.ModuleNameInvalid if not module_name_valid(symbol)
+                for earlier in 0..<index |symbols, symbol|:
+                    raise ModuleContractError.DuplicateSymbol if symbols[earlier] == symbol
+            return true
+
+
+    public:
+        def validate_module_descriptor(module: ModuleDescriptor&) -> bool error[ModuleContractError]:
+            raise ModuleContractError.ModuleNameInvalid if not module_name_valid(module.module_name)
+            raise ModuleContractError.SourcePathInvalid if not module_path_valid(module.source_path)
+            raise ModuleContractError.ImportLimitExceeded if module.imports.count > MODULE_MAX_IMPORTS
+            raise ModuleContractError.SymbolLimitExceeded if module.public_symbols.count > MODULE_MAX_SYMBOLS or module.private_symbols.count > MODULE_MAX_SYMBOLS
+            raise ModuleContractError.InvalidResolutionState if not module_resolution_state_valid(module.state)
+            raise ModuleContractError.ImportAccountingInvalid if module.resolved_imports > module.imports.count
+            try module_symbol_vector_valid(module.public_symbols)
+            try module_symbol_vector_valid(module.private_symbols)
+            for public_symbol in module.public_symbols:
+                for private_symbol in module.private_symbols:
+                    raise ModuleContractError.PublicPrivateCollision if public_symbol == private_symbol
+            for import_entry in module.imports:
+                raise ModuleContractError.ModuleNameInvalid if not module_name_valid(import_entry.module_name)
+                raise ModuleContractError.InvalidVisibility if not module_visibility_valid(import_entry.visibility)
+                raise ModuleContractError.ModuleNameInvalid if import_entry.alias != "" and not module_name_valid(import_entry.alias)
+            for index in 0..<module.imports.count |module|:
+                entry: ModuleImport = module.imports[index]
+                for earlier in 0..<index |module, entry|:
+                    raise ModuleContractError.DuplicateImport if module.imports[earlier].module_name == entry.module_name or entry.alias != "" and module.imports[earlier].alias == entry.alias
+            return true
+
+
+        def validate_module_graph(graph: ModuleGraph&) -> bool error[ModuleContractError]:
+            raise ModuleContractError.ImportLimitExceeded if graph.modules.count > MODULE_MAX_MODULES
+            for module in graph.modules:
+                try validate_module_descriptor(module)
+            for index in 0..<graph.modules.count |graph|:
+                module: ModuleDescriptor = graph.modules[index]
+                for earlier in 0..<index |graph, module|:
+                    raise ModuleContractError.DuplicateModule if graph.modules[earlier].module_name == module.module_name
+            return true
+
+
+        def advance_module_resolution(module: mutable ModuleDescriptor&, event: ModuleResolutionEvent, import_index: usize = 0) -> ModuleResolutionState error[ModuleContractError]:
+            try validate_module_descriptor(module)
+            raise ModuleContractError.InvalidResolutionEvent if not module_resolution_event_valid(event)
+            if event == ModuleResolutionEvent.Begin:
+                raise ModuleContractError.InvalidResolutionState if module.state != ModuleResolutionState.Planned
+                module.state <- ModuleResolutionState.Resolving
+            elif event == ModuleResolutionEvent.ImportResolved:
+                raise ModuleContractError.InvalidResolutionState if module.state != ModuleResolutionState.Resolving
+                raise ModuleContractError.ImportAccountingInvalid if import_index != module.resolved_imports or import_index >= module.imports.count
+                module.resolved_imports <- module.resolved_imports + 1
+            elif event == ModuleResolutionEvent.Complete:
+                raise ModuleContractError.InvalidResolutionState if module.state != ModuleResolutionState.Resolving
+                raise ModuleContractError.ResolutionNotReady if module.resolved_imports != module.imports.count
+                module.state <- ModuleResolutionState.Resolved
+            elif event == ModuleResolutionEvent.Fail:
+                raise ModuleContractError.InvalidResolutionState if module.state != ModuleResolutionState.Resolving
+                module.state <- ModuleResolutionState.Failed
+            return module.state
+
+
+        def module_resolution_stack_push(stack: mutable ModuleResolutionStack&, module_name: sview) -> bool error[ModuleContractError]:
+            raise ModuleContractError.ModuleNameInvalid if not module_name_valid(module_name)
+            raise ModuleContractError.ResolutionStackLimitExceeded if stack.modules.count >= MODULE_MAX_IMPORTS
+            for existing in stack.modules:
+                raise ModuleContractError.ResolutionCycle if existing == module_name
+            stack.modules.push(module_name)
+            return true
+
+
+        def module_resolution_stack_pop(stack: mutable ModuleResolutionStack&) -> sview error[ModuleContractError]:
+            raise ModuleContractError.ResolutionNotReady if stack.modules.count == 0
+            return stack.modules.pop()
