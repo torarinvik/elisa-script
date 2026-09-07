@@ -678,6 +678,14 @@ fingerprint before the session can complete. Rejected order, stale admission,
 wrong-world, missing-comparison, and failed-restore edges remain typed state
 errors. The contract does not launch the reproduction entry or perform cleanup.
 
+`EsDifferentialRedaction::DifferentialRedactionPolicy` is the explicit secret
+boundary for environment metadata captured into artifacts. Policies select exact
+names or redact all values; captured entries retain the name and a deterministic
+value fingerprint while storing an empty value for redacted fields. Duplicate
+names, embedded NULs, oversized text, and malformed redacted entries fail before
+sealing. This keeps replay identity checkable without persisting credentials;
+adapters still decide which environment fields are necessary to capture.
+
 The directory publication protocol is modeled separately from the host I/O
 adapter by `DifferentialArtifactDirectoryPlan`. A plan has a bounded parent
 path and two single-component names: a private staging directory and a distinct

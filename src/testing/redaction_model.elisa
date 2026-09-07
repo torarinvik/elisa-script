@@ -1,0 +1,165 @@
+# Explicit bounded secret-redaction contract for differential artifacts.
+#
+# Environment capture must not accidentally persist credentials. A policy names
+# exact variables to redact (or can redact all values), while the capture keeps
+# a non-secret value fingerprint so replay tooling can detect changed inputs
+# without storing the original bytes.
+
+module EsDifferentialRedaction:
+    public:
+        const DIFFERENTIAL_REDACTION_MAX_RULES: usize = 65536
+        const DIFFERENTIAL_REDACTION_MAX_ENTRIES: usize = 1048576
+        const DIFFERENTIAL_REDACTION_MAX_TEXT_BYTES: usize = 67108864
+
+
+        const enum DifferentialRedactionState of u8:
+            Planned
+            Capturing
+            Sealed
+            Failed
+            Cancelled
+
+
+        const enum DifferentialRedactionEvent of u8:
+            Begin
+            Capture
+            Seal
+            Fail
+            Cancel
+
+
+        struct DifferentialRedactionPolicy:
+            redact_all: bool = false
+            names: darray[sview] = []
+
+
+        struct DifferentialRedactionSourceEntry:
+            name: sview
+            value: sview
+
+
+        struct DifferentialRedactionEntry:
+            name: sview
+            value: sview = ""
+            value_fingerprint: u64 = 0
+            redacted: bool = false
+
+
+        struct DifferentialRedactionSession:
+            policy: DifferentialRedactionPolicy = DifferentialRedactionPolicy{}
+            state: DifferentialRedactionState = DifferentialRedactionState.Planned
+            entries: darray[DifferentialRedactionEntry] = []
+            text_bytes: usize = 0
+
+
+        error DifferentialRedactionError:
+            InvalidState
+            InvalidEvent
+            InvalidPolicy
+            InvalidName
+            EmbeddedNul
+            DuplicateName
+            RuleLimitExceeded
+            EntryLimitExceeded
+            TextLimitExceeded
+            FingerprintMissing
+            CaptureNotReady
+            CancelNotReady
+
+
+    private:
+        const DIFFERENTIAL_REDACTION_HASH_OFFSET: u64 = 14695981039346656037
+        const DIFFERENTIAL_REDACTION_HASH_PRIME: u64 = 1099511628211
+
+
+        def differential_redaction_state_valid(state: DifferentialRedactionState) -> bool:
+            return state in {DifferentialRedactionState.Planned, DifferentialRedactionState.Capturing, DifferentialRedactionState.Sealed, DifferentialRedactionState.Failed, DifferentialRedactionState.Cancelled}
+
+
+        def differential_redaction_event_valid(event: DifferentialRedactionEvent) -> bool:
+            return event in {DifferentialRedactionEvent.Begin, DifferentialRedactionEvent.Capture, DifferentialRedactionEvent.Seal, DifferentialRedactionEvent.Fail, DifferentialRedactionEvent.Cancel}
+
+
+        def differential_redaction_text_valid(value: sview, allow_empty: bool = false) -> bool:
+            return (allow_empty or sview_len(value) != 0) and sview_len(value) <= DIFFERENTIAL_REDACTION_MAX_TEXT_BYTES and not sview_contains_byte(value, 0)
+
+
+        def differential_redaction_name_valid(value: sview) -> bool:
+            return differential_redaction_text_valid(value) and not sview_contains_byte(value, 61)
+
+
+        def differential_redaction_policy_valid(policy: DifferentialRedactionPolicy) -> bool:
+            return policy.names.count <= DIFFERENTIAL_REDACTION_MAX_RULES
+
+
+        def differential_redaction_name_selected(policy: DifferentialRedactionPolicy, name: sview) -> bool:
+            return true if policy.redact_all
+            for rule in policy.names:
+                return true if rule == name
+            return false
+
+
+        def differential_redaction_value_fingerprint(name: sview, value: sview) -> u64:
+            result: mutable u64 = DIFFERENTIAL_REDACTION_HASH_OFFSET
+            for index in 0..<sview_len(name) |name, result|:
+                result <- result * DIFFERENTIAL_REDACTION_HASH_PRIME + sview_at(name, index).u64()
+            result <- result * DIFFERENTIAL_REDACTION_HASH_PRIME + 61
+            for index in 0..<sview_len(value) |value, result|:
+                result <- result * DIFFERENTIAL_REDACTION_HASH_PRIME + sview_at(value, index).u64()
+            return result if result != 0 else 1
+
+
+    public:
+        def validate_differential_redaction_session(session: DifferentialRedactionSession&) -> bool error[DifferentialRedactionError]:
+            raise DifferentialRedactionError.InvalidState if not differential_redaction_state_valid(session.state)
+            raise DifferentialRedactionError.InvalidPolicy if not differential_redaction_policy_valid(session.policy)
+            raise DifferentialRedactionError.RuleLimitExceeded if session.policy.names.count > DIFFERENTIAL_REDACTION_MAX_RULES
+            for index in 0..<session.policy.names.count |session|:
+                rule: sview = session.policy.names[index]
+                raise DifferentialRedactionError.InvalidName if not differential_redaction_name_valid(rule)
+                for prior in 0..<index |session, rule|:
+                    raise DifferentialRedactionError.DuplicateName if session.policy.names[prior] == rule
+            raise DifferentialRedactionError.EntryLimitExceeded if session.entries.count > DIFFERENTIAL_REDACTION_MAX_ENTRIES
+            raise DifferentialRedactionError.TextLimitExceeded if session.text_bytes > DIFFERENTIAL_REDACTION_MAX_TEXT_BYTES
+            for entry in session.entries:
+                raise DifferentialRedactionError.InvalidName if not differential_redaction_name_valid(entry.name)
+                raise DifferentialRedactionError.FingerprintMissing if entry.value_fingerprint == 0
+                raise DifferentialRedactionError.EmbeddedNul if not differential_redaction_text_valid(entry.value, true)
+                raise DifferentialRedactionError.InvalidPolicy if entry.redacted and entry.value != ""
+            return true
+
+
+        def advance_differential_redaction(session: mutable DifferentialRedactionSession&, event: DifferentialRedactionEvent, source: DifferentialRedactionSourceEntry = DifferentialRedactionSourceEntry{name: "NAME", value: "value"}) -> DifferentialRedactionState error[DifferentialRedactionError]:
+            try validate_differential_redaction_session(session)
+            raise DifferentialRedactionError.InvalidEvent if not differential_redaction_event_valid(event)
+            if event == DifferentialRedactionEvent.Begin:
+                raise DifferentialRedactionError.InvalidState if session.state != DifferentialRedactionState.Planned
+                session.state <- DifferentialRedactionState.Capturing
+            elif event == DifferentialRedactionEvent.Capture:
+                raise DifferentialRedactionError.CaptureNotReady if session.state != DifferentialRedactionState.Capturing
+                raise DifferentialRedactionError.EntryLimitExceeded if session.entries.count >= DIFFERENTIAL_REDACTION_MAX_ENTRIES
+                raise DifferentialRedactionError.InvalidName if not differential_redaction_name_valid(source.name)
+                raise DifferentialRedactionError.EmbeddedNul if not differential_redaction_text_valid(source.value, true)
+                redacted: bool = differential_redaction_name_selected(session.policy, source.name)
+                captured_value: sview = "" if redacted else source.value
+                available: mutable usize = DIFFERENTIAL_REDACTION_MAX_TEXT_BYTES - session.text_bytes if session.text_bytes <= DIFFERENTIAL_REDACTION_MAX_TEXT_BYTES else 0
+                name_length: usize = sview_len(source.name)
+                value_length: usize = sview_len(captured_value)
+                raise DifferentialRedactionError.TextLimitExceeded if available < name_length
+                available <- available - name_length
+                raise DifferentialRedactionError.TextLimitExceeded if available < 2 or value_length > available - 2
+                added_text: usize = name_length + value_length + 2
+                for prior in session.entries:
+                    raise DifferentialRedactionError.DuplicateName if prior.name == source.name
+                session.entries.push(DifferentialRedactionEntry{name: source.name, value: captured_value, value_fingerprint: differential_redaction_value_fingerprint(source.name, source.value), redacted: redacted})
+                session.text_bytes <- session.text_bytes + added_text
+            elif event == DifferentialRedactionEvent.Seal:
+                raise DifferentialRedactionError.InvalidState if session.state != DifferentialRedactionState.Capturing
+                session.state <- DifferentialRedactionState.Sealed
+            elif event == DifferentialRedactionEvent.Fail:
+                raise DifferentialRedactionError.InvalidState if session.state != DifferentialRedactionState.Capturing
+                session.state <- DifferentialRedactionState.Failed
+            elif event == DifferentialRedactionEvent.Cancel:
+                raise DifferentialRedactionError.CancelNotReady if session.state != DifferentialRedactionState.Planned and session.state != DifferentialRedactionState.Capturing
+                session.state <- DifferentialRedactionState.Cancelled
+            return session.state
