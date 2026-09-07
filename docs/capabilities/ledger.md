@@ -443,6 +443,16 @@ check_telemetry.sh audit are compiler-free static evidence; clock adapters,
 export formats, cross-task aggregation, and runtime overhead measurements
 remain open.
 
+ES-SCRIPT-046 | EsStructuredTask supplies a bounded structured-concurrency
+contract for scheduler adapters. Child ownership and counts, fail-fast versus
+aggregate failure, scope cancellation, shielded cleanup depth, cancellation
+acknowledgement, and terminal join outcomes are explicit state-machine edges.
+Acknowledgement while a child is cleaning is rejected, and join cannot finish
+until active children are zero. The focused IR fixture, namespace inclusion,
+documentation, and check_structured_task.sh audit are compiler-free static
+evidence; scheduler queues, thread/task adapters, and runtime execution remain
+open.
+
 ES-SCRIPT-040 | EsTaskTransfer supplies a bounded ownership protocol for
 copyable values, linear values, and dynamic handler contexts crossing task
 boundaries. Copy/move/borrow modes, source/target owners, generation updates,

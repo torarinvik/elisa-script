@@ -274,6 +274,13 @@ payload sizes, event count, span depth, and monotonic sequence numbers. Span
 begin/end accounting remains active even for sampled-out events, and a run may
 seal only after all spans close through `error[TelemetryError]`.
 
+`EsStructuredTask::StructuredTaskScope` makes structured concurrency explicit
+for scheduler adapters. Child start/success/failure, fail-fast transition,
+scope cancellation, cleanup entry/exit, cancellation acknowledgement, and join
+are separate transitions. A child in `Cleaning` cannot acknowledge cancellation
+until its cleanup depth returns to zero, and join reports failure or cancellation
+only after every active child is accounted for through `error[StructuredTaskError]`.
+
 EsHandle supplies the host-handle table that those adapters consume. Raw
 handle identity is distinct from the logical resource id and owner token;
 duplicate identities are rejected, ownership transfer requires a new owner,

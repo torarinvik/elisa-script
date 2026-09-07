@@ -1,0 +1,219 @@
+# Structured task scopes with explicit child cleanup and join semantics.
+#
+# This is scheduler-facing metadata only. It does not create threads; a host
+# scheduler must drive these transitions and may not acknowledge cancellation
+# while a child is inside shielded cleanup.
+
+module EsStructuredTask:
+    public:
+        const STRUCTURED_TASK_MAX_CHILDREN: usize = 1024
+        const STRUCTURED_TASK_MAX_CLEANUP_DEPTH: usize = 64
+
+
+        const enum StructuredScopeState of u8:
+            Planned
+            Running
+            Cancelling
+            Joining
+            Succeeded
+            Failed
+            Cancelled
+
+
+        const enum StructuredChildState of u8:
+            Planned
+            Running
+            Succeeded
+            Failed
+            CancelRequested
+            Cleaning
+            Cancelled
+
+
+        const enum StructuredTaskEvent of u8:
+            Begin
+            ChildStart
+            ChildSuccess
+            ChildFail
+            RequestCancel
+            RequestChildCancel
+            EnterCleanup
+            LeaveCleanup
+            ChildCancelAck
+            Join
+            Fail
+
+
+        struct StructuredTaskPolicy:
+            max_children: usize = STRUCTURED_TASK_MAX_CHILDREN
+            max_cleanup_depth: usize = STRUCTURED_TASK_MAX_CLEANUP_DEPTH
+            fail_fast: bool = true
+
+
+        struct StructuredChild:
+            child_id: u64
+            owner_token: u64
+            state: StructuredChildState = StructuredChildState.Planned
+            cleanup_depth: usize = 0
+            failure_code: u32 = 0
+
+
+        struct StructuredTaskScope:
+            policy: StructuredTaskPolicy
+            state: StructuredScopeState = StructuredScopeState.Planned
+            children: darray[StructuredChild] = []
+            active_children: usize = 0
+            completed_children: usize = 0
+            failed_children: usize = 0
+
+
+        error StructuredTaskError:
+            InvalidPolicy
+            InvalidScopeState
+            InvalidChildState
+            InvalidEvent
+            InvalidId
+            InvalidOwner
+            DuplicateChild
+            ChildIndexInvalid
+            ChildLimitExceeded
+            CleanupDepthExceeded
+            CleanupDepthInvalid
+            FailureCodeMissing
+            AccountingInvalid
+            InvalidTransition
+            CancellationShielded
+            JoinNotReady
+
+
+    private:
+        def structured_scope_state_valid(state: StructuredScopeState) -> bool:
+            return state in {StructuredScopeState.Planned, StructuredScopeState.Running, StructuredScopeState.Cancelling, StructuredScopeState.Joining, StructuredScopeState.Succeeded, StructuredScopeState.Failed, StructuredScopeState.Cancelled}
+
+
+        def structured_child_state_valid(state: StructuredChildState) -> bool:
+            return state in {StructuredChildState.Planned, StructuredChildState.Running, StructuredChildState.Succeeded, StructuredChildState.Failed, StructuredChildState.CancelRequested, StructuredChildState.Cleaning, StructuredChildState.Cancelled}
+
+
+        def structured_event_valid(event: StructuredTaskEvent) -> bool:
+            return event in {StructuredTaskEvent.Begin, StructuredTaskEvent.ChildStart, StructuredTaskEvent.ChildSuccess, StructuredTaskEvent.ChildFail, StructuredTaskEvent.RequestCancel, StructuredTaskEvent.RequestChildCancel, StructuredTaskEvent.EnterCleanup, StructuredTaskEvent.LeaveCleanup, StructuredTaskEvent.ChildCancelAck, StructuredTaskEvent.Join, StructuredTaskEvent.Fail}
+
+
+        def structured_scope_terminal(state: StructuredScopeState) -> bool:
+            return state == StructuredScopeState.Succeeded or state == StructuredScopeState.Failed or state == StructuredScopeState.Cancelled
+
+
+        def structured_child_active(state: StructuredChildState) -> bool:
+            return state == StructuredChildState.Running or state == StructuredChildState.CancelRequested or state == StructuredChildState.Cleaning
+
+
+        def structured_child_complete(state: StructuredChildState) -> bool:
+            return state == StructuredChildState.Succeeded or state == StructuredChildState.Failed or state == StructuredChildState.Cancelled
+
+
+        def structured_child_index(scope: StructuredTaskScope&, child_id: u64) -> usize:
+            for index in 0..<scope.children.count |scope, child_id|:
+                return index if scope.children[index].child_id == child_id
+            return scope.children.count
+
+
+    public:
+        def validate_structured_task_scope(scope: StructuredTaskScope&) -> bool error[StructuredTaskError]:
+            raise StructuredTaskError.InvalidPolicy if scope.policy.max_children == 0 or scope.policy.max_children > STRUCTURED_TASK_MAX_CHILDREN or scope.policy.max_cleanup_depth == 0 or scope.policy.max_cleanup_depth > STRUCTURED_TASK_MAX_CLEANUP_DEPTH
+            raise StructuredTaskError.InvalidScopeState if not structured_scope_state_valid(scope.state)
+            raise StructuredTaskError.ChildLimitExceeded if scope.children.count > scope.policy.max_children
+            raise StructuredTaskError.AccountingInvalid if scope.active_children > scope.children.count or scope.completed_children > scope.children.count or scope.failed_children > scope.completed_children
+            active: mutable usize = 0
+            completed: mutable usize = 0
+            failed: mutable usize = 0
+            for index in 0..<scope.children.count |scope|:
+                child: StructuredChild = scope.children[index]
+                raise StructuredTaskError.InvalidId if child.child_id == 0
+                raise StructuredTaskError.InvalidOwner if child.owner_token == 0
+                raise StructuredTaskError.InvalidChildState if not structured_child_state_valid(child.state)
+                raise StructuredTaskError.CleanupDepthExceeded if child.cleanup_depth > scope.policy.max_cleanup_depth
+                raise StructuredTaskError.FailureCodeMissing if child.state == StructuredChildState.Failed and child.failure_code == 0
+                for earlier in 0..<index |scope, child|:
+                    raise StructuredTaskError.DuplicateChild if scope.children[earlier].child_id == child.child_id
+                active <- active + 1 if structured_child_active(child.state)
+                completed <- completed + 1 if structured_child_complete(child.state)
+                failed <- failed + 1 if child.state == StructuredChildState.Failed
+            raise StructuredTaskError.AccountingInvalid if active != scope.active_children or completed != scope.completed_children or failed != scope.failed_children
+            return true
+
+
+        def structured_task_spawn(scope: mutable StructuredTaskScope&, child_id: u64, owner_token: u64) -> bool error[StructuredTaskError]:
+            try validate_structured_task_scope(scope)
+            raise StructuredTaskError.InvalidScopeState if scope.state != StructuredScopeState.Running
+            raise StructuredTaskError.InvalidId if child_id == 0
+            raise StructuredTaskError.InvalidOwner if owner_token == 0
+            raise StructuredTaskError.ChildLimitExceeded if scope.children.count >= scope.policy.max_children
+            raise StructuredTaskError.DuplicateChild if structured_child_index(scope, child_id) != scope.children.count
+            scope.children.push(StructuredChild{child_id: child_id, owner_token: owner_token})
+            return true
+
+
+        def advance_structured_task(scope: mutable StructuredTaskScope&, event: StructuredTaskEvent, child_id: u64 = 0, owner_token: u64 = 0, failure_code: u32 = 0) -> StructuredScopeState error[StructuredTaskError]:
+            try validate_structured_task_scope(scope)
+            raise StructuredTaskError.InvalidEvent if not structured_event_valid(event)
+            if event == StructuredTaskEvent.Begin:
+                raise StructuredTaskError.InvalidTransition if scope.state != StructuredScopeState.Planned
+                scope.state <- StructuredScopeState.Running
+            elif event == StructuredTaskEvent.RequestCancel:
+                raise StructuredTaskError.InvalidTransition if scope.state != StructuredScopeState.Running and scope.state != StructuredScopeState.Joining
+                scope.state <- StructuredScopeState.Cancelling
+            elif event == StructuredTaskEvent.Join:
+                raise StructuredTaskError.InvalidTransition if scope.state != StructuredScopeState.Running and scope.state != StructuredScopeState.Cancelling and scope.state != StructuredScopeState.Joining
+                raise StructuredTaskError.JoinNotReady if scope.active_children != 0
+                joining_state: StructuredScopeState = scope.state
+                scope.state <- StructuredScopeState.Joining
+                scope.state <- StructuredScopeState.Failed if scope.failed_children != 0 else StructuredScopeState.Cancelled if joining_state == StructuredScopeState.Cancelling else StructuredScopeState.Succeeded
+            elif event == StructuredTaskEvent.Fail:
+                raise StructuredTaskError.InvalidTransition if structured_scope_terminal(scope.state)
+                raise StructuredTaskError.JoinNotReady if scope.active_children != 0
+                scope.state <- StructuredScopeState.Failed
+            else:
+                index: usize = structured_child_index(scope, child_id)
+                raise StructuredTaskError.ChildIndexInvalid if index == scope.children.count
+                raise StructuredTaskError.InvalidOwner if owner_token == 0 or scope.children[index].owner_token != owner_token
+                child_state: StructuredChildState = scope.children[index].state
+                if event == StructuredTaskEvent.ChildStart:
+                    raise StructuredTaskError.InvalidTransition if scope.state != StructuredScopeState.Running and scope.state != StructuredScopeState.Joining
+                    raise StructuredTaskError.InvalidTransition if child_state != StructuredChildState.Planned
+                    scope.children[index].state <- StructuredChildState.Running
+                    scope.active_children <- scope.active_children + 1
+                elif event == StructuredTaskEvent.ChildSuccess:
+                    raise StructuredTaskError.InvalidTransition if child_state != StructuredChildState.Running
+                    scope.children[index].state <- StructuredChildState.Succeeded
+                    scope.active_children <- scope.active_children - 1
+                    scope.completed_children <- scope.completed_children + 1
+                elif event == StructuredTaskEvent.ChildFail:
+                    raise StructuredTaskError.InvalidTransition if child_state != StructuredChildState.Running
+                    raise StructuredTaskError.FailureCodeMissing if failure_code == 0
+                    scope.children[index].state <- StructuredChildState.Failed
+                    scope.children[index].failure_code <- failure_code
+                    scope.active_children <- scope.active_children - 1
+                    scope.completed_children <- scope.completed_children + 1
+                    scope.failed_children <- scope.failed_children + 1
+                    scope.state <- StructuredScopeState.Cancelling if scope.policy.fail_fast and scope.active_children != 0
+                elif event == StructuredTaskEvent.RequestChildCancel:
+                    raise StructuredTaskError.InvalidTransition if scope.state != StructuredScopeState.Cancelling
+                    raise StructuredTaskError.InvalidTransition if child_state != StructuredChildState.Running
+                    scope.children[index].state <- StructuredChildState.CancelRequested
+                elif event == StructuredTaskEvent.EnterCleanup:
+                    raise StructuredTaskError.InvalidTransition if child_state != StructuredChildState.CancelRequested
+                    raise StructuredTaskError.CleanupDepthExceeded if scope.children[index].cleanup_depth >= scope.policy.max_cleanup_depth
+                    scope.children[index].cleanup_depth <- scope.children[index].cleanup_depth + 1
+                    scope.children[index].state <- StructuredChildState.Cleaning
+                elif event == StructuredTaskEvent.LeaveCleanup:
+                    raise StructuredTaskError.InvalidTransition if child_state != StructuredChildState.Cleaning
+                    raise StructuredTaskError.CleanupDepthInvalid if scope.children[index].cleanup_depth == 0
+                    scope.children[index].cleanup_depth <- scope.children[index].cleanup_depth - 1
+                    scope.children[index].state <- StructuredChildState.CancelRequested if scope.children[index].cleanup_depth == 0 else StructuredChildState.Cleaning
+                elif event == StructuredTaskEvent.ChildCancelAck:
+                    raise StructuredTaskError.InvalidTransition if child_state != StructuredChildState.CancelRequested
+                    raise StructuredTaskError.CancellationShielded if scope.children[index].cleanup_depth != 0
+                    scope.children[index].state <- StructuredChildState.Cancelled
+                    scope.active_children <- scope.active_children - 1
+                    scope.completed_children <- scope.completed_children + 1
+            return scope.state
