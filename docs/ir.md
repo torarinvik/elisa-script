@@ -168,7 +168,8 @@ streaming JSONL, typed schema conversion, and encoding remain open.
 
 `EsSchema` adds the checked schema-conversion boundary that follows parsing.
 `SchemaDescriptor` declares named fields, source format, requiredness, and
-expected JSON kinds; `SchemaDecodeSession` binds each field at most once and
+expected JSON kinds; `SchemaDecodeSession` validates its complete ledger before
+each transition and binds each field at most once and
 advances `Ready → Binding → Complete|Failed`. Missing required fields,
 duplicate source names, out-of-range node references, and kind mismatches are
 reported through `error[SchemaContractError]` before application code receives

@@ -30,7 +30,8 @@ for declaration in \
     'error SchemaContractError:' \
     'def validate_schema_descriptor(' \
     'def validate_schema_session(' \
-    'def advance_schema_session('; do
+    'def advance_schema_session(' \
+    'try validate_schema_session(session)'; do
     rg -Fq "$declaration" "$model"
 done
 
