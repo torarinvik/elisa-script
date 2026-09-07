@@ -1173,8 +1173,8 @@ for unavoidable process-global changes.
 
 `EsRegexCallback::RegexCallbackSession` is the callback-aware replacement
 boundary. The matcher submits non-overlapping spans and capture counts; the
-session accounts unmatched prefixes, callback replacement bytes, and the final
-suffix under one output ceiling. Global versus single replacement is explicit,
+session accounts bounded input, unmatched prefixes, callback replacement bytes,
+and the final suffix under one output ceiling. Global versus single replacement is explicit,
 zero-width matches must advance (including the EOF non-progress guard), and a
 callback cannot be re-entered while a replacement is pending. Match/capture/
 output limits, malformed spans, cancellation, and premature end use

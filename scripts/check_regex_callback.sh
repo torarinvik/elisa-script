@@ -32,6 +32,7 @@ done
 for boundary in \
     'REGEX_CALLBACK_MAX_MATCHES' \
     'REGEX_CALLBACK_MAX_CAPTURES' \
+    'REGEX_CALLBACK_MAX_INPUT_BYTES' \
     'REGEX_CALLBACK_MAX_OUTPUT_BYTES' \
     'regex_callback_add_fits' \
     'pending' \
