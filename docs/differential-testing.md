@@ -669,6 +669,15 @@ reports the first family, operation, payload, result, or resumption difference;
 an effect trace is never treated as equal merely because the final return value
 matches.
 
+`EsDifferentialReplay::DifferentialReplaySession` is the lifecycle seam between
+validated artifacts and a future host replay adapter. Admission binds the
+manifest identity, materialization binds the world fingerprint, and the policy
+selects reference-first or candidate-first execution. Both run fingerprints are
+required before comparison; restoration must return the expected world
+fingerprint before the session can complete. Rejected order, stale admission,
+wrong-world, missing-comparison, and failed-restore edges remain typed state
+errors. The contract does not launch the reproduction entry or perform cleanup.
+
 The directory publication protocol is modeled separately from the host I/O
 adapter by `DifferentialArtifactDirectoryPlan`. A plan has a bounded parent
 path and two single-component names: a private staging directory and a distinct

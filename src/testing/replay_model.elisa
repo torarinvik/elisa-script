@@ -1,0 +1,172 @@
+# Bounded replay lifecycle contract for differential artifacts.
+#
+# Artifact validation and host execution are separate concerns. This module
+# records the typed lifecycle after a bundle has been admitted: materialize one
+# world, run both sides in an explicit order, compare their captured identities,
+# and restore the world before reporting completion. It performs no I/O.
+
+module EsDifferentialReplay:
+    public:
+        const DIFFERENTIAL_REPLAY_MAX_RUNS: usize = 2
+
+
+        const enum DifferentialReplayOrder of u8:
+            ReferenceThenCandidate
+            CandidateThenReference
+
+
+        const enum DifferentialReplayState of u8:
+            Planned
+            Admitted
+            Materializing
+            Running
+            Comparing
+            Restoring
+            Completed
+            Failed
+            Cancelled
+
+
+        const enum DifferentialReplayEvent of u8:
+            Admit
+            Materialize
+            WorldReady
+            RunComplete
+            CompareComplete
+            RestoreComplete
+            Fail
+            Cancel
+
+
+        const enum DifferentialReplaySide of u8:
+            Reference
+            Candidate
+
+
+        struct DifferentialReplaySession:
+            expected_manifest_fingerprint: u64
+            expected_world_fingerprint: u64
+            order: DifferentialReplayOrder = DifferentialReplayOrder.ReferenceThenCandidate
+            state: DifferentialReplayState = DifferentialReplayState.Planned
+            admission_fingerprint: u64 = 0
+            reference_run_fingerprint: u64 = 0
+            candidate_run_fingerprint: u64 = 0
+            comparison_fingerprint: u64 = 0
+            restored_world_fingerprint: u64 = 0
+            next_run: usize = 0
+            has_admission: bool = false
+            has_materialization: bool = false
+            has_reference: bool = false
+            has_candidate: bool = false
+            has_comparison: bool = false
+            has_restoration: bool = false
+
+
+        error DifferentialReplayError:
+            InvalidState
+            InvalidEvent
+            InvalidOrder
+            FingerprintMissing
+            AdmissionMismatch
+            MaterializationMismatch
+            RunOrderInvalid
+            DuplicateRun
+            RunLimitExceeded
+            ComparisonNotReady
+            RestoreMismatch
+            RestorationNotReady
+            CancelNotReady
+
+
+    private:
+        def differential_replay_state_valid(state: DifferentialReplayState) -> bool:
+            return state in {DifferentialReplayState.Planned, DifferentialReplayState.Admitted, DifferentialReplayState.Materializing, DifferentialReplayState.Running, DifferentialReplayState.Comparing, DifferentialReplayState.Restoring, DifferentialReplayState.Completed, DifferentialReplayState.Failed, DifferentialReplayState.Cancelled}
+
+
+        def differential_replay_event_valid(event: DifferentialReplayEvent) -> bool:
+            return event in {DifferentialReplayEvent.Admit, DifferentialReplayEvent.Materialize, DifferentialReplayEvent.WorldReady, DifferentialReplayEvent.RunComplete, DifferentialReplayEvent.CompareComplete, DifferentialReplayEvent.RestoreComplete, DifferentialReplayEvent.Fail, DifferentialReplayEvent.Cancel}
+
+
+        def differential_replay_order_valid(order: DifferentialReplayOrder) -> bool:
+            return order in {DifferentialReplayOrder.ReferenceThenCandidate, DifferentialReplayOrder.CandidateThenReference}
+
+
+        def differential_replay_side_valid(side: DifferentialReplaySide) -> bool:
+            return side in {DifferentialReplaySide.Reference, DifferentialReplaySide.Candidate}
+
+
+        def differential_replay_fingerprint_valid(value: u64) -> bool:
+            return value != 0
+
+
+    public:
+        def validate_differential_replay_session(session: DifferentialReplaySession&) -> bool error[DifferentialReplayError]:
+            raise DifferentialReplayError.InvalidState if not differential_replay_state_valid(session.state)
+            raise DifferentialReplayError.InvalidOrder if not differential_replay_order_valid(session.order)
+            raise DifferentialReplayError.FingerprintMissing if not differential_replay_fingerprint_valid(session.expected_manifest_fingerprint) or not differential_replay_fingerprint_valid(session.expected_world_fingerprint)
+            raise DifferentialReplayError.RunLimitExceeded if session.next_run > DIFFERENTIAL_REPLAY_MAX_RUNS
+            raise DifferentialReplayError.FingerprintMissing if session.has_admission and not differential_replay_fingerprint_valid(session.admission_fingerprint)
+            raise DifferentialReplayError.FingerprintMissing if session.has_reference and not differential_replay_fingerprint_valid(session.reference_run_fingerprint)
+            raise DifferentialReplayError.FingerprintMissing if session.has_candidate and not differential_replay_fingerprint_valid(session.candidate_run_fingerprint)
+            raise DifferentialReplayError.FingerprintMissing if session.has_comparison and not differential_replay_fingerprint_valid(session.comparison_fingerprint)
+            raise DifferentialReplayError.FingerprintMissing if session.has_restoration and not differential_replay_fingerprint_valid(session.restored_world_fingerprint)
+            raise DifferentialReplayError.InvalidState if session.state == DifferentialReplayState.Admitted and not session.has_admission
+            raise DifferentialReplayError.InvalidState if session.state == DifferentialReplayState.Materializing and not session.has_admission
+            raise DifferentialReplayError.InvalidState if session.state == DifferentialReplayState.Running and not session.has_materialization
+            raise DifferentialReplayError.InvalidState if session.state == DifferentialReplayState.Comparing and (not session.has_reference or not session.has_candidate)
+            raise DifferentialReplayError.InvalidState if session.state == DifferentialReplayState.Restoring and not session.has_comparison
+            raise DifferentialReplayError.InvalidState if session.state == DifferentialReplayState.Completed and not session.has_restoration
+            return true
+
+
+        def advance_differential_replay(session: mutable DifferentialReplaySession&, event: DifferentialReplayEvent, fingerprint: u64 = 0, side: DifferentialReplaySide = DifferentialReplaySide.Reference) -> DifferentialReplayState error[DifferentialReplayError]:
+            try validate_differential_replay_session(session)
+            raise DifferentialReplayError.InvalidEvent if not differential_replay_event_valid(event)
+            if event == DifferentialReplayEvent.Admit:
+                raise DifferentialReplayError.InvalidState if session.state != DifferentialReplayState.Planned
+                raise DifferentialReplayError.AdmissionMismatch if fingerprint != session.expected_manifest_fingerprint
+                raise DifferentialReplayError.FingerprintMissing if not differential_replay_fingerprint_valid(fingerprint)
+                session.admission_fingerprint <- fingerprint
+                session.has_admission <- true
+                session.state <- DifferentialReplayState.Admitted
+            elif event == DifferentialReplayEvent.Materialize:
+                raise DifferentialReplayError.InvalidState if session.state != DifferentialReplayState.Admitted
+                session.state <- DifferentialReplayState.Materializing
+            elif event == DifferentialReplayEvent.WorldReady:
+                raise DifferentialReplayError.InvalidState if session.state != DifferentialReplayState.Materializing
+                raise DifferentialReplayError.MaterializationMismatch if fingerprint != session.expected_world_fingerprint
+                session.has_materialization <- true
+                session.state <- DifferentialReplayState.Running
+            elif event == DifferentialReplayEvent.RunComplete:
+                raise DifferentialReplayError.InvalidState if session.state != DifferentialReplayState.Running
+                raise DifferentialReplayError.RunLimitExceeded if session.next_run >= DIFFERENTIAL_REPLAY_MAX_RUNS
+                raise DifferentialReplayError.InvalidOrder if not differential_replay_side_valid(side)
+                expected_side: DifferentialReplaySide = DifferentialReplaySide.Reference if session.order == DifferentialReplayOrder.ReferenceThenCandidate and session.next_run == 0 else DifferentialReplaySide.Candidate if session.order == DifferentialReplayOrder.ReferenceThenCandidate else DifferentialReplaySide.Candidate if session.next_run == 0 else DifferentialReplaySide.Reference
+                raise DifferentialReplayError.RunOrderInvalid if side != expected_side
+                raise DifferentialReplayError.DuplicateRun if side == DifferentialReplaySide.Reference and session.has_reference or side == DifferentialReplaySide.Candidate and session.has_candidate
+                raise DifferentialReplayError.FingerprintMissing if not differential_replay_fingerprint_valid(fingerprint)
+                session.reference_run_fingerprint <- fingerprint if side == DifferentialReplaySide.Reference else session.reference_run_fingerprint
+                session.candidate_run_fingerprint <- fingerprint if side == DifferentialReplaySide.Candidate else session.candidate_run_fingerprint
+                session.has_reference <- true if side == DifferentialReplaySide.Reference
+                session.has_candidate <- true if side == DifferentialReplaySide.Candidate
+                session.next_run <- session.next_run + 1
+                session.state <- DifferentialReplayState.Comparing if session.next_run == DIFFERENTIAL_REPLAY_MAX_RUNS else session.state
+            elif event == DifferentialReplayEvent.CompareComplete:
+                raise DifferentialReplayError.ComparisonNotReady if session.state != DifferentialReplayState.Comparing or not session.has_reference or not session.has_candidate
+                raise DifferentialReplayError.FingerprintMissing if not differential_replay_fingerprint_valid(fingerprint)
+                session.comparison_fingerprint <- fingerprint
+                session.has_comparison <- true
+                session.state <- DifferentialReplayState.Restoring
+            elif event == DifferentialReplayEvent.RestoreComplete:
+                raise DifferentialReplayError.RestorationNotReady if session.state != DifferentialReplayState.Restoring or not session.has_comparison
+                raise DifferentialReplayError.RestoreMismatch if fingerprint != session.expected_world_fingerprint
+                session.restored_world_fingerprint <- fingerprint
+                session.has_restoration <- true
+                session.state <- DifferentialReplayState.Completed
+            elif event == DifferentialReplayEvent.Fail:
+                raise DifferentialReplayError.InvalidState if session.state == DifferentialReplayState.Completed or session.state == DifferentialReplayState.Failed or session.state == DifferentialReplayState.Cancelled
+                session.state <- DifferentialReplayState.Failed
+            elif event == DifferentialReplayEvent.Cancel:
+                raise DifferentialReplayError.CancelNotReady if session.state == DifferentialReplayState.Completed or session.state == DifferentialReplayState.Failed or session.state == DifferentialReplayState.Cancelled
+                session.state <- DifferentialReplayState.Cancelled
+            return session.state

@@ -530,3 +530,10 @@ fingerprints, resumption counts, multishot admission, sealed fingerprints, and
 first-difference comparison. The focused differential fixture, namespace
 inclusion, documentation, and check_differential_effect_trace.sh audit are
 static evidence; handler instrumentation and execution evidence remain open.
+
+ES-SCRIPT-019 | EsDifferentialReplay supplies a bounded replay lifecycle that
+binds manifest/world fingerprints, enforces an explicit side order, requires
+both run identities and a comparison before restoration, and rejects stale or
+wrong-world completion. The focused differential fixture, namespace inclusion,
+documentation, and check_differential_replay.sh audit are static evidence;
+reproduction launch, host materialization, and crash recovery remain open.
