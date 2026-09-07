@@ -91,6 +91,8 @@ rg -q 'zero_resource_policy: RuntimeResourcePolicy' "$repo_root/test/ir/elisascr
 rg -q 'not runtime_resource_acquire\(zero_resource_usage' "$repo_root/test/ir/elisascript_ir_test.elisa"
 rg -q 'bytecode_compatibility_entrypoints_reject_step_budget_above_shared_ceiling' "$repo_root/test/ir/elisascript_bytecode_test.elisa"
 rg -q 'bytecode_strict_direct_entrypoint_rejects_unaccounted_resource_dimensions' "$repo_root/test/ir/elisascript_bytecode_test.elisa"
+rg -q 'reference\.usage\.output_bytes == 3' "$repo_root/test/ir/elisascript_bytecode_test.elisa"
+rg -q 'compiled\.usage\.output_bytes == reference\.usage\.output_bytes' "$repo_root/test/ir/elisascript_bytecode_test.elisa"
 rg -q 'runtime_resource_policy_with_step_limit' "$bytecode"
 rg -q 'def execute_bytecode_with_resource_policy' "$bytecode"
 rg -q 'def execute_bytecode_direct_only_with_resource_policy' "$bytecode"

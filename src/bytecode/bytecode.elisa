@@ -408,6 +408,7 @@ module EsBytecode:
             value: mutable RuntimeValue
             result: mutable RuntimeValue
             steps: mutable u64
+            output_bytes: mutable usize
             recovered: mutable bool
             recovery_target: mutable u32
 
@@ -2922,7 +2923,7 @@ module EsBytecode:
             for index in 0..<arguments.count |fn, arguments, ids, values|:
                 ids.push(fn.parameters[index].value)
                 values.push(arguments[index])
-            cursor: mutable BytecodeExecutionCursor = BytecodeExecutionCursor{state: BytecodeExecutionState.EnterBlock, control: BytecodeControlCursor{state: BytecodeControlState.Instruction, block_index: bytecode_block_index(fn, fn.entry), instruction_index: 0, action: BytecodeControlAction.Invalid, target: 0, edge_start: 0, edge_count: 0}, entered: true, branch_condition: false, target_index: fn.blocks.count, edge_offset: 0, pending: [], value: runtime_void(), result: runtime_void(), steps: 0, recovered: false, recovery_target: 0}
+            cursor: mutable BytecodeExecutionCursor = BytecodeExecutionCursor{state: BytecodeExecutionState.EnterBlock, control: BytecodeControlCursor{state: BytecodeControlState.Instruction, block_index: bytecode_block_index(fn, fn.entry), instruction_index: 0, action: BytecodeControlAction.Invalid, target: 0, edge_start: 0, edge_count: 0}, entered: true, branch_condition: false, target_index: fn.blocks.count, edge_offset: 0, pending: [], value: runtime_void(), result: runtime_void(), steps: 0, output_bytes: 0, recovered: false, recovery_target: 0}
             error_guards: mutable darray[BytecodeErrorGuard] = []
             machine over cursor.state:
                 state Execute
@@ -2992,6 +2993,20 @@ module EsBytecode:
                     instruction: Instruction = fn.instructions[instruction_index]
                     try bytecode_prepare_guard_instruction(instruction, error_guards)
                     cursor.value <- try bytecode_direct_instruction_guarded(module, instruction, fn, ids, values, storage, observations, step_limit, cursor.steps, error_guards, cursor.recovered, cursor.recovery_target, call_depth, observation_limit)
+                    produced_output: usize = 0
+                    if instruction.opcode == Opcode.WriteStdout or instruction.opcode == Opcode.WriteStderr:
+                        if cursor.value.kind == RuntimeValueKind.Int and cursor.value.integer >= 0:
+                            produced_output <- cursor.value.integer.usize()
+                    if instruction.opcode == Opcode.CaptureProcessStdout or instruction.opcode == Opcode.CaptureProcessStderr or instruction.opcode == Opcode.CaptureProcessStdoutWithStdin or instruction.opcode == Opcode.CaptureProcessStderrWithStdin or instruction.opcode == Opcode.CaptureProcessResult or instruction.opcode == Opcode.CaptureProcessPipeline or instruction.opcode == Opcode.CaptureProcessResultInDirectory or instruction.opcode == Opcode.CaptureProcessResultWithEnvironment or instruction.opcode == Opcode.CaptureProcessResultInDirectoryWithEnvironment:
+                        if cursor.value.kind == RuntimeValueKind.Text:
+                            produced_output <- sview_len(cursor.value.text)
+                        if cursor.value.kind == RuntimeValueKind.ProcessCapture:
+                            stdout_length: usize = sview_len(cursor.value.process_stdout)
+                            stderr_length: usize = sview_len(cursor.value.process_stderr)
+                            raise InterpretError.OutputLimit if stderr_length > ES_RUNTIME_DEFAULT_MAX_OUTPUT_BYTES or stdout_length > ES_RUNTIME_DEFAULT_MAX_OUTPUT_BYTES - stderr_length
+                            produced_output <- stdout_length + stderr_length
+                    raise InterpretError.OutputLimit if produced_output > ES_RUNTIME_DEFAULT_MAX_OUTPUT_BYTES - cursor.output_bytes
+                    cursor.output_bytes <- cursor.output_bytes + produced_output
                     cursor.state <- BytecodeExecutionState.Recover if cursor.recovered else BytecodeExecutionState.StoreInstruction
                     -> Execute
 
@@ -3051,7 +3066,7 @@ module EsBytecode:
                     break
 
             policy: RuntimeResourcePolicy = runtime_resource_policy_with_step_limit(RuntimeResourcePolicy{}, step_limit)
-            usage: RuntimeResourceUsage = RuntimeResourceUsage{steps: cursor.steps}
+            usage: RuntimeResourceUsage = RuntimeResourceUsage{steps: cursor.steps, output_bytes: cursor.output_bytes}
             usage.retained_traces <- observations.count
             raise InterpretError.OutputLimit if not runtime_resource_usage_within_policy(usage, policy)
             return Execution{value: cursor.result, steps: cursor.steps, policy: policy, usage: usage, engine: ExecutionEngine.DirectBytecode}
