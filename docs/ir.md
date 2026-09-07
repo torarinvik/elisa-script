@@ -315,6 +315,16 @@ algorithm matching are checked before publication; the model records the
 contract but delegates cryptographic computation to a maintained host/library
 implementation through `error[HashError]`.
 
+`EsBinary::BinaryCursor` keeps binary parsing distinct from text. It bounds the
+input and read count, admits explicit little- or big-endian scalar reads with
+subtraction-safe offsets, supports bounded skipping, and requires an explicit
+finish with no trailing bytes; truncation, post-finish reads, and malformed
+state fail through `error[BinaryError]`.
+
+Binary format adapters can use `EsBinary::BinaryCursor` as their shared input
+contract: it preserves byte-oriented semantics, explicit endianness, and
+trailing-byte policy while leaving format-specific schemas above the cursor.
+
 EsHandle supplies the host-handle table that those adapters consume. Raw
 handle identity is distinct from the logical resource id and owner token;
 duplicate identities are rejected, ownership transfer requires a new owner,

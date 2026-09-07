@@ -497,6 +497,14 @@ inclusion, documentation, and check_hash.sh audit are compiler-free static
 evidence; cryptographic implementation, streaming adapters, package/archive
 integration, and cross-platform digest parity remain open.
 
+ES-SCRIPT-052 | EsBinary supplies a bounded binary-cursor contract. Input and
+read-count ceilings, explicit little/big endianness, checked u8/u16/u32 reads,
+bounded skips, truncation and state errors, and explicit no-trailing-bytes
+finish are represented through `error[BinaryError]`. The focused IR fixture,
+namespace inclusion, documentation, and check_binary.sh audit are
+compiler-free static evidence; format-specific decoders, streaming adapters,
+and cross-platform binary parity remain open.
+
 ES-SCRIPT-040 | EsTaskTransfer supplies a bounded ownership protocol for
 copyable values, linear values, and dynamic handler contexts crossing task
 boundaries. Copy/move/borrow modes, source/target owners, generation updates,

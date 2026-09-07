@@ -1,0 +1,140 @@
+# Bounded binary cursor for typed parsers and artifact adapters.
+#
+# Binary input is a byte view, not text. Every read performs subtraction-based
+# range admission, records a bounded read count, and leaves final completion
+# explicit so trailing bytes cannot be silently ignored.
+
+module EsBinary:
+    public:
+        const BINARY_MAX_INPUT_BYTES: usize = 268435456
+        const BINARY_MAX_READS: usize = 1048576
+
+
+        const enum BinaryByteOrder of u8:
+            Little
+            Big
+
+
+        const enum BinaryCursorState of u8:
+            Active
+            Exhausted
+            Failed
+
+
+        const enum BinaryEvent of u8:
+            Finish
+            Fail
+
+
+        struct BinaryPolicy:
+            max_input_bytes: usize = BINARY_MAX_INPUT_BYTES
+            max_reads: usize = BINARY_MAX_READS
+
+
+        struct BinaryCursor:
+            source: sview
+            policy: BinaryPolicy
+            state: BinaryCursorState = BinaryCursorState.Active
+            offset: usize = 0
+            reads: usize = 0
+
+
+        error BinaryError:
+            InvalidPolicy
+            InvalidOrder
+            InvalidState
+            InvalidEvent
+            InputLimitExceeded
+            ReadLimitExceeded
+            Truncated
+            OffsetInvalid
+            TrailingBytes
+            InvalidTransition
+
+
+    private:
+        def binary_order_valid(order: BinaryByteOrder) -> bool:
+            return order in {BinaryByteOrder.Little, BinaryByteOrder.Big}
+
+
+        def binary_state_valid(state: BinaryCursorState) -> bool:
+            return state in {BinaryCursorState.Active, BinaryCursorState.Exhausted, BinaryCursorState.Failed}
+
+
+        def binary_event_valid(event: BinaryEvent) -> bool:
+            return event in {BinaryEvent.Finish, BinaryEvent.Fail}
+
+
+        def binary_policy_valid(policy: BinaryPolicy) -> bool:
+            return policy.max_input_bytes != 0 and policy.max_input_bytes <= BINARY_MAX_INPUT_BYTES and policy.max_reads != 0 and policy.max_reads <= BINARY_MAX_READS
+
+
+        def binary_cursor_valid(cursor: BinaryCursor&) -> bool error[BinaryError]:
+            raise BinaryError.InvalidPolicy if not binary_policy_valid(cursor.policy)
+            raise BinaryError.InvalidState if not binary_state_valid(cursor.state)
+            raise BinaryError.InputLimitExceeded if sview_len(cursor.source) > cursor.policy.max_input_bytes
+            raise BinaryError.OffsetInvalid if cursor.offset > sview_len(cursor.source)
+            raise BinaryError.ReadLimitExceeded if cursor.reads > cursor.policy.max_reads
+            return true
+
+
+        def binary_read_admit(cursor: mutable BinaryCursor&, width: usize) -> bool error[BinaryError]:
+            try binary_cursor_valid(cursor)
+            raise BinaryError.InvalidState if cursor.state != BinaryCursorState.Active
+            raise BinaryError.Truncated if width == 0
+            raise BinaryError.ReadLimitExceeded if cursor.reads >= cursor.policy.max_reads
+            raise BinaryError.Truncated if cursor.offset > sview_len(cursor.source) or width > sview_len(cursor.source) - cursor.offset
+            cursor.offset <- cursor.offset + width
+            cursor.reads <- cursor.reads + 1
+            return true
+
+
+    public:
+        def validate_binary_cursor(cursor: BinaryCursor&) -> bool error[BinaryError]:
+            try binary_cursor_valid(cursor)
+            return true
+
+
+        def binary_read_u8(cursor: mutable BinaryCursor&) -> u8 error[BinaryError]:
+            try binary_read_admit(cursor, 1)
+            return sview_at(cursor.source, cursor.offset - 1)
+
+
+        def binary_read_u16(cursor: mutable BinaryCursor&, order: BinaryByteOrder) -> u16 error[BinaryError]:
+            raise BinaryError.InvalidOrder if not binary_order_valid(order)
+            start: usize = cursor.offset
+            try binary_read_admit(cursor, 2)
+            first: u16 = sview_at(cursor.source, start).u16()
+            second: u16 = sview_at(cursor.source, start + 1).u16()
+            return first | second << 8 if order == BinaryByteOrder.Little else first << 8 | second
+
+
+        def binary_read_u32(cursor: mutable BinaryCursor&, order: BinaryByteOrder) -> u32 error[BinaryError]:
+            raise BinaryError.InvalidOrder if not binary_order_valid(order)
+            start: usize = cursor.offset
+            try binary_read_admit(cursor, 4)
+            result: mutable u32 = 0
+            if order == BinaryByteOrder.Little:
+                for index in 0..<4 |cursor, start, result|:
+                    result <- result | sview_at(cursor.source, start + index).u32() << (index * 8)
+            else:
+                for index in 0..<4 |cursor, start, result|:
+                    result <- result | sview_at(cursor.source, start + index).u32() << ((3 - index) * 8)
+            return result
+
+
+        def binary_skip(cursor: mutable BinaryCursor&, width: usize) -> bool error[BinaryError]:
+            return binary_read_admit(cursor, width)
+
+
+        def advance_binary(cursor: mutable BinaryCursor&, event: BinaryEvent) -> BinaryCursorState error[BinaryError]:
+            try binary_cursor_valid(cursor)
+            raise BinaryError.InvalidEvent if not binary_event_valid(event)
+            if event == BinaryEvent.Finish:
+                raise BinaryError.InvalidTransition if cursor.state != BinaryCursorState.Active
+                raise BinaryError.TrailingBytes if cursor.offset != sview_len(cursor.source)
+                cursor.state <- BinaryCursorState.Exhausted
+            elif event == BinaryEvent.Fail:
+                raise BinaryError.InvalidTransition if cursor.state == BinaryCursorState.Exhausted or cursor.state == BinaryCursorState.Failed
+                cursor.state <- BinaryCursorState.Failed
+            return cursor.state
