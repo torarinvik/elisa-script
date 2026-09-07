@@ -23,11 +23,13 @@ opcode_file="$repo_root/src/ir/ir_model.elisa"
 verifier_file="$repo_root/src/ir/ir_verify.elisa"
 lowering_test_file="$repo_root/test/ir/elisascript_lowering_test.elisa"
 ir_test_file="$repo_root/test/ir/elisascript_ir_test.elisa"
+interpreter_test_file="$repo_root/test/ir/elisascript_interpreter_test.elisa"
+bytecode_test_file="$repo_root/test/ir/elisascript_bytecode_test.elisa"
 semantic_test_file="$repo_root/test/semantic/elisascript_semantic_test.elisa"
 surface_doc="$repo_root/docs/builtin-surface.md"
 ledger_doc="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$registry_file" "$semantic_file" "$receiver_semantic_file" "$firm_argument_file" "$literal_argument_file" "$inference_file" "$structural_inference_file" "$lowerer_file" "$interpreter_file" "$bytecode_file" "$opcode_file" "$verifier_file" "$lowering_test_file" "$ir_test_file" "$semantic_test_file" "$surface_doc" "$ledger_doc"; do
+for required_file in "$registry_file" "$semantic_file" "$receiver_semantic_file" "$firm_argument_file" "$literal_argument_file" "$inference_file" "$structural_inference_file" "$lowerer_file" "$interpreter_file" "$bytecode_file" "$opcode_file" "$verifier_file" "$lowering_test_file" "$ir_test_file" "$interpreter_test_file" "$bytecode_test_file" "$semantic_test_file" "$surface_doc" "$ledger_doc"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'builtin registry audit: missing file: %s\n' "$required_file" >&2
         exit 2
@@ -2238,7 +2240,9 @@ if ! rg -q 'name: "capture_names", receiver: "Regex".*argument_types: "text".*re
    ! rg -q 'mode == 1' "$interpreter_file" || \
    ! rg -q 'regex_capture_value\(storage, regex_text\.text, regex_pattern\.text, instruction\.integer\)' "$bytecode_file" || \
    ! rg -q 'valid_mode: bool = instruction\.integer in \{0, 1\}' "$verifier_file" || \
-   ! rg -q 'def verifier_rejects_unknown_regex_capture_mode\(' "$ir_test_file"; then
+   ! rg -q 'def verifier_rejects_unknown_regex_capture_mode\(' "$ir_test_file" || \
+   ! rg -q 'def interpreter_preserves_optional_regex_capture_slots\(' "$interpreter_test_file" || \
+   ! rg -q 'def bytecode_direct_optional_regex_capture_matches_reference_interpreter\(' "$bytecode_test_file"; then
     printf 'builtin registry audit: Regex.capture_names mode contract is incomplete\n' >&2
     exit 1
 fi

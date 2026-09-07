@@ -2995,10 +2995,12 @@ extend EsIr:
         # supports nested groups and quantified groups, but deriving captures
         # from its endpoint-only result would be ambiguous in those cases. We
         # therefore expose captures for a flat sequence of non-quantified
-        # groups, and leave `$n` literal whenever the layout cannot be proven.
-        # This keeps replacement behavior deterministic while the full capture
-        # state machine is added later.
-        def regex_capture_group_layout(pattern: sview, opens: mutable darray[usize]&, starts: mutable darray[usize]&, ends: mutable darray[usize]&, names: mutable darray[sview]&) -> bool can[Memory.Allocate, Abort.Panic]:
+        # groups plus `?`-optional groups; an optional group that does not
+        # participate becomes an empty capture while its name remains stable.
+        # Other quantified/ambiguous layouts remain unsupported and leave the
+        # replacement/capture result deterministic until a full capture state
+        # machine is added later.
+        def regex_capture_group_layout(pattern: sview, opens: mutable darray[usize]&, starts: mutable darray[usize]&, ends: mutable darray[usize]&, names: mutable darray[sview]&, optional: mutable darray[bool]&) -> bool can[Memory.Allocate, Abort.Panic]:
             cursor: mutable usize = 0
             class_depth: mutable usize = 0
             group_depth: mutable usize = 0
@@ -3022,27 +3024,31 @@ extend EsIr:
                     group_end: usize = regex_group_width(pattern, cursor, sview_len(pattern)) + cursor - 1
                     starts.push(regex_group_content_start(pattern, cursor, group_end))
                     names.push(regex_group_name(pattern, cursor, group_end))
+                    quantifier_index: usize = group_end + 1
+                    optional.push(quantifier_index < sview_len(pattern) and sview_at(pattern, quantifier_index) == 63)
                     group_depth <- group_depth + 1
                 elif class_depth == 0 and byte == 41:
                     return false if group_depth == 0
                     ends.push(cursor)
                     group_depth <- group_depth - 1
                     quantifier_index: usize = cursor + 1
-                    return false if quantifier_index < sview_len(pattern) and (sview_at(pattern, quantifier_index) in {42, 43, 63} or regex_braced_quantifier(pattern, quantifier_index, sview_len(pattern)).found)
+                    return false if quantifier_index < sview_len(pattern) and (sview_at(pattern, quantifier_index) in {42, 43} or regex_braced_quantifier(pattern, quantifier_index, sview_len(pattern)).found)
                 cursor <- cursor + 1
-            return group_depth == 0 and not top_level_alternation and opens.count == starts.count and starts.count == ends.count and ends.count == names.count
+            return group_depth == 0 and not top_level_alternation and opens.count == starts.count and starts.count == ends.count and ends.count == names.count and names.count == optional.count
 
 
         def regex_capture_spans_for_match(text: sview, pattern: sview, span: RegexMatchSpan, captures: mutable darray[RegexMatchSpan]&, names: mutable darray[sview]&, budget: mutable RegexWorkBudget&) -> bool can[Memory.Allocate, Abort.Panic]:
             opens: mutable darray[usize] = []
             starts: mutable darray[usize] = []
             ends: mutable darray[usize] = []
+            optional: mutable darray[bool] = []
             return false if not regex_work_bytes(budget, sview_len(pattern))
-            return false if not regex_capture_group_layout(pattern, opens, starts, ends, names)
-            for group_index in 0..<opens.count.usize() |text, pattern, span, captures, opens, starts, ends, budget|:
+            return false if not regex_capture_group_layout(pattern, opens, starts, ends, names, optional)
+            for group_index in 0..<opens.count.usize() |text, pattern, span, captures, opens, starts, ends, optional, budget|:
                 open: usize = opens[group_index]
                 inner_start: usize = starts[group_index]
                 inner_end: usize = ends[group_index]
+                suffix_start: usize = inner_end + 1 + (1 if optional[group_index] else 0)
                 prefix_endpoint: i64 = regex_match_expression_end(pattern, 0, open, text, span.start, budget)
                 return false if budget.exhausted
                 found: mutable bool = false
@@ -3053,13 +3059,18 @@ extend EsIr:
                         group_endpoint: i64 = regex_match_expression_end(pattern, inner_start, inner_end, text, candidate, budget)
                         return false if budget.exhausted
                         if group_endpoint >= 0 and group_endpoint.usize() <= span.end:
-                            suffix_endpoint: i64 = regex_match_expression_end(pattern, inner_end + 1, sview_len(pattern), text, group_endpoint.usize(), budget)
+                            suffix_endpoint: i64 = regex_match_expression_end(pattern, suffix_start, sview_len(pattern), text, group_endpoint.usize(), budget)
                             return false if budget.exhausted
                             if suffix_endpoint == span.end.i64():
                                 captures.push(RegexMatchSpan{start: candidate, end: group_endpoint.usize(), found: true})
                                 found <- true
                     break if candidate == span.end
                     candidate <- candidate + 1
+                if not found and optional[group_index] and prefix_endpoint >= 0:
+                    suffix_endpoint: i64 = regex_match_expression_end(pattern, suffix_start, sview_len(pattern), text, prefix_endpoint.usize(), budget)
+                    if suffix_endpoint == span.end.i64():
+                        captures.push(RegexMatchSpan{start: 0, end: 0, found: false})
+                        found <- true
                 return false if budget.exhausted or not found
             return true
 

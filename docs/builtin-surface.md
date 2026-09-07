@@ -92,7 +92,8 @@ while both line-splitting aliases take no arguments and return `darray[sview]`.
 The receiver-aware `Regex` rows cover `search`, `match`, `fullmatch`,
 `findall`/`find_all`, `capture`/`captures`, `capture_names`, `split`, and `sub`.
 Matching, finding, capturing, and splitting take one positional text haystack
-and return `bool` or `darray[sview]` as declared; `capture_names` returns the
+and return `bool` or `darray[sview]` as declared; `capture`/`captures` preserve
+empty slots for proven `?`-optional groups, and `capture_names` returns the
 first match's positional group-name descriptors (empty text for unnamed
 groups), while `sub` takes positional replacement and haystack text and returns
 `sview`. Regex rows exclude the receiver from arity, reject named arguments,

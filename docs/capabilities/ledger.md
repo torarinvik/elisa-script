@@ -199,6 +199,11 @@ diagnostics, structural result inference, and lowerer call-shape validation all
 consume those rows, including bound Regex receiver classification for `split`,
 with compiler-free audit coverage (`a0337ec`, `73b15d4`).
 
+The `RegexCapture` contract now admits flat `?`-optional groups: unmatched
+groups preserve empty positional slots, while `Regex.capture_names` reports
+stable positional names for the same proven layout; nested/repeated/alternating
+layouts remain fail-closed (`WORKTREE`).
+
 The six canonical global regex facades now use typed registry rows for
 text/Regex contracts and aggregate/direct-call result inference (`37ba738`,
 `cd39dc9`, `7bb8828`); typed `regex(...)` constructors preserve nominal

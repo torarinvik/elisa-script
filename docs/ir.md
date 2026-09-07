@@ -688,9 +688,9 @@ captures use their positional `$1` through `$9` references, plus `${name}` and
 same branch matcher to locate non-overlapping spans, copies unmatched and replacement
 bytes into fresh storage, expands `$0` to each complete matched span, and advances
 after zero-width matches so an empty pattern cannot loop forever. `$1` through `$9`
-also expand when the pattern contains a flat sequence of non-quantified capture groups
+also expand when the pattern contains a flat sequence of non-quantified or `?`-optional capture groups
 whose spans can be proven against the complete match (for example,
-`([a-z]+)=([0-9]+)`). Nested, quantified, or top-level-alternating capture layouts
+`([a-z]+)=([0-9]+)`). Nested, repeated/braced, or top-level-alternating capture layouts
 remain literal rather than guessing a branch; this conservative fallback keeps
 replacement behavior deterministic until recursive regex match values are defined.
 The replacement language also accepts AWK/sed's `&` whole-match token, Perl/Python
@@ -744,9 +744,13 @@ consumed. These receiver forms lower to the same `RegexSearch` contract; its
 `RegexCapture` has the same `Text × Named(Regex)` operands and returns an
 `Array[Text]` for the first match. Element zero is the complete matched span;
 subsequent elements are proven positional capture groups. If no match exists the
-result is empty. Unsupported capture layouts conservatively return only the full
-match, preserving deterministic behavior across the interpreter and bytecode
-facade.
+result is empty. A flat group followed by `?` is supported; when it does not
+participate, its positional element is an empty text value. Other quantified,
+nested, or top-level-alternating capture layouts conservatively return only the
+full match, preserving deterministic behavior across the interpreter and
+bytecode facade. The receiver `capture_names(text)` uses the same proven layout
+and returns positional group names, including empty text for unnamed groups;
+unsupported layouts and missing matches return an empty array.
 
 `Map` is the closed aggregate counterpart to `Array`. Its `Type` descriptor carries
 one exact scalar key type and one recursively represented value type within the
