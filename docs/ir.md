@@ -1177,6 +1177,14 @@ terminal failure and returns to `Created`, and cancellation requires an explicit
 acknowledgement edge. Invalid transitions, zero/oversized retry ceilings, and
 retries beyond `max_attempts` raise `error[ProcessJobError]`; the scheduler,
 parallel-map limits, and platform signal escalation remain host integrations.
+`ProcessPipeline` extends the same shell-free boundary to ordered multi-stage
+commands. It validates every stage through `ProcessCommand`, caps stage count
+and aggregate buffer policy, and advances through explicit `Planned → Running →
+Succeeded/Failed` or `Cancelling → Cancelled` edges. Stage exit/failure events
+must name the next stage, aggregate mode records failures without losing order,
+and invalid stage commands or transitions raise `error[ProcessPipelineError]`.
+Pipe draining, SIGPIPE behavior, concurrent I/O, and child reaping remain host
+responsibilities.
 The argv terminator is cleared using `size_of(uintptr)`, matching the target
 pointer width rather than assuming an 8-byte slot.
 Before reserving argv pointers or owned argument strings, the interpreter

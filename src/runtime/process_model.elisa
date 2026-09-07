@@ -9,6 +9,8 @@ module EsProcess:
     public:
         const PROCESS_COMMAND_MAX_ARGUMENTS: usize = 1048576
         const PROCESS_COMMAND_MAX_TEXT_BYTES: usize = 67108864
+        const PROCESS_PIPELINE_MAX_STAGES: usize = 256
+        const PROCESS_PIPELINE_MAX_BUFFER_BYTES: usize = 67108864
 
 
         const enum ProcessStdioMode of u8:
@@ -94,6 +96,37 @@ module EsProcess:
             failure_mode: ProcessFailureMode = ProcessFailureMode.Check
 
 
+        const enum ProcessPipelineFailureMode of u8:
+            FailFast
+            Aggregate
+
+
+        const enum ProcessPipelineState of u8:
+            Planned
+            Running
+            Cancelling
+            Succeeded
+            Failed
+            Cancelled
+
+
+        const enum ProcessPipelineEvent of u8:
+            Start
+            StageExit
+            StageFailure
+            Cancel
+            CancelAck
+
+
+        struct ProcessPipeline:
+            stages: darray[ProcessCommand] = []
+            state: ProcessPipelineState = ProcessPipelineState.Planned
+            failure_mode: ProcessPipelineFailureMode = ProcessPipelineFailureMode.FailFast
+            completed_stages: usize = 0
+            failed_stages: usize = 0
+            buffer_limit_bytes: usize = PROCESS_PIPELINE_MAX_BUFFER_BYTES
+
+
         error ProcessCommandError:
             EmptyExecutable
             EmbeddedNul
@@ -126,6 +159,18 @@ module EsProcess:
             RetryLimitExceeded
 
 
+        error ProcessPipelineError:
+            EmptyPipeline
+            StageLimitExceeded
+            InvalidPipelineState
+            InvalidPipelineEvent
+            InvalidFailureMode
+            InvalidStageIndex
+            InvalidStageCommand
+            InvalidBufferLimit
+            PipelineNotDrained
+
+
         private:
             def process_job_state_valid(state: ProcessJobState) -> bool:
                 return state in {ProcessJobState.Created, ProcessJobState.Running, ProcessJobState.Cancelling, ProcessJobState.Succeeded, ProcessJobState.Failed, ProcessJobState.TimedOut, ProcessJobState.Cancelled}
@@ -133,6 +178,18 @@ module EsProcess:
 
             def process_job_event_valid(event: ProcessJobEvent) -> bool:
                 return event in {ProcessJobEvent.Start, ProcessJobEvent.Complete, ProcessJobEvent.Fail, ProcessJobEvent.Timeout, ProcessJobEvent.Cancel, ProcessJobEvent.CancelAck, ProcessJobEvent.Retry}
+
+
+            def process_pipeline_state_valid(state: ProcessPipelineState) -> bool:
+                return state in {ProcessPipelineState.Planned, ProcessPipelineState.Running, ProcessPipelineState.Cancelling, ProcessPipelineState.Succeeded, ProcessPipelineState.Failed, ProcessPipelineState.Cancelled}
+
+
+            def process_pipeline_event_valid(event: ProcessPipelineEvent) -> bool:
+                return event in {ProcessPipelineEvent.Start, ProcessPipelineEvent.StageExit, ProcessPipelineEvent.StageFailure, ProcessPipelineEvent.Cancel, ProcessPipelineEvent.CancelAck}
+
+
+            def process_pipeline_failure_mode_valid(mode: ProcessPipelineFailureMode) -> bool:
+                return mode in {ProcessPipelineFailureMode.FailFast, ProcessPipelineFailureMode.Aggregate}
 
 
             def process_result_kind_valid(kind: ProcessResultKind) -> bool:
@@ -228,6 +285,55 @@ module EsProcess:
                         raise ProcessCommandError.ArgumentVectorMalformed if not process_command_text_add_fits(total, path)
                         total <- total + sview_len(path) + 1
                 return true
+
+
+            def validate_process_pipeline(pipeline: ProcessPipeline&) -> bool error[ProcessPipelineError]:
+                raise ProcessPipelineError.EmptyPipeline if pipeline.stages.count == 0
+                raise ProcessPipelineError.StageLimitExceeded if pipeline.stages.count > PROCESS_PIPELINE_MAX_STAGES
+                raise ProcessPipelineError.InvalidPipelineState if not process_pipeline_state_valid(pipeline.state)
+                raise ProcessPipelineError.InvalidFailureMode if not process_pipeline_failure_mode_valid(pipeline.failure_mode)
+                raise ProcessPipelineError.InvalidBufferLimit if pipeline.buffer_limit_bytes == 0 or pipeline.buffer_limit_bytes > PROCESS_PIPELINE_MAX_BUFFER_BYTES
+                raise ProcessPipelineError.InvalidStageIndex if pipeline.completed_stages > pipeline.stages.count or pipeline.failed_stages > pipeline.completed_stages
+                for stage in pipeline.stages |pipeline|:
+                    valid: mutable bool = false
+                    catch validate_process_command(stage):
+                        ok:
+                            valid <- true
+                        error failure:
+                            valid <- false
+                    raise ProcessPipelineError.InvalidStageCommand if not valid
+                return true
+
+
+            def advance_process_pipeline(pipeline: mutable ProcessPipeline&, event: ProcessPipelineEvent, stage_index: usize = 0) -> ProcessPipelineState error[ProcessPipelineError]:
+                try validate_process_pipeline(pipeline)
+                raise ProcessPipelineError.InvalidPipelineEvent if not process_pipeline_event_valid(event)
+                if event == ProcessPipelineEvent.Start:
+                    raise ProcessPipelineError.InvalidPipelineState if pipeline.state != ProcessPipelineState.Planned
+                    pipeline.state <- ProcessPipelineState.Running
+                elif event == ProcessPipelineEvent.StageExit:
+                    raise ProcessPipelineError.InvalidPipelineState if pipeline.state != ProcessPipelineState.Running
+                    raise ProcessPipelineError.InvalidStageIndex if stage_index >= pipeline.stages.count or stage_index != pipeline.completed_stages
+                    pipeline.completed_stages <- pipeline.completed_stages + 1
+                    if pipeline.completed_stages == pipeline.stages.count:
+                        pipeline.state <- ProcessPipelineState.Failed if pipeline.failed_stages != 0 else ProcessPipelineState.Succeeded
+                elif event == ProcessPipelineEvent.StageFailure:
+                    raise ProcessPipelineError.InvalidPipelineState if pipeline.state != ProcessPipelineState.Running
+                    raise ProcessPipelineError.InvalidStageIndex if stage_index >= pipeline.stages.count or stage_index != pipeline.completed_stages
+                    pipeline.completed_stages <- pipeline.completed_stages + 1
+                    pipeline.failed_stages <- pipeline.failed_stages + 1
+                    if pipeline.failure_mode == ProcessPipelineFailureMode.FailFast or pipeline.completed_stages == pipeline.stages.count:
+                        pipeline.state <- ProcessPipelineState.Failed
+                elif event == ProcessPipelineEvent.Cancel:
+                    if pipeline.state == ProcessPipelineState.Planned:
+                        pipeline.state <- ProcessPipelineState.Cancelled
+                    else:
+                        raise ProcessPipelineError.InvalidPipelineState if pipeline.state != ProcessPipelineState.Running
+                        pipeline.state <- ProcessPipelineState.Cancelling
+                elif event == ProcessPipelineEvent.CancelAck:
+                    raise ProcessPipelineError.InvalidPipelineState if pipeline.state != ProcessPipelineState.Cancelling
+                    pipeline.state <- ProcessPipelineState.Cancelled
+                return pipeline.state
 
 
             # Validate the outcome independently from command construction so a

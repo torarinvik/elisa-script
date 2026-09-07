@@ -379,7 +379,10 @@ validation through `error[ProcessResultError]`.
 `ProcessJob` adds a typed background-supervision state machine with bounded
 attempts, explicit cancellation acknowledgement, and typed invalid-transition
 or retry-exhaustion errors; actual scheduling, fan-out, and platform signal
-escalation remain open.
+escalation remain open. `ProcessPipeline` now validates ordered stage commands,
+bounded stage/buffer limits, fail-fast versus aggregate failure policy, and
+explicit stage/cancel transitions; concurrent pipe draining and reaping remain
+open.
 
 `EsRecord::RecordStreamPolicy`, `Record`, and `RecordField` now define a bounded
 Perl/AWK-style record boundary: separator and field modes are explicit, fixed
