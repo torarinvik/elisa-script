@@ -722,7 +722,12 @@ fixed order, retaining only candidates whose original first-difference kind
 survives. It never mutates the input pools or launches either side, and caps
 candidate count at the same runtime default. Aggregate-value simplification,
 process termination/timeout shrinking, and replaying candidates against the
-original world remain separate follow-up layers.
+original world remain separate follow-up layers. `DifferentialShrinkTrace`
+records each retained candidate fingerprint and reduction kind, requires the
+original mismatch category to survive, and only permits completion when the
+adapter explicitly records that its candidate budget is exhausted. This keeps
+“minimal” as an evidence-bearing claim instead of an inference from an empty
+candidate list.
 
 Independent references use `DifferentialOracle`, which pairs a closed source
 language identity with a validated external runner. Python requires the typed

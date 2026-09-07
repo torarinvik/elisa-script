@@ -4324,3 +4324,113 @@ module EsDifferential:
             return differential_world_materialization_failure(DifferentialWorldMaterializationIssue.InvalidTransition, "world materialization transition is not a single lifecycle edge") if not valid_edge
             plan.state <- next_state
             return DifferentialWorldMaterializationCheck{valid: true, issue: DifferentialWorldMaterializationIssue.None}
+
+
+    public:
+        const DIFFERENTIAL_SHRINK_TRACE_MAX_STEPS: usize = 64
+
+
+        const enum DifferentialShrinkTraceState of u8:
+            Planned
+            Recording
+            Complete
+            Failed
+            Cancelled
+
+
+        const enum DifferentialShrinkTraceEvent of u8:
+            Begin
+            Record
+            Complete
+            Fail
+            Cancel
+
+
+        struct DifferentialShrinkTraceStep:
+            ordinal: usize
+            kind: DifferentialRunShrinkKind
+            candidate_fingerprint: u64
+            preserved_kind: DifferentialDifferenceKind
+
+
+        struct DifferentialShrinkTrace:
+            target_kind: DifferentialDifferenceKind
+            max_steps: usize = DIFFERENTIAL_SHRINK_TRACE_MAX_STEPS
+            state: DifferentialShrinkTraceState = DifferentialShrinkTraceState.Planned
+            next_step: usize = 0
+            steps: darray[DifferentialShrinkTraceStep] = []
+            minimality_proven: bool = false
+
+
+        error DifferentialShrinkTraceError:
+            InvalidState
+            InvalidEvent
+            InvalidKind
+            StepLimitExceeded
+            StepOrderInvalid
+            FingerprintMissing
+            MismatchCategory
+            MinimalityUnproven
+            CancelNotReady
+
+
+    private:
+        def differential_shrink_trace_state_valid(state: DifferentialShrinkTraceState) -> bool:
+            return state in {DifferentialShrinkTraceState.Planned, DifferentialShrinkTraceState.Recording, DifferentialShrinkTraceState.Complete, DifferentialShrinkTraceState.Failed, DifferentialShrinkTraceState.Cancelled}
+
+
+        def differential_shrink_trace_event_valid(event: DifferentialShrinkTraceEvent) -> bool:
+            return event in {DifferentialShrinkTraceEvent.Begin, DifferentialShrinkTraceEvent.Record, DifferentialShrinkTraceEvent.Complete, DifferentialShrinkTraceEvent.Fail, DifferentialShrinkTraceEvent.Cancel}
+
+
+        def differential_shrink_trace_kind_valid(kind: DifferentialDifferenceKind) -> bool:
+            return differential_difference_kind_valid(kind) and kind != DifferentialDifferenceKind.Equal
+
+
+        def differential_shrink_trace_run_kind_valid(kind: DifferentialRunShrinkKind) -> bool:
+            return kind in {DifferentialRunShrinkKind.ClearReferenceStdout, DifferentialRunShrinkKind.ClearCandidateStdout, DifferentialRunShrinkKind.ClearReferenceStderr, DifferentialRunShrinkKind.ClearCandidateStderr, DifferentialRunShrinkKind.RemoveReferenceObservation, DifferentialRunShrinkKind.RemoveCandidateObservation}
+
+
+    public:
+        def validate_differential_shrink_trace(trace: DifferentialShrinkTrace&) -> bool error[DifferentialShrinkTraceError]:
+            raise DifferentialShrinkTraceError.InvalidState if not differential_shrink_trace_state_valid(trace.state)
+            raise DifferentialShrinkTraceError.InvalidKind if not differential_shrink_trace_kind_valid(trace.target_kind)
+            raise DifferentialShrinkTraceError.StepLimitExceeded if trace.max_steps == 0 or trace.max_steps > DIFFERENTIAL_SHRINK_TRACE_MAX_STEPS or trace.steps.count > trace.max_steps
+            raise DifferentialShrinkTraceError.StepOrderInvalid if trace.next_step != trace.steps.count
+            for index in 0..<trace.steps.count |trace|:
+                step: DifferentialShrinkTraceStep = trace.steps[index]
+                raise DifferentialShrinkTraceError.StepOrderInvalid if step.ordinal != index
+                raise DifferentialShrinkTraceError.InvalidKind if not differential_shrink_trace_run_kind_valid(step.kind) or not differential_shrink_trace_kind_valid(step.preserved_kind)
+                raise DifferentialShrinkTraceError.MismatchCategory if step.preserved_kind != trace.target_kind
+                raise DifferentialShrinkTraceError.FingerprintMissing if step.candidate_fingerprint == 0
+            raise DifferentialShrinkTraceError.MinimalityUnproven if trace.state == DifferentialShrinkTraceState.Complete and not trace.minimality_proven
+            return true
+
+
+        def advance_differential_shrink_trace(trace: mutable DifferentialShrinkTrace&, event: DifferentialShrinkTraceEvent, step: DifferentialShrinkTraceStep = DifferentialShrinkTraceStep{ordinal: 0, kind: DifferentialRunShrinkKind.ClearReferenceStdout, candidate_fingerprint: 1, preserved_kind: DifferentialDifferenceKind.ReturnValue}, exhausted: bool = false) -> DifferentialShrinkTraceState error[DifferentialShrinkTraceError]:
+            try validate_differential_shrink_trace(trace)
+            raise DifferentialShrinkTraceError.InvalidEvent if not differential_shrink_trace_event_valid(event)
+            if event == DifferentialShrinkTraceEvent.Begin:
+                raise DifferentialShrinkTraceError.InvalidState if trace.state != DifferentialShrinkTraceState.Planned
+                trace.state <- DifferentialShrinkTraceState.Recording
+            elif event == DifferentialShrinkTraceEvent.Record:
+                raise DifferentialShrinkTraceError.InvalidState if trace.state != DifferentialShrinkTraceState.Recording
+                raise DifferentialShrinkTraceError.StepLimitExceeded if trace.steps.count >= trace.max_steps
+                raise DifferentialShrinkTraceError.StepOrderInvalid if step.ordinal != trace.next_step
+                raise DifferentialShrinkTraceError.InvalidKind if not differential_shrink_trace_run_kind_valid(step.kind) or not differential_shrink_trace_kind_valid(step.preserved_kind)
+                raise DifferentialShrinkTraceError.MismatchCategory if step.preserved_kind != trace.target_kind
+                raise DifferentialShrinkTraceError.FingerprintMissing if step.candidate_fingerprint == 0
+                trace.steps.push(step)
+                trace.next_step <- trace.next_step + 1
+            elif event == DifferentialShrinkTraceEvent.Complete:
+                raise DifferentialShrinkTraceError.InvalidState if trace.state != DifferentialShrinkTraceState.Recording
+                raise DifferentialShrinkTraceError.MinimalityUnproven if not exhausted
+                trace.minimality_proven <- true
+                trace.state <- DifferentialShrinkTraceState.Complete
+            elif event == DifferentialShrinkTraceEvent.Fail:
+                raise DifferentialShrinkTraceError.InvalidState if trace.state != DifferentialShrinkTraceState.Recording
+                trace.state <- DifferentialShrinkTraceState.Failed
+            elif event == DifferentialShrinkTraceEvent.Cancel:
+                raise DifferentialShrinkTraceError.CancelNotReady if trace.state != DifferentialShrinkTraceState.Planned and trace.state != DifferentialShrinkTraceState.Recording
+                trace.state <- DifferentialShrinkTraceState.Cancelled
+            return trace.state

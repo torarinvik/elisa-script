@@ -552,3 +552,9 @@ ordered input fingerprints, and aggregate case/byte ceilings. The focused
 differential fixture, namespace inclusion, documentation, and
 check_differential_generator.sh audit are static evidence; schema-aware
 generation, shrinking, and execution evidence remain open.
+
+ES-SCRIPT-022 | EsDifferential shrink traces record bounded reduction ordinals,
+candidate fingerprints, reduction kinds, preserved mismatch categories, and an
+explicit exhausted-budget minimality proof. The focused differential fixture,
+documentation, and check_differential_shrink_trace.sh audit are static
+evidence; aggregate-value reducers and rerun-backed minimality remain open.
