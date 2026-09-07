@@ -606,3 +606,12 @@ ordinals, and exposes lookup only after sealing through typed
 `error[RecordAggregateError]`. The focused IR fixture, namespace inclusion,
 documentation, and check_record_aggregate.sh audit are static evidence; typed
 sums/joins, spill-to-disk aggregation, and host execution remain open.
+
+ES-SCRIPT-028 | EsDifferentialTimeout supplies a bounded timeout/termination
+shrink evidence session. It records reference/candidate side identity,
+strictly decreasing timeout candidates, ordinal order, preserved mismatch kind,
+nonzero rerun fingerprints, explicit accept/reject decisions, and exhausted
+minimality proof without launching or signalling processes. The focused
+differential fixture, documentation, and check_differential_timeout_shrink.sh
+audit are static evidence; host process control and fresh-world reruns remain
+open.

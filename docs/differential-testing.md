@@ -733,6 +733,14 @@ adapter explicitly records that its candidate budget is exhausted. This keeps
 “minimal” as an evidence-bearing claim instead of an inference from an empty
 candidate list.
 
+`EsDifferentialTimeout::DifferentialTimeoutSession` records the timeout-shrink
+layer separately from process control. A host adapter proposes a strictly
+smaller reference or candidate poll budget, reruns the unchanged world, and
+submits a nonzero comparison fingerprint only when the original mismatch kind
+survives. Candidates are accepted in ordinal order under a bounded budget;
+completion requires an explicit exhausted marker, and no event in this contract
+launches, signals, or kills a process.
+
 Independent references use `DifferentialOracle`, which pairs a closed source
 language identity with a validated external runner. Python requires the typed
 `PythonAdapter`; Perl, AWK, and shell references use the shell-free
