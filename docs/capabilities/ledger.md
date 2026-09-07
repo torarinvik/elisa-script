@@ -471,6 +471,12 @@ poll/redirect ceilings, typed status outcomes, retries, and cancellation. The
 focused IR fixture and check_network_session.sh audit are static evidence;
 socket/TLS/redirect and deadline adapters remain open.
 
+ES-SCRIPT-012 | EsRegex supplies typed operation identity, pattern/input/
+replacement ceilings, capture-group limits, shared work accounting, bounded
+replacement output, and explicit completion/failure/cancellation edges. The
+focused IR fixture and check_regex_model.sh audit are static evidence; the
+engine's iterative-stack rewrite and adversarial execution corpus remain open.
+
 ES-SCRIPT-010 | EsEnvironment supplies bounded unique name/value entries,
 sealed lookup, deterministic set updates, tombstone unsets, aggregate text
 accounting, and explicit failure/reset transitions without mutating parent

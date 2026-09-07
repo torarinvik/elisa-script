@@ -1,0 +1,167 @@
+# Typed regex/search/replacement boundary.
+#
+# The interpreter owns the matching engine; this public contract owns policy,
+# operation identity, capture/output accounting, and cancellation. It prevents
+# a replacement callback or helper scan from bypassing the shared work budget.
+
+module EsRegex:
+    public:
+        const REGEX_MAX_PATTERN_BYTES: usize = 65536
+        const REGEX_MAX_INPUT_BYTES: usize = 67108864
+        const REGEX_MAX_REPLACEMENT_BYTES: usize = 67108864
+        const REGEX_MAX_GROUPS: usize = 1024
+        const REGEX_MAX_WORK: u64 = 100000000
+
+
+        const enum RegexOperation of u8:
+            Search
+            Match
+            FullMatch
+            FindAll
+            Split
+            Replace
+
+
+        const enum RegexState of u8:
+            Ready
+            Running
+            Complete
+            Failed
+            Cancelling
+            Cancelled
+
+
+        const enum RegexEvent of u8:
+            Begin
+            Work
+            Match
+            Replace
+            End
+            Fail
+            Cancel
+            CancelAck
+
+
+        struct RegexPolicy:
+            max_pattern_bytes: usize = REGEX_MAX_PATTERN_BYTES
+            max_input_bytes: usize = REGEX_MAX_INPUT_BYTES
+            max_replacement_bytes: usize = REGEX_MAX_REPLACEMENT_BYTES
+            max_groups: usize = REGEX_MAX_GROUPS
+            max_work: u64 = REGEX_MAX_WORK
+
+
+        struct RegexRequest:
+            operation: RegexOperation
+            pattern: sview
+            input: sview
+            replacement: sview = ""
+            global: bool = false
+            policy: RegexPolicy = RegexPolicy{}
+
+
+        struct RegexSession:
+            request: RegexRequest
+            state: RegexState = RegexState.Ready
+            work: u64 = 0
+            matches: usize = 0
+            captures: usize = 0
+            output_bytes: usize = 0
+
+
+        error RegexContractError:
+            InvalidOperation
+            InvalidState
+            InvalidEvent
+            PatternLimitExceeded
+            InputLimitExceeded
+            ReplacementLimitExceeded
+            GroupLimitExceeded
+            WorkLimitExceeded
+            EmbeddedNul
+            ReplacementNotAllowed
+            CaptureAccountingInvalid
+            OutputLimitExceeded
+            EndNotReady
+            CancelNotReady
+
+
+    private:
+        def regex_operation_valid(operation: RegexOperation) -> bool:
+            return operation in {RegexOperation.Search, RegexOperation.Match, RegexOperation.FullMatch, RegexOperation.FindAll, RegexOperation.Split, RegexOperation.Replace}
+
+
+        def regex_state_valid(state: RegexState) -> bool:
+            return state in {RegexState.Ready, RegexState.Running, RegexState.Complete, RegexState.Failed, RegexState.Cancelling, RegexState.Cancelled}
+
+
+        def regex_event_valid(event: RegexEvent) -> bool:
+            return event in {RegexEvent.Begin, RegexEvent.Work, RegexEvent.Match, RegexEvent.Replace, RegexEvent.End, RegexEvent.Fail, RegexEvent.Cancel, RegexEvent.CancelAck}
+
+
+        def regex_text_valid(value: sview, limit: usize) -> bool:
+            return sview_len(value) < limit and not sview_contains_byte(value, 0)
+
+
+    public:
+        def validate_regex_policy(policy: RegexPolicy&) -> bool error[RegexContractError]:
+            raise RegexContractError.PatternLimitExceeded if policy.max_pattern_bytes == 0 or policy.max_pattern_bytes > REGEX_MAX_PATTERN_BYTES
+            raise RegexContractError.InputLimitExceeded if policy.max_input_bytes == 0 or policy.max_input_bytes > REGEX_MAX_INPUT_BYTES
+            raise RegexContractError.ReplacementLimitExceeded if policy.max_replacement_bytes == 0 or policy.max_replacement_bytes > REGEX_MAX_REPLACEMENT_BYTES
+            raise RegexContractError.GroupLimitExceeded if policy.max_groups == 0 or policy.max_groups > REGEX_MAX_GROUPS
+            raise RegexContractError.WorkLimitExceeded if policy.max_work == 0 or policy.max_work > REGEX_MAX_WORK
+            return true
+
+
+        def validate_regex_request(request: RegexRequest&) -> bool error[RegexContractError]:
+            raise RegexContractError.InvalidOperation if not regex_operation_valid(request.operation)
+            try validate_regex_policy(request.policy)
+            raise RegexContractError.PatternLimitExceeded if not regex_text_valid(request.pattern, request.policy.max_pattern_bytes)
+            raise RegexContractError.InputLimitExceeded if not regex_text_valid(request.input, request.policy.max_input_bytes)
+            raise RegexContractError.ReplacementLimitExceeded if not regex_text_valid(request.replacement, request.policy.max_replacement_bytes)
+            raise RegexContractError.ReplacementNotAllowed if request.operation != RegexOperation.Replace and request.replacement != ""
+            return true
+
+
+        def validate_regex_session(session: RegexSession&) -> bool error[RegexContractError]:
+            raise RegexContractError.InvalidState if not regex_state_valid(session.state)
+            try validate_regex_request(session.request)
+            raise RegexContractError.WorkLimitExceeded if session.work > session.request.policy.max_work
+            raise RegexContractError.GroupLimitExceeded if session.captures > session.request.policy.max_groups
+            raise RegexContractError.OutputLimitExceeded if session.output_bytes > session.request.policy.max_replacement_bytes
+            return true
+
+
+        def advance_regex_session(session: mutable RegexSession&, event: RegexEvent, work_delta: u64 = 0, capture_delta: usize = 0, output_delta: usize = 0) -> RegexState error[RegexContractError]:
+            try validate_regex_session(session)
+            raise RegexContractError.InvalidEvent if not regex_event_valid(event)
+            if event == RegexEvent.Begin:
+                raise RegexContractError.InvalidState if session.state != RegexState.Ready
+                session.state <- RegexState.Running
+            elif event == RegexEvent.Work:
+                raise RegexContractError.InvalidState if session.state != RegexState.Running
+                raise RegexContractError.WorkLimitExceeded if work_delta > session.request.policy.max_work - session.work
+                session.work <- session.work + work_delta
+            elif event == RegexEvent.Match:
+                raise RegexContractError.InvalidState if session.state != RegexState.Running
+                raise RegexContractError.GroupLimitExceeded if capture_delta > session.request.policy.max_groups - session.captures
+                session.captures <- session.captures + capture_delta
+                session.matches <- session.matches + 1
+            elif event == RegexEvent.Replace:
+                raise RegexContractError.InvalidState if session.state != RegexState.Running
+                raise RegexContractError.InvalidOperation if session.request.operation != RegexOperation.Replace
+                raise RegexContractError.OutputLimitExceeded if output_delta > session.request.policy.max_replacement_bytes - session.output_bytes
+                session.output_bytes <- session.output_bytes + output_delta
+                session.matches <- session.matches + 1
+            elif event == RegexEvent.End:
+                raise RegexContractError.EndNotReady if session.state != RegexState.Running
+                session.state <- RegexState.Complete
+            elif event == RegexEvent.Fail:
+                raise RegexContractError.InvalidState if session.state != RegexState.Running
+                session.state <- RegexState.Failed
+            elif event == RegexEvent.Cancel:
+                raise RegexContractError.CancelNotReady if session.state != RegexState.Running
+                session.state <- RegexState.Cancelling
+            elif event == RegexEvent.CancelAck:
+                raise RegexContractError.CancelNotReady if session.state != RegexState.Cancelling
+                session.state <- RegexState.Cancelled
+            return session.state

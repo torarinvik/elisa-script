@@ -1015,6 +1015,13 @@ named capture from the first match, or empty text when the name is missing,
 ambiguous, or non-participating; both reference and direct-bytecode execution
 share the same bounded flat-layout proof.
 
+EsRegex exposes the same limits as a public adapter contract. A
+RegexSession identifies search/match/fullmatch/findall/split/replace,
+charges helper work and capture groups before publication, bounds replacement
+output, and makes cancellation explicit. The matcher can therefore remain
+engine-specific while policy, error variants, and resource accounting stay
+identical across interpreter and bytecode paths.
+
 `Map` is the closed aggregate counterpart to `Array`. Its `Type` descriptor carries
 one exact scalar key type and one recursively represented value type within the
 inline descriptor limit; `MakeMap` consumes an even key/value
