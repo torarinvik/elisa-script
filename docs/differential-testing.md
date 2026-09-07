@@ -659,7 +659,8 @@ handle, process, regex, or concurrency counters. This keeps resource metadata
 available for later artifact publication without pretending that a process
 boundary has been measured. Direct-bytecode nested calls carry their parent's
 output ledger through the call chain, so the copied usage snapshot includes
-completed child captures exactly once.
+completed child captures exactly once, even when a child fails after a partial
+capture and the parent resumes through an error guard.
 
 `compare_differential_runs` remains a value/observation comparator and therefore
 does not reject an unknown engine by default. Backend qualification must use

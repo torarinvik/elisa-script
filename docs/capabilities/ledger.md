@@ -284,6 +284,11 @@ shared byte-budget admission and state-machine syntax; compiler-enforced lexical
 cleanup/lifetime, platform adapters, and executed large-file evidence remain
 open.
 
+The direct bytecode resource slice now shares one mutable output ledger through
+nested calls, including child output emitted before a recoverable error. The
+parent usage snapshot therefore cannot reset or double-count nested captures;
+the regression fixture and compiler-free audit are recorded in `0d1bf9c`.
+
 Recent static increments are committed as `72f3325` (Path line semantics audit),
 `0739d4c` (typed cleanup guard), `b0ecf06` (cache cleanup integration),
 `9873d8c` (all resource-policy ceiling admission), `3bd7152` (typed resource
