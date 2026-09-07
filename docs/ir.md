@@ -784,6 +784,11 @@ host responsibilities.
 with explicit `Failed`, `Cancelling`, `Cancelled`, and bounded `Retry` edges.
 Adapters cannot acknowledge cancellation or reuse a failed attempt without the
 matching state transition.
+`NetworkTlsPolicy` makes trust selection explicit: system roots are the default,
+custom bundles require a bounded path, and `InsecureTestOnly` is a visibly named
+escape hatch rather than an implicit verification downgrade. Certificate and
+private-key paths must be supplied together, and all TLS paths/server-name text
+reject embedded NULs and oversized values before a host TLS library is called.
 
 Before any regex opcode executes, both backends enforce a shared input-size
 boundary: haystack text is at most 64 MiB, the compiled-pattern payload is at

@@ -399,7 +399,9 @@ TLS, transport, timeout, protocol, status, decode, and cancellation outcomes.
 cover URL/header/body/status/retry admission plus a
 `Planned → Resolving → Connecting → Securing → Sending → Receiving → Completed`
 request lifecycle with explicit cancellation and retry edges; socket/TLS
-implementations, streaming, and live service adapters remain open.
+implementations now receive an explicit system/custom/test-only trust policy
+shape with paired client identity paths; certificate validation, streaming, and
+live service adapters remain open.
 
 ## Evidence record template
 
