@@ -51,6 +51,24 @@ extend EsRuntime:
             count: usize
 
 
+        # Public state inspection keeps the short-write contract testable
+        # without exposing the opaque FILE* handle or the host adapter.
+        const enum FileStreamWriteState of u8:
+            Progress
+            Done
+            Limit
+            Error
+
+
+        def file_stream_write_transition(offset: usize, capacity: usize, amount: usize, remaining_budget: usize) -> FileStreamWriteState:
+            return FileStreamWriteState.Error if offset > capacity
+            return FileStreamWriteState.Done if offset == capacity
+            return FileStreamWriteState.Error if amount == 0 or amount > capacity - offset
+            return FileStreamWriteState.Limit if amount > remaining_budget
+            return FileStreamWriteState.Done if amount == capacity - offset
+            return FileStreamWriteState.Progress
+
+
         struct FileStream:
             # `handle` is an opaque POSIX value owned by this module.  Callers
             # must obtain it from `file_stream_open` and release it through
@@ -195,11 +213,20 @@ extend EsRuntime:
             return FileStreamWrite{count: 0} if capacity == 0
             raise FileStreamError.LimitExceeded(stream.path) if stream.bytes_written > stream.byte_budget or capacity > stream.byte_budget - stream.bytes_written
             handle: mutable heap void& = stream.handle
-            write_count: usize = fwrite(buffer.cast[void&], 1, capacity, handle)
-            raise FileStreamError.WriteFailed(stream.path) if write_count > capacity or write_count == 0 and ferror(handle) != 0
-            raise FileStreamError.LimitExceeded(stream.path) if write_count > stream.byte_budget - stream.bytes_written
-            stream.bytes_written <- stream.bytes_written + write_count
-            return FileStreamWrite{count: write_count}
+            offset: mutable usize = 0
+            while offset < capacity:
+                remaining: usize = capacity - offset
+                cursor: mutable u8& = buffer + offset
+                write_count: usize = fwrite(cursor.cast[void&], 1, remaining, handle)
+                state: FileStreamWriteState = file_stream_write_transition(offset, capacity, write_count, stream.byte_budget - stream.bytes_written - offset)
+                # A short positive write is recoverable; zero progress is a
+                # terminal host failure even when libc has not set ferror.
+                raise FileStreamError.WriteFailed(stream.path) if state == FileStreamWriteState.Error
+                raise FileStreamError.LimitExceeded(stream.path) if state == FileStreamWriteState.Limit
+                offset <- offset + write_count
+                break if state == FileStreamWriteState.Done
+            stream.bytes_written <- stream.bytes_written + offset
+            return FileStreamWrite{count: offset}
 
 
         def file_stream_sync(stream: mutable FileStream&) -> bool error[FileStreamError] can[Blocking.IO]:

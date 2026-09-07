@@ -349,7 +349,10 @@ is opened with an explicit read/text/binary/write/append mode and a byte budget
 bounded by the shared runtime memory ceiling. `file_stream_read_chunk` and
 `file_stream_write_chunk` admit each request with subtraction-before-addition,
 return typed progress records, and reject closed handles, wrong directions,
-short host counts with errors, and budget overflow. `file_stream_read_line`
+and budget overflow. A write state machine retries positive short `fwrite`
+progress from the advanced buffer offset; zero or over-counted host progress
+is a typed write failure, so a partial write cannot be reported as complete or
+spin forever. `file_stream_read_line`
 uses an explicit state machine whose private transition checks the byte budget
 immediately before every host `fread`, rejects exhaustion without an extra EOF
 probe, strips only the LF delimiter, preserves CR, and rejects a line before its
