@@ -31,6 +31,31 @@ canonical_coding_projects_root="$(CDPATH= cd -- "$coding_projects_root" && pwd -
     exit 2
 }
 
+if ! awk -F '\t' '
+    NR == 1 {
+        if ($0 != "# name\trelative_path\towner\treview_status") bad = 1
+        next
+    }
+    NF == 0 { next }
+    {
+        if (NF != 4 || $1 == "" || $2 == "" || $3 == "" || $4 == "") bad = 1
+        if ($2 ~ /^\// || $2 ~ /(^|\/)\.\.(\/|$)/ || $2 ~ /^\.\//) bad = 1
+        if ($4 !~ /^(pending|reviewed|blocked)$/) bad = 1
+        if ($4 == "reviewed" && $3 == "unassigned") bad = 1
+        names[$1]++
+        paths[$2]++
+        rows++
+    }
+    END {
+        for (name in names) if (names[name] != 1) bad = 1
+        for (path in paths) if (paths[path] != 1) bad = 1
+        if (rows == 0 || bad) exit 1
+    }
+' "$roots_tsv"; then
+    echo "inventory_project_roots: malformed, duplicated, unsafe, or unowned reviewed manifest row" >&2
+    exit 3
+fi
+
 workspace_tmp="$(mktemp -d "${TMPDIR:-/tmp}/elisascript-inventory-roots.XXXXXX")" || {
     echo "inventory_project_roots: unable to create private temporary directory" >&2
     exit 3

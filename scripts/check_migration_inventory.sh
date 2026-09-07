@@ -82,4 +82,8 @@ for containment_file in "$coordinator" "$roots_audit"; do
         exit 1
     fi
 done
+if ! rg -q 'NR == 1' "$coordinator" || ! rg -q 'names\[\$1\]\+\+' "$coordinator" || ! rg -q 'paths\[\$2\]\+\+' "$coordinator" || ! rg -q 'reviewed.*unassigned' "$coordinator"; then
+    printf 'migration inventory audit: coordinator lacks fail-closed manifest preflight\n' >&2
+    exit 1
+fi
 printf 'migration inventory audit: partition manifest and bounded read-only scanners present\n'

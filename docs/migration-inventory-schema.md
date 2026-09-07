@@ -22,7 +22,9 @@ too expensive.
 Both tools canonicalize the configured root and every declared directory with
 `pwd -P`, reject a symlink-resolved path that escapes the coding-projects tree,
 and pass only the canonical in-tree path to scanners. Report metadata retains
-the declared manifest path for review.
+the declared manifest path for review. The coordinator repeats the manifest
+shape, ownership-state, duplicate-name, and duplicate-path preflight itself so
+direct invocation cannot bypass the fail-closed audit.
 
 The first row is the exact header. Every later row has these fields:
 
