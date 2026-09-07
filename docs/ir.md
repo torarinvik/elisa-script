@@ -145,6 +145,14 @@ missing identity words; `advance_install_plan` requires
 rollback edges. The host installer still owns filesystem permissions, atomic
 replacement, signatures, and platform-specific executable layout.
 
+`EsSourceMap` gives diagnostics and navigation a bounded identity layer across
+modules. Files are explicit unique paths, entries carry generated and original
+file/line/column locations plus an optional symbol, and generated locations must
+be strictly ordered. `advance_source_map` seals the append-only map through an
+explicit `Empty → Building → Sealed` protocol (with invalidation), while
+`source_map_lookup` returns a bounded entry index or the table-count sentinel;
+no consumer scans an unvalidated or path-inferred map.
+
 Every verified module also has canonical structural bytes through
 `canonical_module_bytes(module)` and a compact fingerprint through
 `module_fingerprint(module)` (with `canonical_module_hash` as the explicit

@@ -1,0 +1,143 @@
+# Typed source-map contract for cross-file diagnostics and navigation.
+#
+# Generated locations are ordered and bounded. A compiler/backend may emit a
+# map, but consumers never infer file identity from a path string or walk an
+# unbounded table while rendering an error.
+
+module EsSourceMap:
+    public:
+        const SOURCE_MAP_FORMAT_VERSION: u8 = 1
+        const SOURCE_MAP_MAX_FILES: usize = 4096
+        const SOURCE_MAP_MAX_ENTRIES: usize = 16777216
+        const SOURCE_MAP_MAX_PATH_BYTES: usize = 4096
+        const SOURCE_MAP_MAX_SYMBOL_BYTES: usize = 256
+
+
+        const enum SourceMapState of u8:
+            Empty
+            Building
+            Sealed
+            Invalid
+
+
+        const enum SourceMapEvent of u8:
+            Begin
+            Append
+            Seal
+            Invalidate
+
+
+        struct SourceLocation:
+            file_index: usize
+            line: u32
+            column: u32
+
+
+        struct SourceMapEntry:
+            generated: SourceLocation
+            original: SourceLocation
+            symbol: sview = ""
+
+
+        struct SourceMap:
+            format_version: u8 = SOURCE_MAP_FORMAT_VERSION
+            files: darray[sview] = []
+            entries: darray[SourceMapEntry] = []
+            state: SourceMapState = SourceMapState.Empty
+
+
+        error SourceMapContractError:
+            InvalidFormatVersion
+            InvalidState
+            InvalidEvent
+            FileLimitExceeded
+            EntryLimitExceeded
+            PathInvalid
+            SymbolInvalid
+            FileIndexInvalid
+            LocationInvalid
+            EntryOrderInvalid
+            DuplicateFile
+            AppendNotReady
+
+
+    private:
+        def source_map_state_valid(state: SourceMapState) -> bool:
+            return state in {SourceMapState.Empty, SourceMapState.Building, SourceMapState.Sealed, SourceMapState.Invalid}
+
+
+        def source_map_event_valid(event: SourceMapEvent) -> bool:
+            return event in {SourceMapEvent.Begin, SourceMapEvent.Append, SourceMapEvent.Seal, SourceMapEvent.Invalidate}
+
+
+        def source_map_path_valid(path: sview) -> bool:
+            return sview_len(path) != 0 and sview_len(path) < SOURCE_MAP_MAX_PATH_BYTES and not sview_contains_byte(path, 0)
+
+
+        def source_map_symbol_valid(symbol: sview) -> bool:
+            return sview_len(symbol) < SOURCE_MAP_MAX_SYMBOL_BYTES and not sview_contains_byte(symbol, 0)
+
+
+        def source_location_valid(location: SourceLocation, file_count: usize) -> bool:
+            return location.file_index < file_count and location.line != 0 and location.column != 0
+
+
+        def source_location_before(left: SourceLocation, right: SourceLocation) -> bool:
+            return left.file_index < right.file_index if left.file_index != right.file_index else left.line < right.line if left.line != right.line else left.column < right.column
+
+
+        def source_location_equal(left: SourceLocation, right: SourceLocation) -> bool:
+            return left.file_index == right.file_index and left.line == right.line and left.column == right.column
+
+
+    public:
+        def validate_source_map(map: SourceMap&) -> bool error[SourceMapContractError]:
+            raise SourceMapContractError.InvalidFormatVersion if map.format_version != SOURCE_MAP_FORMAT_VERSION
+            raise SourceMapContractError.InvalidState if not source_map_state_valid(map.state)
+            raise SourceMapContractError.FileLimitExceeded if map.files.count > SOURCE_MAP_MAX_FILES
+            raise SourceMapContractError.EntryLimitExceeded if map.entries.count > SOURCE_MAP_MAX_ENTRIES
+            for path in map.files:
+                raise SourceMapContractError.PathInvalid if not source_map_path_valid(path)
+            for index in 0..<map.files.count |map|:
+                for earlier in 0..<index |map|:
+                    raise SourceMapContractError.DuplicateFile if map.files[earlier] == map.files[index]
+            previous: mutable SourceLocation = SourceLocation{file_index: 0, line: 0, column: 0}
+            first: mutable bool = true
+            for entry in map.entries:
+                raise SourceMapContractError.FileIndexInvalid if not source_location_valid(entry.generated, map.files.count) or not source_location_valid(entry.original, map.files.count)
+                raise SourceMapContractError.SymbolInvalid if not source_map_symbol_valid(entry.symbol)
+                raise SourceMapContractError.EntryOrderInvalid if not first and (source_location_before(entry.generated, previous) or source_location_equal(entry.generated, previous))
+                previous <- entry.generated
+                first <- false
+            return true
+
+
+        def advance_source_map(map: mutable SourceMap&, event: SourceMapEvent, entry: SourceMapEntry = SourceMapEntry{generated: SourceLocation{file_index: 0, line: 0, column: 0}, original: SourceLocation{file_index: 0, line: 0, column: 0}}) -> SourceMapState error[SourceMapContractError]:
+            try validate_source_map(map)
+            raise SourceMapContractError.InvalidEvent if not source_map_event_valid(event)
+            if event == SourceMapEvent.Begin:
+                raise SourceMapContractError.InvalidState if map.state != SourceMapState.Empty
+                map.state <- SourceMapState.Building
+            elif event == SourceMapEvent.Append:
+                raise SourceMapContractError.AppendNotReady if map.state != SourceMapState.Building
+                raise SourceMapContractError.EntryLimitExceeded if map.entries.count >= SOURCE_MAP_MAX_ENTRIES
+                raise SourceMapContractError.FileIndexInvalid if not source_location_valid(entry.generated, map.files.count) or not source_location_valid(entry.original, map.files.count)
+                raise SourceMapContractError.SymbolInvalid if not source_map_symbol_valid(entry.symbol)
+                if map.entries.count > 0:
+                    previous: SourceLocation = map.entries[map.entries.count - 1].generated
+                    raise SourceMapContractError.EntryOrderInvalid if source_location_before(entry.generated, previous) or source_location_equal(entry.generated, previous)
+                map.entries.push(entry)
+            elif event == SourceMapEvent.Seal:
+                raise SourceMapContractError.InvalidState if map.state != SourceMapState.Building
+                map.state <- SourceMapState.Sealed
+            elif event == SourceMapEvent.Invalidate:
+                map.state <- SourceMapState.Invalid
+            return map.state
+
+
+        def source_map_lookup(map: SourceMap&, generated: SourceLocation) -> usize error[SourceMapContractError]:
+            try validate_source_map(map)
+            raise SourceMapContractError.LocationInvalid if not source_location_valid(generated, map.files.count)
+            for index in 0..<map.entries.count |map, generated|:
+                return index if source_location_equal(map.entries[index].generated, generated)
+            return map.entries.count
