@@ -88,6 +88,15 @@ ABI shim that forwards directly to that function. This keeps host-facing ABI
 code small while preventing driver implementation helpers from entering the
 program-wide namespace.
 
+`EsCli::CliInvocation` is the launcher argument contract: run/check/test/fmt/doc
+and help/version modes are explicit, `--color` and `--strict-engine` are typed
+options, and the first source path ends launcher-option parsing. A literal `--`
+marks the script-argument boundary; subsequent values are preserved byte-for-
+byte and are never shell-expanded. `validate_cli_invocation` enforces source,
+argument, NUL, and text ceilings through `error[CliContractError]`, while
+`parse_cli_arguments` rejects unknown options, duplicate modes/options, and
+missing option values before source loading.
+
 `EsModule` supplies the source/package-facing identity boundary. A
 `ModuleDescriptor` carries explicit public and private symbol sets, ordered
 imports with aliases and visibility, and a bounded source path; duplicate
