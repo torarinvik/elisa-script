@@ -363,6 +363,10 @@ next chunk read publishes that pending byte before probing the host again, so
 switching between record and byte APIs cannot drop data or bypass the shared
 budget.
 `file_stream_read_line` remains the bounded LF-only compatibility spelling.
+`file_stream_tell` reports the logical position before an unpublished
+lookahead, and `file_stream_seek` exposes explicit begin/current/end origins;
+current-origin seeks rewind that lookahead before applying the requested
+offset, while all successful seeks clear the pending slot.
 `file_stream_close` is idempotent only for a self-consistent terminal state:
 `Closed` must carry a null handle, while an `Open` stream must carry a live
 handle. Split-brain handles assembled outside the adapter fail with the typed
