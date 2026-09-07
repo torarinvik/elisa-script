@@ -711,6 +711,8 @@ extend EsIr:
         struct RegexWorkBudget:
             remaining: mutable u64
             exhausted: mutable bool = false
+            spent: mutable u64 = 0
+            accounted: mutable u64 = 0
 
 
         struct RegexQuantifier:
@@ -2563,6 +2565,7 @@ extend EsIr:
                 budget.exhausted <- true
                 return false
             budget.remaining <- budget.remaining - 1
+            budget.spent <- budget.spent + 1
             return true
 
 
@@ -2572,7 +2575,26 @@ extend EsIr:
                 budget.exhausted <- true
                 return false
             budget.remaining <- budget.remaining - length.u64()
+            budget.spent <- budget.spent + length.u64()
             return true
+
+
+        # Regex helpers consume a local state-machine budget, while the
+        # interpreter also exposes one shared per-run resource ledger. Charge
+        # only the newly spent portion so nested matcher helpers cannot double
+        # count work when an operation performs several scans.
+        def regex_work_account(machine: Machine&, budget: mutable RegexWorkBudget&) -> bool:
+            if budget.spent > budget.accounted:
+                delta: u64 = budget.spent - budget.accounted
+                if not runtime_resource_add_regex_work(machine.resource_usage, machine.resource_policy, delta):
+                    machine.failure <- InterpretFailure.OutputLimit
+                    return true
+                budget.accounted <- budget.spent
+            return budget.exhausted or machine.failure != InterpretFailure.None
+
+
+        def regex_work_budget_limit(machine: Machine&) -> u64:
+            return machine.resource_policy.regex_work
 
 
         def regex_escape_matches(code: u8, value: u8) -> bool:
@@ -3202,9 +3224,9 @@ extend EsIr:
             if not regex_input_within_budget(text.text, pattern.text) or not regex_replacement_within_budget(replacement.text):
                 machine.failure <- InterpretFailure.OutputLimit
                 return runtime_void()
-            budget: mutable RegexWorkBudget = RegexWorkBudget{remaining: INTERPRET_MAX_REGEX_WORK}
+            budget: mutable RegexWorkBudget = RegexWorkBudget{remaining: regex_work_budget_limit(machine)}
             value: sview = regex_replace_snapshot(text.text, pattern.text, replacement.text, budget)
-            if budget.exhausted:
+            if regex_work_account(machine, budget):
                 machine.failure <- InterpretFailure.OutputLimit
                 return runtime_void()
             return runtime_text(value)
@@ -3267,10 +3289,10 @@ extend EsIr:
             cursor: mutable usize = 0
             fields: mutable u32 = 0
             length: usize = sview_len(text.text)
-            budget: mutable RegexWorkBudget = RegexWorkBudget{remaining: INTERPRET_MAX_REGEX_WORK}
+            budget: mutable RegexWorkBudget = RegexWorkBudget{remaining: regex_work_budget_limit(machine)}
             while cursor <= length:
                 span: RegexMatchSpan = regex_find_match(text.text, pattern.text, cursor, budget)
-                if budget.exhausted:
+                if regex_work_account(machine, budget):
                     machine.failure <- InterpretFailure.OutputLimit
                     return runtime_void()
                 if not span.found:
@@ -3308,10 +3330,10 @@ extend EsIr:
             matches: mutable u32 = 0
             cursor: mutable usize = 0
             length: usize = sview_len(text.text)
-            budget: mutable RegexWorkBudget = RegexWorkBudget{remaining: INTERPRET_MAX_REGEX_WORK}
+            budget: mutable RegexWorkBudget = RegexWorkBudget{remaining: regex_work_budget_limit(machine)}
             while cursor <= length:
                 span: RegexMatchSpan = regex_find_match(text.text, pattern.text, cursor, budget)
-                if budget.exhausted:
+                if regex_work_account(machine, budget):
                     machine.failure <- InterpretFailure.OutputLimit
                     return runtime_void()
                 if not span.found:
@@ -3342,9 +3364,9 @@ extend EsIr:
                 machine.failure <- InterpretFailure.IntegerOverflow
                 return runtime_void()
             result_start: u32 = storage.count.u32()
-            budget: mutable RegexWorkBudget = RegexWorkBudget{remaining: INTERPRET_MAX_REGEX_WORK}
+            budget: mutable RegexWorkBudget = RegexWorkBudget{remaining: regex_work_budget_limit(machine)}
             span: RegexMatchSpan = regex_find_match(text.text, pattern.text, 0, budget)
-            if budget.exhausted:
+            if regex_work_account(machine, budget):
                 machine.failure <- InterpretFailure.OutputLimit
                 return runtime_void()
             return runtime_array(result_start, 0) if not span.found
@@ -3352,7 +3374,7 @@ extend EsIr:
             captures: mutable darray[RegexMatchSpan] = []
             names: mutable darray[sview] = []
             captures_found: bool = regex_capture_spans_for_match(text.text, pattern.text, span, captures, names, budget)
-            if budget.exhausted:
+            if regex_work_account(machine, budget):
                 machine.failure <- InterpretFailure.OutputLimit
                 return runtime_void()
             if captures_found:
@@ -3371,28 +3393,30 @@ extend EsIr:
             if not regex_input_within_budget(text.text, pattern.text):
                 machine.failure <- InterpretFailure.OutputLimit
                 return runtime_void()
-            budget: mutable RegexWorkBudget = RegexWorkBudget{remaining: INTERPRET_MAX_REGEX_WORK}
+            budget: mutable RegexWorkBudget = RegexWorkBudget{remaining: regex_work_budget_limit(machine)}
             if mode == 0:
                 found: bool = regex_search(text.text, pattern.text, budget)
-                if budget.exhausted:
+                if regex_work_account(machine, budget):
                     machine.failure <- InterpretFailure.OutputLimit
                     return runtime_void()
                 return runtime_bool(found)
             if mode == 1:
                 if not regex_work_bytes(budget, sview_len(pattern.text)):
+                    _ = regex_work_account(machine, budget)
                     machine.failure <- InterpretFailure.OutputLimit
                     return runtime_void()
                 endpoint: i64 = regex_match_expression_end(pattern.text, 0, sview_len(pattern.text), text.text, 0, budget)
-                if budget.exhausted:
+                if regex_work_account(machine, budget):
                     machine.failure <- InterpretFailure.OutputLimit
                     return runtime_void()
                 return runtime_bool(endpoint >= 0)
             if mode == 2:
                 if not regex_work_bytes(budget, sview_len(pattern.text)):
+                    _ = regex_work_account(machine, budget)
                     machine.failure <- InterpretFailure.OutputLimit
                     return runtime_void()
                 endpoint: i64 = regex_match_expression_end(pattern.text, 0, sview_len(pattern.text), text.text, 0, budget)
-                if budget.exhausted:
+                if regex_work_account(machine, budget):
                     machine.failure <- InterpretFailure.OutputLimit
                     return runtime_void()
                 return runtime_bool(endpoint >= 0 and endpoint.usize() == sview_len(text.text))

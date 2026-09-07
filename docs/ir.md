@@ -243,6 +243,10 @@ byte counts through the shared output edge before returning a value, so a
 caller-supplied output budget cannot be bypassed by switching between console
 and child-process adapters. Host-side process polling still keeps its separate
 capture ceiling and bounded overshoot contract.
+Reference-interpreter regex operations derive their local matcher budget from
+the same policy and account newly spent work exactly once, including multi-pass
+capture and replacement scans; an exhausted shared regex budget fails before
+the operation returns a value.
 interpreter and direct bytecode paths populate the step/retained-trace limits
 and returned usage snapshot, rejecting a trace pool that exceeds the caller's
 policy, while their existing host bridges continue enforcing their specialized
