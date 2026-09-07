@@ -236,6 +236,12 @@ traces. `runtime_resource_add_elapsed` applies the same bounded edge while
 preserving `elapsed_micros == 0` as the explicit “timer not attached” sentinel;
 host bridges still need to sample a monotonic clock and thread these edges
 through every nested path.
+Until those host-wide edges exist, the shared
+`runtime_resource_policy_has_unaccounted_dimensions` predicate makes both the
+reference interpreter and bytecode facade reject non-default elapsed, memory,
+open-handle, process, and concurrent-task budgets instead of carrying an
+unenforced promise. Steps, output, regex work, and retained traces remain
+implemented policy dimensions.
 The reference interpreter's `tick` uses the step edge directly, keeping its
 live usage ledger aligned with the step-limit failure path.
 Console writes and completed process-capture streams now charge their admitted

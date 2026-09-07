@@ -26,6 +26,7 @@ for required_text in \
     'runtime_resource_policy_valid' \
     'runtime_resource_usage_within_policy' \
     'runtime_resource_policy_with_step_limit' \
+    'runtime_resource_policy_has_unaccounted_dimensions' \
     'runtime_resource_acquire' \
     'runtime_resource_release' \
     'runtime_resource_add_steps' \
@@ -48,6 +49,7 @@ done
 rg -q 'resource_policy: RuntimeResourcePolicy' "$interpreter"
 rg -q 'resource_usage: mutable RuntimeResourceUsage' "$interpreter"
 rg -q 'runtime_resource_policy_with_step_limit' "$interpreter"
+rg -q 'runtime_resource_policy_has_unaccounted_dimensions\(policy\)' "$interpreter"
 rg -q 'def interpret_with_resource_policy' "$interpreter"
 rg -q 'policy: machine.resource_policy' "$interpreter"
 rg -q 'usage: machine.resource_usage' "$interpreter"
@@ -99,6 +101,7 @@ rg -q 'def execute_bytecode_with_resource_policy' "$bytecode"
 rg -q 'def execute_bytecode_direct_only_with_resource_policy' "$bytecode"
 rg -q 'def bytecode_policy_requires_reference' "$bytecode"
 rg -q 'def bytecode_policy_has_unsupported_dimensions' "$bytecode"
+rg -q 'runtime_resource_policy_has_unaccounted_dimensions\(policy\)' "$bytecode"
 rg -q 'bytecode_policy_requires_reference\(policy\)' "$bytecode"
 rg -q 'bytecode_policy_has_unsupported_dimensions\(policy\)' "$bytecode"
 rg -q 'retained_traces <- observations.count' "$bytecode"
