@@ -59,6 +59,7 @@ rg -q 'runtime_resource_add_output\(machine.resource_usage, machine.resource_pol
 rg -q 'def regex_work_account\(' "$interpreter"
 rg -q 'runtime_resource_add_regex_work\(machine.resource_usage, machine.resource_policy, delta\)' "$interpreter"
 rg -q 'regex_work_budget_limit\(machine\)' "$interpreter"
+rg -q 'const INTERPRET_MAX_REGEX_WORK: u64 = ES_RUNTIME_DEFAULT_MAX_REGEX_WORK' "$interpreter"
 rg -q 'consumed: mutable u64 = 0' "$interpreter"
 rg -q 'remaining: u64 = reader.limit - current' "$interpreter"
 rg -q 'capacity <- remaining.usize\(\)' "$interpreter"

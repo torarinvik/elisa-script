@@ -247,6 +247,10 @@ Reference-interpreter regex operations derive their local matcher budget from
 the same policy and account newly spent work exactly once, including multi-pass
 capture and replacement scans; an exhausted shared regex budget fails before
 the operation returns a value.
+The allocation-free public regex adapters use the identical
+`ES_RUNTIME_DEFAULT_MAX_REGEX_WORK` ceiling, so direct bytecode calls cannot
+silently run beyond the default policy while custom regex budgets continue to
+route through the reference interpreter.
 interpreter and direct bytecode paths populate the step/retained-trace limits
 and returned usage snapshot, rejecting a trace pool that exceeds the caller's
 policy, while their existing host bridges continue enforcing their specialized
