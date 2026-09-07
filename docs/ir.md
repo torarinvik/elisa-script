@@ -1098,7 +1098,11 @@ command string or shell expansion exists between typed IR and the operating syst
 `EsProcess::ProcessCommand` is the higher-level shell-free command value for
 adapters that need more than the primitive opcode: it keeps the executable,
 ordered argv, child working directory, ordered environment overrides, stdio
-modes, timeout budget, and failure policy in one typed record. Its
+modes, explicit stdin/stdout/stderr file destinations, timeout budget, and
+failure policy in one typed record. A `File` mode must carry its corresponding
+path, while `Inherit`, `Capture`, and `Null` modes reject stray paths; path
+payloads receive the same bounded length/NUL admission before aggregate
+terminated-byte accounting. Its
 `validate_process_command` boundary rejects empty/NUL/oversized text, vectors
 that exceed the `PROCESS_COMMAND_MAX_ARGUMENTS` one-million-argument or
 64 MiB terminated-byte ceilings,
