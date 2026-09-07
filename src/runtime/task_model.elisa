@@ -1,0 +1,195 @@
+# Typed, bounded task scopes and channels.
+#
+# This module describes concurrency ownership without starting threads or
+# selecting an event-loop implementation. A host scheduler must honor the
+# state transitions and limits before it allocates a child task or queues a
+# message.
+
+module EsTask:
+    public:
+        const TASK_MAX_CHILDREN: usize = 1024
+        const TASK_MAX_MESSAGES: usize = 4096
+        const TASK_MAX_MESSAGE_BYTES: usize = 67108864
+
+
+        const enum TaskFailureMode of u8:
+            FailFast
+            Aggregate
+
+
+        const enum TaskScopeState of u8:
+            Planned
+            Running
+            Closing
+            Cancelling
+            Succeeded
+            Failed
+            Cancelled
+
+
+        const enum TaskScopeEvent of u8:
+            Start
+            Spawn
+            ChildComplete
+            ChildFail
+            Close
+            Cancel
+            CancelAck
+
+
+        struct TaskScope:
+            state: TaskScopeState = TaskScopeState.Planned
+            failure_mode: TaskFailureMode = TaskFailureMode.FailFast
+            max_children: usize = TASK_MAX_CHILDREN
+            active_children: usize = 0
+            completed_children: usize = 0
+            failed_children: usize = 0
+
+
+        const enum TaskChannelState of u8:
+            Open
+            Closing
+            Closed
+            Cancelling
+            Cancelled
+
+
+        const enum TaskChannelEvent of u8:
+            Close
+            Cancel
+            CancelAck
+
+
+        struct TaskChannel:
+            state: TaskChannelState = TaskChannelState.Open
+            capacity_messages: usize = TASK_MAX_MESSAGES
+            capacity_bytes: usize = TASK_MAX_MESSAGE_BYTES
+            buffered_messages: usize = 0
+            buffered_bytes: usize = 0
+
+
+        error TaskContractError:
+            InvalidFailureMode
+            InvalidScopeState
+            InvalidScopeEvent
+            ChildLimitExceeded
+            ChildAccountingInvalid
+            InvalidChannelState
+            InvalidChannelEvent
+            ChannelCapacityInvalid
+            ChannelMessageLimitExceeded
+            ChannelBufferExceeded
+            ChannelEmpty
+
+
+    private:
+        def task_failure_mode_valid(mode: TaskFailureMode) -> bool:
+            return mode in {TaskFailureMode.FailFast, TaskFailureMode.Aggregate}
+
+
+        def task_scope_state_valid(state: TaskScopeState) -> bool:
+            return state in {TaskScopeState.Planned, TaskScopeState.Running, TaskScopeState.Closing, TaskScopeState.Cancelling, TaskScopeState.Succeeded, TaskScopeState.Failed, TaskScopeState.Cancelled}
+
+
+        def task_scope_event_valid(event: TaskScopeEvent) -> bool:
+            return event in {TaskScopeEvent.Start, TaskScopeEvent.Spawn, TaskScopeEvent.ChildComplete, TaskScopeEvent.ChildFail, TaskScopeEvent.Close, TaskScopeEvent.Cancel, TaskScopeEvent.CancelAck}
+
+
+        def task_channel_state_valid(state: TaskChannelState) -> bool:
+            return state in {TaskChannelState.Open, TaskChannelState.Closing, TaskChannelState.Closed, TaskChannelState.Cancelling, TaskChannelState.Cancelled}
+
+
+        def task_channel_event_valid(event: TaskChannelEvent) -> bool:
+            return event in {TaskChannelEvent.Close, TaskChannelEvent.Cancel, TaskChannelEvent.CancelAck}
+
+
+    public:
+        def validate_task_scope(scope: TaskScope&) -> bool error[TaskContractError]:
+            raise TaskContractError.InvalidFailureMode if not task_failure_mode_valid(scope.failure_mode)
+            raise TaskContractError.InvalidScopeState if not task_scope_state_valid(scope.state)
+            raise TaskContractError.ChildLimitExceeded if scope.max_children == 0 or scope.max_children > TASK_MAX_CHILDREN
+            raise TaskContractError.ChildAccountingInvalid if scope.active_children > scope.max_children or scope.completed_children > scope.max_children or scope.failed_children > scope.completed_children
+            return true
+
+
+        def advance_task_scope(scope: mutable TaskScope&, event: TaskScopeEvent) -> TaskScopeState error[TaskContractError]:
+            try validate_task_scope(scope)
+            raise TaskContractError.InvalidScopeEvent if not task_scope_event_valid(event)
+            if event == TaskScopeEvent.Start:
+                raise TaskContractError.InvalidScopeState if scope.state != TaskScopeState.Planned
+                scope.state <- TaskScopeState.Running
+            elif event == TaskScopeEvent.Spawn:
+                raise TaskContractError.InvalidScopeState if scope.state != TaskScopeState.Running
+                raise TaskContractError.ChildLimitExceeded if scope.active_children >= scope.max_children
+                scope.active_children <- scope.active_children + 1
+            elif event == TaskScopeEvent.ChildComplete:
+                raise TaskContractError.InvalidScopeState if scope.state != TaskScopeState.Running and scope.state != TaskScopeState.Closing
+                raise TaskContractError.ChildAccountingInvalid if scope.active_children == 0
+                scope.active_children <- scope.active_children - 1
+                scope.completed_children <- scope.completed_children + 1
+                scope.state <- TaskScopeState.Succeeded if scope.state == TaskScopeState.Closing and scope.active_children == 0 and scope.failed_children == 0
+            elif event == TaskScopeEvent.ChildFail:
+                raise TaskContractError.InvalidScopeState if scope.state != TaskScopeState.Running and scope.state != TaskScopeState.Closing
+                raise TaskContractError.ChildAccountingInvalid if scope.active_children == 0
+                scope.active_children <- scope.active_children - 1
+                scope.completed_children <- scope.completed_children + 1
+                scope.failed_children <- scope.failed_children + 1
+                if scope.failure_mode == TaskFailureMode.FailFast or scope.state == TaskScopeState.Closing and scope.active_children == 0:
+                    scope.state <- TaskScopeState.Failed
+            elif event == TaskScopeEvent.Close:
+                raise TaskContractError.InvalidScopeState if scope.state != TaskScopeState.Running
+                scope.state <- TaskScopeState.Succeeded if scope.active_children == 0 and scope.failed_children == 0 else TaskScopeState.Failed if scope.active_children == 0 else TaskScopeState.Closing
+            elif event == TaskScopeEvent.Cancel:
+                if scope.state == TaskScopeState.Planned:
+                    scope.state <- TaskScopeState.Cancelled
+                else:
+                    raise TaskContractError.InvalidScopeState if scope.state != TaskScopeState.Running and scope.state != TaskScopeState.Closing
+                    scope.state <- TaskScopeState.Cancelling
+            elif event == TaskScopeEvent.CancelAck:
+                raise TaskContractError.InvalidScopeState if scope.state != TaskScopeState.Cancelling
+                scope.state <- TaskScopeState.Cancelled
+            return scope.state
+
+
+        def validate_task_channel(channel: TaskChannel&) -> bool error[TaskContractError]:
+            raise TaskContractError.InvalidChannelState if not task_channel_state_valid(channel.state)
+            raise TaskContractError.ChannelCapacityInvalid if channel.capacity_messages == 0 or channel.capacity_messages > TASK_MAX_MESSAGES
+            raise TaskContractError.ChannelCapacityInvalid if channel.capacity_bytes == 0 or channel.capacity_bytes > TASK_MAX_MESSAGE_BYTES
+            raise TaskContractError.ChannelBufferExceeded if channel.buffered_messages > channel.capacity_messages or channel.buffered_bytes > channel.capacity_bytes
+            return true
+
+
+        def advance_task_channel(channel: mutable TaskChannel&, event: TaskChannelEvent) -> TaskChannelState error[TaskContractError]:
+            try validate_task_channel(channel)
+            raise TaskContractError.InvalidChannelEvent if not task_channel_event_valid(event)
+            if event == TaskChannelEvent.Close:
+                raise TaskContractError.InvalidChannelState if channel.state != TaskChannelState.Open
+                channel.state <- TaskChannelState.Closed if channel.buffered_messages == 0 else TaskChannelState.Closing
+            elif event == TaskChannelEvent.Cancel:
+                raise TaskContractError.InvalidChannelState if channel.state != TaskChannelState.Open and channel.state != TaskChannelState.Closing
+                channel.state <- TaskChannelState.Cancelling
+            elif event == TaskChannelEvent.CancelAck:
+                raise TaskContractError.InvalidChannelState if channel.state != TaskChannelState.Cancelling
+                channel.state <- TaskChannelState.Cancelled
+            return channel.state
+
+
+        def task_channel_send(channel: mutable TaskChannel&, message_bytes: usize) -> bool error[TaskContractError]:
+            try validate_task_channel(channel)
+            raise TaskContractError.InvalidChannelState if channel.state != TaskChannelState.Open
+            raise TaskContractError.ChannelMessageLimitExceeded if message_bytes == 0 or message_bytes > channel.capacity_bytes or message_bytes > TASK_MAX_MESSAGE_BYTES
+            raise TaskContractError.ChannelBufferExceeded if channel.buffered_messages >= channel.capacity_messages
+            raise TaskContractError.ChannelBufferExceeded if message_bytes > channel.capacity_bytes - channel.buffered_bytes
+            channel.buffered_messages <- channel.buffered_messages + 1
+            channel.buffered_bytes <- channel.buffered_bytes + message_bytes
+            return true
+
+
+        def task_channel_receive(channel: mutable TaskChannel&, message_bytes: usize) -> usize error[TaskContractError]:
+            try validate_task_channel(channel)
+            raise TaskContractError.ChannelEmpty if channel.buffered_messages == 0
+            raise TaskContractError.ChannelMessageLimitExceeded if message_bytes == 0 or message_bytes > channel.buffered_bytes
+            channel.buffered_messages <- channel.buffered_messages - 1
+            channel.buffered_bytes <- channel.buffered_bytes - message_bytes
+            channel.state <- TaskChannelState.Closed if channel.state == TaskChannelState.Closing and channel.buffered_messages == 0
+            return message_bytes

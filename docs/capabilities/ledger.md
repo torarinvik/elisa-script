@@ -383,6 +383,9 @@ escalation remain open. `ProcessPipeline` now validates ordered stage commands,
 bounded stage/buffer limits, fail-fast versus aggregate failure policy, and
 explicit stage/cancel transitions; concurrent pipe draining and reaping remain
 open.
+`EsTask::TaskScope` and `TaskChannel` add bounded child accounting and
+message-level backpressure with explicit close/cancel acknowledgement edges;
+thread/event-loop scheduling and ownership transfer remain open.
 
 `EsRecord::RecordStreamPolicy`, `Record`, and `RecordField` now define a bounded
 Perl/AWK-style record boundary: separator and field modes are explicit, fixed

@@ -1185,6 +1185,14 @@ must name the next stage, aggregate mode records failures without losing order,
 and invalid stage commands or transitions raise `error[ProcessPipelineError]`.
 Pipe draining, SIGPIPE behavior, concurrent I/O, and child reaping remain host
 responsibilities.
+`EsTask::TaskScope` and `TaskChannel` define the corresponding concurrency
+boundary. A scope caps active children, records completed/failed children, and
+requires explicit close or cancellation acknowledgement; channels cap both
+message count and bytes, reject sends while closing/cancelled, and transition
+to `Closed` only after queued messages drain. `error[TaskContractError]`
+distinguishes invalid transitions, child accounting, full buffers, and empty
+receives. Scheduler threads, event loops, and cross-task ownership remain host
+integrations.
 The argv terminator is cleared using `size_of(uintptr)`, matching the target
 pointer width rather than assuming an 8-byte slot.
 Before reserving argv pointers or owned argument strings, the interpreter
