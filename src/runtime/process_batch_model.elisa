@@ -1,0 +1,199 @@
+# Bounded parallel process-batch scheduling contract.
+#
+# This module never launches a child. It gives host schedulers one typed queue
+# for bounded fan-out/fan-in, retry admission, fail-fast policy, and scoped
+# cancellation acknowledgement.
+
+module EsProcessBatch:
+    public:
+        const PROCESS_BATCH_MAX_JOBS: usize = 1024
+        const PROCESS_BATCH_MAX_PARALLEL: usize = 64
+        const PROCESS_BATCH_MAX_ATTEMPTS: usize = 16
+
+
+        const enum ProcessBatchFailureMode of u8:
+            FailFast
+            Aggregate
+
+
+        const enum ProcessBatchState of u8:
+            Planned
+            Running
+            Draining
+            Succeeded
+            Failed
+            Cancelling
+            Cancelled
+
+
+        const enum ProcessBatchJobState of u8:
+            Pending
+            Running
+            Retryable
+            Succeeded
+            Failed
+            Cancelled
+
+
+        const enum ProcessBatchEvent of u8:
+            Begin
+            Launch
+            Complete
+            Fail
+            Retry
+            Cancel
+            CancelAck
+
+
+        struct ProcessBatchPolicy:
+            max_jobs: usize = PROCESS_BATCH_MAX_JOBS
+            max_parallel: usize = PROCESS_BATCH_MAX_PARALLEL
+            max_attempts: usize = PROCESS_BATCH_MAX_ATTEMPTS
+            failure_mode: ProcessBatchFailureMode = ProcessBatchFailureMode.FailFast
+
+
+        struct ProcessBatchJob:
+            id: u64
+            state: ProcessBatchJobState = ProcessBatchJobState.Pending
+            attempts: usize = 0
+
+
+        struct ProcessBatchSession:
+            policy: ProcessBatchPolicy
+            state: ProcessBatchState = ProcessBatchState.Planned
+            jobs: darray[ProcessBatchJob] = []
+            active: usize = 0
+            completed: usize = 0
+            failed: usize = 0
+
+
+        error ProcessBatchError:
+            InvalidState
+            InvalidEvent
+            InvalidPolicy
+            InvalidFailureMode
+            InvalidJobState
+            InvalidJobIndex
+            DuplicateJobId
+            InvalidJobId
+            JobLimitExceeded
+            ParallelLimitExceeded
+            AttemptLimitExceeded
+            AccountingInvalid
+            NoPendingJob
+            RetryNotReady
+            CancelNotReady
+
+
+    private:
+        def process_batch_state_valid(state: ProcessBatchState) -> bool:
+            return state in {ProcessBatchState.Planned, ProcessBatchState.Running, ProcessBatchState.Draining, ProcessBatchState.Succeeded, ProcessBatchState.Failed, ProcessBatchState.Cancelling, ProcessBatchState.Cancelled}
+
+
+        def process_batch_job_state_valid(state: ProcessBatchJobState) -> bool:
+            return state in {ProcessBatchJobState.Pending, ProcessBatchJobState.Running, ProcessBatchJobState.Retryable, ProcessBatchJobState.Succeeded, ProcessBatchJobState.Failed, ProcessBatchJobState.Cancelled}
+
+
+        def process_batch_event_valid(event: ProcessBatchEvent) -> bool:
+            return event in {ProcessBatchEvent.Begin, ProcessBatchEvent.Launch, ProcessBatchEvent.Complete, ProcessBatchEvent.Fail, ProcessBatchEvent.Retry, ProcessBatchEvent.Cancel, ProcessBatchEvent.CancelAck}
+
+
+        def process_batch_failure_mode_valid(mode: ProcessBatchFailureMode) -> bool:
+            return mode in {ProcessBatchFailureMode.FailFast, ProcessBatchFailureMode.Aggregate}
+
+
+        def process_batch_policy_valid(policy: ProcessBatchPolicy) -> bool:
+            return policy.max_jobs != 0 and policy.max_jobs <= PROCESS_BATCH_MAX_JOBS and policy.max_parallel != 0 and policy.max_parallel <= PROCESS_BATCH_MAX_PARALLEL and policy.max_attempts != 0 and policy.max_attempts <= PROCESS_BATCH_MAX_ATTEMPTS and process_batch_failure_mode_valid(policy.failure_mode)
+
+
+        def process_batch_job_active(state: ProcessBatchJobState) -> bool:
+            return state == ProcessBatchJobState.Running
+
+
+        def process_batch_job_terminal(state: ProcessBatchJobState) -> bool:
+            return state == ProcessBatchJobState.Succeeded or state == ProcessBatchJobState.Failed or state == ProcessBatchJobState.Cancelled
+
+
+        def process_batch_pending_index(session: ProcessBatchSession&) -> usize:
+            for index in 0..<session.jobs.count |session|:
+                return index if session.jobs[index].state == ProcessBatchJobState.Pending
+            return session.jobs.count
+
+
+        def process_batch_all_terminal(session: ProcessBatchSession&) -> bool:
+            return session.completed + session.failed == session.jobs.count
+
+
+    public:
+        def validate_process_batch(session: ProcessBatchSession&) -> bool error[ProcessBatchError]:
+            raise ProcessBatchError.InvalidState if not process_batch_state_valid(session.state)
+            raise ProcessBatchError.InvalidPolicy if not process_batch_policy_valid(session.policy)
+            raise ProcessBatchError.JobLimitExceeded if session.jobs.count > session.policy.max_jobs
+            raise ProcessBatchError.ParallelLimitExceeded if session.active > session.policy.max_parallel
+            raise ProcessBatchError.AccountingInvalid if session.completed > session.jobs.count or session.failed > session.jobs.count or session.completed + session.failed > session.jobs.count
+            active: mutable usize = 0
+            completed: mutable usize = 0
+            failed: mutable usize = 0
+            for index in 0..<session.jobs.count |session, active, completed, failed|:
+                job: ProcessBatchJob = session.jobs[index]
+                raise ProcessBatchError.InvalidJobId if job.id == 0
+                raise ProcessBatchError.InvalidJobState if not process_batch_job_state_valid(job.state)
+                raise ProcessBatchError.AttemptLimitExceeded if job.attempts > session.policy.max_attempts
+                active <- active + 1 if process_batch_job_active(job.state)
+                completed <- completed + 1 if job.state == ProcessBatchJobState.Succeeded
+                failed <- failed + 1 if job.state == ProcessBatchJobState.Failed
+                for earlier in 0..<index |session, job|:
+                    raise ProcessBatchError.DuplicateJobId if session.jobs[earlier].id == job.id
+            raise ProcessBatchError.AccountingInvalid if active != session.active or completed != session.completed or failed != session.failed
+            return true
+
+
+        def advance_process_batch(session: mutable ProcessBatchSession&, event: ProcessBatchEvent, job_index: usize = 0) -> ProcessBatchState error[ProcessBatchError]:
+            try validate_process_batch(session)
+            raise ProcessBatchError.InvalidEvent if not process_batch_event_valid(event)
+            if event == ProcessBatchEvent.Begin:
+                raise ProcessBatchError.InvalidState if session.state != ProcessBatchState.Planned
+                session.state <- ProcessBatchState.Succeeded if session.jobs.count == 0 else ProcessBatchState.Running
+            elif event == ProcessBatchEvent.Launch:
+                raise ProcessBatchError.InvalidState if session.state != ProcessBatchState.Running and session.state != ProcessBatchState.Draining
+                raise ProcessBatchError.ParallelLimitExceeded if session.active >= session.policy.max_parallel
+                pending: usize = process_batch_pending_index(session)
+                raise ProcessBatchError.NoPendingJob if pending == session.jobs.count
+                session.jobs[pending].state <- ProcessBatchJobState.Running
+                session.jobs[pending].attempts <- session.jobs[pending].attempts + 1
+                session.active <- session.active + 1
+            elif event == ProcessBatchEvent.Complete:
+                raise ProcessBatchError.InvalidState if session.state != ProcessBatchState.Running and session.state != ProcessBatchState.Draining
+                raise ProcessBatchError.InvalidJobIndex if job_index >= session.jobs.count
+                raise ProcessBatchError.InvalidJobState if session.jobs[job_index].state != ProcessBatchJobState.Running
+                session.jobs[job_index].state <- ProcessBatchJobState.Succeeded
+                session.active <- session.active - 1
+                session.completed <- session.completed + 1
+                session.state <- ProcessBatchState.Failed if process_batch_all_terminal(session) and session.failed != 0 else ProcessBatchState.Succeeded if process_batch_all_terminal(session) else session.state
+            elif event == ProcessBatchEvent.Fail:
+                raise ProcessBatchError.InvalidState if session.state != ProcessBatchState.Running and session.state != ProcessBatchState.Draining
+                raise ProcessBatchError.InvalidJobIndex if job_index >= session.jobs.count
+                raise ProcessBatchError.InvalidJobState if session.jobs[job_index].state != ProcessBatchJobState.Running
+                session.active <- session.active - 1
+                if session.jobs[job_index].attempts < session.policy.max_attempts:
+                    session.jobs[job_index].state <- ProcessBatchJobState.Retryable
+                else:
+                    session.jobs[job_index].state <- ProcessBatchJobState.Failed
+                    session.failed <- session.failed + 1
+                    session.state <- ProcessBatchState.Failed if session.policy.failure_mode == ProcessBatchFailureMode.FailFast else session.state
+                session.state <- ProcessBatchState.Failed if session.policy.failure_mode == ProcessBatchFailureMode.Aggregate and process_batch_all_terminal(session) and session.failed != 0 else session.state
+            elif event == ProcessBatchEvent.Retry:
+                raise ProcessBatchError.InvalidState if session.state != ProcessBatchState.Running and session.state != ProcessBatchState.Draining
+                raise ProcessBatchError.InvalidJobIndex if job_index >= session.jobs.count
+                raise ProcessBatchError.RetryNotReady if session.jobs[job_index].state != ProcessBatchJobState.Retryable
+                session.jobs[job_index].state <- ProcessBatchJobState.Pending
+            elif event == ProcessBatchEvent.Cancel:
+                raise ProcessBatchError.CancelNotReady if session.state == ProcessBatchState.Succeeded or session.state == ProcessBatchState.Failed or session.state == ProcessBatchState.Cancelled
+                session.state <- ProcessBatchState.Cancelled if session.state == ProcessBatchState.Planned else ProcessBatchState.Cancelling
+            elif event == ProcessBatchEvent.CancelAck:
+                raise ProcessBatchError.InvalidState if session.state != ProcessBatchState.Cancelling
+                for index in 0..<session.jobs.count |session|:
+                    session.jobs[index].state <- ProcessBatchJobState.Cancelled if session.jobs[index].state == ProcessBatchJobState.Pending or session.jobs[index].state == ProcessBatchJobState.Retryable or session.jobs[index].state == ProcessBatchJobState.Running
+                session.active <- 0
+                session.state <- ProcessBatchState.Cancelled
+            return session.state

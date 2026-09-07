@@ -1054,6 +1054,15 @@ before advancing, caps polls and redirects, preserves status failures as
 typed completed outcomes, and exposes retry/failure/cancellation edges without
 opening sockets itself.
 
+`EsProcessBatch::ProcessBatchSession` supplies the bounded fan-out/fan-in layer
+for process maps. Jobs have unique IDs, pending/running/retryable/terminal
+states, bounded attempts, and explicit launch/complete/fail/retry edges. A
+policy caps total jobs and active parallelism and selects fail-fast versus
+aggregate failure. `Cancel → CancelAck` marks every still-owned slot cancelled;
+the contract never starts a child or sends a signal. Duplicate IDs, stale job
+indices, retry exhaustion, no-pending launches, counter drift, and post-terminal
+events return `error[ProcessBatchError]`.
+
 Before any regex opcode executes, both backends enforce a shared input-size
 boundary: haystack text is at most 64 MiB, the compiled-pattern payload is at
 most 64 KiB, and replacement text is at most 64 MiB. Oversized operands fail

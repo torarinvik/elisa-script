@@ -641,6 +641,14 @@ namespace inclusion, documentation, and check_record_join.sh audit are static
 evidence; pair materialization, spill/merge adapters, and host execution remain
 open.
 
+ES-SCRIPT-033 | EsProcessBatch supplies a bounded fan-out/fan-in process-map
+contract without launching children. It enforces unique job IDs, maximum jobs,
+active parallelism, attempts, pending/running/retryable/terminal states,
+fail-fast versus aggregate failure, and scoped `Cancel → CancelAck` cleanup.
+The focused IR fixture, namespace inclusion, documentation, and
+check_process_batch.sh audit are static evidence; scheduler ownership, actual
+pipe/process adapters, signal escalation, and execution evidence remain open.
+
 ES-SCRIPT-029 | EsRecordControl supplies explicit bounded `next`/`nextfile`/
 exit transitions for pattern-action adapters. It closes record/file ownership
 on skips, rejects record events outside files and premature file closure, caps
