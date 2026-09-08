@@ -1105,7 +1105,8 @@ open record, reconciles open-file counters, and can require every file to contai
 at least one record. The validator also reconciles the current-file name and per-file record count with
 the open-file state. The state machine is deliberately callback-neutral so a host can dispatch typed
 begin/per-file/per-record/end functions without weakening ordering or early
-exit cleanup.
+exit cleanup. Validation also rejects record/file counter asymmetry when no
+file has ever been opened.
 
 `EsRecordAggregate::RecordAggregateSession` provides a bounded associative
 count operation for AWK/Perl-style keyed aggregation. Keys retain insertion
