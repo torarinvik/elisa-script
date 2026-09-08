@@ -51,6 +51,7 @@ for boundary in \
     'table.next_lease_id == 18446744073709551615u64' \
     'active_leases' \
     'file_lock_state_requires_attempt' \
+    'FileLockState.TimedOut' \
     'FileLockLeaseState.Failed'; do
     rg -q "$boundary" "$model"
 done

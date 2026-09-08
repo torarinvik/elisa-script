@@ -1240,7 +1240,8 @@ single owner cannot implicitly re-enter a path. `Begin`, `Acquire`, `Retry`,
 `Timeout`, `Cancel`/`CancelAck`, `Release`/`ReleaseAck`, and `Fail` are explicit
 state-machine edges. Nonblocking conflicts return `error[FileLockError.Conflict]`;
 bounded waits return `WouldBlock` until a finite attempt budget is exhausted,
-then become `TimedOut`. A held lease remains active through `Releasing` until
+then become `TimedOut`; timeout is admitted only after at least one acquisition
+attempt. A held lease remains active through `Releasing` until
 the host acknowledges release, while failures decrement active accounting and
 retain a failed lease record. Held, releasing, and released sessions also
 require a consumed acquisition attempt. Lease allocation rejects the terminal
