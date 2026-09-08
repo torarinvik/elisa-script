@@ -83,6 +83,8 @@ removals.
 storage domain before copying entries.
 `Path.iterdir()` rolls the flat storage cursor back on a late child-path failure,
 so directory materialization is failure-atomic.
+Array/map literal and global initialization paths likewise roll back their entry
+cursor when a malformed frame or literal fails during construction.
 
 Set receiver operations now share the registry as `Set.add(value)`,
 `Set.remove(value)`, `Set.discard(value)`, and `Set.clear()` rows. The lowerer
