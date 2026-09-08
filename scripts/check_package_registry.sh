@@ -35,6 +35,8 @@ for boundary in \
     'registry_candidate_before' \
     'registry_candidate_equal' \
     'registry_constraint_satisfied' \
+    'sview_len(left.pre_release) == 0' \
+    'sview_len(right.pre_release) == 0' \
     'IntegrityMissing' \
     'OrderInvalid' \
     'registry.state == PackageRegistryState.Empty' \

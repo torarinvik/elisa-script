@@ -150,7 +150,9 @@ EsPackageRegistry makes that adapter boundary explicit. PackageCandidate rows
 must carry bounded names, versions, locators, source kinds, and four-word
 integrity identities; a registry accepts them only in deterministic
 name/version/source/locator order and exposes lookup only after sealing.
-Constraint-aware lookup therefore cannot consume an unverified or
+Version ordering follows semver's stable-release precedence over a matching
+numeric prerelease, so deterministic tables do not reject `1.0.0-alpha` before
+`1.0.0`. Constraint-aware lookup therefore cannot consume an unverified or
 out-of-order index, while loading-only failure and cancellation edges remain
 explicit; an
 `Empty` registry cannot carry preloaded candidates.
