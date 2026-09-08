@@ -224,7 +224,8 @@ overlapping or omitted spans in imported materializers.
 `EsInstall` makes release publication a typed state machine. An
 `InstallPlan` names the package version, workspace/user/system scope, source,
 bytecode, or native artifact targets, destination paths, executable intent, and
-four-word integrity identity. `validate_install_plan` rejects duplicate
+four-word integrity identity. `validate_install_plan` rejects empty plans,
+duplicate
 destinations, invalid package-version text, non-`.elisascript` source artifacts,
 oversized per-artifact or aggregate payloads, and missing identity words;
 `advance_install_plan` requires

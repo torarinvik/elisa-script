@@ -25,6 +25,7 @@ for declaration in \
     'struct InstallArtifact:' \
     'struct InstallPlan:' \
     'error InstallContractError:' \
+    'EmptyPlan' \
     'PackageVersionInvalid' \
     'def validate_install_plan(' \
     'def advance_install_plan('; do
@@ -32,6 +33,7 @@ for declaration in \
 done
 
 for boundary in \
+    'plan.artifacts.count == 0' \
     'SourceExtensionInvalid' \
     'ArtifactBytesExceeded' \
     'total_bytes' \
