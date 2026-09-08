@@ -312,10 +312,11 @@ clock cannot seal while pending waits remain. Backward time and oversized
 advances fail through `error[DeadlineError]`.
 
 `EsDebugger::DebuggerSession` bounds source breakpoints, stack frames, handler
-and continuation-depth metadata, and replay branches. Attach/pause/continue/
+and continuation-depth metadata, and replay branches with nonempty choices. Attach/pause/continue/
 step, frame push/pop, branch selection, termination, and failure are explicit
-state transitions; locations and names are bounded before publication, and a
-terminated session cannot resume through `error[DebuggerError]`.
+state transitions; locations and names are bounded before publication, a
+detached session cannot carry frames, and a terminated session cannot resume
+through `error[DebuggerError]`.
 
 `EsArchive::ArchiveSession` is the admission boundary for tar/zip extraction.
 Relative path segments reject absolute paths, backslashes, empty/dot/traversal

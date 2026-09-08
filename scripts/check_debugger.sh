@@ -42,7 +42,9 @@ for boundary in \
     'DebuggerEvent.Step' \
     'DebuggerError.InvalidTransition' \
     'DebuggerError.BranchSelectionInvalid' \
-    'DebuggerError.InvalidDepth'; do
+    'DebuggerError.InvalidDepth' \
+    'DebuggerError.InvalidBranch' \
+    'DebuggerState.Detached and'; do
     rg -q "$boundary" "$model"
 done
 
@@ -51,7 +53,8 @@ for fixture_pattern in \
     'typed_debugger_contract_controls_breakpoints_frames_and_replay' \
     'DebuggerEvent.SelectBranch' \
     'DebuggerEvent.Step' \
-    'DebuggerError.InvalidTransition'; do
+    'DebuggerError.InvalidTransition' \
+    'DebuggerError.InvalidBranch'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 

@@ -475,7 +475,7 @@ open.
 
 ES-SCRIPT-049 | EsDebugger supplies a bounded debugger-session contract.
 Breakpoints, source locations, stack frames, handler/continuation depths,
-replay branches, attach/pause/continue/step, frame push/pop, branch selection,
+nonempty replay branches, attach/pause/continue/step, frame push/pop, branch selection,
 termination, and failure are explicitly validated state-machine edges.
 Terminated sessions cannot resume, and names/locations/depths are bounded before
 publication. The focused IR fixture, namespace inclusion, documentation, and
