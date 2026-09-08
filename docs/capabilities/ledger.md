@@ -513,8 +513,9 @@ and cross-platform binary parity remain open.
 ES-SCRIPT-040 | EsTaskTransfer supplies a bounded ownership protocol for
 copyable values, linear values, and dynamic handler contexts crossing task
 boundaries. Copy/move/borrow modes, source/target owners, generation updates,
-finite borrow leases, duplicate-resource rejection, admission accounting, and
-all-items commit/cancel edges are explicit under `error[TaskTransferError]`.
+finite borrow leases, duplicate-resource rejection, state-specific item-vector
+cardinality, admission accounting, and all-items commit/cancel edges are
+explicit under `error[TaskTransferError]`.
 The focused IR fixture, namespace inclusion, documentation, and
 check_task_transfer.sh audit are static evidence; scheduler integration,
 message transport, and runtime ownership tables remain open.

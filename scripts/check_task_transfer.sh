@@ -43,7 +43,10 @@ for boundary in \
     'derived_committed_items' \
     'derived_admitted_bytes' \
     'TaskTransferError.CommitNotReady' \
-    'TaskTransferState.Committed'; do
+    'TaskTransferState.Committed' \
+    'TaskTransferState.Planned and' \
+    'TaskTransferState.Validating and' \
+    'session.state == TaskTransferState.Committed'; do
     rg -q "$boundary" "$model"
 done
 
@@ -53,7 +56,8 @@ for fixture_pattern in \
     'TaskTransferValueKind.Linear' \
     'TaskTransferValueKind.HandlerContext' \
     'TaskTransferError.InvalidMode' \
-    'task_transfer_owner'; do
+    'task_transfer_owner' \
+    'TaskTransferError.ItemStateInvalid'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 

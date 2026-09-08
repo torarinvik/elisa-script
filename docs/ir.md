@@ -1749,8 +1749,10 @@ distinguishes invalid transitions, child accounting, full buffers, and empty
 receives. `EsTaskTransfer::TaskTransferSession` makes cross-task ownership
 explicit: copy is limited to copyable values, move changes the owner only at a
 commit edge and advances the generation, and borrow is limited to copyable or
-handler-context values with a bounded lease. Admission and commit counters are
-derived from the item-state vector, so forged partial accounting is rejected.
+handler-context values with a bounded lease. Planned/validating/committed state
+requires the corresponding item-state cardinality, and admission/commit
+counters are derived from the item-state vector, so forged partial accounting
+is rejected.
 Duplicate resources, stale
 generations, mismatched owners, invalid leases, partial admission, and
 mid-commit cancellation are rejected through `error[TaskTransferError]`.
