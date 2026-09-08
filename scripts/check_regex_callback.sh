@@ -48,6 +48,8 @@ for boundary in \
     'RegexCallbackState.Complete'; do
     rg -q "$boundary" "$model"
 done
+rg -Fq 'preserved: usize = 1 if session.pending_end == session.pending_start' "$model"
+rg -Fq 'assert zero.output_bytes == 2' "$fixture_file"
 
 for fixture_pattern in \
     'using EsRegexCallback' \
