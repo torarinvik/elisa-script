@@ -44,7 +44,10 @@ for boundary in \
     'ProcessBatchEvent.CancelAck' \
     'ProcessBatchError.ParallelLimitExceeded' \
     'ProcessBatchError.DuplicateJobId' \
-    'ProcessBatchError.RetryNotReady'; do
+    'ProcessBatchError.RetryNotReady' \
+    'ProcessBatchState.Planned and' \
+    'ProcessBatchState.Succeeded and' \
+    'ProcessBatchState.Cancelled and'; do
     rg -q "$boundary" "$model"
 done
 
@@ -54,7 +57,8 @@ for fixture_pattern in \
     'ProcessBatchEvent.Launch' \
     'ProcessBatchEvent.Retry' \
     'ProcessBatchEvent.CancelAck' \
-    'ProcessBatchError.DuplicateJobId'; do
+    'ProcessBatchError.DuplicateJobId' \
+    'ProcessBatchError.AccountingInvalid'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 

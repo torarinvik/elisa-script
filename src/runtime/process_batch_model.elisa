@@ -131,20 +131,26 @@ module EsProcessBatch:
             raise ProcessBatchError.JobLimitExceeded if session.jobs.count > session.policy.max_jobs
             raise ProcessBatchError.ParallelLimitExceeded if session.active > session.policy.max_parallel
             raise ProcessBatchError.AccountingInvalid if session.completed > session.jobs.count or session.failed > session.jobs.count or session.completed + session.failed > session.jobs.count
+            raise ProcessBatchError.AccountingInvalid if session.state == ProcessBatchState.Planned and (session.active != 0 or session.completed != 0 or session.failed != 0)
             active: mutable usize = 0
             completed: mutable usize = 0
             failed: mutable usize = 0
-            for index in 0..<session.jobs.count |session, active, completed, failed|:
+            unfinished: mutable usize = 0
+            for index in 0..<session.jobs.count |session, active, completed, failed, unfinished|:
                 job: ProcessBatchJob = session.jobs[index]
                 raise ProcessBatchError.InvalidJobId if job.id == 0
                 raise ProcessBatchError.InvalidJobState if not process_batch_job_state_valid(job.state)
                 raise ProcessBatchError.AttemptLimitExceeded if job.attempts > session.policy.max_attempts
+                raise ProcessBatchError.AccountingInvalid if session.state == ProcessBatchState.Planned and (job.state != ProcessBatchJobState.Pending or job.attempts != 0)
                 active <- active + 1 if process_batch_job_active(job.state)
                 completed <- completed + 1 if job.state == ProcessBatchJobState.Succeeded
                 failed <- failed + 1 if job.state == ProcessBatchJobState.Failed
+                unfinished <- unfinished + 1 if job.state == ProcessBatchJobState.Pending or job.state == ProcessBatchJobState.Running or job.state == ProcessBatchJobState.Retryable
                 for earlier in 0..<index |session, job|:
                     raise ProcessBatchError.DuplicateJobId if session.jobs[earlier].id == job.id
             raise ProcessBatchError.AccountingInvalid if active != session.active or completed != session.completed or failed != session.failed
+            raise ProcessBatchError.AccountingInvalid if session.state == ProcessBatchState.Succeeded and (active != 0 or failed != 0 or completed != session.jobs.count)
+            raise ProcessBatchError.AccountingInvalid if session.state == ProcessBatchState.Cancelled and unfinished != 0
             return true
 
 
@@ -189,7 +195,12 @@ module EsProcessBatch:
                 session.jobs[job_index].state <- ProcessBatchJobState.Pending
             elif event == ProcessBatchEvent.Cancel:
                 raise ProcessBatchError.CancelNotReady if session.state == ProcessBatchState.Succeeded or session.state == ProcessBatchState.Failed or session.state == ProcessBatchState.Cancelled
-                session.state <- ProcessBatchState.Cancelled if session.state == ProcessBatchState.Planned else ProcessBatchState.Cancelling
+                if session.state == ProcessBatchState.Planned:
+                    for index in 0..<session.jobs.count |session|:
+                        session.jobs[index].state <- ProcessBatchJobState.Cancelled if session.jobs[index].state == ProcessBatchJobState.Pending
+                    session.state <- ProcessBatchState.Cancelled
+                else:
+                    session.state <- ProcessBatchState.Cancelling
             elif event == ProcessBatchEvent.CancelAck:
                 raise ProcessBatchError.InvalidState if session.state != ProcessBatchState.Cancelling
                 for index in 0..<session.jobs.count |session|:

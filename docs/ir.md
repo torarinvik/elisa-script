@@ -1296,7 +1296,9 @@ outcome; cancellation must use the explicit cancellation state machine.
 for process maps. Jobs have unique IDs, pending/running/retryable/terminal
 states, bounded attempts, and explicit launch/complete/fail/retry edges. A
 policy caps total jobs and active parallelism and selects fail-fast versus
-aggregate failure. `Cancel → CancelAck` marks every still-owned slot cancelled;
+aggregate failure. Planned cancellation marks all pending jobs cancelled,
+`Succeeded` requires every job completed, and `Cancelled` cannot retain
+unfinished jobs. `Cancel → CancelAck` marks every still-owned slot cancelled;
 the contract never starts a child or sends a signal. Duplicate IDs, stale job
 indices, retry exhaustion, no-pending launches, counter drift, and post-terminal
 events return `error[ProcessBatchError]`.
