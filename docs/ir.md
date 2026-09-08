@@ -1203,8 +1203,8 @@ remain host-adapter responsibilities.
 
 `EsRecordSpill::RecordSpillSession` is the external-sort staging boundary.
 Runs receive stable ordinals and distinct sibling paths, append only within
-per-run and aggregate record/byte ceilings, and must cross `SealRun` before
-`BeginMerge`. Merge runs are consumed in ordinal order; `Commit` is accepted
+per-run and aggregate record/byte ceilings, and must cross `SealRun` into
+`Ready` before `BeginMerge`. Merge runs are consumed in ordinal order; `Commit` is accepted
 only after every sealed run has been merged. Destination/staging collisions,
 duplicate run paths, active-run misuse, forged lifecycle state, accounting drift,
 impossible inactive-run cursors, and cancellation or failure transitions are typed through

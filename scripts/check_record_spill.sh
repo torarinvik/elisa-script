@@ -48,6 +48,7 @@ for boundary in \
     'RecordSpillEvent.MergeRun' \
     'RecordSpillError.MergeOrderInvalid' \
     'RecordSpillError.RunNotSealed' \
+    'session.state != RecordSpillState.Ready' \
     'RecordSpillError.DestinationCollision' \
     'not session.has_active_run and' \
     'RecordSpillState.Sealed'; do
