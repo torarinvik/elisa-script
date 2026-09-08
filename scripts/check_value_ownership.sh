@@ -40,6 +40,7 @@ for boundary in \
     'ValueOwnershipKind.BorrowedView' \
     'ValueOwnershipEvent.BeginBorrow' \
     'ValueOwnershipError.BorrowConflict' \
+    'value.state != ValueOwnershipState.Owned' \
     'value.state == ValueOwnershipState.Dropped and value.bytes != 0' \
     'ValueOwnershipError.MoveNotReady' \
     'ValueOwnershipError.DropNotReady'; do

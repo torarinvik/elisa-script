@@ -278,7 +278,7 @@ cross-thread transfer still require adapter evidence.
 
 `EsValueOwnership::ValueOwnershipLedger` is the allocator-independent runtime
 ownership boundary. Values carry arena identity, owner token, generation, kind,
-and retained bytes; dropped values must carry no retained payload, linear values allow at most one active borrow, borrowed
+and retained bytes; acquisition admits only initially `Owned` values, dropped values must carry no retained payload, linear values allow at most one active borrow, borrowed
 views cannot be reborrowed, moves require an unborrowed owned value and advance
 the generation, and drops reclaim retained bytes without deleting provenance.
 Borrow leases record borrower identity, source generation, and an expiry token;

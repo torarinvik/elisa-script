@@ -406,8 +406,8 @@ fixture, namespace inclusion, documentation, and check_task_transfer.sh audit
 are static evidence; scheduler integration and runtime transport remain open.
 
 ES-SCRIPT-042 | EsValueOwnership supplies a bounded arena-independent runtime
-ownership ledger. It tracks value/arena/owner/generation identities, linear and
-borrowed-view kinds, finite borrow leases, active-value/borrow counts, retained
+ownership ledger. It tracks value/arena/owner/generation identities, admits only
+initially owned values, and supports linear and borrowed-view kinds, finite borrow leases, active-value/borrow counts, retained
 bytes, generation-checked moves, and byte-reclaiming drops with zeroed dropped
 payloads. Borrow conflicts,
 stale generations, duplicate ids, owner mismatches, double-end, and accounting
