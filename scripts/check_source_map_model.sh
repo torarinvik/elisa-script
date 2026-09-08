@@ -36,7 +36,8 @@ for boundary in \
     'FileIndexInvalid' \
     'map.state == SourceMapState.Empty' \
     'AppendNotReady' \
-    'source_location_before'; do
+    'source_location_before' \
+    'map.state == SourceMapState.Invalid'; do
     rg -Fq "$boundary" "$model"
 done
 

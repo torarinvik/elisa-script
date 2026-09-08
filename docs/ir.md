@@ -223,7 +223,8 @@ be strictly ordered. `advance_source_map` seals the append-only map through an
 explicit `Empty → Building → Sealed` protocol (with invalidation), while
 `source_map_lookup` returns a bounded entry index or the table-count sentinel;
 empty maps cannot carry preloaded files or entries, and no consumer scans an
-unvalidated or path-inferred map.
+unvalidated or path-inferred map. Invalidated maps are rejected at lookup rather
+than being treated as ordinary empty results.
 
 `EsOutput` gives launcher, test, and differential renderers one bounded
 document contract. `OutputOptions` fixes human/JSON/JUnit format, color policy,
