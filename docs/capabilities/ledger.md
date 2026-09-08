@@ -479,7 +479,8 @@ evidence, while descriptor writes and concurrent drains remain host work.
 message-level backpressure with explicit close/cancel acknowledgement edges;
 channel validation reconciles zero/nonzero message and byte aggregates, requires
 an exact final-message drain, and
-rejects an empty imported Closing state;
+rejects an empty imported Closing state and failed scopes with unaccounted
+children;
 thread/event-loop scheduling remains open. `EsTaskTransfer` adds a bounded
 copy/move/borrow ownership contract for values and dynamic handler contexts;
 linear values cannot be copied or borrowed, move updates ownership only at

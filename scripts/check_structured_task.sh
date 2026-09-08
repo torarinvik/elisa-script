@@ -52,6 +52,7 @@ for boundary in \
     'StructuredChildState.Cleaning and child.cleanup_depth'; do
     rg -q "$boundary" "$model"
 done
+rg -q 'forged_failed_planned' "$fixture_file"
 
 for fixture_pattern in \
     'using EsStructuredTask' \
