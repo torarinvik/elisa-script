@@ -2728,7 +2728,9 @@ comprehensions use the same verified map storage with a canonical boolean marker
 an internal set descriptor marker that preserves source-level method typing.
 Mutable set `.add` lowers to a typed `SetIndex` rebind and is duplicate-stable;
 `.clear()` lowers to a typed empty `MakeMap` rebind, and `.remove(element)` lowers
-to a typed `DeleteIndex` rebind with no-op missing-key behavior. Indexed access
+to a typed `DeleteIndex` rebind with no-op missing-key behavior. A missing-key
+`DeleteIndex` returns the original map before allocating replacement storage, so
+the no-op is storage-neutral. Indexed access
 remains outside this initial IR subset. Ordinary mutable dictionaries use the same
 `.clear()` and `.remove(key)` operations with their declared key/value types, while
 mutable arrays use `.clear()` to emit a typed empty `MakeArray` rebind. Query

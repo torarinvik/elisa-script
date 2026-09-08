@@ -934,7 +934,8 @@ is a set-only registry operation with the same `DeleteIndex` lowering and
 no-op-on-missing behavior as `.remove(element)`. Indexed set reads remain
 semantic errors until the dedicated set runtime shape is introduced. Mutable
 dictionaries also support `.clear()` and `.remove(key)`, and mutable arrays support
-`.clear()`, all with immutable SSA update semantics; removing a missing key is a no-op.
+`.clear()`, all with immutable SSA update semantics; removing a missing key is a no-op
+that leaves the flat map storage unchanged.
 The lowered map descriptor retains
 an internal set marker, so set-only `.add()` cannot be applied to an ordinary
 `dict[T, bool]` despite the shared physical representation.
