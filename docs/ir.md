@@ -902,8 +902,10 @@ be one of the six declared ownership classes. Unknown enum ordinals are rejected
 as handler-contract issues rather than being treated as replay-safe by default.
 Multi-shot captures whose declared type is an array or map are rejected as
 `UnsafeMultiShot` at verification time until deep aggregate storage cloning is
-available; the runtime keeps the same fail-closed check for legacy hand-built
-descriptors.
+available. When a capture carries an interned TypeTable descriptor, verification
+walks its bounded child graph and rejects nested array/map descendants as well;
+unknown or malformed child links fail closed. The runtime keeps the same
+fail-closed root check for legacy hand-built descriptors.
 Malformed metadata is a handler-contract issue rather than permission to replay
 an untyped or unknown value.
 Coverage is operation-aware: a handler with one or more clauses handles only the
