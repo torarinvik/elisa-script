@@ -47,6 +47,7 @@ for boundary in \
     'StructuredScopeState.Cancelled and' \
     'StructuredScopeState.Failed and' \
     'scope.state != StructuredScopeState.Running' \
+    'StructuredTaskEvent.RequestCancel' \
     'StructuredChildState.Cleaning and' \
     'StructuredChildState.Cleaning and child.cleanup_depth'; do
     rg -q "$boundary" "$model"
