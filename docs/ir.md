@@ -223,8 +223,8 @@ document contract. `OutputOptions` fixes human/JSON/JUnit format, color policy,
 quiet/fail-fast behavior, and a total text budget; `OutputRecord` carries a
 typed pass/fail/error/skip status with bounded name and channel text.
 `advance_output_document` appends records through `Empty → Building → Sealed`
-while accounting failed records against the stored failure count and rejecting
-budget overflow before mutation.
+while reconciling aggregate channel text and failed records against stored
+accounting and rejecting budget overflow before mutation.
 Renderers can therefore remain format-specific without changing result
 semantics or truncating machine output silently.
 

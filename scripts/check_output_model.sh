@@ -33,6 +33,8 @@ done
 
 for boundary in \
     'TextLimitExceeded' \
+    'TextAccountingInvalid' \
+    'accounted_text' \
     'FailedRecordAccountingInvalid' \
     'RecordLimitExceeded' \
     'InvalidColorMode' \
@@ -49,7 +51,9 @@ for fixture_pattern in \
     'OutputFormat.Json' \
     'OutputStatus.Fail' \
     'OutputDocumentEvent.Seal' \
-    'OutputContractError.OutputLimitInvalid'; do
+    'OutputContractError.OutputLimitInvalid' \
+    'OutputContractError.TextAccountingInvalid' \
+    'text_accounting_rejected'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 
