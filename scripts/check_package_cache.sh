@@ -40,6 +40,7 @@ for boundary in \
     'EntryIndexInvalid' \
     'InvalidateNotReady' \
     'cache.state == PackageCacheState.Empty' \
+    'cache.state != PackageCacheState.Updating' \
     'ResetNotReady' \
     'ByteLimitExceeded'; do
     rg -Fq "$boundary" "$model"
