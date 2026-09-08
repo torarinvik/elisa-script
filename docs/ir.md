@@ -358,7 +358,7 @@ writes remain host-adapter work.
 `EsHash::HashContext` is the bounded integrity boundary used by package,
 archive, and artifact adapters. Algorithm identity, input/chunk ceilings,
 one-way begin/update/finalize/fail transitions, canonical digest word shape,
-planned-state accounting, and algorithm matching are checked before
+planned-state accounting, zeroed unpublished digest payloads, and algorithm matching are checked before
 publication; the model records the contract but delegates cryptographic computation to a maintained host/library
 implementation through `error[HashError]`.
 

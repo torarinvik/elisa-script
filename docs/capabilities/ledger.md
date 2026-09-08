@@ -499,7 +499,8 @@ publication, and extraction parity remain open.
 ES-SCRIPT-051 | EsHash supplies a bounded incremental integrity contract.
 Algorithm identity (`Sha256`, `Sha512`, or `Fnv1a64`), input/chunk ceilings,
 chunk counts, one-way begin/update/finalize/fail transitions, canonical digest
-word shape, clean planned-state accounting, and algorithm matching are explicit.
+word shape, clean planned-state accounting, zeroed unpublished digest payloads,
+and algorithm matching are explicit.
 The focused IR fixture, namespace
 inclusion, documentation, and check_hash.sh audit are compiler-free static
 evidence; cryptographic implementation, streaming adapters, package/archive

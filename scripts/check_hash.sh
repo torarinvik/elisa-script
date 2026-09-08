@@ -39,6 +39,8 @@ for boundary in \
     'HashAlgorithm.Sha512' \
     'HashError.DigestAlgorithmMismatch' \
     'HashError.DigestAlreadyPublished' \
+    'hash_digest_unpublished_valid' \
+    'DigestAlreadyPublished if not hash_digest_unpublished_valid' \
     'HashError.InputLimitExceeded' \
     'HashError.AccountingInvalid' \
     'digest.word1 == 0'; do
