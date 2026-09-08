@@ -685,6 +685,9 @@ If a universal/retained record read consumes a non-delimiter lookahead, the
 next chunk read publishes that pending byte before probing the host again, so
 switching between record and byte APIs cannot drop data or bypass the shared
 budget.
+Chunk and byte reads also reject a positive `fread` count accompanied by the
+stdio error indicator, preserving the typed read failure instead of publishing
+partially poisoned stream data.
 `file_stream_read_line` remains the bounded LF-only compatibility spelling.
 `file_stream_tell` reports the logical position before an unpublished
 lookahead, and `file_stream_seek` exposes explicit begin/current/end origins;
