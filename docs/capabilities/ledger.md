@@ -642,8 +642,8 @@ process state. The focused IR fixture and check_environment_model.sh audit are
 static evidence; host environment snapshot/apply adapters remain open.
 
 ES-SCRIPT-009 | EsCsvMaterialize supplies bounded source field spans, contiguous
-record layout, quote markers, shared field/record ceilings, and validated slice
-lookup for CSV/TSV adapters. The focused IR fixture and
+record layout, quote markers, shared field/record ceilings, clean ready-state
+accounting, and validated slice lookup for CSV/TSV adapters. The focused IR fixture and
 check_csv_materializer.sh audit are static evidence; quote unescaping,
 newline policy, and typed row construction remain open.
 
