@@ -1477,6 +1477,8 @@ capacity for pairs that will be overwritten.
 Map removals search before sizing their shortened copy and require only
 `count - 1` pairs after a match; absent-key `PopMap`/`DeleteIndex` no-ops do not
 need any replacement capacity.
+Glob expansion similarly counts sorted unique matches before checking flat-pool
+capacity, so duplicate matches from overlapping variants do not over-reserve.
 Missing keys use the existing typed
 `IndexOutOfBounds` error rather than a sentinel value. The reference interpreter and
 the bytecode facade share this representation. Maps whose key and value types are

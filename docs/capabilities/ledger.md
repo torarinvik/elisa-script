@@ -87,6 +87,8 @@ Map concatenation preflights only newly introduced right-hand keys, preserving
 valid duplicate-only merges when no additional pair capacity remains.
 `PopMap` and `DeleteIndex` likewise preflight only the shortened map after a
 match; absent-key no-ops return without requiring replacement capacity.
+Glob expansion preflights its deduplicated match count rather than the raw
+walker count, preserving valid overlap-heavy expansions at the storage ceiling.
 `Path.iterdir()` rolls the flat storage cursor back on a late child-path failure,
 so directory materialization is failure-atomic.
 Array/map literal and global initialization paths likewise roll back their entry
