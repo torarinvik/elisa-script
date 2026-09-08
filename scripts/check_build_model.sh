@@ -33,6 +33,7 @@ for boundary in \
     'DependencyOrderInvalid' \
     'MissingDependency' \
     'InvalidParallelism' \
+    'DependencyNotReady' \
     'FingerprintMissing' \
     'LogLimitExceeded' \
     'FailureNotReady' \

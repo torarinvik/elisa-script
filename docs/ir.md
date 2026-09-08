@@ -267,7 +267,9 @@ requires a deterministic topological order (dependencies precede consumers),
 rejects missing/duplicate/cyclic dependencies, and preserves process-command
 errors. `advance_build_graph` limits active nodes, records per-node completion
 or failure, and exposes cancellation acknowledgement so a scheduler cannot
-silently overrun parallelism or abandon children. Aggregate counters are
+silently overrun parallelism or abandon children. A node start is admitted only
+after every named dependency is `Succeeded`, so dependency readiness cannot be
+forged by an otherwise valid topological graph. Aggregate counters are
 reconciled with node states, and terminal graph states reject forged progress
 or unfinished completion; a failure is admitted only when no sibling is still
 running, then marks every remaining planned node as `Cancelled` before the
