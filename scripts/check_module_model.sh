@@ -47,6 +47,7 @@ for boundary in \
     'PublicPrivateCollision' \
     'ResolutionCycle' \
     'ResolutionNotReady' \
+    'module.state == ModuleResolutionState.Resolved' \
     'ModuleResolutionEvent.ImportResolved'; do
     rg -Fq "$boundary" "$model"
 done

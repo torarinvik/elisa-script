@@ -117,6 +117,8 @@ imports, public/private collisions, malformed identities, and oversized import
 or symbol sets fail through `error[ModuleContractError]`. Resolution advances
 `Planned → Resolving → Resolved/Failed` one event at a time, while
 `ModuleResolutionStack` rejects recursive identities before a loader can loop.
+Descriptor validation rejects `Planned` modules carrying progress and `Resolved`
+modules that have not accounted for every import.
 The graph contract is independent of host path lookup and leaves package roots,
 lockfiles, and filesystem canonicalization to the launcher/adapter.
 
