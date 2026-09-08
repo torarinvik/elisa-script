@@ -39,6 +39,7 @@ for boundary in \
     'LockOrderInvalid' \
     'MissingLockedDependency' \
     'ConstraintUnsatisfied' \
+    'package_version_equal(constraint.max_version, constraint.min_version)' \
     'ResolutionNotReady' \
     'package_constraint_satisfied'; do
     rg -Fq "$boundary" "$model"
