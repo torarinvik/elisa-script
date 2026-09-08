@@ -2582,9 +2582,10 @@ Mutable dictionaries additionally lower `mapping.pop(key)` and
 `mapping.pop(key, default)` to the paired `PopMapValue`/`PopMap` operations.
 `PopMapValue` returns the exact dictionary value type (or the typed default when
 the key is absent), while `PopMap` removes the key into fresh map storage. A
-missing key without a default raises `IndexOutOfBounds`; the verifier rejects
-set descriptors, mismatched key/default types, and immutable receivers before
-execution.
+missing key without a default raises `IndexOutOfBounds`; an absent-key `PopMap`
+searches before allocating fresh storage, so a failed removal is storage-neutral.
+The verifier rejects set descriptors, mismatched key/default types, and
+immutable receivers before execution.
 `mapping.setdefault(key, default)` lowers to the paired
 `SetDefaultMapValue`/`SetDefaultMap` operations. The value operation returns the
 existing value or the typed default, while the map operation rebinds the mutable

@@ -75,6 +75,8 @@ receiver shapes consume the same
 `Concat`/`DeleteIndex`/`MakeMap` metadata;
 concrete key/value descriptors remain owned by the structural map type while
 recursive generic descriptors remain open.
+Both backends search for a `PopMap` key before allocating replacement storage,
+so an absent-key removal leaves flat storage unchanged.
 
 Set receiver operations now share the registry as `Set.add(value)`,
 `Set.remove(value)`, `Set.discard(value)`, and `Set.clear()` rows. The lowerer
