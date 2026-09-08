@@ -37,6 +37,8 @@ for boundary in \
     'record_rewrite_path_valid' \
     'RecordRewriteError.PathCollision' \
     'RecordRewriteError.OutputLimitExceeded' \
+    'session.state == RecordRewriteState.Staging' \
+    'session.state == RecordRewriteState.Committed and session.plan.require_directory_sync' \
     'RecordRewriteEvent.Sync' \
     'RecordRewriteEvent.DirectorySync' \
     'RecordRewriteEvent.CommitAck' \
