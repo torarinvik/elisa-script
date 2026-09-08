@@ -43,6 +43,8 @@ for boundary in \
     'ArchiveError.LinkRejected' \
     'entry.kind != ArchiveEntryKind.Symlink' \
     'ArchiveError.TotalLimitBytesExceeded' \
+    'ArchiveError.AccountingInvalid' \
+    'ArchiveSessionState.Planned and' \
     'ArchiveError.InvalidTransition'; do
     rg -q "$boundary" "$model"
 done
@@ -52,7 +54,8 @@ for fixture_pattern in \
     'typed_archive_contract_rejects_traversal_and_links_before_commit' \
     'ArchiveError.TraversalPath' \
     'ArchiveError.LinkRejected' \
-    'ArchiveSessionState.Committed'; do
+    'ArchiveSessionState.Committed' \
+    'ArchiveError.AccountingInvalid'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 

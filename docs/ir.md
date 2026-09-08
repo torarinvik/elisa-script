@@ -322,8 +322,9 @@ Relative path segments reject absolute paths, backslashes, empty/dot/traversal
 segments, embedded NULs, and overlong names before publication. Entry count,
 per-entry bytes, aggregate bytes, duplicate ids/paths, link policy, and
 planned/extracting/committed/failed/cancelled states are bounded through
-`error[ArchiveError]`; non-link entries cannot carry hidden link targets, and
-filesystem writes remain host-adapter work.
+`error[ArchiveError]`; non-link entries cannot carry hidden link targets, a
+planned session cannot contain preloaded entries or counters, and filesystem
+writes remain host-adapter work.
 
 `EsHash::HashContext` is the bounded integrity boundary used by package,
 archive, and artifact adapters. Algorithm identity, input/chunk ceilings,

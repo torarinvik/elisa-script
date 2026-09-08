@@ -485,8 +485,8 @@ value adapters, pause delivery, and interactive execution remain open.
 ES-SCRIPT-050 | EsArchive supplies bounded tar/zip extraction admission.
 Relative path validation rejects absolute paths, backslashes, empty/dot/
 traversal segments, embedded NULs, and oversized names; entry count, per-entry
-and aggregate bytes, duplicate identities/paths, link policy, and commit/fail/
-cancel lifecycle are explicit. The focused IR fixture, namespace inclusion,
+and aggregate bytes, duplicate identities/paths, link policy, planned-state
+cleanliness, and commit/fail/cancel lifecycle are explicit. The focused IR fixture, namespace inclusion,
 documentation, and check_archive.sh audit are compiler-free static evidence;
 format decoders, filesystem writes, overwrite/permission behavior, atomic
 publication, and extraction parity remain open.
