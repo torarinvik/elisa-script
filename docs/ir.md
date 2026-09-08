@@ -1198,7 +1198,8 @@ active context, `Change`/`ChangeAck` makes host movement explicit and bounded,
 and `Restore`/`RestoreAck` must return to the original path before the lease is
 released. A second active owner is rejected, changing/restoring operations
 cannot be cancelled mid-flight, and failed contexts remain recorded as failed
-rather than silently releasing an unknown cwd. Hosts should prefer descriptor
+rather than silently releasing an unknown cwd; lease identities are monotonic
+and cannot collide with the next allocation. Hosts should prefer descriptor
 or child-cwd APIs where available; this contract is the conservative fallback
 for unavoidable process-global changes.
 

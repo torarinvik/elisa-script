@@ -40,6 +40,7 @@ for boundary in \
     'WorkingDirectoryEvent.ChangeAck' \
     'WorkingDirectoryEvent.RestoreAck' \
     'WorkingDirectoryError.ConcurrentOwner' \
+    'table.next_lease_id <= lease.lease_id' \
     'WorkingDirectoryError.CancelNotReady' \
     'WorkingDirectoryLeaseState.Failed' \
     'active_contexts'; do
@@ -53,7 +54,8 @@ for fixture_pattern in \
     'WorkingDirectoryEvent.ChangeAck' \
     'WorkingDirectoryEvent.RestoreAck' \
     'WorkingDirectoryError.ConcurrentOwner' \
-    'WorkingDirectoryEvent.CancelAck'; do
+    'WorkingDirectoryEvent.CancelAck' \
+    'forged_identity'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 
