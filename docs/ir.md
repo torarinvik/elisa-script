@@ -1272,7 +1272,7 @@ one sealed record at a time, so this contract does not claim JSON semantic
 validation or whole-document allocation.
 
 `EsRecordControl::RecordControlSession` makes AWK-style control keywords
-explicit: `NextRecord` closes the current record and advances to the next one,
+explicit: `NextRecord` checks the record ceiling, then closes the current record and advances to the next one,
 `NextFile` closes both record and file scopes, and `Exit` terminates cleanly from
 any running scope. The bounded state machine rejects calls outside an open file,
 double-open records, impossible open-file counters, file closure with a live

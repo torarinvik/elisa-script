@@ -36,6 +36,7 @@ for boundary in \
     'RecordControlEvent.NextFile' \
     'RecordControlEvent.Exit' \
     'RecordControlError.RecordNotOpen' \
+    'RecordControlError.RecordLimitExceeded if session.record_count >= session.policy.max_records' \
     'RecordControlError.FileNotClosed' \
     'session.file_open and session.file_count == 0' \
     'session.record_count != 0 and session.file_count == 0' \
