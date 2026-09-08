@@ -49,6 +49,7 @@ for boundary in \
     'RecordNumericEvent.Cancel'; do
     rg -q "$boundary" "$model"
 done
+rg -Fq 'underscore_decimal_rejected' "$fixture_file"
 
 for fixture_pattern in \
     'using EsRecordNumeric' \
