@@ -48,6 +48,7 @@ for boundary in \
     'CaptureAccountingInvalid' \
     'WorkLimitExceeded' \
     'OutputLimitExceeded' \
+    'not session.request.global and session.matches != 0' \
     'EndNotReady' \
     'CancelNotReady'; do
     rg -Fq "$boundary" "$model"

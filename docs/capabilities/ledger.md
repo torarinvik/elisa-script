@@ -635,7 +635,8 @@ socket/TLS/redirect and deadline adapters remain open.
 
 ES-SCRIPT-012 | EsRegex supplies typed operation identity, pattern/input/
 replacement ceilings, capture-group limits, shared work accounting, bounded
-replacement output, and explicit completion/failure/cancellation edges. The
+replacement output, single/global match policy, and explicit
+completion/failure/cancellation edges. The
 focused IR fixture and check_regex_model.sh audit are static evidence; the
 engine's iterative-stack rewrite and adversarial execution corpus remain open.
 

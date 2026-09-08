@@ -1430,7 +1430,8 @@ share the same bounded flat-layout proof.
 EsRegex exposes the same limits as a public adapter contract. A
 RegexSession identifies search/match/fullmatch/findall/split/replace,
 charges helper work and capture groups before publication, bounds replacement
-output and match count, rejects forged ready-state counters and non-replacement output, and
+output and match count, enforces the request's single/global match policy,
+rejects forged ready-state counters and non-replacement output, and
 makes cancellation explicit. The matcher can therefore remain engine-specific
 while policy, error variants, and resource accounting stay identical across
 interpreter and bytecode paths.
