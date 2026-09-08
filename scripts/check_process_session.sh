@@ -37,6 +37,7 @@ for boundary in \
     'PollLimitExceeded' \
     'InvalidOutcome' \
     'session.state == ProcessSessionState.Exited' \
+    'session.exit_status <- exit_status' \
     'session.state == ProcessSessionState.Created' \
     'session.state == ProcessSessionState.Created and session.result_kind != ProcessResultKind.SpawnFailure' \
     'session.state == ProcessSessionState.Failed and session.result_kind != ProcessResultKind.HostIoFailure' \
@@ -57,6 +58,8 @@ for fixture_pattern in \
     'ProcessSessionEvent.CancelAck'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
+
+rg -Fq 'session.exit_status == 17' "$fixture"
 
 rg -Fq 'EsProcessSession binds that command value to an adapter lifecycle' "$docs"
 rg -Fq 'ES-SCRIPT-007 | EsProcessSession' "$ledger"
