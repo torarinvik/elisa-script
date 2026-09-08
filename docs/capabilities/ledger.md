@@ -355,6 +355,8 @@ boundary.
 The differential runner's temporary stdin writer and the interpreter's process
 stdin writer apply the same `ferror` admission after every positive short write,
 so failed input staging cannot be mistaken for a complete payload.
+Its exact-size stdout/stderr reader applies the same admission after positive
+short reads, preserving typed process failure for a sticky temporary-file error.
 
 The first large-file vertical slice is now a typed `EsRuntime::FileStream`
 contract with explicit modes, bounded chunk read/write, an error-safe line

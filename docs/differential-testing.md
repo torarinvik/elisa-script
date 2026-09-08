@@ -334,6 +334,9 @@ Post-exit stdout/stderr materialization applies the same bounded progress policy
 to exact-size reads: positive short `fread` counts advance and retry, while zero
 progress or an over-count fails the owned stream snapshot as
 `DifferentialRunnerError.Process`.
+The same reader rejects a positive count accompanied by the host `ferror`
+indicator, so a sticky temporary-file error cannot be classified as a complete
+stdout/stderr snapshot.
 Temporary stdin writes use the same admission for positive short `fwrite`
 progress and reject a host `ferror` indicator before advancing the owned offset,
 so a poisoned input stream cannot be presented to the reference or candidate as

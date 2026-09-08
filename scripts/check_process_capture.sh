@@ -49,6 +49,7 @@ rg -U -q 'amount == 0 or amount > remaining or ferror\(stream\) != 0' "$interpre
 rg -U -q 'amount == 0 or amount > remaining or ferror\(writer\.stream\) != 0' "$interpreter"
 rg -q 'def differential_write_stream_fully\(' "$differential"
 rg -U -q 'amount == 0 or amount > remaining or ferror\(stream\) != 0' "$differential"
+rg -q 'def differential_read_stream_fully\(' "$differential"
 
 # Both streams are checked independently before the next poll/sleep, and a
 # timeout compares against the predecessor before incrementing its counter.
