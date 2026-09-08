@@ -40,6 +40,7 @@ for boundary in \
     'for value in session.values' \
     'session.state == RecordWindowState.Planned' \
     'session.values.count == 0' \
+    'session.values.count != 0 and session.active_start == session.values.count' \
     'RecordWindowError.EventLimitExceeded' \
     'RecordWindowError.WidthExceeded' \
     'RecordWindowError.SumLimitExceeded' \

@@ -780,7 +780,8 @@ numeric conversion, and host execution remain open.
 
 ES-SCRIPT-031 | EsRecordWindow supplies a bounded rolling unsigned-sum window
 for streaming record actions. It retains at most `max_events`, exposes an
-active suffix no wider than `width`, evicts the oldest value before each new
+active suffix no wider than `width` (and rejects a nonempty history with an
+empty active suffix), evicts the oldest value before each new
 admission, and validates sum accounting against an explicit ceiling. Count and
 sum reads are allowed only while collecting or after sealing; invalid lifecycle,
 eviction, accounting, event, and sum transitions return

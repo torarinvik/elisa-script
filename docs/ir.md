@@ -1153,7 +1153,9 @@ sum under an explicit ceiling. `record_window_count` and `record_window_sum`
 are available while collecting or after sealing; invalid terminal transitions,
 forged planned-state contents, empty-history drift, out-of-policy values in
 retained history, window accounting drift, and event/sum overflow return
-`error[RecordWindowError]`. Keyed windows and signed/decimal numeric policies
+`error[RecordWindowError]`. A nonempty retained history must also retain a
+nonempty active suffix, so an imported cursor cannot skip every retained value.
+Keyed windows and signed/decimal numeric policies
 remain explicit extensions rather than implicit conversions.
 
 `EsRecordJoin::RecordJoinSession` is the deterministic keyed-join boundary.
