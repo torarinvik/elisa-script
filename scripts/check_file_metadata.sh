@@ -45,6 +45,8 @@ for boundary in \
     'FileMetadataError.DuplicatePath' \
     'FileMetadataError.InvalidIdentity' \
     'FileMetadataError.SymlinkTargetInvalid' \
+    'FileMetadataError.AccountingInvalid' \
+    'FileMetadataState.Planned and' \
     'FileMetadataEvent.Entry' \
     'FileMetadataState.Sealed'; do
     rg -q "$boundary" "$model"
@@ -57,7 +59,8 @@ for fixture_pattern in \
     'FileMetadataKind.Missing' \
     'file_metadata_lookup' \
     'FileMetadataError.DuplicatePath' \
-    'FileMetadataError.SymlinkTargetInvalid'; do
+    'FileMetadataError.SymlinkTargetInvalid' \
+    'FileMetadataError.AccountingInvalid'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 

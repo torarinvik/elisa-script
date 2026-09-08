@@ -1146,6 +1146,7 @@ objects. Permission bits, size, inode/device/link identity, and timestamps are
 bounded fields; symlink targets are required only when `preserve_symlink` is
 enabled and the entry is a symlink. Path, target, and aggregate-byte ceilings
 are checked before publication, and `file_metadata_lookup` is sealed-only.
+Planned snapshots must remain empty and zero-accounted until `Begin`.
 `error[FileMetadataError]` covers malformed paths, NULs, identity/mode/size
 violations, missing/symlink policy, duplicate entries, accounting drift, and
 terminal misuse; native stat/lstat, chmod, hardlink, and race-safe traversal
