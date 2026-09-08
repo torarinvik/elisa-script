@@ -1761,10 +1761,12 @@ integrations.
 
 `EsExecutable::ExecutableDiscoverySession` keeps shell-free command lookup
 typed. A bounded PATH-entry search submits candidate observations with stable
-indices; only a regular, executable candidate becomes an `Executable` result.
+indices within the supplied PATH entries; only a regular, executable candidate
+becomes an `Executable` result.
 The result is distinct from an arbitrary `Path`, while exhausted search emits
 `Missing`, and invalid candidate order, names, NULs, limits, cancellation, and
-premature missing results use `error[ExecutableDiscoveryError]`. PATH access,
+premature missing results, forged selected indices, and non-exhausted terminal
+states use `error[ExecutableDiscoveryError]`. PATH access,
 permission checks, and platform executable rules remain host adapter work.
 
 The argv terminator is cleared using `size_of(uintptr)`, matching the target

@@ -40,7 +40,10 @@ for boundary in \
     'ExecutableDiscoveryError.MissingNotReady' \
     'ExecutableDiscoveryError.CandidateOrderInvalid' \
     'ExecutableDiscoveryState.Found' \
-    'ExecutableDiscoveryState.Missing'; do
+    'ExecutableDiscoveryState.Missing' \
+    'session.state == ExecutableDiscoveryState.Planned' \
+    'session.state == ExecutableDiscoveryState.Found' \
+    'candidate.path_index >= session.request.path_entries.count'; do
     rg -q "$boundary" "$model"
 done
 
@@ -49,7 +52,8 @@ for fixture_pattern in \
     'typed_executable_discovery_contract_distinguishes_path_and_executable' \
     'ExecutableDiscoveryEvent.Candidate' \
     'ExecutableDiscoveryError.MissingNotReady' \
-    'executable_discovery_result'; do
+    'executable_discovery_result' \
+    'ExecutableDiscoveryError.CandidateInvalid'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 
