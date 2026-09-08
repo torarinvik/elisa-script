@@ -334,7 +334,8 @@ virtual time. Bounded waits are armed with owner identities, advances are
 strictly positive and capped, pending waits become ready only through an
 explicit due-fire transition in deterministic deadline/id order, cancellation is terminal for that wait, and a
 clock cannot seal while pending waits remain. Backward time and oversized
-advances fail through `error[DeadlineError]`.
+advances fail through `error[DeadlineError]`; imported `Ready` waits must also
+be due at the current clock.
 
 `EsDebugger::DebuggerSession` bounds source breakpoints, stack frames, handler
 and continuation-depth metadata, and replay branches with nonempty choices. Attach/pause/continue/

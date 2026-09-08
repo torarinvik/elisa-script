@@ -471,8 +471,9 @@ executed process-status parity remain open.
 ES-SCRIPT-048 | EsDeadline supplies a monotonic host/virtual deadline clock
 contract. Clock mode, wait ownership, pending/ready/cancelled accounting,
 strictly positive bounded advances, deterministic due-fire ordering, cancellation, and seal
-preconditions are explicit; pending waits cannot be silently dropped and time
-cannot move backwards. The focused IR fixture, namespace inclusion,
+preconditions are explicit; pending waits cannot be silently dropped, ready
+waits cannot be future-dated, and time cannot move backwards. The focused IR
+fixture, namespace inclusion,
 documentation, and check_deadline.sh audit are compiler-free static evidence;
 platform clock sampling, timer integration, and cross-host wakeup parity remain
 open.
