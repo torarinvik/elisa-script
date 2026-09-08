@@ -85,6 +85,9 @@ storage domain before copying entries.
 so directory materialization is failure-atomic.
 Array/map literal and global initialization paths likewise roll back their entry
 cursor when a malformed frame or literal fails during construction.
+Global map materialization additionally rejects odd key/value payload lengths at
+the runtime boundary, preserving the verifier's pair invariant if a malformed
+binding reaches initialization.
 
 Set receiver operations now share the registry as `Set.add(value)`,
 `Set.remove(value)`, `Set.discard(value)`, and `Set.clear()` rows. The lowerer

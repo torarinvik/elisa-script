@@ -25,7 +25,9 @@ parameter or local with the same name shadows the module constant. Scalar
 provide shared storage across calls, with zero values for uninitialized bindings.
 Scalar literals and one-level literal arrays/maps are encoded as flat global
 payloads and materialized in the runtime arena. Nested aggregates and non-literal
-initializers remain outside this lowering subset.
+initializers remain outside this lowering subset. Runtime global admission also
+fails closed on malformed odd-length map payloads, even though verified modules
+already reject them before execution.
 
 Tuple syntax `(a, b, ...)` is lowered through the same `MakeArray` operation after
 each element is checked against one homogeneous `T`. In an explicit `darray[T]`
