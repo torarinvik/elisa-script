@@ -38,7 +38,9 @@ for boundary in \
     'RecordPatternPredicateKind.External' \
     'RecordPatternEvent.Record' \
     'RecordPatternError.ObservationShapeInvalid' \
+    'RecordPatternError.AccountingInvalid' \
     'RecordPatternError.EndNotReady' \
+    'session.decisions.count != session.processed_records' \
     'RecordPatternClauseState.Active'; do
     rg -q "$boundary" "$model"
 done
@@ -48,6 +50,8 @@ for fixture_pattern in \
     'typed_record_pattern_contract_selects_inclusive_ranges' \
     'RecordPatternPredicateKind.RecordNumberEquals' \
     'RecordPatternError.ObservationShapeInvalid' \
+    'RecordPatternError.AccountingInvalid' \
+    'forged_accounting' \
     'record_pattern_selected'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
