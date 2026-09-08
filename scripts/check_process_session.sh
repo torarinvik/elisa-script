@@ -37,6 +37,7 @@ for boundary in \
     'PollLimitExceeded' \
     'InvalidOutcome' \
     'session.state == ProcessSessionState.Exited' \
+    'session.state == ProcessSessionState.Created' \
     'session.state == ProcessSessionState.TimedOut' \
     'ExitNotReady' \
     'CancelNotReady' \
