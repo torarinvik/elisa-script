@@ -42,6 +42,7 @@ for boundary in \
     'session.record_count != 0 and session.file_count == 0' \
     'RecordControlState.Planned' \
     'RecordControlState.RecordSkipped' \
+    'session.state != RecordControlState.RecordSkipped' \
     'RecordControlState.FileSkipped' \
     'RecordControlState.Exited'; do
     rg -q "$boundary" "$model"

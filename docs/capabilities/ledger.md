@@ -983,7 +983,7 @@ fixtures remain host work.
 
 ES-SCRIPT-029 | EsRecordControl supplies explicit bounded `next`/`nextfile`/
 exit transitions for pattern-action adapters. It closes record/file ownership
-on skips, rejects record events outside files and premature file closure, caps
+on skips, resumes a same-file record after `next`, rejects record events outside files and premature file closure, caps
 file/record counts before `RecordEnd` or `next` consumes another record, and clears scopes on
 failure/cancel/exit. The focused IR
 fixture, namespace inclusion, documentation, and check_record_control.sh audit
