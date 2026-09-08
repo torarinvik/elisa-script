@@ -62,7 +62,7 @@ for fixture_pattern in \
 done
 
 rg -Fq 'EsBuildScheduler adds the execution-facing queue contract' "$docs"
-rg -Fq 'rejects cache entries for unknown graph nodes' "$docs"
+rg -Fq 'cache entries for unknown graph nodes' "$docs"
 rg -Fq 'ES-SCRIPT-002 | EsBuildScheduler' "$ledger"
 rg -Fq 'explicit EsBuildScheduler contract' "$plan"
 

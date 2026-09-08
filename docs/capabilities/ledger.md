@@ -571,7 +571,7 @@ successful static diff check is recorded as static review, never as execution.
 
 ES-SCRIPT-002 | EsBuildScheduler supplies deterministic dependency-ready
 queues with clean ready-state admission, exact fingerprint cache admission, bounded parallel dispatch,
-completion/failure accounting, and cancellation transitions over EsBuild.
+completion/failure accounting, queue-gated cache hits, and cancellation transitions over EsBuild.
 The focused IR fixture, namespace inclusion, documentation, and
 check_build_scheduler.sh audit are static evidence; process launch, cache
 persistence, and host cancellation adapters remain open.
