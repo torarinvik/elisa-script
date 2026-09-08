@@ -1076,8 +1076,10 @@ terminal alternatives. The materializer retains borrowed record/field spans,
 checks contiguous record-to-field ownership, counts record/field/text budgets
 with subtraction-safe admission, and rejects all transitions after sealing or
 cancellation through `error[RecordMaterializerError]`. Validation also rejects
-forged planned/empty collecting state and sealing without a completed record.
-Fail and Cancel roll back any open record's borrowed fields and text accounting
+forged planned/empty collecting state, stale inactive borrowed records/cursors,
+and sealing without a completed record. Closing a record and the Fail/Cancel
+rollback edges clear the inactive borrowed record and field cursor; Fail and
+Cancel also roll back any open record's borrowed fields and text accounting
 before entering their terminal state.
 This makes Perl/AWK-style
 `$0`/field streams deterministic for later adapters while leaving byte input,

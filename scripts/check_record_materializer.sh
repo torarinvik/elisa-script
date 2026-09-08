@@ -42,6 +42,7 @@ for boundary in \
     'record_materializer_policy_valid' \
     'record_materializer_record_valid' \
     'record_materializer_field_valid' \
+    'record_materializer_idle_record_valid' \
     'RecordMaterializerError.FieldOrderInvalid' \
     'RecordMaterializerError.AccountingInvalid' \
     'RecordMaterializerError.TextLimitExceeded' \
@@ -56,12 +57,17 @@ for boundary in \
     rg -q "$boundary" "$model"
 done
 
+rg -Fq 'current_record <- Record{source: ""}' "$model"
+rg -Fq 'not materializer.record_open and (materializer.current_field_start != 0 or materializer.current_field_count != 0)' "$model"
+
 for fixture_pattern in \
     'using EsRecordMaterialize' \
     'typed_record_materializer_contract_is_ordered_and_bounded' \
     'RecordMaterializerError.FieldOrderInvalid' \
     'RecordMaterializerError.AccountingInvalid' \
     'forged_planned' \
+    'forged_idle' \
+    'forged_cursor' \
     'RecordMaterializerState.Sealed' \
     'RecordMaterializerState.Cancelled'; do
     rg -q "$fixture_pattern" "$fixture_file"
