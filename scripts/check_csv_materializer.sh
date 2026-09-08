@@ -41,6 +41,8 @@ for boundary in \
     'FieldRangeInvalid' \
     'FieldOrderInvalid' \
     'RecordOrderInvalid' \
+    'accounted_record_fields' \
+    'materializer.next_field != materializer.fields.count' \
     'SourceAccountingInvalid' \
     'EndNotReady'; do
     rg -Fq "$boundary" "$model"
