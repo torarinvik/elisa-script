@@ -40,6 +40,7 @@ for boundary in \
     'record_text_length_valid' \
     'sview_contains_byte' \
     'record_fixed_widths_fit' \
+    'try validate_record_stream_policy\(policy\)' \
     'else:' \
     'RecordContractError.FixedWidthOverflow' \
     'RecordContractError.InvalidFieldRange' \
@@ -56,7 +57,8 @@ for fixture_pattern in \
     'RecordFieldMode.Schema' \
     'RecordContractError.InvalidSeparator' \
     'RecordContractError.FixedWidthMalformed' \
-    'validate_record_field'; do
+    'validate_record_field' \
+    'invalid_record_policy'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 
