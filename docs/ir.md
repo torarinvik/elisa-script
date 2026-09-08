@@ -284,9 +284,11 @@ cleanup or completed-block checkpoint through `error[CancellationError]`.
 `EsTelemetry::TelemetryLedger` provides optional bounded observability. Disabled
 mode rejects recording; counter mode stores fixed metric identities, while
 event mode admits sampled run/error/cancellation/span events with bounded names,
-payload sizes, event count, span depth, and monotonic sequence numbers. Span
-begin/end accounting remains active even for sampled-out events, and a run may
-seal only after all spans close through `error[TelemetryError]`.
+payload sizes, total event attempts, span depth, and monotonic sequence numbers.
+Sampled-out events still consume the event ceiling and sequence accounting, and
+span begin/end accounting remains active even when an event is not retained. A
+fresh ready ledger must have zero activity, and a run may seal only after all
+spans close through `error[TelemetryError]`.
 
 `EsStructuredTask::StructuredTaskScope` makes structured concurrency explicit
 for scheduler adapters. Child start/success/failure, fail-fast transition,

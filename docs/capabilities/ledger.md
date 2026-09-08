@@ -435,9 +435,11 @@ remain open.
 
 ES-SCRIPT-045 | EsTelemetry supplies an opt-out bounded metrics/tracing
 contract. Disabled/counters/events modes are explicit; metric identities,
-caller-owned names, payload bytes, sampled sequence numbers, event ceilings,
-and span-depth accounting are validated. Sampled-out span edges still update
-logical depth, and sealing rejects open spans through `error[TelemetryError]`.
+caller-owned names, payload bytes, sampled sequence numbers, total event
+ceilings, ready-state cleanliness, and span-depth accounting are validated.
+Sampled-out events still consume the event ceiling and sequence accounting;
+sampled-out span edges still update logical depth, and sealing rejects open
+spans through `error[TelemetryError]`.
 The focused IR fixture, namespace inclusion, documentation, and
 check_telemetry.sh audit are compiler-free static evidence; clock adapters,
 export formats, cross-task aggregation, and runtime overhead measurements

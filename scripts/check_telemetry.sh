@@ -45,6 +45,7 @@ for boundary in \
     'TelemetryRecordOutcome.Sampled' \
     'TelemetryError.EventLimitExceeded' \
     'TelemetryError.SpanAccountingInvalid' \
+    'TelemetryError.AccountingInvalid' \
     'TelemetryError.TelemetryDisabled'; do
     rg -q "$boundary" "$model"
 done
@@ -54,7 +55,8 @@ for fixture_pattern in \
     'typed_telemetry_contract_bounds_metrics_spans_and_sampling' \
     'TelemetryMode.Events' \
     'TelemetryRecordOutcome.Sampled' \
-    'TelemetryError.TelemetryDisabled'; do
+    'TelemetryError.TelemetryDisabled' \
+    'TelemetryError.AccountingInvalid'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 
