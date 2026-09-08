@@ -381,7 +381,8 @@ failure and cross-platform text-position qualification remain open. Sync now
 flushes the stdio buffer before descriptor durability and rejects read-mode
 sync requests; libc flush and descriptor failures are separate typed paths.
 Chunk and byte reads reject a positive `fread` count with the host error
-indicator before advancing stream accounting.
+indicator before advancing stream accounting, and EOF checks retain incomplete
+UTF-8 state even when a pending lookahead byte filled part of the chunk.
 The stream now also carries an explicit `Auto`/`Bytes`/`Utf8` encoding policy,
 with incremental strict-UTF-8 validation for text streams and byte-preserving
 binary operation; split three- and four-byte continuation bounds are explicit
