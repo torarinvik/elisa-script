@@ -43,6 +43,8 @@ for boundary in \
     'DigestAlreadyPublished if not hash_digest_unpublished_valid' \
     'HashError.InputLimitExceeded' \
     'HashError.AccountingInvalid' \
+    'context.chunks_seen == 0 and context.bytes_seen != 0' \
+    'context.chunks_seen != 0 and context.bytes_seen == 0' \
     'digest.word1 == 0'; do
     rg -q "$boundary" "$model"
 done
