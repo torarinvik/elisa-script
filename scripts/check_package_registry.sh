@@ -55,6 +55,7 @@ for fixture_pattern in \
     'package_registry_find' \
     'PackageRegistryError.OrderInvalid' \
     'PackageRegistryEvent.Cancel' \
+    'reverse_order_rejected' \
     'forged_empty'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
