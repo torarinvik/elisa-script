@@ -43,6 +43,7 @@ for boundary in \
     'RecordNumericError.ExponentLimitExceeded' \
     'RecordNumericError.AccountingInvalid' \
     'session.digits > session.chars' \
+    'session.saw_exponent and session.phase' \
     'RecordNumericState.Planned' \
     'RecordNumericEvent.Finish' \
     'RecordNumericEvent.Cancel'; do
