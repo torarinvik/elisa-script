@@ -293,9 +293,11 @@ spans close through `error[TelemetryError]`.
 `EsStructuredTask::StructuredTaskScope` makes structured concurrency explicit
 for scheduler adapters. Child start/success/failure, fail-fast transition,
 scope cancellation, cleanup entry/exit, cancellation acknowledgement, and join
-are separate transitions. A child in `Cleaning` cannot acknowledge cancellation
-until its cleanup depth returns to zero, and join reports failure or cancellation
-only after every active child is accounted for through `error[StructuredTaskError]`.
+are separate transitions. Planned scopes must be empty, cleanup depth is present
+only for `Cleaning` children, a child in `Cleaning` cannot acknowledge
+cancellation until its cleanup depth returns to zero, and join reports failure
+or cancellation only after every active child is accounted for through
+`error[StructuredTaskError]`.
 
 `EsExitStatus::ExitStatus` gives the launcher one stable process-status
 contract. Success, user statuses, usage/source/check/test failures, script and

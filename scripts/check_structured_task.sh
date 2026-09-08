@@ -40,7 +40,10 @@ for boundary in \
     'StructuredTaskEvent.ChildCancelAck' \
     'StructuredTaskError.CancellationShielded' \
     'StructuredTaskError.JoinNotReady' \
-    'StructuredTaskError.FailureCodeMissing'; do
+    'StructuredTaskError.FailureCodeMissing' \
+    'StructuredScopeState.Planned and' \
+    'StructuredChildState.Cleaning and' \
+    'StructuredChildState.Cleaning and child.cleanup_depth'; do
     rg -q "$boundary" "$model"
 done
 
@@ -49,7 +52,8 @@ for fixture_pattern in \
     'typed_structured_task_contract_shields_cleanup_before_join' \
     'StructuredTaskEvent.EnterCleanup' \
     'StructuredTaskError.CancellationShielded' \
-    'StructuredScopeState.Cancelled'; do
+    'StructuredScopeState.Cancelled' \
+    'StructuredTaskError.CleanupDepthInvalid'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 
