@@ -1505,10 +1505,10 @@ values, independently of the much larger serialized offset domain. This prevents
 repeated aggregate construction from turning a valid `u32` view space into an
 unbounded host allocation; the same cap is enforced while admitting existing
 storage and function arguments.
-Text split and regex result builders use a related spare-slot check because an
-empty-input match can yield one field for zero input bytes. They reject a host
-text length whose worst-case field count cannot fit after the current pool
-cursor, avoiding a wrapping `length + 1` during result construction.
+Text split, line-split, and regex result builders collect views locally and
+preflight their exact proven field or match count before publishing into the
+shared pool. Empty-input split semantics therefore remain explicit without
+rejecting a long input merely because its worst-case field count would not fit.
 direct scalar/nominal representations, supported arrays, or recursively supported
 nested maps use the packed path for construction, lookup, membership, equality,
 updates, and key extraction. Other aggregates continue through the verified

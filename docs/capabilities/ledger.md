@@ -94,6 +94,8 @@ result count after matcher accounting, avoiding pattern-length over-admission.
 Scalar named-capture lookup no longer charges array storage that it never writes.
 `SplitLines` now applies the same exact-result admission in both engines rather
 than charging the full input length.
+General text `Split`/`rsplit` now collect local views and preflight their exact
+field count before publishing, including whitespace and empty-separator modes.
 `Path.iterdir()` rolls the flat storage cursor back on a late child-path failure,
 so directory materialization is failure-atomic.
 Array/map literal and global initialization paths likewise roll back their entry
