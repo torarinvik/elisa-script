@@ -10,8 +10,9 @@ differential="$repo_root/src/testing/differential.elisa"
 plan="$repo_root/IMPLEMENTATION_PLAN.md"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
+tests="$repo_root/test/differential/elisascript_differential_test.elisa"
 
-for required_file in "$interpreter" "$differential" "$plan" "$docs" "$ledger"; do
+for required_file in "$interpreter" "$differential" "$plan" "$docs" "$ledger" "$tests"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'process descendant audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -48,5 +49,7 @@ assert_group_cleanup_after_reap "$interpreter" process_wait_terminate
 assert_group_cleanup_after_reap "$differential" differential_terminate_process
 
 rg -q 'surviving descendants|leader exit.*group|leader.*group.*KILL' "$docs" "$ledger" "$plan"
+rg -q 'differential_process_execution_reports_bounded_timeout' "$tests"
+rg -q 'differential_process_timeout_owns_descendant_process_group' "$tests"
 
 printf 'process descendant audit: leader reaping still forces private-group cleanup before termination returns\n'
