@@ -116,6 +116,8 @@ rg -q 'stream\.state == FileStreamState\.Closed and stream\.handle != null' "$st
 rg -q 'stream\.state == FileStreamState\.Closed$' "$stream"
 rg -q 'stream\.handle == null' "$stream"
 rg -q 'remaining > stream\.byte_budget - stream\.bytes_read' "$stream"
+rg -q 'stream\.bytes_read >= stream\.byte_budget and count > 0' "$stream"
+rg -q 'raise FileStreamError\.LimitExceeded\(stream\.path\) if stream\.bytes_read >= stream\.byte_budget' "$stream"
 rg -q 'capacity > stream\.byte_budget - stream\.bytes_written' "$stream"
 ! rg -q 'machine over fread\(' "$stream"
 rg -q 'Read, FileStreamRecordState\.Limit:' "$stream"
