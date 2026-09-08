@@ -3005,6 +3005,7 @@ cache hits must also consume a currently queued ready node, preventing an
 out-of-order cache completion after queue corruption; validation also rejects
 cache entries for unknown graph nodes and manually
 injected queue entries whose dependencies are not complete. Cancellation
+Cancellation is rejected once the embedded graph has already succeeded;
 acknowledgement is admitted only after active work reaches zero, and a ready
 scheduler cannot carry a pre-injected dispatch queue (preloaded cache entries
 remain valid for the first refresh).
