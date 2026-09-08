@@ -132,8 +132,10 @@ their continuation according to the declared policy; `MultiReplay` and
 names. The interpreter bounds those continuation pools at one million copied
 values, 100,000 replay frames, and 100,000 resumptions per captured
 continuation, reporting `InvalidContinuation` on exhaustion,
-and reclaims call and callback snapshot suffixes as soon as they return. These
-limits are runtime resource guards, not implicit weakening of the static effect
+and reclaims call and callback snapshot suffixes as soon as they return. Every
+saved frame carries independent id/value pool starts and paired counts; replay
+and reclamation use the matching pool start rather than assuming equal prefixes.
+These limits are runtime resource guards, not implicit weakening of the static effect
 or ownership checks. Capture declarations must use unique non-empty names,
 non-void types, and one of the declared ownership classes before a handler can
 be verified; unknown capture-class ordinals are rejected as malformed handler

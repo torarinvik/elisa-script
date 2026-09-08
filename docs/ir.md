@@ -937,10 +937,12 @@ wrap or before its 100,000-resumption policy budget is exceeded, reporting
 `InterpretError.InvalidContinuation` rather than silently reusing a wrapped
 count. Snapshot ids, values, handler names, and replay frames
 also use bounded machine pools (one million copied values and 100,000 frames).
-A resume also validates the replay-frame span and every referenced id/value/
-handler slice against those pools before indexing; malformed continuation
-metadata therefore fails closed with `InvalidContinuation` rather than exposing
-an out-of-range read.
+Each replay frame records independent starts and counts for the id and value
+pools; the counts must agree, and each slice is validated against its own pool
+before indexing. Cleanup likewise truncates the two pools to their independent
+saved starts. Malformed continuation metadata therefore fails closed with
+`InvalidContinuation` rather than exposing an out-of-range read or retaining a
+suffix from an unrelated pool.
 A dynamic handler that exceeds those limits fails with `InvalidContinuation`
 without retaining a partial snapshot; completed callbacks reclaim their private
 replay suffixes.

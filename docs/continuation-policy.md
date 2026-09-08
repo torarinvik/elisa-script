@@ -69,8 +69,12 @@ The stable profile bounds copied values, replay frames, handler names, active
 call/handler depth, and resumes per captured continuation. Counter arithmetic is
 checked before increment; malformed spans are validated before indexing; budget
 exhaustion is `InvalidContinuation`, not a wraparound or a successful partial
-resume. The current limits are implementation policy and may be lowered by a
-run resource policy, never raised implicitly by a backend.
+resume. Each saved frame carries independent starts and counts for its SSA-id
+and runtime-value pools; the counts must agree, but either pool may have a
+different prefix length. Cleanup truncates each pool to its own saved start, so
+reclamation cannot expose or retain a suffix merely because two pools happened
+to have equal lengths. The current limits are implementation policy and may be
+lowered by a run resource policy, never raised implicitly by a backend.
 
 ## Compatibility and evidence
 
