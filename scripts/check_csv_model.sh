@@ -35,7 +35,8 @@ for boundary in \
     'UnexpectedEnd' \
     'AccountingInvalid' \
     'stream.fields_total < stream.records' \
-    'Cancelled'; do
+    'Cancelled' \
+    'raise CsvContractError.RecordLimitExceeded if stream.records >= stream.limits.records'; do
     rg -Fq "$boundary" "$model"
 done
 
@@ -43,7 +44,8 @@ rg -Fq 'include "../runtime/csv_model.elisa"' "$ir"
 for fixture_pattern in \
     'typed_csv_stream_contract_preserves_quotes_and_bounded_rows' \
     'CsvStreamEvent.Byte' \
-    'CsvContractError.UnexpectedEnd'; do
+    'CsvContractError.UnexpectedEnd' \
+    'assert limited.fields_total == 1'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 
