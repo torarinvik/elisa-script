@@ -41,6 +41,7 @@ for boundary in \
     'ArchiveError.AbsolutePath' \
     'ArchiveError.TraversalPath' \
     'ArchiveError.LinkRejected' \
+    'entry.kind != ArchiveEntryKind.Symlink' \
     'ArchiveError.TotalLimitBytesExceeded' \
     'ArchiveError.InvalidTransition'; do
     rg -q "$boundary" "$model"
