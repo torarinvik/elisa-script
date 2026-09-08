@@ -57,6 +57,7 @@ for boundary in \
     'channel.state == TaskChannelState.Closed' \
     'channel.state == TaskChannelState.Cancelled' \
     'ChannelEmpty' \
+    'channel.buffered_messages == 1 and message_bytes != channel.buffered_bytes' \
     'TaskScopeEvent.CancelAck' \
     'TaskChannelEvent.CancelAck'; do
     rg -Fq "$boundary" "$model"
@@ -69,7 +70,8 @@ for fixture_pattern in \
     'TaskFailureMode.Aggregate' \
     'TaskContractError.ChannelBufferExceeded' \
     'TaskContractError.ChildAccountingInvalid' \
-    'TaskChannelState.Closed'; do
+    'TaskChannelState.Closed' \
+    'partial_last_rejected'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 
