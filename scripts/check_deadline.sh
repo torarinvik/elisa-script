@@ -43,6 +43,7 @@ for boundary in \
     'DeadlineError.AdvanceLimitExceeded' \
     'DeadlineError.NoDueWait' \
     'DeadlineError.FireOrderInvalid' \
+    'for candidate in clock.waits' \
     'wait.state == DeadlineWaitState.Ready and wait.deadline > clock.now' \
     'DeadlineError.AccountingInvalid'; do
     rg -q "$boundary" "$model"
