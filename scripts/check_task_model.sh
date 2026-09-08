@@ -47,6 +47,7 @@ for boundary in \
     'scope.state == TaskScopeState.Succeeded' \
     'scope.state == TaskScopeState.Closing' \
     'scope.state == TaskScopeState.Failed' \
+    'scope.active_children != 0' \
     'scope.state <- TaskScopeState.Succeeded if scope.failed_children == 0 else TaskScopeState.Failed' \
     'scope.state == TaskScopeState.Cancelled' \
     'ChannelBufferExceeded' \
