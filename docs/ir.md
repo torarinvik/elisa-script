@@ -93,7 +93,9 @@ and help/version modes are explicit, `--color` and `--strict-engine` are typed
 options, and the first source path ends launcher-option parsing. A literal `--`
 marks the script-argument boundary; subsequent values are preserved byte-for-
 byte and are never shell-expanded. `validate_cli_invocation` enforces source,
-argument, NUL, and text ceilings through `error[CliContractError]`, while
+argument, NUL, and text ceilings, rejects source/script arguments for
+source-free help/version modes, and rejects repeated colors through
+`error[CliContractError]`, while
 `parse_cli_arguments` rejects unknown options, duplicate modes/options, and
 missing option values before source loading.
 
