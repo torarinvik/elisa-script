@@ -2871,7 +2871,9 @@ cancellation into explicit state-machine events. Queue entries are rebuilt
 after every mutation so completed or running nodes cannot remain dispatchable;
 validation also rejects cache entries for unknown graph nodes and manually
 injected queue entries whose dependencies are not complete. Cancellation
-acknowledgement is admitted only after active work reaches zero.
+acknowledgement is admitted only after active work reaches zero, and a ready
+scheduler cannot carry a pre-injected dispatch queue (preloaded cache entries
+remain valid for the first refresh).
 The scheduler mirrors its active/completed ledger into the embedded graph and
 reconciles both state machines, so a forged complete or failed scheduler cannot
 hide graph progress. Cancellation acknowledgement drains the ready queue and

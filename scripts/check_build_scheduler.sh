@@ -43,6 +43,7 @@ for boundary in \
     'scheduler.graph.active_nodes' \
     'scheduler.graph.completed_nodes != scheduler.graph.nodes.count' \
     'scheduler.ready_queue.count != 0' \
+    'scheduler.state == BuildSchedulerState.Ready and scheduler.ready_queue.count != 0' \
     'scheduler.state == BuildSchedulerState.Complete' \
     'CompleteNotReady' \
     'CancelNotReady'; do
