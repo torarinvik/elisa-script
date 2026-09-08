@@ -44,6 +44,7 @@ for boundary in \
     'RecordSpillState.Sealed' \
     'session.merged_runs != session.runs.count' \
     'RecordSpillEvent.SealRun' \
+    'session.state <- RecordSpillState.Spilling' \
     'RecordSpillEvent.BeginMerge' \
     'RecordSpillEvent.MergeRun' \
     'RecordSpillError.MergeOrderInvalid' \
