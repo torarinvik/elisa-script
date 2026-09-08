@@ -178,7 +178,8 @@ each transition and binds each field at most once and
 advances `Ready → Binding → Complete|Failed`. Missing required fields,
 duplicate source names, out-of-range node references, and kind mismatches are
 reported through `error[SchemaContractError]` before application code receives
-a value. CSV/TSV row adapters and generated record constructors remain open.
+a value; forged ready/completed binding state is rejected as well. CSV/TSV row
+adapters and generated record constructors remain open.
 
 `EsCsv` turns the `CsvPolicy` into a quote-aware streaming state machine.
 `CsvStream` counts input bytes, fields, field bytes, and records against the

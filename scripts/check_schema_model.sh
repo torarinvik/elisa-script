@@ -39,6 +39,9 @@ for boundary in \
     'DuplicateField' \
     'DuplicateSourceName' \
     'ValueKindMismatch' \
+    'schema_json_node_kind_valid' \
+    'session.state == SchemaDecodeState.Ready' \
+    'SchemaDecodeState.Complete' \
     'RequiredFieldMissing' \
     'BindingLimitExceeded' \
     'BindNotReady' \
@@ -50,7 +53,9 @@ rg -Fq 'include "../runtime/schema_model.elisa"' "$ir"
 for fixture_pattern in \
     'typed_schema_binding_contract_checks_json_kinds_and_required_fields' \
     'SchemaDecodeEvent.Bind' \
-    'SchemaContractError.ValueKindMismatch'; do
+    'SchemaContractError.ValueKindMismatch' \
+    'forged_ready' \
+    'forged_complete'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 
