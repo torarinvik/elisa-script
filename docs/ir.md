@@ -1051,6 +1051,9 @@ array operations.
 `RegexFind` has the same operands and returns an `Array[Text]` containing each
 non-overlapping matched span. Zero-width matches advance explicitly, matching the
 termination rule used by `RegexSplit` and `RegexReplace`.
+If matcher work is exhausted after earlier spans were found, both operations roll
+the shared storage cursor back before raising `OutputLimit`, so failed regex
+materialization is failure-atomic.
 
 `EsRecord::RecordStreamPolicy` and `EsRecord::Record` provide the typed boundary
 for Perl/AWK-style record processing. Separator mode is explicit (`Line`,

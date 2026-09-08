@@ -229,6 +229,10 @@ The pattern-first global `regex_count(pattern, text)` shares that
 `RegexFind,Length` composition and is covered by semantic/lowering and
 interpreter/direct-bytecode parity fixtures (`WORKTREE`).
 
+`RegexSplit` and `RegexFind` roll back their shared storage cursor when matcher
+work exhausts after partial span discovery, preventing failed regex operations
+from publishing partial arrays.
+
 `Regex.capture_named(text, name)` and `regex_capture_named(pattern, name, text)`
 now use the verified `RegexCaptureNamed` operation. They return the unique
 participating named capture from the first match and fail closed to empty text
