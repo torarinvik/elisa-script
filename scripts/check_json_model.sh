@@ -36,6 +36,8 @@ done
 for boundary in \
     'InvalidRange' \
     'InvalidChildRange' \
+    'node.scalar_bytes > node.range.end - node.range.start' \
+    'node.kind == JsonNodeKind.Array or node.kind == JsonNodeKind.Object' \
     'document.state == JsonDocumentState.Empty' \
     'document.state == JsonDocumentState.Sealed' \
     'derived_depth' \
