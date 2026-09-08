@@ -1773,6 +1773,12 @@ filesystem path as well as the reference interpreter.
 requires `Process.Run` plus `ProcessError`. The interpreter executes it directly as
 a POSIX `fork`/`execvp`/`waitpid` state transition with a NUL-terminated argv. No
 command string or shell expansion exists between typed IR and the operating system.
+The interpreter's bounded wait state machine preserves timeout as the typed
+`InterpretFailure.Time` outcome: exhausting the poll budget terminates and
+reaps the private process group, then reports `Time` after giving
+`OutputLimit` precedence for capture operations. Other wait, close, seek, and
+reap failures remain `InterpretFailure.Process`, so callers can distinguish a
+deadline from a generic host/process failure without inspecting status bits.
 `EsProcess::ProcessCommand` is the higher-level shell-free command value for
 adapters that need more than the primitive opcode: it keeps the executable,
 ordered argv, child working directory, ordered environment overrides, stdio
