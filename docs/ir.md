@@ -1710,6 +1710,8 @@ and aggregate buffer policy, and advances through explicit `Planned → Running 
 Succeeded/Failed` or `Cancelling → Cancelled` edges. Stage exit/failure events
 must name the next stage, aggregate mode records failures without losing order,
 and invalid stage commands or transitions raise `error[ProcessPipelineError]`.
+Validation reconciles terminal pipeline state with completed/failed counters, so
+forged success cannot hide unfinished stages.
 Pipe draining, SIGPIPE behavior, concurrent I/O, and child reaping remain host
 responsibilities.
 
