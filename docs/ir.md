@@ -249,7 +249,9 @@ requires a deterministic topological order (dependencies precede consumers),
 rejects missing/duplicate/cyclic dependencies, and preserves process-command
 errors. `advance_build_graph` limits active nodes, records per-node completion
 or failure, and exposes cancellation acknowledgement so a scheduler cannot
-silently overrun parallelism or abandon children.
+silently overrun parallelism or abandon children. Aggregate counters are
+reconciled with node states, and terminal graph states reject forged progress
+or unfinished completion.
 
 `EsResource` is the ownership ledger shared by runtime adapters. A lease names
 the resource kind, nonzero identity, and owner token; `ResourceLedger` keeps

@@ -36,6 +36,8 @@ for boundary in \
     'FingerprintMissing' \
     'LogLimitExceeded' \
     'CancelNotReady' \
+    'terminal_nodes' \
+    'graph.state == BuildGraphState.Succeeded' \
     'graph.active_nodes != 0' \
     'validate_process_command'; do
     rg -Fq "$boundary" "$model"
