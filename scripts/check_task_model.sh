@@ -44,6 +44,8 @@ for boundary in \
     'task_channel_state_valid' \
     'ChildLimitExceeded' \
     'ChildAccountingInvalid' \
+    'scope.state == TaskScopeState.Succeeded' \
+    'scope.state == TaskScopeState.Cancelled' \
     'ChannelBufferExceeded' \
     'ChannelEmpty' \
     'TaskScopeEvent.CancelAck' \
