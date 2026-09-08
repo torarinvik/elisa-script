@@ -337,7 +337,8 @@ implementation through `error[HashError]`.
 input and read count, admits explicit little- or big-endian scalar reads with
 subtraction-safe offsets, supports bounded skipping, and requires an explicit
 finish with no trailing bytes; truncation, post-finish reads, and malformed
-state fail through `error[BinaryError]`.
+state (including a forged exhausted cursor before EOF) fail through
+`error[BinaryError]`.
 
 Binary format adapters can use `EsBinary::BinaryCursor` as their shared input
 contract: it preserves byte-oriented semantics, explicit endianness, and

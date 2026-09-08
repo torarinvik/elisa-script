@@ -42,6 +42,7 @@ for boundary in \
     'BinaryError.Truncated' \
     'BinaryError.TrailingBytes' \
     'BinaryError.ReadLimitExceeded' \
+    'cursor.state == BinaryCursorState.Exhausted' \
     'BinaryError.InvalidState'; do
     rg -q "$boundary" "$model"
 done
@@ -52,7 +53,8 @@ for fixture_pattern in \
     'BinaryByteOrder.Little' \
     'BinaryByteOrder.Big' \
     'binary_read_u64' \
-    'BinaryError.Truncated'; do
+    'BinaryError.Truncated' \
+    'BinaryError.TrailingBytes'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 
