@@ -161,7 +161,8 @@ and trimming explicit. `DataDecoder` advances through `Ready → Decoding →
 Complete|Failed|Cancelled` with bounded token/record accounting and requires
 its byte offset to equal accounted input bytes, so JSON,
 JSONL, CSV, and TSV adapters share the same cancellation and limit semantics
-instead of inheriting host parser defaults. Validation rejects forged ready
+instead of inheriting host parser defaults. Field payload bytes have their own
+bounded ledger and cannot exceed the input delta. Validation rejects forged ready
 counters and complete decoders with residual depth. Schema conversion and streaming
 parser implementations remain separate work.
 

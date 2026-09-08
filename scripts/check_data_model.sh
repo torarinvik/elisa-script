@@ -40,9 +40,11 @@ for boundary in \
     'DepthLimitExceeded' \
     'RecordLimitExceeded' \
     'FieldLimitExceeded' \
+    'FieldBytesLimitExceeded' \
     'OffsetAccountingInvalid' \
     'decoder.state == DataDecoderState.Ready' \
     'decoder.state == DataDecoderState.Complete' \
+    'decoder.field_bytes' \
     'InvalidCsvPolicy' \
     'UnexpectedEnd' \
     'Cancelled'; do
