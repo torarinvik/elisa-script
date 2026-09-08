@@ -42,7 +42,7 @@ for boundary in \
     'preserve_symlink' \
     'FileMetadataKind.Symlink' \
     'FileMetadataKind.Missing' \
-    'entry.kind == FileMetadataKind.Missing and (entry.inode != 0 or entry.device != 0 or entry.link_count != 0)' \
+    'raise FileMetadataError.InvalidIdentity if entry.kind == FileMetadataKind.Missing and (entry.inode != 0 or entry.device != 0 or entry.link_count != 0)' \
     'raise FileMetadataError.InvalidSize if entry.kind == FileMetadataKind.Missing and entry.size != 0' \
     'FileMetadataError.DuplicatePath' \
     'FileMetadataError.InvalidIdentity' \
@@ -51,7 +51,7 @@ for boundary in \
     'FileMetadataState.Planned and' \
     'FileMetadataEvent.Entry' \
     'FileMetadataState.Sealed'; do
-    rg -q "$boundary" "$model"
+    rg -Fq "$boundary" "$model"
 done
 
 for fixture_pattern in \
