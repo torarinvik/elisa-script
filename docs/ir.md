@@ -244,8 +244,8 @@ accounting and rejecting budget overflow before mutation.
 Renderers can therefore remain format-specific without changing result
 semantics or truncating machine output silently.
 
-EsOutputRender adds the renderer-side state machine. It requires a sealed
-document, consumes records in index order, charges JSON and XML escaping
+EsOutputRender adds the renderer-side state machine. Validation requires a
+sealed document before any renderer state is admitted; it consumes records in index order, charges JSON and XML escaping
 expansion before each chunk, accounts format framing bytes against the same
 document budget, validates state/chunk/record accounting, and refuses completion
 until every record has been emitted. Cancellation and failure are explicit

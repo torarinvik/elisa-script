@@ -35,6 +35,7 @@ for boundary in \
     'output_render_header_bytes' \
     'output_render_footer_bytes' \
     'DocumentNotSealed' \
+    'render.document.state != OutputDocumentState.Sealed' \
     'RecordOrderInvalid' \
     'AccountingInvalid' \
     'RenderLimitExceeded' \
