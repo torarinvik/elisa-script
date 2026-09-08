@@ -46,6 +46,7 @@ for boundary in \
     'RecordControlState.Exited'; do
     rg -q "$boundary" "$model"
 done
+rg -q -U 'elif event == RecordControlEvent.RecordEnd:\n                raise RecordControlError.InvalidState if session.state != RecordControlState.Running\n                raise RecordControlError.RecordNotOpen if not session.record_open\n                raise RecordControlError.RecordLimitExceeded if session.record_count >= session.policy.max_records' "$model"
 
 for fixture_pattern in \
     'using EsRecordControl' \
@@ -54,7 +55,8 @@ for fixture_pattern in \
     'RecordControlEvent.NextFile' \
     'RecordControlEvent.Exit' \
     'RecordControlError.FileNotOpen' \
-    'forged_skip'; do
+    'forged_skip' \
+    'overflow_end_rejected'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 
