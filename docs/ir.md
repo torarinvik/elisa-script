@@ -317,7 +317,9 @@ only for `Cleaning` children, a child in `Cleaning` cannot acknowledge
 cancellation until its cleanup depth returns to zero, and join reports failure
 or cancellation only after every active child is accounted for through
 `error[StructuredTaskError]`; a join also rejects any admitted child that is
-still `Planned`.
+still `Planned`. Validation also requires `Succeeded` and `Cancelled` scopes
+to account for every child with no failures, and rejects `Failed` scopes that
+still claim active children.
 
 `EsExitStatus::ExitStatus` gives the launcher one stable process-status
 contract. Success, user statuses, usage/source/check/test failures, script and

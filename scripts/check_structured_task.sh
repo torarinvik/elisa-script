@@ -43,6 +43,9 @@ for boundary in \
     'StructuredChildState.Planned' \
     'StructuredTaskError.FailureCodeMissing' \
     'StructuredScopeState.Planned and' \
+    'StructuredScopeState.Succeeded and' \
+    'StructuredScopeState.Cancelled and' \
+    'StructuredScopeState.Failed and' \
     'StructuredChildState.Cleaning and' \
     'StructuredChildState.Cleaning and child.cleanup_depth'; do
     rg -q "$boundary" "$model"
