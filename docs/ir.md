@@ -108,7 +108,8 @@ for an actual run.
 EsCliWorkflow separates planning from host execution. Each accepted mode maps
 to a fixed step sequence: run/test load, lower, verify, execute, and render;
 check omits execution; fmt and doc select their dedicated transformation;
-help/version render directly. The workflow consumes steps in order and exposes
+help/version render directly. The workflow reconciles its cursor with
+Planned/Running/Complete states, consumes steps in order, and exposes
 explicit failure and cancellation transitions, so unsupported host adapters
 cannot masquerade as a successful run.
 

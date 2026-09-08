@@ -611,8 +611,9 @@ evidence; platform signal delivery, PID-generation lookup, wait/reap calls,
 descendant races, and executed cleanup evidence remain host work.
 
 ES-SCRIPT-008 | EsCliWorkflow maps every accepted launcher mode to a fixed
-typed step sequence, validates mode-specific ordering, and exposes explicit
-step completion, failure, and cancellation transitions. The focused IR
+typed step sequence, validates mode-specific ordering and state/cursor
+accounting, and exposes explicit step completion, failure, and cancellation
+transitions. The focused IR
 fixture and check_cli_workflow.sh audit are static evidence; host execution of
 check/test/fmt/doc remains open.
 

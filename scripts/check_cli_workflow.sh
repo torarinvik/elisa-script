@@ -34,6 +34,9 @@ done
 for boundary in \
     'workflow_mode_shape_valid' \
     'StepOrderInvalid' \
+    'workflow.state == CliWorkflowState.Planned' \
+    'workflow.state == CliWorkflowState.Running' \
+    'workflow.state == CliWorkflowState.Complete' \
     'StepNotReady' \
     'InvocationInvalid' \
     'CliMode.Check' \
