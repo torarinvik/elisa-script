@@ -1458,6 +1458,9 @@ interleaved key/value pairs in caller-owned flat storage and validate their comp
 pair range before access. Because view offsets are serialized as `u32`, validation
 also rejects a non-empty span whose final addressed element would exceed the
 `u32` offset domain, even when the host `usize` can represent the backing storage.
+Indexed map updates preflight the possible extra key/value pair before copying the
+old map, so a full storage pool cannot be partially materialized before the
+overflow error is reported.
 Missing keys use the existing typed
 `IndexOutOfBounds` error rather than a sentinel value. The reference interpreter and
 the bytecode facade share this representation. Maps whose key and value types are

@@ -79,6 +79,8 @@ Both backends search for a `PopMap` key before allocating replacement storage,
 so an absent-key removal leaves flat storage unchanged.
 The same search-before-allocation rule applies to no-op `DeleteIndex` map
 removals.
+`SetIndex` map updates also preflight the extra pair and reject a full `u32`
+storage domain before copying entries.
 
 Set receiver operations now share the registry as `Set.add(value)`,
 `Set.remove(value)`, `Set.discard(value)`, and `Set.clear()` rows. The lowerer
