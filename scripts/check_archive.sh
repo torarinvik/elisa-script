@@ -43,6 +43,7 @@ for boundary in \
     'ArchiveError.LinkRejected' \
     'entry.kind != ArchiveEntryKind.Symlink' \
     'ArchiveError.TotalLimitBytesExceeded' \
+    'entry.size > session.policy.max_total_bytes - accounted' \
     'ArchiveError.AccountingInvalid' \
     'ArchiveSessionState.Planned and' \
     'ArchiveError.InvalidTransition'; do
