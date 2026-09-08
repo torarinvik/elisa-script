@@ -340,7 +340,8 @@ advances fail through `error[DeadlineError]`; imported `Ready` waits must also
 be due at the current clock.
 
 `EsDebugger::DebuggerSession` bounds source breakpoints, stack frames, handler
-and continuation-depth metadata, and replay branches with nonempty choices. Attach/pause/continue/
+and continuation-depth metadata, and replay branches with nonempty choices and
+acyclic parent chains. Attach/pause/continue/
 step, frame push/pop, branch selection, termination, and failure are explicit
 state transitions; locations and names are bounded before publication, a
 detached session cannot carry frames, and a terminated session cannot resume

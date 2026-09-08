@@ -44,6 +44,7 @@ for boundary in \
     'DebuggerError.BranchSelectionInvalid' \
     'DebuggerError.InvalidDepth' \
     'DebuggerError.InvalidBranch' \
+    'DebuggerError.BranchCycle' \
     'DebuggerState.Detached and'; do
     rg -q "$boundary" "$model"
 done
@@ -54,7 +55,8 @@ for fixture_pattern in \
     'DebuggerEvent.SelectBranch' \
     'DebuggerEvent.Step' \
     'DebuggerError.InvalidTransition' \
-    'DebuggerError.InvalidBranch'; do
+    'DebuggerError.InvalidBranch' \
+    'DebuggerError.BranchCycle'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 

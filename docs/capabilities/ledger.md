@@ -478,7 +478,8 @@ documentation, and check_deadline.sh audit are compiler-free static evidence;
 platform clock sampling, timer integration, and cross-host wakeup parity remain
 open.
 
-ES-SCRIPT-049 | EsDebugger supplies a bounded debugger-session contract.
+ES-SCRIPT-049 | EsDebugger supplies a bounded debugger-session contract with
+acyclic replay-branch parents.
 Breakpoints, source locations, stack frames, handler/continuation depths,
 nonempty replay branches, attach/pause/continue/step, frame push/pop, branch selection,
 termination, and failure are explicitly validated state-machine edges.
