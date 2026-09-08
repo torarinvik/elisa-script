@@ -34,6 +34,7 @@ for boundary in \
     'UnexpectedCharacterAfterQuote' \
     'UnexpectedEnd' \
     'AccountingInvalid' \
+    'stream.fields_total < stream.records' \
     'Cancelled'; do
     rg -Fq "$boundary" "$model"
 done

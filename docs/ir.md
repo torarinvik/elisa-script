@@ -196,7 +196,8 @@ states. Separators inside quotes are data; doubled quotes and configured escape
 bytes are explicit transitions; malformed post-quote bytes, unterminated
 quotes, and cancellation become typed `CsvContractError` values. Validation
 also reconciles ready/complete state counters before admission. Field
-materialization, newline variants, and external-spill aggregation remain
+materialization, including the invariant that every completed record owns a
+field, newline variants, and external-spill aggregation remain
 adapter work.
 
 EsCsvMaterialize gives CSV/TSV adapters an explicit borrowed-span boundary.
