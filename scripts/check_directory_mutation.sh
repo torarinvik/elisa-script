@@ -46,6 +46,7 @@ for boundary in \
     'DirectoryMutationEvent.Enter' \
     'DirectoryMutationEvent.Leave' \
     'DirectoryMutationError.DuplicateIdentity' \
+    'session\.identities\[index\] != entry\.identity' \
     'DirectoryMutationError.FailureLimitExceeded' \
     'DirectoryMutationError.CancelNotReady'; do
     rg -q "$boundary" "$model"

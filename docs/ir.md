@@ -1163,6 +1163,8 @@ copy) destination paths, an identity, depth, byte count, and an explicit
 and `Reject` symlink policies, fail-fast versus collected failures, identity
 cycle/alias rejection, depth/entry/byte/failure ceilings, balanced
 `Enter`/`Leave` scopes, and cancellation are all checked before host mutation.
+The identity vector is reconciled positionally with admitted entries so
+externally assembled plans cannot forge ownership accounting.
 `Complete` is only reachable with no pending entry and no active scope; a
 collected failure is retained in the completed report rather than silently
 converted into success. The host owns mkdir/copy/unlink/rmdir calls, canonical
