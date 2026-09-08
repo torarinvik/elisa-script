@@ -36,6 +36,7 @@ for boundary in \
     'StepOrderInvalid' \
     'workflow.state == CliWorkflowState.Planned' \
     'workflow.state == CliWorkflowState.Running' \
+    'workflow.state == CliWorkflowState.Cancelling' \
     'workflow.state == CliWorkflowState.Complete' \
     'workflow.state == CliWorkflowState.Failed or workflow.state == CliWorkflowState.Cancelled' \
     'StepNotReady' \
@@ -55,7 +56,8 @@ for fixture_pattern in \
     'CliWorkflowEvent.StepComplete' \
     'CliWorkflowStep.Verify' \
     'CliWorkflowStep.Format' \
-    'CliWorkflowEvent.CancelAck'; do
+    'CliWorkflowEvent.CancelAck' \
+    'forged_cancelling_cursor'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 
