@@ -77,6 +77,7 @@ for boundary in \
     'StreamBufferExceeded' \
     'StreamNotComplete' \
     'StreamNotDrained' \
+    'StreamAccountingInvalid' \
     'network_request_state_is_active' \
     'NetworkRequestEvent.CancelAck' \
     'NetworkRequestEvent.Retry' \
@@ -98,6 +99,7 @@ for fixture_pattern in \
     'NetworkStreamEvent.Finish' \
     'NetworkContractError.ChunkSequenceMismatch' \
     'NetworkContractError.StreamNotDrained' \
+    'NetworkContractError.StreamAccountingInvalid' \
     'NetworkRequestState.Cancelling' \
     'NetworkRequestState.Cancelled' \
     'NetworkContractError.DuplicateHeaderName' \

@@ -1286,7 +1286,9 @@ private-key paths must be supplied together, and all TLS paths/server-name text
 reject embedded NULs and oversized values before a host TLS library is called.
 `NetworkStream` and `NetworkChunk` provide bounded request/response streaming
 with sequence numbers, explicit pause/resume backpressure, final-chunk and
-drain requirements, and cancellation/failure states. Enqueueing cannot exceed
+drain requirements, and cancellation/failure states. Stream state and sequence
+accounting reject forged terminal completion before any adapter is called;
+enqueueing cannot exceed
 the configured in-flight ceiling or occur after a final chunk; a stream cannot
 finish until the final chunk has been observed and all buffered bytes consumed.
 
