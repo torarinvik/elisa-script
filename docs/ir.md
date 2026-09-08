@@ -2815,3 +2815,6 @@ after every mutation so completed or running nodes cannot remain dispatchable;
 validation also rejects cache entries for unknown graph nodes and manually
 injected queue entries whose dependencies are not complete. Cancellation
 acknowledgement is admitted only after active work reaches zero.
+The scheduler mirrors its active/completed ledger into the embedded graph and
+reconciles both state machines, so a forged complete or failed scheduler cannot
+hide graph progress.
