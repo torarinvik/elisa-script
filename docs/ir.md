@@ -1848,7 +1848,8 @@ timeout, cancellation, output-limit termination, and host I/O failure; a signal
 kind requires a nonzero signal within the shared 1–64 signal envelope while every other kind rejects one. Captured
 stdout, stderr, and adapter error text receive length-first NUL admission and a
 shared terminated-byte ceiling through `error[ProcessResultError]`, so a failed
-child cannot be silently reclassified as an ordinary exit status.
+child cannot be silently reclassified as an ordinary exit status; normal exit
+statuses are nonnegative at both result and session boundaries.
 `ProcessJob` and `advance_process_job` define the background-supervision state
 machine (`Created`, `Running`, `Cancelling`, terminal success/failure/timeout,
 or cancellation). Start consumes an attempt, retry is permitted only from a
