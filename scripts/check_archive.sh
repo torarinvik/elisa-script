@@ -46,6 +46,7 @@ for boundary in \
     'entry.size > session.policy.max_total_bytes - accounted' \
     'ArchiveError.AccountingInvalid' \
     'ArchiveSessionState.Planned and' \
+    'event == ArchiveEvent.Fail' \
     'ArchiveError.InvalidTransition'; do
     rg -q "$boundary" "$model"
 done

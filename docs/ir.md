@@ -358,8 +358,9 @@ segments, embedded NULs, and overlong names before publication. Entry count,
 per-entry bytes, subtraction-safe aggregate bytes, duplicate ids/paths, link policy, and
 planned/extracting/committed/failed/cancelled states are bounded through
 `error[ArchiveError]`; non-link entries cannot carry hidden link targets, a
-planned session cannot contain preloaded entries or counters, and filesystem
-writes remain host-adapter work.
+planned session cannot contain preloaded entries or counters, failure is
+admitted only during active extraction, and filesystem writes remain
+host-adapter work.
 
 `EsHash::HashContext` is the bounded integrity boundary used by package,
 archive, and artifact adapters. Algorithm identity, input/chunk ceilings,

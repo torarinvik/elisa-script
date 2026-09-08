@@ -497,7 +497,8 @@ and subtraction-safe aggregate bytes, duplicate identities/paths, link policy, p
 cleanliness, and commit/fail/cancel lifecycle are explicit. The focused IR fixture, namespace inclusion,
 documentation, and check_archive.sh audit are compiler-free static evidence;
 format decoders, filesystem writes, overwrite/permission behavior, atomic
-publication, and extraction parity remain open.
+publication, and extraction parity remain open. Failure is admitted only from
+active extraction; planned and already-failed sessions reject the edge.
 
 ES-SCRIPT-051 | EsHash supplies a bounded incremental integrity contract.
 Algorithm identity (`Sha256`, `Sha512`, or `Fnv1a64`), input/chunk ceilings,
