@@ -349,7 +349,8 @@ acyclic parent chains. Attach/pause/continue/
 step, frame push/pop, branch selection, termination, and failure are explicit
 state transitions; locations and names are bounded before publication, a
 detached session cannot carry frames, and a terminated session cannot resume
-through `error[DebuggerError]`.
+through `error[DebuggerError]`; failure cannot be entered while detached and
+a failed session cannot be re-terminated.
 
 `EsArchive::ArchiveSession` is the admission boundary for tar/zip extraction.
 Relative path segments reject absolute paths, backslashes, empty/dot/traversal

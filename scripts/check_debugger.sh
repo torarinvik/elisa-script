@@ -45,6 +45,7 @@ for boundary in \
     'DebuggerError.InvalidDepth' \
     'DebuggerError.InvalidBranch' \
     'DebuggerError.BranchCycle' \
+    'session.state == DebuggerState.Failed' \
     'DebuggerState.Detached and'; do
     rg -q "$boundary" "$model"
 done

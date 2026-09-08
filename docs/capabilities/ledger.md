@@ -484,7 +484,8 @@ acyclic replay-branch parents.
 Breakpoints, source locations, stack frames, handler/continuation depths,
 nonempty replay branches, attach/pause/continue/step, frame push/pop, branch selection,
 termination, and failure are explicitly validated state-machine edges.
-Terminated sessions cannot resume, and names/locations/depths are bounded before
+Failure requires an attached active session; terminal sessions cannot resume, and
+names/locations/depths are bounded before
 publication. The focused IR fixture, namespace inclusion, documentation, and
 check_debugger.sh audit are compiler-free static evidence; source-map/runtime
 value adapters, pause delivery, and interactive execution remain open.
