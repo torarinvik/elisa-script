@@ -41,6 +41,8 @@ for boundary in \
     'RecordSortError.KeyOrderInvalid' \
     'RecordSortError.OrdinalInvalid' \
     'RecordSortError.UniqueViolation' \
+    'not key.present and (key.text != "" or key.integer != 0)' \
+    'session.state == RecordSortState.Planned and' \
     'record_sort_keys_equal' \
     'RecordSortError.TextLimitExceeded' \
     'RecordSortDirection.Descending' \

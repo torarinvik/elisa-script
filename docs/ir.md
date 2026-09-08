@@ -1088,7 +1088,8 @@ typed core.
 external-sort adapters. A policy declares one or more unique field positions,
 text or signed-integer key kinds, direction, missing-key placement, and stable
 tie behavior. Entries carry validated records, typed keys, and a monotonic
-ordinal; the session admits them through `Planned → Collecting → Sealed` with
+ordinal; missing keys carry no hidden text/integer payload, and the session
+admits entries only from a clean `Planned → Collecting → Sealed` lifecycle with
 bounded record and key-text accounting. `compare_record_sort_entries` provides
 the same lexicographic order for in-memory sorting and disk-run merging, while
 `error[RecordSortError]` rejects duplicate key positions, malformed key kinds,
