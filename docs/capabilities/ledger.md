@@ -737,7 +737,7 @@ rerun-backed minimality remain open.
 ES-SCRIPT-023 | EsRecordMaterialize supplies a bounded Perl/AWK-style record
 materialization session with explicit begin-record/field/end-record/seal,
 failure, and cancellation transitions. It validates every borrowed record and
-field against EsRecord, enforces record/field/text ceilings, preserves ordered
+field against EsRecord, enforces the record ceiling before `EndRecord` plus field/text ceilings, preserves ordered
 field indices, checks contiguous record-to-field ownership, clears inactive
 borrowed records/cursors after close or rollback, and rejects
 post-terminal mutation through typed `error[RecordMaterializerError]`. The
