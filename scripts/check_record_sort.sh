@@ -47,7 +47,7 @@ for boundary in \
     'RecordSortError.TextLimitExceeded' \
     'RecordSortDirection.Descending' \
     'RecordSortState.Sealed'; do
-    rg -q "$boundary" "$model"
+    rg -Fq "$boundary" "$model"
 done
 
 for fixture_pattern in \
