@@ -43,7 +43,7 @@ for boundary in \
     'FileMetadataKind.Symlink' \
     'FileMetadataKind.Missing' \
     'entry.kind == FileMetadataKind.Missing and (entry.inode != 0 or entry.device != 0 or entry.link_count != 0)' \
-    'entry.kind == FileMetadataKind.Missing and entry.size != 0' \
+    'raise FileMetadataError.InvalidSize if entry.kind == FileMetadataKind.Missing and entry.size != 0' \
     'FileMetadataError.DuplicatePath' \
     'FileMetadataError.InvalidIdentity' \
     'FileMetadataError.SymlinkTargetInvalid' \
