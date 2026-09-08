@@ -8,10 +8,11 @@ repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 interpreter="$repo_root/src/ir/interpret.elisa"
 differential="$repo_root/src/testing/differential.elisa"
 process_runtime="$repo_root/src/runtime/process_posix.elisa"
+source_file="$repo_root/src/ir/source_file.elisa"
 tests="$repo_root/test/differential/elisascript_differential_test.elisa"
 plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$interpreter" "$differential" "$process_runtime" "$tests" "$plan"; do
+for required_file in "$interpreter" "$differential" "$process_runtime" "$source_file" "$tests" "$plan"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'process capture audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -50,6 +51,8 @@ rg -U -q 'amount == 0 or amount > remaining or ferror\(writer\.stream\) != 0' "$
 rg -q 'def differential_write_stream_fully\(' "$differential"
 rg -U -q 'amount == 0 or amount > remaining or ferror\(stream\) != 0' "$differential"
 rg -q 'def differential_read_stream_fully\(' "$differential"
+rg -q 'def elisascript_read_stream_fully\(' "$source_file"
+rg -U -q 'amount == 0 or amount > remaining or ferror\(stream\) != 0' "$source_file"
 
 # Both streams are checked independently before the next poll/sleep, and a
 # timeout compares against the predecessor before incrementing its counter.

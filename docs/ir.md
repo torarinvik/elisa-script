@@ -1733,7 +1733,9 @@ uses Elisa's stdio bindings, checks every open/seek/read/close transition, and
 returns one owned length-delimited buffer. It checks the file size against its 64 MiB
 input safety ceiling before allocation; oversized files and other I/O failures become
 `InterpretError.FileIo` at the reference-interpreter boundary. Empty files return
-empty text.
+empty text. The source-file adapter retries positive short `fread` progress but
+rejects a zero/over-count or sticky host `ferror` before publishing source bytes,
+and still requires the exact post-read count and successful close.
 The shell-shaped `cat(path)` spelling lowers to this same typed opcode and retains
 the nominal `Path`, effect, and error contract.
 `WriteText` has verified signature `Named(Path) × Text -> usize` and requires

@@ -352,6 +352,10 @@ progress and a positive count accompanied by the host `ferror` indicator before
 publishing a value; the process-capture audit records the shared helper
 boundary.
 
+The `.elisascript` source-file loader applies the same exact-size read admission
+and rejects a sticky host `ferror` before source bytes enter permanent storage;
+its focused source-file I/O audit records the boundary.
+
 The differential runner's temporary stdin writer and the interpreter's process
 stdin writer apply the same `ferror` admission after every positive short write,
 so failed input staging cannot be mistaken for a complete payload.
