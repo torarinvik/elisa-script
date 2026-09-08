@@ -419,6 +419,12 @@ The semantic registry now has a dedicated negative fixture for `copy_tree`'s two
 nominal `Path` operands, keeping recursive-copy aliases aligned with the existing
 `copy_path` diagnostics (`WORKTREE`).
 
+Builtin copy metadata now preserves independent read/write effect slots from the
+registry through seeded semantic symbols and indexed lowerer propagation. The
+compiler-free `check_builtin_effect_metadata.sh` audit pins both permissions at
+the registry, semantic, lowerer, verifier, and documentation boundaries; general
+effect-ID migration and executed validation remain open.
+
 Recent static increments are committed as `72f3325` (Path line semantics audit),
 `0739d4c` (typed cleanup guard), `b0ecf06` (cache cleanup integration),
 `9873d8c` (all resource-policy ceiling admission), `3bd7152` (typed resource

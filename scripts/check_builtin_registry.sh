@@ -1880,7 +1880,11 @@ if ! rg -q 'copy_path_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_fi
     printf 'builtin registry audit: copy/remove-tree lowerers do not consume registry result/opcode metadata\n' >&2
     exit 1
 fi
-if ! rg -q 'effects_secondary: sview' "$registry_file" || ! rg -q 'state\.required_effects\.push\(spec\.effects_secondary\)' "$lowerer_file"; then
+if ! rg -q 'effects_secondary: sview' "$registry_file" || \
+   ! rg -q 'def builtin_effect_at\(spec: BuiltinSpec, index: u32\)' "$registry_file" || \
+   ! rg -q 'primary_effect: sview = EsBuiltin::builtin_effect_at\(spec, 0\)' "$lowerer_file" || \
+   ! rg -q 'secondary_effect: sview = EsBuiltin::builtin_effect_at\(spec, 1\)' "$lowerer_file" || \
+   ! rg -q 'state\.required_effects\.push\(secondary_effect\)' "$lowerer_file"; then
     printf 'builtin registry audit: secondary effect metadata is not propagated by lowering\n' >&2
     exit 1
 fi

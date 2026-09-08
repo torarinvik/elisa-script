@@ -1599,6 +1599,11 @@ contract and `CopyTree` opcode. Their source and destination roots are nominal
 read-only source permission and a write permission for the destination. The
 lowerer consumes the registry shapes, result types, two-effect contract, and
 copy/remove opcode metadata for `copy_path`, `copy_tree`, and `remove_tree`.
+The registry exposes those permissions through indexed effect slots; semantic
+builtin seeds preserve both slots, and the lowerer records each non-empty slot
+independently before IR verification. This keeps future multi-effect builtins
+from depending on a spelling-specific branch or silently dropping the second
+permission.
 
 `append_text(path: Path, text: sview) -> usize error[FileIoError]
 can[File.Write]` opens or creates the file in append mode and writes every supplied
