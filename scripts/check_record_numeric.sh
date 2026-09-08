@@ -41,6 +41,9 @@ for boundary in \
     'RecordNumericError.IntegerOverflow' \
     'RecordNumericError.UnderscorePlacement' \
     'RecordNumericError.ExponentLimitExceeded' \
+    'RecordNumericError.AccountingInvalid' \
+    'session.digits > session.chars' \
+    'RecordNumericState.Planned' \
     'RecordNumericEvent.Finish' \
     'RecordNumericEvent.Cancel'; do
     rg -q "$boundary" "$model"
@@ -54,7 +57,9 @@ for fixture_pattern in \
     'RecordNumericKind.Decimal' \
     'RecordNumericError.SignNotAllowed' \
     'RecordNumericError.TrailingSeparator' \
-    'RecordNumericError.IntegerOverflow'; do
+    'RecordNumericError.IntegerOverflow' \
+    'RecordNumericError.AccountingInvalid' \
+    'forged'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 

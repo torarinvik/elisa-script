@@ -1026,8 +1026,9 @@ wrapping; decimal fields retain coefficient/fraction digit counts and a
 bounded signed exponent for a later exact-decimal or floating adapter. Signs,
 underscores, decimal points, exponent markers, and finish conditions are
 state-machine validated, with explicit empty/trailing-separator, overflow,
-digit, exponent, cancellation, and invalid-character errors. No implicit
-float conversion occurs at the record boundary.
+digit, exponent, cancellation, and invalid-character errors. Validation also
+reconciles digit/byte counters, decimal flags, and integer magnitude bounds.
+No implicit float conversion occurs at the record boundary.
 
 `EsRecordMaterialize::RecordMaterializer` adds the bounded stream-adapter
 boundary without embedding a regex engine or file descriptor. A producer opens
