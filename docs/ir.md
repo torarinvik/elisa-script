@@ -1238,7 +1238,8 @@ bracket depth while tracking a typed delimiter stack, quoted strings, and escape
 recognized only outside strings and balanced containers; final partial records
 are accepted at `End`, while empty records, unterminated strings/values,
 underflow, invalid stack contents, forged ready/complete state, and cancellation
-are explicit typed errors. A full parser consumes
+are explicit typed errors; complete state also reconciles input bytes with the
+number of admitted records. A full parser consumes
 one sealed record at a time, so this contract does not claim JSON semantic
 validation or whole-document allocation.
 

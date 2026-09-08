@@ -40,6 +40,7 @@ for boundary in \
     'JsonStreamError.DepthUnderflow' \
     'JsonStreamError.MismatchedDelimiter' \
     'JsonStreamError.AccountingInvalid' \
+    'session.records > session.input_bytes' \
     'container_stack' \
     'session.state == JsonStreamState.Ready' \
     'session.state == JsonStreamState.Complete' \
