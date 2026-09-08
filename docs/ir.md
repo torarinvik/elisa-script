@@ -1046,7 +1046,8 @@ ordinal; the session admits them through `Planned → Collecting → Sealed` wit
 bounded record and key-text accounting. `compare_record_sort_entries` provides
 the same lexicographic order for in-memory sorting and disk-run merging, while
 `error[RecordSortError]` rejects duplicate key positions, malformed key kinds,
-ordinal gaps, over-budget text, and post-terminal transitions. Disk runs,
+ordinal gaps, duplicate keys under `unique`, over-budget text, and post-terminal
+transitions. Disk runs,
 atomic spill files, and merge I/O remain host responsibilities.
 
 `EsRecordRewrite::RecordRewriteSession` is the safe in-place transformation

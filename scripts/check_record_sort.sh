@@ -40,6 +40,8 @@ for boundary in \
     'record_sort_entry_valid' \
     'RecordSortError.KeyOrderInvalid' \
     'RecordSortError.OrdinalInvalid' \
+    'RecordSortError.UniqueViolation' \
+    'record_sort_keys_equal' \
     'RecordSortError.TextLimitExceeded' \
     'RecordSortDirection.Descending' \
     'RecordSortState.Sealed'; do
