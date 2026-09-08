@@ -41,6 +41,8 @@ for boundary in \
     'RecordAggregateError.GroupLimitExceeded' \
     'RecordAggregateError.EventLimitExceeded' \
     'RecordAggregateError.KeyBytesLimitExceeded' \
+    'accounted_events' \
+    'first_ordinal == group.first_ordinal' \
     'RecordAggregateError.GroupIndexInvalid' \
     'RecordAggregateEvent.Add' \
     'RecordAggregateEvent.AddValue' \

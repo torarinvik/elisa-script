@@ -1079,7 +1079,8 @@ explicit per-session sum ceiling; `record_aggregate_group_count` and
 duplicate internal groups, event/group/sum overflow, and terminal mutation
 return `error[RecordAggregateError]`. Signed sums, averages, joins, and
 spill-to-disk aggregation remain separate policies rather than implicit numeric
-conversions.
+conversions. Validation derives the event total and rejects duplicate first
+ordinals, so externally assembled groups cannot forge aggregate cardinality.
 
 `EsRecordFields::RecordFieldEditSession` is the bounded mutation boundary for
 AWK `$N` updates and Perl-style record rewrites. A policy fixes the maximum
