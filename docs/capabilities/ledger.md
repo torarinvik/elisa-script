@@ -347,6 +347,11 @@ existing device/inode identity so hard-link or symlink aliases cannot destroy
 the source before its bytes are read. The focused compiler-free copy-path audit
 records this admission boundary.
 
+Interpreter-wide exact-size stdio reads and writes now reject zero/over-counted
+progress and a positive count accompanied by the host `ferror` indicator before
+publishing a value; the process-capture audit records the shared helper
+boundary.
+
 The first large-file vertical slice is now a typed `EsRuntime::FileStream`
 contract with explicit modes, bounded chunk read/write, an error-safe line
 iterator, idempotent closed-state transitions, and a one-shot

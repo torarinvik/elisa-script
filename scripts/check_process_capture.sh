@@ -40,6 +40,13 @@ rg -q 'process_wait_terminate\(waiter\)' "$interpreter"
 rg -q 'differential_terminate_process\(pid, group_ready, status\)' "$differential"
 rg -q 'elisascript_posix_waitpid_impl' "$process_runtime"
 
+# Shared exact-size stdio helpers reject positive progress accompanied by the
+# host error indicator, so a sticky stream error cannot be mistaken for a
+# complete copy or capture.
+rg -q 'def write_stream_fully\(' "$interpreter"
+rg -q 'def read_stream_fully\(' "$interpreter"
+rg -U -q 'amount == 0 or amount > remaining or ferror\(stream\) != 0' "$interpreter"
+
 # Both streams are checked independently before the next poll/sleep, and a
 # timeout compares against the predecessor before incrementing its counter.
 rg -q 'if waiter\.stdout_stream != null:' "$interpreter"
