@@ -47,6 +47,7 @@ for boundary in \
     'DirectoryMutationEvent.Leave' \
     'DirectoryMutationError.DuplicateIdentity' \
     'DirectoryMutationError.DestinationCollision' \
+    'directory_mutation_destination_nested' \
     'DirectoryMutationState.Planned and' \
     'DirectoryMutationState.Completed' \
     'DirectoryMutationState.Cancelled' \
@@ -68,6 +69,7 @@ for fixture_pattern in \
     'DirectoryMutationError.ActiveScope'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
+rg -Fq 'nested_destination' "$fixture_file"
 
 rg -q 'EsDirectoryMutation::DirectoryMutationSession' "$docs"
 rg -q 'ES-FS-005' "$ledger"

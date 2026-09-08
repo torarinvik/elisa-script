@@ -1277,7 +1277,8 @@ copy) destination paths, an identity, depth, byte count, and an explicit
 `Planned`/`Applied`/`Skipped`/`Failed` outcome. `Preserve`, `Follow`, `Skip`,
 and `Reject` symlink policies, fail-fast versus collected failures, identity
 cycle/alias rejection, depth/entry/byte/failure ceilings, balanced
-`Enter`/`Leave` scopes, duplicate copy destinations, clean planned state, and
+`Enter`/`Leave` scopes, source-equal or descendant copy-destination rejection,
+duplicate copy destinations, clean planned state, and
 cancellation are all checked before host mutation.
 The identity vector is reconciled positionally with admitted entries so
 externally assembled plans cannot forge ownership accounting.
