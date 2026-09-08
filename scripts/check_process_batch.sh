@@ -49,7 +49,9 @@ for boundary in \
     'session.jobs\[pending\].attempts >= session.policy.max_attempts' \
     'ProcessBatchState.Planned and' \
     'ProcessBatchState.Succeeded and' \
-    'ProcessBatchState.Cancelled and'; do
+    'ProcessBatchState.Failed and' \
+    'ProcessBatchState.Cancelled and' \
+    'cancelled == 0'; do
     rg -q "$boundary" "$model"
 done
 
@@ -61,6 +63,8 @@ for fixture_pattern in \
     'ProcessBatchEvent.CancelAck' \
     'ProcessBatchError.DuplicateJobId' \
     'ProcessBatchError.AccountingInvalid' \
+    'forged_completed_cancelled' \
+    'forged_failed' \
     'launch_limit'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
