@@ -364,8 +364,10 @@ with incremental strict-UTF-8 validation for text streams and byte-preserving
 binary operation; split three- and four-byte continuation bounds are explicit
 in the IR fixture, and invalid or incomplete sequences remain typed failures.
 Staged publication now has a reusable typed rename edge with optional parent
-directory sync; rename and directory-sync failures remain separate, and the
-caller retains ownership of staging cleanup.
+directory sync; equal staging and destination paths are rejected with typed
+`FileStreamError.PathCollision` before the host rename, rename and
+directory-sync failures remain separate, and the caller retains ownership of
+staging cleanup.
 Source loading and text streams now share the public `EsEncoding::Utf8Cursor`
 validator; invalid or incomplete source bytes fail before parser allocation as
 `ElisascriptSourceError.InvalidUtf8`, while binary stream modes remain raw bytes.
