@@ -11,6 +11,7 @@ baseline="$script_dir/../docs/validation-baseline.md"
 [ -x "$helper" ]
 rg -q 'ELISA_LOCAL_COMPILER:-\$\{ELISACORE_BIN:-\$default_compiler\}' "$helper"
 rg -q 'Go projects/structpy-tree/compiler/bin/elisac' "$helper"
+rg -q 'compiler symlinks are not accepted' "$helper"
 rg -q 'git -C "\$compiler_root" rev-parse HEAD' "$helper"
 rg -q 'shasum -a 256 "\$compiler"' "$helper"
 rg -q 'configuration_key=' "$helper"

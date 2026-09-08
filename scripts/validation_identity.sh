@@ -23,6 +23,10 @@ if [ ! -f "$compiler" ] || [ ! -x "$compiler" ]; then
     echo "validation_identity: compiler is not an executable regular file: $compiler" >&2
     exit 2
 fi
+if [ -L "$compiler" ]; then
+    echo "validation_identity: compiler symlinks are not accepted" >&2
+    exit 2
+fi
 
 compiler_root="$(CDPATH= cd -- "$(dirname -- "$compiler")/../.." && pwd)"
 compiler_revision="$(git -C "$compiler_root" rev-parse HEAD 2>/dev/null || true)"

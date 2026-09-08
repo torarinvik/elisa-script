@@ -32,6 +32,10 @@ case "$compiler" in
         exit 2
         ;;
 esac
+if [ -L "$compiler" ]; then
+    echo "run_bounded_test: refusing symlinked compiler path" >&2
+    exit 2
+fi
 
 setsid_path="${ELISASCRIPT_SETSID:-}"
 if [ -z "$setsid_path" ]; then

@@ -21,6 +21,7 @@ for wrapper in "$lowering" "$test_wrapper"; do
     rg -q 'ELISASCRIPT_VALIDATION_REAUTHORIZED:-0' "$wrapper"
     rg -q 'elisascript-validation\.disabled' "$wrapper"
     rg -q 'Go projects/structpy-tree/compiler/bin/elisac' "$wrapper"
+    rg -q 'refusing symlinked compiler path' "$wrapper"
     rg -q 'process_tree_rss_kb' "$wrapper"
     rg -q 'process_group_rss_kb' "$wrapper"
     rg -q 'setsid_path' "$wrapper"
