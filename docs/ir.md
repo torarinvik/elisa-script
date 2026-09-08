@@ -1210,7 +1210,8 @@ materialization. It bounds total input, per-record bytes, record count, and
 bracket depth while tracking a typed delimiter stack, quoted strings, and escapes. Newline boundaries are
 recognized only outside strings and balanced containers; final partial records
 are accepted at `End`, while empty records, unterminated strings/values,
-underflow, and cancellation are explicit typed errors. A full parser consumes
+underflow, invalid stack contents, forged ready/complete state, and cancellation
+are explicit typed errors. A full parser consumes
 one sealed record at a time, so this contract does not claim JSON semantic
 validation or whole-document allocation.
 

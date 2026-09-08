@@ -39,9 +39,14 @@ for boundary in \
     'escaped' \
     'JsonStreamError.DepthUnderflow' \
     'JsonStreamError.MismatchedDelimiter' \
+    'JsonStreamError.AccountingInvalid' \
     'container_stack' \
+    'session.state == JsonStreamState.Ready' \
+    'session.state == JsonStreamState.Complete' \
     'JsonStreamError.UnterminatedString' \
     'JsonStreamError.UnterminatedValue' \
+    'session.state == JsonStreamState.Ready' \
+    'session.state == JsonStreamState.Complete' \
     'JsonStreamEvent.RecordEnd' \
     'JsonStreamEvent.Cancel' \
     'JsonStreamState.Complete'; do
@@ -54,7 +59,8 @@ for fixture_pattern in \
     'JsonStreamEvent.Byte' \
     'JsonStreamEvent.End' \
     'JsonStreamError.UnterminatedValue' \
-    'JsonStreamError.RecordBytesLimitExceeded'; do
+    'JsonStreamError.RecordBytesLimitExceeded' \
+    'forged_complete'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 
