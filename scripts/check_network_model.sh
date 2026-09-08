@@ -80,6 +80,7 @@ for boundary in \
     'StreamNotComplete' \
     'StreamNotDrained' \
     'StreamAccountingInvalid' \
+    'stream.state == NetworkStreamState.Cancelled and' \
     'network_request_state_is_active' \
     'network_request_state_requires_attempt' \
     'job.attempts > job.max_attempts' \
@@ -111,7 +112,8 @@ for fixture_pattern in \
     'NetworkRequestState.Cancelled' \
     'NetworkContractError.DuplicateHeaderName' \
     'NetworkContractError.InvalidTimeout' \
-    'NetworkContractError.InvalidStatus'; do
+    'NetworkContractError.InvalidStatus' \
+    'forged_cancelled_stream'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 

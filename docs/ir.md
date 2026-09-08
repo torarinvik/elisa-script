@@ -1394,7 +1394,8 @@ reject embedded NULs and oversized values before a host TLS library is called.
 `NetworkStream` and `NetworkChunk` provide bounded request/response streaming
 with sequence numbers, explicit pause/resume backpressure, final-chunk and
 drain requirements, and cancellation/failure states. Stream state and sequence
-accounting reject forged terminal completion before any adapter is called;
+accounting reject forged terminal completion before any adapter is called, and
+cancelled streams must discard buffered bytes and final-chunk state;
 enqueueing cannot exceed
 the configured in-flight ceiling or occur after a final chunk; a stream cannot
 finish until the final chunk has been observed and all buffered bytes consumed.
