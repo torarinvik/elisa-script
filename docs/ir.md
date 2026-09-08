@@ -145,7 +145,8 @@ must carry bounded names, versions, locators, source kinds, and four-word
 integrity identities; a registry accepts them only in deterministic
 name/version/source/locator order and exposes lookup only after sealing.
 Constraint-aware lookup therefore cannot consume an unverified or
-out-of-order index, while fail and cancellation edges remain explicit; an
+out-of-order index, while loading-only failure and cancellation edges remain
+explicit; an
 `Empty` registry cannot carry preloaded candidates.
 
 EsPackageCache complements the registry with a bounded identity cache. Entries

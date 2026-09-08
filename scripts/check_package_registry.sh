@@ -40,6 +40,7 @@ for boundary in \
     'registry.state == PackageRegistryState.Empty' \
     'RegistryNotReady' \
     'ConstraintNoMatch' \
+    'registry.state != PackageRegistryState.Loading' \
     'CancelNotReady'; do
     rg -Fq "$boundary" "$model"
 done

@@ -587,7 +587,7 @@ actual stdout/stderr writes remain a host-adapter follow-up.
 
 ES-SCRIPT-004 | EsPackageRegistry supplies bounded candidate rows, deterministic
 ordering, integrity admission, sealed-state lookup by PackageConstraint, and
-explicit failure/cancellation transitions. The focused IR fixture and
+loading-only failure/cancellation transitions. The focused IR fixture and
 check_package_registry.sh audit are static evidence; network, signature, and
 cache persistence adapters remain open.
 
