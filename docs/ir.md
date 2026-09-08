@@ -1483,6 +1483,8 @@ Glob expansion similarly counts sorted unique matches before checking flat-pool
 capacity, so duplicate matches from overlapping variants do not over-reserve.
 Regex capture materialization sizes the exact proven group/name result after
 matcher work completes rather than charging the entire pattern length.
+Line splitting also counts its actual fields before checking flat-pool capacity,
+so short line results from long inputs are not rejected by an input-length bound.
 Missing keys use the existing typed
 `IndexOutOfBounds` error rather than a sentinel value. The reference interpreter and
 the bytecode facade share this representation. Maps whose key and value types are
