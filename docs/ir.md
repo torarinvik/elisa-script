@@ -2580,8 +2580,10 @@ scalar with a deterministic total order (`bool`, integer, float, `char`, or text
 copies the input into owned storage, and performs a stable insertion sort. Text
 values compare by unsigned `sview` bytes. A dynamic reverse flag branches through
 a typed merge before rebinding the owner; unsupported aggregate element types and
-malformed instructions are rejected before execution, while the interpreter and
-bytecode backend share the same result and failure behavior.
+malformed instructions are rejected before execution. Both backends preflight
+scalar homogeneity before copying the array, so a malformed sort cannot leave a
+partial sorted copy in shared flat storage; the interpreter and bytecode backend
+share the same result and failure behavior.
 Dictionary values also expose Python's `mapping.get(key, default)` spelling. It
 lowers to the same `IndexValid`-guarded CFG as `get mapping[key] else default`,
 so the default expression is lazy and both branches merge one exact value type.

@@ -95,6 +95,8 @@ parallel Array receiver rows with registry arity/opcode identity,
 source-shadowing precedence, structural array inference, and `CopyArray`,
 `PopArrayValue`, `ReverseArray`, `SortArray`, `InsertArray`, `RemoveArray`, `Concat`, `MakeArray`, `ArrayCount`, `ArrayFind`, `ArrayIndex`, and `Contains` verifier coverage;
 recursive generic array descriptors remain open.
+`SortArray` preflights scalar element homogeneity before copying, keeping malformed
+sort failures from publishing partial flat storage in either backend.
 
 Differential artifact text and fixed-width lookahead readers now share the
 subtraction-safe serialized-slice admission used by ESBC (`1d96bfa`); malformed
