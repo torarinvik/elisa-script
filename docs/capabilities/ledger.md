@@ -83,6 +83,8 @@ removals.
 storage domain before copying entries. They first search for the key, so a
 present-key replacement admits the original pair span without requiring an
 unneeded extra slot.
+Map concatenation preflights only newly introduced right-hand keys, preserving
+valid duplicate-only merges when no additional pair capacity remains.
 `Path.iterdir()` rolls the flat storage cursor back on a late child-path failure,
 so directory materialization is failure-atomic.
 Array/map literal and global initialization paths likewise roll back their entry

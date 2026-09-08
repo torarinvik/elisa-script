@@ -1471,6 +1471,9 @@ replacement of a present key only needs the original pair count, while insertion
 preflights the possible extra key/value pair and the map-count ceiling before
 copying. A full storage pool therefore cannot reject a valid replacement or
 partially materialize an insertion before the overflow error is reported.
+Map concatenation likewise counts only right-hand keys absent from both the left
+map and earlier right-hand entries, so duplicate-heavy merges do not require
+capacity for pairs that will be overwritten.
 Missing keys use the existing typed
 `IndexOutOfBounds` error rather than a sentinel value. The reference interpreter and
 the bytecode facade share this representation. Maps whose key and value types are
