@@ -51,7 +51,8 @@ for boundary in \
     'RecordMaterializerEvent.BeginRecord' \
     'RecordMaterializerEvent.EndRecord' \
     'RecordMaterializerEvent.Seal' \
-    'RecordMaterializerEvent.Cancel'; do
+    'RecordMaterializerEvent.Cancel' \
+    'materializer.fields.truncate'; do
     rg -q "$boundary" "$model"
 done
 

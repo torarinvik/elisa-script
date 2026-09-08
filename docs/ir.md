@@ -1066,6 +1066,8 @@ checks contiguous record-to-field ownership, counts record/field/text budgets
 with subtraction-safe admission, and rejects all transitions after sealing or
 cancellation through `error[RecordMaterializerError]`. Validation also rejects
 forged planned/empty collecting state and sealing without a completed record.
+Fail and Cancel roll back any open record's borrowed fields and text accounting
+before entering their terminal state.
 This makes Perl/AWK-style
 `$0`/field streams deterministic for later adapters while leaving byte input,
 regex scanning, external sort, and transactional rewrite effects outside the
