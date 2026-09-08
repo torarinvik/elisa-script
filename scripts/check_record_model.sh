@@ -40,6 +40,7 @@ for boundary in \
     'record_text_length_valid' \
     'sview_contains_byte' \
     'record_fixed_widths_fit' \
+    'else:' \
     'RecordContractError.FixedWidthOverflow' \
     'RecordContractError.InvalidFieldRange' \
     'RecordContractError.SchemaMissing' \
