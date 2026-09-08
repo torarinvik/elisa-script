@@ -1089,7 +1089,8 @@ and whether assigning at the next index may append a field. `Set` preserves
 field positions; an edit with `present: false` clears a field to the empty
 value instead of silently changing `NF`. `record_field_edit_reconstruct_length`
 performs subtraction-safe output accounting before allocation, and
-`record_field_reconstruct` joins only a `Ready` session. The state machine
+`record_field_reconstruct` joins only a `Ready` session; `Ready` output bytes
+must match the reconstructed field length. The state machine
 rejects post-terminal mutation, invalid indices, malformed/NUL-bearing text,
 and output overflows through `error[RecordFieldEditError]`; host adapters own
 the borrowed field storage and any subsequent file publication.

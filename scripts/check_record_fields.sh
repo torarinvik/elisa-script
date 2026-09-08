@@ -43,6 +43,8 @@ for boundary in \
     'RecordFieldEditError.InvalidFieldIndex' \
     'RecordFieldEditError.EditLimitExceeded' \
     'RecordFieldEditError.OutputLimitExceeded' \
+    'RecordFieldEditError.AccountingInvalid' \
+    'expected_output_bytes' \
     'RecordFieldEditEvent.Set' \
     'RecordFieldEditEvent.Reconstruct' \
     'RecordFieldEditState.Ready' \
