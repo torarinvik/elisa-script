@@ -271,7 +271,10 @@ views cannot be reborrowed, moves require an unborrowed owned value and advance
 the generation, and drops reclaim retained bytes without deleting provenance.
 Borrow leases record borrower identity, source generation, and an expiry token;
 duplicate ids, stale leases, owner mismatches, double-end, accounting drift,
-and reclamation while borrowed raise `error[ValueOwnershipError]`.
+and reclamation while borrowed raise `error[ValueOwnershipError]`. Validation
+also requires the value/borrow state relation to be consistent in both
+directions: active leases must reference `Borrowed` values, and a `Borrowed`
+value must retain at least one active lease.
 
 `EsErrorProvenance::ErrorProvenanceLedger` preserves operational error identity
 across runner and driver boundaries. Each envelope records a closed origin

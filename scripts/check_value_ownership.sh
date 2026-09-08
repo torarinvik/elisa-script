@@ -51,6 +51,7 @@ for fixture_pattern in \
     'ValueOwnershipKind.Linear' \
     'ValueOwnershipEvent.EndBorrow' \
     'ValueOwnershipError.MoveNotReady' \
+    'ValueOwnershipError.BorrowConflict' \
     'ledger.retained_bytes'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
