@@ -41,6 +41,7 @@ for boundary in \
     'RecordLimitExceeded' \
     'FieldLimitExceeded' \
     'FieldBytesLimitExceeded' \
+    'raise DataContractError.DepthLimitExceeded if depth > decoder.limits.depth' \
     'OffsetAccountingInvalid' \
     'decoder.state == DataDecoderState.Ready' \
     'decoder.state == DataDecoderState.Complete' \
@@ -59,7 +60,8 @@ for fixture_pattern in \
     'DataContractError.InvalidCsvPolicy' \
     'DataContractError.InputLimitExceeded' \
     'forged_ready' \
-    'forged_complete'; do
+    'forged_complete' \
+    'record_depth_rejected'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 
