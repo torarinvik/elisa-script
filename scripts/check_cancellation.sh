@@ -43,7 +43,9 @@ for boundary in \
     'CancellationPoint.HostBeforeBlock' \
     'CancellationError.HostBlockDenied' \
     'CancellationError.ParentCycle' \
-    'CancellationError.PollLimitExceeded'; do
+    'CancellationError.PollLimitExceeded' \
+    'token.state == CancellationTokenState.Acknowledged' \
+    'CancellationPoint.HostAfterBlock'; do
     rg -q "$boundary" "$model"
 done
 

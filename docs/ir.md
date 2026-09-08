@@ -295,7 +295,9 @@ trees, owner identity, polling counts, and explicit `Request → Propagate →
 Acknowledge → Complete` or `Fail` transitions. Polling a requested token at a
 VM checkpoint propagates cancellation; polling before a blocking host wait
 raises `HostBlockDenied`, while acknowledgement is admitted only after a
-cleanup or completed-block checkpoint through `error[CancellationError]`.
+cleanup or completed-block checkpoint. Validation also rejects externally
+assembled acknowledged tokens whose last checkpoint is not one of those safe
+points through `error[CancellationError]`.
 
 `EsTelemetry::TelemetryLedger` provides optional bounded observability. Disabled
 mode rejects recording; counter mode stores fixed metric identities, while
