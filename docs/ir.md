@@ -1249,7 +1249,8 @@ validation or whole-document allocation.
 explicit: `NextRecord` closes the current record and advances to the next one,
 `NextFile` closes both record and file scopes, and `Exit` terminates cleanly from
 any running scope. The bounded state machine rejects calls outside an open file,
-double-open records, file closure with a live record, and post-terminal events;
+double-open records, impossible open-file counters, file closure with a live
+record, and post-terminal events;
 validation also reconciles skipped/file scope ownership and planned counters.
 Failure and cancellation clear ownership state so a host callback cannot leave a
 half-open traversal.

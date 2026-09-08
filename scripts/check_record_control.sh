@@ -37,6 +37,7 @@ for boundary in \
     'RecordControlEvent.Exit' \
     'RecordControlError.RecordNotOpen' \
     'RecordControlError.FileNotClosed' \
+    'session.file_open and session.file_count == 0' \
     'RecordControlState.Planned' \
     'RecordControlState.RecordSkipped' \
     'RecordControlState.FileSkipped' \
