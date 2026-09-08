@@ -844,7 +844,8 @@ contract. Requests carry explicit shared/exclusive mode, owner token, path and
 bounded-wait policy; same-path shared leases may coexist, while exclusive and
 same-owner re-entry conflicts are rejected. Acquisition attempts, retry,
 timeout, cancellation acknowledgement, release acknowledgement, failed leases,
-and active-lease accounting are explicit state-machine edges under
+terminal lease-id exhaustion before publication, and active-lease accounting
+are explicit state-machine edges under
 `error[FileLockError]`. The focused IR fixture, namespace inclusion,
 documentation, and check_file_lock.sh audit are static evidence; platform
 flock/LockFileEx calls, fairness, mandatory-locking differences, and race
@@ -865,9 +866,10 @@ ES-FS-006 | EsWorkingDirectory supplies an exclusive per-invocation cwd
 ownership contract for the unavoidable process-global chdir fallback. It
 records the original/current/pending paths, owner token, bounded change count,
 and explicit `Begin → Change → ChangeAck → Restore → RestoreAck` lifecycle;
-concurrent owners, unacknowledged changes, mid-flight cancellation, and failed
-restore ownership are rejected or retained as typed
-`error[WorkingDirectoryError]`. The focused IR fixture, namespace inclusion,
+concurrent owners, unacknowledged changes, and failed restore ownership are
+rejected or retained as typed `error[WorkingDirectoryError]`; terminal lease-id
+exhaustion is rejected before context publication so IDs cannot wrap to zero.
+The focused IR fixture, namespace inclusion,
 documentation, and check_working_directory.sh audit are static evidence;
 descriptor-based adapters, platform cwd races, and executed failure/recovery
 fixtures remain host work.

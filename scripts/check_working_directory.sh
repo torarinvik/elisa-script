@@ -41,6 +41,7 @@ for boundary in \
     'WorkingDirectoryEvent.RestoreAck' \
     'WorkingDirectoryError.ConcurrentOwner' \
     'table.next_lease_id <= lease.lease_id' \
+    'table.next_lease_id == 18446744073709551615u64' \
     'WorkingDirectoryError.CancelNotReady' \
     'WorkingDirectoryLeaseState.Failed' \
     'lease.state == WorkingDirectoryLeaseState.Held and lease.pending_path != ""' \
@@ -58,7 +59,8 @@ for fixture_pattern in \
     'WorkingDirectoryEvent.RestoreAck' \
     'WorkingDirectoryError.ConcurrentOwner' \
     'WorkingDirectoryEvent.CancelAck' \
-    'forged_identity'; do
+    'forged_identity' \
+    'exhausted_rejected'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 

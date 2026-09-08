@@ -1202,11 +1202,12 @@ bounded waits return `WouldBlock` until a finite attempt budget is exhausted,
 then become `TimedOut`. A held lease remains active through `Releasing` until
 the host acknowledges release, while failures decrement active accounting and
 retain a failed lease record. Held, releasing, and released sessions also
-require a consumed acquisition attempt. The contract is deliberately
-advisory-only:
-lease identities are monotonic and cannot collide with the next allocation;
-platform lock calls, mandatory-locking behavior, fairness, and race handling
-remain host-adapter responsibilities.
+require a consumed acquisition attempt. Lease allocation rejects the terminal
+`u64` identity before publishing a lease, so the next-identity counter cannot
+wrap to zero or leave a partially committed table. The contract is deliberately
+advisory-only: lease identities are monotonic and cannot collide with the next
+allocation; platform lock calls, mandatory-locking behavior, fairness, and race
+handling remain host-adapter responsibilities.
 
 `EsRecordSpill::RecordSpillSession` is the external-sort staging boundary.
 Runs receive stable ordinals and distinct sibling paths, append only within
@@ -1251,8 +1252,9 @@ active context, `Change`/`ChangeAck` makes host movement explicit and bounded,
 and `Restore`/`RestoreAck` must return to the original path before the lease is
 released. A second active owner is rejected, changing/restoring operations
 cannot be cancelled mid-flight, and failed contexts remain recorded as failed
-rather than silently releasing an unknown cwd; lease identities are monotonic
-and cannot collide with the next allocation. Hosts should prefer descriptor
+rather than silently releasing an unknown cwd. Allocation rejects the terminal
+`u64` lease identity before publishing a context, preserving monotonic IDs
+without a zero-wrap or partial table mutation. Hosts should prefer descriptor
 or child-cwd APIs where available; this contract is the conservative fallback
 for unavoidable process-global changes. Lease validation also ties pending-path
 presence and restored-path equality to the corresponding lease state.
