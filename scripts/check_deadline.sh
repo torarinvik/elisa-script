@@ -42,6 +42,7 @@ for boundary in \
     'DeadlineError.DeadlineInPast' \
     'DeadlineError.AdvanceLimitExceeded' \
     'DeadlineError.NoDueWait' \
+    'DeadlineError.FireOrderInvalid' \
     'DeadlineError.AccountingInvalid'; do
     rg -q "$boundary" "$model"
 done
@@ -51,7 +52,8 @@ for fixture_pattern in \
     'typed_deadline_contract_is_monotonic_and_fireable_in_virtual_time' \
     'DeadlineClockMode.Virtual' \
     'DeadlineError.NoDueWait' \
-    'DeadlineError.AdvanceLimitExceeded'; do
+    'DeadlineError.AdvanceLimitExceeded' \
+    'DeadlineError.FireOrderInvalid'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 

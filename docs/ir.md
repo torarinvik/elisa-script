@@ -307,7 +307,7 @@ positive signal numbers through `error[ExitStatusError]`.
 `EsDeadline::DeadlineClock` separates host monotonic time from deterministic
 virtual time. Bounded waits are armed with owner identities, advances are
 strictly positive and capped, pending waits become ready only through an
-explicit due-fire transition, cancellation is terminal for that wait, and a
+explicit due-fire transition in deterministic deadline/id order, cancellation is terminal for that wait, and a
 clock cannot seal while pending waits remain. Backward time and oversized
 advances fail through `error[DeadlineError]`.
 
