@@ -49,6 +49,9 @@ for boundary in \
     'scope.state == TaskScopeState.Failed' \
     'scope.state == TaskScopeState.Cancelled' \
     'ChannelBufferExceeded' \
+    'channel.buffered_messages == 0 and channel.buffered_bytes != 0' \
+    'channel.buffered_messages != 0 and channel.buffered_bytes == 0' \
+    'channel.state == TaskChannelState.Closing' \
     'channel.state == TaskChannelState.Closed' \
     'channel.state == TaskChannelState.Cancelled' \
     'ChannelEmpty' \

@@ -1791,9 +1791,11 @@ boundary. A scope caps active children, records completed/failed children, and
 rejects closing/failed/terminal records whose child accounting is inconsistent; cancellation
 acknowledgement is admitted only after active children reach zero. It
 requires explicit close or cancellation acknowledgement; channels cap both
-message count and bytes, reject sends while closing/cancelled, and transition
-to `Closed` only after queued messages drain; cancellation acknowledgement also
-requires queued messages to drain. `error[TaskContractError]`
+message count and bytes, reject impossible zero-message/nonzero-byte (or
+nonzero-message/zero-byte) snapshots, reject imported empty `Closing` states,
+reject sends while closing/cancelled, and transition to `Closed` only after
+queued messages drain; cancellation acknowledgement also requires queued
+messages to drain. `error[TaskContractError]`
 distinguishes invalid transitions, child accounting, full buffers, and empty
 receives. `EsTaskTransfer::TaskTransferSession` makes cross-task ownership
 explicit: copy is limited to copyable values, move changes the owner only at a
