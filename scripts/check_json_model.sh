@@ -36,6 +36,9 @@ done
 for boundary in \
     'InvalidRange' \
     'InvalidChildRange' \
+    'document.state == JsonDocumentState.Empty' \
+    'document.state == JsonDocumentState.Sealed' \
+    'derived_depth' \
     'DuplicateObjectKey' \
     'NodeLimitExceeded' \
     'MemberLimitExceeded' \
@@ -50,7 +53,9 @@ for fixture_pattern in \
     'typed_json_document_contract_is_bounded_and_sealed_explicitly' \
     'JsonDocumentEvent.AppendNode' \
     'JsonDocumentEvent.AppendMember' \
-    'JsonContractError.DuplicateObjectKey'; do
+    'JsonContractError.DuplicateObjectKey' \
+    'forged_empty' \
+    'forged_depth'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 

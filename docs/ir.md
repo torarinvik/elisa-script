@@ -166,6 +166,7 @@ the complete document ledger before every transition, requires `Empty → Buildi
 → Sealed` (or `Failed`) transitions, and rejects out-of-range
 children, duplicate object keys, oversized source/token/node/member tables, and
 malformed ranges before a renderer or schema decoder can consume the table.
+Validation also reconciles empty/sealed lifecycle shape and maximum node depth.
 The adapter is intentionally separate from the vendor's global parser names so
 public Elisascript modules retain namespace hygiene; parser translation,
 streaming JSONL, typed schema conversion, and encoding remain open.
