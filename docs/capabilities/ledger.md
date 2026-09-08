@@ -81,6 +81,8 @@ The same search-before-allocation rule applies to no-op `DeleteIndex` map
 removals.
 `SetIndex` map updates also preflight the extra pair and reject a full `u32`
 storage domain before copying entries.
+`Path.iterdir()` rolls the flat storage cursor back on a late child-path failure,
+so directory materialization is failure-atomic.
 
 Set receiver operations now share the registry as `Set.add(value)`,
 `Set.remove(value)`, `Set.discard(value)`, and `Set.clear()` rows. The lowerer

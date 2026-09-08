@@ -2051,6 +2051,10 @@ bytes; brace expansion is capped at 262,144 variants, while final glob matches
 are capped at 1,048,576 items; each collection also has a 64 MiB aggregate
 variant/result-byte budget. Crossing any budget fails with
 `DirectoryError` before partial results are published.
+
+`Path.iterdir()` validates every joined child path before publishing its first
+runtime value; if a later child fails the path envelope, the shared flat storage
+cursor is rolled back to its entry position rather than exposing a partial array.
 Path joins and brace-variant assembly detect host-size addition wrap before
 allocation; the walker reports the existing `DirectoryError` rather than
 publishing a truncated match.
