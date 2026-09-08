@@ -309,8 +309,9 @@ cannot be cancelled again through `error[ErrorProvenanceError]`.
 for VM safe points and blocking host adapters. Tokens have bounded parent/child
 trees, owner identity, polling counts, and explicit `Request → Propagate →
 Acknowledge → Complete` or `Fail` transitions. Polling a requested token at a
-VM checkpoint propagates cancellation; polling before a blocking host wait
-raises `HostBlockDenied`, while acknowledgement is admitted only after a
+VM checkpoint propagates cancellation only after its parent is already
+requested or propagating; polling before a blocking host wait raises
+`HostBlockDenied`, while acknowledgement is admitted only after a
 cleanup or completed-block checkpoint. Validation also rejects externally
 assembled acknowledged tokens whose last checkpoint is not one of those safe
 points through `error[CancellationError]`.

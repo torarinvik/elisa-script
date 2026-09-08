@@ -43,6 +43,7 @@ for boundary in \
     'CancellationPoint.HostBeforeBlock' \
     'CancellationError.HostBlockDenied' \
     'CancellationError.ParentCycle' \
+    'parent_index: usize = cancellation_index' \
     'CancellationError.PollLimitExceeded' \
     'token.state == CancellationTokenState.Acknowledged' \
     'CancellationPoint.HostAfterBlock'; do
