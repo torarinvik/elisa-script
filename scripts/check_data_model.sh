@@ -41,6 +41,8 @@ for boundary in \
     'RecordLimitExceeded' \
     'FieldLimitExceeded' \
     'OffsetAccountingInvalid' \
+    'decoder.state == DataDecoderState.Ready' \
+    'decoder.state == DataDecoderState.Complete' \
     'InvalidCsvPolicy' \
     'UnexpectedEnd' \
     'Cancelled'; do
@@ -53,7 +55,9 @@ for fixture_pattern in \
     'DataFormat.JsonLines' \
     'DataDecoderEvent.Begin' \
     'DataContractError.InvalidCsvPolicy' \
-    'DataContractError.InputLimitExceeded'; do
+    'DataContractError.InputLimitExceeded' \
+    'forged_ready' \
+    'forged_complete'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 
