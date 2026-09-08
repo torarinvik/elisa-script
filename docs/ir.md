@@ -224,9 +224,9 @@ semantics or truncating machine output silently.
 EsOutputRender adds the renderer-side state machine. It requires a sealed
 document, consumes records in index order, charges JSON and XML escaping
 expansion before each chunk, accounts format framing bytes against the same
-document budget, and refuses completion until every record has been emitted.
-Cancellation and failure are explicit transitions, leaving actual host writes
-to a bounded adapter.
+document budget, validates state/chunk/record accounting, and refuses completion
+until every record has been emitted. Cancellation and failure are explicit
+transitions, leaving actual host writes to a bounded adapter.
 
 `EsBuild` is the shell-replacement boundary for build and test recipes.
 `BuildGraph` contains typed `ProcessCommand` nodes, stable fingerprints,

@@ -36,6 +36,7 @@ for boundary in \
     'output_render_footer_bytes' \
     'DocumentNotSealed' \
     'RecordOrderInvalid' \
+    'AccountingInvalid' \
     'RenderLimitExceeded' \
     'Incomplete' \
     'CancelNotReady'; do
