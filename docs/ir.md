@@ -211,7 +211,7 @@ Each field span is range-checked against the source and each record must
 consume the next contiguous field range; field and record ceilings are shared
 with EsData, and a ready session must have clean source, field, record, and
 cursor accounting. Lookup returns only validated slices while the session is
-building or complete. Quoted spans remain
+building or complete. Record starts are range-checked before subtraction. Quoted spans remain
 marked for a later unescape phase rather than being silently treated as plain
 text. Validation derives the field cursor and record-field total, rejecting
 overlapping or omitted spans in imported materializers.
