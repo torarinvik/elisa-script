@@ -890,7 +890,8 @@ windows, signed/decimal values, and host execution remain open.
 
 ES-SCRIPT-032 | EsRecordJoin supplies a deterministic bounded keyed-join
 contract. Left/right rows retain side-local ordinals and borrowed key/value
-views; row/key/value byte ceilings are checked before mutation; inner, left,
+views; row/key/value byte ceilings are checked before mutation; counter bounds
+are checked before reconciliation to prevent overflow; inner, left,
 right, and full outer policies are explicit; duplicate keys produce bounded
 Cartesian pair counts and unmatched outer rows contribute one pair each. The
 sealed pair-count query and all invalid lifecycle, key, ordinal, accounting,

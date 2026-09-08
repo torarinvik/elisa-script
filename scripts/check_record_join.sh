@@ -40,6 +40,7 @@ for boundary in \
     'RECORD_JOIN_MAX_VALUE_BYTES' \
     'record_join_bounded_add' \
     'record_join_pair_add' \
+    'session.left_count > session.rows.count or session.right_count > session.rows.count' \
     'RecordJoinKind.Full' \
     'RecordJoinError.EmptyKey' \
     'RecordJoinError.PairLimitExceeded' \
@@ -56,6 +57,7 @@ for fixture_pattern in \
     'RecordJoinSide.Left' \
     'RecordJoinSide.Right' \
     'record_join_pair_count' \
+    'forged_count_bound' \
     'RecordJoinError.EmptyKey'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
