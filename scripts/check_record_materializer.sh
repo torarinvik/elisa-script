@@ -43,7 +43,11 @@ for boundary in \
     'record_materializer_record_valid' \
     'record_materializer_field_valid' \
     'RecordMaterializerError.FieldOrderInvalid' \
+    'RecordMaterializerError.AccountingInvalid' \
     'RecordMaterializerError.TextLimitExceeded' \
+    'RecordMaterializerState.Planned' \
+    'RecordMaterializerState.Collecting' \
+    'RecordMaterializerState.Sealed' \
     'RecordMaterializerEvent.BeginRecord' \
     'RecordMaterializerEvent.EndRecord' \
     'RecordMaterializerEvent.Seal' \
@@ -55,6 +59,8 @@ for fixture_pattern in \
     'using EsRecordMaterialize' \
     'typed_record_materializer_contract_is_ordered_and_bounded' \
     'RecordMaterializerError.FieldOrderInvalid' \
+    'RecordMaterializerError.AccountingInvalid' \
+    'forged_planned' \
     'RecordMaterializerState.Sealed' \
     'RecordMaterializerState.Cancelled'; do
     rg -q "$fixture_pattern" "$fixture_file"

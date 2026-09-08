@@ -1035,7 +1035,9 @@ closes that record, and repeats until `Seal`; `Fail` and `Cancel` are explicit
 terminal alternatives. The materializer retains borrowed record/field spans,
 checks contiguous record-to-field ownership, counts record/field/text budgets
 with subtraction-safe admission, and rejects all transitions after sealing or
-cancellation through `error[RecordMaterializerError]`. This makes Perl/AWK-style
+cancellation through `error[RecordMaterializerError]`. Validation also rejects
+forged planned/empty collecting state and sealing without a completed record.
+This makes Perl/AWK-style
 `$0`/field streams deterministic for later adapters while leaving byte input,
 regex scanning, external sort, and transactional rewrite effects outside the
 typed core.
