@@ -1779,7 +1779,8 @@ receives. `EsTaskTransfer::TaskTransferSession` makes cross-task ownership
 explicit: copy is limited to copyable values, move changes the owner only at a
 commit edge and advances the generation, and borrow is limited to copyable or
 handler-context values with a bounded lease. Planned/validating/committed state
-requires the corresponding item-state cardinality, and admission/commit
+requires the corresponding item-state cardinality; the internal `Committing`
+edge is not an importable session state. Admission/commit
 counters are derived from the item-state vector, so forged partial accounting
 is rejected.
 Duplicate resources, stale

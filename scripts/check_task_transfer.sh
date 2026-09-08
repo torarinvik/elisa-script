@@ -44,6 +44,7 @@ for boundary in \
     'derived_admitted_bytes' \
     'TaskTransferError.CommitNotReady' \
     'TaskTransferState.Committed' \
+    'TaskTransferState.Committing' \
     'TaskTransferState.Planned and' \
     'TaskTransferState.Validating and' \
     'session.state == TaskTransferState.Committed'; do
