@@ -39,7 +39,11 @@ for boundary in \
     'RetryNotReady' \
     'CancelNotReady' \
     'outcome == NetworkOutcome.Cancelled' \
-    'StatusFailure'; do
+    'StatusFailure' \
+    'NetworkSessionState.Planned and' \
+    'NetworkSessionState.Completed and' \
+    'NetworkSessionState.Failed and' \
+    'NetworkSessionState.Cancelled'; do
     rg -Fq "$boundary" "$model"
 done
 
@@ -51,7 +55,8 @@ for fixture_pattern in \
     'NetworkSessionEvent.SendComplete' \
     'NetworkSessionEvent.ReceiveChunk' \
     'NetworkSessionEvent.ReceiveComplete' \
-    'NetworkSessionEvent.CancelAck'; do
+    'NetworkSessionEvent.CancelAck' \
+    'NetworkSessionError.AccountingInvalid'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 

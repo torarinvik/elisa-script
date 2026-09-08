@@ -1287,7 +1287,9 @@ EsNetworkSession binds those policies to one transport attempt. It requires
 the DNS/connect/TLS/send/receive order, charges request and response bytes
 before advancing, caps polls and redirects, preserves status failures as
 typed completed outcomes, and exposes retry/failure/cancellation edges without
-opening sockets itself. A failure edge cannot carry the distinct `Cancelled`
+opening sockets itself. Planned/retry states clear transient I/O fields,
+completed states require a real status, and failure/cancellation outcomes must
+match their states. A failure edge cannot carry the distinct `Cancelled`
 outcome; cancellation must use the explicit cancellation state machine.
 
 `EsProcessBatch::ProcessBatchSession` supplies the bounded fan-out/fan-in layer
