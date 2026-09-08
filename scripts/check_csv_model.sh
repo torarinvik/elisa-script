@@ -33,6 +33,7 @@ for boundary in \
     'UnexpectedQuote' \
     'UnexpectedCharacterAfterQuote' \
     'UnexpectedEnd' \
+    'AccountingInvalid' \
     'Cancelled'; do
     rg -Fq "$boundary" "$model"
 done
