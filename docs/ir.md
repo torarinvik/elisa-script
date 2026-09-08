@@ -1721,6 +1721,7 @@ fork/exec or signal operations itself.
 cleanup boundary. A host supervisor must first publish the exact root and
 member identities (including start tokens), then acknowledge a graceful group
 request before polling or escalating. Force attempts and polls are bounded;
+planned and running sessions start with clean poll/force/reap accounting;
 reaped-member counts are monotonic and `Reaped` is impossible until every
 owned member is accounted for; externally assembled `Reaped` records with a
 partial count are rejected as well. `Cancel` records cancellation intent without

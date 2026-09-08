@@ -42,6 +42,8 @@ for boundary in \
     'ProcessTerminationEvent.ForceAck' \
     'ProcessTerminationEvent.ReportReaped' \
     'ProcessTerminationError.ReapCountInvalid' \
+    'ProcessTerminationState.Planned and' \
+    'ProcessTerminationState.Running and' \
     'session.state == ProcessTerminationState.Reaped' \
     'ProcessTerminationError.PollLimitExceeded' \
     'ProcessTerminationError.ForceLimitExceeded'; do
@@ -55,7 +57,8 @@ for fixture_pattern in \
     'ProcessTerminationEvent.RequestForce' \
     'ProcessTerminationEvent.ReportReaped' \
     'ProcessTerminationEvent.Cancel' \
-    'ProcessTerminationError.DuplicateMember'; do
+    'ProcessTerminationError.DuplicateMember' \
+    'ProcessTerminationError.AccountingInvalid'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 

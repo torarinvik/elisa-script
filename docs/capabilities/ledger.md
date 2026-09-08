@@ -601,7 +601,7 @@ evidence; fork/exec, signal escalation, and child reaping remain host work.
 ES-SCRIPT-037 | EsProcessTermination supplies bounded process-group
 termination/reaping ownership. It requires a nonzero owner, group, root, and
 start-token identity for every member; records graceful request/ack, bounded
-polls, force escalation, monotonic reaped counts, cancellation intent,
+polls, force escalation, clean initial counters, monotonic reaped counts, cancellation intent,
 timeout, and failure as explicit state-machine edges; and refuses `Reaped`
 until every owned member is accounted for. The focused IR fixture, namespace
 inclusion, documentation, and check_process_termination.sh audit are static
