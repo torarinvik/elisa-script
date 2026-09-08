@@ -1122,7 +1122,8 @@ file has ever been opened.
 `EsRecordAggregate::RecordAggregateSession` provides a bounded associative
 count operation for AWK/Perl-style keyed aggregation. Keys retain insertion
 order, duplicate keys increment their count without changing that order, and
-new groups plus aggregate key bytes are admitted against explicit ceilings.
+planned sessions must be empty before `Begin`; new groups plus aggregate key
+bytes are admitted against explicit ceilings.
 `AddValue` adds a bounded unsigned value to the same stable group, with an
 explicit per-session sum ceiling; `record_aggregate_group_count` and
 `record_aggregate_group_sum` are available only after `Seal`. Malformed keys,
