@@ -46,6 +46,7 @@ for boundary in \
     'ProcessBatchError.ParallelLimitExceeded' \
     'ProcessBatchError.DuplicateJobId' \
     'ProcessBatchError.RetryNotReady' \
+    'session.jobs\[pending\].attempts >= session.policy.max_attempts' \
     'ProcessBatchState.Planned and' \
     'ProcessBatchState.Succeeded and' \
     'ProcessBatchState.Cancelled and'; do
@@ -59,7 +60,8 @@ for fixture_pattern in \
     'ProcessBatchEvent.Retry' \
     'ProcessBatchEvent.CancelAck' \
     'ProcessBatchError.DuplicateJobId' \
-    'ProcessBatchError.AccountingInvalid'; do
+    'ProcessBatchError.AccountingInvalid' \
+    'launch_limit'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 
