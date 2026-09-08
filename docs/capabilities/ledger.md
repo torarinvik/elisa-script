@@ -318,7 +318,8 @@ labels additionally reject embedded NUL bytes before a host string boundary.
 In-memory ESIA/ESBC migration helpers now recompute digest identity from the
 verified module and reject stale legacy fingerprints or capability snapshots;
 on-disk cache rewrite/restart evidence remains pending. `EsArtifactCache` now
-provides bounded file loads plus staged-file/sync/close/rename publication around the
+provides bounded file loads with exact post-read byte-count admission plus
+staged-file/sync/close/rename publication around the
 current/migration/invalid admission classifier and explicit
 staged/committed/aborted/restart state machine. Directory fsync, crash recovery,
 and concurrent-writer evidence remain pending. The pure

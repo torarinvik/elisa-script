@@ -619,8 +619,11 @@ for cache keys or diagnostic correlation; it is intentionally not a substitute
 for validating the artifact against the verified module.
 
 `EsArtifactCache` keeps typed admission beside a bounded POSIX adapter. Its
-load helpers reject files larger than the 64 KiB envelope before allocation and
-return both borrowed bytes and a current/migratable/invalid decision. Its
+load helpers reject files larger than the 64 KiB envelope before allocation,
+require the post-read byte count to equal the size snapshot, and return both
+borrowed bytes and a current/migratable/invalid decision. A concurrent shrink
+or short host read therefore fails before artifact classification rather than
+publishing a truncated cache record. Its
 publication helpers write through `FileStream` to a staging path, close the
 handle, sync the file descriptor, remove the staging file on a write/sync/close
 failure, and publish only with one `rename` edge after `Empty → Staged →
