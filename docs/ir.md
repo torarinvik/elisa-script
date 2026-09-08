@@ -1849,7 +1849,10 @@ EnvironmentEntry names are validated and unique, values remain NUL-free and
 bounded, and a sealed EnvironmentSnapshot can be looked up without touching
 the parent process environment. Set updates an existing entry deterministically
 and Unset leaves a bounded tombstone, so an adapter can apply the exact overlay
-to one child without map-order or global-state leakage.
+to one child without map-order or global-state leakage. New entries are
+admitted against the aggregate byte ceiling before insertion, and replacing a
+value accounts for only the previous value payload rather than double-counting
+the name/terminator overhead.
 `CreateDirectory`, `CreateDirectories`, `RemoveDirectory`, and `ChangeDirectory` verify as
 `Named(Path) -> Bool` with `Directory.Write` and `DirectoryError`.
 The legacy `CreateDirectory` form takes one path operand. `Path.mkdir` may use

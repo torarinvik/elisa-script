@@ -36,6 +36,8 @@ for boundary in \
     'environment_name_valid' \
     'environment_value_valid' \
     'environment_add_fits' \
+    'not environment_add_fits(snapshot.text_bytes, name, value)' \
+    'sview_len(value) > ENVIRONMENT_MAX_TEXT_BYTES - without_previous' \
     'DuplicateName' \
     'NameMissing' \
     'LookupNotReady' \
