@@ -116,8 +116,9 @@ cannot masquerade as a successful run.
 `EsModule` supplies the source/package-facing identity boundary. A
 `ModuleDescriptor` carries explicit public and private symbol sets, ordered
 imports with aliases and visibility, and a bounded source path; duplicate
-imports, public/private collisions, malformed identities, and oversized import
-or symbol sets fail through `error[ModuleContractError]`. Resolution advances
+imports, missing graph targets, public/private collisions, malformed identities,
+and oversized import or symbol sets fail through `error[ModuleContractError]`.
+Resolution advances
 `Planned → Resolving → Resolved/Failed` one event at a time, while
 `ModuleResolutionStack` rejects recursive identities before a loader can loop.
 Descriptor validation rejects `Planned` modules carrying progress and `Resolved`

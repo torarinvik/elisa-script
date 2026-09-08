@@ -43,6 +43,7 @@ for boundary in \
     'module_resolution_state_valid' \
     'DuplicateImport' \
     'DuplicateModule' \
+    'ModuleNotFound' \
     'DuplicateSymbol' \
     'PublicPrivateCollision' \
     'ResolutionCycle' \
@@ -57,7 +58,8 @@ for fixture_pattern in \
     'typed_module_graph_contract_is_private_by_default_and_cycle_safe' \
     'ModuleVisibility.Public' \
     'ModuleContractError.ResolutionCycle' \
-    'ModuleContractError.PublicPrivateCollision'; do
+    'ModuleContractError.PublicPrivateCollision' \
+    'ModuleContractError.ModuleNotFound'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 
