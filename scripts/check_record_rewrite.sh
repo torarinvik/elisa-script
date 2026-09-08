@@ -35,6 +35,7 @@ for boundary in \
     'RECORD_REWRITE_MAX_OUTPUT_BYTES' \
     'RECORD_REWRITE_MAX_APPENDS' \
     'record_rewrite_path_valid' \
+    'record_rewrite_symlink_mode_valid' \
     'RecordRewriteError.PathCollision' \
     'RecordRewriteError.OutputLimitExceeded' \
     'session.state == RecordRewriteState.Staging' \

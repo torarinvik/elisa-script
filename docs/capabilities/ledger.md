@@ -740,7 +740,7 @@ spill files, atomic publication, and merge I/O remain host work.
 
 ES-SCRIPT-025 | EsRecordRewrite supplies a transactional in-place rewrite
 contract for record/regex adapters. It requires distinct source/destination/
-staging paths, optional non-colliding backups, explicit symlink policy, bounded
+staging paths, optional non-colliding backups, a validated closed symlink policy, bounded
 output and append counts, and the ordered `Begin → Append* → Sync →
 DirectorySync? → Commit → CommitAck` lifecycle with failure, cancellation, and
 rollback acknowledgements.

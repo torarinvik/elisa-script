@@ -1100,7 +1100,8 @@ atomic spill files, and merge I/O remain host responsibilities.
 `EsRecordRewrite::RecordRewriteSession` is the safe in-place transformation
 boundary for Perl `-pi`, sed-like, and record/regex rewrite adapters. A plan
 requires distinct source, destination, and sibling staging paths, an optional
-non-colliding backup, a symlink policy, and a bounded output ceiling. The
+non-colliding backup, a closed symlink policy (`Reject`, `FollowSource`, or
+`ReplaceLink`), and a bounded output ceiling. The
 session admits `Begin → Append* → Sync → DirectorySync? → Commit → CommitAck`, with explicit
 failure, cancellation, and `BeginRollback → RollbackAck` recovery edges; an
 empty staged output is valid, but commit is impossible before the sync edge.
