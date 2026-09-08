@@ -1728,8 +1728,10 @@ machine (`Created`, `Running`, `Cancelling`, terminal success/failure/timeout,
 or cancellation). Start consumes an attempt, retry is permitted only from a
 terminal failure and returns to `Created`, and cancellation requires an explicit
 acknowledgement edge. Invalid transitions, zero/oversized retry ceilings, and
-retries beyond `max_attempts` raise `error[ProcessJobError]`; the scheduler,
-parallel-map limits, and platform signal escalation remain host integrations.
+retries beyond `max_attempts` raise `error[ProcessJobError]`; every running or
+terminal attempt state also requires a consumed attempt, preventing forged
+pre-launch outcomes. The scheduler, parallel-map limits, and platform signal
+escalation remain host integrations.
 `ProcessPipeline` extends the same shell-free boundary to ordered multi-stage
 commands. It validates every stage through `ProcessCommand`, caps stage count
 and aggregate buffer policy, and advances through explicit `Planned → Running →

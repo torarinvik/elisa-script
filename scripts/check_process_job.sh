@@ -26,6 +26,9 @@ for boundary in \
     'def advance_process_job(' \
     'ProcessJobError.InvalidState' \
     'ProcessJobError.RetryLimitExceeded' \
+    'process_job_state_requires_attempt' \
+    'job.attempts > job.max_attempts' \
+    'job.state == ProcessJobState.Created and job.attempts >= job.max_attempts' \
     'job.attempts >= job.max_attempts' \
     'ProcessJobEvent.CancelAck'; do
     rg -Fq "$boundary" "$model"
