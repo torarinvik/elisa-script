@@ -38,6 +38,7 @@ for boundary in \
     'RedirectLimitExceeded' \
     'RetryNotReady' \
     'CancelNotReady' \
+    'outcome == NetworkOutcome.Cancelled' \
     'StatusFailure'; do
     rg -Fq "$boundary" "$model"
 done
