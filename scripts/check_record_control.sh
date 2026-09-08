@@ -37,6 +37,9 @@ for boundary in \
     'RecordControlEvent.Exit' \
     'RecordControlError.RecordNotOpen' \
     'RecordControlError.FileNotClosed' \
+    'RecordControlState.Planned' \
+    'RecordControlState.RecordSkipped' \
+    'RecordControlState.FileSkipped' \
     'RecordControlState.Exited'; do
     rg -q "$boundary" "$model"
 done
@@ -47,7 +50,8 @@ for fixture_pattern in \
     'RecordControlEvent.NextRecord' \
     'RecordControlEvent.NextFile' \
     'RecordControlEvent.Exit' \
-    'RecordControlError.FileNotOpen'; do
+    'RecordControlError.FileNotOpen' \
+    'forged_skip'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 
