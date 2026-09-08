@@ -40,6 +40,8 @@ for boundary in \
     'ErrorOrigin.LimitExceeded' \
     'ErrorProvenanceEvent.Forward' \
     'ErrorProvenanceError.InvalidCause' \
+    'ErrorEnvelopeState.Captured and envelope.forward_count != 0' \
+    'ErrorEnvelopeState.Forwarded and envelope.forward_count == 0' \
     'ErrorProvenanceError.CauseDepthExceeded' \
     'ErrorProvenanceError.CancelNotReady'; do
     rg -q "$boundary" "$model"
@@ -51,7 +53,8 @@ for fixture_pattern in \
     'ErrorOrigin.Host' \
     'ErrorOrigin.Script' \
     'ErrorProvenanceEvent.Handle' \
-    'ErrorProvenanceError.InvalidCause'; do
+    'ErrorProvenanceError.InvalidCause' \
+    'forged_forward_history'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 
