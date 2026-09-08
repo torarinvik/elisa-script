@@ -33,6 +33,7 @@ for boundary in \
     'RECORD_LIFECYCLE_MAX_FILES' \
     'RECORD_LIFECYCLE_MAX_RECORDS' \
     'record_lifecycle_name_valid' \
+    'session.file_open and not record_lifecycle_name_valid\(session.current_file\)' \
     'RecordLifecycleError.FileNotOpen' \
     'RecordLifecycleError.RecordNotOpen' \
     'RecordLifecycleError.EmptyFileNotAllowed' \
