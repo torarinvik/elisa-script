@@ -130,10 +130,11 @@ lockfiles, and filesystem canonicalization to the launcher/adapter.
 `EsPackage` supplies that package-facing contract without letting a registry or
 filesystem adapter invent semantics. `PackageManifest` declares a bounded
 versioned root, typed runtime/development/build/native dependencies, native
-dependency names, and an offline-only policy. `PackageLock` records exact
+dependency names, and an offline-only policy. `PackageLock` records the same
+offline policy alongside exact
 ordered entries with source kind, locator, four-word integrity identity, and
 bounded transitive dependency names. `validate_package_resolution` checks root
-identity, every manifest constraint (including empty equal-bound intervals), and every lock dependency before source
+identity, offline-policy agreement, every manifest constraint (including empty equal-bound intervals), and every lock dependency before source
 loading; `advance_package_resolution` exposes the explicit
 `Declared → Locked → Verified` state machine with fail/reset edges. Registry
 selection, signature verification, cache storage, and publishing still belong
