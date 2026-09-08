@@ -60,7 +60,10 @@ guard, so cyclic or hostile descriptor graphs fail as `InvalidTypeTable` before
 host-stack exhaustion. Current rows additionally require array/map child arities
 and canonical child-before-parent ordering; forward or self references are
 rejected until a future recursive descriptor kind defines an explicit cycle
-representation and verifier policy.
+representation and verifier policy. The public interner applies the same kind,
+arity, nonzero-id, and child-before-parent checks at construction time, so
+callers cannot intentionally create a malformed row and defer its rejection to
+the verifier.
 
 The vocabulary intentionally contains no LLVM values, native registers, pointer
 sizes, bytecode slots, or host ABI facts. Those belong to target-specific lowering.
