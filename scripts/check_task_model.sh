@@ -47,6 +47,7 @@ for boundary in \
     'scope.state == TaskScopeState.Succeeded' \
     'scope.state == TaskScopeState.Closing' \
     'scope.state == TaskScopeState.Failed' \
+    'scope.state <- TaskScopeState.Succeeded if scope.failed_children == 0 else TaskScopeState.Failed' \
     'scope.state == TaskScopeState.Cancelled' \
     'ChannelBufferExceeded' \
     'channel.buffered_messages == 0 and channel.buffered_bytes != 0' \
@@ -63,6 +64,7 @@ done
 rg -Fq 'include "../runtime/task_model.elisa"' "$ir"
 for fixture_pattern in \
     'typed_task_scope_and_channel_contract_is_bounded' \
+    'aggregate_close' \
     'TaskFailureMode.Aggregate' \
     'TaskContractError.ChannelBufferExceeded' \
     'TaskContractError.ChildAccountingInvalid' \
