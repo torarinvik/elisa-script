@@ -19,18 +19,27 @@ done
 
 assert_atomic() {
     local definition="$1"
+    local collection="$2"
     local body
+    local local_line
+    local preflight_line
+    local result_line
+    local push_line
     body="$(awk -v definition="$definition" '
         $0 ~ definition { inside = 1 }
         inside { print }
         inside && /^        def / && $0 !~ definition { exit }
     ' "$interpreter")"
-    [[ "$body" == *"storage_start: usize = storage.count"* ]] || {
-        printf 'regex materialization audit: missing entry cursor in %s\n' "$definition" >&2
+    local_line="$(printf '%s\n' "$body" | awk -v collection="$collection" 'index($0, collection ": mutable darray[RegexMatchSpan] = []") { print NR; exit }')"
+    preflight_line="$(printf '%s\n' "$body" | awk -v collection="$collection" 'index($0, "runtime_storage_span_u32_valid(storage, " collection ".count)") { print NR; exit }')"
+    result_line="$(printf '%s\n' "$body" | awk '/result_start: u32 = storage.count.u32\(\)/ { print NR; exit }')"
+    push_line="$(printf '%s\n' "$body" | awk '/storage\.push\(runtime_text/ { print NR; exit }')"
+    [[ "$local_line" =~ ^[0-9]+$ && "$preflight_line" =~ ^[0-9]+$ && "$result_line" =~ ^[0-9]+$ && "$push_line" =~ ^[0-9]+$ ]] || {
+        printf 'regex materialization audit: missing local span/preflight markers in %s\n' "$definition" >&2
         exit 1
     }
-    [[ "$body" == *"storage.truncate(storage_start)"* ]] || {
-        printf 'regex materialization audit: missing rollback in %s\n' "$definition" >&2
+    (( local_line < preflight_line && preflight_line < result_line && result_line < push_line )) || {
+        printf 'regex materialization audit: shared storage is touched before exact preflight in %s\n' "$definition" >&2
         exit 1
     }
     [[ "$body" == *"regex_work_account(machine, budget)"* ]] || {
@@ -39,15 +48,16 @@ assert_atomic() {
     }
 }
 
-assert_atomic 'def evaluate_regex_split'
-assert_atomic 'def evaluate_regex_find'
+assert_atomic 'def evaluate_regex_split' 'fields'
+assert_atomic 'def evaluate_regex_find' 'matches'
 rg -q 'regex_split_value\(storage, regex_text\.text, regex_pattern\.text\)' "$bytecode"
 rg -q 'regex_find_value\(storage, regex_text\.text, regex_pattern\.text\)' "$bytecode"
 rg -q 'split_regex' "$interpreter_fixture"
 rg -q 'find_regex' "$bytecode_fixture"
-rg -q 'failed regex' "$docs"
+rg -q 'exact result count' "$docs"
 rg -q 'failure-atomic' "$docs"
+rg -q 'exact result count' "$ledger"
 rg -q 'RegexSplit.*roll back' "$ledger"
 rg -q 'check_regex_materialization_atomic\.sh' "$plan"
 
-printf 'regex materialization audit: split/find roll back partial flat storage on matcher-budget failure\n'
+printf 'regex materialization audit: split/find preflight exact local span counts before publication\n'

@@ -1056,6 +1056,8 @@ termination rule used by `RegexSplit` and `RegexReplace`.
 If matcher work is exhausted after earlier spans were found, both operations roll
 the shared storage cursor back before raising `OutputLimit`, so failed regex
 materialization is failure-atomic.
+The implementations collect spans locally and preflight the exact result count
+before publishing, avoiding text-length over-admission when few matches exist.
 
 `EsRecord::RecordStreamPolicy` and `EsRecord::Record` provide the typed boundary
 for Perl/AWK-style record processing. Separator mode is explicit (`Line`,
