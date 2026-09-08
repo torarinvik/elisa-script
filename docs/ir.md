@@ -1782,6 +1782,9 @@ deadline from a generic host/process failure without inspecting status bits.
 The termination edge also records whether the direct leader was already
 reaped: even in that case it sends the forced `KILL` to the verified private
 group before returning, so a surviving descendant cannot escape cleanup.
+Parent-side `setpgid` treats POSIX `EACCES` as confirmed admission when the
+child has already crossed `exec` after its child-side group setup; only other
+non-retryable failures use the direct-child fallback.
 `EsProcess::ProcessCommand` is the higher-level shell-free command value for
 adapters that need more than the primitive opcode: it keeps the executable,
 ordered argv, child working directory, ordered environment overrides, stdio

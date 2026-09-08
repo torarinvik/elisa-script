@@ -7,12 +7,13 @@ script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 interpreter="$repo_root/src/ir/interpret.elisa"
 differential="$repo_root/src/testing/differential.elisa"
+runtime="$repo_root/src/runtime/runtime.elisa"
 plan="$repo_root/IMPLEMENTATION_PLAN.md"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 tests="$repo_root/test/differential/elisascript_differential_test.elisa"
 
-for required_file in "$interpreter" "$differential" "$plan" "$docs" "$ledger" "$tests"; do
+for required_file in "$interpreter" "$differential" "$runtime" "$plan" "$docs" "$ledger" "$tests"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'process descendant audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -47,6 +48,10 @@ assert_group_cleanup_after_reap() {
 
 assert_group_cleanup_after_reap "$interpreter" process_wait_terminate
 assert_group_cleanup_after_reap "$differential" differential_terminate_process
+
+rg -q 'ES_RUNTIME_ERRNO_EACCES: int = 13' "$runtime"
+rg -q 'return true if errno\[0\] == ES_RUNTIME_ERRNO_EACCES' "$interpreter"
+rg -q 'return true if errno\[0\] == ES_RUNTIME_ERRNO_EACCES' "$differential"
 
 rg -q 'surviving descendants|leader exit.*group|leader.*group.*KILL' "$docs" "$ledger" "$plan"
 rg -q 'differential_process_execution_reports_bounded_timeout' "$tests"

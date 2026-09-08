@@ -301,8 +301,10 @@ descendants from surviving a failed differential case. Cleanup first sends
 cooperative `TERM`, waits through a bounded no-hang grace window, and then
 escalates to group `KILL` before returning—even when the leader was already
 reaped during the grace window. If parent-side `setpgid`
-is interrupted it is retried through a bounded `EINTR` budget; if it still fails,
-the adapter terminates/reaps the direct leader, closes all temporary streams,
+is interrupted it is retried through a bounded `EINTR` budget; POSIX `EACCES`
+after child-side group setup is treated as confirmed admission, while any
+other non-retryable failure causes the adapter to terminate/reap the direct
+leader, close all temporary streams,
 and returns `DifferentialRunnerError.Process` before continuing. It never runs
 with a direct-PID-only cleanup policy that could leak descendants. Group setup is
 therefore fail-closed on POSIX; adapters on platforms without process groups
