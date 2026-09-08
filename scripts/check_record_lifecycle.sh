@@ -36,6 +36,7 @@ for boundary in \
     'session.file_open and not record_lifecycle_name_valid\(session.current_file\)' \
     'session.file_open and session.file_count == 0' \
     'session.record_count != 0 and session.file_count == 0' \
+    'session.state == RecordLifecycleState.Planned and \(session.file_open or session.record_open' \
     'RecordLifecycleError.FileNotOpen' \
     'RecordLifecycleError.RecordNotOpen' \
     'RecordLifecycleError.EmptyFileNotAllowed' \
@@ -44,6 +45,7 @@ for boundary in \
     'RecordLifecycleEvent.Cancel'; do
     rg -q "$boundary" "$model"
 done
+rg -q 'forged_planned_counters' "$fixture_file"
 rg -q -U 'elif event == RecordLifecycleEvent.RecordEnd:\n                raise RecordLifecycleError.InvalidState if session.state != RecordLifecycleState.Running\n                raise RecordLifecycleError.RecordNotOpen if not session.record_open\n                raise RecordLifecycleError.RecordLimitExceeded if session.record_count >= session.policy.max_records' "$model"
 
 for fixture_pattern in \

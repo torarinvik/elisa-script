@@ -851,7 +851,8 @@ ES-SCRIPT-026 | EsRecordLifecycle supplies bounded begin/file/record/end hook
 ordering with explicit early failure and cancellation. It validates file and
 record ceilings before `RecordEnd`, rejects records outside an open file, prevents file closure
 with an open record, tracks per-file emptiness policy, and clears ownership
-state on terminal failure/cancel. The focused IR fixture, namespace inclusion,
+state on terminal failure/cancel. Imported `Planned` sessions must also have
+pristine counters and ownership fields. The focused IR fixture, namespace inclusion,
 documentation, and check_record_lifecycle.sh audit are static evidence; host
 callback dispatch and multi-file traversal remain open.
 
