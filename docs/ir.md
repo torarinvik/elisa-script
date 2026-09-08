@@ -301,8 +301,9 @@ only after every active child is accounted for through `error[StructuredTaskErro
 contract. Success, user statuses, usage/source/check/test failures, script and
 host failures, resource limits, cancellation, and signal death are distinct
 outcomes; user `main -> i64` values are restricted to `0..123`, reserved
-categories use fixed codes, and signals map to `128 + signal` only for bounded
-positive signal numbers through `error[ExitStatusError]`.
+categories use fixed codes, success/user/signal outcomes reject diagnostic
+detail payloads, and signals map to `128 + signal` only for bounded positive
+signal numbers through `error[ExitStatusError]`.
 
 `EsDeadline::DeadlineClock` separates host monotonic time from deterministic
 virtual time. Bounded waits are armed with owner identities, advances are

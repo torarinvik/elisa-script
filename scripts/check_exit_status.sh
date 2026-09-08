@@ -35,7 +35,9 @@ for boundary in \
     'ExitOutcome.CheckFailure' \
     'ExitOutcome.Cancelled' \
     'ExitStatusError.InvalidUserCode' \
-    'ExitStatusError.InvalidSignal'; do
+    'ExitStatusError.InvalidSignal' \
+    'ExitStatusError.InvalidDetail' \
+    'status.detail_code != 0'; do
     rg -q "$boundary" "$model"
 done
 
@@ -44,7 +46,8 @@ for fixture_pattern in \
     'typed_exit_status_contract_maps_user_failures_and_signals' \
     'ExitOutcome.SourceError' \
     'ExitOutcome.Signal' \
-    'ExitStatusError.InvalidUserCode'; do
+    'ExitStatusError.InvalidUserCode' \
+    'ExitStatusError.InvalidDetail'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 

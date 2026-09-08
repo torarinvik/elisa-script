@@ -458,8 +458,9 @@ open.
 ES-SCRIPT-047 | EsExitStatus supplies a stable launcher/process-status mapping.
 Success, bounded user `main -> i64` statuses, usage/source/check/test/script/
 host/limit/cancellation outcomes, and signal death are distinct typed cases;
-reserved codes are fixed, user codes are restricted to `0..123`, and signal
-codes are bounded `128 + signal` values. The focused IR fixture, namespace
+reserved codes are fixed, user codes are restricted to `0..123`, success/user/
+signal cases reject diagnostic detail, and signal codes are bounded `128 + signal`
+values. The focused IR fixture, namespace
 inclusion, documentation, and check_exit_status.sh audit are compiler-free
 static evidence; platform exit-width differences, launcher integration, and
 executed process-status parity remain open.
