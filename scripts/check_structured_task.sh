@@ -40,6 +40,7 @@ for boundary in \
     'StructuredTaskEvent.ChildCancelAck' \
     'StructuredTaskError.CancellationShielded' \
     'StructuredTaskError.JoinNotReady' \
+    'StructuredChildState.Planned' \
     'StructuredTaskError.FailureCodeMissing' \
     'StructuredScopeState.Planned and' \
     'StructuredChildState.Cleaning and' \

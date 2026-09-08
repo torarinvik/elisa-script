@@ -309,7 +309,8 @@ are separate transitions. Planned scopes must be empty, cleanup depth is present
 only for `Cleaning` children, a child in `Cleaning` cannot acknowledge
 cancellation until its cleanup depth returns to zero, and join reports failure
 or cancellation only after every active child is accounted for through
-`error[StructuredTaskError]`.
+`error[StructuredTaskError]`; a join also rejects any admitted child that is
+still `Planned`.
 
 `EsExitStatus::ExitStatus` gives the launcher one stable process-status
 contract. Success, user statuses, usage/source/check/test failures, script and
