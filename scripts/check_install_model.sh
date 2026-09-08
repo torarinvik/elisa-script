@@ -38,6 +38,7 @@ for boundary in \
     'INSTALL_MAX_TOTAL_ARTIFACT_BYTES - total_bytes' \
     'IntegrityMissing' \
     'DuplicateDestination' \
+    'plan.state == InstallState.Published' \
     'RollbackNotReady'; do
     rg -Fq "$boundary" "$model"
 done

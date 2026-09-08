@@ -224,7 +224,8 @@ destinations, invalid package-version text, non-`.elisascript` source artifacts,
 oversized per-artifact or aggregate payloads, and missing identity words;
 `advance_install_plan` requires
 `Planned → Staged → Verified → Published` and exposes explicit failure and
-rollback edges. The host installer still owns filesystem permissions, atomic
+rollback edges; a published plan cannot re-enter failure and must use rollback
+for post-publication recovery. The host installer still owns filesystem permissions, atomic
 replacement, signatures, and platform-specific executable layout.
 
 `EsSourceMap` gives diagnostics and navigation a bounded identity layer across
