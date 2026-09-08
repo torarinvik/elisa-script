@@ -50,6 +50,7 @@ for boundary in \
     'ProcessBatchState.Planned and' \
     'ProcessBatchState.Succeeded and' \
     'ProcessBatchState.Failed and' \
+    'ProcessBatchState.Draining' \
     'ProcessBatchState.Cancelled and' \
     'cancelled == 0'; do
     rg -q "$boundary" "$model"
