@@ -35,6 +35,7 @@ for boundary in \
     'InvalidParallelism' \
     'FingerprintMissing' \
     'LogLimitExceeded' \
+    'FailureNotReady' \
     'CancelNotReady' \
     'terminal_nodes' \
     'graph.state == BuildGraphState.Succeeded' \

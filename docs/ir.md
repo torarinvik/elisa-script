@@ -263,8 +263,9 @@ errors. `advance_build_graph` limits active nodes, records per-node completion
 or failure, and exposes cancellation acknowledgement so a scheduler cannot
 silently overrun parallelism or abandon children. Aggregate counters are
 reconciled with node states, and terminal graph states reject forged progress
-or unfinished completion; cancellation marks every remaining planned node as
-`Cancelled` before the graph reaches its terminal state.
+or unfinished completion; a failure is admitted only when no sibling is still
+running, then marks every remaining planned node as `Cancelled` before the
+failed graph reaches its terminal state.
 
 `EsResource` is the ownership ledger shared by runtime adapters. A lease names
 the resource kind, nonzero identity, and owner token; `ResourceLedger` keeps
@@ -2898,4 +2899,7 @@ The scheduler mirrors its active/completed ledger into the embedded graph and
 reconciles both state machines, so a forged complete or failed scheduler cannot
 hide graph progress. Cancellation acknowledgement drains the ready queue and
 marks all remaining planned nodes cancelled, so the terminal scheduler and graph
-ledgers contain no pending work.
+ledgers contain no pending work. Failure follows the same fail-closed rule:
+active siblings reject the failure edge, while an admitted failure cancels
+remaining planned nodes, clears the ready queue, and requires complete
+terminal accounting.
