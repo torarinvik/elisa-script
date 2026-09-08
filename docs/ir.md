@@ -218,7 +218,8 @@ overlapping or omitted spans in imported materializers.
 bytecode, or native artifact targets, destination paths, executable intent, and
 four-word integrity identity. `validate_install_plan` rejects duplicate
 destinations, invalid package-version text, non-`.elisascript` source artifacts,
-oversized payloads, and missing identity words; `advance_install_plan` requires
+oversized per-artifact or aggregate payloads, and missing identity words;
+`advance_install_plan` requires
 `Planned → Staged → Verified → Published` and exposes explicit failure and
 rollback edges. The host installer still owns filesystem permissions, atomic
 replacement, signatures, and platform-specific executable layout.

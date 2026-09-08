@@ -18,6 +18,7 @@ done
 for declaration in \
     'module EsInstall:' \
     'INSTALL_FORMAT_VERSION' \
+    'INSTALL_MAX_TOTAL_ARTIFACT_BYTES' \
     'const enum InstallTarget of u8:' \
     'const enum InstallScope of u8:' \
     'const enum InstallState of u8:' \
@@ -33,6 +34,8 @@ done
 for boundary in \
     'SourceExtensionInvalid' \
     'ArtifactBytesExceeded' \
+    'total_bytes' \
+    'INSTALL_MAX_TOTAL_ARTIFACT_BYTES - total_bytes' \
     'IntegrityMissing' \
     'DuplicateDestination' \
     'RollbackNotReady'; do
@@ -44,7 +47,8 @@ for fixture_pattern in \
     'typed_install_plan_publishes_and_rolls_back_integrity_bound_artifacts' \
     'InstallEvent.Stage' \
     'InstallEvent.Rollback' \
-    'InstallContractError.DuplicateDestination'; do
+    'InstallContractError.DuplicateDestination' \
+    'aggregate_rejected'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 
