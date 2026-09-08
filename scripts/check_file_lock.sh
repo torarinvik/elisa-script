@@ -49,6 +49,7 @@ for boundary in \
     'FileLockError.DuplicateOwnerPath' \
     'table.next_lease_id <= lease.lease_id' \
     'active_leases' \
+    'file_lock_state_requires_attempt' \
     'FileLockLeaseState.Failed'; do
     rg -q "$boundary" "$model"
 done

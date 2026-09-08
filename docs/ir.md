@@ -1185,7 +1185,9 @@ state-machine edges. Nonblocking conflicts return `error[FileLockError.Conflict]
 bounded waits return `WouldBlock` until a finite attempt budget is exhausted,
 then become `TimedOut`. A held lease remains active through `Releasing` until
 the host acknowledges release, while failures decrement active accounting and
-retain a failed lease record. The contract is deliberately advisory-only:
+retain a failed lease record. Held, releasing, and released sessions also
+require a consumed acquisition attempt. The contract is deliberately
+advisory-only:
 lease identities are monotonic and cannot collide with the next allocation;
 platform lock calls, mandatory-locking behavior, fairness, and race handling
 remain host-adapter responsibilities.
