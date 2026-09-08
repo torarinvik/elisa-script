@@ -50,8 +50,8 @@ rg -q '^        def evaluate_delete_index\(' "$interpreter"
 rg -q '^        def bytecode_direct_delete_index\(' "$bytecode"
 assert_search_before_allocate "$interpreter" 'def evaluate_delete_index'
 assert_search_before_allocate "$bytecode" 'def bytecode_direct_delete_index'
-rg -q 'runtime_storage_pairs_u32_valid\(storage, collection\.map_count\.usize\(\)\)' "$interpreter"
-rg -q 'runtime_storage_pairs_u32_valid\(storage, collection\.map_count\.usize\(\)' "$bytecode"
+rg -q 'runtime_storage_pairs_u32_valid\(storage, collection\.map_count\.usize\(\) - 1\)' "$interpreter"
+rg -q 'runtime_storage_pairs_u32_valid\(storage, collection\.map_count\.usize\(\) - 1\)' "$bytecode"
 
 rg -q 'interpreter_executes_mutable_dictionary_remove_and_clear' "$interpreter_fixture"
 rg -q 'def missing\(\) -> bool' "$interpreter_fixture"

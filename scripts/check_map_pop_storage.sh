@@ -49,6 +49,8 @@ rg -q '^        def evaluate_pop_map\(' "$interpreter"
 rg -q '^        def bytecode_direct_pop_map\(' "$bytecode"
 assert_search_before_allocate "$interpreter" 'def evaluate_pop_map'
 assert_search_before_allocate "$bytecode" 'def bytecode_direct_pop_map'
+rg -q 'runtime_storage_pairs_u32_valid\(storage, collection\.map_count\.usize\(\) - 1\)' "$interpreter"
+rg -q 'runtime_storage_pairs_u32_valid\(storage, collection\.map_count\.usize\(\) - 1\)' "$bytecode"
 
 rg -q 'interpreter_executes_python_dictionary_pop_with_default' "$interpreter_fixture"
 rg -q 'assert storage\.count == 2' "$interpreter_fixture"
