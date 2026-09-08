@@ -38,6 +38,11 @@ for boundary in \
     'RECORD_SPILL_MAX_TOTAL_BYTES' \
     'record_spill_bounded_add' \
     'has_active_run' \
+    'RecordSpillState.Planned' \
+    'RecordSpillState.Ready' \
+    'RecordSpillState.Merging' \
+    'RecordSpillState.Sealed' \
+    'session.merged_runs != session.runs.count' \
     'RecordSpillEvent.SealRun' \
     'RecordSpillEvent.BeginMerge' \
     'RecordSpillEvent.MergeRun' \
@@ -54,7 +59,9 @@ for fixture_pattern in \
     'RecordSpillEvent.StartRun' \
     'RecordSpillEvent.SealRun' \
     'RecordSpillEvent.MergeRun' \
-    'RecordSpillError.MergeOrderInvalid'; do
+    'RecordSpillError.MergeOrderInvalid' \
+    'RecordSpillError.AccountingInvalid' \
+    'forged_state'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 
