@@ -39,6 +39,7 @@ for boundary in \
     'DuplicateField' \
     'DuplicateSourceName' \
     'ValueKindMismatch' \
+    'raise SchemaContractError.InvalidValueKind if not schema_json_node_kind_valid(node.kind)' \
     'schema_json_node_kind_valid' \
     'session.state == SchemaDecodeState.Ready' \
     'SchemaDecodeState.Complete' \
