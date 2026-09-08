@@ -1201,7 +1201,8 @@ and the final suffix under one output ceiling. Global versus single replacement 
 zero-width matches must advance (including the EOF non-progress guard), and a
 callback cannot be re-entered while a replacement is pending. Match/capture/
 output limits, malformed spans, cancellation, and premature end use
-`error[RegexCallbackError]`; callback invocation and capture materialization
+`error[RegexCallbackError]`; validation also rejects forged planned counters and
+pending callbacks outside matching. Callback invocation and capture materialization
 remain host/interpreter work.
 
 `EsJsonStream::JsonStreamSession` is the JSON/JSONL framing layer before value

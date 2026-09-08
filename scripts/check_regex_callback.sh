@@ -40,6 +40,8 @@ for boundary in \
     'RegexCallbackError.NonProgress' \
     'RegexCallbackError.ReplacementNotReady' \
     'RegexCallbackError.OutputLimitExceeded' \
+    'RegexCallbackError.AccountingInvalid' \
+    'session.pending and session.state != RegexCallbackState.Matching' \
     'RegexCallbackEvent.Match' \
     'RegexCallbackEvent.Replace' \
     'RegexCallbackState.Complete'; do
@@ -52,7 +54,9 @@ for fixture_pattern in \
     'RegexCallbackEvent.Match' \
     'RegexCallbackEvent.Replace' \
     'RegexCallbackError.NonProgress' \
-    'RegexCallbackError.MatchLimitExceeded'; do
+    'RegexCallbackError.MatchLimitExceeded' \
+    'RegexCallbackError.AccountingInvalid' \
+    'forged_pending'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 
