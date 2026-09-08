@@ -1682,7 +1682,8 @@ cleanup boundary. A host supervisor must first publish the exact root and
 member identities (including start tokens), then acknowledge a graceful group
 request before polling or escalating. Force attempts and polls are bounded;
 reaped-member counts are monotonic and `Reaped` is impossible until every
-owned member is accounted for. `Cancel` records cancellation intent without
+owned member is accounted for; externally assembled `Reaped` records with a
+partial count are rejected as well. `Cancel` records cancellation intent without
 weakening the same graceful/force/reap sequence, while timeout and failure
 remain distinct terminal outcomes. The contract never sends signals or calls
 `waitpid`; it prevents a host adapter from targeting an unowned PID or

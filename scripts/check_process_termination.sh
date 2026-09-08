@@ -42,6 +42,7 @@ for boundary in \
     'ProcessTerminationEvent.ForceAck' \
     'ProcessTerminationEvent.ReportReaped' \
     'ProcessTerminationError.ReapCountInvalid' \
+    'session.state == ProcessTerminationState.Reaped' \
     'ProcessTerminationError.PollLimitExceeded' \
     'ProcessTerminationError.ForceLimitExceeded'; do
     rg -q "$boundary" "$model"
