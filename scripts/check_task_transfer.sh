@@ -39,6 +39,9 @@ for boundary in \
     'TaskTransferMode.Move' \
     'TaskTransferMode.Borrow' \
     'TaskTransferError.DuplicateResource' \
+    'derived_admitted_items' \
+    'derived_committed_items' \
+    'derived_admitted_bytes' \
     'TaskTransferError.CommitNotReady' \
     'TaskTransferState.Committed'; do
     rg -q "$boundary" "$model"
