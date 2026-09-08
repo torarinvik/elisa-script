@@ -299,7 +299,8 @@ child creates a private process group before `execvp`; timeout and output-limit
 cleanup signal that confirmed group and then reap the leader, preventing
 descendants from surviving a failed differential case. Cleanup first sends
 cooperative `TERM`, waits through a bounded no-hang grace window, and then
-escalates to group `KILL` before reaping the leader. If parent-side `setpgid`
+escalates to group `KILL` before returning—even when the leader was already
+reaped during the grace window. If parent-side `setpgid`
 is interrupted it is retried through a bounded `EINTR` budget; if it still fails,
 the adapter terminates/reaps the direct leader, closes all temporary streams,
 and returns `DifferentialRunnerError.Process` before continuing. It never runs
