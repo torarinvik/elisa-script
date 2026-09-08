@@ -40,6 +40,8 @@ for boundary in \
     'DependencyNotReady' \
     'ActiveLimitExceeded' \
     'NodeAccountingInvalid' \
+    'scheduler.graph.active_nodes' \
+    'scheduler.state == BuildSchedulerState.Complete' \
     'CompleteNotReady' \
     'CancelNotReady'; do
     rg -Fq "$boundary" "$model"
