@@ -47,6 +47,7 @@ for boundary in \
     'scope.state == TaskScopeState.Succeeded' \
     'scope.state == TaskScopeState.Cancelled' \
     'ChannelBufferExceeded' \
+    'channel.state == TaskChannelState.Closed' \
     'ChannelEmpty' \
     'TaskScopeEvent.CancelAck' \
     'TaskChannelEvent.CancelAck'; do
