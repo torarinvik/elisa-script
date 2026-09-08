@@ -1340,7 +1340,7 @@ metadata, text equality/containment, or host-supplied `External`) and an
 explicit `Select`/`Skip` action. The host supplies one observation per clause,
 while the state machine opens a range on its start match, includes its end
 match, closes it deterministically, and records one bounded decision per input
-record. Validation reconciles decision cardinality/selection counters and
+record; selection is the OR of all matching clauses for that record. Validation reconciles decision cardinality/selection counters and
 running/terminal clause-state shape. Shape mismatches, unterminated ranges,
 malformed predicates, text limits, cancellation, and terminal transitions use
 `error[RecordPatternError]`; regex compilation and callback dispatch remain

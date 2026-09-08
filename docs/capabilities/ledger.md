@@ -525,7 +525,8 @@ sampled-out span edges still update logical depth, and sealing rejects open
 spans through `error[TelemetryError]`.
 Failure is allowed before sealing but cannot be repeated after the ledger is
 already failed.
-The focused IR fixture, namespace inclusion, documentation, and
+Selection is accumulated across all clauses so a later non-selecting clause
+cannot erase an earlier match. The focused IR fixture, namespace inclusion, documentation, and
 check_telemetry.sh audit are compiler-free static evidence; clock adapters,
 export formats, cross-task aggregation, and runtime overhead measurements
 remain open.

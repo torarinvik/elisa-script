@@ -55,6 +55,8 @@ for fixture_pattern in \
     'record_pattern_selected'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
+rg -Fq 'record_selected: mutable bool = false' "$model"
+rg -Fq 'multi_clauses' "$fixture_file"
 
 rg -q 'EsRecordPattern::RecordPatternSession' "$docs"
 rg -q 'ES-SCRIPT-039' "$ledger"
