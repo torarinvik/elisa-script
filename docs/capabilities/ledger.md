@@ -428,7 +428,9 @@ effect-ID migration and executed validation remain open.
 Multi-shot handler verification now walks interned TypeTable child descriptors
 with a bounded fail-closed traversal, rejecting nested array/map storage rather
 than only root aggregate captures. Legacy inline descriptors retain the root-kind
-guard; deep cloning and adversarial execution evidence remain open.
+guard; a malformed nominal-root regression fixture proves the nested guard emits
+an `UnsafeMultiShot` issue alongside the structural table error. Deep cloning and
+adversarial execution evidence remain open.
 
 Recent static increments are committed as `72f3325` (Path line semantics audit),
 `0739d4c` (typed cleanup guard), `b0ecf06` (cache cleanup integration),
