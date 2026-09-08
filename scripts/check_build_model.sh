@@ -36,6 +36,7 @@ for boundary in \
     'FingerprintMissing' \
     'LogLimitExceeded' \
     'CancelNotReady' \
+    'graph.active_nodes != 0' \
     'validate_process_command'; do
     rg -Fq "$boundary" "$model"
 done

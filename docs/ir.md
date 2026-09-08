@@ -2740,4 +2740,7 @@ rebuilds a deterministic ready queue from planned nodes and succeeded
 dependencies, admits at most the graph's declared parallelism, records exact
 fingerprint cache hits, and turns dispatch, completion, failure, and
 cancellation into explicit state-machine events. Queue entries are rebuilt
-after every mutation so completed or running nodes cannot remain dispatchable.
+after every mutation so completed or running nodes cannot remain dispatchable;
+validation also rejects cache entries for unknown graph nodes and manually
+injected queue entries whose dependencies are not complete. Cancellation
+acknowledgement is admitted only after active work reaches zero.
