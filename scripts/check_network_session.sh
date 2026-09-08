@@ -44,6 +44,7 @@ for boundary in \
     'NetworkSessionState.Completed and' \
     'session.sent_bytes != session.request.body.count' \
     'NetworkSessionState.Failed and' \
+    'session_state_active(session.state) and' \
     'NetworkSessionState.Cancelled'; do
     rg -Fq "$boundary" "$model"
 done

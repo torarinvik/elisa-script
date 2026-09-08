@@ -1319,6 +1319,8 @@ match their states. A failure edge cannot carry the distinct `Cancelled`
 outcome; cancellation must use the explicit cancellation state machine.
 Completed sessions also require the full request body to be accounted for, and
 cancellation states cannot retain an HTTP status.
+Active transport phases also retain the neutral success/zero-status pair until
+the explicit receive-completion or failure edge.
 
 `EsProcessBatch::ProcessBatchSession` supplies the bounded fan-out/fan-in layer
 for process maps. Jobs have unique IDs, pending/running/retryable/terminal
