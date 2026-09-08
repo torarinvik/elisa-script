@@ -86,7 +86,9 @@ for boundary in \
     'job.state == NetworkRequestState.Planned and job.attempts >= job.max_attempts' \
     'NetworkRequestEvent.CancelAck' \
     'NetworkRequestEvent.Retry' \
-    'response.outcome in {NetworkOutcome.Success, NetworkOutcome.StatusFailure}' \
+    'response.outcome == NetworkOutcome.Success' \
+    'response.outcome == NetworkOutcome.StatusFailure' \
+    'response.status < 200 or response.status > 399' \
     'response.status != 0'; do
     rg -Fq "$boundary" "$model"
 done
@@ -112,6 +114,10 @@ for fixture_pattern in \
     'NetworkContractError.InvalidStatus'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
+
+rg -Fq 'forged_success_status' "$fixture"
+rg -Fq 'forged_failure_status' "$fixture"
+rg -Fq 'forged_completed_outcome' "$fixture"
 
 rg -Fq 'EsNetwork::NetworkRequest' "$docs"
 rg -Fq 'error[NetworkContractError]' "$docs"
