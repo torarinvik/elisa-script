@@ -1861,7 +1861,9 @@ escalation remain host integrations.
 `ProcessPipeline` extends the same shell-free boundary to ordered multi-stage
 commands. It validates every stage through `ProcessCommand`, caps stage count
 and aggregate buffer policy, and advances through explicit `Planned → Running →
-Succeeded/Failed` or `Cancelling → Cancelled` edges. Stage exit/failure events
+Succeeded/Failed` or `Cancelling → Cancelled` edges. Fail-fast stage failure
+enters cancellation draining, and explicit stage-cancel edges account every
+remaining stage before `Failed` is published. Stage exit/failure events
 must name the next stage, aggregate mode records failures without losing order,
 and invalid stage commands or transitions raise `error[ProcessPipelineError]`.
 Validation reconciles running/cancelling and terminal pipeline state with

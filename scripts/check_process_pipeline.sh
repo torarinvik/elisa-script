@@ -36,6 +36,7 @@ for boundary in \
     'InvalidStageIndex' \
     'ProcessPipelineFailureMode.Aggregate' \
     'ProcessPipelineEvent.StageFailure' \
+    'ProcessPipelineEvent.StageCancel' \
     'ProcessPipelineState.Cancelling' \
     'ProcessPipelineEvent.CancelAck'; do
     rg -Fq "$boundary" "$model"
