@@ -1123,7 +1123,7 @@ value instead of silently changing `NF`. `record_field_edit_reconstruct_length`
 performs subtraction-safe output accounting before allocation, and
 `record_field_reconstruct` joins only a `Ready` session; `Ready` output bytes
 must match the reconstructed field length. The state machine
-rejects post-terminal mutation, invalid indices, malformed/NUL-bearing text,
+rejects pre-begin edits/output, post-terminal mutation, invalid indices, malformed/NUL-bearing text,
 and output overflows through `error[RecordFieldEditError]`; host adapters own
 the borrowed field storage and any subsequent file publication.
 

@@ -44,6 +44,8 @@ for boundary in \
     'RecordFieldEditError.EditLimitExceeded' \
     'RecordFieldEditError.OutputLimitExceeded' \
     'RecordFieldEditError.AccountingInvalid' \
+    'session.state == RecordFieldEditState.Planned and' \
+    'session.state == RecordFieldEditState.Editing and' \
     'expected_output_bytes' \
     'RecordFieldEditEvent.Set' \
     'RecordFieldEditEvent.Reconstruct' \
