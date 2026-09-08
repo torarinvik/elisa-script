@@ -39,6 +39,7 @@ for boundary in \
     'CacheMiss' \
     'EntryIndexInvalid' \
     'InvalidateNotReady' \
+    'cache.state == PackageCacheState.Empty' \
     'ResetNotReady' \
     'ByteLimitExceeded'; do
     rg -Fq "$boundary" "$model"
@@ -51,7 +52,8 @@ for fixture_pattern in \
     'PackageCacheEvent.Store' \
     'package_cache_lookup' \
     'PackageCacheError.CacheMiss' \
-    'PackageCacheEvent.Invalidate'; do
+    'PackageCacheEvent.Invalidate' \
+    'forged_empty'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 
