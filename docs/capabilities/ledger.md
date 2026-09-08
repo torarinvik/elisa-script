@@ -91,6 +91,7 @@ Glob expansion preflights its deduplicated match count rather than the raw
 walker count, preserving valid overlap-heavy expansions at the storage ceiling.
 Regex capture and capture-name arrays likewise preflight their exact proven
 result count after matcher accounting, avoiding pattern-length over-admission.
+Scalar named-capture lookup no longer charges array storage that it never writes.
 `SplitLines` now applies the same exact-result admission in both engines rather
 than charging the full input length.
 `Path.iterdir()` rolls the flat storage cursor back on a late child-path failure,

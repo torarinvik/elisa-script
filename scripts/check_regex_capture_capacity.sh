@@ -38,6 +38,15 @@ pattern_charge_line="$(printf '%s\n' "$body" | awk '/runtime_storage_text_fields
 
 rg -q 'capture_regex' "$interpreter_fixture"
 rg -q 'capture_regex' "$bytecode_fixture"
+named_body="$(awk '
+    /def evaluate_regex_capture_named\(/ { inside = 1 }
+    inside { print }
+    inside && /^        def / && $0 !~ /def evaluate_regex_capture_named\(/ { exit }
+' "$interpreter")"
+[[ "$named_body" != *"runtime_storage_text_fields_u32_valid"* ]] || {
+    printf 'regex capture capacity audit: scalar named lookup still charges text-field storage\n' >&2
+    exit 1
+}
 rg -q 'sizes the exact proven group/name result' "$docs"
 rg -q 'exact proven' "$ledger"
 rg -q 'check_regex_capture_capacity\.sh' "$plan"

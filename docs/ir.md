@@ -1483,6 +1483,8 @@ Glob expansion similarly counts sorted unique matches before checking flat-pool
 capacity, so duplicate matches from overlapping variants do not over-reserve.
 Regex capture materialization sizes the exact proven group/name result after
 matcher work completes rather than charging the entire pattern length.
+Scalar named-capture lookup returns text directly and does not require shared
+array storage admission.
 Line splitting also counts its actual fields before checking flat-pool capacity,
 so short line results from long inputs are not rejected by an input-length bound.
 Missing keys use the existing typed
