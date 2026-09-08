@@ -1206,7 +1206,7 @@ identities fail closed as cycle/alias protection. Planned snapshots are empty,
 `DoNotFollow`, `FollowFiles`,
 and `FollowDirectories` symlink policies plus fail-fast/collect behavior are
 typed, and `Descend`/`Leave` maintain an explicit depth stack. Cancellation and
-completion and cancellation require a balanced walk; malformed paths, non-directories, denied
+completion require a balanced walk; malformed paths, non-directories, denied
 symlink descent, limits, and identity/byte accounting failures use
 `error[DirectoryTreeError]`.
 

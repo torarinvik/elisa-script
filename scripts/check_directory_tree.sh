@@ -47,6 +47,7 @@ for boundary in \
     'DirectoryTreeError.AccountingInvalid' \
     'DirectoryTreeState.Planned and' \
     'DirectoryTreeState.Complete and' \
+    'DirectoryTreeState.Cancelled and' \
     'DirectoryTreeEvent.Descend' \
     'DirectoryTreeEvent.Cancel' \
     'DirectoryTreeState.Complete'; do
