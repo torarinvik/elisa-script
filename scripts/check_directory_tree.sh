@@ -49,6 +49,7 @@ for boundary in \
     'DirectoryTreeState.Complete and' \
     'DirectoryTreeState.Cancelled and' \
     'DirectoryTreeEvent.Descend' \
+    'last.kind == DirectoryTreeEntryKind.Symlink' \
     'session.failures >= session.policy.max_entries' \
     'DirectoryTreeEvent.Cancel' \
     'DirectoryTreeState.Complete'; do
@@ -65,6 +66,7 @@ for fixture_pattern in \
     'DirectoryTreeError.ParentDepthMismatch'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
+rg -Fq 'follow_symlink' "$fixture_file"
 
 rg -q 'EsDirectoryTree::DirectoryTreeSession' "$docs"
 rg -q 'ES-FS-003' "$ledger"

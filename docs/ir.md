@@ -1263,6 +1263,8 @@ each visited path has a nonzero identity and stable depth, and duplicate
 identities fail closed as cycle/alias protection. Planned snapshots are empty,
 `DoNotFollow`, `FollowFiles`,
 and `FollowDirectories` symlink policies plus fail-fast/collect behavior are
+enforced at `Descend`, including admission of symlinked directories only under
+`FollowDirectories`,
 typed, and `Descend`/`Leave` maintain an explicit depth stack. Cancellation and
 completion require a balanced walk; failure counts are bounded before each
 failure edge, and malformed paths, non-directories, denied
