@@ -1302,6 +1302,8 @@ opening sockets itself. Planned/retry states clear transient I/O fields,
 completed states require a real status, and failure/cancellation outcomes must
 match their states. A failure edge cannot carry the distinct `Cancelled`
 outcome; cancellation must use the explicit cancellation state machine.
+Completed sessions also require the full request body to be accounted for, and
+cancellation states cannot retain an HTTP status.
 
 `EsProcessBatch::ProcessBatchSession` supplies the bounded fan-out/fan-in layer
 for process maps. Jobs have unique IDs, pending/running/retryable/terminal

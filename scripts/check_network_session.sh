@@ -42,6 +42,7 @@ for boundary in \
     'StatusFailure' \
     'NetworkSessionState.Planned and' \
     'NetworkSessionState.Completed and' \
+    'session.sent_bytes != session.request.body.count' \
     'NetworkSessionState.Failed and' \
     'NetworkSessionState.Cancelled'; do
     rg -Fq "$boundary" "$model"
