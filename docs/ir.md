@@ -1779,6 +1779,9 @@ reaps the private process group, then reports `Time` after giving
 `OutputLimit` precedence for capture operations. Other wait, close, seek, and
 reap failures remain `InterpretFailure.Process`, so callers can distinguish a
 deadline from a generic host/process failure without inspecting status bits.
+The termination edge also records whether the direct leader was already
+reaped: even in that case it sends the forced `KILL` to the verified private
+group before returning, so a surviving descendant cannot escape cleanup.
 `EsProcess::ProcessCommand` is the higher-level shell-free command value for
 adapters that need more than the primitive opcode: it keeps the executable,
 ordered argv, child working directory, ordered environment overrides, stdio
