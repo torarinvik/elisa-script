@@ -366,7 +366,8 @@ implementation through `error[HashError]`.
 `EsBinary::BinaryCursor` keeps binary parsing distinct from text. It bounds the
 input and read count, admits explicit little- or big-endian scalar reads with
 subtraction-safe offsets, supports bounded skipping, and requires an explicit
-finish with no trailing bytes; truncation, post-finish reads, and malformed
+finish with no trailing bytes; truncation, post-finish reads, impossible
+offset/read accounting, and malformed
 state (including a forged exhausted cursor before EOF) fail through
 `error[BinaryError]`.
 

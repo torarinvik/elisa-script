@@ -42,6 +42,9 @@ for boundary in \
     'BinaryError.Truncated' \
     'BinaryError.TrailingBytes' \
     'BinaryError.ReadLimitExceeded' \
+    'BinaryError.AccountingInvalid' \
+    'cursor.offset != 0 and cursor.reads == 0' \
+    'cursor.reads > cursor.offset' \
     'cursor.state == BinaryCursorState.Exhausted' \
     'BinaryError.InvalidState'; do
     rg -q "$boundary" "$model"
