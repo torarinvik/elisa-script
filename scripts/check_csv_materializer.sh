@@ -43,6 +43,7 @@ for boundary in \
     'RecordOrderInvalid' \
     'accounted_record_fields' \
     'materializer.next_field != materializer.fields.count' \
+    'CsvMaterializerState.Building and materializer.state != CsvMaterializerState.Complete' \
     'SourceAccountingInvalid' \
     'EndNotReady'; do
     rg -Fq "$boundary" "$model"

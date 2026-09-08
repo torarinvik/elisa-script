@@ -203,7 +203,8 @@ adapter work.
 EsCsvMaterialize gives CSV/TSV adapters an explicit borrowed-span boundary.
 Each field span is range-checked against the source and each record must
 consume the next contiguous field range; field and record ceilings are shared
-with EsData, and lookup returns only validated slices. Quoted spans remain
+with EsData, and lookup returns only validated slices while the session is
+building or complete. Quoted spans remain
 marked for a later unescape phase rather than being silently treated as plain
 text. Validation derives the field cursor and record-field total, rejecting
 overlapping or omitted spans in imported materializers.
