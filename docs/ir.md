@@ -1897,6 +1897,8 @@ to one child without map-order or global-state leakage. New entries are
 admitted against the aggregate byte ceiling before insertion, and replacing a
 value accounts for only the previous value payload rather than double-counting
 the name/terminator overhead.
+Fresh `Ready` snapshots must be empty and zero-accounted, and `Unset` validates
+the variable name before resolving tombstones.
 `CreateDirectory`, `CreateDirectories`, `RemoveDirectory`, and `ChangeDirectory` verify as
 `Named(Path) -> Bool` with `Directory.Write` and `DirectoryError`.
 The legacy `CreateDirectory` form takes one path operand. `Path.mkdir` may use

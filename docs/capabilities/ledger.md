@@ -625,7 +625,8 @@ engine's iterative-stack rewrite and adversarial execution corpus remain open.
 
 ES-SCRIPT-010 | EsEnvironment supplies bounded unique name/value entries,
 sealed lookup, deterministic set updates, tombstone unsets, aggregate text
-accounting, and explicit failure/reset transitions without mutating parent
+accounting, clean ready-state initialization, and explicit failure/reset
+transitions without mutating parent
 process state. The focused IR fixture and check_environment_model.sh audit are
 static evidence; host environment snapshot/apply adapters remain open.
 

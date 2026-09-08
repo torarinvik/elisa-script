@@ -38,6 +38,8 @@ for boundary in \
     'environment_add_fits' \
     'not environment_add_fits(snapshot.text_bytes, name, value)' \
     'sview_len(value) > ENVIRONMENT_MAX_TEXT_BYTES - without_previous' \
+    'EnvironmentState.Ready and' \
+    'environment_name_valid(name)' \
     'DuplicateName' \
     'NameMissing' \
     'LookupNotReady' \
