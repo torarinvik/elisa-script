@@ -31,6 +31,15 @@ interpreter, bytecode, source-loader, parser, lexer, semantic, and differential
 test suites. Rebuild the local Elisa-core compiler first when its stage0 or stage1
 sources change, then rerun the Elisascript suites from this checkout.
 
+Resolve the compiler identity and keyed output directory before a validation
+session with `scripts/validation_identity.sh`. It records the pinned checkout
+revision, executable SHA-256, optimization/target/mode configuration, and a
+derived output key under `.validation/`; that directory is ignored and must not
+be used as a substitute for a validation result. Set
+`ELISASCRIPT_VALIDATION_OUTPUT_ROOT` to place keyed logs and artifacts in a
+reviewed external directory. The helper is compiler-free and does not build or
+launch anything.
+
 For a reusable guard instead of an inline shell function, run
 `scripts/run_bounded_lowering.sh test/ir/elisascript_lowering_test.elisa` from
 this repository after explicit reauthorization. It accepts one or more small
