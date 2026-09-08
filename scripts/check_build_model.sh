@@ -38,6 +38,7 @@ for boundary in \
     'CancelNotReady' \
     'terminal_nodes' \
     'graph.state == BuildGraphState.Succeeded' \
+    'graph.completed_nodes != graph.nodes.count' \
     'graph.active_nodes != 0' \
     'validate_process_command'; do
     rg -Fq "$boundary" "$model"
