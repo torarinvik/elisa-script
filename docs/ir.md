@@ -1474,6 +1474,9 @@ partially materialize an insertion before the overflow error is reported.
 Map concatenation likewise counts only right-hand keys absent from both the left
 map and earlier right-hand entries, so duplicate-heavy merges do not require
 capacity for pairs that will be overwritten.
+Map removals search before sizing their shortened copy and require only
+`count - 1` pairs after a match; absent-key `PopMap`/`DeleteIndex` no-ops do not
+need any replacement capacity.
 Missing keys use the existing typed
 `IndexOutOfBounds` error rather than a sentinel value. The reference interpreter and
 the bytecode facade share this representation. Maps whose key and value types are
