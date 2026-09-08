@@ -46,6 +46,10 @@ for boundary in \
     'DirectoryMutationEvent.Enter' \
     'DirectoryMutationEvent.Leave' \
     'DirectoryMutationError.DuplicateIdentity' \
+    'DirectoryMutationError.DestinationCollision' \
+    'DirectoryMutationState.Planned and' \
+    'DirectoryMutationState.Completed' \
+    'DirectoryMutationState.Cancelled' \
     'session\.identities\[index\] != entry\.identity' \
     'DirectoryMutationError.FailureLimitExceeded' \
     'DirectoryMutationError.CancelNotReady'; do
@@ -59,7 +63,9 @@ for fixture_pattern in \
     'DirectoryMutationOperation.Remove' \
     'DirectoryMutationError.DuplicateIdentity' \
     'DirectoryMutationEvent.Failure' \
-    'DirectoryMutationEvent.Cancel'; do
+    'DirectoryMutationEvent.Cancel' \
+    'DirectoryMutationError.DestinationCollision' \
+    'DirectoryMutationError.ActiveScope'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 

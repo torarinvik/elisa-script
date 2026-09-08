@@ -844,8 +844,9 @@ ES-FS-005 | EsDirectoryMutation supplies a bounded recursive copy/remove
 planning contract. It records source/destination paths, stable identities,
 depth and byte accounting, explicit applied/skipped/failed entry outcomes,
 symlink preserve/follow/skip/reject policy, fail-fast versus collected partial
-failures, balanced directory scopes, cycle/alias rejection, resource limits,
-and cancellation through `error[DirectoryMutationError]`. The focused IR
+failures, balanced directory scopes, duplicate copy-destination rejection,
+clean planned state, cycle/alias rejection, resource limits, and cancellation
+through `error[DirectoryMutationError]`. The focused IR
 fixture, namespace inclusion, documentation, and check_directory_mutation.sh
 audit are static evidence; mkdir/copy/unlink/rmdir adapters, canonical path
 containment, permissions, rollback, and race fixtures remain host work.
