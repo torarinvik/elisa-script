@@ -337,6 +337,9 @@ with release on both success and failure; a successful release failure is typed
 as a lock error while publication failures retain their original cause. The
 lock's `Available → Held → Released` transition table is explicit and permits
 reacquisition only from `Released`; invalid events remain inert.
+Cache publication also rejects equal staging/destination paths and lock/data
+aliases with typed `ArtifactCacheIoError.PathCollision` before opening or
+truncating any cache file.
 
 The first large-file vertical slice is now a typed `EsRuntime::FileStream`
 contract with explicit modes, bounded chunk read/write, an error-safe line

@@ -654,7 +654,10 @@ All borrowed cache paths now pass a private bounded 4 KiB terminator admission
 before file-size reads, staging, rename, directory sync, or advisory lock
 operations; an unterminated path returns `ArtifactCacheIoError.PathTooLong`
 (or the typed read failure at the load boundary) before any POSIX helper scans
-it.
+it. Publication also rejects equal staging/destination paths and lock-path
+aliases with `ArtifactCacheIoError.PathCollision`, preventing a caller from
+truncating the destination or overwriting the lock file before the atomic
+rename edge.
 
 `EsRuntime::FileStream` is the first typed large-file vertical slice. A handle
 is opened with an explicit read/text/binary/write/append mode and a byte budget
