@@ -39,7 +39,9 @@ for boundary in \
     'HashAlgorithm.Sha512' \
     'HashError.DigestAlgorithmMismatch' \
     'HashError.DigestAlreadyPublished' \
-    'HashError.InputLimitExceeded'; do
+    'HashError.InputLimitExceeded' \
+    'HashError.AccountingInvalid' \
+    'digest.word1 == 0'; do
     rg -q "$boundary" "$model"
 done
 
@@ -48,7 +50,8 @@ for fixture_pattern in \
     'typed_hash_contract_bounds_chunks_and_publishes_one_digest' \
     'HashAlgorithm.Sha256' \
     'HashError.DigestAlgorithmMismatch' \
-    'HashState.Finalized'; do
+    'HashState.Finalized' \
+    'HashError.AccountingInvalid'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 
