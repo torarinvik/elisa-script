@@ -1270,7 +1270,8 @@ remain host/interpreter work.
 materialization. It bounds total input, per-record bytes, record count, and
 bracket depth while tracking a typed delimiter stack, quoted strings, and escapes. Newline boundaries are
 recognized only outside strings and balanced containers; final partial records
-are accepted at `End`, while empty records, unterminated strings/values,
+are accepted at `End`, while empty records are rejected unless the policy opts
+in, and unterminated strings/values,
 underflow, invalid stack contents, forged ready/complete state, and cancellation
 are explicit typed errors; complete state also reconciles input bytes with the
 number of admitted records. A full parser consumes

@@ -41,6 +41,7 @@ for boundary in \
     'JsonStreamError.MismatchedDelimiter' \
     'JsonStreamError.AccountingInvalid' \
     'session.records > session.input_bytes' \
+    'session.records > session.input_bytes and not session.policy.allow_empty_records' \
     'container_stack' \
     'session.state == JsonStreamState.Ready' \
     'session.state == JsonStreamState.Complete' \
@@ -61,6 +62,7 @@ for fixture_pattern in \
     'JsonStreamEvent.End' \
     'JsonStreamError.UnterminatedValue' \
     'JsonStreamError.RecordBytesLimitExceeded' \
+    'allow_empty_records' \
     'forged_complete'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
