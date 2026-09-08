@@ -33,6 +33,7 @@ done
 
 for boundary in \
     'TextLimitExceeded' \
+    'FailedRecordAccountingInvalid' \
     'RecordLimitExceeded' \
     'InvalidColorMode' \
     'OutputLimitInvalid' \
