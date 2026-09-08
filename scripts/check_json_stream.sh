@@ -35,6 +35,8 @@ for boundary in \
     'JSON_STREAM_MAX_RECORDS' \
     'JSON_STREAM_MAX_DEPTH' \
     'json_stream_finish_record' \
+    'if byte == 10 and not session.in_string and session.depth == 0' \
+    'not json_stream_increment\(session.record_bytes, session.policy.max_record_bytes\)' \
     'in_string' \
     'escaped' \
     'JsonStreamError.DepthUnderflow' \
