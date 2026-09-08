@@ -597,7 +597,8 @@ platform descriptor acquisition and actual close calls remain host adapters.
 ES-SCRIPT-007 | EsProcessSession binds validated ProcessCommand values to
 clean pre-spawn state, distinct spawn handle identities, bounded stdout/stderr
 aggregate accounting, bounded polls, typed terminal outcomes, and explicit timeout/cancellation
-edges. The focused IR fixture and check_process_session.sh audit are static
+edges; a Created session must retain the SpawnFailure result sentinel until
+Spawn. The focused IR fixture and check_process_session.sh audit are static
 evidence; fork/exec, signal escalation, and child reaping remain host work.
 
 ES-SCRIPT-037 | EsProcessTermination supplies bounded process-group

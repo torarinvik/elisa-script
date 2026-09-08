@@ -38,6 +38,7 @@ for boundary in \
     'InvalidOutcome' \
     'session.state == ProcessSessionState.Exited' \
     'session.state == ProcessSessionState.Created' \
+    'session.state == ProcessSessionState.Created and session.result_kind != ProcessResultKind.SpawnFailure' \
     'session.state == ProcessSessionState.TimedOut' \
     'ExitNotReady' \
     'CancelNotReady' \
