@@ -38,6 +38,7 @@ for boundary in \
     'PROCESS_BATCH_MAX_ATTEMPTS' \
     'process_batch_pending_index' \
     'process_batch_all_terminal' \
+    'process_batch_job_requires_attempt' \
     'ProcessBatchFailureMode.FailFast' \
     'ProcessBatchFailureMode.Aggregate' \
     'ProcessBatchEvent.Retry' \

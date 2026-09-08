@@ -1334,9 +1334,11 @@ policy caps total jobs and active parallelism and selects fail-fast versus
 aggregate failure. Planned cancellation marks all pending jobs cancelled,
 `Succeeded` requires every job completed, and `Cancelled` cannot retain
 unfinished jobs. `Cancel → CancelAck` marks every still-owned slot cancelled;
-the contract never starts a child or sends a signal. Duplicate IDs, stale job
-indices, retry exhaustion, no-pending launches, counter drift, and post-terminal
-events return `error[ProcessBatchError]`.
+the contract never starts a child or sends a signal. Non-pending execution
+states also require a consumed attempt, so a retry/failure record cannot be
+forged before its first launch. Duplicate IDs, stale job indices, retry
+exhaustion, no-pending launches, counter drift, and post-terminal events return
+`error[ProcessBatchError]`.
 
 Before any regex opcode executes, both backends enforce a shared input-size
 boundary: haystack text is at most 64 MiB, the compiled-pattern payload is at
