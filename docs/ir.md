@@ -1095,8 +1095,8 @@ mapping, permissions, crash recovery, and multi-file traversal to host code.
 stream and its files: `Begin`, `FileBegin`, `RecordBegin`, `RecordEnd`,
 `FileEnd`, and `End`, with typed failure and cancellation exits. It counts files
 and records, rejects records outside a file, prevents closing a file with an
-open record, and can require every file to contain at least one record. The
-validator also reconciles the current-file name and per-file record count with
+open record, reconciles open-file counters, and can require every file to contain
+at least one record. The validator also reconciles the current-file name and per-file record count with
 the open-file state. The state machine is deliberately callback-neutral so a host can dispatch typed
 begin/per-file/per-record/end functions without weakening ordering or early
 exit cleanup.
