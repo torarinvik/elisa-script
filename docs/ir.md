@@ -1273,6 +1273,7 @@ presence and restored-path equality to the corresponding lease state.
 boundary. The matcher submits non-overlapping spans and capture counts; the
 session accounts bounded input, unmatched prefixes, callback replacement bytes,
 and the final suffix under one output ceiling. Global versus single replacement is explicit,
+and capture budgets must be nonzero,
 zero-width matches must advance (including the EOF non-progress guard), and a
 callback cannot be re-entered while a replacement is pending. Match/capture/
 output limits, malformed spans, cancellation, and premature end use
