@@ -44,6 +44,7 @@ for boundary in \
     'RecordJoinError.EmptyKey' \
     'RecordJoinError.PairLimitExceeded' \
     'RecordJoinError.AccountingInvalid' \
+    'session.state == RecordJoinState.Planned and' \
     'RecordJoinEvent.Add' \
     'RecordJoinState.Sealed'; do
     rg -q "$boundary" "$model"
