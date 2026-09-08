@@ -36,6 +36,7 @@ for boundary in \
     'ReceiveLimitExceeded' \
     'PollLimitExceeded' \
     'RedirectLimitExceeded' \
+    'RedirectNotAllowed' \
     'InvalidRedirectStatus' \
     'RetryNotReady' \
     'CancelNotReady' \
@@ -59,6 +60,7 @@ for fixture_pattern in \
     'NetworkSessionEvent.ReceiveChunk' \
     'NetworkSessionEvent.ReceiveComplete' \
     'NetworkSessionEvent.Redirect' \
+    'NetworkSessionError.RedirectNotAllowed' \
     'NetworkSessionEvent.CancelAck' \
     'NetworkSessionError.AccountingInvalid'; do
     rg -Fq "$fixture_pattern" "$fixture"

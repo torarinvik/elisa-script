@@ -1347,7 +1347,8 @@ finish until the final chunk has been observed and all buffered bytes consumed.
 
 EsNetworkSession binds those policies to one transport attempt. It requires
 the DNS/connect/TLS/send/receive order, charges request and response bytes
-before advancing, caps polls and redirects, and models each redirect as an
+before advancing, caps polls and redirects, requires explicit redirect opt-in,
+and models each redirect as an
 explicit `Receiving → Resolving` edge that validates a 3xx status and clears
 transient request/response accounting before the next resolution. It preserves
 status failures as typed completed outcomes, and exposes retry/failure/cancellation edges without
