@@ -624,8 +624,8 @@ check/test/fmt/doc remains open.
 
 ES-SCRIPT-011 | EsNetworkSession binds validated NetworkRequest policies to
 ordered DNS/connect/TLS/send/receive phases, request/response byte accounting,
-poll/redirect ceilings, state-consistent status outcomes, clean retry resets,
-and cancellation. The
+poll/redirect ceilings, an explicit bounded 3xx redirect reset edge,
+state-consistent status outcomes, clean retry resets, and cancellation. The
 focused IR fixture and check_network_session.sh audit are static evidence;
 socket/TLS/redirect and deadline adapters remain open.
 

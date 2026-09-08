@@ -36,6 +36,7 @@ for boundary in \
     'ReceiveLimitExceeded' \
     'PollLimitExceeded' \
     'RedirectLimitExceeded' \
+    'InvalidRedirectStatus' \
     'RetryNotReady' \
     'CancelNotReady' \
     'outcome == NetworkOutcome.Cancelled' \
@@ -57,6 +58,7 @@ for fixture_pattern in \
     'NetworkSessionEvent.SendComplete' \
     'NetworkSessionEvent.ReceiveChunk' \
     'NetworkSessionEvent.ReceiveComplete' \
+    'NetworkSessionEvent.Redirect' \
     'NetworkSessionEvent.CancelAck' \
     'NetworkSessionError.AccountingInvalid'; do
     rg -Fq "$fixture_pattern" "$fixture"
@@ -66,4 +68,4 @@ rg -Fq 'EsNetworkSession binds those policies to one transport attempt' "$docs"
 rg -Fq 'ES-SCRIPT-011 | EsNetworkSession' "$ledger"
 rg -Fq 'explicit EsNetworkSession contract' "$plan"
 
-printf 'network session audit: ordered transport phases, bounded send/receive accounting, polls, outcomes, retry, and cancellation are present\n'
+printf 'network session audit: ordered transport phases, bounded send/receive accounting, redirects, polls, outcomes, retry, and cancellation are present\n'
