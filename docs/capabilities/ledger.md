@@ -462,7 +462,8 @@ normal exits, signal death, spawn/timeout/cancellation/output-limit/host-I/O
 failures, with bounded stdout/stderr/error payloads and signal consistency
 validation through `error[ProcessResultError]`.
 `ProcessJob` adds a typed background-supervision state machine with bounded
-attempts, explicit cancellation acknowledgement, and typed invalid-transition
+attempts, explicit cancellation acknowledgement, consumed-attempt validation for
+cancelled jobs, and typed invalid-transition
 or retry-exhaustion errors; actual scheduling, fan-out, and platform signal
 escalation remain open. `ProcessPipeline` now validates ordered stage commands,
 bounded stage/buffer limits, fail-fast versus aggregate failure policy, and

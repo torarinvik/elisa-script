@@ -30,6 +30,7 @@ for boundary in \
     'job.attempts > job.max_attempts' \
     'job.state == ProcessJobState.Created and job.attempts >= job.max_attempts' \
     'job.attempts >= job.max_attempts' \
+    'ProcessJobState.Cancelled' \
     'ProcessJobEvent.CancelAck'; do
     rg -Fq "$boundary" "$model"
 done
@@ -38,7 +39,8 @@ for fixture_pattern in \
     'ProcessJobEvent.Timeout' \
     'ProcessJobEvent.Retry' \
     'ProcessJobError.RetryLimitExceeded' \
-    'ProcessJobEvent.CancelAck'; do
+    'ProcessJobEvent.CancelAck' \
+    'forged_cancelled_attempt'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 
