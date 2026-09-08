@@ -80,7 +80,9 @@ so an absent-key removal leaves flat storage unchanged.
 The same search-before-allocation rule applies to no-op `DeleteIndex` map
 removals.
 `SetIndex` map updates also preflight the extra pair and reject a full `u32`
-storage domain before copying entries.
+storage domain before copying entries. They first search for the key, so a
+present-key replacement admits the original pair span without requiring an
+unneeded extra slot.
 `Path.iterdir()` rolls the flat storage cursor back on a late child-path failure,
 so directory materialization is failure-atomic.
 Array/map literal and global initialization paths likewise roll back their entry

@@ -23,6 +23,8 @@ assert_preflight_before_allocate() {
     local body
     local ceiling_line
     local span_line
+    local existing_span_line
+    local search_line
     local allocate_line
 
     body="$(awk -v definition="$definition" '
@@ -32,12 +34,14 @@ assert_preflight_before_allocate() {
     ' "$file")"
     ceiling_line="$(printf '%s\n' "$body" | awk '/collection\.map_count == 4294967295u32/ { print NR; exit }')"
     span_line="$(printf '%s\n' "$body" | awk '/runtime_storage_pairs_u32_valid\(storage, collection\.map_count\.usize\(\) \+ 1\)/ { print NR; exit }')"
+    existing_span_line="$(printf '%s\n' "$body" | awk '/runtime_storage_pairs_u32_valid\(storage, collection\.map_count\.usize\(\)\)/ { print NR; exit }')"
+    search_line="$(printf '%s\n' "$body" | awk '/found: mutable bool = false/ { print NR; exit }')"
     allocate_line="$(printf '%s\n' "$body" | awk '/start: u32 = storage.count.u32\(\)/ { print NR; exit }')"
-    [[ "$ceiling_line" =~ ^[0-9]+$ && "$span_line" =~ ^[0-9]+$ && "$allocate_line" =~ ^[0-9]+$ ]] || {
+    [[ "$ceiling_line" =~ ^[0-9]+$ && "$span_line" =~ ^[0-9]+$ && "$existing_span_line" =~ ^[0-9]+$ && "$search_line" =~ ^[0-9]+$ && "$allocate_line" =~ ^[0-9]+$ ]] || {
         printf 'map set-index bounds audit: missing preflight markers in %s\n' "$file" >&2
         exit 1
     }
-    (( ceiling_line < allocate_line && span_line < allocate_line )) || {
+    (( search_line < ceiling_line && search_line < span_line && existing_span_line < allocate_line && ceiling_line < allocate_line && span_line < allocate_line )) || {
         printf 'map set-index bounds audit: allocation precedes preflight in %s\n' "$file" >&2
         exit 1
     }
@@ -50,7 +54,7 @@ assert_preflight_before_allocate "$bytecode" 'def bytecode_direct_set_index'
 
 rg -q 'values.*two.*<-' "$interpreter_fixture"
 rg -q 'values.*two.*<-' "$bytecode_fixture"
-rg -q 'Indexed map updates preflight' "$docs"
+rg -q 'Indexed map updates search' "$docs"
 rg -q '`SetIndex` map updates also preflight' "$ledger"
 rg -q 'check_map_set_index_bounds\.sh' "$plan"
 

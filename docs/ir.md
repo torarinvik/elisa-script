@@ -1466,9 +1466,11 @@ also rejects a non-empty span whose final addressed element would exceed the
 Array and map literal construction also rolls the shared storage cursor back when
 frame lookup or global-literal decoding fails, so malformed aggregate inputs do
 not publish a partial value before the typed error is raised.
-Indexed map updates preflight the possible extra key/value pair before copying the
-old map, so a full storage pool cannot be partially materialized before the
-overflow error is reported.
+Indexed map updates search for an existing key before choosing the output span:
+replacement of a present key only needs the original pair count, while insertion
+preflights the possible extra key/value pair and the map-count ceiling before
+copying. A full storage pool therefore cannot reject a valid replacement or
+partially materialize an insertion before the overflow error is reported.
 Missing keys use the existing typed
 `IndexOutOfBounds` error rather than a sentinel value. The reference interpreter and
 the bytecode facade share this representation. Maps whose key and value types are
