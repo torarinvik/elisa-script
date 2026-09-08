@@ -1154,7 +1154,8 @@ session admits `Begin → Append* → Sync → DirectorySync? → Commit → Com
 failure, cancellation, and `BeginRollback → RollbackAck` recovery edges; an
 empty staged output is valid, but commit is impossible before the sync edge.
 Validation also rejects imported phase flags that claim a staging or commit
-acknowledgement before their corresponding state transition.
+acknowledgement before their corresponding state transition, including a
+`Committing` snapshot that omits required directory synchronization.
 The typed contract performs no rename or fsync itself, leaving platform error
 mapping, permissions, crash recovery, and multi-file traversal to host code.
 

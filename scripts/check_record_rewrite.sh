@@ -40,6 +40,7 @@ for boundary in \
     'RecordRewriteError.OutputLimitExceeded' \
     'session.state == RecordRewriteState.Staging' \
     'session.state == RecordRewriteState.Committed and session.plan.require_directory_sync' \
+    'session.state == RecordRewriteState.Committing and session.plan.require_directory_sync' \
     'RecordRewriteEvent.Sync' \
     'RecordRewriteEvent.DirectorySync' \
     'RecordRewriteEvent.CommitAck' \
