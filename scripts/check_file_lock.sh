@@ -47,6 +47,7 @@ for boundary in \
     'FileLockError.Conflict' \
     'FileLockError.WouldBlock' \
     'FileLockError.DuplicateOwnerPath' \
+    'table.next_lease_id <= lease.lease_id' \
     'active_leases' \
     'FileLockLeaseState.Failed'; do
     rg -q "$boundary" "$model"
@@ -60,7 +61,8 @@ for fixture_pattern in \
     'FileLockError.Conflict' \
     'FileLockError.WouldBlock' \
     'FileLockEvent.ReleaseAck' \
-    'FileLockEvent.CancelAck'; do
+    'FileLockEvent.CancelAck' \
+    'forged_identity'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 
