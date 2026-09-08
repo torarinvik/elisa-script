@@ -47,6 +47,7 @@ for boundary in \
     'RecordRewriteEvent.RollbackAck'; do
     rg -q "$boundary" "$model"
 done
+rg -q 'return event in .*RecordRewriteEvent.DirectorySync' "$model"
 
 for fixture_pattern in \
     'using EsRecordRewrite' \
