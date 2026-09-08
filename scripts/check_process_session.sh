@@ -39,6 +39,7 @@ for boundary in \
     'session.state == ProcessSessionState.Exited' \
     'session.exit_status <- exit_status' \
     'session.exit_status < 0' \
+    'session.state != ProcessSessionState.Exited and session.exit_status != 0' \
     'session.state == ProcessSessionState.Created' \
     'session.state == ProcessSessionState.Created and session.result_kind != ProcessResultKind.SpawnFailure' \
     'session.state == ProcessSessionState.Failed and session.result_kind != ProcessResultKind.HostIoFailure' \
@@ -56,7 +57,8 @@ for fixture_pattern in \
     'ProcessSessionEvent.Spawn' \
     'ProcessSessionEvent.Stdout' \
     'ProcessSessionEvent.Exit' \
-    'ProcessSessionEvent.CancelAck'; do
+    'ProcessSessionEvent.CancelAck' \
+    'forged_timeout_status'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 
