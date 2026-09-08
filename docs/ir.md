@@ -1400,7 +1400,8 @@ transient request/response accounting before the next resolution. It preserves
 status failures as typed completed outcomes, and exposes retry/failure/cancellation edges without
 opening sockets itself. Planned/retry states clear transient I/O fields,
 completed states require a real status, and failure/cancellation outcomes must
-match their states. A failure edge cannot carry the distinct `Cancelled`
+match their states; `StatusFailure` failures require a non-2xx/3xx HTTP status,
+while other failures retain neutral status. A failure edge cannot carry the distinct `Cancelled`
 outcome; cancellation must use the explicit cancellation state machine.
 Completed sessions also require the full request body to be accounted for, and
 cancellation states cannot retain an HTTP status.
