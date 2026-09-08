@@ -49,6 +49,7 @@ for boundary in \
     'DirectoryTreeState.Complete and' \
     'DirectoryTreeState.Cancelled and' \
     'DirectoryTreeEvent.Descend' \
+    'session.failures >= session.policy.max_entries' \
     'DirectoryTreeEvent.Cancel' \
     'DirectoryTreeState.Complete'; do
     rg -q "$boundary" "$model"
