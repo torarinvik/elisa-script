@@ -97,7 +97,8 @@ than charging the full input length.
 General text `Split`/`rsplit` now collect local views and preflight their exact
 field count before publishing, including whitespace and empty-separator modes.
 `Path.iterdir()` rolls the flat storage cursor back on a late child-path failure,
-so directory materialization is failure-atomic.
+so directory materialization is failure-atomic. The traversal clears its
+scanner handle after `closedir`, preventing reuse of a closed host pointer.
 Array/map literal and global initialization paths likewise roll back their entry
 cursor when a malformed frame or literal fails during construction.
 Global map materialization additionally rejects odd key/value payload lengths at

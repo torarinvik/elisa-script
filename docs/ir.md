@@ -2113,6 +2113,9 @@ variant/result-byte budget. Crossing any budget fails with
 `Path.iterdir()` validates every joined child path before publishing its first
 runtime value; if a later child fails the path envelope, the shared flat storage
 cursor is rolled back to its entry position rather than exposing a partial array.
+After `readdir` reaches EOF or an error, the directory handle is closed and
+cleared from the scanner before the collected entries are exposed, preventing a
+closed host pointer from being reused.
 Path joins and brace-variant assembly detect host-size addition wrap before
 allocation; the walker reports the existing `DirectoryError` rather than
 publishing a truncated match.
