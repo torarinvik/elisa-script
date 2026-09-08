@@ -1778,7 +1778,8 @@ the same typed path pair and `FileIoError` but only requires `File.Write`; it us
 the POSIX rename boundary. Both operations are available on the direct bytecode
 filesystem path as well as the reference interpreter. The interpreter rejects an
 exactly identical source and destination before opening the destination for
-truncating write, preventing a self-copy from destroying its source bytes.
+truncating write, and also compares existing source/destination device and inode
+identity so hard-link or symlink aliases cannot destroy the source bytes.
 `RunProcess` verifies as `Named(Executable) × Array[Text] -> Int(signed, 64)` and
 requires `Process.Run` plus `ProcessError`. The interpreter executes it directly as
 a POSIX `fork`/`execvp`/`waitpid` state transition with a NUL-terminated argv. No

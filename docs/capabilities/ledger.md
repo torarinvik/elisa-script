@@ -342,9 +342,10 @@ aliases with typed `ArtifactCacheIoError.PathCollision` before opening or
 truncating any cache file.
 
 The interpreter's `CopyPath` edge now rejects an exactly identical source and
-destination before opening the destination with truncating write, preventing a
-self-copy from destroying the source before its bytes are read. The focused
-compiler-free copy-path audit records this admission boundary.
+destination before opening the destination with truncating write, and compares
+existing device/inode identity so hard-link or symlink aliases cannot destroy
+the source before its bytes are read. The focused compiler-free copy-path audit
+records this admission boundary.
 
 The first large-file vertical slice is now a typed `EsRuntime::FileStream`
 contract with explicit modes, bounded chunk read/write, an error-safe line
