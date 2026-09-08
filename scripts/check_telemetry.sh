@@ -56,7 +56,7 @@ for fixture_pattern in \
     'TelemetryMode.Events' \
     'TelemetryRecordOutcome.Sampled' \
     'TelemetryError.TelemetryDisabled' \
-    'ledger.state == TelemetryState.Failed' \
+    'TelemetryState.Failed' \
     'TelemetryError.AccountingInvalid'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
