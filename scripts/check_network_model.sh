@@ -45,6 +45,7 @@ for declaration in \
     'def enqueue_network_chunk(' \
     'def consume_network_stream(' \
     'def validate_network_retry_policy(' \
+    'def network_retry_backoff_micros(' \
     'def advance_network_request(' \
     'def validate_network_request(' \
     'def validate_network_response('; do
@@ -63,6 +64,7 @@ for boundary in \
     'NETWORK_MAX_STREAM_CHUNKS' \
     'network_headers_valid' \
     'network_method_is_idempotent' \
+    'network_retry_backoff_micros' \
     'network_tls_path_valid' \
     'DuplicateHeaderName' \
     'InvalidTimeout' \

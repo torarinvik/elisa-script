@@ -547,7 +547,9 @@ binary bodies, timeout/response ceilings, redirect policy, and distinct DNS,
 TLS, transport, timeout, protocol, status, decode, and cancellation outcomes.
 `NetworkRetryPolicy` makes retries explicit and bounded: `Never` is one-shot,
 `IdempotentOnly` admits only GET/HEAD/PUT/DELETE, and mutation retries require
-`Explicit` mode plus nonzero backoff. The IR fixture and network-model audit
+`Explicit` mode plus nonzero backoff. `network_retry_backoff_micros` derives
+one-based attempt delays with checked doubling and saturation at the configured
+ceiling. The IR fixture and network-model audit
 cover URL/header/body/status/retry admission plus a
 `Planned → Resolving → Connecting → Securing → Sending → Receiving → Completed`
 request lifecycle with explicit cancellation and retry edges; socket/TLS

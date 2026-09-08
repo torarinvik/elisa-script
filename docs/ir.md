@@ -1318,7 +1318,10 @@ timeouts, invalid response ceilings, and status/outcome contradictions through
 GET/HEAD/PUT/DELETE, and `Explicit` is required for mutation retries. Every
 multi-attempt policy carries nonzero bounded backoff ceilings; TLS roots, socket
 ownership, total deadlines, and streaming/cancellation adapters remain explicit
-host responsibilities.
+host responsibilities. `network_retry_backoff_micros` derives the delay for a
+one-based attempt with zero delay for the initial dispatch, checked doubling,
+and saturation at the configured ceiling, so hosts do not reimplement retry
+arithmetic with overflow-prone defaults.
 `NetworkRequestJob` supplies the corresponding lifecycle state machine:
 `Planned → Resolving → Connecting → Securing → Sending → Receiving → Completed`,
 with explicit `Failed`, `Cancelling`, `Cancelled`, and bounded `Retry` edges.
