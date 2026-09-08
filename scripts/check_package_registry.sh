@@ -37,6 +37,7 @@ for boundary in \
     'registry_constraint_satisfied' \
     'IntegrityMissing' \
     'OrderInvalid' \
+    'registry.state == PackageRegistryState.Empty' \
     'RegistryNotReady' \
     'ConstraintNoMatch' \
     'CancelNotReady'; do
@@ -50,7 +51,8 @@ for fixture_pattern in \
     'PackageRegistryEvent.Add' \
     'package_registry_find' \
     'PackageRegistryError.OrderInvalid' \
-    'PackageRegistryEvent.Cancel'; do
+    'PackageRegistryEvent.Cancel' \
+    'forged_empty'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 
