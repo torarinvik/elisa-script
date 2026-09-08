@@ -43,6 +43,9 @@ for boundary in \
     'table.next_lease_id <= lease.lease_id' \
     'WorkingDirectoryError.CancelNotReady' \
     'WorkingDirectoryLeaseState.Failed' \
+    'lease.state == WorkingDirectoryLeaseState.Held and lease.pending_path != ""' \
+    'lease.state == WorkingDirectoryLeaseState.Changing or lease.state == WorkingDirectoryLeaseState.Restoring' \
+    'lease.state == WorkingDirectoryLeaseState.Restored and' \
     'active_contexts'; do
     rg -q "$boundary" "$model"
 done

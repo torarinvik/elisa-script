@@ -1239,7 +1239,8 @@ cannot be cancelled mid-flight, and failed contexts remain recorded as failed
 rather than silently releasing an unknown cwd; lease identities are monotonic
 and cannot collide with the next allocation. Hosts should prefer descriptor
 or child-cwd APIs where available; this contract is the conservative fallback
-for unavoidable process-global changes.
+for unavoidable process-global changes. Lease validation also ties pending-path
+presence and restored-path equality to the corresponding lease state.
 
 `EsRegexCallback::RegexCallbackSession` is the callback-aware replacement
 boundary. The matcher submits non-overlapping spans and capture counts; the
