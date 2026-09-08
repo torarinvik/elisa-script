@@ -24,6 +24,7 @@ for declaration in \
     'struct InstallArtifact:' \
     'struct InstallPlan:' \
     'error InstallContractError:' \
+    'PackageVersionInvalid' \
     'def validate_install_plan(' \
     'def advance_install_plan('; do
     rg -Fq "$declaration" "$model"

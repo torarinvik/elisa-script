@@ -26,6 +26,7 @@ for declaration in \
     'struct PackageLockEntry:' \
     'struct PackageLock:' \
     'error PackageContractError:' \
+    'def package_version_is_valid(' \
     'def validate_package_manifest(' \
     'def validate_package_lock(' \
     'def validate_package_resolution(' \
