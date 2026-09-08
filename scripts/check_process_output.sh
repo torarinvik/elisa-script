@@ -40,6 +40,8 @@ for boundary in \
     'ProcessOutputDestinationKind.AppendFile' \
     'ProcessOutputError.DuplicateDestination' \
     'ProcessOutputError.ChunkOrderInvalid' \
+    'ProcessOutputError.AccountingInvalid' \
+    'session.next_sequence != session.chunk_count' \
     'ProcessOutputState.Closed'; do
     rg -q "$boundary" "$model"
 done

@@ -1674,6 +1674,8 @@ route contains bounded `Inherit`, `Null`, `Capture`, `TruncateFile`, or
 `AppendFile` destinations; multiple destinations require an explicit tee flag.
 Chunks carry monotonically increasing sequence numbers and a final marker, and
 the session accounts chunk count and bytes before a host writer fans data out.
+Validation reconciles `next_sequence`, chunk count, byte totals, and final-state
+markers, rejecting imported sessions that bypass the streaming phase.
 Duplicate destinations, missing file paths, out-of-order chunks, overflow,
 premature end, failure, and cancellation use `error[ProcessOutputError]`;
 descriptor writes and concurrent drain behavior remain host work.
