@@ -1296,8 +1296,10 @@ host responsibilities.
 `NetworkRequestJob` supplies the corresponding lifecycle state machine:
 `Planned → Resolving → Connecting → Securing → Sending → Receiving → Completed`,
 with explicit `Failed`, `Cancelling`, `Cancelled`, and bounded `Retry` edges.
-Adapters cannot acknowledge cancellation or reuse a failed attempt without the
-matching state transition.
+Attempt accounting is part of that state machine: active/terminal attempt states
+require a consumed attempt, planned retries must retain budget, and exhausted or
+over-counted jobs are rejected before a transition. Adapters cannot acknowledge
+cancellation or reuse a failed attempt without the matching state transition.
 `NetworkTlsPolicy` makes trust selection explicit: system roots are the default,
 custom bundles require a bounded path, and `InsecureTestOnly` is a visibly named
 escape hatch rather than an implicit verification downgrade. Certificate and

@@ -79,6 +79,9 @@ for boundary in \
     'StreamNotDrained' \
     'StreamAccountingInvalid' \
     'network_request_state_is_active' \
+    'network_request_state_requires_attempt' \
+    'job.attempts > job.max_attempts' \
+    'job.state == NetworkRequestState.Planned and job.attempts >= job.max_attempts' \
     'NetworkRequestEvent.CancelAck' \
     'NetworkRequestEvent.Retry' \
     'response.outcome in {NetworkOutcome.Success, NetworkOutcome.StatusFailure}' \
