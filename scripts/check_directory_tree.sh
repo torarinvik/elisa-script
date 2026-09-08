@@ -45,6 +45,8 @@ for boundary in \
     'DirectoryTreeError.DepthLimitExceeded' \
     'DirectoryTreeError.SymlinkTraversalDenied' \
     'DirectoryTreeError.AccountingInvalid' \
+    'DirectoryTreeState.Planned and' \
+    'DirectoryTreeState.Complete and' \
     'DirectoryTreeEvent.Descend' \
     'DirectoryTreeEvent.Cancel' \
     'DirectoryTreeState.Complete'; do
@@ -57,7 +59,8 @@ for fixture_pattern in \
     'DirectoryTreeEvent.Descend' \
     'DirectoryTreeEvent.Complete' \
     'DirectoryTreeError.CycleDetected' \
-    'DirectoryTreeError.NotDirectory'; do
+    'DirectoryTreeError.NotDirectory' \
+    'DirectoryTreeError.ParentDepthMismatch'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 
