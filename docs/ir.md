@@ -1166,7 +1166,8 @@ remain host responsibilities.
 `EsFileMetadata::FileMetadataSnapshot` is the typed stat/lstat-shaped metadata
 boundary. Entries retain stable ordinals and reject duplicate paths while
 admitting regular, directory, symlink, other, or explicitly allowed missing
-objects. Permission bits, size, inode/device/link identity, and timestamps are
+objects. Missing entries carry zero size and no inode/device/link identity.
+Permission bits, size, inode/device/link identity, and timestamps are
 bounded fields; symlink targets are required only when `preserve_symlink` is
 enabled and the entry is a symlink. Path, target, and aggregate-byte ceilings
 are checked before publication, and `file_metadata_lookup` is sealed-only.
