@@ -110,7 +110,8 @@ to a fixed step sequence: run/test load, lower, verify, execute, and render;
 check omits execution; fmt and doc select their dedicated transformation;
 help/version render directly. The workflow reconciles its cursor with
 Planned/Running/Complete states, consumes steps in order, and exposes
-explicit failure and cancellation transitions, so unsupported host adapters
+explicit failure and cancellation transitions. Failed and cancelled workflows
+must retain an unfinished cursor, so unsupported host adapters
 cannot masquerade as a successful run.
 
 `EsModule` supplies the source/package-facing identity boundary. A

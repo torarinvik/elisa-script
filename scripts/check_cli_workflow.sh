@@ -37,6 +37,7 @@ for boundary in \
     'workflow.state == CliWorkflowState.Planned' \
     'workflow.state == CliWorkflowState.Running' \
     'workflow.state == CliWorkflowState.Complete' \
+    'workflow.state == CliWorkflowState.Failed or workflow.state == CliWorkflowState.Cancelled' \
     'StepNotReady' \
     'InvocationInvalid' \
     'CliMode.Check' \
