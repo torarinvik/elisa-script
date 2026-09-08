@@ -34,6 +34,7 @@ for boundary in \
     'EntryOrderInvalid' \
     'DuplicateFile' \
     'FileIndexInvalid' \
+    'map.state == SourceMapState.Empty' \
     'AppendNotReady' \
     'source_location_before'; do
     rg -Fq "$boundary" "$model"
@@ -44,7 +45,8 @@ for fixture_pattern in \
     'typed_source_map_contract_orders_locations_and_supports_lookup' \
     'SourceMapEvent.Begin' \
     'SourceMapEvent.Seal' \
-    'SourceMapContractError.AppendNotReady'; do
+    'SourceMapContractError.AppendNotReady' \
+    'forged_empty'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 
