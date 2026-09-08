@@ -49,6 +49,7 @@ for boundary in \
     'RecordSpillError.MergeOrderInvalid' \
     'RecordSpillError.RunNotSealed' \
     'RecordSpillError.DestinationCollision' \
+    'not session.has_active_run and' \
     'RecordSpillState.Sealed'; do
     rg -q "$boundary" "$model"
 done
