@@ -1767,7 +1767,7 @@ claiming cleanup before all descendants are reaped.
 
 `EsTask::TaskScope` and `TaskChannel` define the corresponding concurrency
 boundary. A scope caps active children, records completed/failed children, and
-rejects terminal records whose child accounting is inconsistent; cancellation
+rejects closing/failed/terminal records whose child accounting is inconsistent; cancellation
 acknowledgement is admitted only after active children reach zero. It
 requires explicit close or cancellation acknowledgement; channels cap both
 message count and bytes, reject sends while closing/cancelled, and transition

@@ -45,6 +45,8 @@ for boundary in \
     'ChildLimitExceeded' \
     'ChildAccountingInvalid' \
     'scope.state == TaskScopeState.Succeeded' \
+    'scope.state == TaskScopeState.Closing' \
+    'scope.state == TaskScopeState.Failed' \
     'scope.state == TaskScopeState.Cancelled' \
     'ChannelBufferExceeded' \
     'channel.state == TaskChannelState.Closed' \
@@ -59,6 +61,7 @@ for fixture_pattern in \
     'typed_task_scope_and_channel_contract_is_bounded' \
     'TaskFailureMode.Aggregate' \
     'TaskContractError.ChannelBufferExceeded' \
+    'TaskContractError.ChildAccountingInvalid' \
     'TaskChannelState.Closed'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
