@@ -22,6 +22,7 @@ for declaration in \
     'REGEX_MAX_INPUT_BYTES' \
     'REGEX_MAX_REPLACEMENT_BYTES' \
     'REGEX_MAX_GROUPS' \
+    'REGEX_MAX_MATCHES' \
     'REGEX_MAX_WORK' \
     'const enum RegexOperation of u8:' \
     'const enum RegexState of u8:' \
@@ -43,6 +44,7 @@ for boundary in \
     'InputLimitExceeded' \
     'ReplacementNotAllowed' \
     'GroupLimitExceeded' \
+    'MatchLimitExceeded' \
     'CaptureAccountingInvalid' \
     'WorkLimitExceeded' \
     'OutputLimitExceeded' \
