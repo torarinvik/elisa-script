@@ -44,6 +44,7 @@ for boundary in \
     'DirectoryTreeError.CycleDetected' \
     'DirectoryTreeError.DepthLimitExceeded' \
     'DirectoryTreeError.SymlinkTraversalDenied' \
+    'DirectoryTreeError.AccountingInvalid' \
     'DirectoryTreeEvent.Descend' \
     'DirectoryTreeEvent.Cancel' \
     'DirectoryTreeState.Complete'; do

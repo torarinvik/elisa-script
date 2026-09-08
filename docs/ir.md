@@ -1153,7 +1153,7 @@ identities fail closed as cycle/alias protection. `DoNotFollow`, `FollowFiles`,
 and `FollowDirectories` symlink policies plus fail-fast/collect behavior are
 typed, and `Descend`/`Leave` maintain an explicit depth stack. Cancellation and
 completion require a balanced walk; malformed paths, non-directories, denied
-symlink descent, limits, and identity/accounting failures use
+symlink descent, limits, and identity/byte accounting failures use
 `error[DirectoryTreeError]`.
 
 `EsDirectoryMutation::DirectoryMutationSession` is the bounded recursive
