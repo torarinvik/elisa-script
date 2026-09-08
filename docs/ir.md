@@ -1106,7 +1106,8 @@ window for streaming actions. It retains an event history capped by
 value before admitting a new one, and maintains a subtraction-safe unsigned
 sum under an explicit ceiling. `record_window_count` and `record_window_sum`
 are available while collecting or after sealing; invalid terminal transitions,
-window accounting drift, and event/sum overflow return
+forged planned-state contents, empty-history drift, window accounting drift, and
+event/sum overflow return
 `error[RecordWindowError]`. Keyed windows and signed/decimal numeric policies
 remain explicit extensions rather than implicit conversions.
 

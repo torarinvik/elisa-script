@@ -37,6 +37,8 @@ for boundary in \
     'RECORD_WINDOW_MAX_SUM' \
     'active_start' \
     'record_window_sum_valid' \
+    'session.state == RecordWindowState.Planned' \
+    'session.values.count == 0' \
     'RecordWindowError.EventLimitExceeded' \
     'RecordWindowError.WidthExceeded' \
     'RecordWindowError.SumLimitExceeded' \
