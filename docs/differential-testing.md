@@ -334,6 +334,10 @@ Post-exit stdout/stderr materialization applies the same bounded progress policy
 to exact-size reads: positive short `fread` counts advance and retry, while zero
 progress or an over-count fails the owned stream snapshot as
 `DifferentialRunnerError.Process`.
+Temporary stdin writes use the same admission for positive short `fwrite`
+progress and reject a host `ferror` indicator before advancing the owned offset,
+so a poisoned input stream cannot be presented to the reference or candidate as
+complete input.
 Post-exit file sizes are also round-tripped through host `usize` before
 allocation; a stream size representable in `i64` but not on the target host is
 reported as `DifferentialRunnerError.Process` rather than truncated.

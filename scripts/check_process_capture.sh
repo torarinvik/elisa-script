@@ -46,6 +46,9 @@ rg -q 'elisascript_posix_waitpid_impl' "$process_runtime"
 rg -q 'def write_stream_fully\(' "$interpreter"
 rg -q 'def read_stream_fully\(' "$interpreter"
 rg -U -q 'amount == 0 or amount > remaining or ferror\(stream\) != 0' "$interpreter"
+rg -U -q 'amount == 0 or amount > remaining or ferror\(writer\.stream\) != 0' "$interpreter"
+rg -q 'def differential_write_stream_fully\(' "$differential"
+rg -U -q 'amount == 0 or amount > remaining or ferror\(stream\) != 0' "$differential"
 
 # Both streams are checked independently before the next poll/sleep, and a
 # timeout compares against the predecessor before incrementing its counter.
