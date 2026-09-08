@@ -44,13 +44,15 @@ for boundary in \
     'RecordLifecycleEvent.Cancel'; do
     rg -q "$boundary" "$model"
 done
+rg -q -U 'elif event == RecordLifecycleEvent.RecordEnd:\n                raise RecordLifecycleError.InvalidState if session.state != RecordLifecycleState.Running\n                raise RecordLifecycleError.RecordNotOpen if not session.record_open\n                raise RecordLifecycleError.RecordLimitExceeded if session.record_count >= session.policy.max_records' "$model"
 
 for fixture_pattern in \
     'using EsRecordLifecycle' \
     'typed_record_lifecycle_contract_orders_file_and_record_hooks' \
     'RecordLifecycleEvent.FileBegin' \
     'RecordLifecycleEvent.RecordEnd' \
-    'RecordLifecycleError.FileNotOpen'; do
+    'RecordLifecycleError.FileNotOpen' \
+    'overflow_end'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 

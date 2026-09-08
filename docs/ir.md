@@ -1128,7 +1128,7 @@ mapping, permissions, crash recovery, and multi-file traversal to host code.
 `EsRecordLifecycle::RecordLifecycleSession` defines the hook order around a
 stream and its files: `Begin`, `FileBegin`, `RecordBegin`, `RecordEnd`,
 `FileEnd`, and `End`, with typed failure and cancellation exits. It counts files
-and records, rejects records outside a file, prevents closing a file with an
+and records, checks the record ceiling before `RecordEnd`, rejects records outside a file, prevents closing a file with an
 open record, reconciles open-file counters, and can require every file to contain
 at least one record. The validator also reconciles the current-file name and per-file record count with
 the open-file state. The state machine is deliberately callback-neutral so a host can dispatch typed
