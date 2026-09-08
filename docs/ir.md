@@ -1672,7 +1672,9 @@ EsProcessSession binds that command value to an adapter lifecycle. Spawn must
 provide distinct child/stdout/stderr handle identities when capture is
 requested; stdout and stderr progress charge one shared output ceiling,
 polls charge a bounded polling budget, and only typed exit/failure/timeout or
-cancellation events may terminate the session. The session never performs
+cancellation events may terminate the session. Validation also requires each
+terminal state to carry its matching `ProcessResultKind`, so externally
+assembled records cannot relabel a failure as an exit or timeout. The session never performs
 fork/exec or signal operations itself.
 
 `EsProcessTermination::ProcessTerminationSession` is the process-group
