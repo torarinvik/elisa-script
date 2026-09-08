@@ -43,6 +43,7 @@ for boundary in \
     'InputLimitExceeded' \
     'ReplacementNotAllowed' \
     'GroupLimitExceeded' \
+    'CaptureAccountingInvalid' \
     'WorkLimitExceeded' \
     'OutputLimitExceeded' \
     'EndNotReady' \
