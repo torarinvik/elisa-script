@@ -38,6 +38,9 @@ for boundary in \
     'ProcessPipelineEvent.StageFailure' \
     'ProcessPipelineEvent.StageCancel' \
     'ProcessPipelineState.Cancelling' \
+    'pipeline.cancelled_stages > pipeline.completed_stages - pipeline.failed_stages' \
+    'pipeline.completed_stages != pipeline.stages.count' \
+    'pipeline.cancelled_stages == 0' \
     'ProcessPipelineEvent.CancelAck'; do
     rg -Fq "$boundary" "$model"
 done
@@ -47,6 +50,7 @@ for fixture_pattern in \
     'ProcessPipelineFailureMode.Aggregate' \
     'ProcessPipelineEvent.StageExit' \
     'ProcessPipelineEvent.StageFailure' \
+    'ProcessPipelineEvent.CancelAck' \
     'ProcessPipelineError.InvalidStageCommand'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done

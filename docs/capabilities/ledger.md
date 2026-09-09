@@ -467,8 +467,8 @@ cancelled jobs, and typed invalid-transition
 or retry-exhaustion errors; actual scheduling, fan-out, and platform signal
 escalation remain open. `ProcessPipeline` now validates ordered stage commands,
 bounded stage/buffer limits, fail-fast versus aggregate failure policy, and
-explicit stage/cancel transitions; concurrent pipe draining and reaping remain
-open.
+explicit stage/cancel transitions with complete cancellation accounting;
+concurrent pipe draining and reaping remain open.
 `EsProcessOutput` adds a bounded shell-redirection contract for inherit/null,
 capture, truncate, append, and explicit tee fan-out. Destination paths,
 duplicate routes, chunk sequencing, final markers, and output ceilings are

@@ -1875,7 +1875,8 @@ commands. It validates every stage through `ProcessCommand`, caps stage count
 and aggregate buffer policy, and advances through explicit `Planned → Running →
 Succeeded/Failed` or `Cancelling → Cancelled` edges. Fail-fast stage failure
 enters cancellation draining, and explicit stage-cancel edges account every
-remaining stage before `Failed` is published. Stage exit/failure events
+remaining stage before `Failed` or `Cancelled` is published; `CancelAck` cannot
+skip those per-stage cancellations. Stage exit/failure events
 must name the next stage, aggregate mode records failures without losing order,
 and invalid stage commands or transitions raise `error[ProcessPipelineError]`.
 Validation reconciles running/cancelling and terminal pipeline state with
