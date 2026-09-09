@@ -41,6 +41,8 @@ for boundary in \
     'ActiveLimitExceeded' \
     'FailureNotReady' \
     'NodeAccountingInvalid' \
+    'scheduler.completed_nodes > scheduler.graph.nodes.count' \
+    'scheduler.cache_hits > scheduler.completed_nodes' \
     'scheduler.graph.active_nodes' \
     'scheduler.graph.completed_nodes != scheduler.graph.nodes.count' \
     'scheduler.graph.nodes[index].state == BuildNodeState.Running' \

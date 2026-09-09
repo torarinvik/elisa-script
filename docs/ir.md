@@ -3014,6 +3014,8 @@ dependencies, admits at most the graph's declared parallelism, records exact
 fingerprint cache hits, and turns dispatch, completion, failure, and
 cancellation into explicit state-machine events. Queue entries are rebuilt
 after every mutation so completed or running nodes cannot remain dispatchable;
+aggregate completed-node and cache-hit bounds are validated in separate
+subtraction-safe steps before active-node capacity is computed;
 cache hits must also consume a currently queued ready node, preventing an
 out-of-order cache completion after queue corruption; validation also rejects
 cache entries for unknown graph nodes and manually
