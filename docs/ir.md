@@ -1436,6 +1436,8 @@ states also require a consumed attempt, so a retry/failure record cannot be
 forged before its first launch. Duplicate IDs, stale job indices, retry
 exhaustion, no-pending launches, counter drift, and post-terminal events return
 `error[ProcessBatchError]`.
+Aggregate success/failure counters are reconciled with subtraction-based
+bounds, so forged maximum-width counters cannot wrap their admission checks.
 
 Before any regex opcode executes, both backends enforce a shared input-size
 boundary: haystack text is at most 64 MiB, the compiled-pattern payload is at

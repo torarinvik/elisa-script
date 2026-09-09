@@ -52,6 +52,7 @@ for boundary in \
     'ProcessBatchState.Failed and' \
     'ProcessBatchState.Draining' \
     'ProcessBatchState.Cancelled and' \
+    'session.failed > session.jobs.count - session.completed' \
     'cancelled == 0'; do
     rg -q "$boundary" "$model"
 done
