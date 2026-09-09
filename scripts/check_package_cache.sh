@@ -35,6 +35,8 @@ done
 for boundary in \
     'cache_entry_before' \
     'cache_entry_equal' \
+    'locator: sview, fingerprint: u64' \
+    'entry.locator == locator' \
     'CacheNotReady' \
     'CacheMiss' \
     'EntryIndexInvalid' \
@@ -52,6 +54,8 @@ for fixture_pattern in \
     'typed_package_cache_contract_requires_exact_identity_and_explicit_invalidation' \
     'PackageCacheEvent.Store' \
     'package_cache_lookup' \
+    'alternate_cache' \
+    'wrong_locator' \
     'PackageCacheError.CacheMiss' \
     'PackageCacheEvent.Invalidate' \
     'forged_empty'; do
