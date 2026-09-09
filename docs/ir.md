@@ -551,7 +551,8 @@ record cannot claim elapsed time while that timer sentinel remains zero. The cur
 typed overflow/underflow-safe admission for handles, child processes, and
 concurrent tasks. The corresponding `runtime_resource_add_*` helpers apply the
 same checked-subtraction rule to steps, memory, output, regex work, and retained
-traces. `runtime_resource_add_elapsed` applies the same bounded edge while
+traces; each helper rejects an already-over-budget usage value before subtracting
+remaining capacity. `runtime_resource_add_elapsed` applies the same bounded edge while
 preserving `elapsed_micros == 0` as the explicit “timer not attached” sentinel;
 host bridges still need to sample a monotonic clock and thread these edges
 through every nested path.

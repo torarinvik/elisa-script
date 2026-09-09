@@ -66,4 +66,21 @@ if ! rg -q 'ES_RUNTIME_DEFAULT_MAX_EXECUTION_CALL_DEPTH' "$ir_docs" || ! rg -q '
     exit 1
 fi
 
+for safe_guard in \
+    'usage.elapsed_micros > policy.elapsed_micros' \
+    'amount > policy.elapsed_micros - usage.elapsed_micros' \
+    'usage.memory_bytes > policy.memory_bytes' \
+    'amount > policy.memory_bytes - usage.memory_bytes' \
+    'usage.output_bytes > policy.output_bytes' \
+    'amount > policy.output_bytes - usage.output_bytes' \
+    'usage.regex_work > policy.regex_work' \
+    'amount > policy.regex_work - usage.regex_work' \
+    'usage.retained_traces > policy.retained_traces' \
+    'amount > policy.retained_traces - usage.retained_traces'; do
+    if ! rg -q "$safe_guard" "$runtime_file"; then
+        printf 'runtime limit audit: missing ordered budget guard: %s\n' "$safe_guard" >&2
+        exit 1
+    fi
+done
+
 printf 'runtime limit audit: interpreter and direct bytecode share execution depth contract\n'
