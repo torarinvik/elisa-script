@@ -29,6 +29,7 @@ for declaration in \
     'error JsonContractError:' \
     'def validate_json_document(' \
     'def advance_json_document(' \
+    'def json_node_child_range_valid(' \
     'try validate_json_document(document)'; do
     rg -Fq "$declaration" "$model"
 done
@@ -36,8 +37,7 @@ done
 for boundary in \
     'InvalidRange' \
     'InvalidChildRange' \
-    'raise JsonContractError.InvalidChildRange if node.child_start > document.nodes.count' \
-    'raise JsonContractError.InvalidChildRange if node.child_count > document.nodes.count - node.child_start' \
+    'json_node_child_range_valid(node, document.nodes.count)' \
     'node.scalar_bytes > node.range.end - node.range.start' \
     'node.kind == JsonNodeKind.Array or node.kind == JsonNodeKind.Object' \
     'document.state == JsonDocumentState.Empty' \

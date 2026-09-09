@@ -194,8 +194,10 @@ malformed ranges before a renderer or schema decoder can consume the table.
 Validation also reconciles empty/sealed lifecycle shape, maximum node depth, and
 scalar payload bytes against each node's source range; composite nodes cannot
 carry scalar payload accounting. Composite child ranges prove the start index is
-within the node table before subtracting the child count, so malformed metadata
-fails closed without an underflowing bounds calculation.
+within the node table before subtracting the child count, both when a node is
+appended and when the full document is revalidated, so malformed metadata cannot
+remain in a partially mutated table or trigger an underflowing bounds
+calculation.
 The adapter is intentionally separate from the vendor's global parser names so
 public Elisascript modules retain namespace hygiene; parser translation,
 streaming JSONL, typed schema conversion, and encoding remain open.
