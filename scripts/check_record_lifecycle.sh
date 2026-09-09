@@ -35,6 +35,7 @@ for boundary in \
     'record_lifecycle_name_valid' \
     'session.file_open and not record_lifecycle_name_valid\(session.current_file\)' \
     'session.file_open and session.file_count == 0' \
+    'not session.file_open and session.file_record_count != 0' \
     'session.record_count != 0 and session.file_count == 0' \
     'session.state == RecordLifecycleState.Planned and \(session.file_open or session.record_open' \
     'RecordLifecycleError.FileNotOpen' \

@@ -1204,7 +1204,8 @@ the open-file state, and requires imported `Planned` sessions to have pristine
 counters and ownership fields. The state machine is deliberately callback-neutral so a host can dispatch typed
 begin/per-file/per-record/end functions without weakening ordering or early
 exit cleanup. Validation also rejects record/file counter asymmetry when no
-file has ever been opened.
+file has ever been opened and requires the per-file counter to be zero after
+`FileEnd`, failure, or cancellation.
 
 `EsRecordAggregate::RecordAggregateSession` provides a bounded associative
 count operation for AWK/Perl-style keyed aggregation. Keys retain insertion
