@@ -477,6 +477,8 @@ inclusion, documentation, and check_process_output.sh audit are static
 evidence, while descriptor writes and concurrent drains remain host work.
 `EsTask::TaskScope` and `TaskChannel` add bounded child accounting and
 message-level backpressure with explicit close/cancel acknowledgement edges;
+cancelled scopes continue to admit child terminal reports while draining, so
+`CancelAck` cannot deadlock behind active children;
 channel validation reconciles zero/nonzero message and byte aggregates, requires
 an exact final-message drain, and
 rejects an empty imported Closing state and failed scopes with unaccounted

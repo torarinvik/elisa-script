@@ -1967,7 +1967,9 @@ claiming cleanup before all descendants are reaped.
 boundary. A scope caps active children, records completed/failed children, and
 rejects closing/failed/terminal records whose child accounting is inconsistent,
 including failed scopes with unstarted children; cancellation
-acknowledgement is admitted only after active children reach zero. Receiving
+acknowledgement is admitted only after active children reach zero; child
+completion/failure reports remain admissible while cancelling so the scheduler
+can drain already-running work before that acknowledgement. Receiving
 the final message must account for all remaining buffered bytes, preventing a
 zero-message/nonzero-byte state. It
 requires explicit close or cancellation acknowledgement; channels cap both
