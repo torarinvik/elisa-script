@@ -568,7 +568,9 @@ cryptographic digest; aggregate value pools and complete process streams remain
 separate artifact payloads. The same raw-byte predicates are shared by the
 manifest's engine/artifact/comparator policies and by the process, value-pool,
 and index sidecars, so reserved or non-contiguous future ordinals fail closed
-before they can default to the first constructor.
+before they can default to the first constructor. Fixed-width readers validate
+the cursor bound before subtracting each byte window, keeping truncated or
+malformed sidecars fail-closed before any indexed read.
 
 `EsDifferentialReport::DifferentialReport` is the renderer-neutral report
 boundary. It accepts Human, JSON, or JUnit format requests but keeps status and
