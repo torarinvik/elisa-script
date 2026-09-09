@@ -44,6 +44,8 @@ for boundary in \
     'RecordAggregateError.AccountingInvalid' \
     'session.state == RecordAggregateState.Planned and' \
     'accounted_events' \
+    'previous_first_ordinal' \
+    'group.first_ordinal <= previous_first_ordinal' \
     'first_ordinal == group.first_ordinal' \
     'RecordAggregateError.GroupIndexInvalid' \
     'RecordAggregateEvent.Add' \
@@ -58,6 +60,7 @@ for fixture_pattern in \
     'typed_record_aggregate_contract_is_bounded_and_insertion_ordered' \
     'RecordAggregateEvent.Add' \
     'record_aggregate_group_count' \
+    'forged_aggregate_order' \
     'RecordAggregateError.GroupIndexInvalid'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
