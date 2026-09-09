@@ -41,6 +41,7 @@ for boundary in \
     'sview_contains_byte' \
     'record_fixed_widths_fit' \
     'try validate_record_stream_policy\(policy\)' \
+    'try validate_record\(record, policy\)' \
     'else:' \
     'RecordContractError.FixedWidthOverflow' \
     'RecordContractError.InvalidFieldRange' \

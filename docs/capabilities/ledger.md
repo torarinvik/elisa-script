@@ -631,6 +631,7 @@ process-launch integration remain open.
 Perl/AWK-style record boundary: separator and field modes are explicit, fixed
 widths and schema names are validated, and source/filename/record-number/
 file-number/byte-offset metadata remains attached to each raw record. The
+field validator now revalidates its parent record before admitting a slice. The
 compiler-free IR fixture and record-model audit cover NUL/length/range admission;
 stream readers, external sort, lifecycle hooks, and transactional in-place edits
 remain open.

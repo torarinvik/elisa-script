@@ -1122,8 +1122,8 @@ then continue through the shared schema/separator checks; schema policies requir
 a nonempty schema name. Every record carries source,
 optional filename, global/file-local numbers, byte offset, raw bytes, and the
 separator actually consumed. `validate_record_stream_policy`, `validate_record`,
-and `validate_record_field` first validate the shared policy, then reject embedded
-NULs, oversized text, zero metadata
+and `validate_record_field` validate both the shared policy and parent-record
+metadata, then reject embedded NULs, oversized text, zero metadata
 numbers, out-of-range field slices, and inconsistent field payloads through
 `error[RecordContractError]` before a scanner, regex walk, or aggregation buffer
 is allocated. This is a reusable contract; record I/O, external sort, and
