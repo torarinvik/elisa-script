@@ -32,6 +32,7 @@ for declaration in \
     'error ModuleContractError:' \
     'def validate_module_descriptor(' \
     'def validate_module_graph(' \
+    'def module_graph_acyclic(' \
     'def advance_module_resolution(' \
     'def module_resolution_stack_push(' \
     'def module_resolution_stack_pop('; do
@@ -44,6 +45,7 @@ for boundary in \
     'DuplicateImport' \
     'DuplicateModule' \
     'ModuleNotFound' \
+    'module_graph_acyclic' \
     'DuplicateSymbol' \
     'PublicPrivateCollision' \
     'ResolutionCycle' \

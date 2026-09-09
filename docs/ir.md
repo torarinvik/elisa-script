@@ -128,6 +128,8 @@ and oversized import or symbol sets fail through `error[ModuleContractError]`.
 Resolution advances
 `Planned → Resolving → Resolved/Failed` one event at a time, while
 `ModuleResolutionStack` rejects recursive identities before a loader can loop.
+Graph validation also performs bounded topological elimination and rejects a
+mutually importing module subgraph before resolution begins.
 Descriptor validation rejects `Planned` modules carrying progress and `Resolved`
 modules that have not accounted for every import.
 The graph contract is independent of host path lookup and leaves package roots,
