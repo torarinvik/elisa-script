@@ -179,6 +179,9 @@ instead of inheriting host parser defaults. Field payload bytes have their own
 bounded ledger and cannot exceed the input delta. Validation rejects forged ready
 counters and complete decoders with residual depth. Schema conversion and streaming
 parser implementations remain separate work.
+Token and record events both account their supplied byte, field, and field-byte
+deltas cumulatively; record boundaries cannot reset field totals or bypass the
+input/offset ledger.
 
 `EsJson` is the namespaced adapter boundary for the vendor JSON parser. A
 `JsonDocument` owns a bounded table of non-recursive `JsonNode` values,

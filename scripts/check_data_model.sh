@@ -41,6 +41,9 @@ for boundary in \
     'RecordLimitExceeded' \
     'FieldLimitExceeded' \
     'FieldBytesLimitExceeded' \
+    'data_limit_add(decoder.input_bytes, bytes_delta' \
+    'data_limit_add(decoder.fields, fields_delta' \
+    'field_bytes_delta > bytes_delta' \
     'raise DataContractError.DepthLimitExceeded if depth > decoder.limits.depth' \
     'OffsetAccountingInvalid' \
     'decoder.state == DataDecoderState.Ready' \
@@ -61,7 +64,10 @@ for fixture_pattern in \
     'DataContractError.InputLimitExceeded' \
     'forged_ready' \
     'forged_complete' \
-    'record_depth_rejected'; do
+    'record_depth_rejected' \
+    'record_overflow_rejected' \
+    'decoder.offset == 15' \
+    'decoder.fields == 4'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 
