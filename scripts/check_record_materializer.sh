@@ -57,6 +57,11 @@ for boundary in \
     rg -q "$boundary" "$model"
 done
 
+rg -q 'materializer.current_field_start > materializer.fields.count' "$model"
+rg -q 'materializer.current_field_count > materializer.fields.count - materializer.current_field_start' "$model"
+rg -q 'item.field_start > materializer.fields.count' "$model"
+rg -q 'item.field_count > materializer.fields.count - item.field_start' "$model"
+
 rg -Fq 'current_record <- Record{source: ""}' "$model"
 rg -Fq 'not materializer.record_open and (materializer.current_field_start != 0 or materializer.current_field_count != 0)' "$model"
 rg -q -U 'elif event == RecordMaterializerEvent.EndRecord:\n                raise RecordMaterializerError.InvalidState if materializer.state != RecordMaterializerState.Collecting\n                raise RecordMaterializerError.RecordNotOpen if not materializer.record_open\n                raise RecordMaterializerError.RecordLimitExceeded if materializer.records.count >= RECORD_MATERIALIZER_MAX_RECORDS' "$model"

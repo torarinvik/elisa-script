@@ -44,6 +44,8 @@ for boundary in \
     'accounted_record_fields' \
     'materializer.next_field != materializer.fields.count' \
     'first_field > materializer.fields.count' \
+    'record.first_field > materializer.fields.count' \
+    'record.field_count > materializer.fields.count - record.first_field' \
     'materializer.state == CsvMaterializerState.Ready and' \
     'CsvMaterializerState.Building and materializer.state != CsvMaterializerState.Complete' \
     'SourceAccountingInvalid' \

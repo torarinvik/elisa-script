@@ -223,7 +223,8 @@ with EsData, and a ready session must have clean source, field, record, and
 cursor accounting. Lookup returns only validated slices while the session is
 building or complete. Record starts are range-checked before subtraction. Quoted spans remain
 marked for a later unescape phase rather than being silently treated as plain
-text. Validation derives the field cursor and record-field total, rejecting
+text. Validation proves each record's first-field index before subtracting its
+field count, then derives the field cursor and record-field total, rejecting
 overlapping or omitted spans in imported materializers.
 
 `EsInstall` makes release publication a typed state machine. An
@@ -1136,7 +1137,8 @@ one `Record`, appends zero or more validated `RecordField` values in index order
 closes that record after enforcing the record ceiling, and repeats until `Seal`; `Fail` and `Cancel` are explicit
 terminal alternatives. The materializer retains borrowed record/field spans,
 checks contiguous record-to-field ownership, counts record/field/text budgets
-with subtraction-safe admission, and rejects all transitions after sealing or
+with subtraction-safe admission (including start-before-count range checks), and
+rejects all transitions after sealing or
 cancellation through `error[RecordMaterializerError]`. Validation also rejects
 forged planned/empty collecting state, stale inactive borrowed records/cursors,
 and sealing without a completed record. Closing a record and the Fail/Cancel
