@@ -492,7 +492,8 @@ the handler family that a packed VM will use (literal, frame, aggregate, process
 effect, continuation, and so on). `bytecode_dispatch_table_valid` walks functions
 and instructions with explicit preflight states and rejects a missing, stale, or
 invalid class entry before execution. It also validates the cumulative u32 block
-layout and exact instruction coverage before `bytecode_to_ir` reconstructs
+layout by proving each block offset before subtracting its count, and checks exact
+instruction coverage before `bytecode_to_ir` reconstructs
 instruction starts, preventing a malformed block-count sum from wrapping the
 reconstruction cursor ahead of full IR verification.
 
@@ -1452,7 +1453,9 @@ state matcher budget across all scanner positions, recursive backtracking, and
 capture probes; exhaustion reports the same typed limit instead of resetting for
 the next candidate match. These boundaries contain input amplification but do
 not make the recursive matcher provably linear. Replacement construction also
-rejects output growth beyond 64 MiB before final publication.
+rejects output growth beyond 64 MiB before final publication. Every output span
+proves `start <= end` and the source bound before subtracting its width, so
+malformed matcher metadata cannot underflow a remaining-capacity check.
 Pattern delimiter, group, class, and quantifier helper scans charge the same
 work budget by their inspected span, and candidate-position scans charge it
 again for each search/replacement probe. This keeps helper-only work from
