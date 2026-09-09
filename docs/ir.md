@@ -1176,6 +1176,8 @@ non-colliding backup, a closed symlink policy (`Reject`, `FollowSource`, or
 session admits `Begin → Append* → Sync → DirectorySync? → Commit → CommitAck`, with explicit
 failure, cancellation, and `BeginRollback → RollbackAck` recovery edges; an
 empty staged output is valid, but commit is impossible before the sync edge.
+Each append proves the existing output total before subtracting remaining output
+capacity, so malformed session accounting cannot underflow admission.
 Validation also rejects imported phase flags that claim a staging or commit
 acknowledgement before their corresponding state transition, including a
 `Committing` snapshot that omits required directory synchronization.
@@ -1664,6 +1666,9 @@ hostile.
 includes hidden entries, skips only `.` and `..`, sorts by unsigned byte order,
 and returns rooted child paths. It is lowered and executed directly by both the
 interpreter and packed bytecode backends without a glob-pattern round trip.
+Directory entry-name aggregation proves its existing name-byte total before
+subtracting each new entry's length, and glob-brace expansion applies the same
+ordering to variant bytes before allocating a variant.
 `TouchPath` verifies as `Named(Path) -> Bool` with `File.Write` and `FileIoError`
 for the legacy one-operand form, or `Named(Path) × Bool -> Bool` when the
 optional `exist_ok` control is present. Its interpreter bridge opens-or-creates

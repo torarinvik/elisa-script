@@ -49,6 +49,8 @@ rg -q 'sview_len\(prefix\.text\) > INTERPRET_MAX_TEMPORARY_PREFIX_BYTES' "$inter
 rg -q 'interpreter_rejects_oversized_temporary_prefix_before_nul_scan' "$fixture"
 rg -q 'sview\("", 0, 4073\)' "$fixture"
 rg -q 'return \[\] if total >= INTERPRET_MAX_PATH_BYTES' "$interpreter"
+rg -q 'scanner\.name_bytes > INTERPRET_MAX_DIRECTORY_NAME_BYTES' "$interpreter"
+rg -q 'length > INTERPRET_MAX_DIRECTORY_NAME_BYTES - scanner\.name_bytes' "$interpreter"
 rg -q 'def path_join_length_fits\(base: sview, leaf: sview\)' "$interpreter"
 rg -q 'if not path_join_length_fits\(base\.text, leaf\.text\)' "$interpreter"
 rg -q 'if not path_join_length_fits\(path\.text, bytes_view\(name\)\)' "$interpreter"

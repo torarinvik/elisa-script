@@ -49,6 +49,8 @@ for boundary in \
     rg -q "$boundary" "$model"
 done
 rg -q 'return event in .*RecordRewriteEvent.DirectorySync' "$model"
+rg -q 'session.output_bytes > session.plan.max_output_bytes' "$model"
+rg -q 'appended_bytes > session.plan.max_output_bytes - session.output_bytes' "$model"
 
 for fixture_pattern in \
     'using EsRecordRewrite' \
