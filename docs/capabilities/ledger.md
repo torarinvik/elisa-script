@@ -630,7 +630,8 @@ static evidence; PATH access, permission/stat calls, platform search rules, and
 process-launch integration remain open.
 
 `EsRecord::RecordStreamPolicy`, `Record`, and `RecordField` now define a bounded
-Perl/AWK-style record boundary: separator and field modes are explicit, fixed
+Perl/AWK-style record boundary: separator and field modes are explicit, consumed
+separators are retained only under the explicit preservation policy; fixed
 widths and schema names are validated, and source/filename/record-number/
 file-number/byte-offset metadata remains attached to each raw record. The
 field validator now revalidates its parent record before admitting a slice. The

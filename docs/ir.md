@@ -1127,7 +1127,8 @@ require nonzero widths whose sum remains within the shared 64 MiB text envelope,
 then continue through the shared schema/separator checks; schema policies require
 a nonempty schema name. Every record carries source,
 optional filename, global/file-local numbers, byte offset, raw bytes, and the
-separator actually consumed. `validate_record_stream_policy`, `validate_record`,
+separator actually consumed when `preserve_separator` is enabled.
+`validate_record_stream_policy`, `validate_record`,
 and `validate_record_field` validate both the shared policy and parent-record
 metadata, then reject embedded NULs, oversized text, zero metadata
 numbers, out-of-range field slices, and inconsistent field payloads through
