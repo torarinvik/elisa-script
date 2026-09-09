@@ -49,6 +49,7 @@ for boundary in \
     'DirectoryTreeState.Complete and' \
     'DirectoryTreeState.Cancelled and' \
     'DirectoryTreeEvent.Descend' \
+    'entry.depth != session.active_depth' \
     'last.kind == DirectoryTreeEntryKind.Symlink' \
     'session.failures >= session.policy.max_entries' \
     'DirectoryTreeEvent.Cancel' \

@@ -1297,7 +1297,8 @@ sorting, temporary-file creation, fsync/rename, cleanup, and crash recovery.
 
 `EsDirectoryTree::DirectoryTreeSession` makes recursive filesystem traversal
 policy explicit. A walk caps depth, entries, retained identities, and bytes;
-each visited path has a nonzero identity and stable depth, and duplicate
+each visited path has a nonzero identity and a depth matching the active
+parent scope, and duplicate
 identities fail closed as cycle/alias protection. Planned snapshots are empty,
 `DoNotFollow`, `FollowFiles`,
 and `FollowDirectories` symlink policies plus fail-fast/collect behavior are
