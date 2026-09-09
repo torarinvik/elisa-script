@@ -1322,8 +1322,10 @@ and `FollowDirectories` symlink policies plus fail-fast/collect behavior are
 enforced at `Descend`, including admission of symlinked directories only under
 `FollowDirectories`,
 typed, and `Descend`/`Leave` maintain an explicit depth stack. Cancellation and
-completion require a balanced walk; failure counts are bounded before each
-failure edge, and malformed paths, non-directories, denied
+completion require a balanced walk; fail-fast failures inside a nested scope
+remain in `Walking` until matching `Leave` edges unwind to depth zero, then
+become `Failed`, while further visits are rejected. Failure counts are bounded
+before each failure edge, and malformed paths, non-directories, denied
 symlink descent, limits, and identity/byte accounting failures use
 `error[DirectoryTreeError]`.
 
@@ -1335,7 +1337,9 @@ and `Reject` symlink policies, fail-fast versus collected failures, identity
 cycle/alias rejection, depth/entry/byte/failure ceilings, balanced
 `Enter`/`Leave` scopes, source-equal or descendant copy-destination rejection,
 duplicate copy destinations, clean planned state, and
-cancellation are all checked before host mutation.
+cancellation are all checked before host mutation. A fail-fast failure inside
+an `Enter` scope remains `Executing` while matching `Leave` edges unwind; it
+becomes `Failed` only at depth zero and rejects further planning or completion.
 Aggregate byte admission proves the accumulated total before subtracting each
 entry's remaining capacity, so malformed plans fail closed without underflow.
 The identity vector is reconciled positionally with admitted entries so
