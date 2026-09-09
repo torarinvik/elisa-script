@@ -11,9 +11,10 @@ repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 runtime_file="$repo_root/src/ir/runtime_model.elisa"
 interpreter_file="$repo_root/src/ir/interpret.elisa"
 bytecode_file="$repo_root/src/bytecode/bytecode.elisa"
+bytecode_fixture="$repo_root/test/ir/elisascript_bytecode_test.elisa"
 ir_docs="$repo_root/docs/ir.md"
 
-for required_file in "$runtime_file" "$interpreter_file" "$bytecode_file" "$ir_docs"; do
+for required_file in "$runtime_file" "$interpreter_file" "$bytecode_file" "$bytecode_fixture" "$ir_docs"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'runtime limit audit: missing file: %s\n' "$required_file" >&2
         exit 2
@@ -59,6 +60,14 @@ if ! rg -q 'ES_RUNTIME_DEFAULT_MAX_ERROR_GUARD_DEPTH' "$interpreter_file"; then
 fi
 if ! rg -q 'ES_RUNTIME_DEFAULT_MAX_ERROR_GUARD_DEPTH' "$bytecode_file"; then
     printf 'runtime limit audit: direct bytecode does not consume the shared error-guard depth limit\n' >&2
+    exit 1
+fi
+if ! rg -q 'right\.integer >= instruction\.result_type\.bits\.i64\(\)' "$bytecode_file"; then
+    printf 'runtime limit audit: direct bytecode shift guard is not width-aware\n' >&2
+    exit 1
+fi
+if ! rg -q 'invalid_u8_shift' "$bytecode_fixture" || ! rg -q 'failure == InterpretError\.InvalidShift' "$bytecode_fixture"; then
+    printf 'runtime limit audit: width-specific direct-bytecode shift regression is missing\n' >&2
     exit 1
 fi
 if ! rg -q 'ES_RUNTIME_DEFAULT_MAX_EXECUTION_CALL_DEPTH' "$ir_docs" || ! rg -q 'host-recursive|host recursive|handler/error-stack depth' "$ir_docs"; then

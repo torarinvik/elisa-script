@@ -2345,7 +2345,10 @@ maintain a checked fallback stack, and recoverable typed failures jump to the
 verified fallback block without wrapping the value in a result object.
 Integer divide/remainder/shift operations validate zero divisors, signed minimum
 overflow, and shift counts before entering host arithmetic, preserving the typed
-interpreter failures while remaining on the direct path.
+interpreter failures while remaining on the direct path. Shift counts are
+bounded by the declared result width (for example, shifting a `u8` by eight is
+`InvalidShift`, not a narrow-value overflow), so direct-bytecode diagnostics do
+not depend on the host machine width.
 The direct path uses the same overflow-safe flat-array range predicates as the
 interpreter for array/map indexing, slicing, membership, joining, concatenation,
 indexed updates, equality, key extraction, and process argument vectors; malformed external arguments
