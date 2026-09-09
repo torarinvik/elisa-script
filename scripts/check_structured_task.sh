@@ -63,6 +63,8 @@ for fixture_pattern in \
     'StructuredTaskError.CleanupDepthInvalid'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
+rg -q 'StructuredTaskError.JoinNotReady if child.state == StructuredChildState.Planned' "$model"
+rg -q 'fail_pending_rejected' "$fixture_file"
 
 rg -q 'EsStructuredTask::StructuredTaskScope' "$docs"
 rg -q 'ES-SCRIPT-046' "$ledger"
