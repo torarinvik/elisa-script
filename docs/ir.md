@@ -690,9 +690,10 @@ the stream boundary, including an incomplete sequence at EOF or sync.
 The IR fixture records the continuation bounds for split three- and four-byte
 sequences so chunk boundaries cannot silently reset decoder state.
 `file_stream_read_chunk` and
-`file_stream_write_chunk` admit each request with subtraction-before-addition,
-return typed progress records, and reject closed handles, wrong directions,
-and budget overflow. A write state machine retries positive short `fwrite`
+`file_stream_write_chunk` admit each request with ordered over-budget and
+subtraction-before-addition checks, return typed progress records, and reject
+closed handles, wrong directions, and budget overflow. A write state machine
+retries positive short `fwrite`
 progress from the advanced buffer offset; zero or over-counted host progress,
 or a positive count accompanied by the stdio error indicator, is a typed write
 failure, so a partial write cannot be reported as complete or spin forever.
