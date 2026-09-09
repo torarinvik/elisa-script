@@ -41,6 +41,8 @@ for boundary in \
     'RegexCallbackError.ReplacementNotReady' \
     'RegexCallbackError.OutputLimitExceeded' \
     'RegexCallbackError.AccountingInvalid' \
+    'not session.has_last_zero and session.last_zero_start != 0' \
+    'session.has_last_zero and session.last_zero_start > session.input_bytes' \
     'policy.max_captures != 0' \
     'session.pending and session.state != RegexCallbackState.Matching' \
     'RegexCallbackEvent.Match' \
@@ -60,6 +62,8 @@ for fixture_pattern in \
     'RegexCallbackError.MatchLimitExceeded' \
     'RegexCallbackError.AccountingInvalid' \
     'forged_pending' \
+    'forged_zero_marker' \
+    'forged_zero_offset' \
     'zero_capture_policy'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
