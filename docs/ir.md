@@ -1192,6 +1192,9 @@ capacity, so malformed session accounting cannot underflow admission.
 Validation also rejects imported phase flags that claim a staging or commit
 acknowledgement before its corresponding state transition, including a
 `Committing` snapshot that omits required directory synchronization.
+It also rejects rollback acknowledgements in non-rollback states and committed
+snapshots that omit staging synchronization, so terminal records cannot be
+forged by mixing flags from different lifecycle phases.
 The typed contract performs no rename or fsync itself, leaving platform error
 mapping, permissions, crash recovery, and multi-file traversal to host code.
 

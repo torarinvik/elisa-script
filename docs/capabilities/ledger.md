@@ -854,6 +854,8 @@ and non-colliding. The contract also has a validated closed symlink policy, boun
 output and append counts, and the ordered `Begin → Append* → Sync →
 DirectorySync? → Commit → CommitAck` lifecycle with failure, cancellation, and
 rollback acknowledgements.
+Validation rejects cross-phase acknowledgement flags and committed snapshots
+without staging synchronization, preventing forged terminal records.
 The focused IR fixture, namespace inclusion, documentation, and
 check_record_rewrite.sh audit are static evidence; POSIX rename/fsync, mode and
 permission preservation, crash recovery, and multi-file traversal remain host

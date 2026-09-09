@@ -39,6 +39,11 @@ for boundary in \
     'RecordRewriteError.PathCollision' \
     'RecordRewriteError.OutputLimitExceeded' \
     'session.state == RecordRewriteState.Staging' \
+    'session.state == RecordRewriteState.Committing and session.rollback_acknowledged' \
+    'session.state == RecordRewriteState.Committed and not session.staged_synced' \
+    'session.state == RecordRewriteState.RollingBack and session.rollback_acknowledged' \
+    'session.state == RecordRewriteState.Failed and \(session.commit_acknowledged or session.rollback_acknowledged\)' \
+    'session.state == RecordRewriteState.Cancelled and \(session.commit_acknowledged or session.rollback_acknowledged\)' \
     'session.state == RecordRewriteState.Committed and session.plan.require_directory_sync' \
     'session.state == RecordRewriteState.Committing and session.plan.require_directory_sync' \
     'RecordRewriteEvent.Sync' \
@@ -59,7 +64,9 @@ for fixture_pattern in \
     'RecordRewriteEvent.DirectorySync' \
     'RecordRewriteEvent.CommitAck' \
     'RecordRewriteEvent.RollbackAck' \
-    'RecordRewriteError.PathCollision'; do
+    'RecordRewriteError.PathCollision' \
+    'forged_impossible_ack' \
+    'forged_committed_sync'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 
