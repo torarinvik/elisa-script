@@ -35,8 +35,7 @@ for boundary in \
     'registry_candidate_before' \
     'registry_candidate_equal' \
     'registry_constraint_satisfied' \
-    'sview_len(left.pre_release) == 0' \
-    'sview_len(right.pre_release) == 0' \
+    'package_version_precedes' \
     'IntegrityMissing' \
     'OrderInvalid' \
     'registry.state == PackageRegistryState.Empty' \
@@ -56,6 +55,8 @@ for fixture_pattern in \
     'PackageRegistryError.OrderInvalid' \
     'PackageRegistryEvent.Cancel' \
     'reverse_order_rejected' \
+    'numeric_prerelease_high' \
+    'numeric_reverse_rejected' \
     'forged_empty'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done

@@ -35,6 +35,7 @@ done
 for boundary in \
     'cache_entry_before' \
     'cache_entry_equal' \
+    'package_version_precedes' \
     'locator: sview, fingerprint: u64' \
     'entry.locator == locator' \
     'CacheNotReady' \

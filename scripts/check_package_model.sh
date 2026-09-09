@@ -27,6 +27,7 @@ for declaration in \
     'struct PackageLock:' \
     'error PackageContractError:' \
     'def package_version_is_valid(' \
+    'def package_version_precedes(' \
     'def validate_package_manifest(' \
     'def validate_package_lock(' \
     'def validate_package_resolution(' \
@@ -42,6 +43,7 @@ for boundary in \
     'ConstraintUnsatisfied' \
     'OfflinePolicyMismatch' \
     'package_version_equal(constraint.max_version, constraint.min_version)' \
+    'package_pre_release_before' \
     'ResolutionNotReady' \
     'package_constraint_satisfied'; do
     rg -Fq "$boundary" "$model"
