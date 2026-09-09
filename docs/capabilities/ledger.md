@@ -921,7 +921,8 @@ ES-SCRIPT-033 | EsProcessBatch supplies a bounded fan-out/fan-in process-map
 contract without launching children. It enforces unique job IDs, maximum jobs,
 active parallelism, attempts before launch, pending/running/retryable/terminal states,
 terminal-state accounting, planned cancellation, fail-fast versus aggregate
-failure, and scoped `Cancel → CancelAck` cleanup.
+failure, including fail-fast draining where every active sibling fails, and
+scoped `Cancel → CancelAck` cleanup.
 The focused IR fixture, namespace inclusion, documentation, and
 check_process_batch.sh audit are static evidence; scheduler ownership, actual
 pipe/process adapters, signal escalation, and execution evidence remain open.

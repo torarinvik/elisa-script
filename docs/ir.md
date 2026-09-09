@@ -1472,7 +1472,7 @@ aggregate failure. Planned cancellation marks all pending jobs cancelled,
 `Succeeded` requires every job completed, and `Cancelled` cannot retain
 unfinished jobs. `Cancel → CancelAck` marks every still-owned slot cancelled;
 fail-fast exhaustion enters `Draining`, cancels queued work, and waits for
-active siblings to finish before reaching `Failed`; a `Failed` snapshot likewise
+active siblings to finish (whether they complete or fail) before reaching `Failed`; a `Failed` snapshot likewise
 requires every job to be terminal and cannot retain active or queued work;
 the contract never starts a child or sends a signal. Non-pending execution
 states also require a consumed attempt, so a retry/failure record cannot be
