@@ -929,6 +929,9 @@ unknown or malformed child links fail closed. The runtime keeps the same
 fail-closed root check for legacy hand-built descriptors. The IR regression
 fixture also covers a malformed nominal root whose interned child graph hides an
 array, requiring both the unsafe multi-shot and invalid-table diagnostics.
+TypeTable interning proves the existing child pool count before subtracting the
+new descriptor width, so oversized generated descriptors cannot wrap their
+capacity check.
 Malformed metadata is a handler-contract issue rather than permission to replay
 an untyped or unknown value.
 Coverage is operation-aware: a handler with one or more clauses handles only the
