@@ -742,7 +742,8 @@ all length-delimited metadata readers use the public
 `runtime_bounded_slice_end` admission helper. It checks `start <= bound` and
 `length <= bound - start` before writing the end offset, so a malformed u64
 length cannot wrap a target `usize` or expose a partially validated borrowed
-view. `scripts/check_serialization_bounds.sh` audits this shared invariant,
+view. Fixed-width artifact readers likewise check `offset <= bytes.count` before
+subtracting their eight-byte window. `scripts/check_serialization_bounds.sh` audits this shared invariant,
 the bytecode reader, verifier range checks, and its boundary fixture without
 launching the compiler.
 `bytecode_artifact_bytes_valid` is the allocation-free cache-boundary check: it
