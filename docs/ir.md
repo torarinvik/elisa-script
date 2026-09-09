@@ -1139,6 +1139,9 @@ decimal points, with explicit empty/trailing-separator, overflow,
 digit, exponent, cancellation, and invalid-character errors. Validation also
 reconciles digit/byte counters, decimal flags, phase/flag coherence, and
 integer magnitude bounds.
+Rejected bytes and overflow attempts are failure-atomic: character, digit,
+and magnitude accounting is published only after the byte passes its phase
+checks.
 No implicit float conversion occurs at the record boundary.
 
 `EsRecordMaterialize::RecordMaterializer` adds the bounded stream-adapter
