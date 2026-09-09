@@ -43,6 +43,7 @@ for boundary in \
     'PatternLimitExceeded' \
     'InputLimitExceeded' \
     'ReplacementNotAllowed' \
+    'InvalidOperation if session.request.operation == RegexOperation.Replace' \
     'GroupLimitExceeded' \
     'MatchLimitExceeded' \
     'CaptureAccountingInvalid' \
@@ -62,7 +63,8 @@ for fixture_pattern in \
     'RegexOperation.Replace' \
     'RegexEvent.Match' \
     'RegexEvent.Replace' \
-    'RegexEvent.CancelAck'; do
+    'RegexEvent.CancelAck' \
+    'replace_match_rejected'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 
