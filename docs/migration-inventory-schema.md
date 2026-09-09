@@ -26,18 +26,44 @@ the declared manifest path for review. The coordinator repeats the manifest
 shape, ownership-state, duplicate-name, and duplicate-path preflight itself so
 direct invocation cannot bypass the fail-closed audit.
 
-The first row is the exact header. Every later row has these fields:
+Both candidate and signal scanners skip `.git`, `node_modules`, `.venv`,
+`__pycache__`, `vendor`, and `third_party` consistently. The candidate scanner
+also recognizes a `Makefile` or `makefile` directly at the scan root (not only
+when it has a parent directory), so the filename census and kind classification
+cannot disagree on that common build entry point.
+
+The candidate scanner's first row is the exact seven-column header below. Every
+later row has the same fields and order:
+
+```
+path	kind	owner	entrypoint	disposition	risk	notes
+```
 
 | Field | Meaning |
 |---|---|
 | `path` | Absolute candidate path as discovered by `rg --files` |
 | `kind` | `python`, `perl`, `awk`, `shell`, `makefile`, or `unknown` |
 | `owner` | Maintainer identity; starts as `unassigned` |
-| `review_status` | Manifest review state: `pending`, `reviewed`, or `blocked` |
 | `entrypoint` | Direct executable, imported module, build recipe, CI hook, generated output, or `unknown` |
 | `disposition` | `classify`, `classify-generated`, `retain-external`, `port`, `wrap-temporarily`, `archive`, or `remove-after-acceptance` |
 | `risk` | `test`, `build`, `release`, or `unknown` discovery hint; replace with the reviewed risk class |
 | `notes` | Provisional read-only note and later review evidence |
+
+The partition coordinator prepends `root_name` and `root_path` and emits a
+nine-column stream:
+
+```
+root_name	root_path	path	kind	owner	entrypoint	disposition	risk	notes
+```
+
+The `review_status` field belongs to the checked-in root manifest and to the
+maintainer-reviewed file manifest (`docs/migration-review-current.tsv`); it is
+not silently fabricated by the candidate scanner. The reviewed manifest has
+its own eight-column header:
+
+```
+path	kind	owner	review_status	entrypoint	disposition	risk	notes
+```
 
 Generate a snapshot for the declared project roots without running any legacy
 program:

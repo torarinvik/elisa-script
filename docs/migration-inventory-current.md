@@ -4,7 +4,7 @@ This is a read-only discovery snapshot for the current Elisascript repository.
 It is evidence for the migration workflow, not a claim that any legacy file has
 been ported or may be deleted.
 
-Snapshot date: 2026-09-06  
+Snapshot date: 2026-09-09
 Scan root: `/Users/torarinvikbjarko/Documents/Coding Projects/Elisa Projects/elisa-script`  
 Commands: `scripts/inventory_candidates.sh "$PWD"` and
 `scripts/inventory_signals.sh "$PWD"`  
@@ -20,16 +20,18 @@ of the entire `Elisa Projects` tree was stopped after `find` reached roughly
 
 | Artifact | Count |
 |---|---:|
-| Shell-family filename candidates | 10 |
-| Executable-file signals | 8 |
-| Legacy-shebang signals | 9 |
-| Inline Python/Perl/AWK signals | 7 |
+| Shell-family filename candidates | 126 |
+| Executable-file signals | 115 |
+| Legacy-shebang signals | 126 |
+| Inline Python/Perl/AWK signals | 28 |
 
-The nine shell candidates are all repository maintenance tools under `scripts/`:
+The 126 shell candidates are repository maintenance tools under `scripts/`:
 inventory generators, compiler-validation wrappers, and compiler-free audits.
 They are migration candidates for the eventual P15 dogfooding wave, but the
 validation wrappers remain safety controls and must not be replaced or enabled
-until the validation gate is explicitly reauthorized.
+until the validation gate is explicitly reauthorized. The counts are a
+read-only snapshot; generated and vendored trees are excluded by both scanners,
+while every emitted file still needs a maintainer disposition.
 
 ## Representative acceptance cases
 
@@ -68,10 +70,11 @@ their safety semantics even while compiler execution remains disabled.
 - Keep generated/vendored files and safety wrappers explicitly classified before
   any port or removal decision.
 
-The current repository candidates (now ten shell-family files) have now received that review in
-`docs/migration-review-current.tsv`. The reviewed manifest assigns the
-`elisascript-maintainers` owner role, records callers and I/O/dependency/platform
-notes, and classifies all four validation safety wrappers as
-`retain-external`. `scripts/check_migration_review.sh` audits that every current
-candidate is present exactly once, reviewed, non-placeholder-owned, and carries
-an approved `port` or `retain-external` disposition without executing any row.
+The reviewed subset in `docs/migration-review-current.tsv` contains 21 current
+repository candidates. It assigns the `elisascript-maintainers` owner role,
+records callers and I/O/dependency/platform notes, and classifies all four
+validation safety wrappers as `retain-external`.
+`scripts/check_migration_review.sh` audits that each of those 21 selected rows
+is present exactly once, reviewed, non-placeholder-owned, and carries an
+approved `port` or `retain-external` disposition without executing any row;
+the remaining candidates stay pending until their own review records exist.

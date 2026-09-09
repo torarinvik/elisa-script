@@ -59,7 +59,7 @@ printf 'path\tkind\towner\tentrypoint\tdisposition\trisk\tnotes\n'
 candidate_kind() {
     candidate_path="$1"
     case "$candidate_path" in
-        */Makefile|*/makefile) printf '%s' makefile ;;
+        Makefile|makefile|*/Makefile|*/makefile) printf '%s' makefile ;;
         *.py) printf '%s' python ;;
         *.pl|*.pm) printf '%s' perl ;;
         *.awk) printf '%s' awk ;;
@@ -98,7 +98,15 @@ if ! : > "$candidate_paths_file"; then
 fi
 
 for candidate_pattern in '*.py' '*.pl' '*.pm' '*.awk' '*.sh' '*.bash' '*.zsh' '*.fish' 'Makefile' 'makefile'; do
-    if rg --files --hidden -g "$candidate_pattern" "$scan_root" 2>/dev/null >> "$candidate_paths_file"; then
+    if rg --files --hidden \
+        --glob '!.git/**' \
+        --glob '!**/.git/**' \
+        --glob '!**/node_modules/**' \
+        --glob '!**/.venv/**' \
+        --glob '!**/__pycache__/**' \
+        --glob '!**/vendor/**' \
+        --glob '!**/third_party/**' \
+        -g "$candidate_pattern" "$scan_root" 2>/dev/null >> "$candidate_paths_file"; then
         :
     else
         rg_status=$?

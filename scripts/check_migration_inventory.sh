@@ -71,6 +71,22 @@ if ! rg -q 'inventory_candidates\.sh' "$schema_file" || ! rg -q 'inventory_signa
     exit 1
 fi
 
+# Candidate traversal and signal traversal must inspect the same bounded tree;
+# otherwise a dependency directory can bypass the census budget and reappear
+# in the emitted candidate stream. Keep the root-level Makefile classification
+# explicit because a shell case pattern containing `*/Makefile` alone misses
+# a Makefile directly at the scan root.
+for excluded_tree in '.git' 'node_modules' '.venv' '__pycache__' 'vendor' 'third_party'; do
+    if ! rg -q -- "--glob '!\*\*/${excluded_tree}/\*\*'" "$script_dir/inventory_candidates.sh"; then
+        printf 'migration inventory audit: candidate scanner does not exclude %s consistently\n' "$excluded_tree" >&2
+        exit 1
+    fi
+done
+if ! rg -q 'Makefile\|makefile\|\*/Makefile\|\*/makefile' "$script_dir/inventory_candidates.sh"; then
+    printf 'migration inventory audit: candidate scanner misses root-level Makefiles\n' >&2
+    exit 1
+fi
+
 bash -n "$coordinator" "$script_dir/inventory_candidates.sh" "$script_dir/inventory_signals.sh" "$review_audit" "$roots_audit"
 if ! rg -q 'check_migration_roots\.sh' "$roots_audit" "$schema_file"; then
     printf 'migration inventory audit: root ownership audit is not documented\n' >&2
