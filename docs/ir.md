@@ -1236,9 +1236,9 @@ the borrowed field storage and any subsequent file publication.
 
 `EsRecordWindow::RecordWindowSession` supplies a bounded rolling numeric
 window for streaming actions. It retains an event history capped by
-`max_events`, tracks an active suffix capped by `width`, evicts the oldest
-value before admitting a new one, and maintains a subtraction-safe unsigned
-sum under an explicit ceiling. `record_window_count` and `record_window_sum`
+`max_events`, tracks an active suffix capped by `width`, stages eviction and
+checks the prospective sum before admitting a new value, and maintains a
+subtraction-safe unsigned sum under an explicit ceiling. `record_window_count` and `record_window_sum`
 are available while collecting or after sealing; invalid terminal transitions,
 forged planned-state contents, empty-history drift, out-of-policy values in
 retained history, window accounting drift, and event/sum overflow return

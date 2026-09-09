@@ -44,6 +44,8 @@ for boundary in \
     'RecordWindowError.EventLimitExceeded' \
     'RecordWindowError.WidthExceeded' \
     'RecordWindowError.SumLimitExceeded' \
+    'next_sum' \
+    'evicting' \
     'RecordWindowEvent.Push' \
     'RecordWindowState.Sealed'; do
     rg -q "$boundary" "$model"
