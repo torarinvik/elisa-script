@@ -36,6 +36,8 @@ for boundary in \
     'DependencyNotReady' \
     'FingerprintMissing' \
     'LogLimitExceeded' \
+    'total_log_bytes > BUILD_MAX_LOG_BYTES' \
+    'node.log_bytes > BUILD_MAX_LOG_BYTES - total_log_bytes' \
     'FailureNotReady' \
     'CancelNotReady' \
     'terminal_nodes' \

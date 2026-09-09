@@ -282,6 +282,8 @@ reconciled with node states, and terminal graph states reject forged progress
 or unfinished completion; a failure is admitted only when no sibling is still
 running, then marks every remaining planned node as `Cancelled` before the
 failed graph reaches its terminal state.
+Aggregate log admission proves the accumulated log total before subtracting
+each node's remaining log capacity.
 Cancellation acknowledgement also accounts any still-running nodes as
 `Cancelled` after the host confirms they stopped; it cannot leave active
 children unaccounted.
@@ -381,8 +383,9 @@ per-entry bytes, subtraction-safe aggregate bytes, duplicate ids/paths, link pol
 planned/extracting/committed/failed/cancelled states are bounded through
 `error[ArchiveError]`; non-link entries cannot carry hidden link targets, a
 planned session cannot contain preloaded entries or counters, failure is
-admitted only during active extraction, and filesystem writes remain
-host-adapter work.
+admitted only during active extraction. Aggregate byte admission proves the
+existing total before subtracting remaining capacity, and filesystem writes
+remain host-adapter work.
 
 `EsHash::HashContext` is the bounded integrity boundary used by package,
 archive, and artifact adapters. Algorithm identity, input/chunk ceilings,
