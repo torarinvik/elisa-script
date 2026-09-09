@@ -46,6 +46,9 @@ working-directory/locale metadata, stdin, argv, environment, fixture paths, and
 fixture bytes/text; length-only admission runs before NUL/duplicate/path scans,
 and fixture paths have an explicit host-safe length ceiling before hashing or
 filesystem materialization.
+The aggregate helper rejects an already-over-limit total before subtracting the
+remaining world capacity, and nested array/map comparison pools prove their
+start index before subtracting the encoded value count.
 Case names, runner names, oracle names, and serialized manifest identity fields repeat their
 own metadata-length admission before any NUL scan. This keeps direct helper
 calls fail-closed even when they bypass the ordered top-level case validator.

@@ -61,6 +61,11 @@ done
 rg -q 'return false if length == 0 or length > DIFFERENTIAL_DEFAULT_MAX_WORLD_PATH_BYTES' "$source_file"
 rg -q 'sview_len\(entry\.name\) > DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES or sview_len\(entry\.value\) > DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES' "$source_file"
 rg -q 'return false if not differential_manifest_text_bytes_fits\(manifest\)' "$source_file"
+rg -q 'return false if total > DIFFERENTIAL_DEFAULT_MAX_WORLD_BYTES' "$source_file"
+rg -q 'return false if amount > DIFFERENTIAL_DEFAULT_MAX_WORLD_BYTES - total' "$source_file"
+rg -q 'raise DifferentialRunnerError.Invalid if start > DIFFERENTIAL_U32_MAX' "$source_file"
+rg -q 'raise DifferentialRunnerError.Invalid if count > DIFFERENTIAL_U32_MAX - start' "$source_file"
+rg -q 'raise DifferentialRunnerError.Invalid if pair_count > \(DIFFERENTIAL_U32_MAX - start\) / 2' "$source_file"
 
 for helper in differential_process_text_field_lengths_fit; do
     if ! rg -q "def $helper\(" "$source_file"; then
