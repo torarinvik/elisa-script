@@ -1388,7 +1388,7 @@ validation or whole-document allocation.
 `EsRecordControl::RecordControlSession` makes AWK-style control keywords
 explicit: `RecordEnd` and `NextRecord` check the record ceiling before closing the current record,
 then `NextRecord` advances to the next one,
-`NextFile` closes both record and file scopes, and `Exit` terminates cleanly from
+`NextFile` accounts for and closes an open record before closing the file scope, and `Exit` terminates cleanly from
 any running scope. The bounded state machine rejects calls outside an open file,
 double-open records, impossible open-file counters, file closure with a live
 record, and post-terminal events;

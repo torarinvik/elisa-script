@@ -44,6 +44,7 @@ for boundary in \
     'RecordControlState.RecordSkipped' \
     'session.state != RecordControlState.RecordSkipped' \
     'RecordControlState.FileSkipped' \
+    'was_record_open' \
     'RecordControlState.Exited'; do
     rg -q "$boundary" "$model"
 done
@@ -57,6 +58,7 @@ for fixture_pattern in \
     'RecordControlEvent.Exit' \
     'RecordControlError.FileNotOpen' \
     'forged_skip' \
+    'nextfile_counts_record' \
     'overflow_end_rejected'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
