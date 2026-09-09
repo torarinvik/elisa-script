@@ -36,6 +36,8 @@ done
 for boundary in \
     'InvalidRange' \
     'InvalidChildRange' \
+    'raise JsonContractError.InvalidChildRange if node.child_start > document.nodes.count' \
+    'raise JsonContractError.InvalidChildRange if node.child_count > document.nodes.count - node.child_start' \
     'node.scalar_bytes > node.range.end - node.range.start' \
     'node.kind == JsonNodeKind.Array or node.kind == JsonNodeKind.Object' \
     'document.state == JsonDocumentState.Empty' \
