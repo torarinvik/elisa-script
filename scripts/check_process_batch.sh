@@ -67,6 +67,7 @@ for fixture_pattern in \
     'ProcessBatchError.AccountingInvalid' \
     'forged_completed_cancelled' \
     'forged_failed' \
+    'forged_failed_with_pending' \
     'launch_limit'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
