@@ -1374,7 +1374,9 @@ boundaries are accepted, and final partial records
 are accepted at `End`, while empty records are rejected unless the policy opts
 in, and unterminated strings/values,
 underflow, invalid stack contents, forged ready/complete state, and cancellation
-are explicit typed errors; complete state also reconciles input bytes with the
+are explicit typed errors. Rejected byte events are atomic: input and record
+counters advance only after depth, delimiter, and record-limit admission passes;
+complete state also reconciles input bytes with the
 number of admitted records. A full parser consumes
 one sealed record at a time, so this contract does not claim JSON semantic
 validation or whole-document allocation.

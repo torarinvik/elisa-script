@@ -51,6 +51,7 @@ for boundary in \
     'JsonStreamError.UnterminatedValue' \
     'session.state == JsonStreamState.Ready' \
     'session.state == JsonStreamState.Complete' \
+    'session.input_bytes <- session.input_bytes \+ 1' \
     'JsonStreamEvent.RecordEnd' \
     'JsonStreamEvent.Cancel' \
     'JsonStreamState.Complete'; do
@@ -64,6 +65,7 @@ for fixture_pattern in \
     'JsonStreamEvent.End' \
     'JsonStreamError.UnterminatedValue' \
     'JsonStreamError.RecordBytesLimitExceeded' \
+    'assert oversized.input_bytes == 2' \
     'allow_empty_records' \
     'forged_complete'; do
     rg -q "$fixture_pattern" "$fixture_file"
