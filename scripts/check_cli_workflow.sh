@@ -39,6 +39,7 @@ for boundary in \
     'workflow.state == CliWorkflowState.Cancelling' \
     'workflow.state == CliWorkflowState.Complete' \
     'workflow.state == CliWorkflowState.Failed or workflow.state == CliWorkflowState.Cancelled' \
+    'and workflow.next_step >= workflow.steps.count' \
     'StepNotReady' \
     'InvocationInvalid' \
     'CliMode.Check' \
@@ -57,7 +58,10 @@ for fixture_pattern in \
     'CliWorkflowStep.Verify' \
     'CliWorkflowStep.Format' \
     'CliWorkflowEvent.CancelAck' \
-    'forged_cancelling_cursor'; do
+    'forged_cancelling_cursor' \
+    'assert validate_cli_workflow(cancellation)' \
+    'failed_workflow' \
+    'assert validate_cli_workflow(failed_workflow)'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 
