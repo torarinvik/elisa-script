@@ -218,7 +218,8 @@ shared limits while distinguishing unquoted, quoted, escaped, and post-quote
 states. Separators inside quotes are data; doubled quotes and configured escape
 bytes are explicit transitions; malformed post-quote bytes, unterminated
 quotes, and cancellation become typed `CsvContractError` values. Validation
-also reconciles ready/complete state counters before admission. Field
+also reconciles ready/complete state counters before admission, and rejected
+byte events leave input and field counters unchanged. Field
 materialization, including the invariant that every completed record owns a
 field, newline variants, and external-spill aggregation remain
 adapter work.

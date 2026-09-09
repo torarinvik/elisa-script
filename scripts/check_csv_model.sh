@@ -45,7 +45,8 @@ for fixture_pattern in \
     'typed_csv_stream_contract_preserves_quotes_and_bounded_rows' \
     'CsvStreamEvent.Byte' \
     'CsvContractError.UnexpectedEnd' \
-    'assert limited.fields_total == 1'; do
+    'assert limited.fields_total == 1' \
+    'assert byte_rejected.input_bytes == 1'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 
