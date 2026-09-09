@@ -848,8 +848,9 @@ inclusion, documentation, and check_record_sort.sh audit are static evidence;
 spill files, atomic publication, and merge I/O remain host work.
 
 ES-SCRIPT-025 | EsRecordRewrite supplies a transactional in-place rewrite
-contract for record/regex adapters. It requires distinct source/destination/
-staging paths, optional non-colliding backups, a validated closed symlink policy, bounded
+contract for record/regex adapters. Source and destination may be equal for an
+in-place operation, but the staging path must be distinct; backups are optional
+and non-colliding. The contract also has a validated closed symlink policy, bounded
 output and append counts, and the ordered `Begin → Append* → Sync →
 DirectorySync? → Commit → CommitAck` lifecycle with failure, cancellation, and
 rollback acknowledgements.
