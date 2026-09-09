@@ -44,6 +44,8 @@ for boundary in \
     'TelemetryMode.Disabled' \
     'TelemetryRecordOutcome.Sampled' \
     'TelemetryError.EventLimitExceeded' \
+    'policy.max_payload_bytes != 0' \
+    'ledger.events.count \+ ledger.sampled_events >= ledger.policy.max_events' \
     'TelemetryError.SpanAccountingInvalid' \
     'TelemetryError.AccountingInvalid' \
     'TelemetryError.TelemetryDisabled'; do
@@ -57,7 +59,10 @@ for fixture_pattern in \
     'TelemetryRecordOutcome.Sampled' \
     'TelemetryError.TelemetryDisabled' \
     'TelemetryState.Failed' \
-    'TelemetryError.AccountingInvalid'; do
+    'TelemetryError.AccountingInvalid' \
+    'telemetry_event_ceiling_is_atomic' \
+    'invalid_payload_policy' \
+    'TelemetryError.EventLimitExceeded'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 

@@ -524,11 +524,13 @@ remain open.
 
 ES-SCRIPT-045 | EsTelemetry supplies an opt-out bounded metrics/tracing
 contract. Disabled/counters/events modes are explicit; metric identities,
-caller-owned names, payload bytes, sampled sequence numbers, total event
+caller-owned names, positive bounded payload bytes, sampled sequence numbers, total event
 ceilings, ready-state cleanliness, and span-depth accounting are validated.
 Sampled-out events still consume the event ceiling and sequence accounting;
 sampled-out span edges still update logical depth, and sealing rejects open
 spans through `error[TelemetryError]`.
+Admission rejects the next event before mutating sequence, sampling, or span
+accounting when retained plus sampled attempts reach the ceiling.
 Failure is allowed before sealing but cannot be repeated after the ledger is
 already failed.
 Selection is accumulated across all clauses so a later non-selecting clause
