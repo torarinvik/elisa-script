@@ -34,6 +34,8 @@ for boundary in \
     'EntryOrderInvalid' \
     'DuplicateFile' \
     'FileIndexInvalid' \
+    'SourceMapEvent.AddFile' \
+    'map.files.count >= SOURCE_MAP_MAX_FILES' \
     'map.state == SourceMapState.Empty' \
     'AppendNotReady' \
     'source_location_before' \

@@ -248,10 +248,11 @@ replacement, signatures, and platform-specific executable layout.
 `EsSourceMap` gives diagnostics and navigation a bounded identity layer across
 modules. Files are explicit unique paths, entries carry generated and original
 file/line/column locations plus an optional symbol, and generated locations must
-be strictly ordered. `advance_source_map` seals the append-only map through an
-explicit `Empty → Building → Sealed` protocol (with invalidation), while
+be strictly ordered. `advance_source_map` adds files and seals the append-only
+map through an explicit `Empty → Building → Sealed` protocol (with
+invalidation), while
 `source_map_lookup` returns a bounded entry index or the table-count sentinel;
-empty maps cannot carry preloaded files or entries, and no consumer scans an
+empty maps start without preloaded files or entries, and no consumer scans an
 unvalidated or path-inferred map. Invalidated maps are rejected at lookup rather
 than being treated as ordinary empty results.
 
