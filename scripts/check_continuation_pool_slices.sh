@@ -21,11 +21,18 @@ for required_text in \
     'value_snapshot_start: usize' \
     'value_snapshot_count: usize' \
     'frame.snapshot_count != frame.value_snapshot_count' \
+    'frame.snapshot_start > machine.continuation_ids.count' \
+    'frame.snapshot_count > machine.continuation_ids.count - frame.snapshot_start' \
     'frame.value_snapshot_start > machine.continuation_values.count' \
+    'frame.value_snapshot_count > machine.continuation_values.count - frame.value_snapshot_start' \
+    'frame.handler_snapshot_start > machine.continuation_handlers.count' \
+    'frame.handler_snapshot_count > machine.continuation_handlers.count - frame.handler_snapshot_start' \
     'machine.continuation_values[frame.value_snapshot_start + offset]' \
     'machine.continuation_values[replay_frame.value_snapshot_start + offset]' \
     'machine.continuation_values.truncate(value_snapshot_start)' \
     'continuation_pool_append_fits(machine.continuation_values.count, values.count' \
+    'if continuation.replay_start > machine.continuation_frames.count' \
+    'if continuation.replay_count > machine.continuation_frames.count - continuation.replay_start' \
     'continuation_frame_storage_valid(machine, frame)'; do
     rg -Fq "$required_text" "$interpreter" || {
         printf 'continuation pool audit: interpreter omits %s\n' "$required_text" >&2
