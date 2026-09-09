@@ -43,6 +43,8 @@ for boundary in \
     'NodeAccountingInvalid' \
     'scheduler.graph.active_nodes' \
     'scheduler.graph.completed_nodes != scheduler.graph.nodes.count' \
+    'scheduler.graph.nodes[index].state == BuildNodeState.Running' \
+    'scheduler.active_nodes <- scheduler.active_nodes - 1' \
     'scheduler.ready_queue.count != 0' \
     'scheduler.state == BuildSchedulerState.Ready and scheduler.ready_queue.count != 0' \
     'scheduler.state == BuildSchedulerState.Complete' \
@@ -60,6 +62,7 @@ for fixture_pattern in \
     'BuildSchedulerEvent.CacheHit' \
     'BuildSchedulerEvent.Dispatch' \
     'BuildSchedulerEvent.NodeComplete' \
+    'active_cancel' \
     'BuildSchedulerState.Complete' \
     'completed_cancel_rejected'; do
     rg -Fq "$fixture_pattern" "$fixture"

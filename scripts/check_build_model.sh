@@ -42,6 +42,8 @@ for boundary in \
     'graph.state == BuildGraphState.Succeeded' \
     'graph.completed_nodes != graph.nodes.count' \
     'graph.active_nodes != 0' \
+    'graph.nodes[index].state == BuildNodeState.Running' \
+    'graph.active_nodes <- graph.active_nodes - 1' \
     'validate_process_command'; do
     rg -Fq "$boundary" "$model"
 done
@@ -51,6 +53,7 @@ for fixture_pattern in \
     'typed_build_graph_contract_is_ordered_bounded_and_cancelable' \
     'BuildGraphEvent.NodeStart' \
     'BuildGraphEvent.NodeFailure' \
+    'active_graph' \
     'BuildContractError.DependencyOrderInvalid'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done

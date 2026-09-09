@@ -279,6 +279,9 @@ reconciled with node states, and terminal graph states reject forged progress
 or unfinished completion; a failure is admitted only when no sibling is still
 running, then marks every remaining planned node as `Cancelled` before the
 failed graph reaches its terminal state.
+Cancellation acknowledgement also accounts any still-running nodes as
+`Cancelled` after the host confirms they stopped; it cannot leave active
+children unaccounted.
 
 `EsResource` is the ownership ledger shared by runtime adapters. A lease names
 the resource kind, nonzero identity, and owner token; `ResourceLedger` keeps
