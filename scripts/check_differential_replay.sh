@@ -48,7 +48,8 @@ for fixture_pattern in \
     'DifferentialReplayEvent.Admit' \
     'DifferentialReplayEvent.CompareComplete' \
     'DifferentialReplayEvent.RestoreComplete' \
-    'DifferentialReplayError.RunOrderInvalid'; do
+    'DifferentialReplayError.RunOrderInvalid' \
+    'forged_completed_replay'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 

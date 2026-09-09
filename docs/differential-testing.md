@@ -687,11 +687,13 @@ is never treated as equal merely because the final return value matches.
 `EsDifferentialReplay::DifferentialReplaySession` is the lifecycle seam between
 validated artifacts and a future host replay adapter. Admission binds the
 manifest identity, materialization binds the world fingerprint, and the policy
-selects reference-first or candidate-first execution. Both run fingerprints are
-required before comparison; restoration must return the expected world
+selects reference-first or candidate-first execution. Each later phase retains
+all of its prerequisites: both ordered run fingerprints and exactly two runs are
+required before comparison, and restoration must return the expected world
 fingerprint before the session can complete. Rejected order, stale admission,
-wrong-world, missing-comparison, and failed-restore edges remain typed state
-errors. The contract does not launch the reproduction entry or perform cleanup.
+wrong-world, missing-comparison, forged phase flags, and failed-restore edges
+remain typed state errors. The contract does not launch the reproduction entry
+or perform cleanup.
 
 `EsDifferentialRedaction::DifferentialRedactionPolicy` is the explicit secret
 boundary for environment metadata captured into artifacts. Policies select exact
