@@ -1920,6 +1920,8 @@ Validation reconciles `next_sequence`, chunk count, byte totals, and final-state
 markers, rejecting imported sessions that bypass the streaming phase.
 Duplicate destinations, missing file paths, out-of-order chunks, overflow,
 premature end, failure, and cancellation use `error[ProcessOutputError]`;
+the bytecode execution ledger proves both captured channel totals and the
+already-charged output total before subtracting remaining output capacity;
 descriptor writes and concurrent drain behavior remain host work.
 
 EsProcessSession binds that command value to an adapter lifecycle. Spawn must

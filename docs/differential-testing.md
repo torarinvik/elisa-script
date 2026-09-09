@@ -700,6 +700,9 @@ value fingerprint while storing an empty value for redacted fields. Duplicate
 names, embedded NULs, oversized text, and malformed redacted entries fail before
 sealing. This keeps replay identity checkable without persisting credentials;
 adapters still decide which environment fields are necessary to capture.
+Redaction admission proves the remaining text budget is at least the separator
+width before subtracting it, so a tiny remaining budget cannot wrap the value
+capacity check.
 
 `EsDifferentialGenerator::DifferentialGeneratorSession` is the deterministic
 input-generation boundary. It records one base seed, derives each case seed

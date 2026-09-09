@@ -15,6 +15,9 @@ for required_file in "$model" "$consumer" "$fixture" "$docs" "$plan"; do
     [[ -f "$required_file" ]] || { printf 'differential redaction audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
+rg -q 'available < 2' "$model"
+rg -q 'value_length > available - 2' "$model"
+
 for declaration in \
     'module EsDifferentialRedaction:' \
     'DIFFERENTIAL_REDACTION_MAX_RULES' \

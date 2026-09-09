@@ -16,6 +16,10 @@ for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger" "$plan"; d
     [[ -f "$required_file" ]] || { printf 'process output audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
+rg -q 'stderr_length > ES_RUNTIME_DEFAULT_MAX_OUTPUT_BYTES' "$repo_root/src/bytecode/bytecode.elisa"
+rg -q 'stdout_length > ES_RUNTIME_DEFAULT_MAX_OUTPUT_BYTES - stderr_length' "$repo_root/src/bytecode/bytecode.elisa"
+rg -q 'cursor.output_bytes > ES_RUNTIME_DEFAULT_MAX_OUTPUT_BYTES' "$repo_root/src/bytecode/bytecode.elisa"
+
 rg -q '^module EsProcessOutput:' "$model"
 rg -q 'include "\.\./runtime/process_output_model\.elisa"' "$ir"
 for declaration in \

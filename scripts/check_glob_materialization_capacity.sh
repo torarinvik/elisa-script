@@ -38,6 +38,8 @@ allocate_line="$(printf '%s\n' "$body" | awk '/start: u32 = storage.count.u32\(\
 
 rg -q 'variant_bytes > INTERPRET_MAX_GLOB_VARIANT_BYTES' "$interpreter"
 rg -q 'sview_len\(pattern\) > INTERPRET_MAX_GLOB_VARIANT_BYTES - variant_bytes' "$interpreter"
+rg -q 'walker\.match_bytes > INTERPRET_MAX_GLOB_MATCH_BYTES' "$interpreter"
+rg -q 'length > INTERPRET_MAX_GLOB_MATCH_BYTES - walker\.match_bytes' "$interpreter"
 
 rg -q 'expand_glob' "$interpreter_fixture"
 rg -q 'expand_glob' "$bytecode_fixture"
