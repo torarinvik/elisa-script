@@ -47,6 +47,8 @@ for boundary in \
     'DirectoryMutationEvent.Leave' \
     'DirectoryMutationError.DuplicateIdentity' \
     'DirectoryMutationError.DestinationCollision' \
+    'accounted_bytes > session.policy.max_bytes' \
+    'entry.bytes > session.policy.max_bytes - accounted_bytes' \
     'directory_mutation_destination_nested' \
     'DirectoryMutationState.Planned and' \
     'DirectoryMutationState.Completed' \

@@ -1313,6 +1313,8 @@ cycle/alias rejection, depth/entry/byte/failure ceilings, balanced
 `Enter`/`Leave` scopes, source-equal or descendant copy-destination rejection,
 duplicate copy destinations, clean planned state, and
 cancellation are all checked before host mutation.
+Aggregate byte admission proves the accumulated total before subtracting each
+entry's remaining capacity, so malformed plans fail closed without underflow.
 The identity vector is reconciled positionally with admitted entries so
 externally assembled plans cannot forge ownership accounting.
 `Complete` and `Cancelled` states retain no active scope or pending entry; a
