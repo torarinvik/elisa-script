@@ -42,6 +42,7 @@ for boundary in \
     'CancellationEvent.Acknowledge' \
     'CancellationPoint.HostBeforeBlock' \
     'CancellationError.HostBlockDenied' \
+    'HostBlockDenied if point == CancellationPoint.HostBeforeBlock' \
     'CancellationError.ParentCycle' \
     'parent_index: usize = cancellation_index' \
     'CancellationError.PollLimitExceeded' \

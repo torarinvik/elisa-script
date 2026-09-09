@@ -515,7 +515,8 @@ contract for VM safe points and blocking host boundaries. Parent/child token
 ownership, reason text, poll counts, and per-state accounting are validated;
 `Request → Propagate → Acknowledge → Complete` and `Fail` transitions are
 explicit, requested tokens propagate at VM checkpoints, and a
-`HostBeforeBlock` poll rejects blocking work with `HostBlockDenied`. The
+`HostBeforeBlock` poll rejects blocking work with `HostBlockDenied` before
+mutating poll counters or checkpoints. The
 focused IR fixture, namespace inclusion, documentation, and
 check_cancellation.sh audit are compiler-free static evidence; scheduler
 propagation, signal adapters, blocking I/O interruption, and runtime evidence
