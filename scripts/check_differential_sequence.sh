@@ -34,6 +34,7 @@ for boundary in \
     'CheckpointOrderInvalid' \
     'StepOrderInvalid' \
     'ObservationLimitExceeded' \
+    'ObservationAccountingInvalid' \
     'CompletionNotReady' \
     'DivergenceStateInvalid'; do
     rg -Fq "$boundary" "$model"
@@ -44,7 +45,8 @@ for fixture_pattern in \
     'differential_sequence_contract_localizes_first_divergence_and_checkpoints' \
     'DifferentialSequenceEvent.Checkpoint' \
     'DifferentialSequenceState.Diverged' \
-    'DifferentialSequenceError.StepOrderInvalid'; do
+    'DifferentialSequenceError.StepOrderInvalid' \
+    'forged_observation_accounting'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 

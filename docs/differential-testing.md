@@ -815,7 +815,9 @@ remain unqualified compatibility inputs.
 
 `EsDifferentialSequence::DifferentialSequence` is the bounded stateful/lockstep
 boundary. Each step has an ordered index, independent reference/candidate
-fingerprints, an observation count, and an explicit equality decision;
+fingerprints, an observation count, and an explicit equality decision. The
+sequence validator reconciles the aggregate observation count against the
+per-step counts before accepting a trace;
 `EsDifferentialStability::DifferentialStabilitySession` is the bounded repeat
 boundary for adapters whose output may vary between runs. A policy declares a
 minimum and maximum repeat count (capped at sixteen) and explicitly chooses
