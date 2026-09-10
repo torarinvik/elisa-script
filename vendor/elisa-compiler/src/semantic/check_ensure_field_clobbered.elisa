@@ -47,6 +47,70 @@ extend Semantic:
             can Abort.Panic:
                 return any annotation in annotations where annotation.line == 3900000077 and annotation.owner == name and annotation.name == field and field != ""
 
+        # Whether EXPRESSION performs a by-reference call that can clobber BASE.FIELD.
+        # Calls are legal in initializers, assignments, predicates, and value expressions; looking
+        # only at a top-level `Stmt.Expr` misses those eager evaluation paths. Lambda bodies remain
+        # inert until invocation and therefore are deliberately excluded here.
+        def efc_expression_unframed_mutates(expression: Ast::Expr, base: sview, field: sview, ref_mutators: darray[sview]&, contracted: darray[sview]&, annotations: darray[Ast::EnumAnnotation]&) -> bool:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Call(callee, arguments, argument_names, call_line):
+                        callee_name: sview = ident_name_of(callee)
+                        if callee_name != "" and arguments.count > 0 and ident_name_of(arguments[0]) == base and name_in(ref_mutators, callee_name):
+                            true return if not name_in(contracted, callee_name)
+                            true return if efc_callee_changes_field(annotations, callee_name, field)
+                        true return if efc_expression_unframed_mutates(callee, base, field, ref_mutators, contracted, annotations)
+                        for argument in arguments:
+                            true return if efc_expression_unframed_mutates(argument, base, field, ref_mutators, contracted, annotations)
+                        return false
+                    Expr.Field(object, field_name, field_line) | Expr.Scope(object, field_name, field_line):
+                        return efc_expression_unframed_mutates(object, base, field, ref_mutators, contracted, annotations)
+                    Expr.Index(object, index, index_line):
+                        return efc_expression_unframed_mutates(object, base, field, ref_mutators, contracted, annotations) or efc_expression_unframed_mutates(index, base, field, ref_mutators, contracted, annotations)
+                    Expr.Slice(object, low, high, slice_line):
+                        return efc_expression_unframed_mutates(object, base, field, ref_mutators, contracted, annotations) or efc_expression_unframed_mutates(low, base, field, ref_mutators, contracted, annotations) or efc_expression_unframed_mutates(high, base, field, ref_mutators, contracted, annotations)
+                    Expr.IndexN(object, arguments, index_line):
+                        true return if efc_expression_unframed_mutates(object, base, field, ref_mutators, contracted, annotations)
+                        for argument in arguments:
+                            true return if efc_expression_unframed_mutates(argument, base, field, ref_mutators, contracted, annotations)
+                        return false
+                    Expr.Binary(left, operator, right, binary_line):
+                        return efc_expression_unframed_mutates(left, base, field, ref_mutators, contracted, annotations) or efc_expression_unframed_mutates(right, base, field, ref_mutators, contracted, annotations)
+                    Expr.Unary(operator, operand, unary_line) | Expr.Move(operand, unary_line) | Expr.Paren(operand, unary_line):
+                        return efc_expression_unframed_mutates(operand, base, field, ref_mutators, contracted, annotations)
+                    Expr.If(condition, selected, alternative, if_line):
+                        return efc_expression_unframed_mutates(condition, base, field, ref_mutators, contracted, annotations) or efc_expression_unframed_mutates(selected, base, field, ref_mutators, contracted, annotations) or efc_expression_unframed_mutates(alternative, base, field, ref_mutators, contracted, annotations)
+                    Expr.Match(scrutinee, arms, match_line) | Expr.Catch(scrutinee, arms, match_line):
+                        true return if efc_expression_unframed_mutates(scrutinee, base, field, ref_mutators, contracted, annotations)
+                        for arm in arms:
+                            true return if efc_expression_unframed_mutates(arm.guard, base, field, ref_mutators, contracted, annotations) or efc_body_unframed_mutates(arm.body, base, field, ref_mutators, contracted, annotations)
+                        return false
+                    Expr.Refinement(object, predicate, refinement_line):
+                        return efc_expression_unframed_mutates(object, base, field, ref_mutators, contracted, annotations) or efc_expression_unframed_mutates(predicate, base, field, ref_mutators, contracted, annotations)
+                    Expr.GetElse(guarded, recovery, get_else_line):
+                        return efc_expression_unframed_mutates(guarded, base, field, ref_mutators, contracted, annotations) or efc_body_unframed_mutates(recovery, base, field, ref_mutators, contracted, annotations)
+                    Expr.Comprehension(variable, iterable, condition, body, comprehension_line):
+                        return efc_expression_unframed_mutates(iterable, base, field, ref_mutators, contracted, annotations) or efc_expression_unframed_mutates(condition, base, field, ref_mutators, contracted, annotations) or efc_expression_unframed_mutates(body, base, field, ref_mutators, contracted, annotations)
+                    Expr.Block(statements, value, captures, block_line):
+                        return efc_body_unframed_mutates(statements, base, field, ref_mutators, contracted, annotations) or efc_expression_unframed_mutates(value, base, field, ref_mutators, contracted, annotations)
+                    Expr.Array(elements, array_line) | Expr.Tuple(elements, array_line) | Expr.SetLit(elements, array_line):
+                        for element in elements:
+                            true return if efc_expression_unframed_mutates(element, base, field, ref_mutators, contracted, annotations)
+                        return false
+                    Expr.DictLit(entries, dict_line):
+                        for entry in entries:
+                            true return if efc_expression_unframed_mutates(entry.key, base, field, ref_mutators, contracted, annotations) or efc_expression_unframed_mutates(entry.value, base, field, ref_mutators, contracted, annotations)
+                        return false
+                    Expr.Construct(type_expression, fields, construct_line) | Expr.RecordUpdate(type_expression, fields, construct_line):
+                        true return if efc_expression_unframed_mutates(type_expression, base, field, ref_mutators, contracted, annotations)
+                        for field_init in fields:
+                            true return if efc_expression_unframed_mutates(field_init.value, base, field, ref_mutators, contracted, annotations)
+                        return false
+                    Expr.Lambda(parameters, body, lambda_line):
+                        return false
+                    _:
+                        return false
+
         # Whether the body calls a by-reference mutator with `base` as its first argument that
         # cannot preserve BASE.`field`: either an UNFRAMED mutator (may touch any field), or a
         # contracted mutator whose declared `changes` set INCLUDES `field` (a framed clobber).
@@ -55,14 +119,27 @@ extend Semantic:
                 for statement in statements:
                     match statement:
                         Stmt.Expr(expression, line):
-                            match expression:
-                                Expr.Call(callee, arguments, argument_names, call_line):
-                                    callee_name: sview = ident_name_of(callee)
-                                    if callee_name != "" and arguments.count > 0 and ident_name_of(arguments[0]) == base and name_in(ref_mutators, callee_name):
-                                        true return if not name_in(contracted, callee_name)
-                                        true return if efc_callee_changes_field(annotations, callee_name, field)
-                                _:
-                                    pass
+                            true return if efc_expression_unframed_mutates(expression, base, field, ref_mutators, contracted, annotations)
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            true return if efc_expression_unframed_mutates(value, base, field, ref_mutators, contracted, annotations)
+                        Stmt.Assign(target, operator, value, line):
+                            true return if efc_expression_unframed_mutates(target, base, field, ref_mutators, contracted, annotations) or efc_expression_unframed_mutates(value, base, field, ref_mutators, contracted, annotations)
+                        Stmt.Return(value, line):
+                            if value is returned:
+                                true return if efc_expression_unframed_mutates(returned, base, field, ref_mutators, contracted, annotations)
+                        Stmt.If(condition, then_body, else_body, line):
+                            true return if efc_expression_unframed_mutates(condition, base, field, ref_mutators, contracted, annotations)
+                            true return if efc_body_unframed_mutates(then_body, base, field, ref_mutators, contracted, annotations) or efc_body_unframed_mutates(else_body, base, field, ref_mutators, contracted, annotations)
+                        Stmt.While(condition, while_body, line):
+                            true return if efc_expression_unframed_mutates(condition, base, field, ref_mutators, contracted, annotations) or efc_body_unframed_mutates(while_body, base, field, ref_mutators, contracted, annotations)
+                        Stmt.For(bind, variables, iterable, for_body, line):
+                            true return if efc_expression_unframed_mutates(iterable, base, field, ref_mutators, contracted, annotations) or efc_body_unframed_mutates(for_body, base, field, ref_mutators, contracted, annotations)
+                        Stmt.Block(kind, clause, binding, block_body, line):
+                            true return if efc_body_unframed_mutates(block_body, base, field, ref_mutators, contracted, annotations)
+                        Stmt.Match(scrutinee, arms, line):
+                            true return if efc_expression_unframed_mutates(scrutinee, base, field, ref_mutators, contracted, annotations)
+                            for arm in arms:
+                                true return if efc_expression_unframed_mutates(arm.guard, base, field, ref_mutators, contracted, annotations) or efc_body_unframed_mutates(arm.body, base, field, ref_mutators, contracted, annotations)
                         _:
                             pass
                 return false
