@@ -59,31 +59,104 @@ extend Semantic:
                             table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.WritesOutsideChanges, name: root, line: 0, expected: caller_name, actual: changed_field, expected_count: 1}) if callee_declares_changes and not frame_interproc_field_present(caller_changes, changed_field)
                     position <- position + 1
 
+        # Calls can occur in any value expression, not only as a standalone statement. Walk the
+        # expression tree so interprocedural `changes` obligations cannot be bypassed by an
+        # initializer, assignment, index, predicate, or aggregate literal.
+        def frame_interproc_walk_expr(expression: Ast::Expr, caller_name: sview, caller_changes: darray[sview]&, caller_params: darray[sview]&, annotations: darray[Ast::EnumAnnotation]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Call(callee, arguments, argument_names, call_line):
+                        match callee:
+                            Expr.Ident(callee_name, ident_line):
+                                table <- frame_interproc_check_call(callee_name, arguments, caller_name, caller_changes, caller_params, annotations, table)
+                            _:
+                                pass
+                        table <- frame_interproc_walk_expr(callee, caller_name, caller_changes, caller_params, annotations, table)
+                        for argument in arguments |table| -> table:
+                            table <- frame_interproc_walk_expr(argument, caller_name, caller_changes, caller_params, annotations, table)
+                    Expr.Field(object, field, field_line) | Expr.Scope(object, field, field_line):
+                        table <- frame_interproc_walk_expr(object, caller_name, caller_changes, caller_params, annotations, table)
+                    Expr.Index(object, index, index_line):
+                        table <- frame_interproc_walk_expr(object, caller_name, caller_changes, caller_params, annotations, table)
+                        table <- frame_interproc_walk_expr(index, caller_name, caller_changes, caller_params, annotations, table)
+                    Expr.Slice(object, low, high, slice_line):
+                        table <- frame_interproc_walk_expr(object, caller_name, caller_changes, caller_params, annotations, table)
+                        table <- frame_interproc_walk_expr(low, caller_name, caller_changes, caller_params, annotations, table)
+                        table <- frame_interproc_walk_expr(high, caller_name, caller_changes, caller_params, annotations, table)
+                    Expr.IndexN(object, arguments, index_line):
+                        table <- frame_interproc_walk_expr(object, caller_name, caller_changes, caller_params, annotations, table)
+                        for argument in arguments |table| -> table:
+                            table <- frame_interproc_walk_expr(argument, caller_name, caller_changes, caller_params, annotations, table)
+                    Expr.Binary(left, operator, right, binary_line):
+                        table <- frame_interproc_walk_expr(left, caller_name, caller_changes, caller_params, annotations, table)
+                        table <- frame_interproc_walk_expr(right, caller_name, caller_changes, caller_params, annotations, table)
+                    Expr.Unary(operator, operand, unary_line) | Expr.Move(operand, unary_line) | Expr.Paren(operand, unary_line):
+                        table <- frame_interproc_walk_expr(operand, caller_name, caller_changes, caller_params, annotations, table)
+                    Expr.If(condition, selected, alternative, if_line):
+                        table <- frame_interproc_walk_expr(condition, caller_name, caller_changes, caller_params, annotations, table)
+                        table <- frame_interproc_walk_expr(selected, caller_name, caller_changes, caller_params, annotations, table)
+                        table <- frame_interproc_walk_expr(alternative, caller_name, caller_changes, caller_params, annotations, table)
+                    Expr.Match(scrutinee, arms, match_line) | Expr.Catch(scrutinee, arms, match_line):
+                        table <- frame_interproc_walk_expr(scrutinee, caller_name, caller_changes, caller_params, annotations, table)
+                        for arm in arms |table| -> table:
+                            table <- frame_interproc_walk_expr(arm.guard, caller_name, caller_changes, caller_params, annotations, table)
+                            table <- frame_interproc_walk(arm.body, caller_name, caller_changes, caller_params, annotations, table)
+                    Expr.Refinement(base, predicate, refinement_line):
+                        table <- frame_interproc_walk_expr(base, caller_name, caller_changes, caller_params, annotations, table)
+                        table <- frame_interproc_walk_expr(predicate, caller_name, caller_changes, caller_params, annotations, table)
+                    Expr.GetElse(guarded, recovery, get_else_line):
+                        table <- frame_interproc_walk_expr(guarded, caller_name, caller_changes, caller_params, annotations, table)
+                        table <- frame_interproc_walk(recovery, caller_name, caller_changes, caller_params, annotations, table)
+                    Expr.Comprehension(variable, iterable, condition, body, comprehension_line):
+                        table <- frame_interproc_walk_expr(iterable, caller_name, caller_changes, caller_params, annotations, table)
+                        table <- frame_interproc_walk_expr(condition, caller_name, caller_changes, caller_params, annotations, table)
+                        table <- frame_interproc_walk_expr(body, caller_name, caller_changes, caller_params, annotations, table)
+                    Expr.Block(statements, value, captures, block_line):
+                        table <- frame_interproc_walk(statements, caller_name, caller_changes, caller_params, annotations, table)
+                        table <- frame_interproc_walk_expr(value, caller_name, caller_changes, caller_params, annotations, table)
+                    Expr.Array(elements, array_line) | Expr.Tuple(elements, array_line) | Expr.SetLit(elements, array_line):
+                        for element in elements |table| -> table:
+                            table <- frame_interproc_walk_expr(element, caller_name, caller_changes, caller_params, annotations, table)
+                    Expr.DictLit(entries, dict_line):
+                        for entry in entries |table| -> table:
+                            table <- frame_interproc_walk_expr(entry.key, caller_name, caller_changes, caller_params, annotations, table)
+                            table <- frame_interproc_walk_expr(entry.value, caller_name, caller_changes, caller_params, annotations, table)
+                    Expr.Construct(type_expression, fields, construct_line) | Expr.RecordUpdate(type_expression, fields, construct_line):
+                        table <- frame_interproc_walk_expr(type_expression, caller_name, caller_changes, caller_params, annotations, table)
+                        for field in fields |table| -> table:
+                            table <- frame_interproc_walk_expr(field.value, caller_name, caller_changes, caller_params, annotations, table)
+                    _:
+                        pass
+
         def frame_interproc_walk(statements: darray[Ast::Stmt], caller_name: sview, caller_changes: darray[sview]&, caller_params: darray[sview]&, annotations: darray[Ast::EnumAnnotation]&, table: lmut SymbolTable) -> void:
             can Memory.Allocate, Abort.Panic:
                 for statement in statements |table| -> table:
                     match statement:
                         Stmt.Expr(expression, line):
-                            match expression:
-                                Expr.Call(callee, arguments, argument_names, call_line):
-                                    match callee:
-                                        Expr.Ident(callee_name, ident_line):
-                                            table <- frame_interproc_check_call(callee_name, arguments, caller_name, caller_changes, caller_params, annotations, table)
-                                        _:
-                                            pass
-                                _:
-                                    pass
+                            table <- frame_interproc_walk_expr(expression, caller_name, caller_changes, caller_params, annotations, table)
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            table <- frame_interproc_walk_expr(value, caller_name, caller_changes, caller_params, annotations, table)
+                        Stmt.Assign(target, operator, value, line):
+                            table <- frame_interproc_walk_expr(target, caller_name, caller_changes, caller_params, annotations, table)
+                            table <- frame_interproc_walk_expr(value, caller_name, caller_changes, caller_params, annotations, table)
+                        Stmt.Return(value, line):
+                            table <- frame_interproc_walk_expr(returned, caller_name, caller_changes, caller_params, annotations, table) if value is returned
                         Stmt.If(condition, then_body, else_body, line):
+                            table <- frame_interproc_walk_expr(condition, caller_name, caller_changes, caller_params, annotations, table)
                             table <- frame_interproc_walk(then_body, caller_name, caller_changes, caller_params, annotations, table)
                             table <- frame_interproc_walk(else_body, caller_name, caller_changes, caller_params, annotations, table)
                         Stmt.While(condition, body, line):
+                            table <- frame_interproc_walk_expr(condition, caller_name, caller_changes, caller_params, annotations, table)
                             table <- frame_interproc_walk(body, caller_name, caller_changes, caller_params, annotations, table)
                         Stmt.For(bind, variables, iterable, body, line):
+                            table <- frame_interproc_walk_expr(iterable, caller_name, caller_changes, caller_params, annotations, table)
                             table <- frame_interproc_walk(body, caller_name, caller_changes, caller_params, annotations, table)
                         Stmt.Block(block_kind, clause, binding, body, line):
                             table <- frame_interproc_walk(body, caller_name, caller_changes, caller_params, annotations, table)
                         Stmt.Match(scrutinee, arms, line):
+                            table <- frame_interproc_walk_expr(scrutinee, caller_name, caller_changes, caller_params, annotations, table)
                             for arm in arms |table| -> table:
+                                table <- frame_interproc_walk_expr(arm.guard, caller_name, caller_changes, caller_params, annotations, table)
                                 table <- frame_interproc_walk(arm.body, caller_name, caller_changes, caller_params, annotations, table)
                         _:
                             pass
