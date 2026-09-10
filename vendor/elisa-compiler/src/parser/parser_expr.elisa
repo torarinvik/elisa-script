@@ -60,9 +60,47 @@ extend Parser:
                 digit: i64 = (b - 48).i64() if is_binary and (b == 48 or b == 49) else (b - 48).i64() if b >= 48 and b <= 55 and is_octal else (b - 48).i64() if b >= 48 and b <= 57 and not is_octal and not is_binary else (b - 97 + 10).i64() if is_hex and b >= 97 and b <= 102 else (b - 65 + 10).i64() if is_hex and b >= 65 and b <= 70 else -1
                 break if digit < 0
                 base: u64 = 16 if is_hex else 8 if is_octal else 2 if is_binary else 10
+                # Keep the token decoder total: a numeric token wider than u64 must not
+                # wrap back to a small, apparently-valid i64 before semantic checking.
+                return 0 if value > (18446744073709551615u64 - digit.u64()) / base
                 value <- value * base + digit.u64()
                 i <- i + 1
             return value.i64()
+
+        # Whether a lexical integer body is representable in the parser's u64 accumulator.
+        # The AST stores only an i64 payload, but hexadecimal literals deliberately preserve
+        # full-width u64 bit patterns (for example `0xFFFFFFFFFFFFFFFF` is -1), so this helper
+        # checks the accumulator domain rather than imposing a signed decimal policy here.
+        def integer_literal_text_fits_u64(text: sview) -> bool:
+            n: usize = sview_len(text)
+            return false if n == 0
+            is_hex: bool = n >= 2 and sview_at(text, 0) == 48 and (sview_at(text, 1) == 120 or sview_at(text, 1) == 88)
+            is_octal: bool = n >= 2 and sview_at(text, 0) == 48 and (sview_at(text, 1) == 111 or sview_at(text, 1) == 79)
+            is_binary: bool = n >= 2 and sview_at(text, 0) == 48 and (sview_at(text, 1) == 98 or sview_at(text, 1) == 66)
+            base: u64 = 16 if is_hex else 8 if is_octal else 2 if is_binary else 10
+            index: mutable usize = 2 if is_hex or is_octal or is_binary else 0
+            saw_digit: mutable bool = false
+            value: mutable u64 = 0
+            while index < n |index, value, saw_digit, text, base|:
+                byte: u8 = sview_at(text, index)
+                if byte == 95:
+                    index <- index + 1
+                    continue
+                digit: mutable i64 = -1
+                if byte >= 48 and byte <= 57:
+                    digit <- (byte - 48).i64()
+                elif is_hex and byte >= 65 and byte <= 70:
+                    digit <- (byte - 55).i64()
+                elif is_hex and byte >= 97 and byte <= 102:
+                    digit <- (byte - 87).i64()
+                # A suffix is outside the literal body and is intentionally ignored here;
+                # malformed lexical text is still diagnosed by the tokeniser/parser.
+                break if digit < 0
+                return false if digit.u64() >= base or value > (18446744073709551615u64 - digit.u64()) / base
+                value <- value * base + digit.u64()
+                saw_digit <- true
+                index <- index + 1
+            return saw_digit
 
         # Elisascript typed literals are deliberately represented by the existing
         # call AST rather than by one AST variant per literal family:
@@ -102,6 +140,7 @@ extend Parser:
             match kind:
                 TokenKind.IntLit | TokenKind.HexLit:
                     literal_text: sview = Lexer::text_or_empty(token, parser.source)
+                    parser <- parser.error_at(Ast::ParseErrorKind.UnexpectedToken, token) if not integer_literal_text_fits_u64(literal_text)
                     parser <- parser.record_numeric_suffix(token)
                     parser, _ <- parser.advance()
                     if token.flags.has_suffix and token.suffix_length > 0:
