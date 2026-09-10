@@ -312,6 +312,10 @@ extend Semantic:
             can Memory.Allocate, Abort.Panic:
                 match expression:
                     Expr.Call(callee, arguments, argument_names, line):
+                        # A callee may itself be a computed receiver (for example
+                        # `make_pool().shutdown()`), so do not restrict lifecycle
+                        # tracking to ordinary arguments.
+                        table <- walk_lifecycle_expression(callee, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
                         call_name: sview = match callee:
                             Expr.Ident(name, call_line): name
                             _: ""
@@ -328,12 +332,54 @@ extend Semantic:
                     Expr.Binary(left, operator, right, line):
                         table <- walk_lifecycle_expression(left, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
                         table <- walk_lifecycle_expression(right, alias_names, alias_roots, shutdown_names, shutdown_flags, table) if operator != TokenKind.Is and operator != TokenKind.As
+                    Expr.Field(object, field, line) | Expr.Scope(object, field, line):
+                        table <- walk_lifecycle_expression(object, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
+                    Expr.Index(object, index, line):
+                        table <- walk_lifecycle_expression(object, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
+                        table <- walk_lifecycle_expression(index, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
+                    Expr.Slice(object, low, high, line):
+                        table <- walk_lifecycle_expression(object, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
+                        table <- walk_lifecycle_expression(low, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
+                        table <- walk_lifecycle_expression(high, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
+                    Expr.IndexN(object, arguments, line):
+                        table <- walk_lifecycle_expression(object, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
+                        for argument in arguments |alias_names, alias_roots, shutdown_names, shutdown_flags, table| -> table:
+                            table <- walk_lifecycle_expression(argument, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
+                    Expr.If(condition, selected, alternative, line):
+                        table <- walk_lifecycle_expression(condition, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
+                        table <- walk_lifecycle_expression(selected, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
+                        table <- walk_lifecycle_expression(alternative, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
+                    Expr.Match(scrutinee, arms, line) | Expr.Catch(scrutinee, arms, line):
+                        table <- walk_lifecycle_expression(scrutinee, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
+                        for arm in arms |alias_names, alias_roots, shutdown_names, shutdown_flags, table| -> table:
+                            table <- walk_lifecycle_expression(arm.guard, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
+                            table <- walk_thread_pool_lifecycle(arm.body, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
+                    Expr.Refinement(base, predicate, line):
+                        table <- walk_lifecycle_expression(base, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
+                        table <- walk_lifecycle_expression(predicate, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
+                    Expr.GetElse(guarded, recovery, line):
+                        table <- walk_lifecycle_expression(guarded, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
+                        table <- walk_thread_pool_lifecycle(recovery, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
+                    Expr.Comprehension(variable, iterable, condition, body, line):
+                        table <- walk_lifecycle_expression(iterable, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
+                        table <- walk_lifecycle_expression(condition, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
+                        table <- walk_lifecycle_expression(body, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
                     Expr.Construct(type_expression, fields, line) | Expr.RecordUpdate(type_expression, fields, line):
+                        table <- walk_lifecycle_expression(type_expression, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
                         for field in fields |alias_names, alias_roots, shutdown_names, shutdown_flags, table| -> table:
                             table <- walk_lifecycle_expression(field.value, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
                     Expr.Array(elements, line) | Expr.Tuple(elements, line) | Expr.SetLit(elements, line):
                         for element in elements |alias_names, alias_roots, shutdown_names, shutdown_flags, table| -> table:
                             table <- walk_lifecycle_expression(element, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
+                    Expr.DictLit(entries, line):
+                        for entry in entries |alias_names, alias_roots, shutdown_names, shutdown_flags, table| -> table:
+                            table <- walk_lifecycle_expression(entry.key, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
+                            table <- walk_lifecycle_expression(entry.value, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
+                    # Lambda bodies run only when invoked, not when the closure
+                    # value is created; defer their lifecycle effects to the
+                    # later call instead of manufacturing an eager shutdown.
+                    Expr.Lambda(parameters, body, line):
+                        pass
                     _:
                         pass
 
@@ -347,6 +393,7 @@ extend Semantic:
                             source: sview = lifecycle_alias_source(value, alias_names, alias_roots)
                             lifecycle_set_alias(alias_names, alias_roots, name, source) if source != ""
                         Stmt.Assign(target, operator, value, line):
+                            table <- walk_lifecycle_expression(target, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
                             table <- walk_lifecycle_expression(value, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
                             target_root: sview = lifecycle_root(target, alias_names, alias_roots)
                             source: sview = lifecycle_alias_source(value, alias_names, alias_roots)
@@ -364,9 +411,16 @@ extend Semantic:
                             table <- walk_thread_pool_lifecycle(body, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
                         Stmt.While(condition, body, line):
                             table <- walk_lifecycle_expression(condition, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
+                            table <- walk_thread_pool_lifecycle(body, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
+                        Stmt.For(bind, variables, iterable, body, line):
+                            table <- walk_lifecycle_expression(iterable, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
+                            table <- walk_thread_pool_lifecycle(body, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
                         Stmt.Match(scrutinee, arms, line):
                             table <- walk_lifecycle_expression(scrutinee, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
                             for arm in arms |table| -> table:
+                                table <- walk_lifecycle_expression(arm.guard, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
                                 table <- walk_thread_pool_lifecycle(arm.body, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
+                        Stmt.Contract(kind, expression, line):
+                            table <- walk_lifecycle_expression(expression, alias_names, alias_roots, shutdown_names, shutdown_flags, table)
                         _:
                             pass
