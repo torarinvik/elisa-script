@@ -1917,6 +1917,33 @@ extend EsIr:
             return LoweredValue{valid: true, value: result, type: result_type}
 
 
+        # An unsuffixed literal has no independently meaningful operand type.
+        # Comparisons normally infer that type from the left operand, but a
+        # literal on the left must instead borrow the right operand's type so
+        # `3 == byte_value` is symmetric with `byte_value == 3`.  Only pure
+        # literal shapes are admitted here: evaluating an arbitrary expression
+        # out of source order would change effect sequencing.
+        def comparison_literal_can_take_context(expression: Ast::Expr) -> bool:
+            match expression:
+                Expr.IntLit:
+                    return true
+                Expr.FloatLit:
+                    return true
+                Expr.StringLit:
+                    return true
+                Expr.CharLit:
+                    return true
+                Expr.BoolLit:
+                    return true
+                Expr.Unary(operator, Expr.IntLit, _):
+                    return operator == TokenKind.Plus or operator == TokenKind.Minus
+                Expr.Paren(inner, _):
+                    return comparison_literal_can_take_context(inner)
+                _:
+                    pass
+            return false
+
+
         # Lower an expression-form conditional through explicit CFG blocks. A
         # non-void expected type is threaded into both arms so untyped literals
         # follow the destination type instead of defaulting to i64/f64 before
@@ -7352,7 +7379,7 @@ extend EsIr:
                 Expr.IntLit(value):
                     if expected.kind == TypeKind.Int:
                         if not positive_integer_literal_fits(value, expected):
-                            add_issue(state, LowerIssueKind.TypeMismatch, 0, "integer literal is outside its contextual type range")
+                            add_issue(state, LowerIssueKind.TypeMismatch, Ast::expr_pos(expression).line, "integer literal is outside its contextual type range")
                             return LoweredValue{valid: false, value: 0, type: expected}
                         return emit_constant(state, expected, value, "", "", false, zero_span())
                 Expr.FloatLit(text):
@@ -7410,13 +7437,18 @@ extend EsIr:
                     comparison_context: bool = expected.kind == TypeKind.Bool and operator in {TokenKind.EqEq, TokenKind.BangEq, TokenKind.Lt, TokenKind.LtEq, TokenKind.Gt, TokenKind.GtEq}
                     if comparison_context:
                         # Comparisons have a boolean result, so their operand
-                        # type is not visible in `expected`.  Lower the left
-                        # operand first (preserving effects), then use its
-                        # exact static type for the right operand.  This keeps
-                        # `byte == 1` and `text < "z"` from silently defaulting
-                        # literals to i64/sview-independent shapes.
-                        lowered_left: LoweredValue = lower_expression(left, state)
-                        lowered_right: LoweredValue = lower_expression_expected(right, lowered_left.type, state) if lowered_left.valid else lower_expression(right, state)
+                        # type is not visible in `expected`.  Infer it from the
+                        # first non-literal operand.  A pure literal on the
+                        # left is safe to defer, so `3 == byte` is symmetric
+                        # with `byte == 3` without reordering any effects.
+                        lowered_left: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+                        lowered_right: mutable LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+                        if comparison_literal_can_take_context(left):
+                            lowered_right <- lower_expression(right, state)
+                            lowered_left <- lower_expression_expected(left, lowered_right.type, state) if lowered_right.valid else lower_expression(left, state)
+                        else:
+                            lowered_left <- lower_expression(left, state)
+                            lowered_right <- lower_expression_expected(right, lowered_left.type, state) if lowered_left.valid else lower_expression(right, state)
                         if not lowered_left.valid or not lowered_right.valid:
                             return LoweredValue{valid: false, value: 0, type: expected}
                         operands_match: bool = same_type(lowered_left.type, lowered_right.type)
@@ -7619,7 +7651,7 @@ extend EsIr:
             # the wrong type and defer the failure to IR verification.
             lowered: LoweredValue = lower_expression(expression, state)
             if lowered.valid and expected.kind != TypeKind.Void and not (expected.kind == TypeKind.Named and expected.name == "") and not same_type(lowered.type, expected):
-                add_issue(state, LowerIssueKind.TypeMismatch, 0, "expression does not match its contextual type")
+                add_issue(state, LowerIssueKind.TypeMismatch, Ast::expr_pos(expression).line, "expression does not match its contextual type")
                 return LoweredValue{valid: false, value: 0, type: expected}
             return lowered
 
