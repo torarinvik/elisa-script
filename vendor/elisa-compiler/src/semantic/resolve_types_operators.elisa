@@ -209,6 +209,12 @@ extend Semantic:
                     Ast::Expr.Block(block_statements, block_value, block_captures, block_line):
                         table <- check_operator_statements(block_statements, names, types, table)
                         table <- check_operator_operands(block_value, names, types, table)
+                    # `get EXPR else ...` is an expression wrapper, but its recovery is
+                    # executable code.  Treat both sides exactly like a value block so
+                    # operator diagnostics cannot disappear in a fallback branch.
+                    Ast::Expr.GetElse(guarded, recovery, get_else_line):
+                        table <- check_operator_operands(guarded, names, types, table)
+                        table <- check_operator_statements(recovery, names, types, table)
                     Ast::Expr.Match(scrutinee, arms, match_line) | Ast::Expr.Catch(scrutinee, arms, match_line):
                         # Match/catch expressions can occur anywhere a value expression is
                         # accepted.  Their guards and arm blocks therefore need the same
@@ -355,6 +361,48 @@ extend Semantic:
                     true return if is_catch_all
             return false
 
+        # Walk statement lists nested inside expression-position matches, value blocks, and
+        # get-else recovery. The ordinary initializer pass only sees the outer expression;
+        # without this companion walk a non-exhaustive match hidden in a nested return or
+        # declaration escapes the value-match totality check.
+        def check_value_match_statements(statements: darray[Ast::Stmt], names: darray[sview]&, types: darray[sview]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |table| -> table:
+                    match statement:
+                        Stmt.Expr(expression, line):
+                            table <- check_value_match_exhaustive(expression, names, types, table)
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            table <- check_value_match_exhaustive(value, names, types, table)
+                        Stmt.Assign(target, operator, value, line):
+                            table <- check_value_match_exhaustive(target, names, types, table)
+                            table <- check_value_match_exhaustive(value, names, types, table)
+                        Stmt.Return(value, line):
+                            table <- check_value_match_exhaustive(returned, names, types, table) if value is returned
+                        Stmt.If(condition, then_body, else_body, line):
+                            table <- check_value_match_exhaustive(condition, names, types, table)
+                            table <- check_value_match_statements(then_body, names, types, table)
+                            table <- check_value_match_statements(else_body, names, types, table)
+                        Stmt.While(condition, body, line):
+                            table <- check_value_match_exhaustive(condition, names, types, table)
+                            table <- check_value_match_statements(body, names, types, table)
+                        Stmt.For(bind, variables, iterable, body, line):
+                            table <- check_value_match_exhaustive(iterable, names, types, table)
+                            table <- check_value_match_statements(body, names, types, table)
+                        Stmt.Block(kind, clause, binding, body, line):
+                            table <- check_value_match_statements(body, names, types, table)
+                        Stmt.Match(scrutinee, arms, line):
+                            table <- check_value_match_exhaustive(scrutinee, names, types, table)
+                            table <- check_match_exhaustive(scrutinee, arms, line.line, names, types, table)
+                            table <- check_sequence_match_arm_types(scrutinee, arms, line.line, names, types, table)
+                            for arm in arms |table| -> table:
+                                table <- check_value_match_exhaustive(arm.guard, names, types, table)
+                                table <- check_value_match_statements(arm.body, names, types, table)
+                        Stmt.Contract(kind, expression, line):
+                            table <- check_value_match_exhaustive(expression, names, types, table)
+                        _:
+                            pass
+
+
         def check_value_match_exhaustive(value: Ast::Expr, names: darray[sview]&, types: darray[sview]&, table: lmut SymbolTable) -> void:
             can Abort.Panic, Memory.Allocate:
                 match value:
@@ -364,6 +412,7 @@ extend Semantic:
                         table <- check_sequence_match_arm_types(scrutinee, arms, match_line.line, names, types, table)
                         for arm in arms |table| -> table:
                             table <- check_value_match_exhaustive(arm.guard, names, types, table)
+                            table <- check_value_match_statements(arm.body, names, types, table)
                         # docs/125 R2: a value-producing match/when over an OPEN scalar domain
                         # (int/char/string/float) with no `_` cannot yield a value for every
                         # input. Enum scrutinees infer_family to "" (handled above), so this only
@@ -388,6 +437,7 @@ extend Semantic:
                         table <- check_value_match_exhaustive(scrutinee, names, types, table)
                         for arm in arms |table| -> table:
                             table <- check_value_match_exhaustive(arm.guard, names, types, table)
+                            table <- check_value_match_statements(arm.body, names, types, table)
                     Ast::Expr.Paren(inner, paren_line):
                         table <- check_value_match_exhaustive(inner, names, types, table)
                     Ast::Expr.If(condition, then_expression, else_expression, if_line):
@@ -435,8 +485,12 @@ extend Semantic:
                         table <- check_value_match_exhaustive(base, names, types, table)
                         for field in fields |table|:
                             table <- check_value_match_exhaustive(field.value, names, types, table)
+                    Ast::Expr.Block(block_statements, block_value, block_captures, block_line):
+                        table <- check_value_match_statements(block_statements, names, types, table)
+                        table <- check_value_match_exhaustive(block_value, names, types, table)
                     Ast::Expr.GetElse(guarded, recovery, get_else_line):
                         table <- check_value_match_exhaustive(guarded, names, types, table)
+                        table <- check_value_match_statements(recovery, names, types, table)
                     Ast::Expr.Comprehension(loop_variable, iterable, condition, body, comprehension_line):
                         table <- check_value_match_exhaustive(iterable, names, types, table)
                         table <- check_value_match_exhaustive(condition, names, types, table)
