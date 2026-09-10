@@ -1292,6 +1292,47 @@ extend Backend:
             return value
 
 
+        # Division and remainder have two undefined integer cases in LLVM: a zero divisor,
+        # and signed MIN / -1 (the quotient is not representable).  Stage0 reports the
+        # language's integer failure for both, so admit the operation only after a guard rather
+        # than handing poison-producing operands to LLVMBuildSDiv/SRem or UDiv/URem.
+        def emit_checked_int_div(operator: TokenKind, left: LLVMValueRef, right: LLVMValueRef, operand_type: ValueType, structs: mutable StructTable&, m: LLVMModuleRef, ctx: LLVMContextRef, builder: LLVMBuilderRef) -> LLVMValueRef? can[Abort.Panic, Memory.Allocate, Unsafe.PointerCast]:
+            null return if not is_integer_type(operand_type)
+            int_type: LLVMTypeRef = llvm_type_of(operand_type, structs, ctx)
+            zero: LLVMValueRef = LLVMConstInt(int_type, 0, 0)
+            divisor_nonzero: LLVMValueRef = LLVMBuildICmp(builder, 33, right, zero, "int.divisor.nonzero")
+            valid: mutable LLVMValueRef = divisor_nonzero
+            if operand_type.kind == TypeKind.Signed:
+                # Build the signed minimum as a bit pattern; this avoids host-side negation of
+                # i64::MIN while still working for every supported signed width.
+                min_bits: u64 = 1.u64() << (operand_type.bits - 1).u64()
+                min_value: LLVMValueRef = LLVMConstInt(int_type, min_bits, 1)
+                minus_one: LLVMValueRef = LLVMConstInt(int_type, 18446744073709551615.u64(), 1)
+                min_overflow: LLVMValueRef = LLVMBuildAnd(builder, LLVMBuildICmp(builder, 32, left, min_value, "int.div.min"), LLVMBuildICmp(builder, 32, right, minus_one, "int.div.negone"), "int.div.min.negone")
+                valid <- LLVMBuildAnd(builder, valid, LLVMBuildNot(builder, min_overflow, "int.div.min.ok"))
+            emit_contract_guard(valid, m, ctx, builder)
+            return LLVMBuildUDiv(builder, left, right, "div") if operand_type.kind == TypeKind.Unsigned and operator == TokenKind.Slash
+            return LLVMBuildURem(builder, left, right, "rem") if operand_type.kind == TypeKind.Unsigned and operator == TokenKind.Percent
+            return LLVMBuildSDiv(builder, left, right, "div") if operator == TokenKind.Slash
+            return LLVMBuildSRem(builder, left, right, "rem") if operator == TokenKind.Percent
+            return null
+
+
+        # LLVM shift instructions are poison when the count is negative or at least the
+        # operand width.  The language specifies InvalidShift instead of target-dependent
+        # masking, so validate dynamic counts before building the shift.
+        def emit_checked_shift(operator: TokenKind, left: LLVMValueRef, right: LLVMValueRef, operand_type: ValueType, structs: mutable StructTable&, m: LLVMModuleRef, ctx: LLVMContextRef, builder: LLVMBuilderRef) -> LLVMValueRef? can[Abort.Panic, Memory.Allocate, Unsafe.PointerCast]:
+            null return if not is_integer_type(operand_type)
+            int_type: LLVMTypeRef = llvm_type_of(operand_type, structs, ctx)
+            width: LLVMValueRef = LLVMConstInt(int_type, operand_type.bits.u64(), 0)
+            valid: LLVMValueRef = LLVMBuildICmp(builder, 36, right, width, "shift.count.inbounds") if operand_type.kind == TypeKind.Unsigned else LLVMBuildAnd(builder, LLVMBuildICmp(builder, 39, right, LLVMConstInt(int_type, 0, 0), "shift.count.nonnegative"), LLVMBuildICmp(builder, 40, right, width, "shift.count.inbounds"), "shift.count.valid")
+            emit_contract_guard(valid, m, ctx, builder)
+            return LLVMBuildShl(builder, left, right, "shl") if operator == TokenKind.LShift
+            return LLVMBuildLShr(builder, left, right, "shr") if operand_type.kind == TypeKind.Unsigned and operator == TokenKind.RShift
+            return LLVMBuildAShr(builder, left, right, "shr") if operator == TokenKind.Signed and operator == TokenKind.RShift
+            return null
+
+
         def emit_binary(operator: TokenKind, left: LLVMValueRef, right: LLVMValueRef, operand_type: ValueType, structs: mutable StructTable&, fast_math: bool, m: LLVMModuleRef, ctx: LLVMContextRef, builder: LLVMBuilderRef) -> LLVMValueRef? can[Abort.Panic, Memory.Allocate, Unsafe.PointerCast]:
             can Abort.Panic, Memory.Allocate, Unsafe.PointerCast:
                 # Floats are a different instruction family end to end: fadd/fdiv/fcmp, never
@@ -1319,17 +1360,14 @@ extend Backend:
                 LLVMBuildAnd(builder, left, right, "and") return if operator == TokenKind.Ampersand
                 LLVMBuildOr(builder, left, right, "or") return if operator == TokenKind.Pipe
                 LLVMBuildXor(builder, left, right, "xor") return if operator == TokenKind.Caret
-                LLVMBuildShl(builder, left, right, "shl") return if operator == TokenKind.LShift
+                if operator == TokenKind.LShift or operator == TokenKind.RShift:
+                    return emit_checked_shift(operator, left, right, operand_type, structs, m, ctx, builder)
 
                 # Signedness picks the INSTRUCTION, and it is observable: stage0 gives
                 # `u8 200 / 3` == 66 (udiv) and `u8 200 >> 1` == 100 (lshr); the signed forms
                 # answer -56 and 228.
-                if operator == TokenKind.Slash:
-                    return LLVMBuildUDiv(builder, left, right, "div") if unsigned else LLVMBuildSDiv(builder, left, right, "div")
-                if operator == TokenKind.Percent:
-                    return LLVMBuildURem(builder, left, right, "rem") if unsigned else LLVMBuildSRem(builder, left, right, "rem")
-                if operator == TokenKind.RShift:
-                    return LLVMBuildLShr(builder, left, right, "shr") if unsigned else LLVMBuildAShr(builder, left, right, "shr")
+                if operator == TokenKind.Slash or operator == TokenKind.Percent:
+                    return emit_checked_int_div(operator, left, right, operand_type, structs, m, ctx, builder)
 
                 predicate: i32 = int_predicate_of(operator)
                 if predicate >= 0:
