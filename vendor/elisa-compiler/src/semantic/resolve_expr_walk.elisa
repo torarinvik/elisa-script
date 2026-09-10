@@ -107,6 +107,19 @@ extend Semantic:
                     Expr.Ident(name, line): true
                     _: false
 
+
+        # Recover the optional error-binding name recorded by the parser for a
+        # `try EXPR else err: BLOCK` node. GetElse intentionally keeps a compact
+        # three-field AST shape, so the name is line-paired in SymbolTable rather
+        # than duplicated in every AST consumer.
+        def get_else_binding_for_line(table: SymbolTable&, line: u32) -> sview?:
+            can Abort.Panic:
+                paired: usize = table.get_else_binding_lines.count if table.get_else_binding_lines.count < table.get_else_binding_names.count else table.get_else_binding_names.count
+                for index in 0..<paired |table, line|:
+                    binding: sview = table.get_else_binding_names[index]
+                    binding return if table.get_else_binding_lines[index] == line and binding != ""
+                return null
+
         def walk_expression(expression: Ast::Expr, table: lmut SymbolTable, bound: darray[sview]&, bound_mutability: darray[bool]&) -> void:
             can Memory.Allocate, Abort.Panic:
                 table.walk_depth <- table.walk_depth + 1
@@ -276,12 +289,21 @@ extend Semantic:
                             _: false
                         table <- walk_expression(base, table, bound, bound_mutability) if not base_is_void_recovery
                         table <- walk_expression(predicate, table, bound, bound_mutability)
-                    # `get EXPR else return …` — walk both the GUARDED expression and recovery
-                    # statements.  Recovery is executable control flow, so references in a
-                    # fallback return/branch must resolve just like references in the guard.
+                    # `get EXPR else return …` — walk the guarded expression and then the
+                    # recovery in a private scope. Error-binding recoveries (`else err: BLOCK`)
+                    # bind `err` only inside that block; local declarations in the recovery
+                    # must not leak into the enclosing expression or following statements.
                     Expr.GetElse(guarded, recovery, line):
                         table <- walk_expression(guarded, table, bound, bound_mutability)
-                        table <- walk_statements(recovery, table, bound, bound_mutability)
+                        recovery_scope: mutable darray[sview] = [bound_name for bound_name in bound]
+                        recovery_mutability: mutable darray[bool] = [is_mutable for is_mutable in bound_mutability]
+                        binding: sview? = get_else_binding_for_line(table, line.line)
+                        if binding is binding_name:
+                            recovery_scope.push(binding_name)
+                            recovery_mutability.push(false)
+                        gather_locals(recovery, recovery_scope)
+                        pad_bound_mutability(recovery_scope, recovery_mutability)
+                        table <- walk_statements(recovery, table, recovery_scope, recovery_mutability)
                     Expr.Paren(inner, line):
                         table <- walk_expression(inner, table, bound, bound_mutability)
                     Expr.Array(elements, line):
