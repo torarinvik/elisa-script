@@ -858,20 +858,28 @@ extend Backend:
                     if emit_expression(range_low, index_type, local_scope, fns, structs, generics, runtime, m, ctx, builder) is low_value:
                         if emit_expression(range_high, index_type, local_scope, fns, structs, generics, runtime, m, ctx, builder) is high_value:
                             span: LLVMValueRef = zeroed
-                            if emit_checked_int_binary(TokenKind.Minus, high_value, low_value, index_type, structs, m, ctx, builder) is checked_span:
-                                span <- checked_span
-                            else:
-                                return null
+                            # A reversed range is defined to be empty.  Do not feed its
+                            # `high - low` through the trapping arithmetic helper: for
+                            # example `MIN ..< -1` is reversed but the subtraction itself
+                            # would overflow only because the result is discarded.  The plain
+                            # LLVM subtraction is intentionally used as a modulo intermediate;
+                            # `range_nonempty` below selects it only on the ordered path.
+                            range_nonempty: LLVMValueRef = LLVMBuildICmp(builder, 38 if not inclusive else 39, high_value, low_value, "comp.range.nonempty")
+                            span <- LLVMBuildSub(builder, high_value, low_value, "comp.range.span")
                             count: mutable LLVMValueRef = span
                             if inclusive:
-                                if emit_checked_int_binary(TokenKind.Plus, span, LLVMConstInt(int64_type, 1, 0), index_type, structs, m, ctx, builder) is checked_count:
-                                    count <- checked_count
-                                else:
-                                    return null
+                                # `span + 1` overflows only for the full signed i64 domain;
+                                # trap that case when the range is ordered, while still
+                                # allowing an arbitrary modulo intermediate for a reversed
+                                # range that will be selected to zero.
+                                inclusive_count: LLVMValueRef = LLVMBuildAdd(builder, span, LLVMConstInt(int64_type, 1, 0), "comp.range.inclusive.count")
+                                inclusive_overflow: LLVMValueRef = LLVMBuildICmp(builder, 36, inclusive_count, span, "comp.range.inclusive.overflow")
+                                inclusive_bad: LLVMValueRef = LLVMBuildAnd(builder, range_nonempty, inclusive_overflow, "comp.range.inclusive.bad")
+                                emit_contract_guard(LLVMBuildNot(builder, inclusive_bad, "comp.range.inclusive.ok"), m, ctx, builder)
+                                count <- inclusive_count
                             # An empty or reversed range yields an empty darray, not a negative
                             # allocation.
-                            positive: LLVMValueRef = LLVMBuildICmp(builder, 38, count, LLVMConstInt(int64_type, 0, 0), "comp.count.pos")
-                            count <- LLVMBuildSelect(builder, positive, count, LLVMConstInt(int64_type, 0, 0), "comp.count.clamped")
+                            count <- LLVMBuildSelect(builder, range_nonempty, count, LLVMConstInt(int64_type, 0, 0), "comp.count.ordered")
 
                             header: LLVMTypeRef = darray_llvm_type(structs, ctx)
                             result_slot: LLVMValueRef = LLVMBuildAlloca(builder, header, "list.comp.result")

@@ -300,7 +300,18 @@ extend Backend:
                                     soa_iter_col0_pre: LLVMValueRef = LLVMBuildStructGEP2(builder, llvm_type_of(soa_iter_type, structs, ctx), soa_iter_base, 0, "soa.iter.col0.pre")
                                     soa_iter_count_pre: LLVMValueRef = LLVMBuildLoad2(builder, soa_iter_i64, LLVMBuildStructGEP2(builder, darray_llvm_type(structs, ctx), soa_iter_col0_pre, 1, "soa.iter.count.pre.ptr"), "soa.iter.count.pre")
                                     # `rev(...)` walks DOWN from count-1; the forward form starts at 0.
-                                    _ = LLVMBuildStore(builder, LLVMBuildSub(builder, soa_iter_count_pre, LLVMConstInt(soa_iter_i64, 1, 0), "soa.iter.last") if soa_iter_reversed else LLVMConstInt(soa_iter_i64, 0, 0), soa_iter_index)
+                                    if soa_iter_reversed:
+                                        # An empty column has no last index.  Initialising
+                                        # `count - 1` unconditionally wrapped to MAX, and the
+                                        # `>= 0` reverse-loop condition then entered the body
+                                        # and read out of bounds.  Use -1 as the empty sentinel;
+                                        # the reverse condition exits immediately.
+                                        soa_iter_nonempty: LLVMValueRef = LLVMBuildICmp(builder, 33, soa_iter_count_pre, LLVMConstInt(soa_iter_i64, 0, 0), "soa.iter.nonempty")
+                                        soa_iter_last: LLVMValueRef = LLVMBuildSub(builder, soa_iter_count_pre, LLVMConstInt(soa_iter_i64, 1, 0), "soa.iter.last")
+                                        soa_iter_initial: LLVMValueRef = LLVMBuildSelect(builder, soa_iter_nonempty, soa_iter_last, LLVMConstInt(soa_iter_i64, 18446744073709551615.u64(), 1), "soa.iter.initial")
+                                        _ = LLVMBuildStore(builder, soa_iter_initial, soa_iter_index)
+                                    else:
+                                        _ = LLVMBuildStore(builder, LLVMConstInt(soa_iter_i64, 0, 0), soa_iter_index)
                                     soa_iter_function: LLVMValueRef = LLVMGetBasicBlockParent(LLVMGetInsertBlock(builder))
                                     soa_iter_cond: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(ctx, soa_iter_function, "soa.iter.cond")
                                     soa_iter_body: LLVMBasicBlockRef = LLVMAppendBasicBlockInContext(ctx, soa_iter_function, "soa.iter.body")
@@ -919,7 +930,8 @@ extend Backend:
                                     name_storage: mutable darray[u8] = []
                                     # `_` is a discard binder — still need a counter slot, just no name.
                                     slot_name: cstr = "for.i" if for_variable == "_" else sview_to_cstr(for_variable, name_storage)
-                                    slot: LLVMValueRef = LLVMBuildAlloca(builder, int64_type, slot_name)
+                                    loop_llvm_type: LLVMTypeRef = llvm_type_of(loop_type, structs, ctx)
+                                    slot: LLVMValueRef = LLVMBuildAlloca(builder, loop_llvm_type, slot_name)
                                     _ = LLVMBuildStore(builder, low_value, slot)
                                     declare_local(local_scope, for_variable, slot, loop_type) if for_variable != "_"
 
@@ -931,7 +943,6 @@ extend Backend:
 
                                     _ = LLVMBuildBr(builder, head_block)
                                     LLVMPositionBuilderAtEnd(builder, head_block)
-                                    loop_llvm_type: LLVMTypeRef = llvm_type_of(loop_type, structs, ctx)
                                     counter: LLVMValueRef = LLVMBuildLoad2(builder, loop_llvm_type, slot, "for.i")
                                     # Ascending: 41 = SLE (`..=`), 40 = SLT (`..<`).
                                     # Descending `a..>b`: SGT (38) / UGT (34) — stage0 icmp sgt.
@@ -963,8 +974,18 @@ extend Backend:
                                             increment <- step_value
                                         else:
                                             return EmitStatus.Declined
-                                    stepped: LLVMValueRef = LLVMBuildSub(builder, cur, increment, "for.next") if descending else LLVMBuildAdd(builder, cur, increment, "for.next")
-                                    _ = LLVMBuildStore(builder, stepped, slot)
+                                    # A zero (or wrong-sign) step never reaches the range
+                                    # bound, so emitting it would create a non-terminating
+                                    # compiler-generated loop.  Reject it at runtime before
+                                    # updating the counter.  The comparison follows the range
+                                    # variable's signedness, just like the loop condition.
+                                    step_predicate: i32 = 38 if loop_type.kind == TypeKind.Signed else 34
+                                    step_valid: LLVMValueRef = LLVMBuildICmp(builder, step_predicate, increment, LLVMConstInt(loop_llvm_type, 0, 0), "for.step.positive")
+                                    emit_contract_guard(step_valid, m, ctx, builder)
+                                    if emit_checked_int_binary(TokenKind.Minus if descending else TokenKind.Plus, cur, increment, loop_type, structs, m, ctx, builder) is stepped:
+                                        _ = LLVMBuildStore(builder, stepped, slot)
+                                    else:
+                                        return EmitStatus.Declined
                                     _ = LLVMBuildBr(builder, head_block)
 
                                     LLVMPositionBuilderAtEnd(builder, exit_block)
