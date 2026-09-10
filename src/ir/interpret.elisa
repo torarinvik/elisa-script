@@ -1162,7 +1162,10 @@ extend EsIr:
 
 
         def checked_narrow_int(machine: mutable Machine&, value: i64, type: Type&) -> RuntimeValue:
-            if type.bits < 64 and (value < integer_min(type) or value > integer_max(type)):
+            # Runtime integers are represented as i64, so unsigned 64-bit
+            # values still need the representable non-negative half-range
+            # checked even though their nominal width is 64.
+            if (not type.signed or type.bits < 64) and (value < integer_min(type) or value > integer_max(type)):
                 machine.failure <- InterpretFailure.IntegerOverflow
                 return runtime_void()
             return runtime_int(value)
@@ -1172,7 +1175,13 @@ extend EsIr:
             minimum: i64 = integer_min(type)
             maximum: i64 = integer_max(type)
             if opcode == Opcode.Add:
-                if (right > 0 and left > maximum - right) or (right < 0 and left < minimum - right):
+                # `minimum - right` overflows when right is i64::MIN.  Handle
+                # that endpoint explicitly before evaluating the subtraction.
+                if right == -9223372036854775807 - 1:
+                    if minimum != -9223372036854775807 - 1 or left < 0:
+                        machine.failure <- InterpretFailure.IntegerOverflow
+                        return runtime_void()
+                if (right > 0 and left > maximum - right) or (right < 0 and right != -9223372036854775807 - 1 and left < minimum - right):
                     machine.failure <- InterpretFailure.IntegerOverflow
                     return runtime_void()
                 return runtime_int(left + right)
@@ -1200,10 +1209,13 @@ extend EsIr:
         def evaluate_negate(operand: RuntimeValue, result_type: Type&, machine: mutable Machine&) -> RuntimeValue:
             match operand.kind:
                 RuntimeValueKind.Int:
-                    if result_type.signed and operand.integer == integer_min(result_type):
+                    if not result_type.signed and operand.integer != 0:
                         machine.failure <- InterpretFailure.IntegerOverflow
                         return runtime_void()
-                    return runtime_int(-operand.integer)
+                    if operand.integer == -9223372036854775807 - 1:
+                        machine.failure <- InterpretFailure.IntegerOverflow
+                        return runtime_void()
+                    return checked_narrow_int(machine, -operand.integer, result_type)
                 RuntimeValueKind.Float:
                     return runtime_float(-operand.decimal)
                 _:
@@ -1263,9 +1275,12 @@ extend EsIr:
             if operand.kind != RuntimeValueKind.Int:
                 machine.failure <- InterpretFailure.TypeMismatch
                 return runtime_void()
+            if (not result_type.signed or result_type.bits < 64) and (operand.integer < integer_min(result_type) or operand.integer > integer_max(result_type)):
+                machine.failure <- InterpretFailure.IntegerOverflow
+                return runtime_void()
             if not result_type.signed and result_type.bits < 64:
-                return runtime_int((~operand.integer) & integer_max(result_type))
-            return runtime_int(~operand.integer)
+                return checked_narrow_int(machine, (~operand.integer) & integer_max(result_type), result_type)
+            return checked_narrow_int(machine, ~operand.integer, result_type)
 
 
         def runtime_values_equal(storage: darray[RuntimeValue]&, left: RuntimeValue, right: RuntimeValue, depth: usize = 0) -> bool:
@@ -2331,10 +2346,13 @@ extend EsIr:
             if not runtime_array_range_valid(storage, collection):
                 machine.failure <- InterpretFailure.IndexOutOfBounds
                 return runtime_void()
-            count: mutable u32 = 0
+            # Array cardinalities are stored as u32, but the public integer
+            # result is i64.  Keep the accumulator wide so a full u32-sized
+            # array cannot wrap back to zero while counting matching values.
+            count: mutable i64 = 0
             for offset in 0..<collection.array_count.usize() |machine, storage, collection, needle, count|:
                 count <- count + 1 if runtime_values_equal(storage, storage[collection.array_start.usize() + offset], needle)
-            return runtime_int(count.i64())
+            return runtime_int(count)
 
 
         def evaluate_text_find(machine: mutable Machine&, text_value: RuntimeValue, needle: RuntimeValue) -> RuntimeValue:
