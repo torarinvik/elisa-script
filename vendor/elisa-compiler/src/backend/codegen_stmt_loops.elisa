@@ -323,8 +323,15 @@ extend Backend:
                                     soa_iter_col0: LLVMValueRef = LLVMBuildStructGEP2(builder, soa_iter_llvm, soa_iter_base, 0, "soa.iter.col0")
                                     soa_iter_count: LLVMValueRef = LLVMBuildLoad2(builder, soa_iter_i64, LLVMBuildStructGEP2(builder, darray_llvm_type(structs, ctx), soa_iter_col0, 1, "soa.iter.count.ptr"), "soa.iter.count")
                                     soa_iter_at: LLVMValueRef = LLVMBuildLoad2(builder, soa_iter_i64, soa_iter_index, "soa.iter.at")
-                                    # 40 = SLT, 39 = SGE. Reversed runs while the index is still >= 0.
-                                    _ = LLVMBuildCondBr(builder, LLVMBuildICmp(builder, 39, soa_iter_at, LLVMConstInt(soa_iter_i64, 0, 0), "soa.iter.more.rev") if soa_iter_reversed else LLVMBuildICmp(builder, 40, soa_iter_at, soa_iter_count, "soa.iter.more"), soa_iter_body, soa_iter_done)
+                                    # 40 = SLT, 39 = SGE. Reversed runs while the index is still
+                                    # nonnegative AND remains below the current count.  The count
+                                    # is reloaded each condition pass, so a mutation in the body
+                                    # must not leave a stale reverse index pointing past the new end.
+                                    soa_iter_more: LLVMValueRef = LLVMBuildICmp(builder, 40, soa_iter_at, soa_iter_count, "soa.iter.more")
+                                    if soa_iter_reversed:
+                                        soa_iter_nonnegative: LLVMValueRef = LLVMBuildICmp(builder, 39, soa_iter_at, LLVMConstInt(soa_iter_i64, 0, 0), "soa.iter.more.rev.nonnegative")
+                                        soa_iter_more <- LLVMBuildAnd(builder, soa_iter_nonnegative, soa_iter_more, "soa.iter.more.rev")
+                                    _ = LLVMBuildCondBr(builder, soa_iter_more, soa_iter_body, soa_iter_done)
                                     LLVMPositionBuilderAtEnd(builder, soa_iter_body)
                                     # `for i, row in s.rows().enumerate()` — the FIRST binder is the
                                     # running index, the second the row.
@@ -401,6 +408,11 @@ extend Backend:
                                 ce_base: LLVMValueRef = LLVMBuildExtractValue(builder, ce_agg, 0, "ce.base")
                                 ce_len: LLVMValueRef = LLVMBuildExtractValue(builder, ce_agg, 1, "ce.len")
                                 ce_count: LLVMValueRef = LLVMBuildExtractValue(builder, ce_agg, 2, "ce.count")
+                                # Both fields are signed i64 metadata.  A forged negative chunk
+                                # length would form a backwards GEP, while a negative count should
+                                # be rejected rather than silently making the loop appear empty.
+                                emit_nonnegative_length_guard(ce_len, runtime, m, ctx, builder)
+                                emit_nonnegative_length_guard(ce_count, runtime, m, ctx, builder)
                                 ce_data: LLVMValueRef = LLVMBuildExtractValue(builder, ce_base, 0, "ce.data")
                                 ce_index: LLVMValueRef = LLVMBuildAlloca(builder, ce_i64, "ce.i")
                                 _ = LLVMBuildStore(builder, LLVMConstInt(ce_i64, 0, 0), ce_index)
@@ -467,6 +479,7 @@ extend Backend:
                                 sd_i64: LLVMTypeRef = LLVMInt64TypeInContext(ctx)
                                 sd_elem_llvm: LLVMTypeRef = llvm_type_of(sd_element, structs, ctx)
                                 sd_count: LLVMValueRef = LLVMBuildLoad2(builder, sd_i64, LLVMBuildStructGEP2(builder, darray_llvm_type(structs, ctx), sd_slot, 1, "sd.cnt.ptr"), "sd.cnt")
+                                emit_nonnegative_length_guard(sd_count, runtime, m, ctx, builder)
                                 sd_items: LLVMValueRef = LLVMBuildLoad2(builder, LLVMPointerTypeInContext(ctx, 0), LLVMBuildStructGEP2(builder, darray_llvm_type(structs, ctx), sd_slot, 0, "sd.items.ptr"), "sd.items")
                                 sd_index: LLVMValueRef = LLVMBuildAlloca(builder, sd_i64, "sd.i")
                                 _ = LLVMBuildStore(builder, LLVMConstInt(sd_i64, 0, 0), sd_index)
@@ -547,6 +560,7 @@ extend Backend:
                                                 en_elem_llvm: LLVMTypeRef = llvm_type_of(en_elem_type, structs, ctx)
                                                 en_count_ptr: LLVMValueRef = LLVMBuildStructGEP2(builder, en_header, en_source_slot, 1, "enum.cnt.ptr")
                                                 en_count: LLVMValueRef = LLVMBuildLoad2(builder, en_i64, en_count_ptr, "enum.cnt")
+                                                emit_nonnegative_length_guard(en_count, runtime, m, ctx, builder)
                                                 en_items_ptr: LLVMValueRef = LLVMBuildStructGEP2(builder, en_header, en_source_slot, 0, "enum.items.ptr")
                                                 en_items: LLVMValueRef = LLVMBuildLoad2(builder, LLVMPointerTypeInContext(ctx, 0), en_items_ptr, "enum.items")
                                                 en_index_slot: LLVMValueRef = LLVMBuildAlloca(builder, en_i64, "enum.i")
@@ -627,6 +641,7 @@ extend Backend:
                             dict_items_raw: LLVMValueRef = optional_payload_value_of(dict_items_opt, dict_items_field_type, structs, ctx, builder)
                             dict_capacity_ptr: LLVMValueRef = LLVMBuildStructGEP2(builder, dict_llvm, dict_address, dict_capacity_index.u32(), "dict.cap.ptr")
                             dict_capacity: LLVMValueRef = LLVMBuildLoad2(builder, dict_i64, dict_capacity_ptr, "dict.cap")
+                            emit_nonnegative_length_guard(dict_capacity, runtime, m, ctx, builder)
                             dict_index_slot: LLVMValueRef = LLVMBuildAlloca(builder, dict_i64, "dict.i")
                             _ = LLVMBuildStore(builder, LLVMConstInt(dict_i64, 0, 0), dict_index_slot)
                             dict_key_storage: mutable darray[u8] = []
