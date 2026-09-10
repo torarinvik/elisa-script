@@ -45,24 +45,108 @@ extend Semantic:
                             pass
                 return false
 
-        # Collect the names of static functions DIRECTLY called in an expression.
+        # Collect the names of static functions called anywhere in an expression. Static calls can
+        # occur in fields, indexes, collection literals, branch predicates, and value blocks; the
+        # old shallow walk only followed call arguments and arithmetic, silently missing those
+        # compile-time error paths.
         def static_error_scan_calls(expression: Ast::Expr, static_fns: darray[sview]&, out: mutable darray[sview]&) -> void:
             can Memory.Allocate, Abort.Panic:
                 match expression:
                     Expr.Call(callee, arguments, argument_names, line):
                         name: sview = ident_name_of(callee)
                         out.push(name) if name != "" and (any s in static_fns where s == name)
+                        static_error_scan_calls(callee, static_fns, out)
+                        for argument in arguments |static_fns, out|:
+                            static_error_scan_calls(argument, static_fns, out)
+                    Expr.Field(object, field, line) | Expr.Scope(object, field, line):
+                        static_error_scan_calls(object, static_fns, out)
+                    Expr.Index(object, index, line):
+                        static_error_scan_calls(object, static_fns, out)
+                        static_error_scan_calls(index, static_fns, out)
+                    Expr.Slice(object, low, high, line):
+                        static_error_scan_calls(object, static_fns, out)
+                        static_error_scan_calls(low, static_fns, out)
+                        static_error_scan_calls(high, static_fns, out)
+                    Expr.IndexN(object, arguments, line):
+                        static_error_scan_calls(object, static_fns, out)
                         for argument in arguments |static_fns, out|:
                             static_error_scan_calls(argument, static_fns, out)
                     Expr.Binary(left, operator, right, line):
                         static_error_scan_calls(left, static_fns, out)
                         static_error_scan_calls(right, static_fns, out)
-                    Expr.Unary(operator, operand, line):
+                    Expr.Unary(operator, operand, line) | Expr.Move(operand, line) | Expr.Paren(operand, line):
                         static_error_scan_calls(operand, static_fns, out)
-                    Expr.Paren(inner, line):
-                        static_error_scan_calls(inner, static_fns, out)
+                    Expr.If(condition, selected, alternative, line):
+                        static_error_scan_calls(condition, static_fns, out)
+                        static_error_scan_calls(selected, static_fns, out)
+                        static_error_scan_calls(alternative, static_fns, out)
+                    Expr.Match(scrutinee, arms, line) | Expr.Catch(scrutinee, arms, line):
+                        static_error_scan_calls(scrutinee, static_fns, out)
+                        for arm in arms |static_fns, out|:
+                            static_error_scan_calls(arm.guard, static_fns, out)
+                            static_error_scan_statements(arm.body, static_fns, out)
+                    Expr.Refinement(base, predicate, line):
+                        static_error_scan_calls(base, static_fns, out)
+                        static_error_scan_calls(predicate, static_fns, out)
+                    Expr.GetElse(guarded, recovery, line):
+                        static_error_scan_calls(guarded, static_fns, out)
+                        static_error_scan_statements(recovery, static_fns, out)
+                    Expr.Comprehension(variable, iterable, condition, body, line):
+                        static_error_scan_calls(iterable, static_fns, out)
+                        static_error_scan_calls(condition, static_fns, out)
+                        static_error_scan_calls(body, static_fns, out)
+                    Expr.Block(statements, value, captures, line):
+                        static_error_scan_statements(statements, static_fns, out)
+                        static_error_scan_calls(value, static_fns, out)
+                    Expr.Array(elements, line) | Expr.Tuple(elements, line) | Expr.SetLit(elements, line):
+                        for element in elements |static_fns, out|:
+                            static_error_scan_calls(element, static_fns, out)
+                    Expr.DictLit(entries, line):
+                        for entry in entries |static_fns, out|:
+                            static_error_scan_calls(entry.key, static_fns, out)
+                            static_error_scan_calls(entry.value, static_fns, out)
+                    Expr.Construct(type_expression, fields, line) | Expr.RecordUpdate(type_expression, fields, line):
+                        static_error_scan_calls(type_expression, static_fns, out)
+                        for field in fields |static_fns, out|:
+                            static_error_scan_calls(field.value, static_fns, out)
                     _:
                         pass
+
+        # Statement counterpart used by match/catch recovery and value-block expressions.
+        def static_error_scan_statements(statements: darray[Ast::Stmt], static_fns: darray[sview]&, out: mutable darray[sview]&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |static_fns, out|:
+                    match statement:
+                        Stmt.Expr(expression, line):
+                            static_error_scan_calls(expression, static_fns, out)
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            static_error_scan_calls(value, static_fns, out)
+                        Stmt.Assign(target, operator, value, line):
+                            static_error_scan_calls(target, static_fns, out)
+                            static_error_scan_calls(value, static_fns, out)
+                        Stmt.Return(value, line):
+                            static_error_scan_calls(returned, static_fns, out) if value is returned
+                        Stmt.If(condition, then_body, else_body, line):
+                            static_error_scan_calls(condition, static_fns, out)
+                            static_error_scan_statements(then_body, static_fns, out)
+                            static_error_scan_statements(else_body, static_fns, out)
+                        Stmt.While(condition, body, line):
+                            static_error_scan_calls(condition, static_fns, out)
+                            static_error_scan_statements(body, static_fns, out)
+                        Stmt.For(bind, variables, iterable, body, line):
+                            static_error_scan_calls(iterable, static_fns, out)
+                            static_error_scan_statements(body, static_fns, out)
+                        Stmt.Block(kind, clause, binding, body, line):
+                            static_error_scan_statements(body, static_fns, out)
+                        Stmt.Match(scrutinee, arms, line):
+                            static_error_scan_calls(scrutinee, static_fns, out)
+                            for arm in arms |static_fns, out|:
+                                static_error_scan_calls(arm.guard, static_fns, out)
+                                static_error_scan_statements(arm.body, static_fns, out)
+                        Stmt.Contract(kind, expression, line):
+                            static_error_scan_calls(expression, static_fns, out)
+                        _:
+                            pass
 
         def check_static_error(file: Ast::File&, table: lmut SymbolTable) -> void:
             can Memory.Allocate, Abort.Panic:
