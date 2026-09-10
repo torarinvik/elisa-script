@@ -7051,6 +7051,8 @@ extend EsIr:
             current_block: mutable u32 = fn.entry if not resuming else resume_block
             error_guards: mutable darray[ErrorGuard] = []
             guard_limit_failure: mutable bool = false
+            recovered_jump: mutable bool = false
+            recovery_target: mutable u32 = 0
 
             while machine.failure == InterpretFailure.None:
                 runtime_void() return if not tick(machine)
@@ -7067,7 +7069,8 @@ extend EsIr:
                         return runtime_void()
                     instruction_start <- resume_instruction
                     resuming <- false
-                for instruction_index in instruction_start..<instruction_end |machine, observations, storage, handler_stack, module, fn, ids, values, guard_limit_failure|:
+                recovered_jump <- false
+                for instruction_index in instruction_start..<instruction_end |machine, observations, storage, handler_stack, module, fn, ids, values, guard_limit_failure, recovered_jump, recovery_target|:
                     runtime_void() return if not tick(machine)
                     guard_limit_failure <- false
                     instruction: Instruction = fn.instruction_pool[instruction_index]
@@ -7939,13 +7942,23 @@ extend EsIr:
                             machine.failure_operation <- ""
                             machine.failure_operation_id <- 0
                             machine.failure_payloads.truncate(0) if not preserve_payloads
-                            block.terminator <- Terminator{kind: TerminatorKind.Jump, target0: guard.target, target_count: 1, span: block.terminator.span}
+                            # Keep recovery local to this transfer. Mutating the
+                            # function's terminator would permanently rewrite the
+                            # IR block, so a later invocation could skip its real
+                            # control flow after one handled failure.
+                            recovery_target <- guard.target
+                            recovered_jump <- true
                             break
                     set_frame_value(ids, values, instruction.result, dispatch.value) if machine.failure == InterpretFailure.None and dispatch.produces_value
 
                 runtime_void() return if machine.failure != InterpretFailure.None
                 terminator: Terminator = block.terminator
-                transfer: TerminatorDispatch = select_terminator(machine, fn, terminator, ids, values)
+                transfer: mutable TerminatorDispatch = TerminatorDispatch{state: TerminatorDispatchState.Done, action: TerminatorDispatchAction.Invalid, target: 0, edge_start: 0, edge_count: 0, failure: InterpretFailure.None}
+                if recovered_jump:
+                    transfer.action <- TerminatorDispatchAction.Jump
+                    transfer.target <- recovery_target
+                else:
+                    transfer <- select_terminator(machine, fn, terminator, ids, values)
                 runtime_void() return if machine.failure != InterpretFailure.None
                 if transfer.action == TerminatorDispatchAction.Return:
                     return runtime_void() if terminator.operand_count == 0
