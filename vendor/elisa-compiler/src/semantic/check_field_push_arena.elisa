@@ -39,11 +39,62 @@ extend Semantic:
                                 out_bases.push(bf.base)
                                 out_fields.push(bf.field)
                             fpa_collect_construct_fields(field.value, out_bases, out_fields)
-                    Expr.Paren(inner, paren_line):
+                    Expr.RecordUpdate(base, fields, update_line):
+                        for field in fields |out_bases, out_fields|:
+                            bf: (base: sview, field: sview) = fpa_field_base(field.value)
+                            if bf.base != "" and bf.field != "":
+                                out_bases.push(bf.base)
+                                out_fields.push(bf.field)
+                            fpa_collect_construct_fields(field.value, out_bases, out_fields)
+                        fpa_collect_construct_fields(base, out_bases, out_fields)
+                    Expr.Paren(inner, paren_line) | Expr.Unary(operator, inner, paren_line) | Expr.Move(inner, paren_line):
                         fpa_collect_construct_fields(inner, out_bases, out_fields)
-                    Expr.Call(callee, arguments, argument_names, call_line):
+                    Expr.Field(object, field, field_line) | Expr.Scope(object, field, field_line):
+                        fpa_collect_construct_fields(object, out_bases, out_fields)
+                    Expr.Index(object, index, index_line):
+                        fpa_collect_construct_fields(object, out_bases, out_fields)
+                        fpa_collect_construct_fields(index, out_bases, out_fields)
+                    Expr.Slice(object, low, high, slice_line):
+                        fpa_collect_construct_fields(object, out_bases, out_fields)
+                        fpa_collect_construct_fields(low, out_bases, out_fields)
+                        fpa_collect_construct_fields(high, out_bases, out_fields)
+                    Expr.IndexN(object, arguments, index_line):
+                        fpa_collect_construct_fields(object, out_bases, out_fields)
                         for argument in arguments |out_bases, out_fields|:
                             fpa_collect_construct_fields(argument, out_bases, out_fields)
+                    Expr.Call(callee, arguments, argument_names, call_line):
+                        fpa_collect_construct_fields(callee, out_bases, out_fields)
+                        for argument in arguments |out_bases, out_fields|:
+                            fpa_collect_construct_fields(argument, out_bases, out_fields)
+                    Expr.Binary(left, operator, right, binary_line):
+                        fpa_collect_construct_fields(left, out_bases, out_fields)
+                        fpa_collect_construct_fields(right, out_bases, out_fields)
+                    Expr.If(condition, selected, alternative, if_line):
+                        fpa_collect_construct_fields(condition, out_bases, out_fields)
+                        fpa_collect_construct_fields(selected, out_bases, out_fields)
+                        fpa_collect_construct_fields(alternative, out_bases, out_fields)
+                    Expr.Match(scrutinee, arms, match_line) | Expr.Catch(scrutinee, arms, match_line):
+                        fpa_collect_construct_fields(scrutinee, out_bases, out_fields)
+                        for arm in arms |out_bases, out_fields|:
+                            fpa_collect_construct_fields(arm.guard, out_bases, out_fields)
+                            fpa_escape_set(arm.body, out_bases, out_fields)
+                    Expr.GetElse(guarded, recovery, get_else_line):
+                        fpa_collect_construct_fields(guarded, out_bases, out_fields)
+                        fpa_escape_set(recovery, out_bases, out_fields)
+                    Expr.Comprehension(variable, iterable, condition, body, comprehension_line):
+                        fpa_collect_construct_fields(iterable, out_bases, out_fields)
+                        fpa_collect_construct_fields(condition, out_bases, out_fields)
+                        fpa_collect_construct_fields(body, out_bases, out_fields)
+                    Expr.Block(statements, value, captures, block_line):
+                        fpa_escape_set(statements, out_bases, out_fields)
+                        fpa_collect_construct_fields(value, out_bases, out_fields)
+                    Expr.Array(elements, array_line) | Expr.Tuple(elements, array_line) | Expr.SetLit(elements, array_line):
+                        for element in elements |out_bases, out_fields|:
+                            fpa_collect_construct_fields(element, out_bases, out_fields)
+                    Expr.DictLit(entries, dict_line):
+                        for entry in entries |out_bases, out_fields|:
+                            fpa_collect_construct_fields(entry.key, out_bases, out_fields)
+                            fpa_collect_construct_fields(entry.value, out_bases, out_fields)
                     _:
                         pass
 
@@ -78,36 +129,111 @@ extend Semantic:
                     probe <- probe + 1
                 return false
 
+        # Walk eager expressions for a growing call. A push nested in an initializer, assignment,
+        # predicate, collection, or value block still reallocates the escaped field and requires
+        # the same owner scope as a statement-position push.
+        def fpa_walk_expr(expression: Ast::Expr, in_owner_scope: bool, has_region: bool, esc_bases: darray[sview]&, esc_fields: darray[sview]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Call(callee, arguments, argument_names, call_line):
+                        match callee:
+                            Expr.Field(receiver, method, field_line):
+                                if fpa_is_grow_method(method):
+                                    bf: (base: sview, field: sview) = fpa_field_base(receiver)
+                                    fires: bool = bf.base != "" and bf.field != "" and fpa_escapes(bf.base, bf.field, esc_bases, esc_fields) and not in_owner_scope and not has_region
+                                    table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.DarrayPushArenaRequired, name: "", line: call_line.line, expected: "", actual: ""}) if fires
+                            _:
+                                pass
+                        table <- fpa_walk_expr(callee, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                        for argument in arguments |table| -> table:
+                            table <- fpa_walk_expr(argument, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                    Expr.Field(object, field, line) | Expr.Scope(object, field, line):
+                        table <- fpa_walk_expr(object, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                    Expr.Index(object, index, line):
+                        table <- fpa_walk_expr(object, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                        table <- fpa_walk_expr(index, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                    Expr.Slice(object, low, high, line):
+                        table <- fpa_walk_expr(object, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                        table <- fpa_walk_expr(low, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                        table <- fpa_walk_expr(high, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                    Expr.IndexN(object, arguments, line):
+                        table <- fpa_walk_expr(object, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                        for argument in arguments |table| -> table:
+                            table <- fpa_walk_expr(argument, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                    Expr.Binary(left, operator, right, line):
+                        table <- fpa_walk_expr(left, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                        table <- fpa_walk_expr(right, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                    Expr.Unary(operator, operand, line) | Expr.Move(operand, line) | Expr.Paren(operand, line):
+                        table <- fpa_walk_expr(operand, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                    Expr.If(condition, selected, alternative, line):
+                        table <- fpa_walk_expr(condition, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                        table <- fpa_walk_expr(selected, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                        table <- fpa_walk_expr(alternative, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                    Expr.Match(scrutinee, arms, line) | Expr.Catch(scrutinee, arms, line):
+                        table <- fpa_walk_expr(scrutinee, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                        for arm in arms |table| -> table:
+                            table <- fpa_walk_expr(arm.guard, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                            table <- fpa_walk(arm.body, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                    Expr.Refinement(base, predicate, line):
+                        table <- fpa_walk_expr(base, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                        table <- fpa_walk_expr(predicate, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                    Expr.GetElse(guarded, recovery, line):
+                        table <- fpa_walk_expr(guarded, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                        table <- fpa_walk(recovery, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                    Expr.Comprehension(variable, iterable, condition, body, line):
+                        table <- fpa_walk_expr(iterable, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                        table <- fpa_walk_expr(condition, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                        table <- fpa_walk_expr(body, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                    Expr.Block(statements, value, captures, line):
+                        table <- fpa_walk(statements, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                        table <- fpa_walk_expr(value, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                    Expr.Array(elements, line) | Expr.Tuple(elements, line) | Expr.SetLit(elements, line):
+                        for element in elements |table| -> table:
+                            table <- fpa_walk_expr(element, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                    Expr.DictLit(entries, line):
+                        for entry in entries |table| -> table:
+                            table <- fpa_walk_expr(entry.key, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                            table <- fpa_walk_expr(entry.value, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                    Expr.Construct(type_expression, fields, line) | Expr.RecordUpdate(type_expression, fields, line):
+                        table <- fpa_walk_expr(type_expression, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                        for field in fields |table| -> table:
+                            table <- fpa_walk_expr(field.value, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                    Expr.Lambda(parameters, body, line):
+                        table <- fpa_walk(body, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                    _:
+                        pass
+
         def fpa_walk(statements: darray[Ast::Stmt], in_owner_scope: bool, has_region: bool, esc_bases: darray[sview]&, esc_fields: darray[sview]&, table: lmut SymbolTable) -> void:
             can Memory.Allocate, Abort.Panic:
                 for statement in statements |table| -> table:
                     match statement:
                         Stmt.Expr(expression, line):
-                            match expression:
-                                Expr.Call(callee, arguments, argument_names, call_line):
-                                    match callee:
-                                        Expr.Field(receiver, method, field_line):
-                                            if fpa_is_grow_method(method):
-                                                bf: (base: sview, field: sview) = fpa_field_base(receiver)
-                                                fires: bool = bf.base != "" and bf.field != "" and fpa_escapes(bf.base, bf.field, esc_bases, esc_fields) and not in_owner_scope and not has_region
-                                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.DarrayPushArenaRequired, name: "", line: line.line, expected: "", actual: ""}) if fires
-                                        _:
-                                            pass
-                                _:
-                                    pass
+                            table <- fpa_walk_expr(expression, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            table <- fpa_walk_expr(value, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                        Stmt.Assign(target, operator, value, line):
+                            table <- fpa_walk_expr(target, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                            table <- fpa_walk_expr(value, in_owner_scope, has_region, esc_bases, esc_fields, table)
                         Stmt.If(condition, then_body, else_body, if_line):
+                            table <- fpa_walk_expr(condition, in_owner_scope, has_region, esc_bases, esc_fields, table)
                             table <- fpa_walk(then_body, in_owner_scope, has_region, esc_bases, esc_fields, table)
                             table <- fpa_walk(else_body, in_owner_scope, has_region, esc_bases, esc_fields, table)
                         Stmt.Block(kind, clause, binding, block_body, block_line):
                             nested_owner: bool = in_owner_scope or kind == "in" or kind == "region"
                             table <- fpa_walk(block_body, nested_owner, has_region, esc_bases, esc_fields, table)
                         Stmt.While(condition, while_body, while_line):
+                            table <- fpa_walk_expr(condition, in_owner_scope, has_region, esc_bases, esc_fields, table)
                             table <- fpa_walk(while_body, in_owner_scope, has_region, esc_bases, esc_fields, table)
                         Stmt.For(bind, variables, iterable, for_body, for_line):
+                            table <- fpa_walk_expr(iterable, in_owner_scope, has_region, esc_bases, esc_fields, table)
                             table <- fpa_walk(for_body, in_owner_scope, has_region, esc_bases, esc_fields, table)
                         Stmt.Match(scrutinee, arms, match_line):
+                            table <- fpa_walk_expr(scrutinee, in_owner_scope, has_region, esc_bases, esc_fields, table)
                             for arm in arms |table| -> table:
+                                table <- fpa_walk_expr(arm.guard, in_owner_scope, has_region, esc_bases, esc_fields, table)
                                 table <- fpa_walk(arm.body, in_owner_scope, has_region, esc_bases, esc_fields, table)
+                        Stmt.Return(value, line):
+                            table <- fpa_walk_expr(returned, in_owner_scope, has_region, esc_bases, esc_fields, table) if value is returned
                         _:
                             pass
 
