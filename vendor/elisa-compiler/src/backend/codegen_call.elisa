@@ -314,7 +314,19 @@ extend Backend:
                         reduce_step: LLVMValueRef? = emit_call(arguments[1], reduce_call_args, [], local_scope, fns, structs, generics, runtime, m, ctx, builder)
                         scope_restore(local_scope, reduce_scope_mark)
                         if reduce_step is reduce_step_value:
-                            _ = LLVMBuildStore(builder, LLVMBuildAdd(builder, LLVMBuildLoad2(builder, reduce_elem_llvm, reduce_acc, "reduce_sum.acc"), reduce_step_value, "reduce_sum.acc.next"), reduce_acc)
+                            # The accumulator follows the element type.  Building an integer
+                            # `add` unconditionally was both invalid for floating-point views
+                            # and silently wrapped signed reductions.  Route the step through
+                            # the ordinary binary emitter so floats use `fadd` and signed
+                            # integers retain stage0's overflow trap; decline rather than
+                            # leaving a malformed or wrapping instruction behind.
+                            null return if not is_numeric_type(reduce_element)
+                            if LLVMTypeOf(reduce_step_value) != reduce_elem_llvm:
+                                null return
+                            if emit_binary(TokenKind.Plus, LLVMBuildLoad2(builder, reduce_elem_llvm, reduce_acc, "reduce_sum.acc"), reduce_step_value, reduce_element, structs, runtime.fast_math, m, ctx, builder) is reduce_acc_next:
+                                _ = LLVMBuildStore(builder, reduce_acc_next, reduce_acc)
+                            else:
+                                null return
                             _ = LLVMBuildStore(builder, LLVMBuildAdd(builder, LLVMBuildLoad2(builder, reduce_i64, reduce_index, "reduce_sum.index.cur"), LLVMConstInt(reduce_i64, 1, 0), "reduce_sum.index.next"), reduce_index)
                             _ = LLVMBuildBr(builder, reduce_cond)
                             LLVMPositionBuilderAtEnd(builder, reduce_end)
@@ -386,6 +398,12 @@ extend Backend:
                     if emit_expression(arguments[0], chunks_view_type, local_scope, fns, structs, generics, runtime, m, ctx, builder) is chunks_base:
                         if emit_expression(arguments[1], ValueType{kind: TypeKind.Signed, bits: 64}, local_scope, fns, structs, generics, runtime, m, ctx, builder) is chunks_len:
                             chunks_total: LLVMValueRef = LLVMBuildExtractValue(builder, chunks_base, 1, "chunks.total")
+                            # `sdiv` by zero is undefined in LLVM (and can be folded to an
+                            # arbitrary value).  The std constructor requires a positive
+                            # chunk length, so make the precondition explicit before lowering
+                            # the quotient.
+                            chunks_len_valid: LLVMValueRef = LLVMBuildICmp(builder, 38, chunks_len, LLVMConstInt(LLVMInt64TypeInContext(ctx), 0, 0), "chunks.len.positive")
+                            emit_contract_guard(chunks_len_valid, m, ctx, builder)
                             chunks_agg: mutable LLVMValueRef = LLVMGetUndef(llvm_type_of(chunks_result, structs, ctx))
                             chunks_agg <- LLVMBuildInsertValue(builder, chunks_agg, chunks_base, 0, "chunks.base")
                             chunks_agg <- LLVMBuildInsertValue(builder, chunks_agg, chunks_len, 1, "chunks.chunk")
