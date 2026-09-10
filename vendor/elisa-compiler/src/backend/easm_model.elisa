@@ -314,6 +314,23 @@ module Easm:
         def easm_is_terminator(op: sview) -> bool:
             return easm_equal(op, "jmp") or easm_equal(op, "jmpq") or easm_equal(op, "ret") or easm_equal(op, "retq")
 
+        # Stack deltas are analysis facts, not machine integers to wrap.  Saturating malformed
+        # arithmetic keeps an oversized EASM immediate from turning a huge adjustment into a
+        # plausible small/negative one and bypassing the balance or alignment contracts.
+        def easm_stack_add_saturating(current: i64, delta: i64) -> i64:
+            if delta > 0 and current > 9223372036854775807 - delta:
+                return 9223372036854775807
+            if delta < 0 and current < (-9223372036854775807 - 1) - delta:
+                return -9223372036854775807 - 1
+            return current + delta
+
+        def easm_stack_sub_saturating(current: i64, delta: i64) -> i64:
+            if delta > 0 and current < (-9223372036854775807 - 1) + delta:
+                return -9223372036854775807 - 1
+            if delta < 0 and current > 9223372036854775807 + delta:
+                return 9223372036854775807
+            return current - delta
+
         def easm_flow_equal(a: FlowState, b: FlowState) -> bool:
             return a.valid == b.valid and a.live == b.live and a.stack_delta == b.stack_delta and a.stack_mod16 == b.stack_mod16 and a.stack_known == b.stack_known and a.flags_live == b.flags_live
 
@@ -356,16 +373,21 @@ module Easm:
             if easm_starts(instruction.op, "add") or easm_starts(instruction.op, "sub"):
                 out.flags_live <- false
             if easm_starts(instruction.op, "push"):
-                out.stack_delta <- out.stack_delta - 8
+                out.stack_delta <- easm_stack_sub_saturating(out.stack_delta, 8)
                 out.stack_mod16 <- (out.stack_mod16 - 8) % 16 if out.stack_known
             if easm_starts(instruction.op, "pop"):
-                out.stack_delta <- out.stack_delta + 8
+                out.stack_delta <- easm_stack_add_saturating(out.stack_delta, 8)
                 out.stack_mod16 <- (out.stack_mod16 + 8) % 16 if out.stack_known
             if (easm_starts(instruction.op, "add") or easm_starts(instruction.op, "sub")) and easm_find(instruction.text, "%rsp") < sview_len(instruction.text):
-                amount: i64 = easm_immediate_after_dollar(instruction.text)
-                out.stack_delta <- out.stack_delta + amount if easm_starts(instruction.op, "add") else out.stack_delta - amount
-                out.stack_mod16 <- (out.stack_mod16 + amount) % 16 if easm_starts(instruction.op, "add") and out.stack_known
-                out.stack_mod16 <- (out.stack_mod16 - amount) % 16 if easm_starts(instruction.op, "sub") and out.stack_known
+                if easm_immediate_after_dollar_valid(instruction.text):
+                    amount: i64 = easm_immediate_after_dollar(instruction.text)
+                    out.stack_delta <- easm_stack_add_saturating(out.stack_delta, amount) if easm_starts(instruction.op, "add") else easm_stack_sub_saturating(out.stack_delta, amount)
+                    amount_mod16: i64 = amount % 16
+                    out.stack_mod16 <- (out.stack_mod16 + amount_mod16) % 16 if easm_starts(instruction.op, "add") and out.stack_known
+                    out.stack_mod16 <- (out.stack_mod16 - amount_mod16) % 16 if easm_starts(instruction.op, "sub") and out.stack_known
+                else:
+                    out.stack_known <- false
+                    out.stack_mod16 <- 0
             return out
 
         def easm_provenance_slot(register: sview) -> i64:
