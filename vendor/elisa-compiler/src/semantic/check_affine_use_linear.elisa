@@ -6,41 +6,155 @@
 
 extend Semantic:
     private:
-        def walk_affine_expression(expression: Ast::Expr, names: darray[sview]&, flags: darray[bool]&, consumed: mutable darray[sview]&, table: lmut SymbolTable) -> void:
+        def walk_affine_expression(expression: Ast::Expr, names: darray[sview]&, flags: darray[bool]&, consumed: mutable darray[sview]&, linear_names: darray[sview]&, consuming_fns: darray[sview]&, consuming_positions: darray[usize]&, table: lmut SymbolTable) -> void:
             can Memory.Allocate, Abort.Panic:
                 match expression:
                     Expr.Unary(operator, operand, line):
-                        table <- walk_affine_expression(operand, names, flags, consumed, table)
+                        table <- walk_affine_expression(operand, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
                     Expr.Move(operand, line):
+                        table <- walk_affine_expression(operand, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
                         root: sview = affine_root(operand)
-                        table <- report_affine_consumed(root, line.line, consumed, table)
                         consumed.push(root) if root != "" and affine_local(names, flags, root) and not affine_consumed(consumed, root)
                     Expr.Ident(name, line):
                         table <- report_affine_consumed(name, line.line, consumed, table)
                     Expr.Field(object, field, line):
-                        table <- report_affine_consumed(affine_root(object), line.line, consumed, table)
+                        table <- walk_affine_expression(object, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
                     Expr.Index(object, index, line):
-                        table <- report_affine_consumed(affine_root(object), line.line, consumed, table)
-                        table <- walk_affine_expression(index, names, flags, consumed, table)
+                        table <- walk_affine_expression(object, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
+                        table <- walk_affine_expression(index, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
                     Expr.Call(callee, arguments, argument_names, line):
-                        table <- walk_affine_expression(callee, names, flags, consumed, table)
+                        table <- walk_affine_expression(callee, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
                         for argument in arguments |table, consumed| -> table:
-                            table <- walk_affine_expression(argument, names, flags, consumed, table)
+                            table <- walk_affine_expression(argument, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
+                        match callee:
+                            Expr.Ident(consume_fn, consume_fn_line):
+                                cc_probe: mutable usize = 0
+                                while cc_probe < consuming_fns.count |cc_probe, consumed, consume_fn, arguments, consuming_fns, consuming_positions, names, flags|:
+                                    if consuming_fns[cc_probe] == consume_fn and consuming_positions[cc_probe] < arguments.count:
+                                        consume_root: sview = affine_root(arguments[consuming_positions[cc_probe]])
+                                        consumed.push(consume_root) if consume_root != "" and affine_local(names, flags, consume_root) and not affine_consumed(consumed, consume_root)
+                                    cc_probe <- cc_probe + 1
+                            _:
+                                pass
                     Expr.Construct(type_expression, fields, line) | Expr.RecordUpdate(type_expression, fields, line):
                         for field in fields |table, consumed| -> table:
-                            table <- walk_affine_expression(field.value, names, flags, consumed, table)
+                            table <- walk_affine_expression(field.value, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
                     Expr.Array(elements, line) | Expr.Tuple(elements, line) | Expr.SetLit(elements, line):
                         for element in elements |table, consumed| -> table:
-                            table <- walk_affine_expression(element, names, flags, consumed, table)
+                            table <- walk_affine_expression(element, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
                     Expr.Binary(left, operator, right, line):
-                        table <- walk_affine_expression(left, names, flags, consumed, table)
-                        table <- walk_affine_expression(right, names, flags, consumed, table) if operator != TokenKind.Is and operator != TokenKind.As
+                        table <- walk_affine_expression(left, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
+                        table <- walk_affine_expression(right, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table) if operator != TokenKind.Is and operator != TokenKind.As
                     Expr.Paren(inner, line):
-                        table <- walk_affine_expression(inner, names, flags, consumed, table)
-                    # `await EXPR` / value-transparent blocks: walk the payload so a moved
-                    # task handle used after `task_group_add(..., move task)` is flagged.
+                        table <- walk_affine_expression(inner, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
+                    Expr.Scope(base, name, line):
+                        table <- walk_affine_expression(base, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
+                    Expr.Slice(object, low, high, line):
+                        table <- walk_affine_expression(object, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
+                        table <- walk_affine_expression(low, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
+                        table <- walk_affine_expression(high, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
+                    Expr.IndexN(object, arguments, line):
+                        table <- walk_affine_expression(object, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
+                        for argument in arguments |table, consumed| -> table:
+                            table <- walk_affine_expression(argument, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
+                    Expr.If(condition, selected, alternative, line):
+                        table <- walk_affine_expression(condition, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
+                        then_consumed: mutable darray[sview] = []
+                        else_consumed: mutable darray[sview] = []
+                        then_consumed.extend(consumed)
+                        else_consumed.extend(consumed)
+                        table <- walk_affine_expression(selected, names, flags, then_consumed, linear_names, consuming_fns, consuming_positions, table)
+                        table <- walk_affine_expression(alternative, names, flags, else_consumed, linear_names, consuming_fns, consuming_positions, table)
+                        for consumed_name in then_consumed |consumed|:
+                            consumed.push(consumed_name) if affine_consumed(else_consumed, consumed_name) and not affine_consumed(consumed, consumed_name)
+                    Expr.Match(scrutinee, arms, line):
+                        table <- walk_affine_expression(scrutinee, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
+                        match_consumed: mutable darray[sview] = []
+                        match_has_arm: mutable bool = false
+                        for arm in arms |table, match_consumed, match_has_arm| -> table:
+                            arm_names: mutable darray[sview] = []
+                            arm_flags: mutable darray[bool] = []
+                            arm_consumed: mutable darray[sview] = []
+                            arm_names.extend(names)
+                            arm_flags.extend(flags)
+                            arm_consumed.extend(consumed)
+                            table <- walk_affine_expression(arm.guard, arm_names, arm_flags, arm_consumed, linear_names, consuming_fns, consuming_positions, table)
+                            table <- walk_affine_statements(arm.body, arm_names, arm_flags, arm_consumed, linear_names, consuming_fns, consuming_positions, table)
+                            if not match_has_arm:
+                                match_consumed.extend(arm_consumed)
+                                match_has_arm <- true
+                            else:
+                                retained: mutable darray[sview] = []
+                                for carried in match_consumed |retained|:
+                                    retained.push(carried) if affine_consumed(arm_consumed, carried)
+                                match_consumed.truncate(0)
+                                match_consumed.extend(retained)
+                        for consumed_name in match_consumed |consumed|:
+                            consumed.push(consumed_name) if not affine_consumed(consumed, consumed_name)
+                    Expr.Catch(guarded, arms, line):
+                        guarded_consumed: mutable darray[sview] = []
+                        guarded_consumed.extend(consumed)
+                        table <- walk_affine_expression(guarded, names, flags, guarded_consumed, linear_names, consuming_fns, consuming_positions, table)
+                        catch_consumed: mutable darray[sview] = []
+                        catch_consumed.extend(guarded_consumed)
+                        catch_has_arm: mutable bool = false
+                        for arm in arms |table, catch_consumed, catch_has_arm| -> table:
+                            arm_names: mutable darray[sview] = []
+                            arm_flags: mutable darray[bool] = []
+                            arm_consumed: mutable darray[sview] = []
+                            arm_names.extend(names)
+                            arm_flags.extend(flags)
+                            arm_consumed.extend(consumed)
+                            table <- walk_affine_expression(arm.guard, arm_names, arm_flags, arm_consumed, linear_names, consuming_fns, consuming_positions, table)
+                            table <- walk_affine_statements(arm.body, arm_names, arm_flags, arm_consumed, linear_names, consuming_fns, consuming_positions, table)
+                            if not catch_has_arm:
+                                retained: mutable darray[sview] = []
+                                for carried in catch_consumed |retained|:
+                                    retained.push(carried) if affine_consumed(arm_consumed, carried)
+                                catch_consumed.truncate(0)
+                                catch_consumed.extend(retained)
+                                catch_has_arm <- true
+                            else:
+                                retained: mutable darray[sview] = []
+                                for carried in catch_consumed |retained|:
+                                    retained.push(carried) if affine_consumed(arm_consumed, carried)
+                                catch_consumed.truncate(0)
+                                catch_consumed.extend(retained)
+                        for consumed_name in catch_consumed |consumed|:
+                            consumed.push(consumed_name) if not affine_consumed(consumed, consumed_name)
+                    Expr.Refinement(base, predicate, line):
+                        table <- walk_affine_expression(base, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
+                        table <- walk_affine_expression(predicate, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
+                    Expr.GetElse(guarded, recovery, line):
+                        guarded_consumed: mutable darray[sview] = []
+                        recovery_consumed: mutable darray[sview] = []
+                        guarded_consumed.extend(consumed)
+                        recovery_consumed.extend(consumed)
+                        recovery_names: mutable darray[sview] = []
+                        recovery_flags: mutable darray[bool] = []
+                        recovery_names.extend(names)
+                        recovery_flags.extend(flags)
+                        table <- walk_affine_expression(guarded, names, flags, guarded_consumed, linear_names, consuming_fns, consuming_positions, table)
+                        table <- walk_affine_statements(recovery, recovery_names, recovery_flags, recovery_consumed, linear_names, consuming_fns, consuming_positions, table)
+                        retained: mutable darray[sview] = []
+                        for carried in guarded_consumed |retained|:
+                            retained.push(carried) if affine_consumed(recovery_consumed, carried)
+                        consumed.truncate(0)
+                        consumed.extend(retained)
+                    Expr.Comprehension(variable, iterable, condition, body, line):
+                        table <- walk_affine_expression(iterable, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
+                        table <- walk_affine_expression(condition, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
+                        table <- walk_affine_expression(body, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
+                    # `await EXPR` / value-transparent blocks: walk both the statements and
+                    # the payload so a moved task handle used after
+                    # `task_group_add(..., move task)` is flagged. The block's declarations
+                    # are scoped and must not make an affine name visible after the block.
                     Expr.Block(statements, value, captures, line):
-                        table <- walk_affine_expression(value, names, flags, consumed, table)
+                        block_scope_mark: usize = names.count
+                        table <- walk_affine_statements(statements, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
+                        table <- walk_affine_expression(value, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
+                        names.truncate(block_scope_mark)
+                        flags.truncate(block_scope_mark)
                     _:
                         pass
 
@@ -50,11 +164,11 @@ extend Semantic:
                 for statement in statements |names, flags, consumed, table| -> table:
                     match statement:
                         Stmt.VarDecl(name, type_expression, value, line):
-                            table <- walk_affine_expression(value, names, flags, consumed, table)
+                            table <- walk_affine_expression(value, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
                             names.push(name)
                             flags.push(affine_type_expression(type_expression, table))
                         Stmt.Assign(target, operator, value, line):
-                            table <- walk_affine_expression(value, names, flags, consumed, table)
+                            table <- walk_affine_expression(value, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
                             # An un-annotated `t = Ticket.new(...)` binds a fresh linear local (parsed
                             # as Assign, not VarDecl); register it so a later `move t` is tracked.
                             assign_name: sview = ident_name_of(target)
@@ -62,7 +176,7 @@ extend Semantic:
                             names.push(assign_name) if assign_is_linear
                             flags.push(true) if assign_is_linear
                         Stmt.Expr(expression, line):
-                            table <- walk_affine_expression(expression, names, flags, consumed, table)
+                            table <- walk_affine_expression(expression, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
                             # A consuming call `f(x)` (f drives x to a terminal typestate)
                             # completes x's protocol — mark the linear-local argument consumed.
                             match expression:
@@ -82,33 +196,80 @@ extend Semantic:
                         Stmt.Return(value, line):
                             match value:
                                 returned:
-                                    table <- walk_affine_expression(returned, names, flags, consumed, table)
+                                    table <- walk_affine_expression(returned, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
                                     returned_root: sview = affine_root(returned)
                                     consumed.push(returned_root) if returned_root != "" and affine_local(names, flags, returned_root) and not affine_consumed(consumed, returned_root)
                                 _:
                                     pass
                         Stmt.If(condition, then_body, else_body, line):
-                            table <- walk_affine_expression(condition, names, flags, consumed, table)
+                            table <- walk_affine_expression(condition, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
+                            then_names: mutable darray[sview] = []
+                            then_flags: mutable darray[bool] = []
+                            else_names: mutable darray[sview] = []
+                            else_flags: mutable darray[bool] = []
+                            then_names.extend(names)
+                            then_flags.extend(flags)
+                            else_names.extend(names)
+                            else_flags.extend(flags)
                             then_consumed: mutable darray[sview] = []
                             else_consumed: mutable darray[sview] = []
                             then_consumed.extend(consumed)
                             else_consumed.extend(consumed)
-                            table <- walk_affine_statements(then_body, names, flags, then_consumed, linear_names, consuming_fns, consuming_positions, table)
-                            table <- walk_affine_statements(else_body, names, flags, else_consumed, linear_names, consuming_fns, consuming_positions, table)
+                            table <- walk_affine_statements(then_body, then_names, then_flags, then_consumed, linear_names, consuming_fns, consuming_positions, table)
+                            table <- walk_affine_statements(else_body, else_names, else_flags, else_consumed, linear_names, consuming_fns, consuming_positions, table)
                             for consumed_name in then_consumed |consumed|:
                                 consumed.push(consumed_name) if affine_consumed(else_consumed, consumed_name) and not affine_consumed(consumed, consumed_name)
                         Stmt.Block(kind, clause, binding, body, line):
                             moved_root: sview = move_block_root(kind, body)
+                            block_scope_mark: usize = names.count
                             table <- walk_affine_statements(body, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
+                            names.truncate(block_scope_mark)
+                            flags.truncate(block_scope_mark)
                             consumed.push(moved_root) if moved_root != "" and affine_local(names, flags, moved_root) and not affine_consumed(consumed, moved_root)
                         Stmt.While(condition, body, line):
-                            table <- walk_affine_expression(condition, names, flags, consumed, table)
+                            table <- walk_affine_expression(condition, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
+                            loop_names: mutable darray[sview] = []
+                            loop_flags: mutable darray[bool] = []
+                            loop_consumed: mutable darray[sview] = []
+                            loop_names.extend(names)
+                            loop_flags.extend(flags)
+                            loop_consumed.extend(consumed)
+                            table <- walk_affine_statements(body, loop_names, loop_flags, loop_consumed, linear_names, consuming_fns, consuming_positions, table)
+                        Stmt.For(bind, variables, iterable, body, line):
+                            table <- walk_affine_expression(iterable, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
+                            loop_names: mutable darray[sview] = []
+                            loop_flags: mutable darray[bool] = []
+                            loop_consumed: mutable darray[sview] = []
+                            loop_names.extend(names)
+                            loop_flags.extend(flags)
+                            loop_consumed.extend(consumed)
+                            table <- walk_affine_statements(body, loop_names, loop_flags, loop_consumed, linear_names, consuming_fns, consuming_positions, table)
                         Stmt.Match(scrutinee, arms, line):
                             matched_root: sview = affine_match_root(scrutinee)
                             table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.AffineUseAfterConsume, name: matched_root, line: line.line, expected: "match", actual: ""}) if matched_root != "" and affine_consumed(consumed, matched_root)
-                            table <- walk_affine_expression(scrutinee, names, flags, consumed, table)
-                            for arm in arms |table, consumed| -> table:
-                                table <- walk_affine_statements(arm.body, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
+                            table <- walk_affine_expression(scrutinee, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
+                            match_consumed: mutable darray[sview] = []
+                            match_has_arm: mutable bool = false
+                            for arm in arms |table, match_consumed, match_has_arm| -> table:
+                                arm_names: mutable darray[sview] = []
+                                arm_flags: mutable darray[bool] = []
+                                arm_consumed: mutable darray[sview] = []
+                                arm_names.extend(names)
+                                arm_flags.extend(flags)
+                                arm_consumed.extend(consumed)
+                                table <- walk_affine_expression(arm.guard, arm_names, arm_flags, arm_consumed, linear_names, consuming_fns, consuming_positions, table)
+                                table <- walk_affine_statements(arm.body, arm_names, arm_flags, arm_consumed, linear_names, consuming_fns, consuming_positions, table)
+                                if not match_has_arm:
+                                    match_consumed.extend(arm_consumed)
+                                    match_has_arm <- true
+                                else:
+                                    retained: mutable darray[sview] = []
+                                    for carried in match_consumed |retained|:
+                                        retained.push(carried) if affine_consumed(arm_consumed, carried)
+                                    match_consumed.truncate(0)
+                                    match_consumed.extend(retained)
+                            for consumed_name in match_consumed |consumed|:
+                                consumed.push(consumed_name) if not affine_consumed(consumed, consumed_name)
                             consumed.push(matched_root) if matched_root != "" and affine_local(names, flags, matched_root) and not affine_consumed(consumed, matched_root)
                         _:
                             pass
