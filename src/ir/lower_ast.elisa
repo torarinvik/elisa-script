@@ -107,6 +107,11 @@ extend EsIr:
             element_owner_indices: mutable darray[u32]
             element_index_values: mutable darray[u32]
             active_handlers: mutable darray[sview]
+            # A value block can provide the expected type for its tail.  Keep
+            # that context while lowering fresh `=` bindings so unannotated
+            # numeric literals in a block specialize to the same type (for
+            # example the `bak`/`bok` bindings in a `u8` mutation block).
+            implicit_binding_type: mutable Type
             function: sview
             function_names: darray[sview]&
             function_returns: darray[Type]&
@@ -7277,6 +7282,37 @@ extend EsIr:
                 _:
                     pass
             match expression:
+                Expr.IntLit(value):
+                    if expected.kind == TypeKind.Int:
+                        if not positive_integer_literal_fits(value, expected):
+                            add_issue(state, LowerIssueKind.TypeMismatch, 0, "integer literal is outside its contextual type range")
+                            return LoweredValue{valid: false, value: 0, type: expected}
+                        return emit_constant(state, expected, value, "", "", false, zero_span())
+                Expr.FloatLit(text):
+                    return emit_constant(state, expected, 0, text, "", false, zero_span()) if expected.kind == TypeKind.Float
+                Expr.Block(statements, value, captures, pos):
+                    if captures.count != 0:
+                        add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "capturing value blocks require ownership-aware closure lowering")
+                        return LoweredValue{valid: false, value: 0, type: expected}
+                    scope_mark: usize = state.names.count
+                    previous_implicit_type: Type = state.implicit_binding_type
+                    state.implicit_binding_type <- expected if expected.kind != TypeKind.Void
+                    for statement in statements |state|:
+                        lower_statement(statement, state.function_return_type, state)
+                    if state.terminated:
+                        state.names.truncate(scope_mark)
+                        state.values.truncate(scope_mark)
+                        state.types.truncate(scope_mark)
+                        state.mutables.truncate(scope_mark)
+                        state.implicit_binding_type <- previous_implicit_type
+                        return LoweredValue{valid: false, value: 0, type: expected}
+                    lowered_value: LoweredValue = lower_expression_expected(value, expected, state) if expected.kind != TypeKind.Void else lower_expression(value, state)
+                    state.names.truncate(scope_mark)
+                    state.values.truncate(scope_mark)
+                    state.types.truncate(scope_mark)
+                    state.mutables.truncate(scope_mark)
+                    state.implicit_binding_type <- previous_implicit_type
+                    return lowered_value
                 Expr.Array(elements, pos):
                     if expected.kind == TypeKind.Array:
                         if elements.count > LOWER_U16_MAX:
@@ -10630,7 +10666,7 @@ extend EsIr:
                     if operator == TokenKind.Assign:
                         match target:
                             Expr.Ident(fresh_name, fresh_pos):
-                                lowered_fresh: LoweredValue = lower_expression(value, state)
+                                lowered_fresh: LoweredValue = lower_expression_expected(value, state.implicit_binding_type, state) if state.implicit_binding_type.kind != TypeKind.Void else lower_expression(value, state)
                                 if lowered_fresh.valid and fresh_name != "_":
                                     state.names.push(fresh_name)
                                     state.values.push(lowered_fresh.value)
@@ -11430,7 +11466,7 @@ extend EsIr:
         def lower_function(name: sview, params: darray[Ast::ParamDecl]&, return_type_opt: Ast::Expr?, body: darray[Ast::Stmt]&, effects: darray[sview]&, declared_error_start: u32, declared_error_count: u16, pos: Ast::Pos&, function_names: darray[sview]&, function_returns: darray[Type]&, function_parameter_starts: darray[u32]&, function_parameter_counts: darray[u16]&, function_parameter_types: darray[Type]&, function_parameter_names: darray[sview]&, function_parameter_has_defaults: darray[bool]&, function_parameter_defaults: darray[Ast::Expr]&, function_effect_starts: darray[u32]&, function_effect_counts: darray[u16]&, function_effects: darray[sview]&, function_error_starts: darray[u32]&, function_error_counts: darray[u16]&, function_errors: darray[sview]&, handlers: darray[Handler]&, comprehension_kinds: darray[Ast::EnumAnnotation]&, source_file: Ast::File&, constant_names: darray[sview]&, constant_types: darray[Type]&, constant_values: darray[Ast::Expr]&, global_names: darray[sview]&, global_types: darray[Type]&, type_table: mutable TypeTable&, outer_issues: mutable darray[LowerIssue]&) -> Function can[Memory.Allocate, Abort.Panic]:
             return_type: mutable Type = void_ir_type()
             return_type <- interned_type_from_expression(return_expression, type_table) if return_type_opt is return_expression
-            state: mutable LowerState = LowerState{function: name, next_value: 1, current_block: 1, next_block: 2, instruction_start: 0, structured_depth: 0, blocks: [], names: [], values: [], types: [], mutables: [], instructions: [], operand_pool: [], edge_arg_pool: [], issues: [], break_targets: [], continue_targets: [], pending_parameter_blocks: [], pending_parameters: [], block_parameter_pool: [], loop_context_starts: [], loop_context_counts: [], loop_carried_indices: [], loop_handler_depths: [], element_binding_indices: [], element_owner_indices: [], element_index_values: [], active_handlers: [], terminated: false, terminator: Terminator{kind: TerminatorKind.Unreachable, span: ir_span(pos)}, function_names: function_names, function_returns: function_returns, function_parameter_starts: function_parameter_starts, function_parameter_counts: function_parameter_counts, function_parameter_types: function_parameter_types, function_parameter_names: function_parameter_names, function_parameter_has_defaults: function_parameter_has_defaults, function_parameter_defaults: function_parameter_defaults, function_effect_starts: function_effect_starts, function_effect_counts: function_effect_counts, function_effects: function_effects, function_error_starts: function_error_starts, function_error_counts: function_error_counts, function_errors: function_errors, handlers: handlers, comprehension_kinds: comprehension_kinds, source_file: source_file, type_table: type_table, function_return_type: return_type, required_effects: [], required_errors: [], constant_names: constant_names, constant_types: constant_types, constant_values: constant_values, global_names: global_names, global_types: global_types}
+            state: mutable LowerState = LowerState{function: name, next_value: 1, current_block: 1, next_block: 2, instruction_start: 0, structured_depth: 0, blocks: [], names: [], values: [], types: [], mutables: [], instructions: [], operand_pool: [], edge_arg_pool: [], issues: [], break_targets: [], continue_targets: [], pending_parameter_blocks: [], pending_parameters: [], block_parameter_pool: [], loop_context_starts: [], loop_context_counts: [], loop_carried_indices: [], loop_handler_depths: [], element_binding_indices: [], element_owner_indices: [], element_index_values: [], active_handlers: [], implicit_binding_type: void_ir_type(), terminated: false, terminator: Terminator{kind: TerminatorKind.Unreachable, span: ir_span(pos)}, function_names: function_names, function_returns: function_returns, function_parameter_starts: function_parameter_starts, function_parameter_counts: function_parameter_counts, function_parameter_types: function_parameter_types, function_parameter_names: function_parameter_names, function_parameter_has_defaults: function_parameter_has_defaults, function_parameter_defaults: function_parameter_defaults, function_effect_starts: function_effect_starts, function_effect_counts: function_effect_counts, function_effects: function_effects, function_error_starts: function_error_starts, function_error_counts: function_error_counts, function_errors: function_errors, handlers: handlers, comprehension_kinds: comprehension_kinds, source_file: source_file, type_table: type_table, function_return_type: return_type, required_effects: [], required_errors: [], constant_names: constant_names, constant_types: constant_types, constant_values: constant_values, global_names: global_names, global_types: global_types}
             state.required_effects.extend(effects)
             for error_offset in 0..<declared_error_count.usize() |state, declared_error_start|:
                 declared_error: sview = function_errors[declared_error_start.usize() + error_offset]

@@ -2927,19 +2927,23 @@ is the block value:
 
 ```elisascript
 foo =
-    bar = 15i64
-    baz = 25i64
+    bar = 15
+    baz = 25
     bar + baz
 
-total: mutable u8 = 25u8
-total <-
-    low = 25u8
-    high = 15u8
-    low + high
+biz: mutable u8 = 25
+biz <-
+    bak = 25
+    bok = 15
+    bak + bok
 ```
 
 The parser, semantic scope walk, and IR lowerer preserve those declaration versus
-mutation rules, including shadowing inside nested value blocks.
+mutation rules, including shadowing inside nested value blocks. An annotated
+assignment or mutation supplies the expected scalar type to its block: untyped
+integer and floating literals in the block are checked and materialized directly
+at that type, so the `u8` example does not need suffix noise. Out-of-range
+literals remain compile-time type errors rather than silently truncating.
 
 Straight-line `<-` mutation is reconstructed as an SSA name rebind: the
 new expression result becomes the binding's current value and no memory slot is
