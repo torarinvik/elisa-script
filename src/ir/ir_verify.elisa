@@ -70,6 +70,12 @@ extend EsIr:
             return handlers.count
 
 
+        def block_index(fn: Function&, id: u32) -> usize:
+            for index in 0..<fn.blocks.count |fn, id|:
+                index return if fn.blocks[index].id == id
+            return fn.blocks.count
+
+
         def function_index(functions: darray[Function]&, name: sview) -> usize:
             for index in 0..<functions.count |functions, name|:
                 index return if functions[index].name == name
@@ -94,6 +100,68 @@ extend EsIr:
                 if index < handlers.count and verify_handler_covers_operation(handlers[index], family, operation, operation_id):
                     return true
             return false
+
+
+        # Propagate one dynamic-handler stack across a CFG edge. A block join is
+        # valid only when every reachable predecessor carries the same stack;
+        # otherwise effect coverage would depend on source block ordering.
+        def propagate_handler_flow(fn: Function&, source: Block&, target: u32, outgoing: darray[sview]&, storage: mutable darray[sview]&, incoming_starts: mutable darray[u32]&, incoming_counts: mutable darray[u32]&, incoming_known: mutable darray[bool]&, worklist: mutable darray[u32]&, issues: mutable darray[Issue]&) -> void can[Memory.Allocate, Abort.Panic]:
+            target_index: usize = block_index(fn, target)
+            return if target_index == fn.blocks.count
+            outgoing_count: u32 = outgoing.count.u32()
+            if not incoming_known[target_index]:
+                incoming_known[target_index] <- true
+                incoming_starts[target_index] <- storage.count.u32()
+                incoming_counts[target_index] <- outgoing_count
+                for installed in outgoing |storage|:
+                    storage.push(installed)
+                worklist.push(target_index.u32())
+                return
+            same: bool = incoming_counts[target_index] == outgoing_count
+            existing_start: usize = incoming_starts[target_index].usize()
+            if same:
+                if existing_start > storage.count or outgoing.count > storage.count - existing_start:
+                    same <- false
+                else:
+                    for offset in 0..<outgoing.count |outgoing, storage, existing_start, same|:
+                        same <- false if storage[existing_start + offset] != outgoing[offset]
+            issues.push(issue(IssueKind.UnbalancedHandler, fn.name, source.id, 0, 0, "CFG join has incompatible dynamic handler stacks")) if not same
+
+
+        # Compute handler stacks on reachable CFG paths before checking effect
+        # coverage. The old verifier carried one mutable stack through physical
+        # block order, which made a handler installed in one branch appear active
+        # in unrelated successors and missed unbalanced exits on non-last blocks.
+        def verify_handler_stack_flow(fn: Function&, issues: mutable darray[Issue]&, incoming_starts: mutable darray[u32]&, incoming_counts: mutable darray[u32]&, incoming_known: mutable darray[bool]&, storage: mutable darray[sview]&) -> void can[Memory.Allocate, Abort.Panic]:
+            worklist: mutable darray[u32] = []
+            entry_index: usize = block_index(fn, fn.entry)
+            return if entry_index == fn.blocks.count
+            incoming_known[entry_index] <- true
+            worklist.push(entry_index.u32())
+            while worklist.count > 0 |worklist, fn, incoming_starts, incoming_counts, incoming_known, storage, issues|:
+                current_index: usize = worklist.pop().usize()
+                continue if current_index >= fn.blocks.count
+                block: Block = fn.blocks[current_index]
+                outgoing: mutable darray[sview] = []
+                incoming_start: usize = incoming_starts[current_index].usize()
+                incoming_count: usize = incoming_counts[current_index].usize()
+                if incoming_start <= storage.count and incoming_count <= storage.count - incoming_start:
+                    for offset in 0..<incoming_count |storage, incoming_start, outgoing|:
+                        outgoing.push(storage[incoming_start + offset])
+                instruction_end_valid: mutable bool = false
+                instruction_end: usize = bounded_slice_end(block.instruction_start.usize(), block.instruction_count.usize(), fn.instruction_pool.count, instruction_end_valid)
+                safe_instruction_start: usize = block.instruction_start.usize() if block.instruction_start.usize() <= fn.instruction_pool.count else fn.instruction_pool.count
+                safe_instruction_end: usize = instruction_end if instruction_end <= fn.instruction_pool.count else fn.instruction_pool.count
+                for instruction_index in safe_instruction_start..<safe_instruction_end |fn, outgoing|:
+                    instruction: Instruction = fn.instruction_pool[instruction_index]
+                    outgoing.push(instruction.symbol) if instruction.opcode == Opcode.HandlerPush
+                    if instruction.opcode == Opcode.HandlerPop and outgoing.count > 0 and outgoing[outgoing.count - 1] == instruction.symbol:
+                        _ = outgoing.pop()
+                if block.terminator.kind == TerminatorKind.Return:
+                    issues.push(issue(IssueKind.UnbalancedHandler, fn.name, block.id, 0, 0, "function exits with a dynamic handler still installed")) if outgoing.count != 0
+                elif block.terminator.kind == TerminatorKind.Jump or block.terminator.kind == TerminatorKind.Branch:
+                    propagate_handler_flow(fn, block, block.terminator.target0, outgoing, storage, incoming_starts, incoming_counts, incoming_known, worklist, issues) if block.terminator.target_count >= 1
+                    propagate_handler_flow(fn, block, block.terminator.target1, outgoing, storage, incoming_starts, incoming_counts, incoming_known, worklist, issues) if block.terminator.target_count >= 2
 
 
         # Multi-shot snapshots currently cannot deep-copy aggregate storage. A
@@ -420,12 +488,29 @@ extend EsIr:
             definition_types: mutable darray[Type] = []
             traces: mutable darray[u64] = []
             handler_stack: mutable darray[sview] = []
+            handler_incoming_starts: mutable darray[u32] = []
+            handler_incoming_counts: mutable darray[u32] = []
+            handler_incoming_known: mutable darray[bool] = []
+            handler_incoming_storage: mutable darray[sview] = []
+            for block in fn.blocks |handler_incoming_starts, handler_incoming_counts, handler_incoming_known|:
+                handler_incoming_starts.push(0)
+                handler_incoming_counts.push(0)
+                handler_incoming_known.push(false)
+            verify_handler_stack_flow(fn, issues, handler_incoming_starts, handler_incoming_counts, handler_incoming_known, handler_incoming_storage)
             for parameter in fn.parameters |defined, definition_blocks, definition_types, issues|:
                 issues.push(issue(IssueKind.DuplicateValue, fn.name, fn.entry, parameter.value, 0, "parameter SSA value is duplicated or zero")) if parameter.value == 0 or has_u32(defined, parameter.value)
                 defined.push(parameter.value) if parameter.value != 0 and not has_u32(defined, parameter.value)
                 definition_blocks.push(fn.entry) if parameter.value != 0 and definition_blocks.count < defined.count
                 definition_types.push(parameter.type) if parameter.value != 0 and definition_types.count < defined.count
             for block in fn.blocks |defined, definition_blocks, definition_types, traces, block_ids, issues|:
+                handler_stack <- []
+                current_handler_block: usize = block_index(fn, block.id)
+                if current_handler_block < handler_incoming_known.count and handler_incoming_known[current_handler_block]:
+                    incoming_start: usize = handler_incoming_starts[current_handler_block].usize()
+                    incoming_count: usize = handler_incoming_counts[current_handler_block].usize()
+                    if incoming_start <= handler_incoming_storage.count and incoming_count <= handler_incoming_storage.count - incoming_start:
+                        for offset in 0..<incoming_count |handler_incoming_storage, incoming_start, handler_stack|:
+                            handler_stack.push(handler_incoming_storage[incoming_start + offset])
                 parameter_end_valid: mutable bool = false
                 parameter_end: usize = bounded_slice_end(block.parameter_start.usize(), block.parameter_count.usize(), fn.block_parameter_pool.count, parameter_end_valid)
                 issues.push(issue(IssueKind.EdgeArgumentArity, fn.name, block.id, 0, 0, "block parameter slice is outside the function pool")) if not parameter_end_valid
@@ -1452,7 +1537,6 @@ extend EsIr:
                         issues.push(issue(IssueKind.DuplicateTraceSite, fn.name, block.id, instruction.result, instruction.trace.id, "trace site id is not unique within the function")) if instruction.trace.id != 0 and has_u64(traces, instruction.trace.id)
                         traces.push(instruction.trace.id) if instruction.trace.id != 0 and not has_u64(traces, instruction.trace.id)
                 verify_terminator(fn, block, defined, definition_blocks, definition_types, block_ids, issues)
-            issues.push(issue(IssueKind.UnbalancedHandler, fn.name, fn.entry, 0, 0, "function exits with a dynamic handler still installed")) if handler_stack.count != 0
 
 
     public:
