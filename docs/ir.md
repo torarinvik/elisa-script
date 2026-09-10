@@ -2920,6 +2920,27 @@ then yield the tail expression. This makes the idiomatic multiline `return if ..
 form executable while ensuring branch-local names do not leak past the value block;
 mutations of already-existing outer SSA bindings remain visible as expected.
 
+Elisascript also accepts the ML-style bare block spelling on binding and mutation
+RHSs; no `do` introducer is required. A bare `=` introduces a fresh immutable
+binding, while `<-` updates an existing mutable binding, and the final statement
+is the block value:
+
+```elisascript
+foo =
+    bar = 15i64
+    baz = 25i64
+    bar + baz
+
+total: mutable u8 = 25u8
+total <-
+    low = 25u8
+    high = 15u8
+    low + high
+```
+
+The parser, semantic scope walk, and IR lowerer preserve those declaration versus
+mutation rules, including shadowing inside nested value blocks.
+
 Straight-line `<-` mutation is reconstructed as an SSA name rebind: the
 new expression result becomes the binding's current value and no memory slot is
 introduced. Arithmetic and bitwise compound assignments use the same mechanism,
