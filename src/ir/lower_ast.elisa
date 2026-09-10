@@ -3850,13 +3850,16 @@ extend EsIr:
         # transfers to the fallback block, clears the private failure state,
         # and merges the recovered value through a typed block parameter (or
         # resumes through a zero-parameter void merge for statement recovery).
-        def lower_error_recovery(guarded_expression: Ast::Expr, fallback_expression: Ast::Expr, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+        def lower_error_recovery(guarded_expression: Ast::Expr, fallback_expression: Ast::Expr, expected: Type, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
             fallback_block: u32 = fresh_block(state)
             merge_block: u32 = fresh_block(state)
             state.instructions.push(Instruction{opcode: Opcode.ErrorGuardPush, result: 0, result_type: void_ir_type(), integer: fallback_block.i64(), span: ir_span(pos)})
-            guarded: LoweredValue = lower_expression(guarded_expression, state)
+            guarded: LoweredValue = lower_expression_expected(guarded_expression, expected, state) if expected.kind != TypeKind.Void else lower_expression(guarded_expression, state)
             if not guarded.valid:
                 return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
+            if expected.kind != TypeKind.Void and not same_type(guarded.type, expected):
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "recovered expression does not match its contextual type")
+                return LoweredValue{valid: false, value: 0, type: expected}
             if guarded.type.kind == TypeKind.Void:
                 # A void fallible operation is recoverable as a statement.  `else void`
                 # is the explicit no-op spelling, while another void expression may be
@@ -3916,7 +3919,7 @@ extend EsIr:
         # family and tag in the guard metadata and may bind positional payloads.
         # The reference interpreter extracts those payloads through typed
         # ErrorPayload instructions, including terminating variant arms.
-        def lower_catch_expression(guarded_expression: Ast::Expr, arms: darray[Ast::MatchArm]&, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
+        def lower_catch_expression(guarded_expression: Ast::Expr, arms: darray[Ast::MatchArm]&, expected: Type, pos: Ast::Pos&, state: mutable LowerState&) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
             invalid: LoweredValue = LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
             if arms.count != 2:
                 add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "catch expressions currently require one success arm and one error arm")
@@ -4008,12 +4011,15 @@ extend EsIr:
             fallback_block: u32 = fresh_block(state)
             merge_block: u32 = fresh_block(state)
             state.instructions.push(Instruction{opcode: Opcode.ErrorGuardPush, result: 0, result_type: void_ir_type(), integer: fallback_block.i64(), effect_family: error_family, effect_operation: error_operation, operation_id: Ast::effect_operation_identity(error_family, error_operation), span: ir_span(pos)})
-            guarded: LoweredValue = lower_expression(guarded_expression, state)
+            guarded: LoweredValue = lower_expression_expected(guarded_expression, expected, state) if expected.kind != TypeKind.Void else lower_expression(guarded_expression, state)
             if not guarded.valid:
                 return invalid
             if guarded.type.kind == TypeKind.Void:
                 add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "catch expression requires a value-producing guarded expression")
                 return invalid
+            if expected.kind != TypeKind.Void and not same_type(guarded.type, expected):
+                add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "caught expression does not match its contextual type")
+                return LoweredValue{valid: false, value: 0, type: expected}
             state.instructions.push(Instruction{opcode: Opcode.ErrorGuardPop, result: 0, result_type: void_ir_type(), span: ir_span(pos)})
 
             scope_mark: usize = state.names.count
@@ -4997,14 +5003,14 @@ extend EsIr:
                         Expr.IndexN(collection_expression, index_expressions, index_pos):
                             return lower_checked_index_chain(collection_expression, index_expressions, base, pos, state)
                         Expr.Call(callee, arguments, argument_names, call_pos):
-                            return lower_error_recovery(predicate, base, pos, state)
+                            return lower_error_recovery(predicate, base, void_ir_type(), pos, state)
                         _:
                             add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "refinement expression is not in the initial IR lowering subset")
                             return LoweredValue{valid: false, value: 0, type: unknown_ir_type()}
                 Expr.GetElse(guarded, recovery, pos):
                     return lower_error_control_flow(guarded, recovery, pos, state)
                 Expr.Catch(guarded, arms, pos):
-                    return lower_catch_expression(guarded, arms, pos, state)
+                    return lower_catch_expression(guarded, arms, void_ir_type(), pos, state)
                 Expr.Match(scrutinee, arms, pos):
                     if array_match_has_structural_pattern(arms):
                         add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "expression-form structural array matches require aggregate result merging")
@@ -7337,6 +7343,19 @@ extend EsIr:
                         add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "expression-form structural array matches require aggregate result merging")
                         return LoweredValue{valid: false, value: 0, type: expected}
                     return lower_scalar_match_value(scrutinee, arms, expected, pos, state)
+                Expr.Refinement(base, predicate, pos):
+                    match predicate:
+                        Expr.Index(collection_expression, index_expression, index_pos):
+                            return lower_checked_index(collection_expression, index_expression, base, pos, state)
+                        Expr.IndexN(collection_expression, index_expressions, index_pos):
+                            return lower_checked_index_chain(collection_expression, index_expressions, base, pos, state)
+                        Expr.Call(callee, arguments, argument_names, call_pos):
+                            return lower_error_recovery(predicate, base, expected, pos, state)
+                        _:
+                            add_issue(state, LowerIssueKind.UnsupportedExpression, pos.line, "refinement expression is not in the initial IR lowering subset")
+                            return LoweredValue{valid: false, value: 0, type: expected}
+                Expr.Catch(guarded, arms, pos):
+                    return lower_catch_expression(guarded, arms, expected, pos, state)
                 Expr.Binary(left, operator, right, pos):
                     arithmetic_context: bool = expected.kind in {TypeKind.Int, TypeKind.Float} and operator in {TokenKind.Plus, TokenKind.Minus, TokenKind.Star, TokenKind.Slash, TokenKind.Percent}
                     bitwise_context: bool = expected.kind == TypeKind.Int and operator in {TokenKind.Ampersand, TokenKind.Pipe, TokenKind.Caret, TokenKind.LShift, TokenKind.RShift}
