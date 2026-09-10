@@ -76,7 +76,13 @@ extend Backend:
                                     width <- sub_byte if sub_byte > 0 and sub_byte <= 64
                             _:
                                 pass
-                total <- total + width
+                # A packed group is represented by at most one u64 word.  Do
+                # not let a malformed/over-wide declaration wrap the u32
+                # accumulator back into the 0..64 range; that would select a
+                # narrow backing type and make later shifts address the wrong
+                # bits.  Saturating above 64 keeps the result in the existing
+                # backing-type decision while making the overflow fail closed.
+                total <- 65 if width > 64 or total > 64 - width else total + width
             return 8 if total <= 8 else (16 if total <= 16 else (32 if total <= 32 else 64))
 
 
@@ -95,7 +101,14 @@ extend Backend:
 
         def record_bit_group_members(owner_slot: usize, field_name: sview, member: Ast::StructMember&, structs: mutable StructTable&) -> void can[Abort.Panic, Memory.Allocate]:
             offset: mutable u32 = 0
-            for flag in member.bit_group_members |offset, owner_slot, field_name, structs|:
+            overflowed: mutable bool = false
+            for flag in member.bit_group_members |offset, overflowed, owner_slot, field_name, structs|:
+                # Once the 64-bit backing word is exhausted, omit the
+                # remaining rows.  Emitting an offset >= 64 would make LLVM's
+                # shift operations undefined; omitting the row lets normal
+                # field-resolution diagnostics reject accesses to it instead
+                # of silently compiling a corrupt layout.
+                continue if overflowed
                 width: mutable u32 = 1
                 if member.bit_group_kind == "bitfield":
                     declared: ValueType = annotation_value_type(flag.type_expression, structs)
@@ -116,6 +129,8 @@ extend Backend:
                                     width <- sub_byte if sub_byte > 0 and sub_byte <= 64
                             _:
                                 pass
+                overflowed <- true if width == 0 or width > 64 or offset > 64 - width
+                continue if overflowed
                 structs.bitgroup_owners <- structs.bitgroup_owners.push(owner_slot.u32())
                 structs.bitgroup_fields <- structs.bitgroup_fields.push(field_name)
                 structs.bitgroup_members <- structs.bitgroup_members.push(flag.name)
