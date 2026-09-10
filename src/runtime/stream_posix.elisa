@@ -372,15 +372,37 @@ extend EsRuntime:
                 state: FileStreamWriteState = file_stream_write_transition(offset, capacity, write_count, stream.byte_budget - stream.bytes_written - offset)
                 # A short positive write is recoverable; zero progress is a
                 # terminal host failure even when libc has not set ferror.
-                raise FileStreamError.WriteFailed(stream.path) if state == FileStreamWriteState.Error
-                raise FileStreamError.LimitExceeded(stream.path) if state == FileStreamWriteState.Limit
+                if state == FileStreamWriteState.Error:
+                    # A malformed host result (more bytes than requested) is
+                    # not safely attributable. Saturate the budget so a caller
+                    # cannot retry against a stream whose accounting is now
+                    # untrustworthy; a zero-progress result still charges the
+                    # successful prefix from earlier loop iterations.
+                    if offset > capacity:
+                        stream.bytes_written <- stream.byte_budget
+                    elif write_count > capacity - offset:
+                        stream.bytes_written <- stream.byte_budget
+                    else:
+                        stream.bytes_written <- stream.bytes_written + offset
+                    raise FileStreamError.WriteFailed(stream.path)
+                if state == FileStreamWriteState.Limit:
+                    # libc reported bytes beyond the remaining policy budget.
+                    # Treat the stream as fully charged before propagating the
+                    # limit rather than allowing a later retry to write again.
+                    stream.bytes_written <- stream.byte_budget
+                    raise FileStreamError.LimitExceeded(stream.path)
+                offset <- offset + write_count
+                if stream.encoding == FileStreamEncoding.Utf8 and write_count > 0:
+                    if not file_stream_utf8_validate(cursor, write_count, stream.utf8_remaining, stream.utf8_lower, stream.utf8_upper):
+                        stream.bytes_written <- stream.bytes_written + offset
+                        raise FileStreamError.InvalidUtf8(stream.path)
                 # A positive count does not make a stdio error recoverable. If
                 # libc raised its stream error indicator alongside a partial
-                # write, stop before retrying against a poisoned stream.
-                raise FileStreamError.WriteFailed(stream.path) if ferror(handle) != 0
-                if stream.encoding == FileStreamEncoding.Utf8 and write_count > 0:
-                    raise FileStreamError.InvalidUtf8(stream.path) if not file_stream_utf8_validate(cursor, write_count, stream.utf8_remaining, stream.utf8_lower, stream.utf8_upper)
-                offset <- offset + write_count
+                # write, charge the prefix before stopping against the poisoned
+                # stream.
+                if ferror(handle) != 0:
+                    stream.bytes_written <- stream.bytes_written + offset
+                    raise FileStreamError.WriteFailed(stream.path)
                 break if state == FileStreamWriteState.Done
             stream.bytes_written <- stream.bytes_written + offset
             return FileStreamWrite{count: offset}
