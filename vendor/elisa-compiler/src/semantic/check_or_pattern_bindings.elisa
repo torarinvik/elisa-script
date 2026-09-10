@@ -107,32 +107,124 @@ extend Semantic:
                     _:
                         pass
 
+        # Walk match/catch arms through the same top-level exemption used by
+        # statement matches.  Nested alternatives are still checked recursively.
+        def check_or_pattern_binding_arms(arms: darray[Ast::MatchArm], line: u32, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for arm in arms |table| -> table:
+                    match arm.pattern:
+                        Pattern.Or(walk_options):
+                            for walk_option in walk_options |table| -> table:
+                                table <- check_pattern_for_or_bindings(walk_option, line, table)
+                        _:
+                            table <- check_pattern_for_or_bindings(arm.pattern, line, table)
+                    table <- check_or_pattern_bindings_expression(arm.guard, table)
+                    table <- check_or_pattern_bindings_statements(arm.body, table)
+
+        # Recurse through every expression position so a pattern nested inside
+        # a call, condition, block, match expression, or catch cannot evade the
+        # consistency check.
+        def check_or_pattern_bindings_expression(expression: Ast::Expr, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Call(callee, arguments, argument_names, line):
+                        table <- check_or_pattern_bindings_expression(callee, table)
+                        for argument in arguments |table|:
+                            table <- check_or_pattern_bindings_expression(argument, table)
+                    Expr.Field(object, field, line) | Expr.Scope(object, field, line):
+                        table <- check_or_pattern_bindings_expression(object, table)
+                    Expr.Index(object, index, line):
+                        table <- check_or_pattern_bindings_expression(object, table)
+                        table <- check_or_pattern_bindings_expression(index, table)
+                    Expr.Slice(object, low, high, line):
+                        table <- check_or_pattern_bindings_expression(object, table)
+                        table <- check_or_pattern_bindings_expression(low, table)
+                        table <- check_or_pattern_bindings_expression(high, table)
+                    Expr.IndexN(object, arguments, line):
+                        table <- check_or_pattern_bindings_expression(object, table)
+                        for argument in arguments |table|:
+                            table <- check_or_pattern_bindings_expression(argument, table)
+                    Expr.Binary(left, operator, right, line):
+                        table <- check_or_pattern_bindings_expression(left, table)
+                        table <- check_or_pattern_bindings_expression(right, table)
+                    Expr.Unary(operator, operand, line) | Expr.Move(operand, line):
+                        table <- check_or_pattern_bindings_expression(operand, table)
+                    Expr.RegionNew(operand, region, line):
+                        table <- check_or_pattern_bindings_expression(operand, table)
+                    Expr.Paren(inner, line):
+                        table <- check_or_pattern_bindings_expression(inner, table)
+                    Expr.Array(elements, line) | Expr.Tuple(elements, line) | Expr.SetLit(elements, line):
+                        for element in elements |table|:
+                            table <- check_or_pattern_bindings_expression(element, table)
+                    Expr.DictLit(entries, line):
+                        for entry in entries |table|:
+                            table <- check_or_pattern_bindings_expression(entry.key, table)
+                            table <- check_or_pattern_bindings_expression(entry.value, table)
+                    Expr.Construct(type_expression, fields, line):
+                        table <- check_or_pattern_bindings_expression(type_expression, table)
+                        for field in fields |table|:
+                            table <- check_or_pattern_bindings_expression(field.value, table)
+                    Expr.RecordUpdate(base, fields, line):
+                        table <- check_or_pattern_bindings_expression(base, table)
+                        for field in fields |table|:
+                            table <- check_or_pattern_bindings_expression(field.value, table)
+                    Expr.If(condition, then_expression, else_expression, line):
+                        table <- check_or_pattern_bindings_expression(condition, table)
+                        table <- check_or_pattern_bindings_expression(then_expression, table)
+                        table <- check_or_pattern_bindings_expression(else_expression, table)
+                    Expr.Match(scrutinee, arms, line) | Expr.Catch(scrutinee, arms, line):
+                        table <- check_or_pattern_bindings_expression(scrutinee, table)
+                        table <- check_or_pattern_binding_arms(arms, line.line, table)
+                    Expr.Comprehension(variable, iterable, condition, body, line):
+                        table <- check_or_pattern_bindings_expression(iterable, table)
+                        table <- check_or_pattern_bindings_expression(condition, table)
+                        table <- check_or_pattern_bindings_expression(body, table)
+                    Expr.Refinement(base, predicate, line):
+                        table <- check_or_pattern_bindings_expression(base, table)
+                        table <- check_or_pattern_bindings_expression(predicate, table)
+                    Expr.GetElse(guarded, recovery, line):
+                        table <- check_or_pattern_bindings_expression(guarded, table)
+                        table <- check_or_pattern_bindings_statements(recovery, table)
+                    Expr.Lambda(parameters, body, line):
+                        table <- check_or_pattern_bindings_statements(body, table)
+                    Expr.Block(statements, value, captures, line):
+                        table <- check_or_pattern_bindings_statements(statements, table)
+                        table <- check_or_pattern_bindings_expression(value, table)
+                    _:
+                        pass
+
         # Walk statements, checking every match arm's pattern.
         def check_or_pattern_bindings_statements(statements: darray[Ast::Stmt], table: lmut SymbolTable) -> void:
             can Memory.Allocate, Abort.Panic:
                 for statement in statements |table| -> table:
                     match statement:
                         Stmt.Match(scrutinee, arms, line):
-                            for arm in arms |table| -> table:
-                                # An arm-level or-pattern is exempt (see the note in
-                                # check_pattern_for_or_bindings); its ALTERNATIVES are
-                                # still walked so a nested one inside them is caught.
-                                match arm.pattern:
-                                    Pattern.Or(walk_options):
-                                        for walk_option in walk_options |table| -> table:
-                                            table <- check_pattern_for_or_bindings(walk_option, line.line, table)
-                                    _:
-                                        table <- check_pattern_for_or_bindings(arm.pattern, line.line, table)
-                                table <- check_or_pattern_bindings_statements(arm.body, table)
+                            table <- check_or_pattern_bindings_expression(scrutinee, table)
+                            table <- check_or_pattern_binding_arms(arms, line.line, table)
                         Stmt.If(condition, then_body, else_body, line):
+                            table <- check_or_pattern_bindings_expression(condition, table)
                             table <- check_or_pattern_bindings_statements(then_body, table)
                             table <- check_or_pattern_bindings_statements(else_body, table)
                         Stmt.While(condition, body, line):
+                            table <- check_or_pattern_bindings_expression(condition, table)
                             table <- check_or_pattern_bindings_statements(body, table)
                         Stmt.For(bind, variables, iterable, body, line):
+                            table <- check_or_pattern_bindings_expression(iterable, table)
                             table <- check_or_pattern_bindings_statements(body, table)
                         Stmt.Block(kind, clause, binding, body, line):
                             table <- check_or_pattern_bindings_statements(body, table)
+                        Stmt.Expr(expression, line):
+                            table <- check_or_pattern_bindings_expression(expression, table)
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            table <- check_or_pattern_bindings_expression(type_expression, table)
+                            table <- check_or_pattern_bindings_expression(value, table)
+                        Stmt.Assign(target, operator, value, line):
+                            table <- check_or_pattern_bindings_expression(target, table)
+                            table <- check_or_pattern_bindings_expression(value, table)
+                        Stmt.Return(value, line):
+                            table <- check_or_pattern_bindings_expression(return_value, table) if value is return_value
+                        Stmt.Contract(kind, expression, line):
+                            table <- check_or_pattern_bindings_expression(expression, table)
                         _:
                             pass
 
