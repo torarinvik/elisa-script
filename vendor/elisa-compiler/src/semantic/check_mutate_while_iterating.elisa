@@ -7,14 +7,15 @@ extend Semantic:
     private:
         # The growing-mutation method name a statement expression calls on `container`
         # (`container.push(..)` -> "push"), else "". Reallocating mutators only.
-        def iter_mutation_method(expression: Ast::Expr, container: sview) -> sview:
+        def iter_mutation_method(expression: Ast::Expr, container: sview, alias_names: darray[sview]&, alias_targets: darray[sview]&) -> sview:
             can Memory.Allocate, Abort.Panic:
                 match expression:
                     Expr.Call(callee, arguments, argument_names, line):
                         match callee:
                             Expr.Field(receiver, method_name, field_line):
                                 grows: bool = method_name == "push" or method_name == "extend" or method_name == "insert" or method_name == "append"
-                                method_name return if ident_name_of(receiver) == container and container != "" and grows
+                                receiver_name: sview = iter_resolve_alias(alias_names, alias_targets, ident_name_of(receiver))
+                                method_name return if receiver_name == container and container != "" and grows
                             _:
                                 pass
                         return sview("", 0, 0)
@@ -31,7 +32,7 @@ extend Semantic:
                             match value:
                                 Expr.Unary(operator, operand, unary_line):
                                     if operator == TokenKind.Ampersand:
-                                        target: sview = ident_name_of(operand)
+                                        target: sview = iter_resolve_alias(names, targets, ident_name_of(operand))
                                         if target != "" and name != "":
                                             names.push(name)
                                             targets.push(target)
@@ -52,9 +53,9 @@ extend Semantic:
         # Resolve a name through the alias map to the container it references, or itself.
         def iter_resolve_alias(alias_names: darray[sview]&, alias_targets: darray[sview]&, name: sview) -> sview:
             can Abort.Panic:
-                while index < alias_names.count |index: usize = 0|:
+                while index > 0 |index: usize = alias_names.count|:
+                    index <- index - 1
                     alias_targets[index] return if alias_names[index] == name and name != ""
-                    index <- index + 1
                 return name
 
         # The container ident an argument names, seeing through a leading `&` (`&xs` -> "xs") and a
@@ -87,6 +88,75 @@ extend Semantic:
                     _:
                         return false
 
+        # Walk value expressions as well as statements. Mutating calls can be nested in a value
+        # block, branch, collection literal, or fallback expression; restricting the check to a
+        # top-level `Stmt.Expr` silently missed those reallocations during an active iteration.
+        def iter_expression_mutates(expression: Ast::Expr, container: sview, alias_names: darray[sview]&, alias_targets: darray[sview]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match expression:
+                    Expr.Call(callee, arguments, argument_names, line):
+                        method: sview = iter_mutation_method(expression, container, alias_names, alias_targets)
+                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.MutateWhileIterating, name: container, line: line.line, expected: "", actual: method}) if method != ""
+                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.IterCalleeMutableRef, name: container, line: line.line, expected: "", actual: ""}) if method == "" and iter_call_passes_container_by_ref(expression, container, alias_names, alias_targets, table)
+                        table <- iter_expression_mutates(callee, container, alias_names, alias_targets, table)
+                        for argument in arguments |table| -> table:
+                            table <- iter_expression_mutates(argument, container, alias_names, alias_targets, table)
+                    Expr.Unary(operator, operand, line) | Expr.Move(operand, line) | Expr.Paren(operand, line):
+                        table <- iter_expression_mutates(operand, container, alias_names, alias_targets, table)
+                    Expr.Field(object, field, line):
+                        table <- iter_expression_mutates(object, container, alias_names, alias_targets, table)
+                    Expr.Scope(base, name, line):
+                        table <- iter_expression_mutates(base, container, alias_names, alias_targets, table)
+                    Expr.Index(object, index, line):
+                        table <- iter_expression_mutates(object, container, alias_names, alias_targets, table)
+                        table <- iter_expression_mutates(index, container, alias_names, alias_targets, table)
+                    Expr.Slice(object, low, high, line):
+                        table <- iter_expression_mutates(object, container, alias_names, alias_targets, table)
+                        table <- iter_expression_mutates(low, container, alias_names, alias_targets, table)
+                        table <- iter_expression_mutates(high, container, alias_names, alias_targets, table)
+                    Expr.IndexN(object, arguments, line):
+                        table <- iter_expression_mutates(object, container, alias_names, alias_targets, table)
+                        for argument in arguments |table| -> table:
+                            table <- iter_expression_mutates(argument, container, alias_names, alias_targets, table)
+                    Expr.Binary(left, operator, right, line):
+                        table <- iter_expression_mutates(left, container, alias_names, alias_targets, table)
+                        table <- iter_expression_mutates(right, container, alias_names, alias_targets, table)
+                    Expr.If(condition, selected, alternative, line):
+                        table <- iter_expression_mutates(condition, container, alias_names, alias_targets, table)
+                        table <- iter_expression_mutates(selected, container, alias_names, alias_targets, table)
+                        table <- iter_expression_mutates(alternative, container, alias_names, alias_targets, table)
+                    Expr.Match(scrutinee, arms, line) | Expr.Catch(scrutinee, arms, line):
+                        table <- iter_expression_mutates(scrutinee, container, alias_names, alias_targets, table)
+                        for arm in arms |table| -> table:
+                            table <- iter_expression_mutates(arm.guard, container, alias_names, alias_targets, table)
+                            table <- iter_body_mutates(arm.body, container, alias_names, alias_targets, table)
+                    Expr.Refinement(base, predicate, line):
+                        table <- iter_expression_mutates(base, container, alias_names, alias_targets, table)
+                        table <- iter_expression_mutates(predicate, container, alias_names, alias_targets, table)
+                    Expr.GetElse(guarded, recovery, line):
+                        table <- iter_expression_mutates(guarded, container, alias_names, alias_targets, table)
+                        table <- iter_body_mutates(recovery, container, alias_names, alias_targets, table)
+                    Expr.Comprehension(variable, iterable, condition, body, line):
+                        table <- iter_expression_mutates(iterable, container, alias_names, alias_targets, table)
+                        table <- iter_expression_mutates(condition, container, alias_names, alias_targets, table)
+                        table <- iter_expression_mutates(body, container, alias_names, alias_targets, table)
+                    Expr.Block(statements, value, captures, line):
+                        table <- iter_body_mutates(statements, container, alias_names, alias_targets, table)
+                        table <- iter_expression_mutates(value, container, alias_names, alias_targets, table)
+                    Expr.Array(elements, line) | Expr.Tuple(elements, line) | Expr.SetLit(elements, line):
+                        for element in elements |table| -> table:
+                            table <- iter_expression_mutates(element, container, alias_names, alias_targets, table)
+                    Expr.DictLit(entries, line):
+                        for entry in entries |table| -> table:
+                            table <- iter_expression_mutates(entry.key, container, alias_names, alias_targets, table)
+                            table <- iter_expression_mutates(entry.value, container, alias_names, alias_targets, table)
+                    Expr.Construct(type_expression, fields, line) | Expr.RecordUpdate(type_expression, fields, line):
+                        table <- iter_expression_mutates(type_expression, container, alias_names, alias_targets, table)
+                        for field in fields |table| -> table:
+                            table <- iter_expression_mutates(field.value, container, alias_names, alias_targets, table)
+                    _:
+                        pass
+
         # Walk a loop body for a growing mutation of `container`; recurses control flow but NOT a
         # nested `for ... in container` (that inner loop owns its own iterator check).
         def iter_body_mutates(statements: darray[Ast::Stmt], container: sview, alias_names: darray[sview]&, alias_targets: darray[sview]&, table: lmut SymbolTable) -> void:
@@ -94,16 +164,22 @@ extend Semantic:
                 for statement in statements |table| -> table:
                     match statement:
                         Stmt.Expr(expression, line):
-                            method: sview = iter_mutation_method(expression, container)
-                            table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.MutateWhileIterating, name: container, line: line.line, expected: "", actual: method}) if method != ""
-                            table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.IterCalleeMutableRef, name: container, line: line.line, expected: "", actual: ""}) if method == "" and iter_call_passes_container_by_ref(expression, container, alias_names, alias_targets, table)
+                            table <- iter_expression_mutates(expression, container, alias_names, alias_targets, table)
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            table <- iter_expression_mutates(value, container, alias_names, alias_targets, table)
+                        Stmt.Assign(target, operator, value, line):
+                            table <- iter_expression_mutates(target, container, alias_names, alias_targets, table)
+                            table <- iter_expression_mutates(value, container, alias_names, alias_targets, table)
+                        Stmt.Return(value, line):
+                            table <- iter_expression_mutates(returned, container, alias_names, alias_targets, table) if value is returned
                         Stmt.If(condition, then_body, else_body, line):
                             table <- iter_body_mutates(then_body, container, alias_names, alias_targets, table)
                             table <- iter_body_mutates(else_body, container, alias_names, alias_targets, table)
                         Stmt.While(condition, while_body, line):
                             table <- iter_body_mutates(while_body, container, alias_names, alias_targets, table)
                         Stmt.For(bind, variables, iterable, for_body, line):
-                            table <- iter_body_mutates(for_body, container, alias_names, alias_targets, table) if ident_name_of(iterable) != container
+                            nested_container: sview = iter_resolve_alias(alias_names, alias_targets, ident_name_of(iterable))
+                            table <- iter_body_mutates(for_body, container, alias_names, alias_targets, table) if nested_container != container
                         Stmt.Block(block_kind, clause, binding, block_body, block_line):
                             table <- iter_body_mutates(block_body, container, alias_names, alias_targets, table)
                         Stmt.Match(scrutinee, arms, line):
@@ -125,7 +201,7 @@ extend Semantic:
                 for statement in statements |table| -> table:
                     match statement:
                         Stmt.For(bind, variables, iterable, body, line):
-                            container: sview = ident_name_of(iterable)
+                            container: sview = iter_resolve_alias(alias_names, alias_targets, ident_name_of(iterable))
                             table <- iter_body_mutates(body, container, alias_names, alias_targets, table) if container != "" and bind != "move" and not container_is_region_backed(region_annotations, container)
                             table <- iter_check_statements(body, region_annotations, alias_names, alias_targets, table)
                         Stmt.If(condition, then_body, else_body, line):
