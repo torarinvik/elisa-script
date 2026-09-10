@@ -77,15 +77,22 @@ extend Semantic:
                     Stmt.VarDecl(name, type_expression, value, line):
                         return expression_calls_allocating(value, allocating)
                     Stmt.Assign(target, operator, value, line):
-                        return expression_calls_allocating(value, allocating)
+                        return expression_calls_allocating(target, allocating) or expression_calls_allocating(value, allocating)
                     Stmt.Block(kind, clause, binding, body, line):
                         return statements_call_allocating(body, allocating)
                     Stmt.If(condition, then_body, else_body, line):
-                        return statements_call_allocating(then_body, allocating) or statements_call_allocating(else_body, allocating)
+                        return expression_calls_allocating(condition, allocating) or statements_call_allocating(then_body, allocating) or statements_call_allocating(else_body, allocating)
                     Stmt.While(condition, while_body, line):
-                        return statements_call_allocating(while_body, allocating)
+                        return expression_calls_allocating(condition, allocating) or statements_call_allocating(while_body, allocating)
                     Stmt.For(bind, variables, iterable, for_body, line):
-                        return statements_call_allocating(for_body, allocating)
+                        return expression_calls_allocating(iterable, allocating) or statements_call_allocating(for_body, allocating)
+                    Stmt.Match(scrutinee, arms, line):
+                        found: mutable bool = expression_calls_allocating(scrutinee, allocating)
+                        for arm in arms |found, allocating|:
+                            found <- true if expression_calls_allocating(arm.guard, allocating) or statements_call_allocating(arm.body, allocating)
+                        return found
+                    Stmt.Contract(kind, expression, line):
+                        return expression_calls_allocating(expression, allocating)
                     _:
                         return false
 
@@ -95,16 +102,84 @@ extend Semantic:
                     Expr.Call(callee, arguments, argument_names, line):
                         callee_name: sview = ident_name_of(callee)
                         true return if callee_name != "" and any allocating_name in allocating where allocating_name == callee_name
+                        return true if expression_calls_allocating(callee, allocating)
                         any_arg: mutable bool = false
                         for argument in arguments |any_arg, allocating|:
                             any_arg <- true if expression_calls_allocating(argument, allocating)
                         return any_arg
                     Expr.Binary(left, operator, right, line):
                         return expression_calls_allocating(left, allocating) or expression_calls_allocating(right, allocating)
+                    Expr.Field(object, field, line):
+                        return expression_calls_allocating(object, allocating)
+                    Expr.Scope(base, name, line):
+                        return expression_calls_allocating(base, allocating)
+                    Expr.Index(object, index, line):
+                        return expression_calls_allocating(object, allocating) or expression_calls_allocating(index, allocating)
+                    Expr.IndexN(object, arguments, line):
+                        found: mutable bool = expression_calls_allocating(object, allocating)
+                        for argument in arguments |found, allocating|:
+                            found <- true if expression_calls_allocating(argument, allocating)
+                        return found
+                    Expr.Slice(object, low, high, line):
+                        return expression_calls_allocating(object, allocating) or expression_calls_allocating(low, allocating) or expression_calls_allocating(high, allocating)
+                    Expr.Unary(operator, operand, line):
+                        return expression_calls_allocating(operand, allocating)
                     Expr.Paren(inner, line):
                         return expression_calls_allocating(inner, allocating)
+                    Expr.Array(elements, line) | Expr.Tuple(elements, line) | Expr.SetLit(elements, line):
+                        found: mutable bool = false
+                        for element in elements |found, allocating|:
+                            found <- true if expression_calls_allocating(element, allocating)
+                        return found
+                    Expr.DictLit(entries, line):
+                        found: mutable bool = false
+                        for entry in entries |found, allocating|:
+                            found <- true if expression_calls_allocating(entry.key, allocating) or expression_calls_allocating(entry.value, allocating)
+                        return found
+                    Expr.Construct(type_expression, fields, line):
+                        found: mutable bool = expression_calls_allocating(type_expression, allocating)
+                        for field in fields |found, allocating|:
+                            found <- true if expression_calls_allocating(field.value, allocating)
+                        return found
+                    Expr.RecordUpdate(base, fields, line):
+                        found: mutable bool = expression_calls_allocating(base, allocating)
+                        for field in fields |found, allocating|:
+                            found <- true if expression_calls_allocating(field.value, allocating)
+                        return found
+                    Expr.If(condition, then_expr, else_expr, line):
+                        return expression_calls_allocating(condition, allocating) or expression_calls_allocating(then_expr, allocating) or expression_calls_allocating(else_expr, allocating)
+                    Expr.Comprehension(loop_variable, iterable, condition, body, line):
+                        return expression_calls_allocating(iterable, allocating) or expression_calls_allocating(condition, allocating) or expression_calls_allocating(body, allocating)
+                    Expr.Lambda(parameters, body, line):
+                        return statements_call_allocating(body, allocating)
+                    Expr.Block(statements, value, captures, line):
+                        return statements_call_allocating(statements, allocating) or expression_calls_allocating(value, allocating)
+                    Expr.Match(scrutinee, arms, line) | Expr.Catch(scrutinee, arms, line):
+                        found: mutable bool = expression_calls_allocating(scrutinee, allocating)
+                        for arm in arms |found, allocating|:
+                            found <- true if expression_calls_allocating(arm.guard, allocating) or statements_call_allocating(arm.body, allocating)
+                        return found
                     _:
                         return false
+
+        # Expand the allocation set to a fixed point so wrappers around allocating functions are
+        # also treated as allocating. A single direct-call pass is insufficient for noalloc's
+        # transitive guarantee (A -> B -> Memory.Allocate).
+        def collect_transitive_allocating(declarations: darray[Ast::Decl], allocating: mutable darray[sview]&, changed: mutable bool&) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for declaration in declarations |allocating, changed|:
+                    match declaration:
+                        Decl.Func(function_name, parameters, return_type, body, effects, decorators, line):
+                            already: bool = any existing in allocating where existing == function_name
+                            if not already and statements_call_allocating(body, allocating):
+                                allocating.push(function_name)
+                                changed <- true
+                        Decl.Module(module_name, module_body, module_line):
+                            collect_transitive_allocating(module_body, allocating, changed)
+                        Decl.Scoped(scoped_body, scoped_line):
+                            collect_transitive_allocating(scoped_body, allocating, changed)
+                        _:
+                            pass
 
         def check_noalloc_allocates_decls(declarations: darray[Ast::Decl], allocating: darray[sview]&, table: lmut SymbolTable) -> void:
             can Memory.Allocate, Abort.Panic:
@@ -125,4 +200,8 @@ extend Semantic:
             can Memory.Allocate, Abort.Panic:
                 allocating: mutable darray[sview] = []
                 collect_allocating_functions(file.top_decls, allocating)
+                changed: mutable bool = true
+                while changed |changed, allocating|:
+                    changed <- false
+                    collect_transitive_allocating(file.top_decls, allocating, changed)
                 table <- check_noalloc_allocates_decls(file.top_decls, allocating, table)
