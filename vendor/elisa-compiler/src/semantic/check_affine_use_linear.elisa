@@ -273,6 +273,7 @@ extend Semantic:
                             consumed.push(matched_root) if matched_root != "" and affine_local(names, flags, matched_root) and not affine_consumed(consumed, matched_root)
                         _:
                             pass
+                table <- report_linear_scope_leaks(statements, linear_names, consumed, table)
 
 
         # Names of `linear struct`/`linear typestate` types (affinity "linear"): a value of such
@@ -345,6 +346,24 @@ extend Semantic:
                                 return linear_typestate_new_type(ident_name_of(callee), linear_names)
                     _:
                         return sview("", 0, 0)
+
+        # Check only declarations owned by THIS statement list. Nested control-flow bodies are
+        # checked when their own walk returns, using that body's path-specific consumption state;
+        # flattening them into the enclosing function would incorrectly report a branch-local value
+        # as leaked on paths where the branch never executes.
+        def report_linear_scope_leaks(statements: darray[Ast::Stmt], linear_names: darray[sview]&, consumed: darray[sview]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |table| -> table:
+                    match statement:
+                        Stmt.VarDecl(name, type_expression, value, line):
+                            is_linear: bool = linear_local_type(type_expression, value, linear_names, table) != ""
+                            table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.LinearScopeExit, name: name, line: line.line, expected: "", actual: ""}) if is_linear and not affine_consumed(consumed, name)
+                        Stmt.Assign(target, operator, value, line):
+                            name: sview = ident_name_of(target)
+                            is_linear: bool = name != "" and linear_local_type((Ast::Expr.Absent), value, linear_names, table) != ""
+                            table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.LinearScopeExit, name: name, line: line.line, expected: "", actual: ""}) if is_linear and not affine_consumed(consumed, name)
+                        _:
+                            pass
 
         # Collect (linear-local name, decl line) declared in a statement list (recursively).
         def collect_linear_locals(statements: darray[Ast::Stmt], linear_names: darray[sview]&, table: SymbolTable&, out_names: mutable darray[sview]&, out_lines: mutable darray[u32]&) -> void:
@@ -423,15 +442,9 @@ extend Semantic:
                                 names.push(param.name)
                                 flags.push(affine_type_expression(param.type_expression, table))
                             table <- walk_affine_statements(body, names, flags, consumed, linear_names, consuming_fns, consuming_positions, table)
-                            # Linear locals must be consumed on every path. The affine `consumed`
-                            # set (built above, with branch-merge) is the sound consumption model;
-                            # a linear local absent from it is leaked at scope exit.
                             linear_local_names: mutable darray[sview] = []
                             linear_local_lines: mutable darray[u32] = []
                             collect_linear_locals(body, linear_names, table, linear_local_names, linear_local_lines)
-                            while linear_probe < linear_local_names.count |linear_probe: usize = 0, table| -> table:
-                                table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.LinearScopeExit, name: linear_local_names[linear_probe], line: linear_local_lines[linear_probe], expected: "", actual: ""}) if not affine_consumed(consumed, linear_local_names[linear_probe])
-                                linear_probe <- linear_probe + 1
                             table <- linear_return_walk(body, linear_local_names, table)
                             lifecycle: u32 = lifecycle_statement_flags(body)
                             table <- walk_thread_pool_lifecycle(body, alias_names, alias_roots, shutdown_names, shutdown_flags, table) if (lifecycle & 8) != 0
