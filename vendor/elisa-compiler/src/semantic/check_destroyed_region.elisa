@@ -21,6 +21,8 @@ extend Semantic:
                         return region if destroyed_region_contains(destroyed, region) else ""
                     Expr.Field(receiver, field, line):
                         return destroyed_region_of_expression(receiver, annotations, destroyed, function_line, use_line)
+                    Expr.Scope(base, name, line):
+                        return destroyed_region_of_expression(base, annotations, destroyed, function_line, use_line)
                     Expr.Index(object, index, line):
                         return destroyed_region_of_expression(object, annotations, destroyed, function_line, use_line)
                     Expr.IndexN(object, arguments, line):
@@ -41,6 +43,7 @@ extend Semantic:
                 return match expression:
                     Expr.Ident(root_name, root_line): root_name
                     Expr.Field(object, field, field_line): destroyed_use_root_name(object)
+                    Expr.Scope(base, name, scope_line): destroyed_use_root_name(base)
                     Expr.Index(object, index, index_line): destroyed_use_root_name(object)
                     Expr.IndexN(object, arguments, indexn_line): destroyed_use_root_name(object)
                     Expr.Slice(object, start, end, slice_line): destroyed_use_root_name(object)
@@ -57,8 +60,73 @@ extend Semantic:
                         collect_lambda_expression_idents(expression, out)
                     Stmt.VarDecl(name, type_expression, value, line):
                         collect_lambda_expression_idents(value, out)
+                    Stmt.Assign(target, operator, value, line):
+                        collect_lambda_expression_idents(target, out)
+                        collect_lambda_expression_idents(value, out)
+                    Stmt.If(condition, then_body, else_body, line):
+                        collect_lambda_expression_idents(condition, out)
+                        for nested in then_body:
+                            collect_lambda_statement_idents(nested, out)
+                        for nested in else_body:
+                            collect_lambda_statement_idents(nested, out)
+                    Stmt.While(condition, body, line):
+                        collect_lambda_expression_idents(condition, out)
+                        for nested in body:
+                            collect_lambda_statement_idents(nested, out)
+                    Stmt.For(bind, variables, iterable, body, line):
+                        collect_lambda_expression_idents(iterable, out)
+                        for nested in body:
+                            collect_lambda_statement_idents(nested, out)
+                    Stmt.Block(kind, clause, binding, body, line):
+                        for nested in body:
+                            collect_lambda_statement_idents(nested, out)
+                    Stmt.Match(scrutinee, arms, line):
+                        collect_lambda_expression_idents(scrutinee, out)
+                        for arm in arms:
+                            collect_lambda_expression_idents(arm.guard, out)
+                            for nested in arm.body:
+                                collect_lambda_statement_idents(nested, out)
                     _:
                         pass
+
+        # Lightweight nested statement walk used by expression recursion. The outer statement
+        # walk owns allocation-region bookkeeping; this helper only preserves destroy ordering and
+        # diagnoses value expressions hidden inside expression-form control flow.
+        def diagnose_destroyed_nested_statements(statements: darray[Ast::Stmt], annotations: darray[Ast::LocalRegionAnnotation]&, destroyed: mutable darray[sview]&, lambda_dep_names: mutable darray[sview]&, lambda_dep_regions: mutable darray[sview]&, function_line: u32, line: u32, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                for statement in statements |destroyed, lambda_dep_names, lambda_dep_regions, table|:
+                    match statement:
+                        Stmt.Block("destroy", clause, binding, body, block_line):
+                            destroyed.push(clause[0]) if clause.count > 0 and not destroyed_region_contains(destroyed, clause[0])
+                            table <- diagnose_destroyed_nested_statements(body, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                        Stmt.Block(kind, clause, binding, body, block_line):
+                            table <- diagnose_destroyed_nested_statements(body, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                        Stmt.Expr(expression, statement_line):
+                            table <- diagnose_destroyed_expression(expression, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, statement_line.line, table)
+                        Stmt.VarDecl(name, type_expression, value, statement_line):
+                            table <- diagnose_destroyed_expression(value, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, statement_line.line, table)
+                        Stmt.Assign(target, operator, value, statement_line):
+                            table <- diagnose_destroyed_expression(target, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, statement_line.line, table)
+                            table <- diagnose_destroyed_expression(value, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, statement_line.line, table)
+                        Stmt.Return(value, statement_line):
+                            table <- diagnose_destroyed_expression(returned, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, statement_line.line, table) if value is returned
+                        Stmt.If(condition, then_body, else_body, statement_line):
+                            table <- diagnose_destroyed_expression(condition, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, statement_line.line, table)
+                            table <- diagnose_destroyed_nested_statements(then_body, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                            table <- diagnose_destroyed_nested_statements(else_body, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                        Stmt.While(condition, body, statement_line):
+                            table <- diagnose_destroyed_expression(condition, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, statement_line.line, table)
+                            table <- diagnose_destroyed_nested_statements(body, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                        Stmt.For(bind, variables, iterable, body, statement_line):
+                            table <- diagnose_destroyed_expression(iterable, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, statement_line.line, table)
+                            table <- diagnose_destroyed_nested_statements(body, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                        Stmt.Match(scrutinee, arms, statement_line):
+                            table <- diagnose_destroyed_expression(scrutinee, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, statement_line.line, table)
+                            for arm in arms |table|:
+                                table <- diagnose_destroyed_expression(arm.guard, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, statement_line.line, table)
+                                table <- diagnose_destroyed_nested_statements(arm.body, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                        _:
+                            pass
 
 
         # Ident collection that descends FIELD receivers (`first.value` mentions "first").
@@ -69,6 +137,8 @@ extend Semantic:
                         out.push(name)
                     Expr.Field(object, field, line):
                         collect_lambda_expression_idents(object, out)
+                    Expr.Scope(base, name, line):
+                        collect_lambda_expression_idents(base, out)
                     Expr.Binary(left, operator, right, line):
                         collect_lambda_expression_idents(left, out)
                         collect_lambda_expression_idents(right, out)
@@ -79,10 +149,57 @@ extend Semantic:
                     Expr.Index(object, index, line):
                         collect_lambda_expression_idents(object, out)
                         collect_lambda_expression_idents(index, out)
+                    Expr.Slice(object, low, high, line):
+                        collect_lambda_expression_idents(object, out)
+                        collect_lambda_expression_idents(low, out)
+                        collect_lambda_expression_idents(high, out)
+                    Expr.IndexN(object, arguments, line):
+                        collect_lambda_expression_idents(object, out)
+                        for argument in arguments |out|:
+                            collect_lambda_expression_idents(argument, out)
                     Expr.Call(callee, arguments, argument_names, line):
                         collect_lambda_expression_idents(callee, out)
                         for argument in arguments |out|:
                             collect_lambda_expression_idents(argument, out)
+                    Expr.If(condition, selected, alternative, line):
+                        collect_lambda_expression_idents(condition, out)
+                        collect_lambda_expression_idents(selected, out)
+                        collect_lambda_expression_idents(alternative, out)
+                    Expr.Match(scrutinee, arms, line) | Expr.Catch(scrutinee, arms, line):
+                        collect_lambda_expression_idents(scrutinee, out)
+                        for arm in arms |out|:
+                            collect_lambda_expression_idents(arm.guard, out)
+                            for nested in arm.body:
+                                collect_lambda_statement_idents(nested, out)
+                    Expr.Refinement(base, predicate, line):
+                        collect_lambda_expression_idents(base, out)
+                        collect_lambda_expression_idents(predicate, out)
+                    Expr.GetElse(guarded, recovery, line):
+                        collect_lambda_expression_idents(guarded, out)
+                        for nested in recovery:
+                            collect_lambda_statement_idents(nested, out)
+                    Expr.Comprehension(variable, iterable, condition, body, line):
+                        collect_lambda_expression_idents(iterable, out)
+                        collect_lambda_expression_idents(condition, out)
+                        collect_lambda_expression_idents(body, out)
+                    Expr.Block(statements, value, captures, line):
+                        for nested in statements:
+                            collect_lambda_statement_idents(nested, out)
+                        collect_lambda_expression_idents(value, out)
+                    Expr.Array(elements, line) | Expr.Tuple(elements, line) | Expr.SetLit(elements, line):
+                        for element in elements |out|:
+                            collect_lambda_expression_idents(element, out)
+                    Expr.DictLit(entries, line):
+                        for entry in entries |out|:
+                            collect_lambda_expression_idents(entry.key, out)
+                            collect_lambda_expression_idents(entry.value, out)
+                    Expr.Construct(type_expression, fields, line) | Expr.RecordUpdate(type_expression, fields, line):
+                        collect_lambda_expression_idents(type_expression, out)
+                        for field in fields |out|:
+                            collect_lambda_expression_idents(field.value, out)
+                    Expr.Lambda(parameters, body, line):
+                        for nested in body:
+                            collect_lambda_statement_idents(nested, out)
                     _:
                         pass
 
@@ -90,7 +207,6 @@ extend Semantic:
             can Memory.Allocate, Abort.Panic:
                 region: sview = destroyed_region_of_expression(expression, annotations, destroyed, function_line, line)
                 table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.DestroyedRegionUse, name: destroyed_use_root_name(expression), line: line, expected: "use", actual: region}) if region != ""
-                return if region != ""
                 # A LAMBDA that captured a region-dependent binding inherits its
                 # dependence: calling it after the destroy is the same stale use.
                 root: sview = destroyed_use_root_name(expression)
@@ -100,6 +216,71 @@ extend Semantic:
                     stale: bool = lambda_dep_names[probe] == lambda_root and destroyed_region_contains(destroyed, lambda_dep_regions[probe])
                     table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.DestroyedRegionUse, name: lambda_root, line: line, expected: "use", actual: lambda_dep_regions[probe]}) if stale
                     probe <- probe + 1
+                # The root check above handles a direct receiver (for example `buf[0]`),
+                # while this structural walk catches destroyed-region uses nested inside calls,
+                # branches, comprehensions, and value blocks. Do not recurse through a node whose
+                # own root was already diagnosed; its child is the same use and would duplicate it.
+                return if region != ""
+                match expression:
+                    Expr.Call(callee, arguments, argument_names, call_line):
+                        table <- diagnose_destroyed_expression(callee, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                        for argument in arguments |table|:
+                            table <- diagnose_destroyed_expression(argument, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                    Expr.Field(object, field, node_line) | Expr.Scope(object, field, node_line):
+                        table <- diagnose_destroyed_expression(object, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                    Expr.Index(object, index, index_line):
+                        table <- diagnose_destroyed_expression(object, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                        table <- diagnose_destroyed_expression(index, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                    Expr.Slice(object, low, high, slice_line):
+                        table <- diagnose_destroyed_expression(object, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                        table <- diagnose_destroyed_expression(low, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                        table <- diagnose_destroyed_expression(high, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                    Expr.IndexN(object, arguments, index_n_line):
+                        table <- diagnose_destroyed_expression(object, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                        for argument in arguments |table|:
+                            table <- diagnose_destroyed_expression(argument, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                    Expr.Binary(left, operator, right, binary_line):
+                        table <- diagnose_destroyed_expression(left, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                        table <- diagnose_destroyed_expression(right, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                    Expr.Unary(operator, operand, unary_line) | Expr.Move(operand, unary_line) | Expr.Paren(operand, unary_line):
+                        table <- diagnose_destroyed_expression(operand, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                    Expr.If(condition, selected, alternative, if_line):
+                        table <- diagnose_destroyed_expression(condition, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                        table <- diagnose_destroyed_expression(selected, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                        table <- diagnose_destroyed_expression(alternative, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                    Expr.Match(scrutinee, arms, match_line) | Expr.Catch(scrutinee, arms, match_line):
+                        table <- diagnose_destroyed_expression(scrutinee, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                        for arm in arms |table|:
+                            table <- diagnose_destroyed_expression(arm.guard, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                            table <- diagnose_destroyed_nested_statements(arm.body, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                    Expr.Refinement(base, predicate, refinement_line):
+                        table <- diagnose_destroyed_expression(base, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                        table <- diagnose_destroyed_expression(predicate, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                    Expr.GetElse(guarded, recovery, get_else_line):
+                        table <- diagnose_destroyed_expression(guarded, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                        table <- diagnose_destroyed_nested_statements(recovery, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                    Expr.Comprehension(variable, iterable, condition, body, comprehension_line):
+                        table <- diagnose_destroyed_expression(iterable, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                        table <- diagnose_destroyed_expression(condition, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                        table <- diagnose_destroyed_expression(body, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                    Expr.Block(statements, value, captures, block_line):
+                        table <- diagnose_destroyed_nested_statements(statements, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                        table <- diagnose_destroyed_expression(value, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                    Expr.Array(elements, node_line) | Expr.Tuple(elements, node_line) | Expr.SetLit(elements, node_line):
+                        for element in elements |table|:
+                            table <- diagnose_destroyed_expression(element, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                    Expr.DictLit(entries, dict_line):
+                        for entry in entries |table|:
+                            table <- diagnose_destroyed_expression(entry.key, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                            table <- diagnose_destroyed_expression(entry.value, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                    Expr.Construct(type_expression, fields, node_line) | Expr.RecordUpdate(type_expression, fields, node_line):
+                        table <- diagnose_destroyed_expression(type_expression, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                        for field in fields |table|:
+                            table <- diagnose_destroyed_expression(field.value, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                    Expr.Lambda(parameters, body, lambda_line):
+                        table <- diagnose_destroyed_nested_statements(body, annotations, destroyed, lambda_dep_names, lambda_dep_regions, function_line, line, table)
+                    _:
+                        pass
 
 
         # The callee root of `g()` (destroyed_use_root_name does not descend calls).
