@@ -1375,7 +1375,8 @@ zero-width matches must advance (including the EOF non-progress guard), and a
 callback cannot be re-entered while a replacement is pending. Match/capture/
 output limits, malformed spans, cancellation, and premature end use
 `error[RegexCallbackError]`; validation also rejects forged planned counters and
-pending callbacks outside matching. Callback invocation and capture materialization
+pending callbacks outside matching, and a complete session must have consumed
+the entire input cursor. Callback invocation and capture materialization
 remain host/interpreter work.
 
 `EsJsonStream::JsonStreamSession` is the JSON/JSONL framing layer before value
