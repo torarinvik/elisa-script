@@ -681,10 +681,11 @@ sidecar, while full trace collection stays with the adapter.
 part of algebraic-effect behavior for parity cases. Each ordered event carries
 the effect family and operation identity, payload/result fingerprints, and an
 explicit resumption count plus multishot marker. Event count, operation text,
-fingerprints, and resumption count are bounded before sealing. The comparator
-reports the first family, operation, payload, result, or resumption difference;
-malformed records produce an explicit `Invalid` comparison, and an effect trace
-is never treated as equal merely because the final return value matches.
+fingerprints, resumption count, and contiguous sequence indices are bounded
+before sealing. The comparator reports the first family, operation, payload,
+result, or resumption difference; malformed records produce an explicit
+`Invalid` comparison, including forged sequence indices, and an effect trace is
+never treated as equal merely because the final return value matches.
 
 `EsDifferentialReplay::DifferentialReplaySession` is the lifecycle seam between
 validated artifacts and a future host replay adapter. Admission binds the

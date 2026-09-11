@@ -799,8 +799,9 @@ host resource sampling and adverse-resource execution remain open.
 
 ES-SCRIPT-018 | EsDifferentialEffectTrace supplies bounded ordered algebraic-
 effect events with explicit family/operation identity, payload/result
-fingerprints, resumption counts, multishot admission, sealed fingerprints, and
-first-difference comparison with malformed-record rejection. The focused
+fingerprints, resumption counts, multishot admission, sealed fingerprints,
+contiguous sequence indices, first-difference comparison, and malformed-record
+rejection. The focused
 differential fixture, namespace inclusion, documentation, and
 check_differential_effect_trace.sh audit are static evidence; handler
 instrumentation and execution evidence remain open.
