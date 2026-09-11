@@ -40,6 +40,8 @@ for boundary in \
     'redacted' \
     'DuplicateName' \
     'TextLimitExceeded' \
+    'expected_text_bytes' \
+    'session.text_bytes != expected_text_bytes' \
     'differential_redaction_name_selected' \
     'differential_redaction_value_fingerprint'; do
     rg -Fq "$boundary" "$model"
@@ -51,7 +53,8 @@ for fixture_pattern in \
     'differential_redaction_contract_preserves_fingerprints_without_secret_values' \
     'DifferentialRedactionEvent.Capture' \
     'assert session.entries[1].value == ""' \
-    'DifferentialRedactionError.DuplicateName'; do
+    'DifferentialRedactionError.DuplicateName' \
+    'forged_redaction_duplicate'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 

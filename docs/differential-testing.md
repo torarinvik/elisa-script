@@ -702,8 +702,9 @@ or perform cleanup.
 boundary for environment metadata captured into artifacts. Policies select exact
 names or redact all values; captured entries retain the name and a deterministic
 value fingerprint while storing an empty value for redacted fields. Duplicate
-names, embedded NULs, oversized text, and malformed redacted entries fail before
-sealing. This keeps replay identity checkable without persisting credentials;
+names, embedded NULs, oversized text, aggregate text-count mismatches, and
+malformed redacted entries fail before sealing. This keeps replay identity
+checkable without persisting credentials;
 adapters still decide which environment fields are necessary to capture.
 Redaction admission proves the remaining text budget is at least the separator
 width before subtracting it, so a tiny remaining budget cannot wrap the value

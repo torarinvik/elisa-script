@@ -816,7 +816,7 @@ reproduction launch, host materialization, and crash recovery remain open.
 ES-SCRIPT-020 | EsDifferentialRedaction supplies explicit exact-name/all-value
 redaction policy, bounded environment capture, deterministic value fingerprints,
 omission of selected secret values, duplicate-name/NUL/size rejection, and a
-sealed capture lifecycle. The focused differential fixture, namespace
+sealed capture lifecycle with derived aggregate text accounting. The focused differential fixture, namespace
 inclusion, documentation, and check_differential_redaction.sh audit are static
 evidence; adapter field selection and secure storage remain open.
 
