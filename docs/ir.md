@@ -1294,7 +1294,9 @@ single owner cannot implicitly re-enter a path. `Begin`, `Acquire`, `Retry`,
 state-machine edges. Nonblocking conflicts return `error[FileLockError.Conflict]`;
 bounded waits return `WouldBlock` until a finite attempt budget is exhausted,
 then become `TimedOut`; timeout is admitted only after at least one acquisition
-attempt. A held lease remains active through `Releasing` until
+attempt. Each conflict exposes one retry permit, which is consumed before the
+next acquisition attempt so a caller cannot spin retries without progress. A
+held lease remains active through `Releasing` until
 the host acknowledges release, while failures decrement active accounting and
 retain a failed lease record. Held, releasing, and released sessions also
 require a consumed acquisition attempt. Lease allocation rejects the terminal

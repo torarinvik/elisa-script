@@ -88,6 +88,7 @@ module EsFileLock:
             state: FileLockState = FileLockState.Planned
             attempts: usize = 0
             lease_id: u64 = 0
+            retry_ready: bool = false
 
 
         error FileLockError:
@@ -209,6 +210,8 @@ module EsFileLock:
             raise FileLockError.InvalidWaitMode if not file_lock_wait_mode_valid(session.request.wait_mode)
             raise FileLockError.AttemptsExceeded if session.request.max_attempts == 0 or session.request.max_attempts > table.policy.max_attempts or session.attempts > session.request.max_attempts
             raise FileLockError.AccountingInvalid if file_lock_state_requires_attempt(session.state) and session.attempts == 0
+            raise FileLockError.InvalidTransition if session.retry_ready and session.state != FileLockState.Waiting
+            raise FileLockError.RetryNotAllowed if session.retry_ready and (session.request.wait_mode != FileLockWaitMode.Bounded or session.attempts == 0 or session.attempts >= session.request.max_attempts)
             raise FileLockError.InvalidPolicy if not file_lock_request_valid(session.request, table.policy)
             if session.state == FileLockState.Held:
                 raise FileLockError.LeaseMismatch if session.lease_id == 0 or not file_lock_session_lease_matches(table, session, FileLockLeaseState.Held)
@@ -231,6 +234,7 @@ module EsFileLock:
                 session.state <- FileLockState.Waiting
             elif event == FileLockEvent.Acquire:
                 raise FileLockError.InvalidTransition if session.state != FileLockState.Waiting
+                raise FileLockError.RetryNotAllowed if session.retry_ready
                 raise FileLockError.AttemptsExceeded if session.attempts >= session.request.max_attempts
                 session.attempts <- session.attempts + 1
                 if file_lock_conflicts(table, session.request):
@@ -239,6 +243,7 @@ module EsFileLock:
                     if session.attempts >= session.request.max_attempts:
                         session.state <- FileLockState.TimedOut
                         return session.state
+                    session.retry_ready <- true
                     raise FileLockError.WouldBlock
                 raise FileLockError.LeaseLimitExceeded if table.leases.count >= table.policy.max_leases
                 raise FileLockError.InvalidLeaseId if table.next_lease_id == 0 or table.next_lease_id == 18446744073709551615u64
@@ -246,12 +251,15 @@ module EsFileLock:
                 table.leases.push(FileLockLease{lease_id: table.next_lease_id, path: session.request.path, owner_token: session.request.owner_token, mode: session.request.mode})
                 table.next_lease_id <- table.next_lease_id + 1
                 table.active_leases <- table.active_leases + 1
+                session.retry_ready <- false
                 session.state <- FileLockState.Held
             elif event == FileLockEvent.Retry:
                 raise FileLockError.InvalidTransition if session.state != FileLockState.Waiting
                 raise FileLockError.RetryNotAllowed if session.request.wait_mode != FileLockWaitMode.Bounded
                 raise FileLockError.RetryNotAllowed if session.attempts == 0
+                raise FileLockError.RetryNotAllowed if not session.retry_ready
                 raise FileLockError.AttemptsExceeded if session.attempts >= session.request.max_attempts
+                session.retry_ready <- false
             elif event == FileLockEvent.Release:
                 raise FileLockError.ReleaseNotReady if session.state != FileLockState.Held
                 raise FileLockError.LeaseMismatch if not file_lock_session_lease_matches(table, session, FileLockLeaseState.Held)
@@ -269,9 +277,11 @@ module EsFileLock:
                 raise FileLockError.InvalidTransition if session.state != FileLockState.Waiting
                 raise FileLockError.RetryNotAllowed if session.request.wait_mode != FileLockWaitMode.Bounded
                 raise FileLockError.AccountingInvalid if session.attempts == 0
+                session.retry_ready <- false
                 session.state <- FileLockState.TimedOut
             elif event == FileLockEvent.Cancel:
                 raise FileLockError.CancelNotReady if session.state != FileLockState.Waiting
+                session.retry_ready <- false
                 session.state <- FileLockState.Cancelling
             elif event == FileLockEvent.CancelAck:
                 raise FileLockError.CancelNotReady if session.state != FileLockState.Cancelling
@@ -284,5 +294,6 @@ module EsFileLock:
                     raise FileLockError.LeaseMismatch if not file_lock_lease_active(table.leases[index].state)
                     table.leases[index].state <- FileLockLeaseState.Failed
                     table.active_leases <- table.active_leases - 1
+                session.retry_ready <- false
                 session.state <- FileLockState.Failed
             return session.state
