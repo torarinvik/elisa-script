@@ -38,6 +38,10 @@ for boundary in \
     'DifferentialNondeterminismPolicy.Reject' \
     'DifferentialNondeterminismPolicy.Report' \
     'has_nondeterminism' \
+    'expected_stable_repeats' \
+    'expected_nondeterminism' \
+    'session.stable_repeats != expected_stable_repeats' \
+    'session.has_nondeterminism != expected_nondeterminism' \
     'StableEqual' \
     'StableMismatch' \
     'CompleteNotReady' \
@@ -55,6 +59,7 @@ for fixture_pattern in \
     'DifferentialStabilityError.NondeterministicRejected'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
+rg -Fq 'forged_stability_accounting' "$fixture"
 
 rg -Fq 'EsDifferentialStability::DifferentialStabilitySession' "$docs"
 rg -Fq 'P13 repeat-stability follow-up' "$plan"
