@@ -662,7 +662,9 @@ explicit. A bounded session records at most one `ReferenceThenCandidate` and one
 fingerprints and the comparison fingerprint. Completion requires both orders by
 default. A changed final world is `WorldContaminated`; a changed comparison is
 `OrderDependent`; stable fingerprints in both orders are `OrderIndependent`.
-The policy either rejects contamination before completion or reports the typed
+Contamination and order-dependency flags are derived cumulatively from every
+retained observation, so a later clean ordering cannot erase an earlier world
+leak. The policy either rejects contamination before completion or reports the typed
 classification for an inconclusive artifact. The contract does not execute or
 restore a world; adapters must perform those operations around each run.
 

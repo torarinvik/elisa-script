@@ -40,7 +40,10 @@ for boundary in \
     'OrderContaminationRejected' \
     'OrderIndependent' \
     'OrderDependent' \
-    'WorldContaminated'; do
+    'WorldContaminated' \
+    'expected_order_dependency' \
+    'expected_world_contamination' \
+    'session.has_world_contamination != expected_world_contamination'; do
     rg -Fq "$boundary" "$model"
 done
 
@@ -52,7 +55,9 @@ for fixture_pattern in \
     'DifferentialExecutionOrder.CandidateThenReference' \
     'DifferentialOrderClassification.OrderIndependent' \
     'DifferentialOrderClassification.WorldContaminated' \
-    'DifferentialOrderError.OrderContaminationRejected'; do
+    'DifferentialOrderError.OrderContaminationRejected' \
+    'retained_leak' \
+    'forged_order_flags'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 
