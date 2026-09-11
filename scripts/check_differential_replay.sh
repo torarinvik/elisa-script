@@ -36,6 +36,9 @@ for boundary in \
     'ComparisonNotReady' \
     'RestoreMismatch' \
     'RestorationNotReady' \
+    'session.admission_fingerprint != session.expected_manifest_fingerprint' \
+    'session.restored_world_fingerprint != session.expected_world_fingerprint' \
+    'session.state == DifferentialReplayState.Comparing and (session.has_comparison or session.has_restoration)' \
     'DifferentialReplayState.Comparing' \
     'DifferentialReplayState.Restoring'; do
     rg -Fq "$boundary" "$model"
@@ -49,7 +52,8 @@ for fixture_pattern in \
     'DifferentialReplayEvent.CompareComplete' \
     'DifferentialReplayEvent.RestoreComplete' \
     'DifferentialReplayError.RunOrderInvalid' \
-    'forged_completed_replay'; do
+    'forged_completed_replay' \
+    'forged_admission_identity'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 
