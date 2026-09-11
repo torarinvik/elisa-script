@@ -758,8 +758,11 @@ layer separately from process control. A host adapter proposes a strictly
 smaller reference or candidate poll budget, reruns the unchanged world, and
 submits a nonzero comparison fingerprint only when the original mismatch kind
 survives. Candidates are accepted in ordinal order under a bounded budget;
-completion requires an explicit exhausted marker, and no event in this contract
-launches, signals, or kills a process.
+validation replays retained candidate ordinals, mismatch kinds, fingerprints,
+and strictly decreasing budgets, reconciles the current budget with the last
+accepted candidate, and keeps pending metadata bounded. Completion requires an
+explicit exhausted marker, and no event in this contract launches, signals, or
+kills a process.
 
 Independent references use `DifferentialOracle`, which pairs a closed source
 language identity with a validated external runner. Python requires the typed

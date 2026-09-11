@@ -1008,7 +1008,9 @@ ES-SCRIPT-028 | EsDifferentialTimeout supplies a bounded timeout/termination
 shrink evidence session. It records reference/candidate side identity,
 strictly decreasing timeout candidates, ordinal order, preserved mismatch kind,
 nonzero rerun fingerprints, explicit accept/reject decisions, and exhausted
-minimality proof without launching or signalling processes. The focused
+minimality proof without launching or signalling processes. Validation replays
+retained candidate accounting and pending metadata, and rejects forged
+exhaustion state. The focused
 differential fixture, documentation, and check_differential_timeout_shrink.sh
 audit are static evidence; host process control and fresh-world reruns remain
 open.

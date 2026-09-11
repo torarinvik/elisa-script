@@ -35,6 +35,9 @@ for boundary in \
     'CandidateOrderInvalid' \
     'MismatchCategory' \
     'MinimalityUnproven' \
+    'session.exhausted and session.state != DifferentialTimeoutState.Complete' \
+    'session.pending.ordinal != session.candidates.count' \
+    'session.current_timeout_steps != session.candidates\[session.candidates.count - 1\].timeout_steps' \
     'comparison_fingerprint' \
     'DifferentialTimeoutEvent.Exhaust'; do
     rg -q "$boundary" "$source_file"
@@ -44,7 +47,8 @@ for fixture_pattern in \
     'include "../../src/testing/timeout_shrink_model.elisa"' \
     'using EsDifferentialTimeout' \
     'differential_timeout_shrinker_requires_monotonic_rerun_evidence' \
-    'DifferentialTimeoutError.CandidateNotSmaller'; do
+    'DifferentialTimeoutError.CandidateNotSmaller' \
+    'forged_timeout_candidates'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 
