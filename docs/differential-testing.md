@@ -670,10 +670,10 @@ restore a world; adapters must perform those operations around each run.
 around a lockstep divergence. Its policy fixes the number of steps before and
 after the anchor and a total event ceiling; records must be strictly ordered,
 inside that range, and carry nonzero reference/candidate fingerprints. The
-anchor record is required before sealing, and each record is classified as
-`Before`, `Divergence`, or `After`. A sealed window has a deterministic compact
-fingerprint suitable for an artifact sidecar, while full trace collection stays
-with the adapter.
+anchor record is required before sealing and must contain a non-equal pair, and
+each record is classified as `Before`, `Divergence`, or `After`. A sealed
+window has a deterministic compact fingerprint suitable for an artifact
+sidecar, while full trace collection stays with the adapter.
 
 `EsDifferentialEffectTrace::DifferentialEffectTrace` preserves the observable
 part of algebraic-effect behavior for parity cases. Each ordered event carries

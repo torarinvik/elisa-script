@@ -784,7 +784,7 @@ actual world reset and repeated host execution remain open.
 
 ES-SCRIPT-016 | EsDifferentialTraceWindow supplies bounded pre/anchor/post
  lockstep records around a first divergence, strict step ordering, required
- anchor admission, position classification, and deterministic sealed-window
+ anchor admission with a non-equal anchor pair, position classification, and deterministic sealed-window
  fingerprints. The focused differential fixture, namespace inclusion,
  documentation, and check_differential_trace_window.sh audit are static
  evidence; adapter trace collection and execution evidence remain open.

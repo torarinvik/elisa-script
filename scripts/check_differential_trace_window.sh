@@ -37,6 +37,7 @@ for boundary in \
     'after_steps' \
     'anchor_step' \
     'AnchorMissing' \
+    'AnchorNotDivergent' \
     'OutsideWindow' \
     'StepOrderInvalid' \
     'DifferentialTraceWindowPosition.Before' \
@@ -51,7 +52,8 @@ for fixture_pattern in \
     'differential_trace_window_contract_bounds_context_around_first_divergence' \
     'DifferentialTraceWindowEvent.Record' \
     'DifferentialTraceWindowEvent.Seal' \
-    'DifferentialTraceWindowError.OutsideWindow'; do
+    'DifferentialTraceWindowError.OutsideWindow' \
+    'equal_anchor_rejected'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 
