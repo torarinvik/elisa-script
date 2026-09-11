@@ -338,7 +338,9 @@ requested or propagating; polling before a blocking host wait raises
 while acknowledgement is admitted only after a
 cleanup or completed-block checkpoint. Validation also rejects externally
 assembled acknowledged tokens whose last checkpoint is not one of those safe
-points through `error[CancellationError]`.
+points through `error[CancellationError]`; children cannot be registered under
+a completed or failed parent, because such a child could never satisfy the
+parent propagation edge.
 
 `EsTelemetry::TelemetryLedger` provides optional bounded observability. Disabled
 mode rejects recording; counter mode stores fixed metric identities, while

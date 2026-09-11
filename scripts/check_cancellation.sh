@@ -44,6 +44,7 @@ for boundary in \
     'CancellationError.HostBlockDenied' \
     'HostBlockDenied if point == CancellationPoint.HostBeforeBlock' \
     'CancellationError.ParentCycle' \
+    'InvalidTransition if cancellation_terminal\(ledger.tokens\[parent_index\].state\)' \
     'parent_index: usize = cancellation_index' \
     'CancellationError.PollLimitExceeded' \
     'token.state == CancellationTokenState.Acknowledged' \
