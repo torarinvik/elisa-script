@@ -45,6 +45,9 @@ for boundary in \
     'DirectoryMutationFailureMode.Collect' \
     'DirectoryMutationEvent.Enter' \
     'DirectoryMutationEvent.Leave' \
+    'can_enter: bool = false' \
+    'raise DirectoryMutationError.EntryNotApplied if not session.can_enter' \
+    'session.can_enter <- false' \
     'DirectoryMutationError.DuplicateIdentity' \
     'DirectoryMutationError.DestinationCollision' \
     'accounted_bytes > session.policy.max_bytes' \
@@ -68,7 +71,8 @@ for fixture_pattern in \
     'DirectoryMutationEvent.Failure' \
     'DirectoryMutationEvent.Cancel' \
     'DirectoryMutationError.DestinationCollision' \
-    'DirectoryMutationError.ActiveScope'; do
+    'DirectoryMutationError.ActiveScope' \
+    'repeated_enter_rejected'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 rg -Fq 'nested_destination' "$fixture_file"

@@ -50,6 +50,9 @@ for boundary in \
     'DirectoryTreeState.Cancelled and' \
     'DirectoryTreeEvent.Descend' \
     'entry.depth != session.active_depth' \
+    'can_descend: bool = false' \
+    'raise DirectoryTreeError.ParentDepthMismatch if not session.can_descend' \
+    'session.can_descend <- false' \
     'last.kind == DirectoryTreeEntryKind.Symlink' \
     'session.failures >= session.policy.max_entries' \
     'DirectoryTreeEvent.Cancel' \
@@ -64,7 +67,8 @@ for fixture_pattern in \
     'DirectoryTreeEvent.Complete' \
     'DirectoryTreeError.CycleDetected' \
     'DirectoryTreeError.NotDirectory' \
-    'DirectoryTreeError.ParentDepthMismatch'; do
+    'DirectoryTreeError.ParentDepthMismatch' \
+    'repeated_descend_rejected'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 rg -Fq 'follow_symlink' "$fixture_file"
