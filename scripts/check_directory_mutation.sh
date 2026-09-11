@@ -72,7 +72,8 @@ for fixture_pattern in \
     'DirectoryMutationEvent.Cancel' \
     'DirectoryMutationError.DestinationCollision' \
     'DirectoryMutationError.ActiveScope' \
-    'repeated_enter_rejected'; do
+    'repeated_enter_rejected' \
+    'stale_regular_enter_rejected'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 rg -Fq 'nested_destination' "$fixture_file"
