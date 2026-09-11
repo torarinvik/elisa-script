@@ -46,6 +46,7 @@ for boundary in \
     'FileLockEvent.CancelAck' \
     'FileLockError.Conflict' \
     'FileLockError.WouldBlock' \
+    'raise FileLockError.RetryNotAllowed if session.attempts == 0' \
     'FileLockError.DuplicateOwnerPath' \
     'table.next_lease_id <= lease.lease_id' \
     'table.next_lease_id == 18446744073709551615u64' \
@@ -63,6 +64,7 @@ for fixture_pattern in \
     'FileLockMode.Exclusive' \
     'FileLockError.Conflict' \
     'FileLockError.WouldBlock' \
+    'retry_without_attempt' \
     'FileLockEvent.ReleaseAck' \
     'FileLockEvent.CancelAck' \
     'forged_identity' \
