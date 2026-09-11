@@ -28,6 +28,7 @@ done
 
 for boundary in \
     'minimality_proven' \
+    'trace.minimality_proven and trace.state != DifferentialShrinkTraceState.Complete' \
     'MismatchCategory' \
     'MinimalityUnproven' \
     'candidate_fingerprint' \
@@ -43,6 +44,7 @@ for fixture_pattern in \
     'differential_run_shrinker_preserves_first_difference_and_order' \
     'DifferentialShrinkTraceEvent.Record' \
     'DifferentialShrinkTraceError.MismatchCategory' \
+    'forged_shrink_proof' \
     'ClearReferenceValueSlot' \
     'ClearCandidateValueSlot' \
     'exhausted: true'; do

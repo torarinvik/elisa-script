@@ -830,7 +830,8 @@ generation, shrinking, and execution evidence remain open.
 
 ES-SCRIPT-022 | EsDifferential shrink traces record bounded reduction ordinals,
 candidate fingerprints, reduction kinds, preserved mismatch categories, and an
-explicit exhausted-budget minimality proof. The focused differential fixture,
+explicit exhausted-budget minimality proof that is bound to the complete state.
+The focused differential fixture,
 documentation, and check_differential_shrink_trace.sh audit are static
 evidence; bounded aggregate-value slot reducers now preserve valid roots and
 the original mismatch category; process termination/timeout reducers and

@@ -755,9 +755,10 @@ and replaying candidates against the original world remain separate follow-up
 layers. `DifferentialShrinkTrace`
 records each retained candidate fingerprint and reduction kind, requires the
 original mismatch category to survive, and only permits completion when the
-adapter explicitly records that its candidate budget is exhausted. This keeps
-“minimal” as an evidence-bearing claim instead of an inference from an empty
-candidate list.
+adapter explicitly records that its candidate budget is exhausted. Validation
+also rejects a minimality proof on any non-complete trace. This keeps “minimal”
+as an evidence-bearing claim instead of an inference from an empty candidate
+list.
 
 `EsDifferentialTimeout::DifferentialTimeoutSession` records the timeout-shrink
 layer separately from process control. A host adapter proposes a strictly
