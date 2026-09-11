@@ -36,6 +36,8 @@ for boundary in \
     'SeedMismatch' \
     'CaseOrderInvalid' \
     'ByteLimitExceeded' \
+    'expected_bytes' \
+    'session.generated_bytes != expected_bytes' \
     'CompleteNotReady'; do
     rg -Fq "$boundary" "$model"
 done
@@ -46,7 +48,8 @@ for fixture_pattern in \
     'differential_generator_contract_derives_case_seeds_and_bounds_payloads' \
     'DifferentialGeneratorEvent.Generate' \
     'DifferentialGeneratorError.SeedMismatch' \
-    'DifferentialGeneratorState.Completed'; do
+    'DifferentialGeneratorState.Completed' \
+    'forged_generator_bytes'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 

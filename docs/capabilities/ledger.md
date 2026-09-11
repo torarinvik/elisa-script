@@ -822,7 +822,8 @@ evidence; adapter field selection and secure storage remain open.
 
 ES-SCRIPT-021 | EsDifferentialGenerator supplies a bounded deterministic
 generator session with one recorded base seed, ordinal-derived case seeds,
-ordered input fingerprints, and aggregate case/byte ceilings. The focused
+ordered input fingerprints, aggregate case/byte ceilings, and derived byte
+accounting over retained payloads. The focused
 differential fixture, namespace inclusion, documentation, and
 check_differential_generator.sh audit are static evidence; schema-aware
 generation, shrinking, and execution evidence remain open.
