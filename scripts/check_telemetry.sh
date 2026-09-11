@@ -47,6 +47,7 @@ for boundary in \
     'policy.max_payload_bytes != 0' \
     'ledger.events.count \+ ledger.sampled_events >= ledger.policy.max_events' \
     'TelemetryError.SpanAccountingInvalid' \
+    'event.sequence > \(ledger.events.count \+ ledger.sampled_events\).u64\(\)' \
     'TelemetryError.AccountingInvalid' \
     'TelemetryError.TelemetryDisabled'; do
     rg -q "$boundary" "$model"

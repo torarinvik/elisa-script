@@ -351,7 +351,8 @@ Sampled-out events still consume the event ceiling and sequence accounting, and
 span begin/end accounting remains active even when an event is not retained. A
 recording attempt is rejected before any sequence, sampling, or span counter is
 mutated once retained plus sampled attempts reach the event ceiling. A fresh
-ready ledger must have zero activity, repeated failure is rejected, and a
+ready ledger must have zero activity, retained sequence numbers must fit within
+the retained-plus-sampled attempt range, repeated failure is rejected, and a
 run may seal only after all spans close through `error[TelemetryError]`.
 
 `EsStructuredTask::StructuredTaskScope` makes structured concurrency explicit
