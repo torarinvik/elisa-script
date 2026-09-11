@@ -40,6 +40,8 @@ for boundary in \
     'InvalidRedirectStatus' \
     'RetryNotReady' \
     'CancelNotReady' \
+    'session_state_requires_attempt' \
+    'session_state_requires_attempt(session.state) and session.attempts == 0' \
     'outcome == NetworkOutcome.Cancelled' \
     'StatusFailure' \
     'NetworkSessionState.Planned and' \

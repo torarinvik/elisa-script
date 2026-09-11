@@ -1468,7 +1468,8 @@ match their states; `StatusFailure` failures require a non-2xx/3xx HTTP status,
 while other failures retain neutral status. A failure edge cannot carry the distinct `Cancelled`
 outcome; cancellation must use the explicit cancellation state machine.
 Completed sessions also require the full request body to be accounted for, and
-cancellation states cannot retain an HTTP status.
+cancellation states cannot retain an HTTP status; every post-planned state must
+also account for at least one consumed attempt.
 Active transport phases also retain the neutral success/zero-status pair until
 the explicit receive-completion or failure edge.
 
