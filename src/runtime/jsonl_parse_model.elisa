@@ -1,0 +1,213 @@
+# Bounded one-record-at-a-time JSON Lines parsing.
+#
+# The reader borrows the complete input view but retains only framing state and
+# cumulative budgets. Each completed record is lexed and materialized once,
+# returned to the caller, and then released by the caller before advancing.
+
+module EsJsonLinesParse:
+    using EsData
+    using EsJson
+    using EsJsonLex
+    using EsJsonParse
+    using EsJsonStream
+
+    public:
+        const JSON_LINES_PARSE_FORMAT_VERSION: u8 = 1
+
+
+        struct JsonLinesReader:
+            format_version: u8 = JSON_LINES_PARSE_FORMAT_VERSION
+            source: sview
+            source_bytes: usize
+            limits: DataDecodeLimits
+            json_policy: JsonPolicy = JsonPolicy{}
+            stream: JsonStreamSession
+            decoder: DataDecoder
+            offset: usize = 0
+            record_start: usize = 0
+            failure_record_number: usize = 0
+            failure_record_start: usize = 0
+
+
+        struct JsonLinesReadResult:
+            has_document: bool = false
+            record_number: usize = 0
+            source_offset: usize = 0
+            document: JsonDocument = JsonDocument{}
+
+
+        error JsonLinesParseError:
+            InvalidFormatVersion
+            InvalidState
+            InvalidSource
+            AccountingInvalid
+            TokenLimitExceeded
+            FieldLimitExceeded
+            FieldBytesLimitExceeded
+
+
+    private:
+        def json_lines_min(left: usize, right: usize) -> usize:
+            return left if left < right else right
+
+
+        def json_lines_record_is_whitespace(source: sview, start: usize, end: usize) -> bool:
+            cursor: mutable usize = start
+            while cursor < end:
+                byte: u8 = sview_at(source, cursor)
+                return false if byte != 9u8 and byte != 10u8 and byte != 13u8 and byte != 32u8
+                cursor <- cursor + 1
+            return true
+
+
+        def json_lines_reader_state_valid(reader: JsonLinesReader&) -> bool error[JsonLinesParseError, JsonStreamError, DataContractError]:
+            try validate_json_stream(reader.stream)
+            try validate_data_decoder(reader.decoder)
+            try validate_json_policy(reader.json_policy)
+            raise JsonLinesParseError.InvalidFormatVersion if reader.format_version != JSON_LINES_PARSE_FORMAT_VERSION
+            raise JsonLinesParseError.InvalidSource if reader.source_bytes != sview_len(reader.source)
+            raise JsonLinesParseError.AccountingInvalid if reader.offset != reader.stream.input_bytes
+            raise JsonLinesParseError.AccountingInvalid if reader.record_start > reader.source_bytes or reader.record_start > reader.offset
+            raise JsonLinesParseError.AccountingInvalid if reader.stream.policy.max_input_bytes > reader.limits.input_bytes
+            raise JsonLinesParseError.AccountingInvalid if reader.stream.policy.max_record_bytes > reader.limits.input_bytes
+            raise JsonLinesParseError.AccountingInvalid if reader.stream.policy.max_records > reader.limits.records
+            raise JsonLinesParseError.AccountingInvalid if reader.stream.policy.max_depth > reader.limits.depth
+            raise JsonLinesParseError.AccountingInvalid if reader.decoder.format != DataFormat.JsonLines
+            raise JsonLinesParseError.AccountingInvalid if reader.decoder.limits.input_bytes != reader.limits.input_bytes or reader.decoder.limits.tokens != reader.limits.tokens or reader.decoder.limits.depth != reader.limits.depth or reader.decoder.limits.records != reader.limits.records or reader.decoder.limits.fields != reader.limits.fields or reader.decoder.limits.field_bytes != reader.limits.field_bytes
+            if reader.stream.state == JsonStreamState.Reading:
+                raise JsonLinesParseError.InvalidState if reader.decoder.state != DataDecoderState.Decoding
+                raise JsonLinesParseError.AccountingInvalid if reader.stream.record_bytes != 0
+                raise JsonLinesParseError.AccountingInvalid if reader.decoder.input_bytes != reader.stream.input_bytes
+                raise JsonLinesParseError.AccountingInvalid if reader.decoder.records != reader.stream.records
+                raise JsonLinesParseError.AccountingInvalid if reader.failure_record_number != 0 or reader.failure_record_start != 0
+            elif reader.stream.state == JsonStreamState.Complete:
+                raise JsonLinesParseError.InvalidState if reader.decoder.state != DataDecoderState.Complete
+                raise JsonLinesParseError.AccountingInvalid if reader.offset != reader.source_bytes
+                raise JsonLinesParseError.AccountingInvalid if reader.decoder.input_bytes != reader.stream.input_bytes
+                raise JsonLinesParseError.AccountingInvalid if reader.decoder.records != reader.stream.records
+                raise JsonLinesParseError.AccountingInvalid if reader.failure_record_number != 0 or reader.failure_record_start != 0
+            elif reader.stream.state == JsonStreamState.Failed:
+                raise JsonLinesParseError.InvalidState if reader.decoder.state != DataDecoderState.Failed
+                raise JsonLinesParseError.AccountingInvalid if reader.failure_record_number == 0
+                raise JsonLinesParseError.AccountingInvalid if reader.failure_record_start > reader.source_bytes
+            else:
+                raise JsonLinesParseError.InvalidState
+            return true
+
+
+        def json_lines_record_document(reader: mutable JsonLinesReader&, start: usize, end: usize, framed_bytes: usize) -> JsonDocument error[JsonLinesParseError, JsonStreamError, DataContractError, JsonLexError, JsonParseError, JsonContractError] can[Memory.Allocate, Abort.Panic]:
+            raise JsonLinesParseError.InvalidSource if start > end or end > reader.source_bytes
+            raise JsonLinesParseError.InvalidSource if framed_bytes < end - start
+            record_source: sview = string_view_slice(reader.source, start.i64(), end.i64())
+            lexed: JsonLexedSource = try lex_json(record_source, reader.limits, reader.json_policy)
+            raise JsonLinesParseError.TokenLimitExceeded if lexed.tokens.count > reader.limits.tokens - reader.decoder.tokens
+            document: JsonDocument = try parse_json_document(lexed)
+            raise JsonLinesParseError.FieldLimitExceeded if document.members.count > reader.limits.fields - reader.decoder.fields
+            raise JsonLinesParseError.FieldBytesLimitExceeded if document.key_bytes.count > framed_bytes
+            raise JsonLinesParseError.FieldBytesLimitExceeded if document.scalar_data.count > framed_bytes - document.key_bytes.count
+            record_field_bytes: usize = document.key_bytes.count + document.scalar_data.count
+            raise JsonLinesParseError.FieldBytesLimitExceeded if record_field_bytes > reader.limits.field_bytes - reader.decoder.field_bytes
+            for _ in 0..<lexed.tokens.count |reader, document|:
+                _ = try advance_data_decoder(reader.decoder, DataDecoderEvent.Token, 0, 0, document.max_depth, 0)
+            _ = try advance_data_decoder(reader.decoder, DataDecoderEvent.Record, framed_bytes, document.members.count, 0, record_field_bytes)
+            return document
+
+
+        def json_lines_skip_empty_record(reader: mutable JsonLinesReader&, framed_bytes: usize) -> void error[DataContractError]:
+            # Empty records accepted by policy are counted and skipped; they
+            # do not represent a JSON value or produce an empty document.
+            _ = try advance_data_decoder(reader.decoder, DataDecoderEvent.Record, framed_bytes, 0, 0, 0)
+
+
+        def json_lines_next_impl(reader: mutable JsonLinesReader&) -> JsonLinesReadResult error[JsonLinesParseError, JsonStreamError, DataContractError, JsonLexError, JsonParseError, JsonContractError] can[Memory.Allocate, Abort.Panic]:
+            if reader.stream.state == JsonStreamState.Complete:
+                return JsonLinesReadResult{}
+            raise JsonLinesParseError.InvalidState if reader.stream.state != JsonStreamState.Reading
+            while reader.offset < reader.source_bytes:
+                byte: u8 = sview_at(reader.source, reader.offset)
+                is_record_separator: bool = byte == 10u8 and not reader.stream.in_string and reader.stream.depth == 0
+                current_offset: usize = reader.offset
+                if is_record_separator:
+                    start: usize = reader.record_start
+                    end: usize = current_offset
+                    _ = try advance_json_stream(reader.stream, JsonStreamEvent.Byte, byte)
+                    reader.offset <- reader.offset + 1
+                    framed_bytes: usize = reader.offset - start
+                    if reader.stream.policy.allow_empty_records and json_lines_record_is_whitespace(reader.source, start, end):
+                        _ = try json_lines_skip_empty_record(reader, framed_bytes)
+                        reader.record_start <- reader.offset
+                    else:
+                        document: JsonDocument = try json_lines_record_document(reader, start, end, framed_bytes)
+                        record_number: usize = reader.stream.records
+                        reader.record_start <- reader.offset
+                        return JsonLinesReadResult{has_document: true, record_number: record_number, source_offset: start, document: document}
+                else:
+                    _ = try advance_json_stream(reader.stream, JsonStreamEvent.Byte, byte)
+                    reader.offset <- reader.offset + 1
+            if reader.stream.record_bytes != 0:
+                start: usize = reader.record_start
+                end: usize = reader.source_bytes
+                framed_bytes: usize = end - start
+                if reader.stream.policy.allow_empty_records and json_lines_record_is_whitespace(reader.source, start, end):
+                    _ = try advance_json_stream(reader.stream, JsonStreamEvent.RecordEnd)
+                    _ = try json_lines_skip_empty_record(reader, framed_bytes)
+                    reader.record_start <- end
+                    _ = try advance_json_stream(reader.stream, JsonStreamEvent.End)
+                    _ = try advance_data_decoder(reader.decoder, DataDecoderEvent.End)
+                    return JsonLinesReadResult{}
+                _ = try advance_json_stream(reader.stream, JsonStreamEvent.RecordEnd)
+                document: JsonDocument = try json_lines_record_document(reader, start, end, framed_bytes)
+                record_number: usize = reader.stream.records
+                reader.record_start <- end
+                _ = try advance_json_stream(reader.stream, JsonStreamEvent.End)
+                _ = try advance_data_decoder(reader.decoder, DataDecoderEvent.End)
+                return JsonLinesReadResult{has_document: true, record_number: record_number, source_offset: start, document: document}
+            _ = try advance_json_stream(reader.stream, JsonStreamEvent.End)
+            _ = try advance_data_decoder(reader.decoder, DataDecoderEvent.End)
+            return JsonLinesReadResult{}
+
+
+    public:
+        def begin_json_lines_reader(source: sview, limits: DataDecodeLimits = DataDecodeLimits{}, policy: JsonPolicy = JsonPolicy{}, framing: JsonStreamPolicy = JsonStreamPolicy{}) -> JsonLinesReader error[DataContractError, JsonStreamError] can[Memory.Allocate, Abort.Panic]:
+            try validate_data_decoder(DataDecoder{format: DataFormat.JsonLines, limits: limits})
+            try validate_json_policy(policy)
+            _ = try validate_json_stream(JsonStreamSession{policy: framing})
+            effective_input_bytes: usize = json_lines_min(framing.max_input_bytes, limits.input_bytes)
+            effective_record_bytes: usize = json_lines_min(json_lines_min(framing.max_record_bytes, effective_input_bytes), limits.input_bytes)
+            effective_records: usize = json_lines_min(framing.max_records, limits.records)
+            effective_depth: usize = json_lines_min(framing.max_depth, limits.depth)
+            effective_framing: JsonStreamPolicy = JsonStreamPolicy{max_input_bytes: effective_input_bytes, max_record_bytes: effective_record_bytes, max_records: effective_records, max_depth: effective_depth, allow_empty_records: framing.allow_empty_records}
+            stream: mutable JsonStreamSession = JsonStreamSession{policy: effective_framing}
+            _ = try advance_json_stream(stream, JsonStreamEvent.Begin)
+            decoder: mutable DataDecoder = DataDecoder{format: DataFormat.JsonLines, limits: limits}
+            _ = try advance_data_decoder(decoder, DataDecoderEvent.Begin)
+            return JsonLinesReader{source: source, source_bytes: sview_len(source), limits: limits, json_policy: policy, stream: stream, decoder: decoder}
+
+
+        def validate_json_lines_reader(reader: JsonLinesReader&) -> bool error[JsonLinesParseError, JsonStreamError, DataContractError]:
+            try json_lines_reader_state_valid(reader)
+            return true
+
+
+        def next_json_lines_document(reader: mutable JsonLinesReader&) -> JsonLinesReadResult error[JsonLinesParseError, JsonStreamError, DataContractError, JsonLexError, JsonParseError, JsonContractError] can[Memory.Allocate, Abort.Panic]:
+            try validate_json_lines_reader(reader)
+            raise JsonLinesParseError.InvalidState if reader.stream.state == JsonStreamState.Failed
+            catch json_lines_next_impl(reader):
+                ok result:
+                    return result
+                error failure:
+                    reader.failure_record_number <- reader.stream.records + 1 if reader.stream.record_bytes != 0 or reader.offset == reader.record_start else reader.stream.records
+                    reader.failure_record_start <- reader.record_start
+                    if reader.stream.state == JsonStreamState.Reading:
+                        catch advance_json_stream(reader.stream, JsonStreamEvent.Fail):
+                            ok failed_stream:
+                                _ = failed_stream
+                            error fail_stream:
+                                _ = fail_stream
+                    if reader.decoder.state == DataDecoderState.Decoding:
+                        catch advance_data_decoder(reader.decoder, DataDecoderEvent.Fail):
+                            ok failed_decoder:
+                                _ = failed_decoder
+                            error fail_decoder:
+                                _ = fail_decoder
+                    raise failure

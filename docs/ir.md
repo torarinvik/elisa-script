@@ -231,8 +231,21 @@ performs one full-ledger validation, which checks duplicate keys in an ordered
 linear pass rather than a pairwise scan. The separate `advance_json_document`
 event API still revalidates the complete ledger per transition and is intended
 for small incremental construction; the parser avoids that repeated scan.
-JSONL framing and schema conversion are separate adapters. Algorithmic scaling
-is improved, but runtime/performance qualification remains open.
+`EsJsonLinesParse::next_json_lines_document` composes that framer with the
+lexer and parser one record at a time. It returns a sealed document with its
+1-based record number and absolute source offset, without retaining a
+collection of all parsed documents. Cumulative input, lexical-token, retained
+member, and decoded key/scalar-byte budgets span the entire reader rather than
+resetting per record. When `allow_empty_records` is enabled, zero-byte and
+JSON-whitespace-only frames (including blank CRLF frames) are counted and
+skipped; they do not become fabricated JSON values. A parse or budget failure
+makes the reader terminal and retains the failed record number/start for correlating its
+record-relative diagnostic offset. The reader borrows a complete `sview`; a
+chunked host-file input adapter and schema conversion remain separate work.
+The existing framer ends records only at newlines outside strings and balanced
+containers, so newlines inside containers remain JSON whitespace in one record
+rather than enforcing strict physical-line JSONL. Algorithmic scaling is
+improved, but runtime/performance qualification remains open.
 Detached duplicate candidates keep their node and scalar span in the arena;
 normalization changes ownership/references, not the contiguous payload ledger.
 `EsJsonEncode::encode_json_root` emits one selected root as compact JSON under
@@ -275,9 +288,8 @@ three policies: append applies KeepFirst/KeepLast, while validation rejects a
 forged duplicate or malformed key-index permutation in the final table.
 `EsJsonParse` supplies decoded keys and appends node/edge/member rows in the
 required postorder. It remains separate from the vendor's global parser names;
-JSONL materialization, typed schema conversion, and runtime/performance
-qualification remain open, while compact encoding is provided by
-`EsJsonEncode`.
+typed schema conversion and runtime/performance qualification remain open,
+while compact encoding is provided by `EsJsonEncode`.
 
 `EsSchema` adds the checked schema-conversion boundary that follows parsing.
 `SchemaDescriptor` declares named fields, source format, requiredness, and
@@ -1471,7 +1483,18 @@ counters advance only after depth, delimiter, and record-limit admission passes;
 complete state also reconciles input bytes with the
 number of admitted records. A full parser consumes
 one sealed record at a time, so this contract does not claim JSON semantic
-validation or whole-document allocation.
+validation or whole-document allocation. `EsJsonLinesParse` supplies the next
+boundary: it borrows the source view, drives framing through each delimiter,
+then runs `EsJsonLex` and `EsJsonParse` for the completed record before
+returning its document. Its single reader carries `EsData::DataDecoder`
+counters across records, records absolute source offsets, and becomes terminal
+on malformed JSON or cumulative-budget failure. Empty records admitted by the
+framing policy are counted and skipped; the parser also treats whitespace-only
+frames as empty under that policy, including CRLF-only frames. The framer
+intentionally treats newlines inside balanced containers as whitespace within
+one record; strict
+physical-line JSONL semantics and chunked host-stream input are not yet
+implemented.
 
 `EsRecordControl::RecordControlSession` makes AWK-style control keywords
 explicit: `RecordEnd` and `NextRecord` check the record ceiling before closing the current record,
