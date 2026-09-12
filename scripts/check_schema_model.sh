@@ -9,12 +9,13 @@ model="$repo_root/src/runtime/schema_model.elisa"
 json_model="$repo_root/src/runtime/json_model.elisa"
 json_materializer="$repo_root/src/runtime/schema_json_materializer.elisa"
 csv_materializer="$repo_root/src/runtime/schema_csv_materializer.elisa"
+integer_conversion="$repo_root/src/runtime/schema_integer_conversion.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$json_model" "$json_materializer" "$csv_materializer" "$ir" "$fixture" "$docs" "$plan"; do
+for required_file in "$model" "$json_model" "$json_materializer" "$csv_materializer" "$integer_conversion" "$ir" "$fixture" "$docs" "$plan"; do
     [[ -f "$required_file" ]] || { printf 'schema model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -30,8 +31,10 @@ for declaration in \
     'error SchemaCsvMaterializeError:' \
     'def materialize_csv_schema_record(' \
     'def materialize_csv_schema_batch(' \
+    'SchemaCsvValueKind.Integer' \
     'schema_csv_prepare_projection(' \
     'schema_csv_materialize_row_with_projection(' \
+    'parse_schema_integer(' \
     'schema_csv_sort_name_indices(' \
     'schema_csv_sort_position_indices(' \
     'SchemaCsvDecodeState.Escaped'; do
@@ -51,7 +54,9 @@ for declaration in \
     'module EsSchemaJson:' \
     'using EsJson' \
     'using EsSchema' \
+    'using EsSchemaNumeric' \
     'const enum SchemaJsonScalarKind of u8:' \
+    'SchemaJsonScalarKind.Integer' \
     'struct SchemaJsonValue:' \
     'struct SchemaJsonRecord:' \
     'error SchemaJsonMaterializeError:' \
@@ -68,6 +73,8 @@ for declaration in \
     'SCHEMA_FORMAT_VERSION' \
     'const enum SchemaSource of u8:' \
     'const enum SchemaValueKind of u8:' \
+    'const enum SchemaIntegerTarget of u8:' \
+    'struct SchemaIntegerValue:' \
     'const enum SchemaDecodeState of u8:' \
     'const enum SchemaDecodeEvent of u8:' \
     'struct SchemaField:' \
@@ -75,11 +82,25 @@ for declaration in \
     'struct SchemaBinding:' \
     'struct SchemaDecodeSession:' \
     'error SchemaContractError:' \
+    'InvalidIntegerTarget' \
     'def validate_schema_descriptor(' \
     'def validate_schema_session(' \
     'def advance_schema_session(' \
     'try validate_schema_session(session)'; do
     rg -Fq "$declaration" "$model"
+done
+
+for declaration in \
+    'module EsSchemaNumeric:' \
+    'using EsRecordNumeric' \
+    'using EsSchema' \
+    'SCHEMA_INTEGER_MAX_BYTES' \
+    'error SchemaIntegerError:' \
+    'def parse_schema_integer(' \
+    'allow_underscores: false' \
+    'schema_integer_target_limit(' \
+    'SchemaIntegerError.TargetOutOfRange'; do
+    rg -Fq "$declaration" "$integer_conversion"
 done
 
 for boundary in \
@@ -92,6 +113,12 @@ for boundary in \
     'field_payload_limit <- remaining_payload if remaining_payload < field_payload_limit' \
     'schema_csv_position_is_mapped'; do
     rg -Fq "$boundary" "$csv_materializer"
+done
+
+for boundary in \
+    'field.integer_target != SchemaIntegerTarget.None and schema.source == SchemaSource.Json and field.kind != SchemaValueKind.Number' \
+    'field.integer_target != SchemaIntegerTarget.None and schema.source != SchemaSource.Json and field.kind != SchemaValueKind.Text'; do
+    rg -Fq "$boundary" "$model"
 done
 
 for boundary in \
@@ -113,11 +140,14 @@ for boundary in \
 done
 
 rg -Fq 'include "../runtime/schema_model.elisa"' "$ir"
+rg -Fq 'include "../runtime/schema_integer_conversion.elisa"' "$ir"
 rg -Fq 'include "../runtime/schema_json_materializer.elisa"' "$ir"
 rg -Fq 'include "../runtime/schema_csv_materializer.elisa"' "$ir"
 for fixture_pattern in \
     'typed_schema_binding_contract_checks_json_kinds_and_required_fields' \
     'typed_json_schema_materializer_owns_scalars_and_preserves_schema_order' \
+    'typed_schema_json_integer_targets_convert_exactly_without_float_rounding' \
+    'typed_csv_schema_integer_targets_decode_signed_and_unsigned_fields' \
     'typed_csv_schema_materializer_binds_header_aliases_and_optional_fields' \
     'typed_csv_schema_batch_projects_exact_ranges_with_shared_mapping' \
     'typed_csv_schema_materializer_distinguishes_empty_from_missing_and_maps_positions' \
@@ -135,7 +165,7 @@ done
 
 rg -Fq '`EsSchema`' "$docs"
 rg -Fq '`EsSchemaCsv` materializes completed CSV/TSV records' "$docs"
-rg -Fq 'prepares the schema' "$docs"
+rg -Fq 'header/positional projection once per call' "$docs"
 rg -Fq 'Latest P08 typed JSON schema follow-up' "$plan"
 
 printf 'schema model audit: typed JSON binding and bounded owned CSV row batches are present\n'

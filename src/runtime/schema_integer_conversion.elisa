@@ -1,0 +1,101 @@
+# Exact decimal-integer conversion shared by JSON and CSV schema adapters.
+#
+# The parser reuses the bounded record-numeric state machine with separators
+# disabled. It retains no lexeme and never passes through a floating type.
+
+module EsSchemaNumeric:
+    using EsRecordNumeric
+    using EsSchema
+
+    public:
+        const SCHEMA_INTEGER_MAX_BYTES: usize = RECORD_NUMERIC_MAX_BYTES
+
+
+        error SchemaIntegerError:
+            InvalidTarget
+            InputLimitExceeded
+            MalformedInteger
+            TargetOutOfRange
+            NumericStateInvalid
+
+
+    private:
+        def schema_integer_target_is_signed(target: SchemaIntegerTarget) -> bool:
+            return target == SchemaIntegerTarget.I8 or target == SchemaIntegerTarget.I16 or target == SchemaIntegerTarget.I32 or target == SchemaIntegerTarget.I64
+
+
+        def schema_integer_target_limit(target: SchemaIntegerTarget, negative: bool) -> u64 error[SchemaIntegerError]:
+            if target == SchemaIntegerTarget.I8:
+                return 128 if negative else 127
+            elif target == SchemaIntegerTarget.I16:
+                return 32768 if negative else 32767
+            elif target == SchemaIntegerTarget.I32:
+                return 2147483648 if negative else 2147483647
+            elif target == SchemaIntegerTarget.I64:
+                return 9223372036854775808u64 if negative else 9223372036854775807u64
+            elif target == SchemaIntegerTarget.U8:
+                return 255
+            elif target == SchemaIntegerTarget.U16:
+                return 65535
+            elif target == SchemaIntegerTarget.U32:
+                return 4294967295
+            elif target == SchemaIntegerTarget.U64:
+                return 18446744073709551615u64
+            raise SchemaIntegerError.InvalidTarget
+
+
+        def schema_integer_advance(session: mutable RecordNumericSession&, event: RecordNumericEvent, byte: u8 = 0) -> void error[SchemaIntegerError]:
+            catch advance_record_numeric(session, event, byte):
+                ok state:
+                    _ = state
+                error failure:
+                    raise SchemaIntegerError.TargetOutOfRange if failure == RecordNumericError.IntegerOverflow
+                    raise SchemaIntegerError.InputLimitExceeded if failure == RecordNumericError.TextLimitExceeded or failure == RecordNumericError.DigitLimitExceeded
+                    raise SchemaIntegerError.MalformedInteger
+
+
+        def schema_integer_result(session: RecordNumericSession&) -> RecordNumericResult error[SchemaIntegerError]:
+            result: mutable RecordNumericResult = RecordNumericResult{kind: session.policy.kind}
+            catch record_numeric_result(session):
+                ok value:
+                    result <- value
+                error failure:
+                    _ = failure
+                    raise SchemaIntegerError.NumericStateInvalid
+            return result
+
+
+    public:
+        def parse_schema_integer(bytes: darray[u8]&, start: usize, byte_count: usize, target: SchemaIntegerTarget) -> SchemaIntegerValue error[SchemaIntegerError]:
+            raise SchemaIntegerError.InvalidTarget if target == SchemaIntegerTarget.None
+            raise SchemaIntegerError.MalformedInteger if byte_count == 0
+            raise SchemaIntegerError.InputLimitExceeded if byte_count > SCHEMA_INTEGER_MAX_BYTES
+            raise SchemaIntegerError.InputLimitExceeded if start > bytes.count
+            raise SchemaIntegerError.InputLimitExceeded if byte_count > bytes.count - start
+
+            numeric_kind: RecordNumericKind = RecordNumericKind.Integer if schema_integer_target_is_signed(target) else RecordNumericKind.Unsigned
+            policy: RecordNumericPolicy = RecordNumericPolicy{kind: numeric_kind, max_bytes: byte_count, max_digits: byte_count, allow_underscores: false}
+            session: mutable RecordNumericSession = RecordNumericSession{policy: policy}
+            try schema_integer_advance(session, RecordNumericEvent.Begin)
+            finish: usize = start + byte_count
+            for offset in start..<finish |bytes, session|:
+                try schema_integer_advance(session, RecordNumericEvent.Byte, bytes[offset])
+            try schema_integer_advance(session, RecordNumericEvent.Finish)
+
+            parsed: RecordNumericResult = try schema_integer_result(session)
+            negative: bool = parsed.negative if schema_integer_target_is_signed(target) else false
+            limit: u64 = try schema_integer_target_limit(target, negative)
+            raise SchemaIntegerError.TargetOutOfRange if parsed.magnitude > limit
+            if schema_integer_target_is_signed(target):
+                signed_value: i64 = 0
+                if negative:
+                    signed_minimum_magnitude: u64 = try schema_integer_target_limit(target, true)
+                    if parsed.magnitude == signed_minimum_magnitude:
+                        signed_value <- -9223372036854775807i64 - 1 if target == SchemaIntegerTarget.I64
+                        signed_value <- -(signed_minimum_magnitude.i64()) if target != SchemaIntegerTarget.I64
+                    else:
+                        signed_value <- 0i64 - parsed.magnitude.i64()
+                else:
+                    signed_value <- parsed.magnitude.i64()
+                return SchemaIntegerValue{target: target, signed_value: signed_value}
+            return SchemaIntegerValue{target: target, unsigned_value: parsed.magnitude}

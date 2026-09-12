@@ -342,12 +342,18 @@ a value; forged ready/completed binding state is rejected as well. Validation
 also rejects collisions between an explicit source alias and another field's
 default source name. `EsSchemaJson` materializes one object root into an owned
 record in schema-field order: text values are decoded UTF-8, JSON numbers retain
-their exact lexemes (including `-0` and exponent spelling), booleans and nulls
-remain distinct, and missing optional fields use an explicit `Missing` tag.
-Unknown keys follow `allow_unknown`; required-field and JSON-kind mismatches
-fail before a record is returned. Array/object fields and `Any` are explicitly
-rejected until recursive value typing and number-target conversion policies
-are specified. Generated native record constructors remain open.
+their exact lexemes by default (including `-0` and exponent spelling),
+booleans and nulls remain distinct, and missing optional fields use an explicit
+`Missing` tag. A field may opt into an exact `I8`/`I16`/`I32`/`I64` or
+`U8`/`U16`/`U32`/`U64` `integer_target`; the adapter then accepts only an
+integer JSON number (bounded to 4,096 bytes), checks the target range, and
+stores a tagged signed or unsigned integer without floating-point conversion.
+JSON's grammar rejects leading plus signs and leading-zero forms, while decimal
+and exponent forms are not integers for this target. Unknown keys follow
+`allow_unknown`; required-field and JSON-kind mismatches fail before a record
+is returned.
+Array/object fields and `Any` remain rejected until recursive value typing is
+defined. Generated native record constructors remain open.
 
 `EsCsv` turns the `CsvPolicy` into a quote-aware streaming state machine.
 `CsvStream` counts input bytes, fields, field bytes, and records against the
@@ -387,10 +393,16 @@ fields fail explicitly. `allow_unknown` controls unmatched header and data
 columns. Optional missing columns carry a `Missing` tag, distinct from an
 empty `Text` cell. Doubled quotes and configured in-quote escapes are decoded;
 optional unquoted trimming is ASCII space/tab only and never affects quoted
-cells. Numeric and other typed CSV conversions remain open rather than being
-guessed from cell contents. `materialize_csv_schema_batch` validates its inputs
-and prepares the header/positional projection once per call for an exact
-data-row range, then returns the owned batch atomically. Each batch is capped at 4,096 rows,
+cells. CSV/TSV fields remain declared as `Text`; an explicit integer target
+instead parses the decoded cell as a base-10 integer without whitespace,
+underscores, decimal point, exponent, or floating conversion, with a 4,096-byte
+token ceiling. Existing
+`trim_unquoted` policy may remove outer ASCII space/tab first; quoted cells are
+never trimmed. Signed targets accept `+` or `-`; unsigned targets accept digits
+only. Values are range-checked before being stored in the tagged integer
+payload. `materialize_csv_schema_batch` validates its inputs and prepares the
+header/positional projection once per call for an exact data-row range, then
+returns the owned batch atomically. Each batch is capped at 4,096 rows,
 `DATA_MAX_FIELDS` output values (including `Missing`), and
 `DATA_MAX_INPUT_BYTES` aggregate decoded payload. Empty ranges are allowed at a
 valid row boundary; out-of-range requests fail rather than truncate.

@@ -29,6 +29,7 @@ using EsJsonLinesParse
 using EsJsonLinesFilePosix
 using EsSchema
 using EsSchemaJson
+using EsSchemaNumeric
 using EsCsv
 using EsCsvMaterialize
 using EsSchemaCsv
@@ -3271,6 +3272,113 @@ def typed_json_schema_materializer_owns_scalars_and_preserves_schema_order() -> 
     assert root_index_rejected
     document.scalar_data[0] <- 90
     assert record.values[0].bytes[0] == 65
+
+
+@test
+def typed_schema_json_integer_targets_convert_exactly_without_float_rounding() -> void:
+    limits: DataDecodeLimits = DataDecodeLimits{input_bytes: 256, tokens: 64, depth: 8, records: 8, fields: 16, field_bytes: 64}
+    document: JsonDocument = parse_json_document(lex_json("{\"small\":127,\"negative\":-128,\"wide\":18446744073709551615,\"minimum\":-9223372036854775808}", limits))
+    schema: SchemaDescriptor = SchemaDescriptor{name: "integer_config", source: SchemaSource.Json, fields: [
+        SchemaField{name: "small", kind: SchemaValueKind.Number, integer_target: SchemaIntegerTarget.I8},
+        SchemaField{name: "negative", kind: SchemaValueKind.Number, integer_target: SchemaIntegerTarget.I8},
+        SchemaField{name: "wide", kind: SchemaValueKind.Number, integer_target: SchemaIntegerTarget.U64},
+        SchemaField{name: "minimum", kind: SchemaValueKind.Number, integer_target: SchemaIntegerTarget.I64}
+    ]}
+    record: SchemaJsonRecord = materialize_json_schema_record(schema, document, 0)
+    assert record.values.count == 4 and record.payload_bytes == 0
+    assert record.values[0].kind == SchemaJsonScalarKind.Integer and record.values[0].integer_value.target == SchemaIntegerTarget.I8 and record.values[0].integer_value.signed_value == 127
+    assert record.values[1].kind == SchemaJsonScalarKind.Integer and record.values[1].integer_value.signed_value == -128
+    assert record.values[2].kind == SchemaJsonScalarKind.Integer and record.values[2].integer_value.target == SchemaIntegerTarget.U64 and record.values[2].integer_value.unsigned_value == 18446744073709551615u64
+    assert record.values[3].kind == SchemaJsonScalarKind.Integer and record.values[3].integer_value.signed_value == (-9223372036854775807i64 - 1)
+
+    too_large: JsonDocument = parse_json_document(lex_json("{\"n\":128}", limits))
+    range_rejected: mutable bool = false
+    catch materialize_json_schema_record(SchemaDescriptor{name: "too_large", source: SchemaSource.Json, fields: [SchemaField{name: "n", kind: SchemaValueKind.Number, integer_target: SchemaIntegerTarget.I8}]}, too_large, 0):
+        ok value:
+            assert false
+        error failure:
+            assert failure == SchemaIntegerError.TargetOutOfRange
+            range_rejected <- true
+    assert range_rejected
+
+    u64_overflow: JsonDocument = parse_json_document(lex_json("{\"n\":18446744073709551616}", limits))
+    u64_range_rejected: mutable bool = false
+    catch materialize_json_schema_record(SchemaDescriptor{name: "u64_too_large", source: SchemaSource.Json, fields: [SchemaField{name: "n", kind: SchemaValueKind.Number, integer_target: SchemaIntegerTarget.U64}]}, u64_overflow, 0):
+        ok value:
+            assert false
+        error failure:
+            assert failure == SchemaIntegerError.TargetOutOfRange
+            u64_range_rejected <- true
+    assert u64_range_rejected
+
+    decimal: JsonDocument = parse_json_document(lex_json("{\"n\":1.0}", limits))
+    decimal_rejected: mutable bool = false
+    catch materialize_json_schema_record(SchemaDescriptor{name: "not_integral", source: SchemaSource.Json, fields: [SchemaField{name: "n", kind: SchemaValueKind.Number, integer_target: SchemaIntegerTarget.I32}]}, decimal, 0):
+        ok value:
+            assert false
+        error failure:
+            assert failure == SchemaIntegerError.MalformedInteger
+            decimal_rejected <- true
+    assert decimal_rejected
+
+    invalid_target: mutable bool = false
+    catch validate_schema_descriptor(SchemaDescriptor{name: "wrong_target", source: SchemaSource.Json, fields: [SchemaField{name: "text", kind: SchemaValueKind.Text, integer_target: SchemaIntegerTarget.I8}]}):
+        ok value:
+            assert false
+        error failure:
+            assert failure == SchemaContractError.InvalidIntegerTarget
+            invalid_target <- true
+    assert invalid_target
+
+
+@test
+def typed_csv_schema_integer_targets_decode_signed_and_unsigned_fields() -> void:
+    source: sview = "\"-128\",+127,255\n"
+    materializer: mutable CsvMaterializer = CsvMaterializer{source: source}
+    _ = advance_csv_materializer(materializer, CsvMaterializerEvent.Begin)
+    _ = advance_csv_materializer(materializer, CsvMaterializerEvent.Field, 0, 6, true)
+    _ = advance_csv_materializer(materializer, CsvMaterializerEvent.Field, 7, 11, false)
+    _ = advance_csv_materializer(materializer, CsvMaterializerEvent.Field, 12, 15, false)
+    _ = advance_csv_materializer(materializer, CsvMaterializerEvent.Record, 0, 0, false, 0, 3)
+    _ = advance_csv_materializer(materializer, CsvMaterializerEvent.End)
+    schema: SchemaDescriptor = SchemaDescriptor{name: "numeric_row", source: SchemaSource.Csv, fields: [
+        SchemaField{name: "minimum", kind: SchemaValueKind.Text, integer_target: SchemaIntegerTarget.I8},
+        SchemaField{name: "positive", kind: SchemaValueKind.Text, integer_target: SchemaIntegerTarget.I8},
+        SchemaField{name: "unsigned", kind: SchemaValueKind.Text, integer_target: SchemaIntegerTarget.U8}
+    ]}
+    record: SchemaCsvRecord = materialize_csv_schema_record(schema, materializer, 0)
+    assert record.values.count == 3 and record.payload_bytes == 0
+    assert record.values[0].kind == SchemaCsvValueKind.Integer and record.values[0].integer_value.signed_value == -128
+    assert record.values[1].kind == SchemaCsvValueKind.Integer and record.values[1].integer_value.signed_value == 127
+    assert record.values[2].kind == SchemaCsvValueKind.Integer and record.values[2].integer_value.unsigned_value == 255
+
+    malformed: mutable CsvMaterializer = CsvMaterializer{source: "1_0\n"}
+    _ = advance_csv_materializer(malformed, CsvMaterializerEvent.Begin)
+    _ = advance_csv_materializer(malformed, CsvMaterializerEvent.Field, 0, 3, false)
+    _ = advance_csv_materializer(malformed, CsvMaterializerEvent.Record, 0, 0, false, 0, 1)
+    _ = advance_csv_materializer(malformed, CsvMaterializerEvent.End)
+    malformed_rejected: mutable bool = false
+    catch materialize_csv_schema_record(SchemaDescriptor{name: "underscored", source: SchemaSource.Csv, fields: [SchemaField{name: "n", kind: SchemaValueKind.Text, integer_target: SchemaIntegerTarget.I32}]}, malformed, 0):
+        ok value:
+            assert false
+        error failure:
+            assert failure == SchemaIntegerError.MalformedInteger
+            malformed_rejected <- true
+    assert malformed_rejected
+
+    empty: mutable CsvMaterializer = CsvMaterializer{source: "\n"}
+    _ = advance_csv_materializer(empty, CsvMaterializerEvent.Begin)
+    _ = advance_csv_materializer(empty, CsvMaterializerEvent.Field, 0, 0, false)
+    _ = advance_csv_materializer(empty, CsvMaterializerEvent.Record, 0, 0, false, 0, 1)
+    _ = advance_csv_materializer(empty, CsvMaterializerEvent.End)
+    empty_rejected: mutable bool = false
+    catch materialize_csv_schema_record(SchemaDescriptor{name: "empty_integer", source: SchemaSource.Csv, fields: [SchemaField{name: "n", kind: SchemaValueKind.Text, integer_target: SchemaIntegerTarget.I32}]}, empty, 0):
+        ok value:
+            assert false
+        error failure:
+            assert failure == SchemaIntegerError.MalformedInteger
+            empty_rejected <- true
+    assert empty_rejected
 
 
 @test
