@@ -1,4 +1,4 @@
-# Owned text-only CSV/TSV row projection into a checked schema.
+# Owned text-only CSV/TSV row and bounded batch projection into a checked schema.
 #
 # Parsing and source-span accounting are separate. This adapter accepts only
 # completed, policy-bound EsCsvMaterialize records, then unquotes and copies a
@@ -14,6 +14,8 @@ module EsSchemaCsv:
     public:
         const SCHEMA_CSV_MAX_PAYLOAD_BYTES: usize = DATA_MAX_INPUT_BYTES
         const SCHEMA_CSV_MAX_INDEX_ENTRIES: usize = SCHEMA_MAX_FIELDS * 2
+        const SCHEMA_CSV_MAX_BATCH_ROWS: usize = 4096
+        const SCHEMA_CSV_MAX_BATCH_VALUES: usize = DATA_MAX_FIELDS
 
 
         const enum SchemaCsvValueKind of u8:
@@ -33,6 +35,13 @@ module EsSchemaCsv:
             payload_bytes: usize = 0
 
 
+        struct SchemaCsvRecordBatch:
+            first_row: usize
+            records: darray[SchemaCsvRecord] = []
+            value_count: usize = 0
+            payload_bytes: usize = 0
+
+
         error SchemaCsvMaterializeError:
             UnsupportedValueKind
             RowIndexInvalid
@@ -44,6 +53,8 @@ module EsSchemaCsv:
             MalformedField
             InvalidUtf8
             PayloadLimitExceeded
+            BatchRowLimitExceeded
+            BatchValueLimitExceeded
 
 
     private:
@@ -68,6 +79,13 @@ module EsSchemaCsv:
             end: usize
             index: usize
             schema_name: bool
+
+
+        struct SchemaCsvProjection:
+            field_to_column: darray[usize] = []
+            header_column_to_field: darray[usize] = []
+            position_order: darray[usize] = []
+            has_header: bool = false
 
 
         def schema_csv_bytes_valid_utf8(bytes: darray[u8]&, start: usize, end: usize) -> bool:
@@ -236,35 +254,31 @@ module EsSchemaCsv:
             for column_index in 0..<header_record.field_count |materializer, header_record, arena, entries|:
                 span: CsvFieldSpan = materializer.fields[header_record.first_field + column_index]
                 start: usize = arena.count
-                _ = try schema_csv_decode_cell(materializer, span, arena, DATA_MAX_FIELD_BYTES)
                 raise SchemaCsvMaterializeError.PayloadLimitExceeded if arena.count > SCHEMA_CSV_MAX_PAYLOAD_BYTES
+                remaining_bytes: usize = SCHEMA_CSV_MAX_PAYLOAD_BYTES - arena.count
+                _ = try schema_csv_decode_cell(materializer, span, arena, remaining_bytes)
                 raise SchemaCsvMaterializeError.InvalidUtf8 if not schema_csv_bytes_valid_utf8(arena, start, arena.count)
                 entries.push(SchemaCsvNameEntry{start: start, end: arena.count, index: column_index, schema_name: false})
 
 
-    public:
-        def materialize_csv_schema_record(schema: SchemaDescriptor&, materializer: CsvMaterializer&, row_ordinal: usize) -> SchemaCsvRecord error[DataContractError, CsvMaterializerError, SchemaContractError, SchemaCsvMaterializeError] can[Memory.Allocate, Abort.Panic]:
+        def schema_csv_validate_inputs(schema: SchemaDescriptor&, materializer: CsvMaterializer&) -> bool error[DataContractError, CsvMaterializerError, SchemaContractError, SchemaCsvMaterializeError] can[Memory.Allocate, Abort.Panic]:
             try validate_schema_descriptor(schema)
             raise SchemaContractError.InvalidSource if schema.source != SchemaSource.Csv and schema.source != SchemaSource.Tsv
             try validate_csv_materializer(materializer)
             raise SchemaCsvMaterializeError.MaterializerIncomplete if materializer.state != CsvMaterializerState.Complete
             for field in schema.fields:
                 raise SchemaCsvMaterializeError.UnsupportedValueKind if field.kind != SchemaValueKind.Text
+            return true
 
-            header_record: CsvRecordSpan = CsvRecordSpan{first_field: 0, field_count: 0}
-            source_record_index: usize = row_ordinal
-            if materializer.policy.header:
-                raise SchemaCsvMaterializeError.RowIndexInvalid if materializer.records.count <= 1 or row_ordinal >= materializer.records.count - 1
-                header_record <- materializer.records[0]
-                source_record_index <- row_ordinal + 1
-            else:
-                raise SchemaCsvMaterializeError.RowIndexInvalid if row_ordinal >= materializer.records.count
-            row: CsvRecordSpan = materializer.records[source_record_index]
 
-            field_to_column: mutable darray[usize] = []
-            for _ in 0..<schema.fields.count |field_to_column|:
-                field_to_column.push(SCHEMA_CSV_INDEX_NONE)
-            if materializer.policy.header:
+        def schema_csv_prepare_projection(schema: SchemaDescriptor&, materializer: CsvMaterializer&) -> SchemaCsvProjection error[SchemaCsvMaterializeError] can[Memory.Allocate, Abort.Panic]:
+            projection: mutable SchemaCsvProjection = SchemaCsvProjection{has_header: materializer.policy.header}
+            for _ in 0..<schema.fields.count |projection|:
+                projection.field_to_column.push(SCHEMA_CSV_INDEX_NONE)
+            if projection.has_header:
+                header_record: CsvRecordSpan = materializer.records[0]
+                raise SchemaCsvMaterializeError.PayloadLimitExceeded if header_record.field_count > SCHEMA_CSV_MAX_INDEX_ENTRIES
+                raise SchemaCsvMaterializeError.PayloadLimitExceeded if schema.fields.count > SCHEMA_CSV_MAX_INDEX_ENTRIES - header_record.field_count
                 name_bytes: mutable darray[u8] = []
                 name_entries: mutable darray[SchemaCsvNameEntry] = []
                 name_order: mutable darray[usize] = []
@@ -275,9 +289,8 @@ module EsSchemaCsv:
                     name_order.push(entry_index)
                     name_scratch.push(entry_index)
                 schema_csv_sort_name_indices(name_bytes, name_entries, name_order, name_scratch)
-                header_column_to_field: mutable darray[usize] = []
-                for _ in 0..<header_record.field_count |header_column_to_field|:
-                    header_column_to_field.push(SCHEMA_CSV_INDEX_NONE)
+                for _ in 0..<header_record.field_count |projection|:
+                    projection.header_column_to_field.push(SCHEMA_CSV_INDEX_NONE)
                 cursor: mutable usize = 0
                 while cursor < name_order.count:
                     group_end: mutable usize = cursor + 1
@@ -298,50 +311,114 @@ module EsSchemaCsv:
                         if schema_field_index == SCHEMA_CSV_INDEX_NONE:
                             raise SchemaCsvMaterializeError.UnknownColumn if not schema.allow_unknown
                         else:
-                            field_to_column[schema_field_index] <- header_column_index
-                            header_column_to_field[header_column_index] <- schema_field_index
+                            projection.field_to_column[schema_field_index] <- header_column_index
+                            projection.header_column_to_field[header_column_index] <- schema_field_index
                     cursor <- group_end
-                for column_index in 0..<row.field_count |row, header_column_to_field|:
-                    raise SchemaCsvMaterializeError.UnknownColumn if column_index >= header_column_to_field.count and not schema.allow_unknown
-                    raise SchemaCsvMaterializeError.UnknownColumn if column_index < header_column_to_field.count and header_column_to_field[column_index] == SCHEMA_CSV_INDEX_NONE and not schema.allow_unknown
             else:
-                position_order: mutable darray[usize] = []
                 position_scratch: mutable darray[usize] = []
-                for field_index in 0..<schema.fields.count |schema, position_order, position_scratch|:
+                for field_index in 0..<schema.fields.count |schema, projection, position_scratch|:
                     position: usize = schema_csv_effective_source_index(schema.fields[field_index], field_index)
                     raise SchemaCsvMaterializeError.SourceIndexInvalid if position >= SCHEMA_MAX_FIELDS
-                    position_order.push(field_index)
+                    projection.position_order.push(field_index)
                     position_scratch.push(field_index)
-                schema_csv_sort_position_indices(schema, position_order, position_scratch)
-                for index in 1..<position_order.count |schema, position_order|:
-                    left: usize = schema_csv_effective_source_index(schema.fields[position_order[index - 1]], position_order[index - 1])
-                    right: usize = schema_csv_effective_source_index(schema.fields[position_order[index]], position_order[index])
+                schema_csv_sort_position_indices(schema, projection.position_order, position_scratch)
+                for index in 1..<projection.position_order.count |schema, projection|:
+                    left: usize = schema_csv_effective_source_index(schema.fields[projection.position_order[index - 1]], projection.position_order[index - 1])
+                    right: usize = schema_csv_effective_source_index(schema.fields[projection.position_order[index]], projection.position_order[index])
                     raise SchemaCsvMaterializeError.DuplicateSourceIndex if left == right
-                for field_index in 0..<schema.fields.count |schema, field_to_column|:
+                for field_index in 0..<schema.fields.count |schema, projection|:
                     position: usize = schema_csv_effective_source_index(schema.fields[field_index], field_index)
-                    field_to_column[field_index] <- position
-                position_to_field: mutable darray[usize] = []
-                for _ in 0..<row.field_count |position_to_field|:
-                    position_to_field.push(SCHEMA_CSV_INDEX_NONE)
-                for field_index in 0..<field_to_column.count |field_to_column, position_to_field, row|:
-                    position: usize = field_to_column[field_index]
-                    position_to_field[position] <- field_index if position < row.field_count
-                for column_index in 0..<row.field_count |position_to_field|:
-                    raise SchemaCsvMaterializeError.UnknownColumn if position_to_field[column_index] == SCHEMA_CSV_INDEX_NONE and not schema.allow_unknown
+                    projection.field_to_column[field_index] <- position
+            return projection
 
+
+        def schema_csv_position_is_mapped(schema: SchemaDescriptor&, projection: SchemaCsvProjection&, position: usize) -> bool:
+            low: mutable usize = 0
+            high: mutable usize = projection.position_order.count
+            while low < high:
+                middle: usize = low + (high - low) / 2
+                field_index: usize = projection.position_order[middle]
+                mapped_position: usize = schema_csv_effective_source_index(schema.fields[field_index], field_index)
+                if mapped_position == position:
+                    return true
+                elif mapped_position < position:
+                    low <- middle + 1
+                else:
+                    high <- middle
+            return false
+
+
+        def schema_csv_validate_row_columns(schema: SchemaDescriptor&, projection: SchemaCsvProjection&, row: CsvRecordSpan) -> bool error[SchemaCsvMaterializeError]:
+            if projection.has_header:
+                for column_index in 0..<row.field_count |row, projection|:
+                    if not schema.allow_unknown:
+                        raise SchemaCsvMaterializeError.UnknownColumn if column_index >= projection.header_column_to_field.count
+                        raise SchemaCsvMaterializeError.UnknownColumn if projection.header_column_to_field[column_index] == SCHEMA_CSV_INDEX_NONE
+            else:
+                for column_index in 0..<row.field_count |row, schema, projection|:
+                    raise SchemaCsvMaterializeError.UnknownColumn if not schema.allow_unknown and not schema_csv_position_is_mapped(schema, projection, column_index)
+            return true
+
+
+        def schema_csv_materialize_row_with_projection(schema: SchemaDescriptor&, materializer: CsvMaterializer&, projection: SchemaCsvProjection&, row_ordinal: usize, source_record_index: usize, payload_limit: usize) -> SchemaCsvRecord error[SchemaContractError, SchemaCsvMaterializeError] can[Memory.Allocate, Abort.Panic]:
+            row: CsvRecordSpan = materializer.records[source_record_index]
+            try schema_csv_validate_row_columns(schema, projection, row)
             record: mutable SchemaCsvRecord = SchemaCsvRecord{row_ordinal: row_ordinal}
-            for field_index in 0..<schema.fields.count |schema, field_to_column, row, materializer, record|:
+            for field_index in 0..<schema.fields.count |schema, projection, row, materializer, record|:
                 field: SchemaField = schema.fields[field_index]
-                column_index: usize = field_to_column[field_index]
+                column_index: usize = projection.field_to_column[field_index]
                 if column_index == SCHEMA_CSV_INDEX_NONE or column_index >= row.field_count:
                     raise SchemaContractError.RequiredFieldMissing if field.required
                     record.values.push(SchemaCsvValue{field_index: field_index, kind: SchemaCsvValueKind.Missing})
                 else:
                     span: CsvFieldSpan = materializer.fields[row.first_field + column_index]
                     value: mutable SchemaCsvValue = SchemaCsvValue{field_index: field_index, kind: SchemaCsvValueKind.Text}
-                    payload_bytes: usize = try schema_csv_decode_cell(materializer, span, value.bytes, DATA_MAX_FIELD_BYTES)
-                    raise SchemaCsvMaterializeError.PayloadLimitExceeded if record.payload_bytes > SCHEMA_CSV_MAX_PAYLOAD_BYTES
-                    raise SchemaCsvMaterializeError.PayloadLimitExceeded if payload_bytes > SCHEMA_CSV_MAX_PAYLOAD_BYTES - record.payload_bytes
+                    raise SchemaCsvMaterializeError.PayloadLimitExceeded if record.payload_bytes > payload_limit
+                    remaining_payload: usize = payload_limit - record.payload_bytes
+                    field_payload_limit: mutable usize = DATA_MAX_FIELD_BYTES
+                    field_payload_limit <- remaining_payload if remaining_payload < field_payload_limit
+                    payload_bytes: usize = try schema_csv_decode_cell(materializer, span, value.bytes, field_payload_limit)
+                    raise SchemaCsvMaterializeError.PayloadLimitExceeded if payload_bytes > remaining_payload
                     record.payload_bytes <- record.payload_bytes + payload_bytes
                     record.values.push(value)
             return record
+
+
+        def schema_csv_data_row_count(materializer: CsvMaterializer&) -> usize:
+            return materializer.records.count - 1 if materializer.policy.header else materializer.records.count
+
+
+        def schema_csv_source_record_index(materializer: CsvMaterializer&, row_ordinal: usize) -> usize:
+            return row_ordinal + 1 if materializer.policy.header else row_ordinal
+
+
+    public:
+        def materialize_csv_schema_record(schema: SchemaDescriptor&, materializer: CsvMaterializer&, row_ordinal: usize) -> SchemaCsvRecord error[DataContractError, CsvMaterializerError, SchemaContractError, SchemaCsvMaterializeError] can[Memory.Allocate, Abort.Panic]:
+            try schema_csv_validate_inputs(schema, materializer)
+            raise SchemaCsvMaterializeError.RowIndexInvalid if row_ordinal >= schema_csv_data_row_count(materializer)
+            projection: SchemaCsvProjection = try schema_csv_prepare_projection(schema, materializer)
+            return try schema_csv_materialize_row_with_projection(schema, materializer, projection, row_ordinal, schema_csv_source_record_index(materializer, row_ordinal), SCHEMA_CSV_MAX_PAYLOAD_BYTES)
+
+
+        def materialize_csv_schema_batch(schema: SchemaDescriptor&, materializer: CsvMaterializer&, first_data_row: usize, row_count: usize) -> SchemaCsvRecordBatch error[DataContractError, CsvMaterializerError, SchemaContractError, SchemaCsvMaterializeError] can[Memory.Allocate, Abort.Panic]:
+            raise SchemaCsvMaterializeError.BatchRowLimitExceeded if row_count > SCHEMA_CSV_MAX_BATCH_ROWS
+            try schema_csv_validate_inputs(schema, materializer)
+            available_rows: usize = schema_csv_data_row_count(materializer)
+            raise SchemaCsvMaterializeError.RowIndexInvalid if first_data_row > available_rows
+            raise SchemaCsvMaterializeError.RowIndexInvalid if row_count > available_rows - first_data_row
+            if row_count != 0:
+                raise SchemaCsvMaterializeError.BatchValueLimitExceeded if schema.fields.count > SCHEMA_CSV_MAX_BATCH_VALUES / row_count
+            projection: SchemaCsvProjection = try schema_csv_prepare_projection(schema, materializer)
+            batch: mutable SchemaCsvRecordBatch = SchemaCsvRecordBatch{first_row: first_data_row}
+            row_offset: mutable usize = 0
+            while row_offset < row_count:
+                row_ordinal: usize = first_data_row + row_offset
+                remaining_payload: usize = SCHEMA_CSV_MAX_PAYLOAD_BYTES - batch.payload_bytes
+                record: SchemaCsvRecord = try schema_csv_materialize_row_with_projection(schema, materializer, projection, row_ordinal, schema_csv_source_record_index(materializer, row_ordinal), remaining_payload)
+                raise SchemaCsvMaterializeError.BatchValueLimitExceeded if record.values.count > SCHEMA_CSV_MAX_BATCH_VALUES - batch.value_count
+                raise SchemaCsvMaterializeError.PayloadLimitExceeded if record.payload_bytes > SCHEMA_CSV_MAX_PAYLOAD_BYTES - batch.payload_bytes
+                batch.value_count <- batch.value_count + record.values.count
+                batch.payload_bytes <- batch.payload_bytes + record.payload_bytes
+                batch.records.push(record)
+                row_offset <- row_offset + 1
+            return batch

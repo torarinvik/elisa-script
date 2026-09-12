@@ -21,11 +21,17 @@ done
 for declaration in \
     'module EsSchemaCsv:' \
     'SCHEMA_CSV_MAX_PAYLOAD_BYTES' \
+    'SCHEMA_CSV_MAX_BATCH_ROWS' \
+    'SCHEMA_CSV_MAX_BATCH_VALUES' \
     'const enum SchemaCsvValueKind of u8:' \
     'struct SchemaCsvValue:' \
     'struct SchemaCsvRecord:' \
+    'struct SchemaCsvRecordBatch:' \
     'error SchemaCsvMaterializeError:' \
     'def materialize_csv_schema_record(' \
+    'def materialize_csv_schema_batch(' \
+    'schema_csv_prepare_projection(' \
+    'schema_csv_materialize_row_with_projection(' \
     'schema_csv_sort_name_indices(' \
     'schema_csv_sort_position_indices(' \
     'SchemaCsvDecodeState.Escaped'; do
@@ -77,6 +83,18 @@ for declaration in \
 done
 
 for boundary in \
+    'BatchRowLimitExceeded' \
+    'BatchValueLimitExceeded' \
+    'row_count > available_rows - first_data_row' \
+    'SCHEMA_CSV_MAX_BATCH_VALUES / row_count' \
+    'record.payload_bytes > SCHEMA_CSV_MAX_PAYLOAD_BYTES - batch.payload_bytes' \
+    'remaining_payload: usize = payload_limit - record.payload_bytes' \
+    'field_payload_limit <- remaining_payload if remaining_payload < field_payload_limit' \
+    'schema_csv_position_is_mapped'; do
+    rg -Fq "$boundary" "$csv_materializer"
+done
+
+for boundary in \
     'DuplicateField' \
     'DuplicateSourceName' \
     'schema_effective_source_name(field)' \
@@ -101,6 +119,7 @@ for fixture_pattern in \
     'typed_schema_binding_contract_checks_json_kinds_and_required_fields' \
     'typed_json_schema_materializer_owns_scalars_and_preserves_schema_order' \
     'typed_csv_schema_materializer_binds_header_aliases_and_optional_fields' \
+    'typed_csv_schema_batch_projects_exact_ranges_with_shared_mapping' \
     'typed_csv_schema_materializer_distinguishes_empty_from_missing_and_maps_positions' \
     'typed_csv_schema_materializer_unescapes_quotes_and_rejects_duplicate_header_names' \
     'SchemaCsvValueKind.Missing' \
@@ -115,7 +134,8 @@ for fixture_pattern in \
 done
 
 rg -Fq '`EsSchema`' "$docs"
-rg -Fq '`EsSchemaCsv` materializes one completed CSV/TSV record' "$docs"
+rg -Fq '`EsSchemaCsv` materializes completed CSV/TSV records' "$docs"
+rg -Fq 'prepares the schema' "$docs"
 rg -Fq 'Latest P08 typed JSON schema follow-up' "$plan"
 
-printf 'schema model audit: typed JSON and CSV binding with owned scalar text materialization are present\n'
+printf 'schema model audit: typed JSON binding and bounded owned CSV row batches are present\n'

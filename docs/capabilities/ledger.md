@@ -762,10 +762,12 @@ configured-byte, LF, CRLF, and CR record boundaries, including CRLF spans and
 quoted multiline fields. The focused IR fixture and check_csv_materializer.sh
 audit are static evidence; large batch construction remains open.
 
-ES-SCRIPT-050 | EsSchemaCsv materializes one complete CSV/TSV row into owned,
+ES-SCRIPT-050 | EsSchemaCsv materializes complete CSV/TSV rows into owned,
 schema-ordered UTF-8 text, with decoded header aliases or unique positional
 indexes, explicit Missing distinct from empty Text, required/unknown-column
-checks, quote unescaping, and bounded payload accounting. Its fixtures,
+checks, quote unescaping, and bounded payload accounting. Its exact-range batch
+API prepares projection once and caps each result at 4,096 rows,
+`DATA_MAX_FIELDS` values, and `DATA_MAX_INPUT_BYTES` decoded payload. Fixtures,
 namespace inclusion, IR documentation, and compiler-free audit source are
 static only; numeric conversion, generated record constructors, and runtime
 qualification remain open.

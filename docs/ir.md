@@ -379,7 +379,7 @@ is building or complete. Record starts are range-checked before subtraction.
 The incremental event API revalidates its ledger and is intended for small
 construction; a future large adapter should capture bounded parser batches.
 
-`EsSchemaCsv` materializes one completed CSV/TSV record as owned UTF-8 text in
+`EsSchemaCsv` materializes completed CSV/TSV records as owned UTF-8 text in
 schema order. It binds decoded header names through `source_name` aliases, or
 uses `source_index` (declaration order by default) without a header; duplicate
 headers/indexes, unknown columns, invalid quoting/UTF-8, and missing required
@@ -388,7 +388,12 @@ columns. Optional missing columns carry a `Missing` tag, distinct from an
 empty `Text` cell. Doubled quotes and configured in-quote escapes are decoded;
 optional unquoted trimming is ASCII space/tab only and never affects quoted
 cells. Numeric and other typed CSV conversions remain open rather than being
-guessed from cell contents.
+guessed from cell contents. `materialize_csv_schema_batch` validates its inputs
+and prepares the header/positional projection once per call for an exact
+data-row range, then returns the owned batch atomically. Each batch is capped at 4,096 rows,
+`DATA_MAX_FIELDS` output values (including `Missing`), and
+`DATA_MAX_INPUT_BYTES` aggregate decoded payload. Empty ranges are allowed at a
+valid row boundary; out-of-range requests fail rather than truncate.
 
 `EsInstall` makes release publication a typed state machine. An
 `InstallPlan` names the package version, workspace/user/system scope, source,
