@@ -24,6 +24,7 @@ for declaration in \
     'const enum JsonDocumentEvent of u8:' \
     'struct JsonRange:' \
     'struct JsonNode:' \
+    'struct JsonArrayChild:' \
     'struct JsonMember:' \
     'struct JsonDocument:' \
     'error JsonContractError:' \
@@ -37,14 +38,22 @@ done
 for boundary in \
     'InvalidRange' \
     'InvalidChildRange' \
-    'json_node_child_range_valid(node, document.nodes.count)' \
+    'json_node_child_range_valid(node, document.children.count)' \
+    'json_node_member_range_valid(node, document.members.count)' \
+    'edge.owner_index != index' \
+    'member.owner_index != index' \
+    'earlier.key == member.key' \
+    'document.policy.duplicate_keys == JsonDuplicateKeyPolicy.KeepFirst' \
     'node.scalar_bytes > node.range.end - node.range.start' \
-    'node.kind == JsonNodeKind.Array or node.kind == JsonNodeKind.Object' \
+    'if node.kind == JsonNodeKind.Array' \
     'document.state == JsonDocumentState.Empty' \
     'document.state == JsonDocumentState.Sealed' \
     'derived_depth' \
     'DuplicateObjectKey' \
     'NodeLimitExceeded' \
+    'InvalidArrayChild' \
+    'InvalidMemberOwner' \
+    'InvalidMemberOrder' \
     'MemberLimitExceeded' \
     'RootLimitExceeded' \
     'AppendNotReady' \
@@ -56,8 +65,13 @@ rg -Fq 'include "../runtime/json_model.elisa"' "$ir"
 for fixture_pattern in \
     'typed_json_document_contract_is_bounded_and_sealed_explicitly' \
     'JsonDocumentEvent.AppendNode' \
+    'JsonDocumentEvent.AppendArrayChild' \
     'JsonDocumentEvent.AppendMember' \
     'JsonContractError.DuplicateObjectKey' \
+    'JsonArrayChild{owner_index: 1, value_index: 0, ordinal: 0}' \
+    'JsonMember{owner_index: 3, key: "name"' \
+    'nul_key' \
+    'forged_policy_duplicates' \
     'forged_empty' \
     'forged_depth'; do
     rg -Fq "$fixture_pattern" "$fixture"

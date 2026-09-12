@@ -185,19 +185,28 @@ input/offset ledger.
 
 `EsJson` is the namespaced adapter boundary for the vendor JSON parser. A
 `JsonDocument` owns a bounded table of non-recursive `JsonNode` values,
-source ranges, object members, and roots, while `JsonPolicy` and
+source ranges, array-child edges, object members, and roots, while `JsonPolicy` and
 `DataDecodeLimits` remain explicit inputs. `advance_json_document` revalidates
 the complete document ledger before every transition, requires `Empty → Building
 → Sealed` (or `Failed`) transitions, and rejects out-of-range
-children, duplicate object keys, oversized source/token/node/member tables, and
+children, duplicate object keys, oversized source/token/node/child/member tables, and
 malformed ranges before a renderer or schema decoder can consume the table.
 Validation also reconciles empty/sealed lifecycle shape, maximum node depth, and
 scalar payload bytes against each node's source range; composite nodes cannot
-carry scalar payload accounting. Composite child ranges prove the start index is
-within the node table before subtracting the child count, both when a node is
-appended and when the full document is revalidated, so malformed metadata cannot
-remain in a partially mutated table or trigger an underflowing bounds
-calculation.
+carry scalar payload accounting. Arrays index an explicit `JsonArrayChild`
+table; each edge names its array owner, value node, and ordinal. Objects index
+their own contiguous member ranges, and each `JsonMember` names its object owner,
+value node, and ordinal. The ranges are checked against their respective tables
+(never against the node table), with complete table coverage and owner/order
+checks. Duplicate comparison is scoped to one object and uses decoded key text;
+decoded keys may contain U+0000, which is legal in JSON strings and must not be
+rejected using path/C-string rules.
+Reject, KeepFirst, and KeepLast therefore cannot merge equal names from distinct
+nested or sibling objects. The retained object table is canonical under all
+three policies: append applies KeepFirst/KeepLast, while validation rejects a
+forged duplicate that remains in the final table. A decoder remains responsible
+for supplying decoded keys and building node/edge/member rows in the documented
+order.
 The adapter is intentionally separate from the vendor's global parser names so
 public Elisascript modules retain namespace hygiene; parser translation,
 streaming JSONL, typed schema conversion, and encoding remain open.
