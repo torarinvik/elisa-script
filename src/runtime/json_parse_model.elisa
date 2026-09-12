@@ -50,6 +50,12 @@ module EsJsonParse:
             value_index: usize
 
 
+        const enum JsonParseKeyOrder of u8:
+            Before
+            Equal
+            After
+
+
         struct JsonParseFrame:
             kind: JsonParseFrameKind
             phase: JsonParsePhase
@@ -68,6 +74,60 @@ module EsJsonParse:
 
         def json_parse_scalar_kind(kind: JsonLexemeKind) -> bool:
             return kind in {JsonLexemeKind.String, JsonLexemeKind.Number, JsonLexemeKind.True, JsonLexemeKind.False, JsonLexemeKind.Null}
+
+
+        def json_parse_pending_key_order(decoded: darray[u8], members: darray[JsonParsePendingMember], left_index: usize, right_index: usize) -> JsonParseKeyOrder:
+            left: JsonParsePendingMember = members[left_index]
+            right: JsonParsePendingMember = members[right_index]
+            common_bytes: usize = left.key_bytes if left.key_bytes < right.key_bytes else right.key_bytes
+            for offset in 0..<common_bytes |decoded, left, right|:
+                left_byte: u8 = decoded[left.key_start + offset]
+                right_byte: u8 = decoded[right.key_start + offset]
+                return JsonParseKeyOrder.Before if left_byte < right_byte
+                return JsonParseKeyOrder.After if left_byte > right_byte
+            return JsonParseKeyOrder.Equal if left.key_bytes == right.key_bytes
+            return JsonParseKeyOrder.Before if left.key_bytes < right.key_bytes
+            return JsonParseKeyOrder.After
+
+
+        def json_parse_sorted_pending_members(decoded: darray[u8], members: darray[JsonParsePendingMember]) -> darray[usize] can[Memory.Allocate, Abort.Panic]:
+            order: mutable darray[usize] = []
+            scratch: mutable darray[usize] = []
+            for index in 0..<members.count |order, scratch|:
+                order.push(index)
+                scratch.push(index)
+            width: mutable usize = 1
+            while width < order.count:
+                start: mutable usize = 0
+                while start < order.count:
+                    middle: mutable usize = start + width
+                    middle <- order.count if middle > order.count
+                    end: mutable usize = middle + width
+                    end <- order.count if end > order.count
+                    left: mutable usize = start
+                    right: mutable usize = middle
+                    destination: mutable usize = start
+                    while destination < end:
+                        if left == middle:
+                            scratch[destination] <- order[right]
+                            right <- right + 1
+                        elif right == end:
+                            scratch[destination] <- order[left]
+                            left <- left + 1
+                        # Taking the left row on equal keys keeps the order
+                        # stable, so duplicate groups retain source ordinals.
+                        elif json_parse_pending_key_order(decoded, members, order[left], order[right]) != JsonParseKeyOrder.After:
+                            scratch[destination] <- order[left]
+                            left <- left + 1
+                        else:
+                            scratch[destination] <- order[right]
+                            right <- right + 1
+                        destination <- destination + 1
+                    start <- end
+                for index in 0..<order.count |order, scratch|:
+                    order[index] <- scratch[index]
+                width <- order.count if width > order.count / 2 else width * 2
+            return order
 
 
         def json_parse_push_frame(frames: mutable darray[JsonParseFrame]&, kind: JsonParseFrameKind, token: JsonLexeme, depth: usize, limits: DataDecodeLimits) -> void error[JsonParseError] can[Memory.Allocate, Abort.Panic]:
@@ -120,16 +180,38 @@ module EsJsonParse:
                 node_kind <- JsonNodeKind.Null
             else:
                 raise JsonParseError.UnexpectedToken(token.range.start)
-            bytes_delta: usize = lexed.source_bytes if document.nodes.count == 0 else 0
-            node: JsonNodeInput = JsonNodeInput{kind: node_kind, range: token.range, depth: depth, scalar_value: scalar_value, bool_value: bool_value}
-            _ = try advance_json_document(document, JsonDocumentEvent.AppendNode, node, JsonMemberInput{owner_index: JSON_INDEX_NONE, key: ""}, JSON_INDEX_NONE, bytes_delta)
+            scalar_bytes: usize = sview_len(scalar_value)
+            raise JsonContractError.InvalidScalarBytes if scalar_bytes > lexed.limits.field_bytes
+            raise JsonContractError.TokenLimitExceeded if document.token_count >= lexed.limits.tokens
+            raise JsonContractError.NodeLimitExceeded if document.nodes.count >= JSON_MAX_NODES
+            raise JsonContractError.InvalidScalarPayload if document.scalar_data.count > JSON_MAX_TOTAL_SCALAR_BYTES
+            raise JsonContractError.InvalidScalarPayload if document.scalar_data.count > lexed.limits.input_bytes
+            raise JsonContractError.InvalidScalarPayload if scalar_bytes > JSON_MAX_TOTAL_SCALAR_BYTES - document.scalar_data.count
+            raise JsonContractError.InvalidScalarPayload if scalar_bytes > lexed.limits.input_bytes - document.scalar_data.count
+            stored_node: mutable JsonNode = JsonNode{kind: node_kind, range: token.range, depth: depth, bool_value: bool_value}
+            if node_kind == JsonNodeKind.Text or node_kind == JsonNodeKind.Number:
+                if node_kind == JsonNodeKind.Number:
+                    raise JsonContractError.InvalidScalarPayload if not json_number_lexeme_is_valid(scalar_value)
+                stored_node.scalar_start <- document.scalar_data.count
+                stored_node.scalar_bytes <- scalar_bytes
+                for offset in 0..<scalar_bytes |document, scalar_value|:
+                    document.scalar_data.push(sview_at(scalar_value, offset))
+            document.nodes.push(stored_node)
+            document.token_count <- document.token_count + 1
+            document.max_depth <- depth if depth > document.max_depth
             return document.nodes.count - 1
 
 
         def json_parse_record_value(document: mutable JsonDocument&, frames: mutable darray[JsonParseFrame]&, value_index: usize, offset: usize) -> void error[JsonParseError, JsonContractError] can[Memory.Allocate, Abort.Panic]:
             if frames.count == 0:
                 raise JsonParseError.MultipleRoots(offset) if document.roots.count != 0
-                _ = try advance_json_document(document, JsonDocumentEvent.AppendRoot, JsonNodeInput{kind: JsonNodeKind.Null}, JsonMemberInput{owner_index: JSON_INDEX_NONE, key: ""}, value_index)
+                raise JsonContractError.RootLimitExceeded if document.roots.count >= document.limits.records
+                root: mutable JsonNode = document.nodes[value_index]
+                root.owner_kind <- JsonNodeOwnerKind.Root
+                root.owner_index <- JSON_INDEX_NONE
+                root.owner_ordinal <- document.roots.count
+                document.nodes[value_index] <- root
+                document.roots.push(value_index)
             else:
                 frame_index: usize = frames.count - 1
                 frame: mutable JsonParseFrame = frames[frame_index]
@@ -140,6 +222,7 @@ module EsJsonParse:
                     frame.phase <- JsonParsePhase.ArrayCommaOrEnd
                 else:
                     raise JsonParseError.ExpectedValue(offset) if frame.phase != JsonParsePhase.ObjectValue
+                    raise JsonContractError.MemberLimitExceeded if frame.members.count >= document.limits.fields
                     raise JsonParseError.FrameLimitExceeded(offset) if frame.members.count >= document.limits.tokens
                     frame.members.push(JsonParsePendingMember{key_start: frame.key_start, key_bytes: frame.key_bytes, key_range: frame.key_range, value_index: value_index})
                     frame.phase <- JsonParsePhase.ObjectCommaOrEnd
@@ -155,23 +238,111 @@ module EsJsonParse:
             _ = try json_parse_close_allowed(frame, document.policy, token.range.start)
             container_kind: JsonNodeKind = JsonNodeKind.Array if frame.kind == JsonParseFrameKind.Array else JsonNodeKind.Object
             container_range: JsonRange = JsonRange{start: frame.open_start, end: token.range.end}
-            bytes_delta: usize = lexed.source_bytes if document.nodes.count == 0 else 0
-            _ = try advance_json_document(document, JsonDocumentEvent.AppendNode, JsonNodeInput{kind: container_kind, range: container_range, depth: frame.depth}, JsonMemberInput{owner_index: JSON_INDEX_NONE, key: ""}, JSON_INDEX_NONE, bytes_delta)
+            pending_order: mutable darray[usize] = []
+            retained: mutable darray[bool] = []
+            selected_values: mutable darray[usize] = []
+            pending_to_document: mutable darray[usize] = []
+            retained_count: mutable usize = 0
+            retained_key_bytes: mutable usize = 0
+            order_cursor: mutable usize = 0
+            if frame.kind == JsonParseFrameKind.Object:
+                raise JsonContractError.InvalidScalarPayload if document.scalar_data.count > document.source_bytes
+                raise JsonContractError.InvalidMemberKey if document.key_bytes.count > document.source_bytes - document.scalar_data.count
+                raise JsonContractError.InvalidMemberKey if document.key_bytes.count > JSON_MAX_TOTAL_KEY_BYTES
+                available_key_bytes: usize = document.source_bytes - document.scalar_data.count - document.key_bytes.count
+                pending_order <- try json_parse_sorted_pending_members(lexed.decoded_data, frame.members)
+                for pending_index in 0..<frame.members.count |frame, retained, selected_values, pending_to_document|:
+                    retained.push(false)
+                    selected_values.push(frame.members[pending_index].value_index)
+                    pending_to_document.push(JSON_INDEX_NONE)
+                while order_cursor < pending_order.count:
+                    first_pending: usize = pending_order[order_cursor]
+                    group_end: mutable usize = order_cursor + 1
+                    while group_end < pending_order.count and json_parse_pending_key_order(lexed.decoded_data, frame.members, first_pending, pending_order[group_end]) == JsonParseKeyOrder.Equal:
+                        group_end <- group_end + 1
+                    raise JsonContractError.DuplicateObjectKey if group_end - order_cursor > 1 and document.policy.duplicate_keys == JsonDuplicateKeyPolicy.Reject
+                    retained[first_pending] <- true
+                    if document.policy.duplicate_keys == JsonDuplicateKeyPolicy.KeepLast:
+                        last_pending: usize = pending_order[group_end - 1]
+                        selected_values[first_pending] <- frame.members[last_pending].value_index
+                    retained_count <- retained_count + 1
+                    pending_key_bytes: usize = frame.members[first_pending].key_bytes
+                    raise JsonContractError.InvalidMemberKey if retained_key_bytes > available_key_bytes
+                    raise JsonContractError.InvalidMemberKey if pending_key_bytes > available_key_bytes - retained_key_bytes
+                    raise JsonContractError.InvalidMemberKey if retained_key_bytes > JSON_MAX_TOTAL_KEY_BYTES
+                    raise JsonContractError.InvalidMemberKey if pending_key_bytes > JSON_MAX_TOTAL_KEY_BYTES - retained_key_bytes
+                    retained_key_bytes <- retained_key_bytes + pending_key_bytes
+                    order_cursor <- group_end
+                raise JsonContractError.NodeLimitExceeded if document.nodes.count >= JSON_MAX_NODES
+                raise JsonContractError.TokenLimitExceeded if document.token_count >= lexed.limits.tokens
+                raise JsonContractError.MemberLimitExceeded if document.members.count > document.limits.fields
+                raise JsonContractError.MemberLimitExceeded if document.members.count > JSON_MAX_MEMBERS
+                raise JsonContractError.MemberLimitExceeded if retained_count > document.limits.fields - document.members.count
+                raise JsonContractError.MemberLimitExceeded if retained_count > JSON_MAX_MEMBERS - document.members.count
+                raise JsonContractError.MemberLimitExceeded if document.member_key_order.count != document.members.count
+                raise JsonContractError.InvalidMemberKey if retained_key_bytes > JSON_MAX_TOTAL_KEY_BYTES - document.key_bytes.count
+                for pending_index in 0..<frame.members.count |frame, retained|:
+                    if retained[pending_index]:
+                        raise JsonContractError.InvalidMemberKey if frame.members[pending_index].key_bytes > document.limits.field_bytes
+                        raise JsonContractError.InvalidMemberKey if frame.members[pending_index].key_bytes >= JSON_MAX_KEY_BYTES
+            else:
+                raise JsonContractError.NodeLimitExceeded if document.nodes.count >= JSON_MAX_NODES
+                raise JsonContractError.TokenLimitExceeded if document.token_count >= lexed.limits.tokens
+                raise JsonContractError.NodeLimitExceeded if frame.children.count > JSON_MAX_NODES - document.children.count
+                raise JsonContractError.TokenLimitExceeded if frame.children.count > document.limits.tokens - document.children.count
+            container: mutable JsonNode = JsonNode{kind: container_kind, range: container_range, depth: frame.depth}
+            document.nodes.push(container)
+            document.token_count <- document.token_count + 1
+            document.max_depth <- frame.depth if frame.depth > document.max_depth
             container_index: usize = document.nodes.count - 1
             if frame.kind == JsonParseFrameKind.Array:
+                if frame.children.count != 0:
+                    container.child_start <- document.children.count
                 for ordinal in 0..<frame.children.count |document, frame, container_index, ordinal|:
                     child_index: usize = frame.children[ordinal]
                     child: JsonArrayChild = JsonArrayChild{owner_index: container_index, value_index: child_index, ordinal: ordinal}
-                    _ = try advance_json_document(document, JsonDocumentEvent.AppendArrayChild, JsonNodeInput{kind: JsonNodeKind.Null}, JsonMemberInput{owner_index: JSON_INDEX_NONE, key: ""}, JSON_INDEX_NONE, 0, child)
+                    value: mutable JsonNode = document.nodes[child_index]
+                    value.owner_kind <- JsonNodeOwnerKind.ArrayChild
+                    value.owner_index <- container_index
+                    value.owner_ordinal <- ordinal
+                    document.nodes[child_index] <- value
+                    document.children.push(child)
+                container.child_count <- frame.children.count
             else:
-                decoded_view: sview = bytes_view(lexed.decoded_data)
-                for ordinal in 0..<frame.members.count |document, lexed, frame, container_index, decoded_view, ordinal|:
-                    pending: JsonParsePendingMember = frame.members[ordinal]
-                    key_end: usize = pending.key_start + pending.key_bytes
-                    key: sview = string_view_slice(decoded_view, pending.key_start.i64(), key_end.i64())
-                    retained_ordinal: usize = document.nodes[container_index].member_count
-                    member: JsonMemberInput = JsonMemberInput{owner_index: container_index, key: key, key_range: pending.key_range, value_index: pending.value_index, ordinal: retained_ordinal}
-                    _ = try advance_json_document(document, JsonDocumentEvent.AppendMember, JsonNodeInput{kind: JsonNodeKind.Null}, member)
+                if retained_count != 0:
+                    container.member_start <- document.members.count
+                    container.member_key_order_start <- document.member_key_order.count
+                retained_ordinal: mutable usize = 0
+                for pending_index in 0..<frame.members.count |document, frame, retained, selected_values, pending_to_document, retained_ordinal, container_index|:
+                    if retained[pending_index]:
+                        pending: JsonParsePendingMember = frame.members[pending_index]
+                        key_start: usize = document.key_bytes.count
+                        for offset in 0..<pending.key_bytes |document, lexed, pending|:
+                            document.key_bytes.push(lexed.decoded_data[pending.key_start + offset])
+                        member_index: usize = document.members.count
+                        member: JsonMember = JsonMember{owner_index: container_index, key_start: key_start, key_bytes: pending.key_bytes, key_range: pending.key_range, value_index: selected_values[pending_index], ordinal: retained_ordinal}
+                        document.members.push(member)
+                        pending_to_document[pending_index] <- member_index
+                        value: mutable JsonNode = document.nodes[selected_values[pending_index]]
+                        value.owner_kind <- JsonNodeOwnerKind.ObjectMember
+                        value.owner_index <- container_index
+                        value.owner_ordinal <- retained_ordinal
+                        document.nodes[selected_values[pending_index]] <- value
+                        retained_ordinal <- retained_ordinal + 1
+                order_cursor <- 0
+                while order_cursor < pending_order.count:
+                    first_pending: usize = pending_order[order_cursor]
+                    group_end: mutable usize = order_cursor + 1
+                    while group_end < pending_order.count and json_parse_pending_key_order(lexed.decoded_data, frame.members, first_pending, pending_order[group_end]) == JsonParseKeyOrder.Equal:
+                        group_end <- group_end + 1
+                    member_index: usize = pending_to_document[first_pending]
+                    member: mutable JsonMember = document.members[member_index]
+                    member.member_key_order_rank <- document.member_key_order.count
+                    document.members[member_index] <- member
+                    document.member_key_order.push(member_index)
+                    order_cursor <- group_end
+                container.member_count <- retained_count
+            document.nodes[container_index] <- container
             _ = frames.pop()
             try json_parse_record_value(document, frames, container_index, token.range.start)
 
@@ -179,6 +350,7 @@ module EsJsonParse:
         def json_parse_build(lexed: JsonLexedSource&, document: mutable JsonDocument&) -> void error[JsonParseError, JsonContractError] can[Memory.Allocate, Abort.Panic]:
             source_view: sview = bytes_view(lexed.source_data)
             decoded_view: sview = bytes_view(lexed.decoded_data)
+            document.source_bytes <- lexed.source_bytes
             frames: mutable darray[JsonParseFrame] = []
             cursor: mutable usize = 0
             while cursor < lexed.tokens.count:
@@ -221,6 +393,7 @@ module EsJsonParse:
                         raise JsonParseError.ExpectedColon(token.range.start)
                     elif frame.kind == JsonParseFrameKind.Object and (frame.phase == JsonParsePhase.ObjectFirstKeyOrEnd or frame.phase == JsonParsePhase.ObjectKey):
                         raise JsonParseError.NonStringObjectKey(token.range.start) if token.kind != JsonLexemeKind.String
+                        raise JsonContractError.InvalidMemberKey if token.payload_bytes > lexed.limits.field_bytes or token.payload_bytes >= JSON_MAX_KEY_BYTES
                         frame.key_start <- token.payload_start
                         frame.key_bytes <- token.payload_bytes
                         frame.key_range <- token.range

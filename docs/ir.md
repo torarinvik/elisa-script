@@ -184,9 +184,10 @@ deltas cumulatively; record boundaries cannot reset field totals or bypass the
 input/offset ledger.
 
 `EsJson` is the namespaced owned-document boundary for JSON parsing. A
-version-4 `JsonDocument` owns bounded tables of non-recursive `JsonNode`
+version-5 `JsonDocument` owns bounded tables of non-recursive `JsonNode`
 values, source ranges, array-child edges, object members, decoded key bytes,
-decoded text/number-lexeme bytes, and roots, while `JsonPolicy` and
+decoded text/number-lexeme bytes, a verified per-object sorted key index, and
+roots, while `JsonPolicy` and
 `DataDecodeLimits` remain explicit inputs. `advance_json_document` revalidates
 the complete document ledger before every transition, requires `Empty → Building
 → Sealed` (or `Failed`) transitions, and rejects out-of-range
@@ -222,13 +223,16 @@ does not claim that a token stream is a syntactically valid JSON document.
 boundary: an explicit array/object phase stack enforces JSON grammar without
 host recursion, then appends values postorder so every child index precedes its
 container owner. Decoded keys and exact source-backed number lexemes are copied
-into the owned document through the existing checked append transitions;
-trailing-comma and duplicate-key policies remain explicit. JSONL framing and
-schema conversion are separate adapters. The current checked append path
-revalidates the accumulated document on each transition, including pairwise
-duplicate-key checks; large-document performance is therefore not qualified,
-and a bounded batch/incremental-validation path is required before claiming
-large-input suitability.
+into the owned document by a parser-owned bounded batch. Each object's pending
+member count and merge workspace are capped by `DataDecodeLimits.fields`, and
+its keys are stably merge-sorted once; the document retains a verified sorted
+per-object key-index permutation while preserving source member order. Sealing
+performs one full-ledger validation, which checks duplicate keys in an ordered
+linear pass rather than a pairwise scan. The separate `advance_json_document`
+event API still revalidates the complete ledger per transition and is intended
+for small incremental construction; the parser avoids that repeated scan.
+JSONL framing and schema conversion are separate adapters. Algorithmic scaling
+is improved, but runtime/performance qualification remains open.
 Detached duplicate candidates keep their node and scalar span in the arena;
 normalization changes ownership/references, not the contiguous payload ledger.
 `EsJsonEncode::encode_json_root` emits one selected root as compact JSON under
@@ -258,20 +262,22 @@ KeepLast can detach the superseded value without corrupting its descendants.
 Array child source spans must be ordered and non-overlapping, and each object
 key's raw span must precede its value span; retained key spans remain ordered
 and non-overlapping even when KeepLast points an earlier member at a later value.
-The ranges are checked against their
-respective tables (never against the node table), with complete table coverage
-and owner/order checks. Duplicate comparison is scoped to one object and uses
-the document-owned decoded key bytes;
+The ranges are checked against their respective tables (never against the node
+table), with complete table coverage and owner/order checks. The sorted-key
+index is a checked permutation of all member rows; it is grouped by owner and
+strictly ordered by document-owned decoded key bytes, so duplicate comparison
+is scoped to one object without quadratic pair scans;
 decoded keys may contain U+0000, which is legal in JSON strings and must not be
 rejected using path/C-string rules.
 Reject, KeepFirst, and KeepLast therefore cannot merge equal names from distinct
 nested or sibling objects. The retained object table is canonical under all
 three policies: append applies KeepFirst/KeepLast, while validation rejects a
-forged duplicate that remains in the final table. `EsJsonParse` supplies
-decoded keys and appends node/edge/member rows in the required postorder. It
-remains separate from the vendor's global parser names; JSONL materialization,
-typed schema conversion, and scaling past repeated full-ledger validation
-remain open, while compact encoding is provided by `EsJsonEncode`.
+forged duplicate or malformed key-index permutation in the final table.
+`EsJsonParse` supplies decoded keys and appends node/edge/member rows in the
+required postorder. It remains separate from the vendor's global parser names;
+JSONL materialization, typed schema conversion, and runtime/performance
+qualification remain open, while compact encoding is provided by
+`EsJsonEncode`.
 
 `EsSchema` adds the checked schema-conversion boundary that follows parsing.
 `SchemaDescriptor` declares named fields, source format, requiredness, and

@@ -42,9 +42,11 @@ for parser_contract in \
     'struct JsonParseFrame:' \
     'def json_parse_build(' \
     'def parse_json_document(' \
-    'JsonDocumentEvent.AppendArrayChild' \
-    'JsonDocumentEvent.AppendMember' \
-    'JsonDocumentEvent.AppendRoot' \
+    'def json_parse_sorted_pending_members(' \
+    'document.children.push(child)' \
+    'document.members.push(member)' \
+    'document.member_key_order.push(member_index)' \
+    'document.roots.push(value_index)' \
     'JsonDocumentEvent.Seal' \
     'JsonDocumentEvent.Fail' \
     'JsonParseError.TrailingComma' \
@@ -73,11 +75,12 @@ for declaration in \
     'module EsJson:' \
     'using EsData' \
     'using EsEncoding' \
-    'JSON_MODEL_FORMAT_VERSION: u8 = 4' \
+    'JSON_MODEL_FORMAT_VERSION: u8 = 5' \
     'const enum JsonNodeKind of u8:' \
     'const enum JsonNodeOwnerKind of u8:' \
     'const enum JsonDocumentState of u8:' \
     'const enum JsonDocumentEvent of u8:' \
+    'const enum JsonKeyOrder of u8:' \
     'struct JsonRange:' \
     'struct JsonNode:' \
     'struct JsonNodeInput:' \
@@ -85,12 +88,13 @@ for declaration in \
     'struct JsonMemberInput:' \
     'struct JsonMember:' \
     'struct JsonDocument:' \
+    'member_key_order: darray[usize] = []' \
     'error JsonContractError:' \
     'def validate_json_document(' \
     'def advance_json_document(' \
     'def json_node_child_range_valid(' \
-    'def json_stored_key_equals_view(' \
-    'def json_stored_keys_equal(' \
+    'def json_stored_keys_order(' \
+    'def json_member_key_order_lower_bound(' \
     'def json_number_next_state(' \
     'def json_number_span_valid(' \
     'def json_text_valid(' \
@@ -131,8 +135,9 @@ for boundary in \
     'member.key_range.end > value.range.start' \
     'member.key_bytes > member.key_range.end - member.key_range.start' \
     'previous_member.key_range.end > member.key_range.start' \
-    'json_stored_keys_equal(document.key_bytes, earlier, member)' \
-    'json_stored_key_equals_view(document, earlier, member.key)' \
+    'json_stored_keys_order(document.key_bytes, earlier, member)' \
+    'json_stored_key_view_order(document, earlier, member.key)' \
+    'member.member_key_order_rank != rank' \
     'expected_key_start != document.key_bytes.count' \
     'expected_scalar_start != document.scalar_data.count' \
     'document.key_bytes.count > document.source_bytes' \
@@ -155,12 +160,19 @@ for boundary in \
     rg -Fq "$boundary" "$model"
 done
 
+if rg -Fq 'advance_json_document(document, JsonDocumentEvent.Append' "$parser"; then
+    printf 'json model audit: parser must build one checked batch, not rescan the document per append\n' >&2
+    exit 1
+fi
+
 rg -Fq 'include "../runtime/json_model.elisa"' "$ir"
 rg -Fq 'include "../runtime/json_lexer_model.elisa"' "$ir"
 rg -Fq 'include "../runtime/json_parse_model.elisa"' "$ir"
 rg -Fq 'include "../runtime/json_encode_model.elisa"' "$ir"
 for fixture_pattern in \
     'typed_json_document_contract_is_bounded_and_sealed_explicitly' \
+    'member_key_order[0] == 1' \
+    'forged_key_index_rejected' \
     'typed_json_document_owns_scalar_values_without_coercing_numbers' \
     'typed_json_lexer_preserves_byte_spans_and_decodes_strings' \
     'copy_json_lexed_string(lexed, 2)' \
@@ -171,6 +183,7 @@ for fixture_pattern in \
     'token_limit_rejected' \
     'typed_json_parser_materializes_postorder_and_enforces_grammar' \
     'parse_json_document(lexed)' \
+    'sorted_keys: JsonDocument' \
     'trailing_comma_rejected' \
     'duplicate_last' \
     'duplicate_first' \
@@ -217,7 +230,7 @@ for fixture_pattern in \
     rg -Fq "$fixture_pattern" "$fixture"
 done
 
-rg -Fq '`EsJson` is the namespaced adapter boundary' "$docs"
+rg -Fq '`EsJson` is the namespaced owned-document boundary' "$docs"
 rg -Fq 'Latest P08 JSON adapter follow-up' "$plan"
 
 printf 'json model audit: namespaced owned scalar/key arenas and document lifecycle contracts are present\n'

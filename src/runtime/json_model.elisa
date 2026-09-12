@@ -10,7 +10,7 @@ module EsJson:
     using EsEncoding
 
     public:
-        const JSON_MODEL_FORMAT_VERSION: u8 = 4
+        const JSON_MODEL_FORMAT_VERSION: u8 = 5
         const JSON_MAX_NODES: usize = 16777216
         const JSON_MAX_MEMBERS: usize = 16777216
         const JSON_MAX_ROOTS: usize = 16777216
@@ -71,6 +71,9 @@ module EsJson:
             child_count: usize = 0
             member_start: usize = JSON_INDEX_NONE
             member_count: usize = 0
+            # Per-object range into JsonDocument.member_key_order, sorted by
+            # decoded key bytes while member rows retain source order.
+            member_key_order_start: usize = JSON_INDEX_NONE
             scalar_start: usize = JSON_INDEX_NONE
             scalar_bytes: usize = 0
             bool_value: bool = false
@@ -108,6 +111,7 @@ module EsJson:
             key_range: JsonRange = JsonRange{}
             value_index: usize = JSON_INDEX_NONE
             ordinal: usize = 0
+            member_key_order_rank: usize = JSON_INDEX_NONE
 
 
         struct JsonDocument:
@@ -121,6 +125,10 @@ module EsJson:
             nodes: darray[JsonNode] = []
             children: darray[JsonArrayChild] = []
             members: darray[JsonMember] = []
+            # A verified permutation of member rows, grouped by owner and
+            # sorted by decoded key. This keeps duplicate validation bounded
+            # to one ordered pass rather than pairwise key comparisons.
+            member_key_order: darray[usize] = []
             key_bytes: darray[u8] = []
             scalar_data: darray[u8] = []
             roots: darray[usize] = []
@@ -170,6 +178,12 @@ module EsJson:
             Invalid
 
 
+        const enum JsonKeyOrder of u8:
+            Before
+            Equal
+            After
+
+
         def json_node_kind_valid(kind: JsonNodeKind) -> bool:
             return kind in {JsonNodeKind.Null, JsonNodeKind.Bool, JsonNodeKind.Number, JsonNodeKind.Text, JsonNodeKind.Array, JsonNodeKind.Object}
 
@@ -211,20 +225,43 @@ module EsJson:
             return sview_len(key) <= field_byte_limit and sview_len(key) < JSON_MAX_KEY_BYTES and json_text_valid(key)
 
 
-        def json_stored_key_equals_view(document: JsonDocument&, stored: JsonMember, candidate: sview) -> bool:
-            return false if stored.key_bytes != sview_len(candidate)
-            matched: mutable bool = true
-            for offset in 0..<stored.key_bytes |document, stored, candidate, matched|:
-                matched <- false if document.key_bytes[stored.key_start + offset] != sview_at(candidate, offset)
-            return matched
+        def json_stored_keys_order(key_bytes: darray[u8], left: JsonMember, right: JsonMember) -> JsonKeyOrder:
+            common_bytes: usize = left.key_bytes if left.key_bytes < right.key_bytes else right.key_bytes
+            for offset in 0..<common_bytes |key_bytes, left, right|:
+                left_byte: u8 = key_bytes[left.key_start + offset]
+                right_byte: u8 = key_bytes[right.key_start + offset]
+                return JsonKeyOrder.Before if left_byte < right_byte
+                return JsonKeyOrder.After if left_byte > right_byte
+            return JsonKeyOrder.Equal if left.key_bytes == right.key_bytes
+            return JsonKeyOrder.Before if left.key_bytes < right.key_bytes
+            return JsonKeyOrder.After
 
 
-        def json_stored_keys_equal(key_bytes: darray[u8], left: JsonMember, right: JsonMember) -> bool:
-            return false if left.key_bytes != right.key_bytes
-            matched: mutable bool = true
-            for offset in 0..<left.key_bytes |key_bytes, left, right, matched|:
-                matched <- false if key_bytes[left.key_start + offset] != key_bytes[right.key_start + offset]
-            return matched
+        def json_stored_key_view_order(document: JsonDocument&, stored: JsonMember, candidate: sview) -> JsonKeyOrder:
+            candidate_bytes: usize = sview_len(candidate)
+            common_bytes: usize = stored.key_bytes if stored.key_bytes < candidate_bytes else candidate_bytes
+            for offset in 0..<common_bytes |document, stored, candidate|:
+                stored_byte: u8 = document.key_bytes[stored.key_start + offset]
+                candidate_byte: u8 = sview_at(candidate, offset)
+                return JsonKeyOrder.Before if stored_byte < candidate_byte
+                return JsonKeyOrder.After if stored_byte > candidate_byte
+            return JsonKeyOrder.Equal if stored.key_bytes == candidate_bytes
+            return JsonKeyOrder.Before if stored.key_bytes < candidate_bytes
+            return JsonKeyOrder.After
+
+
+        def json_member_key_order_lower_bound(document: JsonDocument&, owner: JsonNode, candidate: sview) -> usize:
+            low: mutable usize = owner.member_key_order_start
+            high: mutable usize = owner.member_key_order_start + owner.member_count
+            while low < high:
+                middle: usize = low + (high - low) / 2
+                member_index: usize = document.member_key_order[middle]
+                stored: JsonMember = document.members[member_index]
+                if json_stored_key_view_order(document, stored, candidate) == JsonKeyOrder.Before:
+                    low <- middle + 1
+                else:
+                    high <- middle
+            return low
 
 
         def json_number_next_state(state: JsonNumberScanState, byte: u8) -> JsonNumberScanState:
@@ -323,16 +360,19 @@ module EsJson:
             raise JsonContractError.InvalidScalarBytes if node.scalar_bytes > node.range.end - node.range.start
             if node.kind != JsonNodeKind.Array and node.kind != JsonNodeKind.Object:
                 raise JsonContractError.InvalidChildRange if node.child_count != 0 or node.child_start != JSON_INDEX_NONE or node.member_count != 0 or node.member_start != JSON_INDEX_NONE
+                raise JsonContractError.InvalidMemberOrder if node.member_key_order_start != JSON_INDEX_NONE
             if node.kind == JsonNodeKind.Array:
                 raise JsonContractError.InvalidScalarPayload if node.scalar_start != JSON_INDEX_NONE or node.scalar_bytes != 0 or node.bool_value
                 raise JsonContractError.InvalidRange if node.range.end - node.range.start < 2
                 raise JsonContractError.InvalidChildRange if node.member_count != 0 or node.member_start != JSON_INDEX_NONE
+                raise JsonContractError.InvalidMemberOrder if node.member_key_order_start != JSON_INDEX_NONE
                 raise JsonContractError.InvalidChildRange if node.child_count == 0 and node.child_start != JSON_INDEX_NONE
             elif node.kind == JsonNodeKind.Object:
                 raise JsonContractError.InvalidScalarPayload if node.scalar_start != JSON_INDEX_NONE or node.scalar_bytes != 0 or node.bool_value
                 raise JsonContractError.InvalidRange if node.range.end - node.range.start < 2
                 raise JsonContractError.InvalidChildRange if node.child_count != 0 or node.child_start != JSON_INDEX_NONE
                 raise JsonContractError.InvalidChildRange if node.member_count == 0 and node.member_start != JSON_INDEX_NONE
+                raise JsonContractError.InvalidMemberOrder if node.member_count == 0 and node.member_key_order_start != JSON_INDEX_NONE
             elif node.kind == JsonNodeKind.Text:
                 raise JsonContractError.InvalidScalarPayload if node.scalar_start == JSON_INDEX_NONE or node.bool_value
                 raise JsonContractError.InvalidScalarPayload if node.range.end - node.range.start < 2
@@ -371,6 +411,7 @@ module EsJson:
             raise JsonContractError.NodeLimitExceeded if document.nodes.count > JSON_MAX_NODES
             raise JsonContractError.NodeLimitExceeded if document.children.count > JSON_MAX_NODES
             raise JsonContractError.MemberLimitExceeded if document.members.count > JSON_MAX_MEMBERS
+            raise JsonContractError.MemberLimitExceeded if document.member_key_order.count > JSON_MAX_MEMBERS
             raise JsonContractError.InvalidMemberKey if document.key_bytes.count > JSON_MAX_TOTAL_KEY_BYTES
             raise JsonContractError.InvalidMemberKey if document.key_bytes.count > document.source_bytes
             raise JsonContractError.InvalidScalarPayload if document.scalar_data.count > JSON_MAX_TOTAL_SCALAR_BYTES
@@ -380,15 +421,17 @@ module EsJson:
             raise JsonContractError.TokenLimitExceeded if document.nodes.count > document.limits.tokens
             raise JsonContractError.TokenLimitExceeded if document.children.count > document.limits.tokens
             raise JsonContractError.MemberLimitExceeded if document.members.count > document.limits.fields
+            raise JsonContractError.MemberLimitExceeded if document.member_key_order.count > document.limits.fields
             raise JsonContractError.RootLimitExceeded if document.roots.count > document.limits.records
-            raise JsonContractError.InvalidDocumentState if document.state == JsonDocumentState.Empty and (document.source_bytes != 0 or document.token_count != 0 or document.max_depth != 0 or document.nodes.count != 0 or document.children.count != 0 or document.members.count != 0 or document.key_bytes.count != 0 or document.scalar_data.count != 0 or document.roots.count != 0)
+            raise JsonContractError.InvalidDocumentState if document.state == JsonDocumentState.Empty and (document.source_bytes != 0 or document.token_count != 0 or document.max_depth != 0 or document.nodes.count != 0 or document.children.count != 0 or document.members.count != 0 or document.member_key_order.count != 0 or document.key_bytes.count != 0 or document.scalar_data.count != 0 or document.roots.count != 0)
             raise JsonContractError.InvalidDocumentState if document.state == JsonDocumentState.Sealed and (document.nodes.count == 0 or document.roots.count == 0)
             raise JsonContractError.NodeAccountingInvalid if document.token_count < document.nodes.count
             derived_depth: mutable usize = 0
             expected_child_start: mutable usize = 0
             expected_member_start: mutable usize = 0
+            expected_member_key_order_start: mutable usize = 0
             expected_scalar_start: mutable usize = 0
-            for index in 0..<document.nodes.count |document, expected_child_start, expected_member_start, expected_scalar_start|:
+            for index in 0..<document.nodes.count |document, expected_child_start, expected_member_start, expected_member_key_order_start, expected_scalar_start|:
                 node: JsonNode = document.nodes[index]
                 try json_node_valid(node, document.source_bytes, document.limits)
                 if node.kind == JsonNodeKind.Text or node.kind == JsonNodeKind.Number:
@@ -442,6 +485,7 @@ module EsJson:
                     expected_child_start <- expected_child_start + node.child_count
                 if node.kind == JsonNodeKind.Object and node.member_count != 0:
                     raise JsonContractError.InvalidMemberOrder if node.member_start != expected_member_start
+                    raise JsonContractError.InvalidMemberOrder if node.member_key_order_start != expected_member_key_order_start
                     for ordinal in 0..<node.member_count |document, index, node, ordinal|:
                         member: JsonMember = document.members[node.member_start + ordinal]
                         raise JsonContractError.InvalidMemberOwner if member.owner_index != index
@@ -466,9 +510,11 @@ module EsJson:
                             previous_member: JsonMember = document.members[node.member_start + ordinal - 1]
                             raise JsonContractError.InvalidMemberOrder if previous_member.key_range.end > member.key_range.start
                     expected_member_start <- expected_member_start + node.member_count
+                    expected_member_key_order_start <- expected_member_key_order_start + node.member_count
                 derived_depth <- node.depth if node.depth > derived_depth
             raise JsonContractError.InvalidChildRange if expected_child_start != document.children.count
             raise JsonContractError.InvalidMemberOrder if expected_member_start != document.members.count
+            raise JsonContractError.InvalidMemberOrder if expected_member_key_order_start != document.member_key_order.count
             raise JsonContractError.InvalidScalarPayload if expected_scalar_start != document.scalar_data.count
             for edge in document.children:
                 raise JsonContractError.InvalidArrayChild if edge.owner_index >= document.nodes.count
@@ -485,17 +531,24 @@ module EsJson:
                 raise JsonContractError.InvalidMemberKey if not json_bounded_add(expected_key_start, member.key_bytes, document.key_bytes.count)
                 expected_key_start <- expected_key_start + member.key_bytes
             raise JsonContractError.InvalidMemberKey if expected_key_start != document.key_bytes.count
-            for node_index in 0..<document.nodes.count |document|:
-                node: JsonNode = document.nodes[node_index]
-                if node.kind == JsonNodeKind.Object:
-                    for offset in 0..<node.member_count |document, node, node_index, offset|:
-                        member: JsonMember = document.members[node.member_start + offset]
-                        for earlier_offset in 0..<offset |document, node, member, earlier_offset|:
-                            earlier: JsonMember = document.members[node.member_start + earlier_offset]
-                            # The table is the normalized semantic document:
-                            # KeepFirst/KeepLast are applied during append, so
-                            # every policy must leave only one retained row.
-                            raise JsonContractError.DuplicateObjectKey if json_stored_keys_equal(document.key_bytes, earlier, member)
+            raise JsonContractError.InvalidMemberOrder if document.member_key_order.count != document.members.count
+            for rank in 0..<document.member_key_order.count |document|:
+                member_index: usize = document.member_key_order[rank]
+                raise JsonContractError.InvalidMemberOrder if member_index >= document.members.count
+                member: JsonMember = document.members[member_index]
+                raise JsonContractError.InvalidMemberOrder if member.member_key_order_rank != rank
+                if rank != 0:
+                    earlier_index: usize = document.member_key_order[rank - 1]
+                    raise JsonContractError.InvalidMemberOrder if earlier_index >= document.members.count
+                    earlier: JsonMember = document.members[earlier_index]
+                    raise JsonContractError.InvalidMemberOrder if earlier.owner_index > member.owner_index
+                    if earlier.owner_index == member.owner_index:
+                        key_order: JsonKeyOrder = json_stored_keys_order(document.key_bytes, earlier, member)
+                        # The table is the normalized semantic document:
+                        # duplicate policies are applied during append, so
+                        # every policy must leave only one retained row.
+                        raise JsonContractError.DuplicateObjectKey if key_order == JsonKeyOrder.Equal
+                        raise JsonContractError.InvalidMemberOrder if key_order != JsonKeyOrder.Before
             for ordinal in 0..<document.roots.count |document|:
                 root: usize = document.roots[ordinal]
                 raise JsonContractError.RootAccountingInvalid if root >= document.nodes.count
@@ -618,9 +671,15 @@ module EsJson:
                 raise JsonContractError.InvalidRange if member.key_range.end - member.key_range.start < 2
                 raise JsonContractError.InvalidMemberOrder if member.key_range.end > value.range.start
                 raise JsonContractError.InvalidMemberKey if sview_len(member.key) > member.key_range.end - member.key_range.start
-                for index in owner.member_start..<(owner.member_start + owner.member_count) |document, member|:
-                    earlier: JsonMember = document.members[index]
-                    if json_stored_key_equals_view(document, earlier, member.key):
+                if owner.member_count != 0:
+                    raise JsonContractError.InvalidMemberOrder if owner.member_key_order_start + owner.member_count != document.member_key_order.count
+                else:
+                    owner.member_key_order_start <- document.member_key_order.count
+                insertion_rank: usize = json_member_key_order_lower_bound(document, owner, member.key)
+                if insertion_rank < owner.member_key_order_start + owner.member_count:
+                    earlier_index: usize = document.member_key_order[insertion_rank]
+                    earlier: JsonMember = document.members[earlier_index]
+                    if json_stored_key_view_order(document, earlier, member.key) == JsonKeyOrder.Equal:
                         raise JsonContractError.DuplicateObjectKey if document.policy.duplicate_keys == JsonDuplicateKeyPolicy.Reject
                         if document.policy.duplicate_keys == JsonDuplicateKeyPolicy.KeepFirst:
                             return document.state
@@ -635,10 +694,12 @@ module EsJson:
                         document.nodes[member.value_index] <- value
                         replacement: mutable JsonMember = earlier
                         replacement.value_index <- member.value_index
-                        document.members[index] <- replacement
+                        document.members[earlier_index] <- replacement
                         return document.state
                 raise JsonContractError.MemberLimitExceeded if document.members.count >= JSON_MAX_MEMBERS
                 raise JsonContractError.MemberLimitExceeded if document.members.count >= document.limits.fields
+                raise JsonContractError.MemberLimitExceeded if document.member_key_order.count >= JSON_MAX_MEMBERS
+                raise JsonContractError.MemberLimitExceeded if document.member_key_order.count >= document.limits.fields
                 raise JsonContractError.InvalidMemberOrder if member.ordinal != owner.member_count
                 if owner.member_count == 0:
                     raise JsonContractError.InvalidMemberOrder if document.members.count != 0 and member.owner_index < document.members[document.members.count - 1].owner_index
@@ -648,10 +709,21 @@ module EsJson:
                     raise JsonContractError.InvalidMemberOrder if document.members[document.members.count - 1].owner_index != member.owner_index
                 raise JsonContractError.InvalidMemberKey if not json_bounded_add(document.key_bytes.count, sview_len(member.key), JSON_MAX_TOTAL_KEY_BYTES)
                 raise JsonContractError.InvalidMemberKey if not json_bounded_add(document.key_bytes.count, sview_len(member.key), document.source_bytes - document.scalar_data.count)
-                stored_member: JsonMember = JsonMember{owner_index: member.owner_index, key_start: document.key_bytes.count, key_bytes: sview_len(member.key), key_range: member.key_range, value_index: member.value_index, ordinal: member.ordinal}
+                member_index: usize = document.members.count
+                stored_member: JsonMember = JsonMember{owner_index: member.owner_index, key_start: document.key_bytes.count, key_bytes: sview_len(member.key), key_range: member.key_range, value_index: member.value_index, ordinal: member.ordinal, member_key_order_rank: insertion_rank}
                 for offset in 0..<sview_len(member.key) |document, member|:
                     document.key_bytes.push(sview_at(member.key, offset))
                 document.members.push(stored_member)
+                document.member_key_order.push(member_index)
+                shift_rank: mutable usize = document.member_key_order.count - 1
+                while shift_rank > insertion_rank:
+                    shifted_index: usize = document.member_key_order[shift_rank - 1]
+                    document.member_key_order[shift_rank] <- shifted_index
+                    shifted_member: mutable JsonMember = document.members[shifted_index]
+                    shifted_member.member_key_order_rank <- shift_rank
+                    document.members[shifted_index] <- shifted_member
+                    shift_rank <- shift_rank - 1
+                document.member_key_order[insertion_rank] <- member_index
                 owner.member_count <- owner.member_count + 1
                 document.nodes[member.owner_index] <- owner
                 value.owner_kind <- JsonNodeOwnerKind.ObjectMember
