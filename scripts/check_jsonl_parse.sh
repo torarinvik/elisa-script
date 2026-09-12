@@ -18,11 +18,16 @@ for contract in \
     'module EsJsonLinesParse:' \
     'struct JsonLinesReader:' \
     'struct JsonLinesReadResult:' \
+    'struct JsonLinesChunkReader:' \
+    'struct JsonLinesFeedResult:' \
     'error JsonLinesParseError:' \
     'def json_lines_record_is_whitespace(' \
     'def begin_json_lines_reader(' \
     'def validate_json_lines_reader(' \
     'def next_json_lines_document(' \
+    'def feed_json_lines_chunk(' \
+    'reader.stream.input_bytes - reader.decoder.input_bytes != reader.stream.record_bytes' \
+    'JsonLinesFeedOutcome.NeedInput' \
     'advance_json_stream(reader.stream, JsonStreamEvent.Byte, byte)' \
     'advance_json_stream(reader.stream, JsonStreamEvent.RecordEnd)' \
     'parse_json_document(lexed)' \
@@ -38,6 +43,15 @@ rg -Fq 'include "../runtime/jsonl_parse_model.elisa"' "$ir"
 rg -Fq 'using EsJsonLinesParse' "$fixture"
 for fixture_pattern in \
     'typed_json_lines_reader_returns_bounded_documents_one_record_at_a_time' \
+    'begin_json_lines_chunk_reader(limits)' \
+    'second_chunk.outcome == JsonLinesFeedOutcome.Document and second_chunk.consumed_bytes == 3' \
+    'final_record.record_number == 2 and final_record.source_offset == 5' \
+    'final_delimiter_suffix.outcome == JsonLinesFeedOutcome.Document and final_delimiter_suffix.consumed_bytes == 5' \
+    'final_delimiter_reader.stream.state == JsonStreamState.Complete' \
+    'final_delimiter_wrong_suffix_rejected' \
+    'split_crlf.outcome == JsonLinesFeedOutcome.NeedInput and split_crlf.consumed_bytes == 1' \
+    'empty_chunk_result.record_number == 2 and empty_chunk_result.source_offset == 2 and empty_chunk_result.consumed_bytes == 6' \
+    'chunk_limited_reader.failure_record_number == 2 and chunk_limited_reader.failure_record_start == 5' \
     'begin_json_lines_reader("null\r\ntrue\n[1]", limits)' \
     'reader.decoder.records == 3 and reader.decoder.tokens == 5' \
     'empty_reader' \
@@ -52,4 +66,4 @@ done
 
 rg -Fq '`EsJsonLinesParse::next_json_lines_document`' "$docs"
 
-printf 'jsonl parse audit: bounded framing, cumulative budgets, and record-at-a-time JSON materialization are present\n'
+printf 'jsonl parse audit: bounded framing, cumulative budgets, and record-at-a-time chunk parsing are present\n'

@@ -246,6 +246,17 @@ The existing framer ends records only at newlines outside strings and balanced
 containers, so newlines inside containers remain JSON whitespace in one record
 rather than enforcing strict physical-line JSONL. Algorithmic scaling is
 improved, but runtime/performance qualification remains open.
+For caller-driven chunk input, `begin_json_lines_chunk_reader` and
+`feed_json_lines_chunk` retain only the current bounded record buffer. A feed
+returns `NeedInput`, `Document`, or `Complete` plus the exact byte count it
+consumed; when it returns a document before the supplied chunk ends, the caller
+resubmits the unconsumed suffix and preserves the final-input flag if the
+original chunk was final. For a final suffix, the reader checks that the
+resubmitted length matches the previously reported remainder; the caller must
+also preserve the suffix bytes exactly. The chunk view is borrowed only for
+that call, while record bytes are copied into the bounded scratch buffer. This
+keeps host file ownership and I/O effects outside the parser; a `FileStream`
+adapter and runtime qualification remain open.
 Detached duplicate candidates keep their node and scalar span in the arena;
 normalization changes ownership/references, not the contiguous payload ledger.
 `EsJsonEncode::encode_json_root` emits one selected root as compact JSON under
@@ -1492,9 +1503,9 @@ on malformed JSON or cumulative-budget failure. Empty records admitted by the
 framing policy are counted and skipped; the parser also treats whitespace-only
 frames as empty under that policy, including CRLF-only frames. The framer
 intentionally treats newlines inside balanced containers as whitespace within
-one record; strict
-physical-line JSONL semantics and chunked host-stream input are not yet
-implemented.
+one record, so strict physical-line JSONL remains unimplemented. The parser-
+level chunk feed is available and reports consumed-byte boundaries; a host
+`FileStream` adapter and execution evidence remain open.
 
 `EsRecordControl::RecordControlSession` makes AWK-style control keywords
 explicit: `RecordEnd` and `NextRecord` check the record ceiling before closing the current record,
