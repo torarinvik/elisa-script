@@ -693,10 +693,15 @@ manifest identity, materialization binds the world fingerprint, and the policy
 selects reference-first or candidate-first execution. Each later phase retains
 all of its prerequisites: both ordered run fingerprints and exactly two runs are
 required before comparison, and restoration must return the expected world
-fingerprint before the session can complete. Rejected order, stale admission,
-wrong-world, missing-comparison, forged phase flags, and failed-restore edges
-remain typed state errors. The contract does not launch the reproduction entry
-or perform cleanup.
+fingerprint before the session can complete. Materialization attempts are
+recorded before host work begins, so failure or cancellation after that point
+enters `Restoring` even if `WorldReady` was never acknowledged. A failed or
+cancelled session is terminal only after the original world fingerprint is
+verified; pre-materialization termination remains safe to complete directly.
+Conflicting termination requests, rejected order, stale admission, wrong-world,
+missing-comparison, forged phase flags, and failed-restore edges remain typed
+state errors. The contract does not launch the reproduction entry or perform
+cleanup itself.
 
 `EsDifferentialRedaction::DifferentialRedactionPolicy` is the explicit secret
 boundary for environment metadata captured into artifacts. Policies select exact

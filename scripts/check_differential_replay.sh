@@ -22,9 +22,11 @@ for declaration in \
     'const enum DifferentialReplayState of u8:' \
     'const enum DifferentialReplayEvent of u8:' \
     'const enum DifferentialReplaySide of u8:' \
+    'const enum DifferentialReplayDisposition of u8:' \
     'struct DifferentialReplaySession:' \
     'error DifferentialReplayError:' \
     'def validate_differential_replay_session(' \
+    'def differential_replay_expected_side(' \
     'def advance_differential_replay('; do
     rg -Fq "$declaration" "$model"
 done
@@ -38,6 +40,8 @@ for boundary in \
     'RestorationNotReady' \
     'session.admission_fingerprint != session.expected_manifest_fingerprint' \
     'session.restored_world_fingerprint != session.expected_world_fingerprint' \
+    'session.has_materialization_attempt and not session.has_restoration' \
+    'session.state == DifferentialReplayState.Restoring and session.disposition == DifferentialReplayDisposition.Normal' \
     'session.state == DifferentialReplayState.Comparing and (session.has_comparison or session.has_restoration)' \
     'DifferentialReplayState.Comparing' \
     'DifferentialReplayState.Restoring'; do
@@ -48,11 +52,14 @@ rg -Fq 'include "./replay_model.elisa"' "$consumer"
 rg -Fq 'using EsDifferentialReplay' "$fixture"
 for fixture_pattern in \
     'differential_replay_contract_requires_admission_ordered_runs_and_restoration' \
+    'differential_replay_abort_paths_restore_started_worlds_before_terminal_state' \
     'DifferentialReplayEvent.Admit' \
     'DifferentialReplayEvent.CompareComplete' \
     'DifferentialReplayEvent.RestoreComplete' \
     'DifferentialReplayError.RunOrderInvalid' \
     'forged_completed_replay' \
+    'forged_failed_replay' \
+    'forged_cancelled_replay' \
     'forged_admission_identity'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
@@ -60,4 +67,4 @@ done
 rg -Fq 'EsDifferentialReplay::DifferentialReplaySession' "$docs"
 rg -Fq 'P13 replay-lifecycle follow-up' "$plan"
 
-printf 'differential replay audit: bounded admission, ordered side execution, comparison, and world restoration are present\n'
+printf 'differential replay audit: bounded admission, ordered side execution, abort cleanup, comparison, and world restoration are present\n'
