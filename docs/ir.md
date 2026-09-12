@@ -209,6 +209,9 @@ JSON number grammar. Retained decoded keys and scalar payloads share a
 subtraction-checked aggregate ceiling no larger than the source-byte ledger.
 `copy_json_scalar` returns an owned copy from a sealed
 document rather than exposing a borrowed view with an unclear lifetime.
+`json_object_member_index` and its bounded batch companion perform checked
+lookups through the document's sorted per-object key index; the batch form
+validates the document once for all requested keys.
 `EsJsonLex::lex_json` provides the bounded lexical pass before grammar parsing:
 it preserves exact half-open byte spans for punctuation, literals, strings,
 and numbers, while decoded string/key bytes live in an owned UTF-8 arena.
@@ -241,7 +244,7 @@ JSON-whitespace-only frames (including blank CRLF frames) are counted and
 skipped; they do not become fabricated JSON values. A parse or budget failure
 makes the reader terminal and retains the failed record number/start for correlating its
 record-relative diagnostic offset. The whole-view reader borrows a complete
-`sview`; schema conversion remains separate work.
+`sview`; schema materialization remains a separate phase.
 `JsonStreamPolicy.record_boundary` makes the framing choice explicit. Its
 compatibility default, `JsonLineBoundaryMode.BalancedContainers`, ends records
 only at newlines outside strings and balanced containers, so newlines inside
@@ -323,7 +326,7 @@ three policies: append applies KeepFirst/KeepLast, while validation rejects a
 forged duplicate or malformed key-index permutation in the final table.
 `EsJsonParse` supplies decoded keys and appends node/edge/member rows in the
 required postorder. It remains separate from the vendor's global parser names;
-typed schema conversion and runtime/performance qualification remain open,
+typed target-width conversion and runtime/performance qualification remain open,
 while compact encoding is provided by `EsJsonEncode`.
 
 `EsSchema` adds the checked schema-conversion boundary that follows parsing.
@@ -333,8 +336,17 @@ each transition and binds each field at most once and
 advances `Ready → Binding → Complete|Failed`. Missing required fields,
 duplicate source names, out-of-range node references, and kind mismatches are
 reported through `error[SchemaContractError]` before application code receives
-a value; forged ready/completed binding state is rejected as well. CSV/TSV row
-adapters and generated record constructors remain open.
+a value; forged ready/completed binding state is rejected as well. Validation
+also rejects collisions between an explicit source alias and another field's
+default source name. `EsSchemaJson` materializes one object root into an owned
+record in schema-field order: text values are decoded UTF-8, JSON numbers retain
+their exact lexemes (including `-0` and exponent spelling), booleans and nulls
+remain distinct, and missing optional fields use an explicit `Missing` tag.
+Unknown keys follow `allow_unknown`; required-field and JSON-kind mismatches
+fail before a record is returned. Array/object fields and `Any` are explicitly
+rejected until recursive value typing and number-target conversion policies
+are specified. CSV/TSV row materialization and generated native record
+constructors remain open.
 
 `EsCsv` turns the `CsvPolicy` into a quote-aware streaming state machine.
 `CsvStream` counts input bytes, fields, field bytes, and records against the

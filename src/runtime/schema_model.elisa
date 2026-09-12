@@ -7,6 +7,7 @@
 
 module EsSchema:
     using EsJson
+    using EsEncoding
 
     public:
         const SCHEMA_FORMAT_VERSION: u8 = 1
@@ -96,6 +97,12 @@ module EsSchema:
 
 
     private:
+        const enum SchemaNameOrder of u8:
+            Before
+            Equal
+            After
+
+
         def schema_source_valid(source: SchemaSource) -> bool:
             return source in {SchemaSource.Json, SchemaSource.Csv, SchemaSource.Tsv}
 
@@ -113,7 +120,77 @@ module EsSchema:
 
 
         def schema_name_valid(name: sview) -> bool:
-            return sview_len(name) != 0 and sview_len(name) < SCHEMA_MAX_NAME_BYTES and not sview_contains_byte(name, 0)
+            return false if sview_len(name) == 0 or sview_len(name) >= SCHEMA_MAX_NAME_BYTES or sview_contains_byte(name, 0)
+            cursor: mutable Utf8Cursor = Utf8Cursor{}
+            for offset in 0..<sview_len(name) |name, cursor|:
+                return false if not utf8_feed(sview_at(name, offset), cursor)
+            return utf8_complete(cursor)
+
+
+        def schema_effective_source_name(field: SchemaField) -> sview:
+            return field.name if field.source_name == ""
+            return field.source_name
+
+
+        def schema_name_order(left: sview, right: sview) -> SchemaNameOrder:
+            left_length: usize = sview_len(left)
+            right_length: usize = sview_len(right)
+            common: usize = left_length if left_length < right_length else right_length
+            for offset in 0..<common |left, right|:
+                return SchemaNameOrder.Before if sview_at(left, offset) < sview_at(right, offset)
+                return SchemaNameOrder.After if sview_at(left, offset) > sview_at(right, offset)
+            return SchemaNameOrder.Equal if left_length == right_length
+            return SchemaNameOrder.Before if left_length < right_length
+            return SchemaNameOrder.After
+
+
+        def schema_indexed_name(schema: SchemaDescriptor&, field_index: usize, effective_source: bool) -> sview:
+            field: SchemaField = schema.fields[field_index]
+            return schema_effective_source_name(field) if effective_source
+            return field.name
+
+
+        def schema_index_name_order(schema: SchemaDescriptor&, left_index: usize, right_index: usize, effective_source: bool) -> SchemaNameOrder:
+            return schema_name_order(schema_indexed_name(schema, left_index, effective_source), schema_indexed_name(schema, right_index, effective_source))
+
+
+        def schema_sort_field_indices(schema: SchemaDescriptor&, order: mutable darray[usize]&, scratch: mutable darray[usize]&, effective_source: bool) -> void:
+            width: mutable usize = 1
+            while width < order.count:
+                start: mutable usize = 0
+                while start < order.count:
+                    middle: mutable usize = start + width
+                    middle <- order.count if middle > order.count
+                    end: mutable usize = middle + width
+                    end <- order.count if end > order.count
+                    left: mutable usize = start
+                    right: mutable usize = middle
+                    destination: mutable usize = start
+                    while destination < end:
+                        if left == middle:
+                            scratch[destination] <- order[right]
+                            right <- right + 1
+                        elif right == end:
+                            scratch[destination] <- order[left]
+                            left <- left + 1
+                        elif schema_index_name_order(schema, order[left], order[right], effective_source) != SchemaNameOrder.After:
+                            scratch[destination] <- order[left]
+                            left <- left + 1
+                        else:
+                            scratch[destination] <- order[right]
+                            right <- right + 1
+                        destination <- destination + 1
+                    start <- end
+                for index in 0..<order.count |order, scratch|:
+                    order[index] <- scratch[index]
+                width <- order.count if width > order.count / 2 else width * 2
+
+
+        def schema_duplicate_names_rejected(schema: SchemaDescriptor&, order: darray[usize], effective_source: bool) -> bool error[SchemaContractError]:
+            for index in 1..<order.count |schema, order, effective_source|:
+                raise SchemaContractError.DuplicateSourceName if effective_source and schema_index_name_order(schema, order[index - 1], order[index], effective_source) == SchemaNameOrder.Equal
+                raise SchemaContractError.DuplicateField if not effective_source and schema_index_name_order(schema, order[index - 1], order[index], effective_source) == SchemaNameOrder.Equal
+            return true
 
 
         def schema_node_matches(kind: SchemaValueKind, node_kind: JsonNodeKind) -> bool:
@@ -144,22 +221,28 @@ module EsSchema:
 
 
     public:
-        def validate_schema_descriptor(schema: SchemaDescriptor&) -> bool error[SchemaContractError]:
+        def validate_schema_descriptor(schema: SchemaDescriptor&) -> bool error[SchemaContractError] can[Memory.Allocate, Abort.Panic]:
             raise SchemaContractError.InvalidFormatVersion if schema.format_version != SCHEMA_FORMAT_VERSION
             raise SchemaContractError.InvalidName if not schema_name_valid(schema.name)
             raise SchemaContractError.InvalidSource if not schema_source_valid(schema.source)
             raise SchemaContractError.InvalidFieldLimit if schema.fields.count == 0 or schema.fields.count > SCHEMA_MAX_FIELDS
             for field in schema.fields:
                 try schema_field_valid(field)
-            for index in 0..<schema.fields.count |schema|:
-                field: SchemaField = schema.fields[index]
-                for earlier in 0..<index |schema, field|:
-                    raise SchemaContractError.DuplicateField if schema.fields[earlier].name == field.name
-                    raise SchemaContractError.DuplicateSourceName if field.source_name != "" and schema.fields[earlier].source_name == field.source_name
+            order: mutable darray[usize] = []
+            scratch: mutable darray[usize] = []
+            for index in 0..<schema.fields.count |order, scratch|:
+                order.push(index)
+                scratch.push(index)
+            schema_sort_field_indices(schema, order, scratch, false)
+            try schema_duplicate_names_rejected(schema, order, false)
+            for index in 0..<order.count |order|:
+                order[index] <- index
+            schema_sort_field_indices(schema, order, scratch, true)
+            try schema_duplicate_names_rejected(schema, order, true)
             return true
 
 
-        def validate_schema_session(session: SchemaDecodeSession&) -> bool error[SchemaContractError]:
+        def validate_schema_session(session: SchemaDecodeSession&) -> bool error[SchemaContractError] can[Memory.Allocate, Abort.Panic]:
             try validate_schema_descriptor(session.schema)
             raise SchemaContractError.InvalidState if not schema_state_valid(session.state)
             raise SchemaContractError.BindingLimitExceeded if session.bindings.count > session.schema.fields.count
@@ -188,7 +271,7 @@ module EsSchema:
             return true
 
 
-        def advance_schema_session(session: mutable SchemaDecodeSession&, event: SchemaDecodeEvent, binding: SchemaBinding = SchemaBinding{field_index: 0, node_index: 0}) -> SchemaDecodeState error[SchemaContractError]:
+        def advance_schema_session(session: mutable SchemaDecodeSession&, event: SchemaDecodeEvent, binding: SchemaBinding = SchemaBinding{field_index: 0, node_index: 0}) -> SchemaDecodeState error[SchemaContractError] can[Memory.Allocate, Abort.Panic]:
             try validate_schema_session(session)
             raise SchemaContractError.InvalidEvent if not schema_event_valid(event)
             if event == SchemaDecodeEvent.Begin:

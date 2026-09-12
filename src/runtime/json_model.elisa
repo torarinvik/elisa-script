@@ -17,6 +17,7 @@ module EsJson:
         const JSON_MAX_KEY_BYTES: usize = 67108864
         const JSON_MAX_TOTAL_KEY_BYTES: usize = 67108864
         const JSON_MAX_TOTAL_SCALAR_BYTES: usize = 268435456
+        const JSON_MAX_OBJECT_LOOKUP_KEYS: usize = 1048576
         # Above every configured table limit, while still representable by
         # the minimum supported 32-bit usize target.
         const JSON_INDEX_NONE: usize = 4294967295
@@ -160,6 +161,7 @@ module EsJson:
             MemberAccountingInvalid
             RootAccountingInvalid
             DuplicateObjectKey
+            LookupLimitExceeded
             AppendNotReady
             SealNotReady
 
@@ -262,6 +264,17 @@ module EsJson:
                 else:
                     high <- middle
             return low
+
+
+        def json_object_member_index_validated(document: JsonDocument&, owner: JsonNode, key: sview) -> usize:
+            return JSON_INDEX_NONE if owner.member_count == 0
+            rank: usize = json_member_key_order_lower_bound(document, owner, key)
+            range_end: usize = owner.member_key_order_start + owner.member_count
+            return JSON_INDEX_NONE if rank >= range_end
+            member_index: usize = document.member_key_order[rank]
+            member: JsonMember = document.members[member_index]
+            return JSON_INDEX_NONE if json_stored_key_view_order(document, member, key) != JsonKeyOrder.Equal
+            return member_index
 
 
         def json_number_next_state(state: JsonNumberScanState, byte: u8) -> JsonNumberScanState:
@@ -578,6 +591,30 @@ module EsJson:
             for offset in 0..<node.scalar_bytes |document, node, copied|:
                 copied.push(document.scalar_data[node.scalar_start + offset])
             return copied
+
+
+        def json_object_member_index(document: JsonDocument&, object_index: usize, key: sview) -> usize error[JsonContractError]:
+            try validate_json_document(document)
+            raise JsonContractError.InvalidDocumentState if document.state != JsonDocumentState.Sealed
+            raise JsonContractError.InvalidMemberOwner if object_index >= document.nodes.count
+            owner: JsonNode = document.nodes[object_index]
+            raise JsonContractError.InvalidMemberOwner if owner.kind != JsonNodeKind.Object
+            raise JsonContractError.InvalidMemberKey if not json_key_valid(key, document.limits.field_bytes)
+            return json_object_member_index_validated(document, owner, key)
+
+
+        def json_object_member_indices(document: JsonDocument&, object_index: usize, keys: darray[sview]) -> darray[usize] error[JsonContractError] can[Memory.Allocate, Abort.Panic]:
+            raise JsonContractError.LookupLimitExceeded if keys.count > JSON_MAX_OBJECT_LOOKUP_KEYS
+            try validate_json_document(document)
+            raise JsonContractError.InvalidDocumentState if document.state != JsonDocumentState.Sealed
+            raise JsonContractError.InvalidMemberOwner if object_index >= document.nodes.count
+            owner: JsonNode = document.nodes[object_index]
+            raise JsonContractError.InvalidMemberOwner if owner.kind != JsonNodeKind.Object
+            matches: mutable darray[usize] = []
+            for key in keys |document, owner, matches|:
+                raise JsonContractError.InvalidMemberKey if not json_key_valid(key, document.limits.field_bytes)
+                matches.push(json_object_member_index_validated(document, owner, key))
+            return matches
 
 
         def advance_json_document(document: mutable JsonDocument&, event: JsonDocumentEvent, node: JsonNodeInput = JsonNodeInput{kind: JsonNodeKind.Null}, member: JsonMemberInput = JsonMemberInput{owner_index: JSON_INDEX_NONE, key: ""}, root_index: usize = JSON_INDEX_NONE, bytes_delta: usize = 0, child: JsonArrayChild = JsonArrayChild{owner_index: JSON_INDEX_NONE, value_index: JSON_INDEX_NONE, ordinal: 0}) -> JsonDocumentState error[JsonContractError]:

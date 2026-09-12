@@ -1,0 +1,119 @@
+# Scalar JSON-to-schema materialization.
+#
+# Parsing retains a validated JSON document. This adapter projects one object
+# root into schema order and owns each selected scalar payload, so consumers do
+# not borrow storage from the parser's document. Nested values and target-width
+# numeric conversion deliberately remain explicit follow-up work.
+
+module EsSchemaJson:
+    using EsData
+    using EsJson
+    using EsSchema
+
+    public:
+        const SCHEMA_JSON_MAX_PAYLOAD_BYTES: usize = DATA_MAX_INPUT_BYTES
+
+
+        const enum SchemaJsonScalarKind of u8:
+            Missing
+            Null
+            Bool
+            Number
+            Text
+
+
+        struct SchemaJsonValue:
+            field_index: usize
+            kind: SchemaJsonScalarKind
+            bool_value: bool = false
+            bytes: darray[u8] = []
+
+
+        struct SchemaJsonRecord:
+            root_ordinal: usize
+            values: darray[SchemaJsonValue] = []
+            payload_bytes: usize = 0
+
+
+        error SchemaJsonMaterializeError:
+            RootIndexInvalid
+            RootNotObject
+            UnknownField
+            UnsupportedValueKind
+            PayloadLimitExceeded
+
+
+    private:
+        def schema_json_source_name(field: SchemaField) -> sview:
+            return field.name if field.source_name == ""
+            return field.source_name
+
+
+        def schema_json_kind_matches(schema_kind: SchemaValueKind, json_kind: JsonNodeKind) -> bool:
+            if schema_kind == SchemaValueKind.Any:
+                return true
+            if schema_kind == SchemaValueKind.Null:
+                return json_kind == JsonNodeKind.Null
+            if schema_kind == SchemaValueKind.Bool:
+                return json_kind == JsonNodeKind.Bool
+            if schema_kind == SchemaValueKind.Number:
+                return json_kind == JsonNodeKind.Number
+            if schema_kind == SchemaValueKind.Text:
+                return json_kind == JsonNodeKind.Text
+            if schema_kind == SchemaValueKind.Array:
+                return json_kind == JsonNodeKind.Array
+            return json_kind == JsonNodeKind.Object
+
+
+        def schema_json_scalar_kind(node_kind: JsonNodeKind) -> SchemaJsonScalarKind error[SchemaJsonMaterializeError]:
+            if node_kind == JsonNodeKind.Null:
+                return SchemaJsonScalarKind.Null
+            if node_kind == JsonNodeKind.Bool:
+                return SchemaJsonScalarKind.Bool
+            if node_kind == JsonNodeKind.Number:
+                return SchemaJsonScalarKind.Number
+            if node_kind == JsonNodeKind.Text:
+                return SchemaJsonScalarKind.Text
+            raise SchemaJsonMaterializeError.UnsupportedValueKind
+
+
+    public:
+        def materialize_json_schema_record(schema: SchemaDescriptor&, document: JsonDocument&, root_ordinal: usize) -> SchemaJsonRecord error[JsonContractError, SchemaContractError, SchemaJsonMaterializeError] can[Memory.Allocate, Abort.Panic]:
+            try validate_schema_descriptor(schema)
+            raise SchemaContractError.InvalidSource if schema.source != SchemaSource.Json
+            raise JsonContractError.InvalidDocumentState if document.state != JsonDocumentState.Sealed
+            raise SchemaJsonMaterializeError.RootIndexInvalid if root_ordinal >= document.roots.count
+            root_index: usize = document.roots[root_ordinal]
+            raise JsonContractError.RootAccountingInvalid if root_index >= document.nodes.count
+            raise SchemaJsonMaterializeError.RootNotObject if document.nodes[root_index].kind != JsonNodeKind.Object
+
+            source_keys: mutable darray[sview] = []
+            for field in schema.fields |schema, source_keys|:
+                source_keys.push(schema_json_source_name(field))
+            member_indices: darray[usize] = json_object_member_indices(document, root_index, source_keys)
+
+            record: mutable SchemaJsonRecord = SchemaJsonRecord{root_ordinal: root_ordinal}
+            matched_fields: mutable usize = 0
+            for field_index in 0..<schema.fields.count |schema, document, member_indices, record, matched_fields|:
+                field: SchemaField = schema.fields[field_index]
+                member_index: usize = member_indices[field_index]
+                if member_index == JSON_INDEX_NONE:
+                    raise SchemaContractError.RequiredFieldMissing if field.required
+                    record.values.push(SchemaJsonValue{field_index: field_index, kind: SchemaJsonScalarKind.Missing})
+                else:
+                    matched_fields <- matched_fields + 1
+                    member: JsonMember = document.members[member_index]
+                    node: JsonNode = document.nodes[member.value_index]
+                    raise SchemaContractError.ValueKindMismatch if not schema_json_kind_matches(field.kind, node.kind)
+                    raise SchemaJsonMaterializeError.UnsupportedValueKind if field.kind == SchemaValueKind.Any
+                    scalar_kind: SchemaJsonScalarKind = schema_json_scalar_kind(node.kind)
+                    value: mutable SchemaJsonValue = SchemaJsonValue{field_index: field_index, kind: scalar_kind, bool_value: node.bool_value}
+                    if scalar_kind == SchemaJsonScalarKind.Number or scalar_kind == SchemaJsonScalarKind.Text:
+                        raise SchemaJsonMaterializeError.PayloadLimitExceeded if record.payload_bytes > SCHEMA_JSON_MAX_PAYLOAD_BYTES
+                        raise SchemaJsonMaterializeError.PayloadLimitExceeded if node.scalar_bytes > SCHEMA_JSON_MAX_PAYLOAD_BYTES - record.payload_bytes
+                        for offset in 0..<node.scalar_bytes |document, node, value|:
+                            value.bytes.push(document.scalar_data[node.scalar_start + offset])
+                        record.payload_bytes <- record.payload_bytes + node.scalar_bytes
+                    record.values.push(value)
+            raise SchemaJsonMaterializeError.UnknownField if not schema.allow_unknown and matched_fields != document.nodes[root_index].member_count
+            return record
