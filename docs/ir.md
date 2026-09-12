@@ -356,15 +356,22 @@ states. Separators inside quotes are data; doubled quotes and configured escape
 bytes are explicit transitions; malformed post-quote bytes, unterminated
 quotes, and cancellation become typed `CsvContractError` values. Validation
 also reconciles ready/complete state counters before admission, and rejected
-byte events leave input and field counters unchanged. Field
+byte events leave input and field counters unchanged. `CsvPolicy` keeps the
+legacy configurable single-byte terminator by default and also names explicit
+LF, CRLF, or CR modes; the legacy `record_separator` byte is read and validated
+only in `ConfiguredByte` mode. CRLF is recognized across byte events with a
+pending-CR state; an invalid or incomplete suffix is rejected without
+consuming the offending byte. CR and LF remain payload inside quoted fields,
+while an unmatched CR or LF outside quotes is invalid in CRLF mode. Field
 materialization, including the invariant that every completed record owns a
-field, newline variants, and external-spill aggregation remain
-adapter work.
+field, and external-spill aggregation remain adapter work.
 
 `EsCsvMaterialize` gives CSV/TSV adapters a policy-bound borrowed-span
 boundary. Each field span is range-checked against the source and checked as a
 well-formed quoted or unquoted cell; each record must consume the next
-contiguous field range with the configured separators at every boundary.
+contiguous field range with the configured field separator and exact configured
+record terminator at every boundary. Unquoted cells may not contain bytes that
+form the selected record terminator; quoted cells may contain newline payload.
 Field and record ceilings are shared with `EsData`, including exact-limit
 inputs and cells, and a ready session must have clean source, field, record,
 and cursor accounting. Lookup returns only validated slices while the session

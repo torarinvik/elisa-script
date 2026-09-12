@@ -20,6 +20,7 @@ module EsCsv:
             Quoted
             Escaped
             AfterQuote
+            PendingRecordTerminator
             Complete
             Failed
             Cancelled
@@ -54,6 +55,7 @@ module EsCsv:
             FieldBytesLimitExceeded
             UnexpectedQuote
             UnexpectedCharacterAfterQuote
+            InvalidRecordTerminator
             UnexpectedEnd
             AccountingInvalid
             Cancelled
@@ -61,7 +63,7 @@ module EsCsv:
 
     private:
         def csv_state_valid(state: CsvStreamState) -> bool:
-            return state in {CsvStreamState.Ready, CsvStreamState.Unquoted, CsvStreamState.Quoted, CsvStreamState.Escaped, CsvStreamState.AfterQuote, CsvStreamState.Complete, CsvStreamState.Failed, CsvStreamState.Cancelled}
+            return state in {CsvStreamState.Ready, CsvStreamState.Unquoted, CsvStreamState.Quoted, CsvStreamState.Escaped, CsvStreamState.AfterQuote, CsvStreamState.PendingRecordTerminator, CsvStreamState.Complete, CsvStreamState.Failed, CsvStreamState.Cancelled}
 
 
         def csv_event_valid(event: CsvStreamEvent) -> bool:
@@ -116,6 +118,7 @@ module EsCsv:
             raise CsvContractError.AccountingInvalid if stream.fields_in_record > stream.fields_total
             raise CsvContractError.AccountingInvalid if stream.fields_total < stream.records
             raise CsvContractError.AccountingInvalid if stream.state == CsvStreamState.Ready and (stream.input_bytes != 0 or stream.records != 0 or stream.fields_total != 0 or stream.fields_in_record != 0 or stream.field_bytes != 0)
+            raise CsvContractError.AccountingInvalid if stream.state == CsvStreamState.PendingRecordTerminator and (stream.policy.line_ending != CsvLineEndingMode.CrLf or stream.input_bytes == 0)
             raise CsvContractError.AccountingInvalid if stream.state == CsvStreamState.Complete and (stream.fields_in_record != 0 or stream.field_bytes != 0)
             raise CsvContractError.AccountingInvalid if stream.state == CsvStreamState.Complete and stream.records == 0 and stream.input_bytes != 0
             return true
@@ -128,17 +131,26 @@ module EsCsv:
                 raise CsvContractError.InvalidState if stream.state != CsvStreamState.Ready
                 stream.state <- CsvStreamState.Unquoted
             elif event == CsvStreamEvent.Byte:
-                raise CsvContractError.InvalidState if stream.state != CsvStreamState.Unquoted and stream.state != CsvStreamState.Quoted and stream.state != CsvStreamState.Escaped and stream.state != CsvStreamState.AfterQuote
+                raise CsvContractError.InvalidState if stream.state != CsvStreamState.Unquoted and stream.state != CsvStreamState.Quoted and stream.state != CsvStreamState.Escaped and stream.state != CsvStreamState.AfterQuote and stream.state != CsvStreamState.PendingRecordTerminator
                 raise CsvContractError.InputLimitExceeded if not csv_bounded_add(stream.input_bytes, 1, stream.limits.input_bytes)
-                if stream.state == CsvStreamState.Unquoted:
+                if stream.state == CsvStreamState.PendingRecordTerminator:
+                    raise CsvContractError.InvalidRecordTerminator if byte != csv_policy_record_terminator_byte(stream.policy, 1)
+                    try csv_finish_record(stream)
+                    stream.state <- CsvStreamState.Unquoted
+                elif stream.state == CsvStreamState.Unquoted:
                     if byte == stream.policy.quote and stream.field_bytes == 0:
                         stream.state <- CsvStreamState.Quoted
                     elif byte == stream.policy.quote:
                         raise CsvContractError.UnexpectedQuote
                     elif byte == stream.policy.separator:
                         try csv_finish_field(stream)
-                    elif byte == stream.policy.record_separator:
-                        try csv_finish_record(stream)
+                    elif byte == csv_policy_record_terminator_byte(stream.policy, 0):
+                        if csv_policy_record_terminator_width(stream.policy) == 2:
+                            stream.state <- CsvStreamState.PendingRecordTerminator
+                        else:
+                            try csv_finish_record(stream)
+                    elif csv_policy_record_terminator_contains(stream.policy, byte):
+                        raise CsvContractError.InvalidRecordTerminator
                     else:
                         try csv_add_field_byte(stream)
                 elif stream.state == CsvStreamState.Quoted:
@@ -155,9 +167,14 @@ module EsCsv:
                     if byte == stream.policy.separator:
                         try csv_finish_field(stream)
                         stream.state <- CsvStreamState.Unquoted
-                    elif byte == stream.policy.record_separator:
-                        try csv_finish_record(stream)
-                        stream.state <- CsvStreamState.Unquoted
+                    elif byte == csv_policy_record_terminator_byte(stream.policy, 0):
+                        if csv_policy_record_terminator_width(stream.policy) == 2:
+                            stream.state <- CsvStreamState.PendingRecordTerminator
+                        else:
+                            try csv_finish_record(stream)
+                            stream.state <- CsvStreamState.Unquoted
+                    elif csv_policy_record_terminator_contains(stream.policy, byte):
+                        raise CsvContractError.InvalidRecordTerminator
                     elif byte == stream.policy.quote and stream.policy.escape == stream.policy.quote:
                         try csv_add_field_byte(stream)
                         stream.state <- CsvStreamState.Quoted
@@ -166,7 +183,7 @@ module EsCsv:
                 stream.input_bytes <- stream.input_bytes + 1
             elif event == CsvStreamEvent.End:
                 raise CsvContractError.InvalidState if stream.state == CsvStreamState.Ready or stream.state == CsvStreamState.Complete or stream.state == CsvStreamState.Failed or stream.state == CsvStreamState.Cancelled
-                raise CsvContractError.UnexpectedEnd if stream.state == CsvStreamState.Quoted or stream.state == CsvStreamState.Escaped
+                raise CsvContractError.UnexpectedEnd if stream.state == CsvStreamState.Quoted or stream.state == CsvStreamState.Escaped or stream.state == CsvStreamState.PendingRecordTerminator
                 if stream.state == CsvStreamState.Unquoted and stream.fields_in_record == 0 and stream.field_bytes == 0 and stream.records != 0:
                     pass
                 else:

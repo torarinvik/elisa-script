@@ -36,6 +36,7 @@ done
 for boundary in \
     'materializer_field_range_valid' \
     'materializer_raw_field_valid' \
+    'materializer_record_terminator_at' \
     'materializer_complete_source_covered' \
     'FieldLayoutInvalid' \
     'RecordLayoutInvalid' \
@@ -64,6 +65,8 @@ rg -Fq 'include "../runtime/csv_materializer_model.elisa"' "$ir"
 rg -Fq 'using EsCsvMaterialize' "$fixture"
 for fixture_pattern in \
     'typed_csv_materializer_contract_preserves_bounded_field_spans' \
+    'typed_csv_materializer_validates_crlf_boundaries_and_quoted_newlines' \
+    'CsvLineEndingMode.CrLf' \
     'trailing_bytes_rejected' \
     'CsvMaterializerEvent.Field' \
     'CsvMaterializerEvent.Record' \
@@ -73,7 +76,8 @@ for fixture_pattern in \
 done
 
 rg -Fq '`EsCsvMaterialize` gives CSV/TSV adapters a policy-bound borrowed-span' "$docs"
+rg -Fq 'exact configured' "$docs"
 rg -Fq 'ES-SCRIPT-009 | EsCsvMaterialize' "$ledger"
 rg -Fq 'explicit EsCsvMaterialize' "$plan"
 
-printf 'csv materializer audit: bounded field spans, contiguous records, quote markers, shared ceilings, and validated slices are present\n'
+printf 'csv materializer audit: bounded spans, contiguous records, exact line endings, quote markers, shared ceilings, and validated slices are present\n'

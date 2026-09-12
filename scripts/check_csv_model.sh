@@ -19,6 +19,7 @@ for declaration in \
     'module EsCsv:' \
     'using EsData' \
     'const enum CsvStreamState of u8:' \
+    'PendingRecordTerminator' \
     'const enum CsvStreamEvent of u8:' \
     'struct CsvStream:' \
     'error CsvContractError:' \
@@ -32,6 +33,7 @@ for boundary in \
     'FieldBytesLimitExceeded' \
     'UnexpectedQuote' \
     'UnexpectedCharacterAfterQuote' \
+    'InvalidRecordTerminator' \
     'UnexpectedEnd' \
     'AccountingInvalid' \
     'stream.fields_total < stream.records' \
@@ -43,6 +45,9 @@ done
 rg -Fq 'include "../runtime/csv_model.elisa"' "$ir"
 for fixture_pattern in \
     'typed_csv_stream_contract_preserves_quotes_and_bounded_rows' \
+    'typed_csv_stream_handles_explicit_line_ending_modes' \
+    'CsvLineEndingMode.CrLf' \
+    'CsvStreamState.PendingRecordTerminator' \
     'CsvStreamEvent.Byte' \
     'CsvContractError.UnexpectedEnd' \
     'assert limited.fields_total == 1' \
@@ -53,4 +58,4 @@ done
 rg -Fq '`EsCsv`' "$docs"
 rg -Fq 'Latest P08 CSV streaming follow-up' "$plan"
 
-printf 'csv model audit: quote-aware bounded CSV/TSV stream transitions are present\n'
+printf 'csv model audit: quote-aware bounded stream transitions and explicit line endings are present\n'

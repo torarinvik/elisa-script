@@ -22,6 +22,7 @@ for declaration in \
     'const enum DataFormat of u8:' \
     'const enum DataDecoderState of u8:' \
     'const enum DataDecoderEvent of u8:' \
+    'const enum CsvLineEndingMode of u8:' \
     'struct DataDecodeLimits:' \
     'struct JsonPolicy:' \
     'struct CsvPolicy:' \
@@ -50,6 +51,9 @@ for boundary in \
     'decoder.state == DataDecoderState.Complete' \
     'decoder.field_bytes' \
     'InvalidCsvPolicy' \
+    'policy.line_ending == CsvLineEndingMode.ConfiguredByte and policy.record_separator == 0' \
+    'data_csv_record_terminator_width' \
+    'data_csv_record_terminator_contains' \
     'UnexpectedEnd' \
     'Cancelled'; do
     rg -Fq "$boundary" "$model"
@@ -58,6 +62,10 @@ done
 rg -Fq 'include "../runtime/data_model.elisa"' "$ir"
 for fixture_pattern in \
     'typed_data_decoder_contract_bounds_json_and_csv_streams' \
+    'typed_csv_stream_handles_explicit_line_ending_modes' \
+    'CsvLineEndingMode.ConfiguredByte' \
+    'CsvLineEndingMode.Lf' \
+    'CsvLineEndingMode.CrLf' \
     'DataFormat.JsonLines' \
     'DataDecoderEvent.Begin' \
     'DataContractError.InvalidCsvPolicy' \
@@ -72,6 +80,7 @@ for fixture_pattern in \
 done
 
 rg -Fq '`EsData` is the format-neutral boundary' "$docs"
+rg -Fq 'legacy configurable single-byte terminator' "$docs"
 rg -Fq 'P8 structured-data follow-up' "$plan"
 
-printf 'data model audit: bounded JSON/JSONL/CSV/TSV policies and decoder state transitions are present\n'
+printf 'data model audit: bounded policies, explicit CSV line endings, and decoder state transitions are present\n'
