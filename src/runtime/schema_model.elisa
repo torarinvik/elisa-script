@@ -12,8 +12,12 @@ module EsSchema:
     public:
         const SCHEMA_FORMAT_VERSION: u8 = 1
         const SCHEMA_MAX_FIELDS: usize = 1048576
+        const SCHEMA_MAX_TYPES: usize = 1048576
+        const SCHEMA_MAX_NESTED_FIELDS: usize = 1048576
         const SCHEMA_MAX_NAME_BYTES: usize = 4096
+        const SCHEMA_MAX_TOTAL_NAME_BYTES: usize = 67108864
         const SCHEMA_SOURCE_INDEX_AUTO: usize = 4294967295
+        const SCHEMA_TYPE_INDEX_NONE: usize = 4294967295
 
 
         const enum SchemaSource of u8:
@@ -63,6 +67,27 @@ module EsSchema:
             scale: i64 = 0
 
 
+        # Indexed schema graph. Recursive references are valid: runtime walks
+        # finite input values iteratively under the JSON depth/node limits.
+        struct SchemaTypeNode:
+            kind: SchemaValueKind
+            integer_target: SchemaIntegerTarget = SchemaIntegerTarget.None
+            decimal_target: SchemaDecimalTarget = SchemaDecimalTarget.None
+            array_item_type_index: usize = SCHEMA_TYPE_INDEX_NONE
+            object_field_start: usize = SCHEMA_TYPE_INDEX_NONE
+            object_field_count: usize = 0
+            allow_unknown: bool = false
+
+
+        # Object fields are grouped by SchemaTypeNode range and stored in
+        # strictly increasing effective-source-name order for bounded lookup.
+        struct SchemaNestedField:
+            name: sview
+            source_name: sview = ""
+            required: bool = true
+            type_index: usize = SCHEMA_TYPE_INDEX_NONE
+
+
         const enum SchemaDecodeState of u8:
             Ready
             Binding
@@ -85,6 +110,8 @@ module EsSchema:
             required: bool = true
             integer_target: SchemaIntegerTarget = SchemaIntegerTarget.None
             decimal_target: SchemaDecimalTarget = SchemaDecimalTarget.None
+            # NONE preserves the legacy shallow kind/target declaration.
+            type_index: usize = SCHEMA_TYPE_INDEX_NONE
 
 
         struct SchemaDescriptor:
@@ -93,6 +120,8 @@ module EsSchema:
             source: SchemaSource
             fields: darray[SchemaField] = []
             allow_unknown: bool = false
+            types: darray[SchemaTypeNode] = []
+            nested_fields: darray[SchemaNestedField] = []
 
 
         struct SchemaBinding:
@@ -116,9 +145,15 @@ module EsSchema:
             InvalidIntegerTarget
             InvalidDecimalTarget
             ConflictingNumericTargets
+            InvalidTypeLimit
+            InvalidTypeReference
+            InvalidTypeShape
+            InvalidNestedFieldRange
+            InvalidNestedFieldOrder
             InvalidState
             InvalidEvent
             InvalidName
+            InvalidNameByteLimit
             InvalidFieldLimit
             DuplicateField
             DuplicateSourceName
@@ -154,6 +189,60 @@ module EsSchema:
 
         def schema_decimal_target_valid(target: SchemaDecimalTarget) -> bool:
             return target in {SchemaDecimalTarget.None, SchemaDecimalTarget.Exact}
+
+
+        def schema_nested_field_source_name(field: SchemaNestedField) -> sview:
+            return field.name if field.source_name == ""
+            return field.source_name
+
+
+        def schema_nested_field_name_order(schema: SchemaDescriptor&, left_index: usize, right_index: usize, effective_source: bool) -> SchemaNameOrder:
+            left: SchemaNestedField = schema.nested_fields[left_index]
+            right: SchemaNestedField = schema.nested_fields[right_index]
+            left_name: sview = left.name
+            right_name: sview = right.name
+            if effective_source:
+                left_name <- schema_nested_field_source_name(left)
+                right_name <- schema_nested_field_source_name(right)
+            return schema_name_order(left_name, right_name)
+
+
+        def schema_sort_nested_field_indices(schema: SchemaDescriptor&, order: mutable darray[usize]&, scratch: mutable darray[usize]&) -> void:
+            width: mutable usize = 1
+            while width < order.count:
+                start: mutable usize = 0
+                while start < order.count:
+                    middle: usize = start + width
+                    middle <- order.count if middle > order.count
+                    end: usize = middle + width
+                    end <- order.count if end > order.count
+                    left: mutable usize = start
+                    right: mutable usize = middle
+                    destination: mutable usize = start
+                    while destination < end:
+                        if left == middle:
+                            scratch[destination] <- order[right]
+                            right <- right + 1
+                        elif right == end:
+                            scratch[destination] <- order[left]
+                            left <- left + 1
+                        elif schema_nested_field_name_order(schema, order[left], order[right], false) != SchemaNameOrder.After:
+                            scratch[destination] <- order[left]
+                            left <- left + 1
+                        else:
+                            scratch[destination] <- order[right]
+                            right <- right + 1
+                        destination <- destination + 1
+                    start <- end
+                for index in 0..<order.count |order, scratch|:
+                    order[index] <- scratch[index]
+                width <- order.count if width > order.count / 2 else width * 2
+
+
+        def schema_nested_duplicate_names_rejected(schema: SchemaDescriptor&, order: darray[usize]) -> bool error[SchemaContractError]:
+            for index in 1..<order.count |schema, order|:
+                raise SchemaContractError.DuplicateField if schema_nested_field_name_order(schema, order[index - 1], order[index], false) == SchemaNameOrder.Equal
+            return true
 
 
         def schema_state_valid(state: SchemaDecodeState) -> bool:
@@ -268,18 +357,111 @@ module EsSchema:
             return true
 
 
+        def schema_type_mark_reachable(types: darray[SchemaTypeNode]&, seen: mutable darray[bool]&, queue: mutable darray[usize]&, type_index: usize) -> void error[SchemaContractError] can[Memory.Allocate, Abort.Panic]:
+            raise SchemaContractError.InvalidTypeReference if type_index >= types.count or type_index >= seen.count
+            if not seen[type_index]:
+                seen[type_index] <- true
+                queue.push(type_index)
+
+
+        def schema_type_graph_fully_reachable(schema: SchemaDescriptor&) -> bool error[SchemaContractError] can[Memory.Allocate, Abort.Panic]:
+            seen: mutable darray[bool] = []
+            queue: mutable darray[usize] = []
+            for _ in 0..<schema.types.count |seen|:
+                seen.push(false)
+            for field in schema.fields |schema, seen, queue|:
+                if field.type_index != SCHEMA_TYPE_INDEX_NONE:
+                    try schema_type_mark_reachable(schema.types, seen, queue, field.type_index)
+            cursor: mutable usize = 0
+            while cursor < queue.count:
+                type_node: SchemaTypeNode = schema.types[queue[cursor]]
+                if type_node.kind == SchemaValueKind.Array:
+                    try schema_type_mark_reachable(schema.types, seen, queue, type_node.array_item_type_index)
+                elif type_node.kind == SchemaValueKind.Object and type_node.object_field_count != 0:
+                    for nested_index in type_node.object_field_start..<(type_node.object_field_start + type_node.object_field_count) |schema, seen, queue|:
+                        try schema_type_mark_reachable(schema.types, seen, queue, schema.nested_fields[nested_index].type_index)
+                cursor <- cursor + 1
+            return queue.count == schema.types.count
+
+
     public:
         def validate_schema_descriptor(schema: SchemaDescriptor&) -> bool error[SchemaContractError] can[Memory.Allocate, Abort.Panic]:
             raise SchemaContractError.InvalidFormatVersion if schema.format_version != SCHEMA_FORMAT_VERSION
             raise SchemaContractError.InvalidName if not schema_name_valid(schema.name)
             raise SchemaContractError.InvalidSource if not schema_source_valid(schema.source)
             raise SchemaContractError.InvalidFieldLimit if schema.fields.count == 0 or schema.fields.count > SCHEMA_MAX_FIELDS
-            for field in schema.fields:
+            raise SchemaContractError.InvalidTypeLimit if schema.types.count > SCHEMA_MAX_TYPES or schema.nested_fields.count > SCHEMA_MAX_NESTED_FIELDS
+            name_bytes: mutable usize = sview_len(schema.name)
+            raise SchemaContractError.InvalidNameByteLimit if name_bytes > SCHEMA_MAX_TOTAL_NAME_BYTES
+            raise SchemaContractError.InvalidSource if schema.source != SchemaSource.Json and (schema.types.count != 0 or schema.nested_fields.count != 0)
+            for field in schema.fields |name_bytes|:
                 try schema_field_valid(field)
+                raise SchemaContractError.InvalidNameByteLimit if sview_len(field.name) > SCHEMA_MAX_TOTAL_NAME_BYTES - name_bytes
+                name_bytes <- name_bytes + sview_len(field.name)
+                if field.source_name != "":
+                    raise SchemaContractError.InvalidNameByteLimit if sview_len(field.source_name) > SCHEMA_MAX_TOTAL_NAME_BYTES - name_bytes
+                    name_bytes <- name_bytes + sview_len(field.source_name)
                 raise SchemaContractError.InvalidIntegerTarget if field.integer_target != SchemaIntegerTarget.None and schema.source == SchemaSource.Json and field.kind != SchemaValueKind.Number
                 raise SchemaContractError.InvalidIntegerTarget if field.integer_target != SchemaIntegerTarget.None and schema.source != SchemaSource.Json and field.kind != SchemaValueKind.Text
                 raise SchemaContractError.InvalidDecimalTarget if field.decimal_target != SchemaDecimalTarget.None and schema.source == SchemaSource.Json and field.kind != SchemaValueKind.Number
                 raise SchemaContractError.InvalidDecimalTarget if field.decimal_target != SchemaDecimalTarget.None and schema.source != SchemaSource.Json and field.kind != SchemaValueKind.Text
+                if field.type_index != SCHEMA_TYPE_INDEX_NONE:
+                    raise SchemaContractError.InvalidSource if schema.source != SchemaSource.Json
+                    raise SchemaContractError.InvalidTypeReference if field.type_index >= schema.types.count
+                    type_node: SchemaTypeNode = schema.types[field.type_index]
+                    raise SchemaContractError.InvalidTypeShape if type_node.kind != field.kind or type_node.integer_target != field.integer_target or type_node.decimal_target != field.decimal_target
+
+            expected_nested_field_start: mutable usize = 0
+            nested_order_indices: mutable darray[usize] = []
+            nested_scratch_indices: mutable darray[usize] = []
+            for type_index in 0..<schema.types.count |schema, expected_nested_field_start, nested_order_indices, nested_scratch_indices|:
+                type_node: SchemaTypeNode = schema.types[type_index]
+                raise SchemaContractError.InvalidValueKind if not schema_value_kind_valid(type_node.kind) or type_node.kind == SchemaValueKind.Any
+                raise SchemaContractError.InvalidIntegerTarget if not schema_integer_target_valid(type_node.integer_target)
+                raise SchemaContractError.InvalidDecimalTarget if not schema_decimal_target_valid(type_node.decimal_target)
+                raise SchemaContractError.ConflictingNumericTargets if type_node.integer_target != SchemaIntegerTarget.None and type_node.decimal_target != SchemaDecimalTarget.None
+                raise SchemaContractError.InvalidIntegerTarget if type_node.integer_target != SchemaIntegerTarget.None and type_node.kind != SchemaValueKind.Number
+                raise SchemaContractError.InvalidDecimalTarget if type_node.decimal_target != SchemaDecimalTarget.None and type_node.kind != SchemaValueKind.Number
+                if type_node.kind == SchemaValueKind.Array:
+                    raise SchemaContractError.InvalidTypeReference if type_node.array_item_type_index == SCHEMA_TYPE_INDEX_NONE or type_node.array_item_type_index >= schema.types.count
+                    raise SchemaContractError.InvalidTypeShape if type_node.object_field_start != SCHEMA_TYPE_INDEX_NONE or type_node.object_field_count != 0 or type_node.allow_unknown
+                elif type_node.kind == SchemaValueKind.Object:
+                    raise SchemaContractError.InvalidTypeShape if type_node.array_item_type_index != SCHEMA_TYPE_INDEX_NONE
+                    if type_node.object_field_count == 0:
+                        raise SchemaContractError.InvalidNestedFieldRange if type_node.object_field_start != SCHEMA_TYPE_INDEX_NONE
+                    else:
+                        raise SchemaContractError.InvalidNestedFieldRange if type_node.object_field_start != expected_nested_field_start
+                        raise SchemaContractError.InvalidNestedFieldRange if type_node.object_field_start > schema.nested_fields.count
+                        raise SchemaContractError.InvalidNestedFieldRange if type_node.object_field_count > schema.nested_fields.count - type_node.object_field_start
+                        range_end: usize = type_node.object_field_start + type_node.object_field_count
+                        for field_index in type_node.object_field_start..<range_end |schema|:
+                            nested_field: SchemaNestedField = schema.nested_fields[field_index]
+                            raise SchemaContractError.InvalidName if not schema_name_valid(nested_field.name)
+                            raise SchemaContractError.InvalidName if nested_field.source_name != "" and not schema_name_valid(nested_field.source_name)
+                            raise SchemaContractError.InvalidNameByteLimit if sview_len(nested_field.name) > SCHEMA_MAX_TOTAL_NAME_BYTES - name_bytes
+                            name_bytes <- name_bytes + sview_len(nested_field.name)
+                            if nested_field.source_name != "":
+                                raise SchemaContractError.InvalidNameByteLimit if sview_len(nested_field.source_name) > SCHEMA_MAX_TOTAL_NAME_BYTES - name_bytes
+                                name_bytes <- name_bytes + sview_len(nested_field.source_name)
+                            raise SchemaContractError.InvalidTypeReference if nested_field.type_index == SCHEMA_TYPE_INDEX_NONE or nested_field.type_index >= schema.types.count
+                            if field_index > type_node.object_field_start:
+                                order: SchemaNameOrder = schema_nested_field_name_order(schema, field_index - 1, field_index, true)
+                                raise SchemaContractError.DuplicateSourceName if order == SchemaNameOrder.Equal
+                                raise SchemaContractError.InvalidNestedFieldOrder if order != SchemaNameOrder.Before
+                        nested_order_indices.truncate(0)
+                        nested_scratch_indices.truncate(0)
+                        for field_index in type_node.object_field_start..<range_end |nested_order_indices, nested_scratch_indices|:
+                            nested_order_indices.push(field_index)
+                            nested_scratch_indices.push(field_index)
+                        schema_sort_nested_field_indices(schema, nested_order_indices, nested_scratch_indices)
+                        try schema_nested_duplicate_names_rejected(schema, nested_order_indices)
+                        expected_nested_field_start <- range_end
+                else:
+                    raise SchemaContractError.InvalidTypeShape if type_node.array_item_type_index != SCHEMA_TYPE_INDEX_NONE or type_node.object_field_start != SCHEMA_TYPE_INDEX_NONE or type_node.object_field_count != 0 or type_node.allow_unknown
+            raise SchemaContractError.InvalidNestedFieldRange if expected_nested_field_start != schema.nested_fields.count
+            type_graph_reachable: bool = try schema_type_graph_fully_reachable(schema)
+            raise SchemaContractError.InvalidTypeReference if not type_graph_reachable
+
             order: mutable darray[usize] = []
             scratch: mutable darray[usize] = []
             for index in 0..<schema.fields.count |order, scratch|:

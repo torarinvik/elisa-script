@@ -355,10 +355,22 @@ is returned. Array and object fields own a bounded flat value graph with
 source-order child/member tables and independent decoded-key/scalar arenas.
 Nested strings remain decoded UTF-8, nested numbers retain their exact JSON
 lexemes, and traversal is iterative with explicit depth, node, edge, member,
-and aggregate-payload limits. `validate_schema_json_record` rejects forged
-indices, ranges, ownership order, scalar payloads, or root mappings before a
-consumer trusts the public tables. This is generic nested JSON ownership, not
-recursive nested-field schema checking; `Any` remains unsupported. Generated
+and aggregate-payload limits. JSON descriptors may add an indexed
+`SchemaTypeNode` graph and contiguous `SchemaNestedField` ranges to describe
+recursive arrays and objects, per-object aliases, requiredness, exact numeric
+targets, and nested `allow_unknown` policy. Type references may be cyclic;
+materialization walks only the finite input tree with a bounded work queue.
+Object-field ranges must be in canonical effective-source-name order, so
+decoded member keys can be resolved by binary search; type/name tables are
+bounded, and unreachable type nodes are rejected. Nested values receive
+schema type/field annotations, and exact integer/decimal conversions apply at
+any depth. `validate_schema_json_record_against` rechecks those annotations,
+nested key-to-field mappings, requiredness, kind/target agreement, and per-
+object unknown-field policy. Root-level unknown keys are checked during
+materialization, while the source document is available.
+The descriptor-free `validate_schema_json_record` intentionally accepts only
+unannotated generic records; it rejects schema annotations it cannot
+authenticate and duplicate object keys. `Any` remains unsupported. Generated
 native record constructors remain open.
 
 JSON `Number` and CSV/TSV `Text` fields may instead opt into

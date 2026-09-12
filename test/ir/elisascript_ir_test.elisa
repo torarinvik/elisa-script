@@ -3329,6 +3329,160 @@ def typed_json_schema_materializer_owns_nested_values_iteratively_and_preserves_
 
 
 @test
+def typed_json_schema_materializer_checks_recursive_nested_types_and_exact_numbers() -> void:
+    limits: DataDecodeLimits = DataDecodeLimits{input_bytes: 512, tokens: 128, depth: 16, records: 8, fields: 32, field_bytes: 128}
+    document: JsonDocument = parse_json_document(lex_json("{\"tree\":{\"label\":\"root\",\"count\":2,\"weight\":-0.00,\"children\":[{\"label\":\"leaf\",\"count\":3,\"children\":[]}]}}", limits))
+    schema: SchemaDescriptor = SchemaDescriptor{name: "recursive_tree", source: SchemaSource.Json, fields: [
+        SchemaField{name: "tree", kind: SchemaValueKind.Object, type_index: 0}
+    ], types: [
+        SchemaTypeNode{kind: SchemaValueKind.Object, object_field_start: 0, object_field_count: 4},
+        SchemaTypeNode{kind: SchemaValueKind.Array, array_item_type_index: 0},
+        SchemaTypeNode{kind: SchemaValueKind.Text},
+        SchemaTypeNode{kind: SchemaValueKind.Number, integer_target: SchemaIntegerTarget.I16},
+        SchemaTypeNode{kind: SchemaValueKind.Number, decimal_target: SchemaDecimalTarget.Exact}
+    ], nested_fields: [
+        SchemaNestedField{name: "children", required: false, type_index: 1},
+        SchemaNestedField{name: "count", type_index: 3},
+        SchemaNestedField{name: "name", source_name: "label", type_index: 2},
+        SchemaNestedField{name: "weight", required: false, type_index: 4}
+    ]}
+
+    record: SchemaJsonRecord = materialize_json_schema_record(schema, document, 0)
+    graph: SchemaJsonOwnedValueGraph = record.nested_values
+    assert validate_schema_json_record_against(schema, record)
+    assert record.values[0].type_index == 0 and graph.nodes[0].schema_type_index == 0
+    assert graph.nodes[4].kind == JsonNodeKind.Array and graph.nodes[4].schema_type_index == 1
+    assert graph.nodes[5].kind == JsonNodeKind.Object and graph.nodes[5].schema_type_index == 0
+    assert graph.nodes[2].number_representation == SchemaJsonNumberRepresentation.Integer
+    assert graph.nodes[2].integer_value.target == SchemaIntegerTarget.I16 and graph.nodes[2].integer_value.signed_value == 2
+    assert graph.nodes[3].number_representation == SchemaJsonNumberRepresentation.Decimal
+    assert graph.nodes[3].decimal_value.negative and graph.nodes[3].decimal_value.scale == 2
+    assert graph.nodes[3].decimal_value.coefficient_digits.count == 3
+    assert graph.members[0].schema_field_index == 2 and graph.members[1].schema_field_index == 1
+    assert graph.members[2].schema_field_index == 3 and graph.members[3].schema_field_index == 0
+    assert graph.members[4].schema_field_index == 2 and graph.members[5].schema_field_index == 1
+    assert graph.members[6].schema_field_index == 0
+
+    generic_validation_rejected: mutable bool = false
+    catch validate_schema_json_record(record):
+        ok value:
+            assert not value
+        error failure:
+            assert failure == SchemaJsonMaterializeError.InvalidRecord
+            generic_validation_rejected <- true
+    assert generic_validation_rejected
+
+    forged: mutable SchemaJsonRecord = record
+    forged.nested_values.nodes[5].schema_type_index <- 2
+    forged_rejected: mutable bool = false
+    catch validate_schema_json_record_against(schema, forged):
+        ok value:
+            assert not value
+        error failure:
+            assert failure == SchemaJsonMaterializeError.InvalidRecord
+            forged_rejected <- true
+    assert forged_rejected
+
+    missing_required: JsonDocument = parse_json_document(lex_json("{\"tree\":{\"count\":2}}", limits))
+    missing_rejected: mutable bool = false
+    catch materialize_json_schema_record(schema, missing_required, 0):
+        ok value:
+            assert false
+        error failure:
+            assert failure == SchemaContractError.RequiredFieldMissing
+            missing_rejected <- true
+    assert missing_rejected
+
+    wrong_kind: JsonDocument = parse_json_document(lex_json("{\"tree\":{\"label\":\"root\",\"count\":\"2\"}}", limits))
+    wrong_kind_rejected: mutable bool = false
+    catch materialize_json_schema_record(schema, wrong_kind, 0):
+        ok value:
+            assert false
+        error failure:
+            assert failure == SchemaContractError.ValueKindMismatch
+            wrong_kind_rejected <- true
+    assert wrong_kind_rejected
+
+    unknown_field: JsonDocument = parse_json_document(lex_json("{\"tree\":{\"label\":\"root\",\"count\":2,\"other\":true}}", limits))
+    unknown_rejected: mutable bool = false
+    catch materialize_json_schema_record(schema, unknown_field, 0):
+        ok value:
+            assert false
+        error failure:
+            assert failure == SchemaJsonMaterializeError.UnknownField
+            unknown_rejected <- true
+    assert unknown_rejected
+
+    open_schema: mutable SchemaDescriptor = schema
+    open_schema.types[0].allow_unknown <- true
+    unknown_subtree: JsonDocument = parse_json_document(lex_json("{\"tree\":{\"label\":\"root\",\"count\":2,\"other\":[{\"x\":1}]}}", limits))
+    unknown_record: SchemaJsonRecord = materialize_json_schema_record(open_schema, unknown_subtree, 0)
+    assert validate_schema_json_record_against(open_schema, unknown_record)
+    assert unknown_record.nested_values.members[2].schema_field_index == SCHEMA_TYPE_INDEX_NONE
+    assert unknown_record.nested_values.nodes[3].schema_type_index == SCHEMA_TYPE_INDEX_NONE
+    assert unknown_record.nested_values.nodes[4].schema_type_index == SCHEMA_TYPE_INDEX_NONE
+    assert unknown_record.nested_values.members[3].schema_field_index == SCHEMA_TYPE_INDEX_NONE
+    assert unknown_record.nested_values.nodes[5].schema_type_index == SCHEMA_TYPE_INDEX_NONE
+
+    known_optional_document: JsonDocument = parse_json_document(lex_json("{\"tree\":{\"label\":\"root\",\"count\":2,\"children\":[],\"other\":[]}}", limits))
+    known_optional_record: SchemaJsonRecord = materialize_json_schema_record(open_schema, known_optional_document, 0)
+    forged_unknown: mutable SchemaJsonRecord = known_optional_record
+    forged_unknown.nested_values.members[2].schema_field_index <- SCHEMA_TYPE_INDEX_NONE
+    forged_unknown.nested_values.nodes[3].schema_type_index <- SCHEMA_TYPE_INDEX_NONE
+    forged_unknown_rejected: mutable bool = false
+    catch validate_schema_json_record_against(open_schema, forged_unknown):
+        ok value:
+            assert not value
+        error failure:
+            assert failure == SchemaJsonMaterializeError.InvalidRecord
+            forged_unknown_rejected <- true
+    assert forged_unknown_rejected
+
+    duplicate_unknown_document: JsonDocument = parse_json_document(lex_json("{\"tree\":{\"label\":\"root\",\"count\":2,\"other\":[],\"extra\":[]}}", limits))
+    duplicate_unknown_record: SchemaJsonRecord = materialize_json_schema_record(open_schema, duplicate_unknown_document, 0)
+    forged_duplicate_unknown: mutable SchemaJsonRecord = duplicate_unknown_record
+    forged_duplicate_unknown.nested_values.key_bytes[15] <- 111
+    forged_duplicate_unknown.nested_values.key_bytes[16] <- 116
+    forged_duplicate_unknown.nested_values.key_bytes[17] <- 104
+    forged_duplicate_unknown.nested_values.key_bytes[18] <- 101
+    forged_duplicate_unknown.nested_values.key_bytes[19] <- 114
+    forged_duplicate_rejected: mutable bool = false
+    catch validate_schema_json_record_against(open_schema, forged_duplicate_unknown):
+        ok value:
+            assert not value
+        error failure:
+            assert failure == SchemaJsonMaterializeError.InvalidRecord
+            forged_duplicate_rejected <- true
+    assert forged_duplicate_rejected
+
+    invalid_order: mutable bool = false
+    bad_order: SchemaDescriptor = SchemaDescriptor{name: "bad_order", source: SchemaSource.Json, fields: [SchemaField{name: "tree", kind: SchemaValueKind.Object, type_index: 0}], types: [
+        SchemaTypeNode{kind: SchemaValueKind.Object, object_field_start: 0, object_field_count: 2},
+        SchemaTypeNode{kind: SchemaValueKind.Text}
+    ], nested_fields: [SchemaNestedField{name: "z", type_index: 1}, SchemaNestedField{name: "a", type_index: 1}]}
+    catch validate_schema_descriptor(bad_order):
+        ok value:
+            assert false
+        error failure:
+            assert failure == SchemaContractError.InvalidNestedFieldOrder
+            invalid_order <- true
+    assert invalid_order
+
+    unreachable: mutable bool = false
+    bad_graph: SchemaDescriptor = SchemaDescriptor{name: "unreachable", source: SchemaSource.Json, fields: [SchemaField{name: "tree", kind: SchemaValueKind.Object, type_index: 0}], types: [
+        SchemaTypeNode{kind: SchemaValueKind.Object},
+        SchemaTypeNode{kind: SchemaValueKind.Text}
+    ]}
+    catch validate_schema_descriptor(bad_graph):
+        ok value:
+            assert false
+        error failure:
+            assert failure == SchemaContractError.InvalidTypeReference
+            unreachable <- true
+    assert unreachable
+
+
+@test
 def typed_schema_json_integer_targets_convert_exactly_without_float_rounding() -> void:
     limits: DataDecodeLimits = DataDecodeLimits{input_bytes: 256, tokens: 64, depth: 8, records: 8, fields: 16, field_bytes: 64}
     document: JsonDocument = parse_json_document(lex_json("{\"small\":127,\"negative\":-128,\"wide\":18446744073709551615,\"minimum\":-9223372036854775808}", limits))

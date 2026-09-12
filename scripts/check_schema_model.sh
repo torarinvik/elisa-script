@@ -64,10 +64,16 @@ for declaration in \
     'struct SchemaJsonOwnedValueGraph:' \
     'struct SchemaJsonValue:' \
     'struct SchemaJsonRecord:' \
+    'SchemaJsonNumberRepresentation' \
     'error SchemaJsonMaterializeError:' \
     'def materialize_json_schema_record(' \
     'def validate_schema_json_record(' \
+    'def validate_schema_json_record_against(' \
     'schema_json_copy_nested_values(' \
+    'schema_json_required_field_counts(' \
+    'schema_json_sort_owned_member_indices(' \
+    'schema_json_record_matches_validated_schema(' \
+    'SchemaJsonMaterializeError.DuplicateField' \
     'schema_json_integer_value_valid(' \
     'json_object_member_indices(' \
     'SCHEMA_JSON_MAX_PAYLOAD_BYTES'; do
@@ -85,6 +91,11 @@ for declaration in \
     'const enum SchemaDecimalTarget of u8:' \
     'struct SchemaIntegerValue:' \
     'struct SchemaDecimalValue:' \
+    'struct SchemaTypeNode:' \
+    'struct SchemaNestedField:' \
+    'SCHEMA_MAX_TYPES' \
+    'SCHEMA_MAX_NESTED_FIELDS' \
+    'SCHEMA_MAX_TOTAL_NAME_BYTES' \
     'const enum SchemaDecodeState of u8:' \
     'const enum SchemaDecodeEvent of u8:' \
     'struct SchemaField:' \
@@ -93,6 +104,8 @@ for declaration in \
     'struct SchemaDecodeSession:' \
     'error SchemaContractError:' \
     'InvalidIntegerTarget' \
+    'InvalidNestedFieldOrder' \
+    'schema_type_graph_fully_reachable(' \
     'def validate_schema_descriptor(' \
     'def validate_schema_session(' \
     'def advance_schema_session(' \
@@ -163,6 +176,9 @@ for fixture_pattern in \
     'typed_schema_binding_contract_checks_json_kinds_and_required_fields' \
     'typed_json_schema_materializer_owns_scalars_and_preserves_schema_order' \
     'typed_json_schema_materializer_owns_nested_values_iteratively_and_preserves_order' \
+    'typed_json_schema_materializer_checks_recursive_nested_types_and_exact_numbers' \
+    'forged_unknown_rejected' \
+    'forged_duplicate_rejected' \
     'typed_schema_json_integer_targets_convert_exactly_without_float_rounding' \
     'typed_schema_json_decimal_target_preserves_exact_scale_and_negative_zero' \
     'typed_csv_schema_integer_targets_decode_signed_and_unsigned_fields' \
@@ -185,7 +201,9 @@ done
 
 rg -Fq '`EsSchema`' "$docs"
 rg -Fq '`EsSchemaCsv` materializes completed CSV/TSV records' "$docs"
+rg -Fq '`validate_schema_json_record_against` rechecks those annotations' "$docs"
 rg -Fq 'header/positional projection once per call' "$docs"
 rg -Fq 'Latest P08 typed JSON schema follow-up' "$plan"
+rg -Fq 'Latest P08 recursive typed JSON schema follow-up' "$plan"
 
-printf 'schema model audit: owned nested JSON values, typed schema binding, and bounded CSV row batches are present\n'
+printf 'schema model audit: recursively typed JSON values, typed schema binding, and bounded CSV row batches are present\n'
