@@ -351,9 +351,15 @@ stores a tagged signed or unsigned integer without floating-point conversion.
 JSON's grammar rejects leading plus signs and leading-zero forms, while decimal
 and exponent forms are not integers for this target. Unknown keys follow
 `allow_unknown`; required-field and JSON-kind mismatches fail before a record
-is returned.
-Array/object fields and `Any` remain rejected until recursive value typing is
-defined. Generated native record constructors remain open.
+is returned. Array and object fields own a bounded flat value graph with
+source-order child/member tables and independent decoded-key/scalar arenas.
+Nested strings remain decoded UTF-8, nested numbers retain their exact JSON
+lexemes, and traversal is iterative with explicit depth, node, edge, member,
+and aggregate-payload limits. `validate_schema_json_record` rejects forged
+indices, ranges, ownership order, scalar payloads, or root mappings before a
+consumer trusts the public tables. This is generic nested JSON ownership, not
+recursive nested-field schema checking; `Any` remains unsupported. Generated
+native record constructors remain open.
 
 `EsCsv` turns the `CsvPolicy` into a quote-aware streaming state machine.
 `CsvStream` counts input bytes, fields, field bytes, and records against the

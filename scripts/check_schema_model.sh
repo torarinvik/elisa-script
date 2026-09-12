@@ -55,12 +55,17 @@ for declaration in \
     'using EsJson' \
     'using EsSchema' \
     'using EsSchemaNumeric' \
-    'const enum SchemaJsonScalarKind of u8:' \
-    'SchemaJsonScalarKind.Integer' \
+    'const enum SchemaJsonValueKind of u8:' \
+    'SchemaJsonValueKind.Integer' \
+    'struct SchemaJsonOwnedNode:' \
+    'struct SchemaJsonOwnedValueGraph:' \
     'struct SchemaJsonValue:' \
     'struct SchemaJsonRecord:' \
     'error SchemaJsonMaterializeError:' \
     'def materialize_json_schema_record(' \
+    'def validate_schema_json_record(' \
+    'schema_json_copy_nested_values(' \
+    'schema_json_integer_value_valid(' \
     'json_object_member_indices(' \
     'SCHEMA_JSON_MAX_PAYLOAD_BYTES'; do
     rg -Fq "$declaration" "$json_materializer"
@@ -146,6 +151,7 @@ rg -Fq 'include "../runtime/schema_csv_materializer.elisa"' "$ir"
 for fixture_pattern in \
     'typed_schema_binding_contract_checks_json_kinds_and_required_fields' \
     'typed_json_schema_materializer_owns_scalars_and_preserves_schema_order' \
+    'typed_json_schema_materializer_owns_nested_values_iteratively_and_preserves_order' \
     'typed_schema_json_integer_targets_convert_exactly_without_float_rounding' \
     'typed_csv_schema_integer_targets_decode_signed_and_unsigned_fields' \
     'typed_csv_schema_materializer_binds_header_aliases_and_optional_fields' \
@@ -157,8 +163,9 @@ for fixture_pattern in \
     'SchemaDecodeEvent.Bind' \
     'SchemaContractError.ValueKindMismatch' \
     'SchemaJsonMaterializeError.UnsupportedValueKind' \
-    'SchemaJsonScalarKind.Missing' \
+    'SchemaJsonValueKind.Missing' \
     'forged_ready' \
+    'forged_integer_rejected' \
     'forged_complete'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
@@ -168,4 +175,4 @@ rg -Fq '`EsSchemaCsv` materializes completed CSV/TSV records' "$docs"
 rg -Fq 'header/positional projection once per call' "$docs"
 rg -Fq 'Latest P08 typed JSON schema follow-up' "$plan"
 
-printf 'schema model audit: typed JSON binding and bounded owned CSV row batches are present\n'
+printf 'schema model audit: owned nested JSON values, typed schema binding, and bounded CSV row batches are present\n'

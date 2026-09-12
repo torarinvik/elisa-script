@@ -1,41 +1,86 @@
-# Scalar JSON-to-schema materialization.
+# Owned JSON-to-schema materialization.
 #
 # Parsing retains a validated JSON document. This adapter projects one object
-# root into schema order and owns each selected scalar payload, so consumers do
-# not borrow storage from the parser's document. Declared integer targets are
-# parsed exactly without floating-point coercion; nested values remain open.
+# root into schema order and owns each selected scalar payload and generic
+# nested-value graph, so consumers do not borrow storage from the parser's
+# document. Declared integer targets are parsed exactly without floating-point
+# coercion. Nested values preserve JSON kinds and order but are not recursively
+# constrained by nested schema declarations yet.
 
 module EsSchemaJson:
     using EsData
     using EsJson
     using EsSchema
     using EsSchemaNumeric
+    using EsEncoding
 
     public:
         const SCHEMA_JSON_MAX_PAYLOAD_BYTES: usize = DATA_MAX_INPUT_BYTES
+        const SCHEMA_JSON_MAX_NODES: usize = DATA_MAX_TOKENS
+        const SCHEMA_JSON_MAX_ARRAY_CHILDREN: usize = DATA_MAX_TOKENS
+        const SCHEMA_JSON_MAX_OBJECT_MEMBERS: usize = DATA_MAX_FIELDS
+        const SCHEMA_JSON_INDEX_NONE: usize = JSON_INDEX_NONE
 
 
-        const enum SchemaJsonScalarKind of u8:
+        const enum SchemaJsonValueKind of u8:
             Missing
             Null
             Bool
             Number
             Integer
             Text
+            Array
+            Object
+
+
+        struct SchemaJsonOwnedNode:
+            kind: JsonNodeKind
+            depth: usize = 0
+            bool_value: bool = false
+            child_start: usize = SCHEMA_JSON_INDEX_NONE
+            child_count: usize = 0
+            member_start: usize = SCHEMA_JSON_INDEX_NONE
+            member_count: usize = 0
+            scalar_start: usize = SCHEMA_JSON_INDEX_NONE
+            scalar_bytes: usize = 0
+
+
+        struct SchemaJsonOwnedArrayChild:
+            owner_index: usize
+            value_index: usize
+            ordinal: usize
+
+
+        struct SchemaJsonOwnedObjectMember:
+            owner_index: usize
+            key_start: usize
+            key_bytes: usize
+            value_index: usize
+            ordinal: usize
+
+
+        struct SchemaJsonOwnedValueGraph:
+            nodes: darray[SchemaJsonOwnedNode] = []
+            children: darray[SchemaJsonOwnedArrayChild] = []
+            members: darray[SchemaJsonOwnedObjectMember] = []
+            key_bytes: darray[u8] = []
+            scalar_bytes: darray[u8] = []
 
 
         struct SchemaJsonValue:
             field_index: usize
-            kind: SchemaJsonScalarKind
+            kind: SchemaJsonValueKind
             bool_value: bool = false
             integer_value: SchemaIntegerValue = SchemaIntegerValue{}
             bytes: darray[u8] = []
+            container_root_index: usize = SCHEMA_JSON_INDEX_NONE
 
 
         struct SchemaJsonRecord:
             root_ordinal: usize
             values: darray[SchemaJsonValue] = []
             payload_bytes: usize = 0
+            nested_values: SchemaJsonOwnedValueGraph = SchemaJsonOwnedValueGraph{}
 
 
         error SchemaJsonMaterializeError:
@@ -44,9 +89,22 @@ module EsSchemaJson:
             UnknownField
             UnsupportedValueKind
             PayloadLimitExceeded
-
-
+            NodeLimitExceeded
+            ArrayChildLimitExceeded
+            ObjectMemberLimitExceeded
+            DepthLimitExceeded
+            InvalidScalarPayload
+            InvalidRecord
     private:
+        struct SchemaJsonPendingContainer:
+            value_index: usize
+            source_node_index: usize
+
+
+        struct SchemaJsonTraversalItem:
+            source_node_index: usize
+
+
         def schema_json_source_name(field: SchemaField) -> sview:
             return field.name if field.source_name == ""
             return field.source_name
@@ -68,19 +126,279 @@ module EsSchemaJson:
             return json_kind == JsonNodeKind.Object
 
 
-        def schema_json_scalar_kind(node_kind: JsonNodeKind) -> SchemaJsonScalarKind error[SchemaJsonMaterializeError]:
+        def schema_json_value_kind(node_kind: JsonNodeKind) -> SchemaJsonValueKind error[SchemaJsonMaterializeError]:
             if node_kind == JsonNodeKind.Null:
-                return SchemaJsonScalarKind.Null
+                return SchemaJsonValueKind.Null
             if node_kind == JsonNodeKind.Bool:
-                return SchemaJsonScalarKind.Bool
+                return SchemaJsonValueKind.Bool
             if node_kind == JsonNodeKind.Number:
-                return SchemaJsonScalarKind.Number
+                return SchemaJsonValueKind.Number
             if node_kind == JsonNodeKind.Text:
-                return SchemaJsonScalarKind.Text
+                return SchemaJsonValueKind.Text
+            if node_kind == JsonNodeKind.Array:
+                return SchemaJsonValueKind.Array
+            if node_kind == JsonNodeKind.Object:
+                return SchemaJsonValueKind.Object
             raise SchemaJsonMaterializeError.UnsupportedValueKind
 
 
+        def schema_json_owned_range_valid(start: usize, count: usize, table_count: usize) -> bool:
+            return start == SCHEMA_JSON_INDEX_NONE if count == 0
+            return false if start > table_count
+            return count <= table_count - start
+
+
+        def schema_json_document_range_valid(start: usize, count: usize, table_count: usize) -> bool:
+            return false if count == 0 and start != JSON_INDEX_NONE
+            return true if count == 0
+            return false if start == JSON_INDEX_NONE or start > table_count
+            return count <= table_count - start
+
+
+        def schema_json_utf8_span_valid(bytes: darray[u8]&, start: usize, length: usize) -> bool:
+            return false if start > bytes.count
+            return false if length > bytes.count - start
+            cursor: mutable Utf8Cursor = Utf8Cursor{}
+            for offset in 0..<length |bytes, start, cursor|:
+                return false if not utf8_feed(bytes[start + offset], cursor)
+            return utf8_complete(cursor)
+
+
+        def schema_json_integer_target_valid(target: SchemaIntegerTarget) -> bool:
+            return target in {SchemaIntegerTarget.I8, SchemaIntegerTarget.I16, SchemaIntegerTarget.I32, SchemaIntegerTarget.I64, SchemaIntegerTarget.U8, SchemaIntegerTarget.U16, SchemaIntegerTarget.U32, SchemaIntegerTarget.U64}
+
+
+        def schema_json_integer_value_empty(value: SchemaIntegerValue) -> bool:
+            return value.target == SchemaIntegerTarget.None and value.signed_value == 0 and value.unsigned_value == 0
+
+
+        def schema_json_integer_value_valid(value: SchemaIntegerValue) -> bool:
+            if value.target == SchemaIntegerTarget.I8:
+                return value.unsigned_value == 0 and value.signed_value >= -128 and value.signed_value <= 127
+            elif value.target == SchemaIntegerTarget.I16:
+                return value.unsigned_value == 0 and value.signed_value >= -32768 and value.signed_value <= 32767
+            elif value.target == SchemaIntegerTarget.I32:
+                return value.unsigned_value == 0 and value.signed_value >= -2147483648 and value.signed_value <= 2147483647
+            elif value.target == SchemaIntegerTarget.I64:
+                return value.unsigned_value == 0
+            elif value.target == SchemaIntegerTarget.U8:
+                return value.signed_value == 0 and value.unsigned_value <= 255
+            elif value.target == SchemaIntegerTarget.U16:
+                return value.signed_value == 0 and value.unsigned_value <= 65535
+            elif value.target == SchemaIntegerTarget.U32:
+                return value.signed_value == 0 and value.unsigned_value <= 4294967295
+            elif value.target == SchemaIntegerTarget.U64:
+                return value.signed_value == 0
+            return false
+
+
+        def schema_json_copy_span(source: darray[u8]&, start: usize, length: usize, destination: mutable darray[u8]&, remaining_payload: usize) -> void error[SchemaJsonMaterializeError] can[Memory.Allocate, Abort.Panic]:
+            raise SchemaJsonMaterializeError.PayloadLimitExceeded if length > remaining_payload
+            raise SchemaJsonMaterializeError.InvalidScalarPayload if start > source.count
+            raise SchemaJsonMaterializeError.InvalidScalarPayload if length > source.count - start
+            for offset in 0..<length |source, destination, start|:
+                destination.push(source[start + offset])
+
+
+        def schema_json_output_node(source: JsonNode, depth: usize) -> SchemaJsonOwnedNode:
+            return SchemaJsonOwnedNode{kind: source.kind, depth: depth, bool_value: source.bool_value}
+
+
+        def schema_json_copy_nested_values(document: JsonDocument&, pending: darray[SchemaJsonPendingContainer], record: mutable SchemaJsonRecord&) -> void error[JsonContractError, SchemaJsonMaterializeError] can[Memory.Allocate, Abort.Panic]:
+            graph: mutable SchemaJsonOwnedValueGraph = record.nested_values
+            source_queue: mutable darray[SchemaJsonTraversalItem] = []
+            raise SchemaJsonMaterializeError.InvalidRecord if graph.nodes.count != 0 or graph.children.count != 0 or graph.members.count != 0 or graph.key_bytes.count != 0 or graph.scalar_bytes.count != 0
+            raise SchemaJsonMaterializeError.NodeLimitExceeded if pending.count > document.nodes.count
+            raise SchemaJsonMaterializeError.NodeLimitExceeded if pending.count > SCHEMA_JSON_MAX_NODES
+            for item in pending |document, graph, source_queue, record|:
+                raise SchemaJsonMaterializeError.InvalidRecord if item.value_index >= record.values.count
+                raise JsonContractError.NodeAccountingInvalid if item.source_node_index >= document.nodes.count
+                source_node: JsonNode = document.nodes[item.source_node_index]
+                raise SchemaJsonMaterializeError.UnsupportedValueKind if source_node.kind != JsonNodeKind.Array and source_node.kind != JsonNodeKind.Object
+                root_index: usize = graph.nodes.count
+                graph.nodes.push(schema_json_output_node(source_node, 0))
+                value: mutable SchemaJsonValue = record.values[item.value_index]
+                value.container_root_index <- root_index
+                record.values[item.value_index] <- value
+                source_queue.push(SchemaJsonTraversalItem{source_node_index: item.source_node_index})
+
+            cursor: mutable usize = 0
+            while cursor < source_queue.count:
+                raise SchemaJsonMaterializeError.InvalidRecord if cursor >= graph.nodes.count
+                source_index: usize = source_queue[cursor].source_node_index
+                raise JsonContractError.NodeAccountingInvalid if source_index >= document.nodes.count
+                source_node: JsonNode = document.nodes[source_index]
+                output_node: mutable SchemaJsonOwnedNode = graph.nodes[cursor]
+                if source_node.kind == JsonNodeKind.Array:
+                    raise JsonContractError.InvalidChildRange if not schema_json_document_range_valid(source_node.child_start, source_node.child_count, document.children.count)
+                    raise SchemaJsonMaterializeError.ArrayChildLimitExceeded if graph.children.count > SCHEMA_JSON_MAX_ARRAY_CHILDREN or graph.children.count > document.children.count
+                    raise SchemaJsonMaterializeError.ArrayChildLimitExceeded if source_node.child_count > SCHEMA_JSON_MAX_ARRAY_CHILDREN - graph.children.count
+                    raise SchemaJsonMaterializeError.ArrayChildLimitExceeded if source_node.child_count > document.children.count - graph.children.count
+                    output_node.child_start <- graph.children.count if source_node.child_count != 0
+                    output_node.child_count <- source_node.child_count
+                    for ordinal in 0..<source_node.child_count |document, graph, source_queue, output_node, cursor, record|:
+                        raise SchemaJsonMaterializeError.NodeLimitExceeded if graph.nodes.count >= document.nodes.count or graph.nodes.count >= SCHEMA_JSON_MAX_NODES
+                        child: JsonArrayChild = document.children[source_node.child_start + ordinal]
+                        raise JsonContractError.InvalidArrayChild if child.value_index >= document.nodes.count
+                        raise JsonContractError.InvalidArrayChild if child.owner_index != source_index or child.ordinal != ordinal
+                        raise SchemaJsonMaterializeError.DepthLimitExceeded if output_node.depth >= DATA_MAX_DEPTH or output_node.depth >= document.limits.depth
+                        child_output_index: usize = graph.nodes.count
+                        child_node: JsonNode = document.nodes[child.value_index]
+                        graph.children.push(SchemaJsonOwnedArrayChild{owner_index: cursor, value_index: child_output_index, ordinal: ordinal})
+                        graph.nodes.push(schema_json_output_node(child_node, output_node.depth + 1))
+                        source_queue.push(SchemaJsonTraversalItem{source_node_index: child.value_index})
+                elif source_node.kind == JsonNodeKind.Object:
+                    raise JsonContractError.InvalidMemberOwner if not schema_json_document_range_valid(source_node.member_start, source_node.member_count, document.members.count)
+                    raise SchemaJsonMaterializeError.ObjectMemberLimitExceeded if graph.members.count > SCHEMA_JSON_MAX_OBJECT_MEMBERS or graph.members.count > document.members.count
+                    raise SchemaJsonMaterializeError.ObjectMemberLimitExceeded if source_node.member_count > SCHEMA_JSON_MAX_OBJECT_MEMBERS - graph.members.count
+                    raise SchemaJsonMaterializeError.ObjectMemberLimitExceeded if source_node.member_count > document.members.count - graph.members.count
+                    output_node.member_start <- graph.members.count if source_node.member_count != 0
+                    output_node.member_count <- source_node.member_count
+                    for ordinal in 0..<source_node.member_count |document, graph, source_queue, output_node, cursor, record|:
+                        raise SchemaJsonMaterializeError.NodeLimitExceeded if graph.nodes.count >= document.nodes.count or graph.nodes.count >= SCHEMA_JSON_MAX_NODES
+                        member: JsonMember = document.members[source_node.member_start + ordinal]
+                        raise JsonContractError.InvalidMemberValue if member.value_index >= document.nodes.count
+                        raise JsonContractError.InvalidMemberOwner if member.owner_index != source_index or member.ordinal != ordinal
+                        raise SchemaJsonMaterializeError.DepthLimitExceeded if output_node.depth >= DATA_MAX_DEPTH or output_node.depth >= document.limits.depth
+                        remaining_key_payload: usize = SCHEMA_JSON_MAX_PAYLOAD_BYTES - record.payload_bytes
+                        key_start: usize = graph.key_bytes.count
+                        try schema_json_copy_span(document.key_bytes, member.key_start, member.key_bytes, graph.key_bytes, remaining_key_payload)
+                        record.payload_bytes <- record.payload_bytes + member.key_bytes
+                        child_output_index: usize = graph.nodes.count
+                        child_node: JsonNode = document.nodes[member.value_index]
+                        graph.members.push(SchemaJsonOwnedObjectMember{owner_index: cursor, key_start: key_start, key_bytes: member.key_bytes, value_index: child_output_index, ordinal: ordinal})
+                        graph.nodes.push(schema_json_output_node(child_node, output_node.depth + 1))
+                        source_queue.push(SchemaJsonTraversalItem{source_node_index: member.value_index})
+                elif source_node.kind == JsonNodeKind.Text or source_node.kind == JsonNodeKind.Number:
+                    raise JsonContractError.InvalidScalarPayload if source_node.scalar_start > document.scalar_data.count
+                    raise JsonContractError.InvalidScalarPayload if source_node.scalar_bytes > document.scalar_data.count - source_node.scalar_start
+                    remaining_scalar_payload: usize = SCHEMA_JSON_MAX_PAYLOAD_BYTES - record.payload_bytes
+                    scalar_start: usize = graph.scalar_bytes.count
+                    try schema_json_copy_span(document.scalar_data, source_node.scalar_start, source_node.scalar_bytes, graph.scalar_bytes, remaining_scalar_payload)
+                    record.payload_bytes <- record.payload_bytes + source_node.scalar_bytes
+                    output_node.scalar_start <- scalar_start
+                    output_node.scalar_bytes <- source_node.scalar_bytes
+                else:
+                    raise SchemaJsonMaterializeError.InvalidScalarPayload if source_node.kind != JsonNodeKind.Null and source_node.kind != JsonNodeKind.Bool
+                graph.nodes[cursor] <- output_node
+                cursor <- cursor + 1
+            record.nested_values <- graph
+
+
+        def schema_json_record_valid(record: SchemaJsonRecord&) -> bool error[SchemaJsonMaterializeError]:
+            raise SchemaJsonMaterializeError.InvalidRecord if record.values.count == 0 or record.values.count > SCHEMA_MAX_FIELDS
+            raise SchemaJsonMaterializeError.InvalidRecord if record.payload_bytes > SCHEMA_JSON_MAX_PAYLOAD_BYTES
+            graph: SchemaJsonOwnedValueGraph = record.nested_values
+            raise SchemaJsonMaterializeError.NodeLimitExceeded if graph.nodes.count > SCHEMA_JSON_MAX_NODES
+            raise SchemaJsonMaterializeError.ArrayChildLimitExceeded if graph.children.count > SCHEMA_JSON_MAX_ARRAY_CHILDREN
+            raise SchemaJsonMaterializeError.ObjectMemberLimitExceeded if graph.members.count > SCHEMA_JSON_MAX_OBJECT_MEMBERS
+            raise SchemaJsonMaterializeError.PayloadLimitExceeded if graph.key_bytes.count > SCHEMA_JSON_MAX_PAYLOAD_BYTES
+            raise SchemaJsonMaterializeError.PayloadLimitExceeded if graph.scalar_bytes.count > SCHEMA_JSON_MAX_PAYLOAD_BYTES - graph.key_bytes.count
+
+            root_count: mutable usize = 0
+            computed_payload: mutable usize = 0
+            for value_index in 0..<record.values.count |record, root_count, computed_payload|:
+                value: SchemaJsonValue = record.values[value_index]
+                raise SchemaJsonMaterializeError.InvalidRecord if value.field_index != value_index
+                if value.kind == SchemaJsonValueKind.Missing or value.kind == SchemaJsonValueKind.Null or value.kind == SchemaJsonValueKind.Bool:
+                    raise SchemaJsonMaterializeError.InvalidRecord if value.bytes.count != 0 or value.container_root_index != SCHEMA_JSON_INDEX_NONE or not schema_json_integer_value_empty(value.integer_value)
+                    raise SchemaJsonMaterializeError.InvalidRecord if value.kind != SchemaJsonValueKind.Bool and value.bool_value
+                elif value.kind == SchemaJsonValueKind.Number:
+                    raise SchemaJsonMaterializeError.InvalidRecord if value.container_root_index != SCHEMA_JSON_INDEX_NONE or not schema_json_integer_value_empty(value.integer_value) or value.bool_value
+                    raise SchemaJsonMaterializeError.InvalidScalarPayload if not json_number_bytes_are_valid(value.bytes, 0, value.bytes.count)
+                    raise SchemaJsonMaterializeError.PayloadLimitExceeded if value.bytes.count > SCHEMA_JSON_MAX_PAYLOAD_BYTES - computed_payload
+                    computed_payload <- computed_payload + value.bytes.count
+                elif value.kind == SchemaJsonValueKind.Text:
+                    raise SchemaJsonMaterializeError.InvalidRecord if value.container_root_index != SCHEMA_JSON_INDEX_NONE or not schema_json_integer_value_empty(value.integer_value) or value.bool_value
+                    raise SchemaJsonMaterializeError.InvalidScalarPayload if not schema_json_utf8_span_valid(value.bytes, 0, value.bytes.count)
+                    raise SchemaJsonMaterializeError.PayloadLimitExceeded if value.bytes.count > SCHEMA_JSON_MAX_PAYLOAD_BYTES - computed_payload
+                    computed_payload <- computed_payload + value.bytes.count
+                elif value.kind == SchemaJsonValueKind.Integer:
+                    raise SchemaJsonMaterializeError.InvalidRecord if value.bytes.count != 0 or value.container_root_index != SCHEMA_JSON_INDEX_NONE or value.bool_value
+                    raise SchemaJsonMaterializeError.InvalidRecord if not schema_json_integer_target_valid(value.integer_value.target) or not schema_json_integer_value_valid(value.integer_value)
+                elif value.kind == SchemaJsonValueKind.Array or value.kind == SchemaJsonValueKind.Object:
+                    raise SchemaJsonMaterializeError.InvalidRecord if value.bytes.count != 0 or not schema_json_integer_value_empty(value.integer_value) or value.bool_value
+                    raise SchemaJsonMaterializeError.InvalidRecord if value.container_root_index != root_count
+                    root_count <- root_count + 1
+                else:
+                    raise SchemaJsonMaterializeError.InvalidRecord
+
+            raise SchemaJsonMaterializeError.InvalidRecord if record.payload_bytes != computed_payload + graph.key_bytes.count + graph.scalar_bytes.count
+            raise SchemaJsonMaterializeError.InvalidRecord if root_count > graph.nodes.count
+            raise SchemaJsonMaterializeError.InvalidRecord if (root_count == 0) != (graph.nodes.count == 0)
+
+            expected_child_start: mutable usize = 0
+            expected_member_start: mutable usize = 0
+            expected_key_start: mutable usize = 0
+            expected_scalar_start: mutable usize = 0
+            expected_node_index: mutable usize = root_count
+            for node_index in 0..<graph.nodes.count |record, graph, root_count, expected_child_start, expected_member_start, expected_key_start, expected_scalar_start, expected_node_index|:
+                node: SchemaJsonOwnedNode = graph.nodes[node_index]
+                raise SchemaJsonMaterializeError.InvalidRecord if node.depth > DATA_MAX_DEPTH
+                if node_index < root_count:
+                    raise SchemaJsonMaterializeError.InvalidRecord if node.depth != 0
+                if node.kind == JsonNodeKind.Array:
+                    raise SchemaJsonMaterializeError.InvalidScalarPayload if node.scalar_start != SCHEMA_JSON_INDEX_NONE or node.scalar_bytes != 0 or node.bool_value
+                    raise SchemaJsonMaterializeError.InvalidRecord if node.member_start != SCHEMA_JSON_INDEX_NONE or node.member_count != 0
+                    raise SchemaJsonMaterializeError.InvalidRecord if node.child_start != expected_child_start and node.child_count != 0
+                    raise SchemaJsonMaterializeError.InvalidRecord if not schema_json_owned_range_valid(node.child_start, node.child_count, graph.children.count)
+                    for ordinal in 0..<node.child_count |graph, node, node_index, ordinal, expected_node_index|:
+                        child: SchemaJsonOwnedArrayChild = graph.children[node.child_start + ordinal]
+                        raise SchemaJsonMaterializeError.InvalidRecord if child.owner_index != node_index or child.ordinal != ordinal or child.value_index != expected_node_index
+                        raise SchemaJsonMaterializeError.InvalidRecord if child.value_index >= graph.nodes.count
+                        child_node: SchemaJsonOwnedNode = graph.nodes[child.value_index]
+                        raise SchemaJsonMaterializeError.InvalidRecord if child_node.depth != node.depth + 1
+                        expected_node_index <- expected_node_index + 1
+                    expected_child_start <- expected_child_start + node.child_count
+                elif node.kind == JsonNodeKind.Object:
+                    raise SchemaJsonMaterializeError.InvalidScalarPayload if node.scalar_start != SCHEMA_JSON_INDEX_NONE or node.scalar_bytes != 0 or node.bool_value
+                    raise SchemaJsonMaterializeError.InvalidRecord if node.child_start != SCHEMA_JSON_INDEX_NONE or node.child_count != 0
+                    raise SchemaJsonMaterializeError.InvalidRecord if node.member_start != expected_member_start and node.member_count != 0
+                    raise SchemaJsonMaterializeError.InvalidRecord if not schema_json_owned_range_valid(node.member_start, node.member_count, graph.members.count)
+                    for ordinal in 0..<node.member_count |record, graph, node, node_index, ordinal, expected_key_start, expected_node_index|:
+                        member: SchemaJsonOwnedObjectMember = graph.members[node.member_start + ordinal]
+                        raise SchemaJsonMaterializeError.InvalidRecord if member.owner_index != node_index or member.ordinal != ordinal or member.value_index != expected_node_index
+                        raise SchemaJsonMaterializeError.InvalidRecord if member.value_index >= graph.nodes.count
+                        raise SchemaJsonMaterializeError.InvalidRecord if member.key_start != expected_key_start
+                        raise SchemaJsonMaterializeError.InvalidRecord if member.key_start > graph.key_bytes.count
+                        raise SchemaJsonMaterializeError.InvalidRecord if member.key_bytes > graph.key_bytes.count - member.key_start
+                        raise SchemaJsonMaterializeError.InvalidScalarPayload if not schema_json_utf8_span_valid(graph.key_bytes, member.key_start, member.key_bytes)
+                        child_node: SchemaJsonOwnedNode = graph.nodes[member.value_index]
+                        raise SchemaJsonMaterializeError.InvalidRecord if child_node.depth != node.depth + 1
+                        expected_key_start <- expected_key_start + member.key_bytes
+                        expected_node_index <- expected_node_index + 1
+                    expected_member_start <- expected_member_start + node.member_count
+                elif node.kind == JsonNodeKind.Text or node.kind == JsonNodeKind.Number:
+                    raise SchemaJsonMaterializeError.InvalidRecord if node.bool_value or node.child_start != SCHEMA_JSON_INDEX_NONE or node.child_count != 0 or node.member_start != SCHEMA_JSON_INDEX_NONE or node.member_count != 0
+                    raise SchemaJsonMaterializeError.InvalidRecord if node.scalar_start != expected_scalar_start or node.scalar_start > graph.scalar_bytes.count
+                    raise SchemaJsonMaterializeError.InvalidRecord if node.scalar_bytes > graph.scalar_bytes.count - node.scalar_start
+                    if node.kind == JsonNodeKind.Text:
+                        raise SchemaJsonMaterializeError.InvalidScalarPayload if not schema_json_utf8_span_valid(graph.scalar_bytes, node.scalar_start, node.scalar_bytes)
+                    else:
+                        raise SchemaJsonMaterializeError.InvalidScalarPayload if not json_number_bytes_are_valid(graph.scalar_bytes, node.scalar_start, node.scalar_bytes)
+                    expected_scalar_start <- expected_scalar_start + node.scalar_bytes
+                elif node.kind == JsonNodeKind.Null or node.kind == JsonNodeKind.Bool:
+                    raise SchemaJsonMaterializeError.InvalidScalarPayload if node.scalar_start != SCHEMA_JSON_INDEX_NONE or node.scalar_bytes != 0
+                    raise SchemaJsonMaterializeError.InvalidRecord if node.child_start != SCHEMA_JSON_INDEX_NONE or node.child_count != 0 or node.member_start != SCHEMA_JSON_INDEX_NONE or node.member_count != 0
+                    raise SchemaJsonMaterializeError.InvalidScalarPayload if node.kind == JsonNodeKind.Null and node.bool_value
+                else:
+                    raise SchemaJsonMaterializeError.InvalidRecord
+            raise SchemaJsonMaterializeError.InvalidRecord if expected_child_start != graph.children.count or expected_member_start != graph.members.count
+            raise SchemaJsonMaterializeError.InvalidRecord if expected_key_start != graph.key_bytes.count or expected_scalar_start != graph.scalar_bytes.count
+            raise SchemaJsonMaterializeError.InvalidRecord if expected_node_index != graph.nodes.count
+            for value in record.values |record, graph|:
+                if value.kind == SchemaJsonValueKind.Array or value.kind == SchemaJsonValueKind.Object:
+                    root: SchemaJsonOwnedNode = graph.nodes[value.container_root_index]
+                    raise SchemaJsonMaterializeError.InvalidRecord if value.kind == SchemaJsonValueKind.Array and root.kind != JsonNodeKind.Array
+                    raise SchemaJsonMaterializeError.InvalidRecord if value.kind == SchemaJsonValueKind.Object and root.kind != JsonNodeKind.Object
+            return true
+
+
     public:
+        def validate_schema_json_record(record: SchemaJsonRecord&) -> bool error[SchemaJsonMaterializeError]:
+            return try schema_json_record_valid(record)
+
+
         def materialize_json_schema_record(schema: SchemaDescriptor&, document: JsonDocument&, root_ordinal: usize) -> SchemaJsonRecord error[JsonContractError, SchemaContractError, SchemaIntegerError, SchemaJsonMaterializeError] can[Memory.Allocate, Abort.Panic]:
             try validate_schema_descriptor(schema)
             raise SchemaContractError.InvalidSource if schema.source != SchemaSource.Json
@@ -96,30 +414,37 @@ module EsSchemaJson:
             member_indices: darray[usize] = json_object_member_indices(document, root_index, source_keys)
 
             record: mutable SchemaJsonRecord = SchemaJsonRecord{root_ordinal: root_ordinal}
+            pending: mutable darray[SchemaJsonPendingContainer] = []
             matched_fields: mutable usize = 0
             for field_index in 0..<schema.fields.count |schema, document, member_indices, record, matched_fields|:
                 field: SchemaField = schema.fields[field_index]
                 member_index: usize = member_indices[field_index]
                 if member_index == JSON_INDEX_NONE:
                     raise SchemaContractError.RequiredFieldMissing if field.required
-                    record.values.push(SchemaJsonValue{field_index: field_index, kind: SchemaJsonScalarKind.Missing})
+                    record.values.push(SchemaJsonValue{field_index: field_index, kind: SchemaJsonValueKind.Missing})
                 else:
                     matched_fields <- matched_fields + 1
                     member: JsonMember = document.members[member_index]
                     node: JsonNode = document.nodes[member.value_index]
                     raise SchemaContractError.ValueKindMismatch if not schema_json_kind_matches(field.kind, node.kind)
                     raise SchemaJsonMaterializeError.UnsupportedValueKind if field.kind == SchemaValueKind.Any
-                    scalar_kind: SchemaJsonScalarKind = schema_json_scalar_kind(node.kind)
+                    scalar_kind: SchemaJsonValueKind = schema_json_value_kind(node.kind)
                     value: mutable SchemaJsonValue = SchemaJsonValue{field_index: field_index, kind: scalar_kind, bool_value: node.bool_value}
                     if field.integer_target != SchemaIntegerTarget.None:
                         value.integer_value <- try parse_schema_integer(document.scalar_data, node.scalar_start, node.scalar_bytes, field.integer_target)
-                        value.kind <- SchemaJsonScalarKind.Integer
-                    elif scalar_kind == SchemaJsonScalarKind.Number or scalar_kind == SchemaJsonScalarKind.Text:
+                        value.kind <- SchemaJsonValueKind.Integer
+                    elif scalar_kind == SchemaJsonValueKind.Number or scalar_kind == SchemaJsonValueKind.Text:
                         raise SchemaJsonMaterializeError.PayloadLimitExceeded if record.payload_bytes > SCHEMA_JSON_MAX_PAYLOAD_BYTES
                         raise SchemaJsonMaterializeError.PayloadLimitExceeded if node.scalar_bytes > SCHEMA_JSON_MAX_PAYLOAD_BYTES - record.payload_bytes
+                        raise JsonContractError.InvalidScalarPayload if node.scalar_start > document.scalar_data.count
+                        raise JsonContractError.InvalidScalarPayload if node.scalar_bytes > document.scalar_data.count - node.scalar_start
                         for offset in 0..<node.scalar_bytes |document, node, value|:
                             value.bytes.push(document.scalar_data[node.scalar_start + offset])
                         record.payload_bytes <- record.payload_bytes + node.scalar_bytes
+                    elif scalar_kind == SchemaJsonValueKind.Array or scalar_kind == SchemaJsonValueKind.Object:
+                        pending.push(SchemaJsonPendingContainer{value_index: field_index, source_node_index: member.value_index})
                     record.values.push(value)
             raise SchemaJsonMaterializeError.UnknownField if not schema.allow_unknown and matched_fields != document.nodes[root_index].member_count
+            try schema_json_copy_nested_values(document, pending, record)
+            _ = try schema_json_record_valid(record)
             return record
