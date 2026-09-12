@@ -1,0 +1,508 @@
+# Bounded byte lexer for JSON source.
+#
+# This lexical pass preserves exact source ranges and number spellings while
+# decoding quoted text into an owned UTF-8 arena. Grammar and JsonDocument
+# construction are deliberately separate, so consumers never infer source
+# locations from a lossy floating-point DOM.
+
+module EsJsonLex:
+    using EsData
+    using EsEncoding
+    using EsJson
+
+    public:
+        const JSON_LEX_FORMAT_VERSION: u8 = 1
+        const JSON_LEX_MAX_TOKENS: usize = DATA_MAX_TOKENS
+        const JSON_LEX_MAX_DECODED_BYTES: usize = DATA_MAX_INPUT_BYTES
+        const JSON_LEX_INDEX_NONE: usize = 4294967295
+
+
+        const enum JsonLexState of u8:
+            Building
+            Sealed
+            Failed
+
+
+        const enum JsonLexemeKind of u8:
+            String
+            Number
+            True
+            False
+            Null
+            ArrayOpen
+            ArrayClose
+            ObjectOpen
+            ObjectClose
+            Comma
+            Colon
+
+
+        struct JsonLexeme:
+            kind: JsonLexemeKind
+            range: JsonRange
+            payload_start: usize = JSON_LEX_INDEX_NONE
+            payload_bytes: usize = 0
+
+
+        struct JsonLexedSource:
+            format_version: u8 = JSON_LEX_FORMAT_VERSION
+            state: JsonLexState = JsonLexState.Building
+            limits: DataDecodeLimits = DataDecodeLimits{}
+            policy: JsonPolicy = JsonPolicy{}
+            source_bytes: usize = 0
+            max_depth: usize = 0
+            source_data: darray[u8] = []
+            decoded_data: darray[u8] = []
+            tokens: darray[JsonLexeme] = []
+
+
+        error JsonLexError:
+            InvalidFormatVersion
+            InvalidState
+            InvalidToken
+            InvalidLimits
+            InvalidPolicy
+            InvalidSource
+            InputLimitExceeded(offset: usize)
+            TokenLimitExceeded(offset: usize)
+            DepthLimitExceeded(offset: usize)
+            DecodedBytesLimitExceeded(offset: usize)
+            StringBytesLimitExceeded(offset: usize)
+            InvalidCharacter(offset: usize)
+            InvalidLiteral(offset: usize)
+            InvalidNumber(offset: usize)
+            InvalidString(offset: usize)
+            InvalidEscape(offset: usize)
+            InvalidUnicodeEscape(offset: usize)
+            InvalidSurrogate(offset: usize)
+            InvalidUtf8(offset: usize)
+            MismatchedDelimiter(offset: usize)
+            UnterminatedContainer(offset: usize)
+            UnterminatedComment(offset: usize)
+
+
+    private:
+        const JSON_LEX_CH_TAB: u8 = 9
+        const JSON_LEX_CH_LF: u8 = 10
+        const JSON_LEX_CH_CR: u8 = 13
+        const JSON_LEX_CH_SPACE: u8 = 32
+        const JSON_LEX_CH_DQUOTE: u8 = 34
+        const JSON_LEX_CH_COMMA: u8 = 44
+        const JSON_LEX_CH_MINUS: u8 = 45
+        const JSON_LEX_CH_DOT: u8 = 46
+        const JSON_LEX_CH_SLASH: u8 = 47
+        const JSON_LEX_CH_0: u8 = 48
+        const JSON_LEX_CH_9: u8 = 57
+        const JSON_LEX_CH_COLON: u8 = 58
+        const JSON_LEX_CH_LBRACKET: u8 = 91
+        const JSON_LEX_CH_BSLASH: u8 = 92
+        const JSON_LEX_CH_RBRACKET: u8 = 93
+        const JSON_LEX_CH_LBRACE: u8 = 123
+        const JSON_LEX_CH_RBRACE: u8 = 125
+
+
+        def json_lex_state_valid(state: JsonLexState) -> bool:
+            return state in {JsonLexState.Building, JsonLexState.Sealed, JsonLexState.Failed}
+
+
+        def json_lex_kind_valid(kind: JsonLexemeKind) -> bool:
+            return kind in {JsonLexemeKind.String, JsonLexemeKind.Number, JsonLexemeKind.True, JsonLexemeKind.False, JsonLexemeKind.Null, JsonLexemeKind.ArrayOpen, JsonLexemeKind.ArrayClose, JsonLexemeKind.ObjectOpen, JsonLexemeKind.ObjectClose, JsonLexemeKind.Comma, JsonLexemeKind.Colon}
+
+
+        def json_lex_limits_valid(limits: DataDecodeLimits) -> bool error[JsonLexError]:
+            raise JsonLexError.InvalidLimits if limits.input_bytes == 0 or limits.input_bytes > DATA_MAX_INPUT_BYTES
+            raise JsonLexError.InvalidLimits if limits.tokens == 0 or limits.tokens > JSON_LEX_MAX_TOKENS
+            raise JsonLexError.InvalidLimits if limits.depth == 0 or limits.depth > DATA_MAX_DEPTH
+            raise JsonLexError.InvalidLimits if limits.records == 0 or limits.records > DATA_MAX_RECORDS
+            raise JsonLexError.InvalidLimits if limits.fields == 0 or limits.fields > DATA_MAX_FIELDS
+            raise JsonLexError.InvalidLimits if limits.field_bytes == 0 or limits.field_bytes > DATA_MAX_FIELD_BYTES
+            return true
+
+
+        def json_lex_is_whitespace(byte: u8) -> bool:
+            return byte == JSON_LEX_CH_SPACE or byte == JSON_LEX_CH_TAB or byte == JSON_LEX_CH_LF or byte == JSON_LEX_CH_CR
+
+
+        def json_lex_hex_value(byte: u8) -> usize:
+            return (byte - JSON_LEX_CH_0).usize() if byte >= JSON_LEX_CH_0 and byte <= JSON_LEX_CH_9
+            return (byte - 65u8 + 10u8).usize() if byte >= 65u8 and byte <= 70u8
+            return (byte - 97u8 + 10u8).usize() if byte >= 97u8 and byte <= 102u8
+            return JSON_LEX_INDEX_NONE
+
+
+        def json_lex_push_decoded(document: mutable JsonLexedSource&, byte: u8, offset: usize) -> void error[JsonLexError] can[Memory.Allocate, Abort.Panic]:
+            raise JsonLexError.DecodedBytesLimitExceeded(offset) if document.decoded_data.count >= document.limits.input_bytes
+            raise JsonLexError.DecodedBytesLimitExceeded(offset) if document.decoded_data.count >= JSON_LEX_MAX_DECODED_BYTES
+            document.decoded_data.push(byte)
+
+
+        def json_lex_codepoint(document: mutable JsonLexedSource&, codepoint: usize, offset: usize) -> void error[JsonLexError] can[Memory.Allocate, Abort.Panic]:
+            raise JsonLexError.InvalidSurrogate(offset) if codepoint > 1114111 or (codepoint >= 55296 and codepoint <= 57343)
+            if codepoint <= 127:
+                try json_lex_push_decoded(document, codepoint.u8(), offset)
+            elif codepoint <= 2047:
+                try json_lex_push_decoded(document, (192 + (codepoint >> 6)).u8(), offset)
+                try json_lex_push_decoded(document, (128 + (codepoint & 63)).u8(), offset)
+            elif codepoint <= 65535:
+                try json_lex_push_decoded(document, (224 + (codepoint >> 12)).u8(), offset)
+                try json_lex_push_decoded(document, (128 + ((codepoint >> 6) & 63)).u8(), offset)
+                try json_lex_push_decoded(document, (128 + (codepoint & 63)).u8(), offset)
+            else:
+                try json_lex_push_decoded(document, (240 + (codepoint >> 18)).u8(), offset)
+                try json_lex_push_decoded(document, (128 + ((codepoint >> 12) & 63)).u8(), offset)
+                try json_lex_push_decoded(document, (128 + ((codepoint >> 6) & 63)).u8(), offset)
+                try json_lex_push_decoded(document, (128 + (codepoint & 63)).u8(), offset)
+
+
+        def json_lex_read_hex4(source: sview, cursor: mutable usize&) -> usize error[JsonLexError]:
+            raise JsonLexError.InvalidUnicodeEscape(cursor) if cursor > sview_len(source) or 4 > sview_len(source) - cursor
+            value: mutable usize = 0
+            for _ in 0..<4 |source, cursor, value|:
+                digit: usize = json_lex_hex_value(sview_at(source, cursor))
+                raise JsonLexError.InvalidUnicodeEscape(cursor) if digit == JSON_LEX_INDEX_NONE
+                value <- value * 16 + digit
+                cursor <- cursor + 1
+            return value
+
+
+        def json_lex_decoded_utf8_valid(bytes: darray[u8]&, start: usize, length: usize) -> bool:
+            return false if start > bytes.count or length > bytes.count - start
+            cursor: mutable Utf8Cursor = Utf8Cursor{}
+            for offset in 0..<length |bytes, start, cursor|:
+                return false if not utf8_feed(bytes[start + offset], cursor)
+            return utf8_complete(cursor)
+
+
+        def json_lex_string(source: sview, cursor: mutable usize&, document: mutable JsonLexedSource&) -> JsonLexeme error[JsonLexError] can[Memory.Allocate, Abort.Panic]:
+            start: usize = cursor
+            raise JsonLexError.InvalidString(cursor) if cursor >= sview_len(source) or sview_at(source, cursor) != JSON_LEX_CH_DQUOTE
+            cursor <- cursor + 1
+            payload_start: usize = document.decoded_data.count
+            closed: mutable bool = false
+            while cursor < sview_len(source) and not closed:
+                byte: u8 = sview_at(source, cursor)
+                if byte == JSON_LEX_CH_DQUOTE:
+                    cursor <- cursor + 1
+                    closed <- true
+                elif byte < 32u8:
+                    raise JsonLexError.InvalidString(cursor)
+                elif byte == JSON_LEX_CH_BSLASH:
+                    escape_offset: usize = cursor
+                    cursor <- cursor + 1
+                    raise JsonLexError.InvalidEscape(escape_offset) if cursor >= sview_len(source)
+                    escaped: u8 = sview_at(source, cursor)
+                    cursor <- cursor + 1
+                    if escaped == JSON_LEX_CH_DQUOTE or escaped == JSON_LEX_CH_BSLASH or escaped == 47u8:
+                        try json_lex_push_decoded(document, escaped, escape_offset)
+                    elif escaped == 98u8:
+                        try json_lex_push_decoded(document, 8u8, escape_offset)
+                    elif escaped == 102u8:
+                        try json_lex_push_decoded(document, 12u8, escape_offset)
+                    elif escaped == 110u8:
+                        try json_lex_push_decoded(document, 10u8, escape_offset)
+                    elif escaped == 114u8:
+                        try json_lex_push_decoded(document, 13u8, escape_offset)
+                    elif escaped == 116u8:
+                        try json_lex_push_decoded(document, 9u8, escape_offset)
+                    elif escaped == 117u8:
+                        high: usize = try json_lex_read_hex4(source, cursor)
+                        if high >= 55296 and high <= 56319:
+                            raise JsonLexError.InvalidSurrogate(cursor) if cursor > sview_len(source) or 6 > sview_len(source) - cursor
+                            raise JsonLexError.InvalidSurrogate(cursor) if sview_at(source, cursor) != JSON_LEX_CH_BSLASH or sview_at(source, cursor + 1) != 117u8
+                            cursor <- cursor + 2
+                            low: usize = try json_lex_read_hex4(source, cursor)
+                            raise JsonLexError.InvalidSurrogate(cursor - 4) if low < 56320 or low > 57343
+                            point: usize = 65536 + ((high - 55296) << 10) + (low - 56320)
+                            try json_lex_codepoint(document, point, escape_offset)
+                        elif high >= 56320 and high <= 57343:
+                            raise JsonLexError.InvalidSurrogate(escape_offset)
+                        else:
+                            try json_lex_codepoint(document, high, escape_offset)
+                    else:
+                        raise JsonLexError.InvalidEscape(escape_offset)
+                else:
+                    try json_lex_push_decoded(document, byte, cursor)
+                    cursor <- cursor + 1
+                raise JsonLexError.StringBytesLimitExceeded(start) if document.decoded_data.count - payload_start > document.limits.field_bytes
+            raise JsonLexError.InvalidString(start) if not closed
+            payload_bytes: usize = document.decoded_data.count - payload_start
+            raise JsonLexError.InvalidUtf8(start) if not json_lex_decoded_utf8_valid(document.decoded_data, payload_start, payload_bytes)
+            return JsonLexeme{kind: JsonLexemeKind.String, range: JsonRange{start: start, end: cursor}, payload_start: payload_start, payload_bytes: payload_bytes}
+
+
+        def json_lex_following_delimiter(source: sview, cursor: usize, policy: JsonPolicy) -> bool:
+            return true if cursor == sview_len(source)
+            byte: u8 = sview_at(source, cursor)
+            return true if json_lex_is_whitespace(byte) or byte == JSON_LEX_CH_COMMA or byte == JSON_LEX_CH_COLON or byte == JSON_LEX_CH_RBRACKET or byte == JSON_LEX_CH_RBRACE or byte == JSON_LEX_CH_LBRACKET or byte == JSON_LEX_CH_LBRACE or byte == JSON_LEX_CH_DQUOTE
+            return true if policy.allow_comments and byte == JSON_LEX_CH_SLASH and cursor + 1 < sview_len(source) and (sview_at(source, cursor + 1) == JSON_LEX_CH_SLASH or sview_at(source, cursor + 1) == 42u8)
+            return false
+
+
+        def json_lex_skip_trivia(source: sview, cursor: mutable usize&, policy: JsonPolicy) -> bool error[JsonLexError]:
+            skipping: mutable bool = true
+            while skipping and cursor < sview_len(source):
+                byte: u8 = sview_at(source, cursor)
+                if json_lex_is_whitespace(byte):
+                    cursor <- cursor + 1
+                elif policy.allow_comments and byte == JSON_LEX_CH_SLASH and cursor + 1 < sview_len(source) and sview_at(source, cursor + 1) == JSON_LEX_CH_SLASH:
+                    cursor <- cursor + 2
+                    while cursor < sview_len(source) and sview_at(source, cursor) != JSON_LEX_CH_LF and sview_at(source, cursor) != JSON_LEX_CH_CR:
+                        cursor <- cursor + 1
+                elif policy.allow_comments and byte == JSON_LEX_CH_SLASH and cursor + 1 < sview_len(source) and sview_at(source, cursor + 1) == 42u8:
+                    comment_start: usize = cursor
+                    cursor <- cursor + 2
+                    closed: mutable bool = false
+                    while cursor + 1 < sview_len(source) and not closed:
+                        if sview_at(source, cursor) == 42u8 and sview_at(source, cursor + 1) == JSON_LEX_CH_SLASH:
+                            cursor <- cursor + 2
+                            closed <- true
+                        else:
+                            cursor <- cursor + 1
+                    raise JsonLexError.UnterminatedComment(comment_start) if not closed
+                else:
+                    skipping <- false
+            return true
+
+
+        def json_lex_literal(source: sview, cursor: mutable usize&, literal: sview, kind: JsonLexemeKind, policy: JsonPolicy) -> JsonLexeme error[JsonLexError]:
+            start: usize = cursor
+            literal_bytes: usize = sview_len(literal)
+            raise JsonLexError.InvalidLiteral(start) if cursor > sview_len(source) or literal_bytes > sview_len(source) - cursor
+            for offset in 0..<literal_bytes |source, cursor, literal|:
+                raise JsonLexError.InvalidLiteral(start) if sview_at(source, cursor + offset) != sview_at(literal, offset)
+            cursor <- cursor + literal_bytes
+            raise JsonLexError.InvalidLiteral(cursor) if not json_lex_following_delimiter(source, cursor, policy)
+            return JsonLexeme{kind: kind, range: JsonRange{start: start, end: cursor}}
+
+
+        def json_lex_push_token(document: mutable JsonLexedSource&, token: JsonLexeme, offset: usize) -> void error[JsonLexError] can[Memory.Allocate, Abort.Panic]:
+            raise JsonLexError.TokenLimitExceeded(offset) if document.tokens.count >= document.limits.tokens or document.tokens.count >= JSON_LEX_MAX_TOKENS
+            document.tokens.push(token)
+
+
+        def json_lex_open_delimiter(byte: u8) -> bool:
+            return byte == JSON_LEX_CH_LBRACKET or byte == JSON_LEX_CH_LBRACE
+
+
+        def json_lex_close_delimiter(byte: u8) -> bool:
+            return byte == JSON_LEX_CH_RBRACKET or byte == JSON_LEX_CH_RBRACE
+
+
+        def json_lex_delimiter_matches(opener: u8, closer: u8) -> bool:
+            return opener == JSON_LEX_CH_LBRACKET and closer == JSON_LEX_CH_RBRACKET or opener == JSON_LEX_CH_LBRACE and closer == JSON_LEX_CH_RBRACE
+
+
+        # Build the owned token and decoded-byte tables from source. The
+        # validator uses the same lexical primitives to compare against these
+        # tables without allocating a second full document.
+        def json_lex_scan(source: sview, limits: DataDecodeLimits, policy: JsonPolicy) -> JsonLexedSource error[JsonLexError] can[Memory.Allocate, Abort.Panic]:
+            try json_lex_limits_valid(limits)
+            policy_valid: mutable bool = false
+            catch validate_json_policy(policy):
+                ok value:
+                    policy_valid <- value
+                error failure:
+                    policy_valid <- false
+            raise JsonLexError.InvalidPolicy if not policy_valid
+            input_bytes: usize = sview_len(source)
+            raise JsonLexError.InputLimitExceeded(input_bytes) if input_bytes > limits.input_bytes
+
+            document: mutable JsonLexedSource = JsonLexedSource{limits: limits, policy: policy, source_bytes: input_bytes}
+            cursor: mutable usize = 0
+            delimiters: mutable darray[u8] = []
+            while cursor < input_bytes:
+                try json_lex_skip_trivia(source, cursor, policy)
+                if cursor == input_bytes:
+                    break
+                start: usize = cursor
+                byte: u8 = sview_at(source, cursor)
+                token: JsonLexeme = JsonLexeme{kind: JsonLexemeKind.Null}
+                if byte == JSON_LEX_CH_DQUOTE:
+                    token <- try json_lex_string(source, cursor, document)
+                elif byte == JSON_LEX_CH_MINUS or byte >= JSON_LEX_CH_0 and byte <= JSON_LEX_CH_9:
+                    while cursor < input_bytes and not json_lex_is_whitespace(sview_at(source, cursor)) and sview_at(source, cursor) != JSON_LEX_CH_COMMA and sview_at(source, cursor) != JSON_LEX_CH_COLON and sview_at(source, cursor) != JSON_LEX_CH_RBRACKET and sview_at(source, cursor) != JSON_LEX_CH_RBRACE and sview_at(source, cursor) != JSON_LEX_CH_LBRACKET and sview_at(source, cursor) != JSON_LEX_CH_LBRACE and sview_at(source, cursor) != JSON_LEX_CH_DQUOTE:
+                        if policy.allow_comments and sview_at(source, cursor) == JSON_LEX_CH_SLASH and cursor + 1 < input_bytes and (sview_at(source, cursor + 1) == JSON_LEX_CH_SLASH or sview_at(source, cursor + 1) == 42u8):
+                            break
+                        cursor <- cursor + 1
+                    raise JsonLexError.InvalidNumber(start) if not json_number_lexeme_is_valid(source[start:cursor])
+                    raise JsonLexError.InvalidNumber(cursor) if not json_lex_following_delimiter(source, cursor, policy)
+                    token <- JsonLexeme{kind: JsonLexemeKind.Number, range: JsonRange{start: start, end: cursor}}
+                elif byte == 116u8:
+                    token <- try json_lex_literal(source, cursor, "true", JsonLexemeKind.True, policy)
+                elif byte == 102u8:
+                    token <- try json_lex_literal(source, cursor, "false", JsonLexemeKind.False, policy)
+                elif byte == 110u8:
+                    token <- try json_lex_literal(source, cursor, "null", JsonLexemeKind.Null, policy)
+                else:
+                    cursor <- cursor + 1
+                    if byte == JSON_LEX_CH_LBRACKET:
+                        token <- JsonLexeme{kind: JsonLexemeKind.ArrayOpen, range: JsonRange{start: start, end: cursor}}
+                    elif byte == JSON_LEX_CH_RBRACKET:
+                        token <- JsonLexeme{kind: JsonLexemeKind.ArrayClose, range: JsonRange{start: start, end: cursor}}
+                    elif byte == JSON_LEX_CH_LBRACE:
+                        token <- JsonLexeme{kind: JsonLexemeKind.ObjectOpen, range: JsonRange{start: start, end: cursor}}
+                    elif byte == JSON_LEX_CH_RBRACE:
+                        token <- JsonLexeme{kind: JsonLexemeKind.ObjectClose, range: JsonRange{start: start, end: cursor}}
+                    elif byte == JSON_LEX_CH_COMMA:
+                        token <- JsonLexeme{kind: JsonLexemeKind.Comma, range: JsonRange{start: start, end: cursor}}
+                    elif byte == JSON_LEX_CH_COLON:
+                        token <- JsonLexeme{kind: JsonLexemeKind.Colon, range: JsonRange{start: start, end: cursor}}
+                    else:
+                        raise JsonLexError.InvalidCharacter(start)
+                    if json_lex_open_delimiter(byte):
+                        raise JsonLexError.DepthLimitExceeded(start) if delimiters.count >= limits.depth
+                        delimiters.push(byte)
+                        document.max_depth <- delimiters.count if delimiters.count > document.max_depth
+                    elif json_lex_close_delimiter(byte):
+                        raise JsonLexError.MismatchedDelimiter(start) if delimiters.count == 0
+                        raise JsonLexError.MismatchedDelimiter(start) if not json_lex_delimiter_matches(delimiters[delimiters.count - 1], byte)
+                        _ = delimiters.pop()
+                try json_lex_push_token(document, token, start)
+            raise JsonLexError.UnterminatedContainer(input_bytes) if delimiters.count != 0
+            for offset in 0..<input_bytes |source, document|:
+                document.source_data.push(sview_at(source, offset))
+            document.state <- JsonLexState.Sealed
+            return document
+
+
+        # Verify that every token is exactly the next token in the owned source
+        # and that trivia is the only material between tokens. String decoding
+        # uses one reusable arena, avoiding a second full document allocation.
+        def json_lex_source_matches_tokens(document: JsonLexedSource&) -> bool error[JsonLexError] can[Memory.Allocate, Abort.Panic]:
+            source: sview = bytes_view(document.source_data)
+            cursor: mutable usize = 0
+            decoded_cursor: mutable usize = 0
+            scratch: mutable JsonLexedSource = JsonLexedSource{limits: document.limits}
+            for index in 0..<document.tokens.count |document, cursor, decoded_cursor, scratch|:
+                try json_lex_skip_trivia(source, cursor, document.policy)
+                token: JsonLexeme = document.tokens[index]
+                return false if cursor != token.range.start
+                start: usize = cursor
+                scanned: JsonLexeme = JsonLexeme{kind: JsonLexemeKind.Null}
+                if token.kind == JsonLexemeKind.String:
+                    return false if token.payload_start != decoded_cursor
+                    while scratch.decoded_data.count != 0:
+                        _ = scratch.decoded_data.pop()
+                    scanned <- try json_lex_string(source, cursor, scratch)
+                    return false if scanned.payload_bytes != token.payload_bytes or scratch.decoded_data.count != token.payload_bytes
+                    for offset in 0..<token.payload_bytes |document, token, scratch|:
+                        return false if scratch.decoded_data[offset] != document.decoded_data[token.payload_start + offset]
+                    decoded_cursor <- decoded_cursor + token.payload_bytes
+                elif token.kind == JsonLexemeKind.Number:
+                    while cursor < sview_len(source) and not json_lex_is_whitespace(sview_at(source, cursor)) and sview_at(source, cursor) != JSON_LEX_CH_COMMA and sview_at(source, cursor) != JSON_LEX_CH_COLON and sview_at(source, cursor) != JSON_LEX_CH_RBRACKET and sview_at(source, cursor) != JSON_LEX_CH_RBRACE and sview_at(source, cursor) != JSON_LEX_CH_LBRACKET and sview_at(source, cursor) != JSON_LEX_CH_LBRACE and sview_at(source, cursor) != JSON_LEX_CH_DQUOTE:
+                        if document.policy.allow_comments and sview_at(source, cursor) == JSON_LEX_CH_SLASH and cursor + 1 < sview_len(source) and (sview_at(source, cursor + 1) == JSON_LEX_CH_SLASH or sview_at(source, cursor + 1) == 42u8):
+                            break
+                        cursor <- cursor + 1
+                    raise JsonLexError.InvalidNumber(start) if not json_number_lexeme_is_valid(source[start:cursor])
+                    raise JsonLexError.InvalidNumber(cursor) if not json_lex_following_delimiter(source, cursor, document.policy)
+                    scanned <- JsonLexeme{kind: JsonLexemeKind.Number, range: JsonRange{start: start, end: cursor}}
+                elif token.kind == JsonLexemeKind.True:
+                    scanned <- try json_lex_literal(source, cursor, "true", JsonLexemeKind.True, document.policy)
+                elif token.kind == JsonLexemeKind.False:
+                    scanned <- try json_lex_literal(source, cursor, "false", JsonLexemeKind.False, document.policy)
+                elif token.kind == JsonLexemeKind.Null:
+                    scanned <- try json_lex_literal(source, cursor, "null", JsonLexemeKind.Null, document.policy)
+                else:
+                    byte: u8 = sview_at(source, cursor)
+                    cursor <- cursor + 1
+                    matches_kind: bool = token.kind == JsonLexemeKind.ArrayOpen and byte == JSON_LEX_CH_LBRACKET or token.kind == JsonLexemeKind.ArrayClose and byte == JSON_LEX_CH_RBRACKET or token.kind == JsonLexemeKind.ObjectOpen and byte == JSON_LEX_CH_LBRACE or token.kind == JsonLexemeKind.ObjectClose and byte == JSON_LEX_CH_RBRACE or token.kind == JsonLexemeKind.Comma and byte == JSON_LEX_CH_COMMA or token.kind == JsonLexemeKind.Colon and byte == JSON_LEX_CH_COLON
+                    return false if not matches_kind
+                    scanned <- JsonLexeme{kind: token.kind, range: JsonRange{start: start, end: cursor}}
+                return false if scanned.kind != token.kind or scanned.range.start != token.range.start or scanned.range.end != token.range.end
+            try json_lex_skip_trivia(source, cursor, document.policy)
+            return cursor == document.source_bytes and decoded_cursor == document.decoded_data.count
+
+
+        def validate_json_lexed_source(document: JsonLexedSource&) -> bool error[JsonLexError] can[Memory.Allocate, Abort.Panic]:
+            raise JsonLexError.InvalidFormatVersion if document.format_version != JSON_LEX_FORMAT_VERSION
+            raise JsonLexError.InvalidState if not json_lex_state_valid(document.state) or document.state != JsonLexState.Sealed
+            try json_lex_limits_valid(document.limits)
+            policy_valid: mutable bool = false
+            catch validate_json_policy(document.policy):
+                ok value:
+                    policy_valid <- value
+                error failure:
+                    policy_valid <- false
+            raise JsonLexError.InvalidPolicy if not policy_valid
+            raise JsonLexError.InvalidSource if document.source_bytes != document.source_data.count
+            raise JsonLexError.InputLimitExceeded(document.source_bytes) if document.source_bytes > document.limits.input_bytes
+            raise JsonLexError.TokenLimitExceeded(document.tokens.count) if document.tokens.count > document.limits.tokens or document.tokens.count > JSON_LEX_MAX_TOKENS
+            raise JsonLexError.DecodedBytesLimitExceeded(document.decoded_data.count) if document.decoded_data.count > document.limits.input_bytes or document.decoded_data.count > JSON_LEX_MAX_DECODED_BYTES
+            delimiters: mutable darray[u8] = []
+            expected_payload_start: mutable usize = 0
+            maximum_depth: mutable usize = 0
+            previous_end: mutable usize = 0
+            for index in 0..<document.tokens.count |document, delimiters, expected_payload_start, maximum_depth, previous_end|:
+                token: JsonLexeme = document.tokens[index]
+                raise JsonLexError.InvalidToken if not json_lex_kind_valid(token.kind)
+                raise JsonLexError.InvalidToken if token.range.start > token.range.end or token.range.end > document.source_bytes
+                raise JsonLexError.InvalidToken if token.range.start == token.range.end or token.range.start < previous_end
+                previous_end <- token.range.end
+                if token.kind == JsonLexemeKind.String:
+                    raise JsonLexError.InvalidToken if token.payload_start != expected_payload_start
+                    raise JsonLexError.InvalidToken if token.payload_start > document.decoded_data.count or token.payload_bytes > document.decoded_data.count - token.payload_start
+                    raise JsonLexError.InvalidToken if token.payload_bytes > document.limits.field_bytes
+                    raise JsonLexError.InvalidToken if token.range.end - token.range.start < 2
+                    raise JsonLexError.InvalidToken if document.source_data[token.range.start] != JSON_LEX_CH_DQUOTE or document.source_data[token.range.end - 1] != JSON_LEX_CH_DQUOTE
+                    raise JsonLexError.InvalidUtf8(token.range.start) if not json_lex_decoded_utf8_valid(document.decoded_data, token.payload_start, token.payload_bytes)
+                    expected_payload_start <- expected_payload_start + token.payload_bytes
+                else:
+                    raise JsonLexError.InvalidToken if token.payload_start != JSON_LEX_INDEX_NONE or token.payload_bytes != 0
+                    if token.kind == JsonLexemeKind.Number:
+                        raise JsonLexError.InvalidNumber(token.range.start) if not json_number_bytes_are_valid(document.source_data, token.range.start, token.range.end - token.range.start)
+                    elif token.kind == JsonLexemeKind.True:
+                        raise JsonLexError.InvalidLiteral(token.range.start) if token.range.end - token.range.start != 4 or document.source_data[token.range.start] != 116u8 or document.source_data[token.range.start + 1] != 114u8 or document.source_data[token.range.start + 2] != 117u8 or document.source_data[token.range.start + 3] != 101u8
+                    elif token.kind == JsonLexemeKind.False:
+                        raise JsonLexError.InvalidLiteral(token.range.start) if token.range.end - token.range.start != 5 or document.source_data[token.range.start] != 102u8 or document.source_data[token.range.start + 1] != 97u8 or document.source_data[token.range.start + 2] != 108u8 or document.source_data[token.range.start + 3] != 115u8 or document.source_data[token.range.start + 4] != 101u8
+                    elif token.kind == JsonLexemeKind.Null:
+                        raise JsonLexError.InvalidLiteral(token.range.start) if token.range.end - token.range.start != 4 or document.source_data[token.range.start] != 110u8 or document.source_data[token.range.start + 1] != 117u8 or document.source_data[token.range.start + 2] != 108u8 or document.source_data[token.range.start + 3] != 108u8
+                    else:
+                        raise JsonLexError.InvalidToken if token.range.end - token.range.start != 1
+                        byte: u8 = document.source_data[token.range.start]
+                        raise JsonLexError.InvalidToken if token.kind == JsonLexemeKind.ArrayOpen and byte != JSON_LEX_CH_LBRACKET
+                        raise JsonLexError.InvalidToken if token.kind == JsonLexemeKind.ArrayClose and byte != JSON_LEX_CH_RBRACKET
+                        raise JsonLexError.InvalidToken if token.kind == JsonLexemeKind.ObjectOpen and byte != JSON_LEX_CH_LBRACE
+                        raise JsonLexError.InvalidToken if token.kind == JsonLexemeKind.ObjectClose and byte != JSON_LEX_CH_RBRACE
+                        raise JsonLexError.InvalidToken if token.kind == JsonLexemeKind.Comma and byte != JSON_LEX_CH_COMMA
+                        raise JsonLexError.InvalidToken if token.kind == JsonLexemeKind.Colon and byte != JSON_LEX_CH_COLON
+                        if json_lex_open_delimiter(byte):
+                            raise JsonLexError.DepthLimitExceeded(token.range.start) if delimiters.count >= document.limits.depth
+                            delimiters.push(byte)
+                            maximum_depth <- delimiters.count if delimiters.count > maximum_depth
+                        elif json_lex_close_delimiter(byte):
+                            raise JsonLexError.MismatchedDelimiter(token.range.start) if delimiters.count == 0
+                            raise JsonLexError.MismatchedDelimiter(token.range.start) if not json_lex_delimiter_matches(delimiters[delimiters.count - 1], byte)
+                            _ = delimiters.pop()
+            raise JsonLexError.InvalidToken if expected_payload_start != document.decoded_data.count
+            raise JsonLexError.UnterminatedContainer(document.source_bytes) if delimiters.count != 0
+            raise JsonLexError.InvalidToken if maximum_depth != document.max_depth
+            source_matches: bool = try json_lex_source_matches_tokens(document)
+            raise JsonLexError.InvalidSource if not source_matches
+            return true
+
+
+    public:
+        def lex_json(source: sview, limits: DataDecodeLimits = DataDecodeLimits{}, policy: JsonPolicy = JsonPolicy{}) -> JsonLexedSource error[JsonLexError] can[Memory.Allocate, Abort.Panic]:
+            document: mutable JsonLexedSource = try json_lex_scan(source, limits, policy)
+            try validate_json_lexed_source(document)
+            return document
+
+
+        def copy_json_lexed_string(document: JsonLexedSource&, token_index: usize) -> darray[u8] error[JsonLexError] can[Memory.Allocate, Abort.Panic]:
+            try validate_json_lexed_source(document)
+            raise JsonLexError.InvalidToken if token_index >= document.tokens.count
+            token: JsonLexeme = document.tokens[token_index]
+            raise JsonLexError.InvalidToken if token.kind != JsonLexemeKind.String
+            copied: mutable darray[u8] = []
+            for offset in 0..<token.payload_bytes |document, token, copied|:
+                copied.push(document.decoded_data[token.payload_start + offset])
+            return copied
+
+
+        def copy_json_lexed_source_span(document: JsonLexedSource&, range: JsonRange) -> darray[u8] error[JsonLexError] can[Memory.Allocate, Abort.Panic]:
+            try validate_json_lexed_source(document)
+            raise JsonLexError.InvalidToken if range.start > range.end or range.end > document.source_bytes
+            copied: mutable darray[u8] = []
+            for offset in range.start..<range.end |document, range, copied|:
+                copied.push(document.source_data[offset])
+            return copied

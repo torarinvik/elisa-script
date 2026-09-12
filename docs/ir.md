@@ -208,6 +208,18 @@ JSON number grammar. Retained decoded keys and scalar payloads share a
 subtraction-checked aggregate ceiling no larger than the source-byte ledger.
 `copy_json_scalar` returns an owned copy from a sealed
 document rather than exposing a borrowed view with an unclear lifetime.
+`EsJsonLex::lex_json` provides the bounded lexical pass before grammar parsing:
+it preserves exact half-open byte spans for punctuation, literals, strings,
+and numbers, while decoded string/key bytes live in an owned UTF-8 arena.
+String escapes and surrogate pairs are decoded and validated, number spellings
+remain source-backed rather than passing through `f64`, and optional comments
+are admitted only by explicit policy. The lexer checks input/token/string/depth
+ceilings and balanced delimiter kinds. Validation rescans the owned source and
+checks the complete token and decoded-string ledgers, so forged metadata cannot
+drop non-trivia source bytes or substitute a decoded value. It deliberately
+does not claim that a token stream is a syntactically valid JSON document. A
+grammar parser and postorder `JsonDocument` materializer remain separate
+follow-up work.
 Detached duplicate candidates keep their node and scalar span in the arena;
 normalization changes ownership/references, not the contiguous payload ledger.
 `EsJsonEncode::encode_json_root` emits one selected root as compact JSON under

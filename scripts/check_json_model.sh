@@ -9,11 +9,29 @@ model="$repo_root/src/runtime/json_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 encoder="$repo_root/src/runtime/json_encode_model.elisa"
+lexer="$repo_root/src/runtime/json_lexer_model.elisa"
 docs="$repo_root/docs/ir.md"
 plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$encoder" "$ir" "$fixture" "$docs" "$plan"; do
+for required_file in "$model" "$lexer" "$encoder" "$ir" "$fixture" "$docs" "$plan"; do
     [[ -f "$required_file" ]] || { printf 'json model audit: missing %s\n' "$required_file" >&2; exit 1; }
+done
+
+for lexer_contract in \
+    'module EsJsonLex:' \
+    'struct JsonLexedSource:' \
+    'struct JsonLexeme:' \
+    'def lex_json(' \
+    'def validate_json_lexed_source(' \
+    'def json_lex_scan(' \
+    'def json_lex_source_matches_tokens(' \
+    'json_number_lexeme_is_valid' \
+    'json_lex_read_hex4' \
+    'InvalidSurrogate' \
+    'UnterminatedComment' \
+    'JsonLexError.TokenLimitExceeded' \
+    'JsonLexError.DepthLimitExceeded'; do
+    rg -Fq "$lexer_contract" "$lexer"
 done
 
 for encoder_contract in \
@@ -120,10 +138,18 @@ for boundary in \
 done
 
 rg -Fq 'include "../runtime/json_model.elisa"' "$ir"
+rg -Fq 'include "../runtime/json_lexer_model.elisa"' "$ir"
 rg -Fq 'include "../runtime/json_encode_model.elisa"' "$ir"
 for fixture_pattern in \
     'typed_json_document_contract_is_bounded_and_sealed_explicitly' \
     'typed_json_document_owns_scalar_values_without_coercing_numbers' \
+    'typed_json_lexer_preserves_byte_spans_and_decodes_strings' \
+    'copy_json_lexed_string(lexed, 2)' \
+    'copy_json_lexed_source_span(lexed, lexed.tokens[8].range)' \
+    'bad_surrogate_rejected' \
+    'forged_tail_rejected' \
+    'forged_string_rejected' \
+    'token_limit_rejected' \
     'typed_json_encoder_is_bounded_and_preserves_values' \
     'encode_json_root(document, 0)' \
     'encoded_values: darray[u8] = encode_json_root(document, 0)' \
