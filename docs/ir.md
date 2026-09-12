@@ -277,7 +277,10 @@ lexing, not FileStream text decoding, validates JSON bytes. The path storage
 must remain alive until `close_json_lines_file_reader`, which is explicit and
 idempotent after successful close; failures leave the adapter terminal until
 the caller closes it. The adapter does not use physical-line reads, preserving
-the parser's current newline-inside-balanced-container behavior.
+the parser's selected line-boundary behavior. The source fixture covers
+multiple documents in one host read, a final non-newline-terminated document,
+exact-limit EOF, one-byte overflow, and close after both completion and
+failure; those file-I/O cases remain unexecuted under the validation stop.
 Detached duplicate candidates keep their node and scalar span in the arena;
 normalization changes ownership/references, not the contiguous payload ledger.
 `EsJsonEncode::encode_json_root` emits one selected root as compact JSON under

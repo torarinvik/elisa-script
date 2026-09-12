@@ -47,6 +47,13 @@ rg -Fq 'include "../runtime/jsonl_file_posix.elisa"' "$ir"
 ! rg -q 'file_stream_read_line(_mode)?\(' "$adapter"
 for fixture_pattern in \
     'typed_json_lines_file_adapter_uses_bounded_owned_chunks' \
+    'typed_json_lines_file_adapter_reads_documents_and_closes' \
+    'typed_json_lines_file_adapter_probes_exact_limit_and_rejects_overflow' \
+    'assert third.has_document and third.record_number == 3' \
+    'reader.source_bytes_read == 15 and reader.buffer_bytes == 15 and reader.buffer_offset == 5' \
+    'exact_reader.source_bytes_read == 5 and exact_reader.file.bytes_read == 5' \
+    'overflow_reader.source_bytes_read == 6 and overflow_reader.file.bytes_read == 6' \
+    'validate_json_lines_file_reader(overflow_reader)' \
     'JSON_LINES_FILE_CHUNK_BYTES == 16384' \
     'JSON_LINES_FILE_MAX_INPUT_BYTES + 1 == FILE_STREAM_DEFAULT_MAX_BYTES' \
     'JsonLinesFileReaderState.Failed != JsonLinesFileReaderState.Closed'; do
