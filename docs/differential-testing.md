@@ -637,13 +637,21 @@ materializers; it does not claim that filesystem creation/restoration has been
 executed yet.
 
 `DifferentialWorldMaterializationPlan` makes that host boundary explicit for
-two separate absolute roots. Its lifecycle is `Planned → Materialized → Running
-→ Restoring → Restored`; roots must be distinct, bounded, NUL-free, and free of
-empty, dot, or parent components. The validator binds both roots to a valid
-world snapshot, and the transition helper authorizes exactly one edge without
-performing I/O. A future adapter must perform fixture creation, cwd/environment
-setup, cleanup, and restoration around these states and must not report
-`Restored` until `validate_differential_world_snapshot` succeeds.
+two separate absolute roots. Its lifecycle is `Planned → Materializing →
+Materialized → Running → Restoring → Restored`, with partial materialization,
+materialized-world, and running states all permitted to enter `Restoring` for
+cleanup. Roots must be distinct, bounded, NUL-free, and free of empty, dot, or
+parent components. The validator binds both roots to a valid world snapshot,
+and the transition helper authorizes exactly one nonterminal edge without
+performing I/O. An adapter must enter `Materializing` before it starts host
+mutations. Only `complete_differential_world_restoration` may mark the plan
+`Restored`; it validates both isolated restored worlds against the original
+snapshot fingerprint first, leaving a rejected restore in `Restoring`. A future
+adapter must perform fixture creation, cwd/environment setup, cleanup, and
+restoration around these states. The plan is a public value record, so its
+validator establishes structural consistency, not tamper-proof provenance; a
+host adapter must keep ownership of the live plan and must not trust a
+caller-constructed terminal record as proof that filesystem cleanup occurred.
 
 `EsDifferentialFilesystem::DifferentialFilesystemSnapshot` is the post-run file
 tree boundary. Adapters submit relative file, directory, and symlink entries in

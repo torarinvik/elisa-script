@@ -213,6 +213,20 @@ for boundary in 'if not group_ready:' 'differential_terminate_process(pid, false
     fi
 done
 
+for boundary in 'DifferentialWorldMaterializationState.Materializing' 'differential_world_materialization_transition_allowed' 'complete_differential_world_restoration' 'plan.has_materialization_attempt' 'plan.has_reference_restoration' 'plan.has_candidate_restoration' 'plan.reference_restored_world_fingerprint' 'plan.candidate_restored_world_fingerprint'; do
+    if ! rg -Fq "$boundary" "$source_file"; then
+        printf 'differential case audit: missing verified materialization boundary %s\n' "$boundary" >&2
+        exit 1
+    fi
+done
+
+for fixture_boundary in 'generic_restore: DifferentialWorldMaterializationCheck' 'wrong_restore: DifferentialWorldMaterializationCheck' 'forged_restored: mutable DifferentialWorldMaterializationPlan' 'partial: mutable DifferentialWorldMaterializationPlan'; do
+    if ! rg -Fq "$fixture_boundary" "$fixture_file"; then
+        printf 'differential case audit: missing restore lifecycle fixture %s\n' "$fixture_boundary" >&2
+        exit 1
+    fi
+done
+
 if ! rg -q 'Define a Case|DifferentialCase|artifact manifest|artifact' "$docs_file"; then
     printf 'differential case audit: documentation omits the case/artifact contract\n' >&2
     exit 1

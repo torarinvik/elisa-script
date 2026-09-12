@@ -537,18 +537,27 @@ module EsDifferential:
 
         const enum DifferentialWorldMaterializationState of u8:
             Planned
+            Materializing
             Materialized
             Running
             Restoring
             Restored
 
 
+        # Public value record: validation enforces structural consistency, not
+        # provenance. Host adapters must own this plan rather than trust a
+        # caller-constructed terminal record as restoration evidence.
         struct DifferentialWorldMaterializationPlan:
             format_version: u8 = 1
             snapshot_fingerprint: u64 = 0
             reference_root: sview = ""
             candidate_root: sview = ""
             state: DifferentialWorldMaterializationState = DifferentialWorldMaterializationState.Planned
+            has_materialization_attempt: bool = false
+            has_reference_restoration: bool = false
+            reference_restored_world_fingerprint: u64 = 0
+            has_candidate_restoration: bool = false
+            candidate_restored_world_fingerprint: u64 = 0
 
 
         const enum DifferentialWorldMaterializationIssue of u8:
@@ -4292,7 +4301,7 @@ module EsDifferential:
 
 
         def differential_world_materialization_state_valid(state: DifferentialWorldMaterializationState) -> bool:
-            return state in {DifferentialWorldMaterializationState.Planned, DifferentialWorldMaterializationState.Materialized, DifferentialWorldMaterializationState.Running, DifferentialWorldMaterializationState.Restoring, DifferentialWorldMaterializationState.Restored}
+            return state in {DifferentialWorldMaterializationState.Planned, DifferentialWorldMaterializationState.Materializing, DifferentialWorldMaterializationState.Materialized, DifferentialWorldMaterializationState.Running, DifferentialWorldMaterializationState.Restoring, DifferentialWorldMaterializationState.Restored}
 
 
         # Materializers receive absolute roots so neither side can accidentally
@@ -4324,11 +4333,36 @@ module EsDifferential:
             return false if not differential_world_materialization_root_valid(plan.reference_root) or not differential_world_materialization_root_valid(plan.candidate_root)
             return false if plan.reference_root == plan.candidate_root
             return false if differential_world_materialization_root_contains(plan.reference_root, plan.candidate_root)
-            return not differential_world_materialization_root_contains(plan.candidate_root, plan.reference_root)
+            return false if differential_world_materialization_root_contains(plan.candidate_root, plan.reference_root)
+            return false if plan.state == DifferentialWorldMaterializationState.Planned and (plan.has_materialization_attempt or plan.has_reference_restoration or plan.has_candidate_restoration or plan.reference_restored_world_fingerprint != 0 or plan.candidate_restored_world_fingerprint != 0)
+            return false if plan.state != DifferentialWorldMaterializationState.Planned and not plan.has_materialization_attempt
+            return false if plan.state == DifferentialWorldMaterializationState.Restored and (not plan.has_reference_restoration or not plan.has_candidate_restoration)
+            return false if plan.state != DifferentialWorldMaterializationState.Restored and (plan.has_reference_restoration or plan.has_candidate_restoration or plan.reference_restored_world_fingerprint != 0 or plan.candidate_restored_world_fingerprint != 0)
+            return false if plan.has_reference_restoration and plan.reference_restored_world_fingerprint != plan.snapshot_fingerprint
+            return false if plan.has_candidate_restoration and plan.candidate_restored_world_fingerprint != plan.snapshot_fingerprint
+            return true
 
 
         def differential_world_materialization_failure(issue: DifferentialWorldMaterializationIssue, reason: sview) -> DifferentialWorldMaterializationCheck:
             return DifferentialWorldMaterializationCheck{valid: false, issue: issue, reason: reason}
+
+
+        def differential_world_materialization_transition_allowed(current: DifferentialWorldMaterializationState, next: DifferentialWorldMaterializationState) -> bool:
+            match current:
+                DifferentialWorldMaterializationState.Planned:
+                    return next == DifferentialWorldMaterializationState.Materializing
+                DifferentialWorldMaterializationState.Materializing:
+                    return next == DifferentialWorldMaterializationState.Materialized or next == DifferentialWorldMaterializationState.Restoring
+                DifferentialWorldMaterializationState.Materialized:
+                    return next == DifferentialWorldMaterializationState.Running or next == DifferentialWorldMaterializationState.Restoring
+                DifferentialWorldMaterializationState.Running:
+                    return next == DifferentialWorldMaterializationState.Restoring
+                DifferentialWorldMaterializationState.Restoring:
+                    return false
+                DifferentialWorldMaterializationState.Restored:
+                    return false
+                _:
+                    return false
 
 
         const enum DifferentialWorldMaterializationCheckState of u8:
@@ -4348,9 +4382,9 @@ module EsDifferential:
         # one snapshot. Construction is identity-only; it never creates or
         # removes a directory and therefore remains safe for compiler-free
         # admission and replay planning.
-        def make_differential_world_materialization_plan(snapshot: DifferentialWorldSnapshot&, reference_root: sview, candidate_root: sview, state: DifferentialWorldMaterializationState = DifferentialWorldMaterializationState.Planned) -> DifferentialWorldMaterializationPlan error[DifferentialRunnerError] can[Memory.Allocate, Abort.Panic]:
-            raise DifferentialRunnerError.Invalid if not differential_world_snapshot_valid(snapshot) or not differential_world_materialization_state_valid(state)
-            plan: DifferentialWorldMaterializationPlan = DifferentialWorldMaterializationPlan{snapshot_fingerprint: snapshot.world_fingerprint, reference_root: reference_root, candidate_root: candidate_root, state: state}
+        def make_differential_world_materialization_plan(snapshot: DifferentialWorldSnapshot&, reference_root: sview, candidate_root: sview) -> DifferentialWorldMaterializationPlan error[DifferentialRunnerError] can[Memory.Allocate, Abort.Panic]:
+            raise DifferentialRunnerError.Invalid if not differential_world_snapshot_valid(snapshot)
+            plan: DifferentialWorldMaterializationPlan = DifferentialWorldMaterializationPlan{snapshot_fingerprint: snapshot.world_fingerprint, reference_root: reference_root, candidate_root: candidate_root}
             raise DifferentialRunnerError.Invalid if not differential_world_materialization_plan_valid(plan)
             return plan
 
@@ -4394,14 +4428,32 @@ module EsDifferential:
             return cursor.result
 
 
-        # Advance exactly one host lifecycle edge. The host adapter performs
+        # Advance one materialization/cleanup edge. The host adapter performs
         # mkdir/write/chdir/restore operations around these declarations; this
-        # function only authorizes the next state and never performs I/O.
+        # function never marks restoration complete and never performs I/O.
         def advance_differential_world_materialization(plan: mutable DifferentialWorldMaterializationPlan&, next_state: DifferentialWorldMaterializationState) -> DifferentialWorldMaterializationCheck:
             return differential_world_materialization_failure(DifferentialWorldMaterializationIssue.InvalidPlan, "world materialization plan is invalid") if not differential_world_materialization_plan_valid(plan)
-            valid_edge: bool = (plan.state == DifferentialWorldMaterializationState.Planned and next_state == DifferentialWorldMaterializationState.Materialized) or (plan.state == DifferentialWorldMaterializationState.Materialized and next_state == DifferentialWorldMaterializationState.Running) or (plan.state == DifferentialWorldMaterializationState.Running and next_state == DifferentialWorldMaterializationState.Restoring) or (plan.state == DifferentialWorldMaterializationState.Restoring and next_state == DifferentialWorldMaterializationState.Restored)
+            valid_edge: bool = differential_world_materialization_transition_allowed(plan.state, next_state)
             return differential_world_materialization_failure(DifferentialWorldMaterializationIssue.InvalidTransition, "world materialization transition is not a single lifecycle edge") if not valid_edge
+            plan.has_materialization_attempt <- true if next_state == DifferentialWorldMaterializationState.Materializing
             plan.state <- next_state
+            return DifferentialWorldMaterializationCheck{valid: true, issue: DifferentialWorldMaterializationIssue.None}
+
+
+        # A host may report Restored only after proving both isolated worlds
+        # match the original snapshot. Rejected restores remain in cleanup.
+        def complete_differential_world_restoration(plan: mutable DifferentialWorldMaterializationPlan&, snapshot: DifferentialWorldSnapshot&, reference_restored_world: DifferentialWorld&, candidate_restored_world: DifferentialWorld&) -> DifferentialWorldMaterializationCheck:
+            return differential_world_materialization_failure(DifferentialWorldMaterializationIssue.InvalidPlan, "world materialization plan is invalid") if not differential_world_materialization_plan_valid(plan)
+            return differential_world_materialization_failure(DifferentialWorldMaterializationIssue.InvalidTransition, "world restoration is not pending") if plan.state != DifferentialWorldMaterializationState.Restoring
+            reference_restored: DifferentialWorldMaterializationCheck = validate_differential_world_materialization(plan, snapshot, reference_restored_world)
+            return reference_restored if not reference_restored.valid
+            candidate_restored: DifferentialWorldMaterializationCheck = validate_differential_world_materialization(plan, snapshot, candidate_restored_world)
+            return candidate_restored if not candidate_restored.valid
+            plan.reference_restored_world_fingerprint <- differential_world_fingerprint(reference_restored_world)
+            plan.candidate_restored_world_fingerprint <- differential_world_fingerprint(candidate_restored_world)
+            plan.has_reference_restoration <- true
+            plan.has_candidate_restoration <- true
+            plan.state <- DifferentialWorldMaterializationState.Restored
             return DifferentialWorldMaterializationCheck{valid: true, issue: DifferentialWorldMaterializationIssue.None}
 
 
