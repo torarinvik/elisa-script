@@ -404,8 +404,9 @@ payload. `materialize_csv_schema_batch` validates its inputs and prepares the
 header/positional projection once per call for an exact data-row range, then
 returns the owned batch atomically. Each batch is capped at 4,096 rows,
 `DATA_MAX_FIELDS` output values (including `Missing`), and
-`DATA_MAX_INPUT_BYTES` aggregate decoded payload. Empty ranges are allowed at a
-valid row boundary; out-of-range requests fail rather than truncate.
+`DATA_MAX_INPUT_BYTES` aggregate retained text payload. Empty ranges are
+allowed at a valid row boundary; out-of-range requests fail rather than
+truncate.
 
 `EsInstall` makes release publication a typed state machine. An
 `InstallPlan` names the package version, workspace/user/system scope, source,
