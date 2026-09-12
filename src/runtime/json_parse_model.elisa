@@ -1,0 +1,270 @@
+# Iterative JSON grammar parser and owned-document materializer.
+#
+# The parser consumes the lossless byte lexer directly. It never routes number
+# spellings or source ranges through the vendored floating-point JSON DOM.
+
+module EsJsonParse:
+    using EsData
+    using EsJson
+    using EsJsonLex
+
+    public:
+        const JSON_PARSE_MAX_FRAMES: usize = DATA_MAX_DEPTH
+
+
+        error JsonParseError:
+            EmptyInput
+            UnexpectedToken(offset: usize)
+            ExpectedObjectKey(offset: usize)
+            ExpectedColon(offset: usize)
+            ExpectedValue(offset: usize)
+            ExpectedCommaOrEnd(offset: usize)
+            NonStringObjectKey(offset: usize)
+            TrailingComma(offset: usize)
+            MultipleRoots(offset: usize)
+            UnterminatedContainer(offset: usize)
+            FrameLimitExceeded(offset: usize)
+
+
+    private:
+        const enum JsonParseFrameKind of u8:
+            Array
+            Object
+
+
+        const enum JsonParsePhase of u8:
+            ArrayFirstValueOrEnd
+            ArrayValue
+            ArrayCommaOrEnd
+            ObjectFirstKeyOrEnd
+            ObjectKey
+            ObjectColon
+            ObjectValue
+            ObjectCommaOrEnd
+
+
+        struct JsonParsePendingMember:
+            key_start: usize
+            key_bytes: usize
+            key_range: JsonRange
+            value_index: usize
+
+
+        struct JsonParseFrame:
+            kind: JsonParseFrameKind
+            phase: JsonParsePhase
+            open_start: usize
+            depth: usize
+            key_start: usize = 0
+            key_bytes: usize = 0
+            key_range: JsonRange = JsonRange{}
+            children: darray[usize] = []
+            members: darray[JsonParsePendingMember] = []
+
+
+        def json_parse_value_kind(kind: JsonLexemeKind) -> bool:
+            return kind in {JsonLexemeKind.String, JsonLexemeKind.Number, JsonLexemeKind.True, JsonLexemeKind.False, JsonLexemeKind.Null, JsonLexemeKind.ArrayOpen, JsonLexemeKind.ObjectOpen}
+
+
+        def json_parse_scalar_kind(kind: JsonLexemeKind) -> bool:
+            return kind in {JsonLexemeKind.String, JsonLexemeKind.Number, JsonLexemeKind.True, JsonLexemeKind.False, JsonLexemeKind.Null}
+
+
+        def json_parse_push_frame(frames: mutable darray[JsonParseFrame]&, kind: JsonParseFrameKind, token: JsonLexeme, depth: usize, limits: DataDecodeLimits) -> void error[JsonParseError] can[Memory.Allocate, Abort.Panic]:
+            raise JsonParseError.FrameLimitExceeded(token.range.start) if frames.count >= limits.depth or frames.count >= JSON_PARSE_MAX_FRAMES
+            phase: JsonParsePhase = JsonParsePhase.ArrayFirstValueOrEnd if kind == JsonParseFrameKind.Array else JsonParsePhase.ObjectFirstKeyOrEnd
+            frames.push(JsonParseFrame{kind: kind, phase: phase, open_start: token.range.start, depth: depth})
+
+
+        def json_parse_close_allowed(frame: JsonParseFrame, policy: JsonPolicy, offset: usize) -> bool error[JsonParseError]:
+            if frame.kind == JsonParseFrameKind.Array:
+                if frame.phase == JsonParsePhase.ArrayFirstValueOrEnd or frame.phase == JsonParsePhase.ArrayCommaOrEnd:
+                    return true
+                elif frame.phase == JsonParsePhase.ArrayValue:
+                    raise JsonParseError.TrailingComma(offset) if policy.trailing_commas == JsonTrailingCommaPolicy.Reject
+                    return true
+                else:
+                    raise JsonParseError.ExpectedValue(offset)
+            else:
+                if frame.phase == JsonParsePhase.ObjectFirstKeyOrEnd or frame.phase == JsonParsePhase.ObjectCommaOrEnd:
+                    return true
+                elif frame.phase == JsonParsePhase.ObjectKey:
+                    raise JsonParseError.TrailingComma(offset) if policy.trailing_commas == JsonTrailingCommaPolicy.Reject
+                    return true
+                elif frame.phase == JsonParsePhase.ObjectColon:
+                    raise JsonParseError.ExpectedColon(offset)
+                elif frame.phase == JsonParsePhase.ObjectValue:
+                    raise JsonParseError.ExpectedValue(offset)
+                else:
+                    raise JsonParseError.ExpectedObjectKey(offset)
+            return false
+
+
+        def json_parse_append_scalar(document: mutable JsonDocument&, lexed: JsonLexedSource&, token: JsonLexeme, depth: usize, source_view: sview, decoded_view: sview) -> usize error[JsonParseError, JsonContractError] can[Memory.Allocate, Abort.Panic]:
+            node_kind: JsonNodeKind = JsonNodeKind.Null
+            scalar_value: sview = ""
+            bool_value: bool = false
+            if token.kind == JsonLexemeKind.String:
+                node_kind <- JsonNodeKind.Text
+                decoded_end: usize = token.payload_start + token.payload_bytes
+                scalar_value <- string_view_slice(decoded_view, token.payload_start.i64(), decoded_end.i64())
+            elif token.kind == JsonLexemeKind.Number:
+                node_kind <- JsonNodeKind.Number
+                scalar_value <- string_view_slice(source_view, token.range.start.i64(), token.range.end.i64())
+            elif token.kind == JsonLexemeKind.True:
+                node_kind <- JsonNodeKind.Bool
+                bool_value <- true
+            elif token.kind == JsonLexemeKind.False:
+                node_kind <- JsonNodeKind.Bool
+            elif token.kind == JsonLexemeKind.Null:
+                node_kind <- JsonNodeKind.Null
+            else:
+                raise JsonParseError.UnexpectedToken(token.range.start)
+            bytes_delta: usize = lexed.source_bytes if document.nodes.count == 0 else 0
+            node: JsonNodeInput = JsonNodeInput{kind: node_kind, range: token.range, depth: depth, scalar_value: scalar_value, bool_value: bool_value}
+            _ = try advance_json_document(document, JsonDocumentEvent.AppendNode, node, JsonMemberInput{owner_index: JSON_INDEX_NONE, key: ""}, JSON_INDEX_NONE, bytes_delta)
+            return document.nodes.count - 1
+
+
+        def json_parse_record_value(document: mutable JsonDocument&, frames: mutable darray[JsonParseFrame]&, value_index: usize, offset: usize) -> void error[JsonParseError, JsonContractError] can[Memory.Allocate, Abort.Panic]:
+            if frames.count == 0:
+                raise JsonParseError.MultipleRoots(offset) if document.roots.count != 0
+                _ = try advance_json_document(document, JsonDocumentEvent.AppendRoot, JsonNodeInput{kind: JsonNodeKind.Null}, JsonMemberInput{owner_index: JSON_INDEX_NONE, key: ""}, value_index)
+            else:
+                frame_index: usize = frames.count - 1
+                frame: mutable JsonParseFrame = frames[frame_index]
+                if frame.kind == JsonParseFrameKind.Array:
+                    raise JsonParseError.ExpectedValue(offset) if frame.phase != JsonParsePhase.ArrayFirstValueOrEnd and frame.phase != JsonParsePhase.ArrayValue
+                    raise JsonParseError.FrameLimitExceeded(offset) if frame.children.count >= document.limits.tokens
+                    frame.children.push(value_index)
+                    frame.phase <- JsonParsePhase.ArrayCommaOrEnd
+                else:
+                    raise JsonParseError.ExpectedValue(offset) if frame.phase != JsonParsePhase.ObjectValue
+                    raise JsonParseError.FrameLimitExceeded(offset) if frame.members.count >= document.limits.tokens
+                    frame.members.push(JsonParsePendingMember{key_start: frame.key_start, key_bytes: frame.key_bytes, key_range: frame.key_range, value_index: value_index})
+                    frame.phase <- JsonParsePhase.ObjectCommaOrEnd
+                frames[frame_index] <- frame
+
+
+        def json_parse_finish_container(document: mutable JsonDocument&, lexed: JsonLexedSource&, frames: mutable darray[JsonParseFrame]&, token: JsonLexeme) -> void error[JsonParseError, JsonContractError] can[Memory.Allocate, Abort.Panic]:
+            raise JsonParseError.UnexpectedToken(token.range.start) if frames.count == 0
+            frame_index: usize = frames.count - 1
+            frame: JsonParseFrame = frames[frame_index]
+            raise JsonParseError.UnexpectedToken(token.range.start) if frame.kind == JsonParseFrameKind.Array and token.kind != JsonLexemeKind.ArrayClose
+            raise JsonParseError.UnexpectedToken(token.range.start) if frame.kind == JsonParseFrameKind.Object and token.kind != JsonLexemeKind.ObjectClose
+            _ = try json_parse_close_allowed(frame, document.policy, token.range.start)
+            container_kind: JsonNodeKind = JsonNodeKind.Array if frame.kind == JsonParseFrameKind.Array else JsonNodeKind.Object
+            container_range: JsonRange = JsonRange{start: frame.open_start, end: token.range.end}
+            bytes_delta: usize = lexed.source_bytes if document.nodes.count == 0 else 0
+            _ = try advance_json_document(document, JsonDocumentEvent.AppendNode, JsonNodeInput{kind: container_kind, range: container_range, depth: frame.depth}, JsonMemberInput{owner_index: JSON_INDEX_NONE, key: ""}, JSON_INDEX_NONE, bytes_delta)
+            container_index: usize = document.nodes.count - 1
+            if frame.kind == JsonParseFrameKind.Array:
+                for ordinal in 0..<frame.children.count |document, frame, container_index, ordinal|:
+                    child_index: usize = frame.children[ordinal]
+                    child: JsonArrayChild = JsonArrayChild{owner_index: container_index, value_index: child_index, ordinal: ordinal}
+                    _ = try advance_json_document(document, JsonDocumentEvent.AppendArrayChild, JsonNodeInput{kind: JsonNodeKind.Null}, JsonMemberInput{owner_index: JSON_INDEX_NONE, key: ""}, JSON_INDEX_NONE, 0, child)
+            else:
+                decoded_view: sview = bytes_view(lexed.decoded_data)
+                for ordinal in 0..<frame.members.count |document, lexed, frame, container_index, decoded_view, ordinal|:
+                    pending: JsonParsePendingMember = frame.members[ordinal]
+                    key_end: usize = pending.key_start + pending.key_bytes
+                    key: sview = string_view_slice(decoded_view, pending.key_start.i64(), key_end.i64())
+                    retained_ordinal: usize = document.nodes[container_index].member_count
+                    member: JsonMemberInput = JsonMemberInput{owner_index: container_index, key: key, key_range: pending.key_range, value_index: pending.value_index, ordinal: retained_ordinal}
+                    _ = try advance_json_document(document, JsonDocumentEvent.AppendMember, JsonNodeInput{kind: JsonNodeKind.Null}, member)
+            _ = frames.pop()
+            try json_parse_record_value(document, frames, container_index, token.range.start)
+
+
+        def json_parse_build(lexed: JsonLexedSource&, document: mutable JsonDocument&) -> void error[JsonParseError, JsonContractError] can[Memory.Allocate, Abort.Panic]:
+            source_view: sview = bytes_view(lexed.source_data)
+            decoded_view: sview = bytes_view(lexed.decoded_data)
+            frames: mutable darray[JsonParseFrame] = []
+            cursor: mutable usize = 0
+            while cursor < lexed.tokens.count:
+                token: JsonLexeme = lexed.tokens[cursor]
+                if frames.count == 0:
+                    raise JsonParseError.MultipleRoots(token.range.start) if document.roots.count != 0
+                    if token.kind == JsonLexemeKind.ArrayOpen:
+                        try json_parse_push_frame(frames, JsonParseFrameKind.Array, token, 0, lexed.limits)
+                        cursor <- cursor + 1
+                    elif token.kind == JsonLexemeKind.ObjectOpen:
+                        try json_parse_push_frame(frames, JsonParseFrameKind.Object, token, 0, lexed.limits)
+                        cursor <- cursor + 1
+                    elif json_parse_scalar_kind(token.kind):
+                        value_index: usize = try json_parse_append_scalar(document, lexed, token, 0, source_view, decoded_view)
+                        try json_parse_record_value(document, frames, value_index, token.range.start)
+                        cursor <- cursor + 1
+                    else:
+                        raise JsonParseError.UnexpectedToken(token.range.start)
+                else:
+                    frame_index: usize = frames.count - 1
+                    frame: mutable JsonParseFrame = frames[frame_index]
+                    if token.kind == JsonLexemeKind.ArrayClose or token.kind == JsonLexemeKind.ObjectClose:
+                        try json_parse_finish_container(document, lexed, frames, token)
+                        cursor <- cursor + 1
+                    elif token.kind == JsonLexemeKind.Comma:
+                        if frame.kind == JsonParseFrameKind.Array and frame.phase == JsonParsePhase.ArrayCommaOrEnd:
+                            frame.phase <- JsonParsePhase.ArrayValue
+                        elif frame.kind == JsonParseFrameKind.Object and frame.phase == JsonParsePhase.ObjectCommaOrEnd:
+                            frame.phase <- JsonParsePhase.ObjectKey
+                        else:
+                            raise JsonParseError.UnexpectedToken(token.range.start)
+                        frames[frame_index] <- frame
+                        cursor <- cursor + 1
+                    elif token.kind == JsonLexemeKind.Colon:
+                        raise JsonParseError.ExpectedColon(token.range.start) if frame.kind != JsonParseFrameKind.Object or frame.phase != JsonParsePhase.ObjectColon
+                        frame.phase <- JsonParsePhase.ObjectValue
+                        frames[frame_index] <- frame
+                        cursor <- cursor + 1
+                    elif frame.kind == JsonParseFrameKind.Object and frame.phase == JsonParsePhase.ObjectColon:
+                        raise JsonParseError.ExpectedColon(token.range.start)
+                    elif frame.kind == JsonParseFrameKind.Object and (frame.phase == JsonParsePhase.ObjectFirstKeyOrEnd or frame.phase == JsonParsePhase.ObjectKey):
+                        raise JsonParseError.NonStringObjectKey(token.range.start) if token.kind != JsonLexemeKind.String
+                        frame.key_start <- token.payload_start
+                        frame.key_bytes <- token.payload_bytes
+                        frame.key_range <- token.range
+                        frame.phase <- JsonParsePhase.ObjectColon
+                        frames[frame_index] <- frame
+                        cursor <- cursor + 1
+                    elif (frame.kind == JsonParseFrameKind.Array and (frame.phase == JsonParsePhase.ArrayFirstValueOrEnd or frame.phase == JsonParsePhase.ArrayValue)) or (frame.kind == JsonParseFrameKind.Object and frame.phase == JsonParsePhase.ObjectValue):
+                        raise JsonParseError.ExpectedValue(token.range.start) if not json_parse_value_kind(token.kind)
+                        if token.kind == JsonLexemeKind.ArrayOpen:
+                            child_depth: usize = frame.depth + 1
+                            try json_parse_push_frame(frames, JsonParseFrameKind.Array, token, child_depth, lexed.limits)
+                            cursor <- cursor + 1
+                        elif token.kind == JsonLexemeKind.ObjectOpen:
+                            child_depth: usize = frame.depth + 1
+                            try json_parse_push_frame(frames, JsonParseFrameKind.Object, token, child_depth, lexed.limits)
+                            cursor <- cursor + 1
+                        else:
+                            value_depth: usize = frame.depth + 1
+                            value_index: usize = try json_parse_append_scalar(document, lexed, token, value_depth, source_view, decoded_view)
+                            try json_parse_record_value(document, frames, value_index, token.range.start)
+                            cursor <- cursor + 1
+                    else:
+                        raise JsonParseError.ExpectedCommaOrEnd(token.range.start)
+            raise JsonParseError.EmptyInput if document.roots.count == 0 and lexed.tokens.count == 0
+            raise JsonParseError.UnterminatedContainer(lexed.source_bytes) if frames.count != 0
+            raise JsonParseError.EmptyInput if document.roots.count == 0
+            raise JsonParseError.MultipleRoots(lexed.source_bytes) if document.roots.count != 1
+            _ = try advance_json_document(document, JsonDocumentEvent.Seal)
+
+
+    public:
+        def parse_json_document(lexed: JsonLexedSource&) -> JsonDocument error[JsonParseError, JsonLexError, JsonContractError] can[Memory.Allocate, Abort.Panic]:
+            try validate_json_lexed_source(lexed)
+            document: mutable JsonDocument = JsonDocument{limits: lexed.limits, policy: lexed.policy}
+            _ = try advance_json_document(document, JsonDocumentEvent.Begin)
+            catch json_parse_build(lexed, document):
+                ok:
+                    _ = document.state
+                error parse_failure:
+                    if document.state == JsonDocumentState.Building:
+                        catch advance_json_document(document, JsonDocumentEvent.Fail):
+                            ok failed_state:
+                                _ = failed_state
+                            error fail_failure:
+                                _ = fail_failure
+                    raise parse_failure
+            return document

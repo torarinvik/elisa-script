@@ -10,10 +10,11 @@ ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 encoder="$repo_root/src/runtime/json_encode_model.elisa"
 lexer="$repo_root/src/runtime/json_lexer_model.elisa"
+parser="$repo_root/src/runtime/json_parse_model.elisa"
 docs="$repo_root/docs/ir.md"
 plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$lexer" "$encoder" "$ir" "$fixture" "$docs" "$plan"; do
+for required_file in "$model" "$lexer" "$parser" "$encoder" "$ir" "$fixture" "$docs" "$plan"; do
     [[ -f "$required_file" ]] || { printf 'json model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -32,6 +33,23 @@ for lexer_contract in \
     'JsonLexError.TokenLimitExceeded' \
     'JsonLexError.DepthLimitExceeded'; do
     rg -Fq "$lexer_contract" "$lexer"
+done
+
+for parser_contract in \
+    'module EsJsonParse:' \
+    'error JsonParseError:' \
+    'const enum JsonParsePhase of u8:' \
+    'struct JsonParseFrame:' \
+    'def json_parse_build(' \
+    'def parse_json_document(' \
+    'JsonDocumentEvent.AppendArrayChild' \
+    'JsonDocumentEvent.AppendMember' \
+    'JsonDocumentEvent.AppendRoot' \
+    'JsonDocumentEvent.Seal' \
+    'JsonDocumentEvent.Fail' \
+    'JsonParseError.TrailingComma' \
+    'JsonParseError.MultipleRoots'; do
+    rg -Fq "$parser_contract" "$parser"
 done
 
 for encoder_contract in \
@@ -139,6 +157,7 @@ done
 
 rg -Fq 'include "../runtime/json_model.elisa"' "$ir"
 rg -Fq 'include "../runtime/json_lexer_model.elisa"' "$ir"
+rg -Fq 'include "../runtime/json_parse_model.elisa"' "$ir"
 rg -Fq 'include "../runtime/json_encode_model.elisa"' "$ir"
 for fixture_pattern in \
     'typed_json_document_contract_is_bounded_and_sealed_explicitly' \
@@ -150,6 +169,17 @@ for fixture_pattern in \
     'forged_tail_rejected' \
     'forged_string_rejected' \
     'token_limit_rejected' \
+    'typed_json_parser_materializes_postorder_and_enforces_grammar' \
+    'parse_json_document(lexed)' \
+    'trailing_comma_rejected' \
+    'duplicate_last' \
+    'duplicate_first' \
+    'duplicate_rejected' \
+    'missing_colon_rejected' \
+    'multiple_roots_rejected' \
+    'non_string_key_rejected' \
+    'missing_value_rejected' \
+    'missing_separator_rejected' \
     'typed_json_encoder_is_bounded_and_preserves_values' \
     'encode_json_root(document, 0)' \
     'encoded_values: darray[u8] = encode_json_root(document, 0)' \

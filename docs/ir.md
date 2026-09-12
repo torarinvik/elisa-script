@@ -183,7 +183,7 @@ Token and record events both account their supplied byte, field, and field-byte
 deltas cumulatively; record boundaries cannot reset field totals or bypass the
 input/offset ledger.
 
-`EsJson` is the namespaced adapter boundary for the vendor JSON parser. A
+`EsJson` is the namespaced owned-document boundary for JSON parsing. A
 version-4 `JsonDocument` owns bounded tables of non-recursive `JsonNode`
 values, source ranges, array-child edges, object members, decoded key bytes,
 decoded text/number-lexeme bytes, and roots, while `JsonPolicy` and
@@ -217,9 +217,18 @@ are admitted only by explicit policy. The lexer checks input/token/string/depth
 ceilings and balanced delimiter kinds. Validation rescans the owned source and
 checks the complete token and decoded-string ledgers, so forged metadata cannot
 drop non-trivia source bytes or substitute a decoded value. It deliberately
-does not claim that a token stream is a syntactically valid JSON document. A
-grammar parser and postorder `JsonDocument` materializer remain separate
-follow-up work.
+does not claim that a token stream is a syntactically valid JSON document.
+`EsJsonParse::parse_json_document` supplies that grammar/materialization
+boundary: an explicit array/object phase stack enforces JSON grammar without
+host recursion, then appends values postorder so every child index precedes its
+container owner. Decoded keys and exact source-backed number lexemes are copied
+into the owned document through the existing checked append transitions;
+trailing-comma and duplicate-key policies remain explicit. JSONL framing and
+schema conversion are separate adapters. The current checked append path
+revalidates the accumulated document on each transition, including pairwise
+duplicate-key checks; large-document performance is therefore not qualified,
+and a bounded batch/incremental-validation path is required before claiming
+large-input suitability.
 Detached duplicate candidates keep their node and scalar span in the arena;
 normalization changes ownership/references, not the contiguous payload ledger.
 `EsJsonEncode::encode_json_root` emits one selected root as compact JSON under
@@ -258,13 +267,11 @@ rejected using path/C-string rules.
 Reject, KeepFirst, and KeepLast therefore cannot merge equal names from distinct
 nested or sibling objects. The retained object table is canonical under all
 three policies: append applies KeepFirst/KeepLast, while validation rejects a
-forged duplicate that remains in the final table. A decoder remains responsible
-for supplying decoded keys and building node/edge/member rows in the documented
-order.
-The adapter is intentionally separate from the vendor's global parser names so
-public Elisascript modules retain namespace hygiene; vendor parser translation,
-streaming JSONL materialization, typed schema conversion, and encoding remain
-open.
+forged duplicate that remains in the final table. `EsJsonParse` supplies
+decoded keys and appends node/edge/member rows in the required postorder. It
+remains separate from the vendor's global parser names; JSONL materialization,
+typed schema conversion, and scaling past repeated full-ledger validation
+remain open, while compact encoding is provided by `EsJsonEncode`.
 
 `EsSchema` adds the checked schema-conversion boundary that follows parsing.
 `SchemaDescriptor` declares named fields, source format, requiredness, and
