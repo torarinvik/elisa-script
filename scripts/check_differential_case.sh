@@ -6,10 +6,14 @@ set -euo pipefail
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 source_file="$repo_root/src/testing/differential.elisa"
+runner_source="$repo_root/src/ir/runner.elisa"
+interpreter_source="$repo_root/src/ir/interpret.elisa"
+bytecode_source="$repo_root/src/bytecode/bytecode.elisa"
 fixture_file="$repo_root/test/differential/elisascript_differential_test.elisa"
+bytecode_fixture_file="$repo_root/test/ir/elisascript_bytecode_test.elisa"
 docs_file="$repo_root/docs/differential-testing.md"
 
-for required_file in "$source_file" "$fixture_file" "$docs_file"; do
+for required_file in "$source_file" "$runner_source" "$interpreter_source" "$bytecode_source" "$fixture_file" "$bytecode_fixture_file" "$docs_file"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'differential case audit: missing file: %s\n' "$required_file" >&2
         exit 2
@@ -30,12 +34,55 @@ for binary_helper in differential_world_file_kind_valid differential_world_hash_
     fi
 done
 
-for declaration in 'struct DifferentialWorldFile' 'struct DifferentialWorld' 'struct DifferentialWorldSnapshot' 'struct DifferentialWorldSnapshotCheck' 'struct DifferentialWorldMaterializationPlan' 'struct DifferentialWorldMaterializationCheck' 'struct DifferentialCase' 'struct DifferentialComparatorPolicy' 'struct DifferentialArtifactManifest' 'struct DifferentialArtifactManifestDecode' 'struct DifferentialProcessStreamArtifact' 'struct DifferentialProcessStreamArtifactDecode' 'struct DifferentialReproductionArtifact' 'struct DifferentialReproductionArtifactDecode' 'struct DifferentialValuePoolArtifact' 'struct DifferentialValuePoolArtifactDecode' 'struct DifferentialArtifactIndex' 'struct DifferentialArtifactIndexDecode' 'struct DifferentialArtifactReplayCheck' 'struct DifferentialArtifactDirectoryPlan' 'struct DifferentialArtifactDirectoryCheck' 'struct DifferentialShrinkCandidate' 'struct DifferentialShrinkResult' 'struct DifferentialRunShrinkCandidate' 'struct DifferentialRunShrinkResult' 'struct DifferentialOracle' 'struct DifferentialOracleCheck' 'struct DifferentialComparison' 'struct DifferentialComparisonArtifact' 'struct DifferentialComparisonArtifactDecode' 'const enum DifferentialArtifactPolicy' 'const enum DifferentialArtifactPublicationState' 'const enum DifferentialArtifactReplayIssue' 'const enum DifferentialArtifactDirectoryState' 'const enum DifferentialArtifactDirectoryIssue' 'const enum DifferentialShrinkKind' 'const enum DifferentialRunShrinkKind' 'const enum DifferentialOracleLanguage' 'const enum DifferentialOracleIssue' 'const enum DifferentialWorldSnapshotIssue' 'const enum DifferentialWorldMaterializationState' 'const enum DifferentialWorldMaterializationIssue' 'const enum DifferentialCaseIssueKind' 'const enum DifferentialDifferenceKind' 'const enum DifferentialRunOutcome' 'const enum DifferentialTextComparison' 'const enum DifferentialMapComparison'; do
+for declaration in 'struct DifferentialWorldFile' 'struct DifferentialWorld' 'struct DifferentialWorldSnapshot' 'struct DifferentialWorldSnapshotCheck' 'struct DifferentialWorldMaterializationPlan' 'struct DifferentialWorldMaterializationCheck' 'struct DifferentialCase' 'struct DifferentialComparatorPolicy' 'struct DifferentialArtifactManifest' 'struct DifferentialArtifactManifestDecode' 'struct DifferentialProcessStreamArtifact' 'struct DifferentialProcessStreamArtifactDecode' 'struct DifferentialReproductionArtifact' 'struct DifferentialReproductionArtifactDecode' 'struct DifferentialValuePoolArtifact' 'struct DifferentialValuePoolArtifactDecode' 'struct DifferentialArtifactIndex' 'struct DifferentialArtifactIndexDecode' 'struct DifferentialArtifactReplayCheck' 'struct DifferentialArtifactDirectoryPlan' 'struct DifferentialArtifactDirectoryCheck' 'struct DifferentialShrinkCandidate' 'struct DifferentialShrinkResult' 'struct DifferentialRunShrinkCandidate' 'struct DifferentialRunShrinkResult' 'struct DifferentialOracle' 'struct DifferentialOracleCheck' 'struct DifferentialComparison' 'struct DifferentialComparisonArtifact' 'struct DifferentialComparisonArtifactDecode' 'const enum DifferentialArtifactPolicy' 'const enum DifferentialArtifactPublicationState' 'const enum DifferentialArtifactReplayIssue' 'const enum DifferentialArtifactDirectoryState' 'const enum DifferentialArtifactDirectoryIssue' 'const enum DifferentialShrinkKind' 'const enum DifferentialRunShrinkKind' 'const enum DifferentialOracleLanguage' 'const enum DifferentialOracleIssue' 'const enum DifferentialWorldSnapshotIssue' 'const enum DifferentialWorldMaterializationState' 'const enum DifferentialWorldMaterializationIssue' 'const enum DifferentialCaseSide' 'const enum DifferentialCaseIssueKind' 'const enum DifferentialDifferenceKind' 'const enum DifferentialRunOutcome' 'const enum DifferentialTextComparison' 'const enum DifferentialMapComparison'; do
     if ! rg -q "$declaration" "$source_file"; then
         printf 'differential case audit: missing %s\n' "$declaration" >&2
         exit 1
     fi
 done
+
+for helper in differential_case_effective_limit differential_case_runner_with_limits prepare_differential_case_runner; do
+    if ! rg -q "def $helper\\(" "$source_file"; then
+        printf 'differential case audit: missing case limit preparation helper %s\n' "$helper" >&2
+        exit 1
+    fi
+done
+rg -q 'case\.timeout_steps == 0 or case\.timeout_steps <= DIFFERENTIAL_DEFAULT_MAX_TIMEOUT_STEPS' "$source_file"
+rg -q 'case\.max_output_bytes == 0 or case\.max_output_bytes <= DIFFERENTIAL_DEFAULT_MAX_OUTPUT_BYTES' "$source_file"
+rg -q 'runner\.timeout_steps > 0 and runner\.timeout_steps <= DIFFERENTIAL_DEFAULT_MAX_TIMEOUT_STEPS' "$source_file"
+rg -q 'invocation\.timeout_steps > DIFFERENTIAL_DEFAULT_MAX_TIMEOUT_STEPS' "$source_file"
+rg -q 'timeout_steps: timeout_steps, max_output_bytes: max_output_bytes, required_effects: runner\.required_effects, required_errors: runner\.required_errors' "$source_file"
+rg -q 'arguments: runner\.arguments, handlers: runner\.handlers, working_directory: runner\.working_directory, environment: runner\.environment, stdin: runner\.stdin, stdin_bytes: runner\.stdin_bytes, stdin_binary: runner\.stdin_binary, protocol: runner\.protocol' "$source_file"
+rg -q 'runner\.max_output_bytes\.usize\(\)' "$source_file"
+rg -q 'output_limit: usize = EsIr::ES_RUNTIME_DEFAULT_MAX_OUTPUT_BYTES' "$runner_source"
+rg -q 'policy\.output_bytes <- output_limit' "$runner_source"
+rg -q 'execute_bytecode_with_resource_policy\(lowered\.module' "$runner_source"
+rg -q 'writer\.length > machine\.resource_policy\.output_bytes - machine\.resource_usage\.output_bytes' "$interpreter_source"
+rg -q 'output_used: mutable usize&' "$interpreter_source"
+rg -q 'runtime_resource_add_output\(machine\.resource_usage, machine\.resource_policy, writer\.offset\)' "$interpreter_source"
+rg -q 'process_output_limit: policy\.output_bytes\.u64\(\)' "$interpreter_source"
+rg -q 'def process_output_remaining\(' "$interpreter_source"
+rg -q 'def process_wait_stream_size\(' "$interpreter_source"
+rg -q 'stderr_size > waiter\.output_limit - stdout_size' "$interpreter_source"
+rg -q 'output_limit: process_output_remaining\(machine\)' "$interpreter_source"
+rg -Uq 'if process_wait_output_exceeded\(waiter\):[\s\S]{0,512}process_wait_terminate\(waiter\)' "$interpreter_source"
+rg -q 'write_stdout_value_with_output_ledger\(stdio_text\.text, output_bytes\)' "$bytecode_source"
+rg -q 'write_stderr_value_with_output_ledger\(stdio_text\.text, output_bytes\)' "$bytecode_source"
+rg -q 'def differential_stream_pair_within_limit\(' "$source_file"
+rg -q 'differential_stream_pair_within_limit\(stdout_size, stderr_size, invocation\.max_output_bytes\)' "$source_file"
+rg -q 'differential_stream_pair_within_limit\(stdout_size, stderr_size, max_output_bytes\)' "$source_file"
+
+for fixture in differential_case_validation_rejects_limits_above_shared_hard_budgets differential_case_runner_preparation_tightens_both_sides_without_losing_runner_fields differential_case_runner_preparation_inherits_each_sides_runner_limits_when_case_limits_are_zero differential_runner_validation_rejects_timeout_above_shared_hard_budget differential_process_execution_rejects_timeout_above_shared_hard_budget_before_launch differential_process_execution_enforces_one_aggregate_output_ceiling differential_elisascript_case_output_ceiling_rejects_before_console_write; do
+    if ! rg -q "def $fixture\\(" "$fixture_file"; then
+        printf 'differential case audit: missing case limit fixture %s\n' "$fixture" >&2
+        exit 1
+    fi
+done
+
+if ! rg -q 'def bytecode_direct_stdio_rejects_output_before_emission_when_shared_budget_is_full\(' "$bytecode_fixture_file"; then
+    printf 'differential case audit: missing bytecode stdio shared-ledger fixture\n' >&2
+    exit 1
+fi
 
 for helper in differential_world_path_segment_safe differential_world_fixture_path_safe differential_world_issue differential_world_hash_u64 differential_world_hash_text differential_world_fingerprint differential_world_snapshot_valid differential_world_snapshot_failure differential_world_materialization_state_valid differential_world_materialization_root_valid differential_world_materialization_plan_valid differential_world_materialization_failure make_differential_world_snapshot validate_differential_world_snapshot make_differential_world_materialization_plan validate_differential_world_materialization advance_differential_world_materialization differential_artifact_policy_valid differential_engine_requirement_valid differential_float_tolerance_valid differential_comparator_policy_valid differential_text_comparison_byte_valid differential_map_comparison_byte_valid differential_artifact_policy_byte_valid differential_engine_requirement_byte_valid differential_artifact_side_byte_valid differential_run_outcome_byte_valid differential_artifact_publication_state_byte_valid differential_difference_kind_byte_valid differential_execution_engine_byte_valid validate_differential_case make_differential_artifact_manifest differential_manifest_text_bytes_fits differential_artifact_manifest_valid canonical_differential_artifact_manifest_bytes differential_artifact_manifest_fingerprint differential_manifest_read_u64 differential_manifest_read_i64 differential_manifest_read_u32 differential_manifest_read_text_bounds differential_decode_artifact_manifest differential_artifact_manifest_bytes_valid decode_differential_artifact_manifest differential_artifact_side_valid differential_process_stream_artifact_text_bytes_fits differential_process_stream_artifact_valid make_differential_process_stream_artifact canonical_differential_process_stream_artifact_bytes differential_process_stream_artifact_fingerprint differential_decode_process_stream_artifact differential_process_stream_artifact_bytes_valid decode_differential_process_stream_artifact differential_reproduction_text_valid differential_reproduction_artifact_valid make_differential_reproduction_artifact canonical_differential_reproduction_artifact_bytes differential_reproduction_artifact_fingerprint differential_decode_reproduction_artifact differential_reproduction_artifact_bytes_valid decode_differential_reproduction_artifact differential_float_bits differential_float_from_bits differential_value_text_bytes_fits differential_value_record_valid differential_value_text_append_fits differential_value_text_fields_fits differential_value_pool_text_bytes_fits differential_value_pool_artifact_valid differential_emit_value differential_read_value make_differential_value_pool_artifact canonical_differential_value_pool_artifact_bytes differential_value_pool_artifact_fingerprint differential_decode_value_pool_artifact differential_value_pool_artifact_bytes_valid decode_differential_value_pool_artifact differential_artifact_publication_state_valid differential_artifact_index_valid make_differential_artifact_index canonical_differential_artifact_index_bytes differential_artifact_index_fingerprint differential_decode_artifact_index differential_artifact_index_bytes_valid decode_differential_artifact_index differential_artifact_directory_state_valid differential_artifact_directory_component_valid differential_artifact_directory_plan_valid differential_artifact_directory_failure make_differential_artifact_directory_plan validate_differential_artifact_directory advance_differential_artifact_directory differential_artifact_replay_failure validate_differential_artifact_bundle differential_append_shrink_candidate shrink_differential_case differential_run_shrink_input_valid differential_append_run_shrink_candidate shrink_differential_runs differential_oracle_language_valid differential_oracle_runner_independent differential_oracle_failure validate_differential_oracle make_differential_oracle differential_text_length differential_text_equal differential_difference_kind_valid differential_run_outcome_valid differential_process_capture_text_bytes_fit differential_comparison_artifact_text_bytes_fits differential_comparison_artifact_valid make_differential_comparison_artifact canonical_differential_comparison_artifact_bytes differential_comparison_artifact_fingerprint differential_decode_comparison_artifact differential_comparison_artifact_bytes_valid decode_differential_comparison_artifact compare_differential_runs_with_policy compare_differential_runs_with_engine_requirement_policy; do
     if ! rg -q "def $helper\(" "$source_file"; then

@@ -41,6 +41,39 @@ World binary stdin uses the same explicit mode and bounded owned-byte rule as
 binary files, and its bytes participate in the world fingerprint. `validate_differential_case` validates both nested runners, rejects NULs, duplicate
 fixture paths, oversized world data, invalid engine or artifact policies, comparator
 policy, and preserves the nested runner issue kind.
+A case may also set `timeout_steps` and `max_output_bytes` as shared ceilings for
+both sides. Zero means “inherit this side's runner value”; a nonzero case ceiling
+is combined with each runner by taking the smaller value, so case policy can
+narrow but never expand a runner's own budget. `prepare_differential_case_runner`
+validates the complete case and returns the selected side's runner with those
+effective limits while preserving its arguments, handlers, environment, stdin,
+and other adapter configuration. Call it separately for `DifferentialCaseSide.Reference`
+and `DifferentialCaseSide.Candidate` before execution. It prepares limits only:
+it does not materialize or merge `DifferentialCase.world` into runner settings.
+The execution helpers accept a runner rather than a whole case, so passing the
+original runner directly intentionally bypasses case-level ceilings; pass the
+prepared runner to the adapter.
+The shared numeric hard ceiling for timeout values is the runtime's default
+maximum step budget. This is a VM step limit for in-process Elisascript runners,
+but a bounded wait-poll count for native process runners; those units are not
+wall-clock-equivalent. A case limit cannot raise the runner's configured timeout
+(whose runner default is one), so callers should configure runner budgets first
+and use case values only to tighten both sides. For external process runners,
+`max_output_bytes` is one combined budget across stdout and stderr. Both
+temporary streams are checked while the child is being polled and again
+together before either is materialized into the run result. In-process
+Elisascript runners also aggregate stdout and stderr writes, and the VM admits
+each complete write against the remaining budget before sending bytes to the
+host stream. Those console writes are bounded but are not yet captured into
+`DifferentialRun.stdout`/`stderr`, so stdout parity still requires a process
+adapter or a future captured-console boundary. Child-process captures inside
+the reference interpreter charge both channels to the same aggregate runtime
+ledger before allocating each retained channel. The direct bytecode path checks
+captured process output against its aggregate ledger after the capture
+instruction returns; a rejected capture can therefore temporarily materialize
+more than the combined ceiling, up to the per-process stream guards.
+Lower-than-default case budgets select the reference interpreter, so
+case-narrowed captures use its pre-allocation accounting.
 A complete world is also subject to an aggregate payload ceiling across its
 working-directory/locale metadata, stdin, argv, environment, fixture paths, and
 fixture bytes/text; length-only admission runs before NUL/duplicate/path scans,
@@ -289,16 +322,20 @@ byte limits as explicit resource issues; the low-level invocation API repeats
 the check before launch.
 `max_output_bytes` remains caller-configurable below the default 64 MiB ceiling,
 but values above that hard capture budget are rejected before fork; this keeps
-temporary-file growth and post-exit materialization bounded even when a caller
-bypasses runner preparation.
-The poll counter checks the positive budget before incrementing, so a
-maximum-width timeout cannot wrap into an unbounded wait. Launch, wait, and capture
-failures use `DifferentialRunnerError.Process`. Each captured stream is checked
-against the runner's `max_output_bytes` ceiling before allocation; exceeding it
-fails the invocation instead of allowing unbounded child output to exhaust the
-host. Output files are checked during the wait loop as well as after exit, so a
-long-running child is terminated as soon as a stream crosses its ceiling. Each
-child creates a private process group before `execvp`; timeout and output-limit
+retained output materialization bounded even when a caller bypasses runner
+preparation. Temporary-file sizes are sampled during wait polling and checked
+again after exit; a fast child can overshoot between samples, but over-budget
+bytes are rejected before either stream is allocated into the run result.
+Runner and direct invocation timeout values must be positive and no greater than
+the shared runtime step/poll ceiling. The poll counter checks this bounded budget
+before incrementing, so it cannot wrap into an unbounded wait. Launch, wait, and capture
+failures use `DifferentialRunnerError.Process`. stdout and stderr are checked
+together against the runner's `max_output_bytes` ceiling before either stream
+is allocated into the invocation result; exceeding the aggregate fails the
+invocation instead of allowing captured output to exhaust the host. The combined
+output size is checked during the wait loop and again after exit, so a
+long-running child is terminated when its sampled aggregate crosses the
+ceiling. Each child creates a private process group before `execvp`; timeout and output-limit
 cleanup signal that confirmed group and then reap the leader, preventing
 descendants from surviving a failed differential case. Cleanup first sends
 cooperative `TERM`, waits through a bounded no-hang grace window, and then
@@ -373,7 +410,14 @@ uses the canonical source/file execution boundary, converts the typed return val
 and `observe` events into owned differential values, and propagates source and
 runtime error families unchanged. Its `timeout_steps` field is the VM step limit;
 filesystem and process effects therefore remain visible through the same typed
-capabilities as ordinary script execution.
+capabilities as ordinary script execution. Its `max_output_bytes` setting is
+passed through the policy-aware bytecode facade to the runtime output budget;
+lower-than-default output ceilings use the interpreter path until direct
+bytecode supports custom output limits. Both engines reject an oversized
+standard-stream write before emission. Process captures in the reference path
+are charged against the remaining combined output budget before allocation;
+the direct engine currently rejects an over-budget combined capture after its
+capture instruction returns, as called out above.
 The in-process adapter rejects nonempty `working_directory`, `environment`,
 `stdin`, or `protocol` fields with `DifferentialRunnerError.UnsupportedConfiguration`;
 use a process runner when a candidate must execute in a separate configured world.

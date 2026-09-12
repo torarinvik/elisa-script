@@ -315,6 +315,7 @@ extend EsIr:
             # explicit instead of relying on a post-exit allocation check.
             stdout_stream: mutable heap void&? = null
             stderr_stream: mutable heap void&? = null
+            # Combined remaining budget for captured stdout plus stderr.
             output_limit: u64 = 0
             output_exceeded: mutable bool = false
             timed_out: mutable bool = false
@@ -5169,7 +5170,7 @@ extend EsIr:
                     elisascript_posix_exit(127)
                     return runtime_void()
                 group_ready: bool = process_setpgid_parent(pid)
-                waiter: mutable ProcessWaiter = ProcessWaiter{pid: pid, group_ready: group_ready, status: 0, failed: false, stdout_stream: stream, output_limit: machine.process_output_limit}
+                waiter: mutable ProcessWaiter = ProcessWaiter{pid: pid, group_ready: group_ready, status: 0, failed: false, stdout_stream: stream, output_limit: process_output_remaining(machine)}
                 machine over process_wait_next(waiter):
                     state Wait
                     start Wait
@@ -5329,35 +5330,38 @@ extend EsIr:
                 retries <- retries + 1
 
 
-        def process_wait_stream_exceeded(waiter: mutable ProcessWaiter&, stream: heap void&) -> bool can[Blocking.IO]:
-            if waiter.output_limit == 0:
-                return false
+        def process_output_remaining(machine: Machine&) -> u64:
+            return 0 if machine.resource_usage.output_bytes >= machine.resource_policy.output_bytes
+            return (machine.resource_policy.output_bytes - machine.resource_usage.output_bytes).u64()
+
+
+        def process_wait_stream_size(waiter: mutable ProcessWaiter&, stream: heap void&) -> u64 can[Blocking.IO]:
             if fseek(stream, 0, FILEIO_SEEK_END) != 0:
                 waiter.failed <- true
-                process_wait_terminate(waiter)
-                return true
+                return 0
             size: i64 = ftell(stream)
             if size < 0:
                 waiter.failed <- true
-                process_wait_terminate(waiter)
-                return true
-            if size.u64() <= waiter.output_limit:
-                return false
-            process_wait_terminate(waiter)
-            waiter.output_exceeded <- true
-            return true
+                return 0
+            return size.u64()
 
         def process_wait_output_exceeded(waiter: mutable ProcessWaiter&) -> bool can[Blocking.IO]:
-            return false if waiter.output_limit == 0
-            exceeded: mutable bool = false
+            stdout_size: mutable u64 = 0
+            stderr_size: mutable u64 = 0
             if waiter.stdout_stream != null:
                 stdout_stream: heap void& = waiter.stdout_stream
-                exceeded <- process_wait_stream_exceeded(waiter, stdout_stream)
-                return true if exceeded
+                stdout_size <- process_wait_stream_size(waiter, stdout_stream)
             if waiter.stderr_stream != null:
                 stderr_stream: heap void& = waiter.stderr_stream
-                exceeded <- process_wait_stream_exceeded(waiter, stderr_stream)
-            return exceeded
+                stderr_size <- process_wait_stream_size(waiter, stderr_stream)
+            return true if waiter.failed
+            if stdout_size > waiter.output_limit:
+                waiter.output_exceeded <- true
+                return true
+            if stderr_size > waiter.output_limit - stdout_size:
+                waiter.output_exceeded <- true
+                return true
+            return false
 
 
         def process_wait_sleep() -> bool can[Blocking.IO]:
@@ -5366,6 +5370,13 @@ extend EsIr:
 
         def process_wait_next(waiter: mutable ProcessWaiter&) -> ProcessWaitState can[Blocking.IO]:
             waited: int = elisascript_posix_waitpid(waiter.pid, waiter.status, INTERPRET_PROCESS_WAIT_NOHANG)
+            if waited == waiter.pid:
+                waiter.eintr_retries <- 0
+                # A short-lived child may finish between polls after producing
+                # its full output. Recheck both streams after reaping so the
+                # final sample cannot be skipped.
+                return ProcessWaitState.Error if process_wait_output_exceeded(waiter)
+                return ProcessWaitState.Exited
             if waited != waiter.pid:
                 if waited < 0:
                     errno: mutable int& = elisascript_posix_errno()
@@ -5376,7 +5387,13 @@ extend EsIr:
                     waiter.failed <- true
                     return ProcessWaitState.Error
                 waiter.eintr_retries <- 0
-                return ProcessWaitState.Error if process_wait_output_exceeded(waiter)
+                if process_wait_output_exceeded(waiter):
+                    # `waited == 0` means the child is still live. Terminate it
+                    # on both output overflow and stream-inspection failure;
+                    # otherwise a failed fseek/ftell could leave it writing to
+                    # temporary files after the parent closes its descriptors.
+                    process_wait_terminate(waiter)
+                    return ProcessWaitState.Error
                 if waiter.polls >= INTERPRET_PROCESS_WAIT_MAX_POLLS:
                     waiter.timed_out <- true
                     process_wait_terminate(waiter)
@@ -5668,7 +5685,7 @@ extend EsIr:
                     elisascript_posix_exit(127)
                     return runtime_void()
                 group_ready: bool = process_setpgid_parent(pid)
-                waiter: mutable ProcessWaiter = ProcessWaiter{pid: pid, group_ready: group_ready, status: 0, failed: false, stdout_stream: stdout_stream, stderr_stream: stderr_stream, output_limit: machine.process_output_limit}
+                waiter: mutable ProcessWaiter = ProcessWaiter{pid: pid, group_ready: group_ready, status: 0, failed: false, stdout_stream: stdout_stream, stderr_stream: stderr_stream, output_limit: process_output_remaining(machine)}
                 machine over process_wait_next(waiter):
                     state Wait
                     start Wait
@@ -5836,7 +5853,7 @@ extend EsIr:
                     elisascript_posix_exit(127)
                     return runtime_void()
                 group_ready: bool = process_setpgid_parent(pid)
-                waiter: mutable ProcessWaiter = ProcessWaiter{pid: pid, group_ready: group_ready, status: 0, failed: false, stdout_stream: output_stream, output_limit: machine.process_output_limit}
+                waiter: mutable ProcessWaiter = ProcessWaiter{pid: pid, group_ready: group_ready, status: 0, failed: false, stdout_stream: output_stream, output_limit: process_output_remaining(machine)}
                 machine over process_wait_next(waiter):
                     state Wait
                     start Wait
@@ -6797,6 +6814,12 @@ extend EsIr:
                 machine.failure <- InterpretFailure.TypeMismatch
                 return runtime_void()
             writer: mutable StdioWriter = StdioWriter{fd: fd, data: text.text.data, length: sview_len(text.text), offset: 0, failed: false}
+            # Reject an entire write that cannot fit before any bytes reach the
+            # host stream. The post-write accounting below still records actual
+            # successful progress, but must never be the first limit check.
+            if machine.resource_usage.output_bytes > machine.resource_policy.output_bytes or writer.length > machine.resource_policy.output_bytes - machine.resource_usage.output_bytes:
+                machine.failure <- InterpretFailure.OutputLimit
+                return runtime_void()
             can Blocking.IO:
                 machine over stdio_write_next(writer):
                     state Write
@@ -6809,6 +6832,12 @@ extend EsIr:
                     Write, StdioWriteState.Error:
                         break
             if writer.failed:
+                # A host stream can fail after accepting a prefix. Account for
+                # those bytes before returning so a recoverable Console handler
+                # cannot make already-emitted output disappear from the budget.
+                if not runtime_resource_add_output(machine.resource_usage, machine.resource_policy, writer.offset):
+                    machine.failure <- InterpretFailure.OutputLimit
+                    return runtime_void()
                 machine.failure <- InterpretFailure.Console
                 return runtime_void()
             if not runtime_resource_add_output(machine.resource_usage, machine.resource_policy, writer.offset):
@@ -8739,18 +8768,38 @@ extend EsIr:
             return value.text
 
 
-        def write_stdout_value(text: sview) -> i64 error[InterpretError] can[Memory.Allocate, Abort.Panic]:
-            machine: mutable Machine = Machine{steps: 0, step_limit: 1, failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void()}
+        # Direct bytecode uses these ledger-aware boundaries so each write is
+        # admitted against cumulative stdout and stderr before touching the host
+        # stream. The mutable ledger is updated even when a partial host write
+        # later fails with a recoverable Console error.
+        def write_stdout_value_with_output_ledger(text: sview, output_used: mutable usize&) -> i64 error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+            policy: RuntimeResourcePolicy = RuntimeResourcePolicy{}
+            usage: RuntimeResourceUsage = RuntimeResourceUsage{output_bytes: output_used}
+            machine: mutable Machine = Machine{steps: 0, step_limit: 1, resource_policy: policy, resource_usage: usage, failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void()}
             value: RuntimeValue = evaluate_write_stream(machine, runtime_text(text), FileDescriptor.Output)
+            output_used <- machine.resource_usage.output_bytes
             try raise_interpret_failure(machine.failure) if machine.failure != InterpretFailure.None
             return value.integer
+
+
+        def write_stderr_value_with_output_ledger(text: sview, output_used: mutable usize&) -> i64 error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+            policy: RuntimeResourcePolicy = RuntimeResourcePolicy{}
+            usage: RuntimeResourceUsage = RuntimeResourceUsage{output_bytes: output_used}
+            machine: mutable Machine = Machine{steps: 0, step_limit: 1, resource_policy: policy, resource_usage: usage, failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void()}
+            value: RuntimeValue = evaluate_write_stream(machine, runtime_text(text), FileDescriptor.Error)
+            output_used <- machine.resource_usage.output_bytes
+            try raise_interpret_failure(machine.failure) if machine.failure != InterpretFailure.None
+            return value.integer
+
+
+        def write_stdout_value(text: sview) -> i64 error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+            output_used: mutable usize = 0
+            return try write_stdout_value_with_output_ledger(text, output_used)
 
 
         def write_stderr_value(text: sview) -> i64 error[InterpretError] can[Memory.Allocate, Abort.Panic]:
-            machine: mutable Machine = Machine{steps: 0, step_limit: 1, failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void()}
-            value: RuntimeValue = evaluate_write_stream(machine, runtime_text(text), FileDescriptor.Error)
-            try raise_interpret_failure(machine.failure) if machine.failure != InterpretFailure.None
-            return value.integer
+            output_used: mutable usize = 0
+            return try write_stderr_value_with_output_ledger(text, output_used)
 
 
         def regex_search_text(text: sview, pattern: sview) -> bool error[InterpretError]:
@@ -8858,7 +8907,7 @@ extend EsIr:
             raise InterpretError.VerificationFailed if verify(module).count != 0
             function_index: usize = find_function(module, entry)
             raise InterpretError.UnknownFunction if function_index == module.functions.count
-            machine: mutable Machine = Machine{steps: 0, step_limit: policy.steps, resource_policy: policy, resource_usage: RuntimeResourceUsage{}, failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void(), globals: []}
+            machine: mutable Machine = Machine{steps: 0, step_limit: policy.steps, resource_policy: policy, resource_usage: RuntimeResourceUsage{}, process_output_limit: policy.output_bytes.u64(), failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void(), globals: []}
             for binding in module.globals |machine, storage|:
                 machine.globals.push(global_value(binding, machine, storage))
             try raise_interpret_failure(machine.failure) if machine.failure != InterpretFailure.None

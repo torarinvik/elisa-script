@@ -37,6 +37,7 @@ module EsDifferential:
 
 
     const DIFFERENTIAL_DEFAULT_MAX_OUTPUT_BYTES: u64 = 67108864
+    const DIFFERENTIAL_DEFAULT_MAX_TIMEOUT_STEPS: u64 = EsIr::ES_RUNTIME_DEFAULT_MAX_STEPS
     # Process adapters copy argv and environment entries into owned C strings
     # before fork. Keep both host-side reservations bounded even when a caller
     # bypasses runner preparation and invokes the low-level adapter directly.
@@ -606,6 +607,11 @@ module EsDifferential:
             artifact_policy: DifferentialArtifactPolicy = DifferentialArtifactPolicy.OnMismatch
 
 
+        const enum DifferentialCaseSide of u8:
+            Reference
+            Candidate
+
+
         struct DifferentialArtifactManifest:
             format_version: u8 = 3
             case_name: sview
@@ -1113,6 +1119,17 @@ module EsDifferential:
             return result
 
 
+        def differential_case_effective_limit(case_limit: u64, runner_limit: u64) -> u64:
+            return runner_limit if case_limit == 0 or runner_limit <= case_limit
+            return case_limit
+
+
+        # Reconstruct the whole runner so narrowing execution limits cannot
+        # accidentally discard adapter configuration or dynamic handler state.
+        def differential_case_runner_with_limits(runner: DifferentialRunner&, timeout_steps: u64, max_output_bytes: u64) -> DifferentialRunner:
+            return DifferentialRunner{kind: runner.kind, name: runner.name, target: runner.target, entry: runner.entry, arguments: runner.arguments, handlers: runner.handlers, working_directory: runner.working_directory, environment: runner.environment, stdin: runner.stdin, stdin_bytes: runner.stdin_bytes, stdin_binary: runner.stdin_binary, protocol: runner.protocol, timeout_steps: timeout_steps, max_output_bytes: max_output_bytes, required_effects: runner.required_effects, required_errors: runner.required_errors}
+
+
     public:
         # Validate the complete case envelope before either runner is handed to
         # an adapter. Nested runner failures retain their original issue kind so a
@@ -1164,7 +1181,7 @@ module EsDifferential:
                         cursor.result.reason <- "differential world is invalid"
                     -> Validate
 
-                Validate, DifferentialCaseCheckState.Limits if (case.max_output_bytes == 0 or case.max_output_bytes <= DIFFERENTIAL_DEFAULT_MAX_OUTPUT_BYTES) and differential_artifact_policy_valid(case.artifact_policy) and differential_engine_requirement_valid(case.engine_requirement) and differential_float_tolerance_valid(case.tolerance) and differential_comparator_policy_valid(case.comparator):
+                Validate, DifferentialCaseCheckState.Limits if (case.timeout_steps == 0 or case.timeout_steps <= DIFFERENTIAL_DEFAULT_MAX_TIMEOUT_STEPS) and (case.max_output_bytes == 0 or case.max_output_bytes <= DIFFERENTIAL_DEFAULT_MAX_OUTPUT_BYTES) and differential_artifact_policy_valid(case.artifact_policy) and differential_engine_requirement_valid(case.engine_requirement) and differential_float_tolerance_valid(case.tolerance) and differential_comparator_policy_valid(case.comparator):
                     cursor.state <- DifferentialCaseCheckState.Done
                     -> Validate
                 Validate, DifferentialCaseCheckState.Limits:
@@ -1177,6 +1194,28 @@ module EsDifferential:
                     break
 
             return cursor.result
+
+
+        # Produce the selected side's runner with the case ceilings applied.
+        # Zero case limits inherit the side's runner value; nonzero limits can
+        # only narrow it. This validates both sides and the world first, so a
+        # caller cannot accidentally begin a half-valid differential run.
+        # World materialization and merging remain the orchestration adapter's
+        # responsibility.
+        def prepare_differential_case_runner(case: DifferentialCase&, side: DifferentialCaseSide) -> DifferentialRunner error[DifferentialRunnerError] can[Memory.Allocate, Abort.Panic]:
+            check: DifferentialCaseCheck = validate_differential_case(case)
+            raise DifferentialRunnerError.Invalid if not check.valid
+            selected: mutable DifferentialRunner = case.reference
+            match side:
+                DifferentialCaseSide.Reference:
+                    selected <- case.reference
+                DifferentialCaseSide.Candidate:
+                    selected <- case.candidate
+                _:
+                    raise DifferentialRunnerError.Invalid
+            timeout_steps: u64 = differential_case_effective_limit(case.timeout_steps, selected.timeout_steps)
+            max_output_bytes: u64 = differential_case_effective_limit(case.max_output_bytes, selected.max_output_bytes)
+            return differential_case_runner_with_limits(selected, timeout_steps, max_output_bytes)
 
 
         def make_differential_artifact_manifest(case: DifferentialCase&, module_fingerprint: u64 = 0, module_digest_0: u64 = 0, module_digest_1: u64 = 0, module_digest_2: u64 = 0, module_digest_3: u64 = 0) -> DifferentialArtifactManifest error[DifferentialRunnerError] can[Memory.Allocate, Abort.Panic]:
@@ -2346,13 +2385,13 @@ module EsDifferential:
                     cursor.state <- DifferentialRunnerCheckState.Timeout
                     -> Validate
 
-                Validate, DifferentialRunnerCheckState.Timeout if runner.timeout_steps > 0:
+                Validate, DifferentialRunnerCheckState.Timeout if runner.timeout_steps > 0 and runner.timeout_steps <= DIFFERENTIAL_DEFAULT_MAX_TIMEOUT_STEPS:
                     cursor.state <- DifferentialRunnerCheckState.OutputLimit
                     -> Validate
                 Validate, DifferentialRunnerCheckState.Timeout:
                     cursor.result.valid <- false
                     cursor.result.issue <- DifferentialRunnerIssueKind.InvalidTimeout
-                    cursor.result.reason <- "runner timeout must be positive"
+                    cursor.result.reason <- "runner timeout must be positive and no greater than the shared step/poll budget"
                     -> Validate
 
                 Validate, DifferentialRunnerCheckState.OutputLimit if runner.max_output_bytes > DIFFERENTIAL_DEFAULT_MAX_OUTPUT_BYTES:
@@ -2507,6 +2546,17 @@ module EsDifferential:
             return size
 
 
+        # stdout and stderr share one run budget, matching the interpreter's
+        # aggregate output ledger. Check the first channel before subtracting
+        # so signed host sizes and the unsigned ceiling cannot wrap.
+        def differential_stream_pair_within_limit(stdout_size: i64, stderr_size: i64, max_output_bytes: u64) -> bool:
+            return false if stdout_size < 0 or stderr_size < 0
+            stdout_bytes: u64 = stdout_size.u64()
+            stderr_bytes: u64 = stderr_size.u64()
+            return false if stdout_bytes > max_output_bytes
+            return stderr_bytes <= max_output_bytes - stdout_bytes
+
+
         # Read both temporary output streams as one ownership boundary. Each
         # `differential_read_stream` call closes the stream it owns, including
         # its own error paths; if the first read fails, this helper closes the
@@ -2514,6 +2564,26 @@ module EsDifferential:
         # prevents a large differential campaign from leaking one descriptor
         # per failed candidate while preserving OutputLimit/Process identity.
         def differential_read_stream_pair(stdout_stream: heap void&, stderr_stream: heap void&, max_output_bytes: u64, stdout_text: mutable sview&, stderr_text: mutable sview&) -> void error[DifferentialRunnerError] can[Memory.Allocate, Memory.Release, Blocking.IO]:
+            stdout_size: mutable i64 = 0
+            catch differential_stream_size(stdout_stream):
+                ok size:
+                    stdout_size <- size
+                error failure:
+                    _ = fclose(stdout_stream)
+                    _ = fclose(stderr_stream)
+                    raise failure
+            stderr_size: mutable i64 = 0
+            catch differential_stream_size(stderr_stream):
+                ok size:
+                    stderr_size <- size
+                error failure:
+                    _ = fclose(stdout_stream)
+                    _ = fclose(stderr_stream)
+                    raise failure
+            if not differential_stream_pair_within_limit(stdout_size, stderr_size, max_output_bytes):
+                _ = fclose(stdout_stream)
+                _ = fclose(stderr_stream)
+                raise DifferentialRunnerError.OutputLimit
             catch differential_read_stream(stdout_stream, max_output_bytes):
                 ok value:
                     stdout_text <- value
@@ -2659,7 +2729,7 @@ module EsDifferential:
             # Keep the direct host boundary as strict as the runner validator:
             # callers that bypass `prepare_differential_process` must still
             # provide a positive output ceiling before any child is launched.
-            raise DifferentialRunnerError.Invalid if invocation.executable == "" or invocation.timeout_steps == 0 or invocation.max_output_bytes == 0 or invocation.max_output_bytes > DIFFERENTIAL_DEFAULT_MAX_OUTPUT_BYTES
+            raise DifferentialRunnerError.Invalid if invocation.executable == "" or invocation.timeout_steps == 0 or invocation.timeout_steps > DIFFERENTIAL_DEFAULT_MAX_TIMEOUT_STEPS or invocation.max_output_bytes == 0 or invocation.max_output_bytes > DIFFERENTIAL_DEFAULT_MAX_OUTPUT_BYTES
             raise DifferentialRunnerError.Invalid if not differential_process_text_field_lengths_fit(invocation.executable, invocation.entry, invocation.arguments, invocation.working_directory, invocation.environment)
             raise DifferentialRunnerError.Invalid if differential_sview_has_nul(invocation.executable) or differential_sview_has_nul(invocation.entry) or differential_sview_has_nul(invocation.working_directory)
             raise DifferentialRunnerError.Invalid if invocation.arguments.count > DIFFERENTIAL_DEFAULT_MAX_ARGUMENTS or invocation.environment.count > DIFFERENTIAL_DEFAULT_MAX_ENVIRONMENT_ENTRIES
@@ -2848,7 +2918,7 @@ module EsDifferential:
                                 _ = fclose(stdout_stream)
                                 _ = fclose(stderr_stream)
                                 raise failure
-                        if stdout_size.u64() > invocation.max_output_bytes or stderr_size.u64() > invocation.max_output_bytes:
+                        if not differential_stream_pair_within_limit(stdout_size, stderr_size, invocation.max_output_bytes):
                             differential_terminate_process(pid, group_ready, status)
                             _ = fclose(input_stream)
                             _ = fclose(stdout_stream)
@@ -2932,7 +3002,7 @@ module EsDifferential:
                 arguments.push(runtime_text(argument))
             observations: mutable darray[Observation] = []
             runtime_storage: mutable darray[RuntimeValue] = []
-            execution: Execution = try execute_elisascript_file_with_handlers(path_items, "differential", runner.entry, arguments, observations, runtime_storage, runner.handlers, runner.timeout_steps)
+            execution: Execution = try execute_elisascript_file_with_handlers(path_items, "differential", runner.entry, arguments, observations, runtime_storage, runner.handlers, runner.timeout_steps, runner.max_output_bytes.usize())
             result.engine_known <- true
             result.engine <- execution.engine
             result.capability_known <- execution.capability_known
@@ -2960,7 +3030,7 @@ module EsDifferential:
             path_items: mutable u8& = path_bytes.items
             observations: mutable darray[Observation] = []
             runtime_storage: mutable darray[RuntimeValue] = []
-            execution: Execution = try execute_elisascript_program_file_with_handlers(path_items, runner.arguments, observations, runtime_storage, runner.handlers, runner.timeout_steps)
+            execution: Execution = try execute_elisascript_program_file_with_handlers(path_items, runner.arguments, observations, runtime_storage, runner.handlers, runner.timeout_steps, runner.max_output_bytes.usize())
             result.engine_known <- true
             result.engine <- execution.engine
             result.capability_known <- execution.capability_known
