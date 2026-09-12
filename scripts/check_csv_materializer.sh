@@ -35,6 +35,13 @@ done
 
 for boundary in \
     'materializer_field_range_valid' \
+    'materializer_raw_field_valid' \
+    'materializer_complete_source_covered' \
+    'FieldLayoutInvalid' \
+    'RecordLayoutInvalid' \
+    'try validate_csv_policy(materializer.policy)' \
+    'sview_len(source) <= DATA_MAX_INPUT_BYTES' \
+    'span.end - span.start <= DATA_MAX_FIELD_BYTES' \
     'record_field_cursor' \
     'FieldLimitExceeded' \
     'RecordLimitExceeded' \
@@ -57,6 +64,7 @@ rg -Fq 'include "../runtime/csv_materializer_model.elisa"' "$ir"
 rg -Fq 'using EsCsvMaterialize' "$fixture"
 for fixture_pattern in \
     'typed_csv_materializer_contract_preserves_bounded_field_spans' \
+    'trailing_bytes_rejected' \
     'CsvMaterializerEvent.Field' \
     'CsvMaterializerEvent.Record' \
     'csv_materialized_field' \
@@ -64,7 +72,7 @@ for fixture_pattern in \
     rg -Fq "$fixture_pattern" "$fixture"
 done
 
-rg -Fq 'EsCsvMaterialize gives CSV/TSV adapters an explicit borrowed-span boundary' "$docs"
+rg -Fq '`EsCsvMaterialize` gives CSV/TSV adapters a policy-bound borrowed-span' "$docs"
 rg -Fq 'ES-SCRIPT-009 | EsCsvMaterialize' "$ledger"
 rg -Fq 'explicit EsCsvMaterialize' "$plan"
 

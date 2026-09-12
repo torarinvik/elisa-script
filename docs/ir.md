@@ -330,8 +330,10 @@ typed target-width conversion and runtime/performance qualification remain open,
 while compact encoding is provided by `EsJsonEncode`.
 
 `EsSchema` adds the checked schema-conversion boundary that follows parsing.
-`SchemaDescriptor` declares named fields, source format, requiredness, and
-expected JSON kinds; `SchemaDecodeSession` validates its complete ledger before
+`SchemaDescriptor` declares named fields, source format, requiredness,
+expected value kinds, aliases, and positional source indexes. JSON ignores
+`source_index`; CSV/TSV use it without a header, with the auto sentinel mapping
+fields by declaration order. `SchemaDecodeSession` validates its complete ledger before
 each transition and binds each field at most once and
 advances `Ready → Binding → Complete|Failed`. Missing required fields,
 duplicate source names, out-of-range node references, and kind mismatches are
@@ -345,8 +347,7 @@ remain distinct, and missing optional fields use an explicit `Missing` tag.
 Unknown keys follow `allow_unknown`; required-field and JSON-kind mismatches
 fail before a record is returned. Array/object fields and `Any` are explicitly
 rejected until recursive value typing and number-target conversion policies
-are specified. CSV/TSV row materialization and generated native record
-constructors remain open.
+are specified. Generated native record constructors remain open.
 
 `EsCsv` turns the `CsvPolicy` into a quote-aware streaming state machine.
 `CsvStream` counts input bytes, fields, field bytes, and records against the
@@ -360,16 +361,27 @@ materialization, including the invariant that every completed record owns a
 field, newline variants, and external-spill aggregation remain
 adapter work.
 
-EsCsvMaterialize gives CSV/TSV adapters an explicit borrowed-span boundary.
-Each field span is range-checked against the source and each record must
-consume the next contiguous field range; field and record ceilings are shared
-with EsData, and a ready session must have clean source, field, record, and
-cursor accounting. Lookup returns only validated slices while the session is
-building or complete. Record starts are range-checked before subtraction. Quoted spans remain
-marked for a later unescape phase rather than being silently treated as plain
-text. Validation proves each record's first-field index before subtracting its
-field count, then derives the field cursor and record-field total, rejecting
-overlapping or omitted spans in imported materializers.
+`EsCsvMaterialize` gives CSV/TSV adapters a policy-bound borrowed-span
+boundary. Each field span is range-checked against the source and checked as a
+well-formed quoted or unquoted cell; each record must consume the next
+contiguous field range with the configured separators at every boundary.
+Field and record ceilings are shared with `EsData`, including exact-limit
+inputs and cells, and a ready session must have clean source, field, record,
+and cursor accounting. Lookup returns only validated slices while the session
+is building or complete. Record starts are range-checked before subtraction.
+The incremental event API revalidates its ledger and is intended for small
+construction; a future large adapter should capture bounded parser batches.
+
+`EsSchemaCsv` materializes one completed CSV/TSV record as owned UTF-8 text in
+schema order. It binds decoded header names through `source_name` aliases, or
+uses `source_index` (declaration order by default) without a header; duplicate
+headers/indexes, unknown columns, invalid quoting/UTF-8, and missing required
+fields fail explicitly. `allow_unknown` controls unmatched header and data
+columns. Optional missing columns carry a `Missing` tag, distinct from an
+empty `Text` cell. Doubled quotes and configured in-quote escapes are decoded;
+optional unquoted trimming is ASCII space/tab only and never affects quoted
+cells. Numeric and other typed CSV conversions remain open rather than being
+guessed from cell contents.
 
 `EsInstall` makes release publication a typed state machine. An
 `InstallPlan` names the package version, workspace/user/system scope, source,

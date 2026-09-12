@@ -755,10 +755,19 @@ process state. The focused IR fixture and check_environment_model.sh audit are
 static evidence; host environment snapshot/apply adapters remain open.
 
 ES-SCRIPT-009 | EsCsvMaterialize supplies bounded source field spans, contiguous
-record layout, quote markers, shared field/record ceilings, subtraction-safe record starts, clean ready-state
-accounting, and validated slice lookup for CSV/TSV adapters. The focused IR fixture and
-check_csv_materializer.sh audit are static evidence; quote unescaping,
-newline policy, and typed row construction remain open.
+policy-checked record layout, quote markers, shared field/record ceilings,
+subtraction-safe record starts, exact-limit admission, clean ready-state
+accounting, and validated slice lookup for CSV/TSV adapters. The focused IR
+fixture and check_csv_materializer.sh audit are static evidence; newline
+variants and large batch construction remain open.
+
+ES-SCRIPT-050 | EsSchemaCsv materializes one complete CSV/TSV row into owned,
+schema-ordered UTF-8 text, with decoded header aliases or unique positional
+indexes, explicit Missing distinct from empty Text, required/unknown-column
+checks, quote unescaping, and bounded payload accounting. Its fixtures,
+namespace inclusion, IR documentation, and compiler-free audit source are
+static only; numeric conversion, generated record constructors, and runtime
+qualification remain open.
 
 ES-SCRIPT-013 | EsDifferentialStability supplies a bounded repeat session with
 minimum/maximum repeat policy, baseline fingerprint accounting, stable-equal and

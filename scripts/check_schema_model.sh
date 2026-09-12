@@ -8,13 +8,28 @@ repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 model="$repo_root/src/runtime/schema_model.elisa"
 json_model="$repo_root/src/runtime/json_model.elisa"
 json_materializer="$repo_root/src/runtime/schema_json_materializer.elisa"
+csv_materializer="$repo_root/src/runtime/schema_csv_materializer.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$json_model" "$json_materializer" "$ir" "$fixture" "$docs" "$plan"; do
+for required_file in "$model" "$json_model" "$json_materializer" "$csv_materializer" "$ir" "$fixture" "$docs" "$plan"; do
     [[ -f "$required_file" ]] || { printf 'schema model audit: missing %s\n' "$required_file" >&2; exit 1; }
+done
+
+for declaration in \
+    'module EsSchemaCsv:' \
+    'SCHEMA_CSV_MAX_PAYLOAD_BYTES' \
+    'const enum SchemaCsvValueKind of u8:' \
+    'struct SchemaCsvValue:' \
+    'struct SchemaCsvRecord:' \
+    'error SchemaCsvMaterializeError:' \
+    'def materialize_csv_schema_record(' \
+    'schema_csv_sort_name_indices(' \
+    'schema_csv_sort_position_indices(' \
+    'SchemaCsvDecodeState.Escaped'; do
+    rg -Fq "$declaration" "$csv_materializer"
 done
 
 for declaration in \
@@ -81,9 +96,15 @@ done
 
 rg -Fq 'include "../runtime/schema_model.elisa"' "$ir"
 rg -Fq 'include "../runtime/schema_json_materializer.elisa"' "$ir"
+rg -Fq 'include "../runtime/schema_csv_materializer.elisa"' "$ir"
 for fixture_pattern in \
     'typed_schema_binding_contract_checks_json_kinds_and_required_fields' \
     'typed_json_schema_materializer_owns_scalars_and_preserves_schema_order' \
+    'typed_csv_schema_materializer_binds_header_aliases_and_optional_fields' \
+    'typed_csv_schema_materializer_distinguishes_empty_from_missing_and_maps_positions' \
+    'typed_csv_schema_materializer_unescapes_quotes_and_rejects_duplicate_header_names' \
+    'SchemaCsvValueKind.Missing' \
+    'SchemaCsvMaterializeError.DuplicateHeader' \
     'SchemaDecodeEvent.Bind' \
     'SchemaContractError.ValueKindMismatch' \
     'SchemaJsonMaterializeError.UnsupportedValueKind' \
@@ -94,6 +115,7 @@ for fixture_pattern in \
 done
 
 rg -Fq '`EsSchema`' "$docs"
+rg -Fq '`EsSchemaCsv` materializes one completed CSV/TSV record' "$docs"
 rg -Fq 'Latest P08 typed JSON schema follow-up' "$plan"
 
-printf 'schema model audit: typed JSON binding and owned scalar materialization are present\n'
+printf 'schema model audit: typed JSON and CSV binding with owned scalar text materialization are present\n'

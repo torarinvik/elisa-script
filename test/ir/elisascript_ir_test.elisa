@@ -31,6 +31,7 @@ using EsSchema
 using EsSchemaJson
 using EsCsv
 using EsCsvMaterialize
+using EsSchemaCsv
 using EsInstall
 using EsSourceMap
 using EsOutput
@@ -3369,6 +3370,144 @@ def typed_csv_materializer_contract_preserves_bounded_field_spans() -> void:
             assert failure == CsvMaterializerError.InvalidState
             terminal_lookup <- true
     assert terminal_lookup
+    no_record: mutable CsvMaterializer = CsvMaterializer{source: ""}
+    _ = advance_csv_materializer(no_record, CsvMaterializerEvent.Begin)
+    empty_complete_rejected: mutable bool = false
+    catch advance_csv_materializer(no_record, CsvMaterializerEvent.End):
+        ok value:
+            assert false
+        error failure:
+            assert failure == CsvMaterializerError.EndNotReady
+            empty_complete_rejected <- true
+    assert empty_complete_rejected
+    trailing_source: mutable CsvMaterializer = CsvMaterializer{source: "a\nX"}
+    _ = advance_csv_materializer(trailing_source, CsvMaterializerEvent.Begin)
+    _ = advance_csv_materializer(trailing_source, CsvMaterializerEvent.Field, 0, 1, false)
+    _ = advance_csv_materializer(trailing_source, CsvMaterializerEvent.Record, 0, 0, false, 0, 1)
+    trailing_bytes_rejected: mutable bool = false
+    catch advance_csv_materializer(trailing_source, CsvMaterializerEvent.End):
+        ok value:
+            assert false
+        error failure:
+            assert failure == CsvMaterializerError.RecordLayoutInvalid
+            trailing_bytes_rejected <- true
+    assert trailing_bytes_rejected and trailing_source.state == CsvMaterializerState.Building
+
+
+@test
+def typed_csv_schema_materializer_binds_header_aliases_and_optional_fields() -> void:
+    source: sview = "legacy_name,ignored\nAda,x\n"
+    materializer: mutable CsvMaterializer = CsvMaterializer{source: source, policy: CsvPolicy{header: true}}
+    _ = advance_csv_materializer(materializer, CsvMaterializerEvent.Begin)
+    _ = advance_csv_materializer(materializer, CsvMaterializerEvent.Field, 0, 11, false)
+    _ = advance_csv_materializer(materializer, CsvMaterializerEvent.Field, 12, 19, false)
+    _ = advance_csv_materializer(materializer, CsvMaterializerEvent.Field, 20, 23, false)
+    _ = advance_csv_materializer(materializer, CsvMaterializerEvent.Field, 24, 25, false)
+    _ = advance_csv_materializer(materializer, CsvMaterializerEvent.Record, 0, 0, false, 0, 2)
+    _ = advance_csv_materializer(materializer, CsvMaterializerEvent.Record, 0, 0, false, 2, 2)
+    _ = advance_csv_materializer(materializer, CsvMaterializerEvent.End)
+    schema: SchemaDescriptor = SchemaDescriptor{name: "person", source: SchemaSource.Csv, allow_unknown: true, fields: [
+        SchemaField{name: "name", source_name: "legacy_name", kind: SchemaValueKind.Text},
+        SchemaField{name: "note", kind: SchemaValueKind.Text, required: false}
+    ]}
+    record: SchemaCsvRecord = materialize_csv_schema_record(schema, materializer, 0)
+    assert record.row_ordinal == 0 and record.values.count == 2 and record.payload_bytes == 3
+    assert record.values[0].field_index == 0 and record.values[0].kind == SchemaCsvValueKind.Text
+    assert record.values[0].bytes.count == 3 and record.values[0].bytes[0] == 65 and record.values[0].bytes[1] == 100 and record.values[0].bytes[2] == 97
+    assert record.values[1].field_index == 1 and record.values[1].kind == SchemaCsvValueKind.Missing
+
+    unknown_header: mutable bool = false
+    strict_schema: SchemaDescriptor = SchemaDescriptor{name: "strict_person", source: SchemaSource.Csv, fields: [SchemaField{name: "name", source_name: "legacy_name", kind: SchemaValueKind.Text}]}
+    catch materialize_csv_schema_record(strict_schema, materializer, 0):
+        ok value:
+            assert false
+        error failure:
+            assert failure == SchemaCsvMaterializeError.UnknownColumn
+            unknown_header <- true
+    assert unknown_header
+
+
+@test
+def typed_csv_schema_materializer_distinguishes_empty_from_missing_and_maps_positions() -> void:
+    materializer: mutable CsvMaterializer = CsvMaterializer{source: "a,,c\n"}
+    _ = advance_csv_materializer(materializer, CsvMaterializerEvent.Begin)
+    _ = advance_csv_materializer(materializer, CsvMaterializerEvent.Field, 0, 1, false)
+    _ = advance_csv_materializer(materializer, CsvMaterializerEvent.Field, 2, 2, false)
+    _ = advance_csv_materializer(materializer, CsvMaterializerEvent.Field, 3, 4, false)
+    _ = advance_csv_materializer(materializer, CsvMaterializerEvent.Record, 0, 0, false, 0, 3)
+    _ = advance_csv_materializer(materializer, CsvMaterializerEvent.End)
+    schema: SchemaDescriptor = SchemaDescriptor{name: "columns", source: SchemaSource.Csv, allow_unknown: true, fields: [
+        SchemaField{name: "empty", kind: SchemaValueKind.Text, source_index: 1},
+        SchemaField{name: "missing", kind: SchemaValueKind.Text, source_index: 4, required: false},
+        SchemaField{name: "last", kind: SchemaValueKind.Text, source_index: 2}
+    ]}
+    record: SchemaCsvRecord = materialize_csv_schema_record(schema, materializer, 0)
+    assert record.values.count == 3 and record.values[0].kind == SchemaCsvValueKind.Text
+    assert record.values[0].bytes.count == 0 and record.values[1].kind == SchemaCsvValueKind.Missing
+    assert record.values[2].kind == SchemaCsvValueKind.Text and record.values[2].bytes.count == 1 and record.values[2].bytes[0] == 99
+
+    required_missing: mutable bool = false
+    required_schema: SchemaDescriptor = SchemaDescriptor{name: "missing_required", source: SchemaSource.Csv, allow_unknown: true, fields: [SchemaField{name: "absent", kind: SchemaValueKind.Text, source_index: 4}]}
+    catch materialize_csv_schema_record(required_schema, materializer, 0):
+        ok value:
+            assert false
+        error failure:
+            assert failure == SchemaContractError.RequiredFieldMissing
+            required_missing <- true
+    assert required_missing
+
+    duplicate_index: mutable bool = false
+    duplicate_schema: SchemaDescriptor = SchemaDescriptor{name: "duplicate_positions", source: SchemaSource.Csv, fields: [
+        SchemaField{name: "left", kind: SchemaValueKind.Text, source_index: 1},
+        SchemaField{name: "right", kind: SchemaValueKind.Text, source_index: 1}
+    ]}
+    catch materialize_csv_schema_record(duplicate_schema, materializer, 0):
+        ok value:
+            assert false
+        error failure:
+            assert failure == SchemaCsvMaterializeError.DuplicateSourceIndex
+            duplicate_index <- true
+    assert duplicate_index
+
+    non_text_rejected: mutable bool = false
+    non_text_schema: SchemaDescriptor = SchemaDescriptor{name: "numeric_text_pending", source: SchemaSource.Csv, fields: [SchemaField{name: "number", kind: SchemaValueKind.Number}]}
+    catch materialize_csv_schema_record(non_text_schema, materializer, 0):
+        ok value:
+            assert false
+        error failure:
+            assert failure == SchemaCsvMaterializeError.UnsupportedValueKind
+            non_text_rejected <- true
+    assert non_text_rejected
+
+
+@test
+def typed_csv_schema_materializer_unescapes_quotes_and_rejects_duplicate_header_names() -> void:
+    quoted: mutable CsvMaterializer = CsvMaterializer{source: "\"A\"\"B\"\n"}
+    _ = advance_csv_materializer(quoted, CsvMaterializerEvent.Begin)
+    _ = advance_csv_materializer(quoted, CsvMaterializerEvent.Field, 0, 6, true)
+    _ = advance_csv_materializer(quoted, CsvMaterializerEvent.Record, 0, 0, false, 0, 1)
+    _ = advance_csv_materializer(quoted, CsvMaterializerEvent.End)
+    text_schema: SchemaDescriptor = SchemaDescriptor{name: "quoted", source: SchemaSource.Csv, fields: [SchemaField{name: "value", kind: SchemaValueKind.Text}]}
+    decoded: SchemaCsvRecord = materialize_csv_schema_record(text_schema, quoted, 0)
+    assert decoded.values[0].bytes.count == 3 and decoded.values[0].bytes[0] == 65 and decoded.values[0].bytes[1] == 34 and decoded.values[0].bytes[2] == 66
+
+    duplicate: mutable CsvMaterializer = CsvMaterializer{source: "name,name\nx,x\n", policy: CsvPolicy{header: true}}
+    _ = advance_csv_materializer(duplicate, CsvMaterializerEvent.Begin)
+    _ = advance_csv_materializer(duplicate, CsvMaterializerEvent.Field, 0, 4, false)
+    _ = advance_csv_materializer(duplicate, CsvMaterializerEvent.Field, 5, 9, false)
+    _ = advance_csv_materializer(duplicate, CsvMaterializerEvent.Field, 10, 11, false)
+    _ = advance_csv_materializer(duplicate, CsvMaterializerEvent.Field, 12, 13, false)
+    _ = advance_csv_materializer(duplicate, CsvMaterializerEvent.Record, 0, 0, false, 0, 2)
+    _ = advance_csv_materializer(duplicate, CsvMaterializerEvent.Record, 0, 0, false, 2, 2)
+    _ = advance_csv_materializer(duplicate, CsvMaterializerEvent.End)
+    duplicate_header: mutable bool = false
+    catch materialize_csv_schema_record(text_schema, duplicate, 0):
+        ok value:
+            assert false
+        error failure:
+            assert failure == SchemaCsvMaterializeError.DuplicateHeader
+            duplicate_header <- true
+    assert duplicate_header
 
 
 @test
