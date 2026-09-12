@@ -1,0 +1,239 @@
+# Bounded POSIX FileStream adapter for one-document-at-a-time JSON Lines reads.
+#
+# Parsing remains pure in EsJsonLinesParse. This module owns one binary
+# FileStream, reads into one fixed-size chunk, and preserves any unconsumed
+# suffix between document requests.
+
+module EsJsonLinesFilePosix:
+    using EsData
+    using EsJsonLinesParse
+    using EsJsonStream
+    using EsRuntime
+
+    public:
+        const JSON_LINES_FILE_READER_FORMAT_VERSION: u8 = 1
+        const JSON_LINES_FILE_CHUNK_BYTES: usize = 16384
+        const JSON_LINES_FILE_MAX_INPUT_BYTES: usize = FILE_STREAM_DEFAULT_MAX_BYTES - 1
+
+
+        const enum JsonLinesFileReaderState of u8:
+            Reading
+            Complete
+            Failed
+            Closed
+
+
+        struct JsonLinesFileReader:
+            format_version: u8 = JSON_LINES_FILE_READER_FORMAT_VERSION
+            file: FileStream
+            parser: JsonLinesChunkReader
+            chunk_buffer: darray[u8] = []
+            buffer_bytes: usize = 0
+            buffer_offset: usize = 0
+            source_bytes_read: usize = 0
+            cleanup: FileStreamCleanupGuard = FileStreamCleanupGuard{}
+            state: JsonLinesFileReaderState = JsonLinesFileReaderState.Reading
+
+
+        error JsonLinesFileError:
+            InvalidFormatVersion
+            InvalidState
+            InvalidPolicy
+            InvalidReadResult
+            InputLimitExceeded
+            AccountingInvalid
+
+
+    private:
+        const enum JsonLinesFileAction of u8:
+            ReturnComplete
+            FeedBuffered
+            ReadChunk
+
+
+        def json_lines_file_min(left: usize, right: usize) -> usize:
+            return left if left < right else right
+
+
+        def json_lines_file_action(reader: JsonLinesFileReader&) -> JsonLinesFileAction:
+            return JsonLinesFileAction.ReturnComplete if reader.state == JsonLinesFileReaderState.Complete
+            return JsonLinesFileAction.FeedBuffered if reader.buffer_offset < reader.buffer_bytes
+            return JsonLinesFileAction.ReadChunk
+
+
+        def json_lines_file_chunk_view(reader: JsonLinesFileReader&) -> sview:
+            data: u8& = (&reader.chunk_buffer[0]).cast[u8&]
+            return sview(data, reader.buffer_offset.i64(), (reader.buffer_bytes - reader.buffer_offset).i64())
+
+
+        def json_lines_file_clear_buffer(reader: mutable JsonLinesFileReader&) -> void:
+            reader.buffer_bytes <- 0
+            reader.buffer_offset <- 0
+
+
+        def json_lines_file_read_capacity(reader: JsonLinesFileReader&) -> usize error[JsonLinesFileError, FileStreamError]:
+            input_limit: usize = reader.parser.stream.policy.max_input_bytes
+            raise JsonLinesFileError.InputLimitExceeded if reader.source_bytes_read > input_limit
+            raise JsonLinesFileError.AccountingInvalid if reader.file.bytes_read > reader.file.byte_budget
+            file_remaining: usize = reader.file.byte_budget - reader.file.bytes_read
+            if reader.source_bytes_read == input_limit:
+                raise FileStreamError.LimitExceeded(reader.file.path) if file_remaining == 0 and not reader.file.pending_valid
+                return 1
+            input_remaining: usize = input_limit - reader.source_bytes_read
+            if file_remaining == 0:
+                return 1 if reader.file.pending_valid
+                raise FileStreamError.LimitExceeded(reader.file.path)
+            return json_lines_file_min(JSON_LINES_FILE_CHUNK_BYTES, json_lines_file_min(input_remaining, file_remaining))
+
+
+        def json_lines_file_feed_result(feed: JsonLinesFeedResult) -> JsonLinesReadResult:
+            return JsonLinesReadResult{has_document: feed.outcome == JsonLinesFeedOutcome.Document, record_number: feed.record_number, source_offset: feed.source_offset, document: feed.document}
+
+
+        def json_lines_file_reader_state_valid(reader: JsonLinesFileReader&) -> bool error[JsonLinesFileError, JsonLinesParseError, JsonStreamError, DataContractError]:
+            raise JsonLinesFileError.InvalidFormatVersion if reader.format_version != JSON_LINES_FILE_READER_FORMAT_VERSION
+            try validate_json_lines_chunk_reader(reader.parser)
+            raise JsonLinesFileError.InvalidPolicy if reader.parser.stream.policy.max_input_bytes > JSON_LINES_FILE_MAX_INPUT_BYTES
+            raise JsonLinesFileError.AccountingInvalid if reader.file.byte_budget != reader.parser.stream.policy.max_input_bytes + 1
+            raise JsonLinesFileError.AccountingInvalid if reader.file.bytes_read > reader.file.byte_budget
+            raise JsonLinesFileError.AccountingInvalid if reader.chunk_buffer.count != JSON_LINES_FILE_CHUNK_BYTES
+            raise JsonLinesFileError.AccountingInvalid if reader.buffer_offset > reader.buffer_bytes or reader.buffer_bytes > JSON_LINES_FILE_CHUNK_BYTES
+            raise JsonLinesFileError.AccountingInvalid if reader.source_bytes_read > reader.parser.stream.policy.max_input_bytes + 1
+            raise JsonLinesFileError.AccountingInvalid if reader.parser.offset > reader.source_bytes_read
+            raise JsonLinesFileError.AccountingInvalid if reader.source_bytes_read - reader.parser.offset != reader.buffer_bytes - reader.buffer_offset if reader.state != JsonLinesFileReaderState.Failed
+            raise JsonLinesFileError.InvalidState if reader.buffer_bytes == reader.buffer_offset and (reader.buffer_bytes != 0 or reader.buffer_offset != 0)
+            raise JsonLinesFileError.InvalidState if reader.file.mode != FileStreamMode.ReadBinary or reader.file.encoding != FileStreamEncoding.Bytes
+            raise JsonLinesFileError.InvalidState if reader.file.pending_valid
+            if reader.state == JsonLinesFileReaderState.Reading:
+                raise JsonLinesFileError.InvalidState if reader.parser.stream.state != JsonStreamState.Reading
+                raise JsonLinesFileError.InvalidState if reader.file.state != FileStreamState.Open or reader.file.handle == null
+                raise JsonLinesFileError.InvalidState if reader.cleanup.state != FileStreamCleanupState.Armed
+                raise JsonLinesFileError.InvalidState if reader.file.bytes_read != reader.source_bytes_read
+            elif reader.state == JsonLinesFileReaderState.Complete:
+                raise JsonLinesFileError.InvalidState if reader.parser.stream.state != JsonStreamState.Complete
+                raise JsonLinesFileError.InvalidState if reader.file.state != FileStreamState.Open or reader.file.handle == null
+                raise JsonLinesFileError.InvalidState if reader.cleanup.state != FileStreamCleanupState.Armed
+                raise JsonLinesFileError.InvalidState if reader.buffer_bytes != 0 or reader.buffer_offset != 0
+                raise JsonLinesFileError.InvalidState if reader.source_bytes_read != reader.parser.offset
+                raise JsonLinesFileError.InvalidState if reader.file.bytes_read != reader.source_bytes_read
+            elif reader.state == JsonLinesFileReaderState.Failed:
+                raise JsonLinesFileError.InvalidState if reader.file.state != FileStreamState.Open or reader.file.handle == null
+                raise JsonLinesFileError.InvalidState if reader.cleanup.state != FileStreamCleanupState.Armed
+            elif reader.state == JsonLinesFileReaderState.Closed:
+                raise JsonLinesFileError.InvalidState if reader.file.state != FileStreamState.Closed or reader.file.handle != null
+                raise JsonLinesFileError.InvalidState if reader.cleanup.state == FileStreamCleanupState.Armed
+            else:
+                raise JsonLinesFileError.InvalidState
+            return true
+
+
+        def json_lines_file_next_impl(reader: mutable JsonLinesFileReader&) -> JsonLinesReadResult error[JsonLinesFileError, FileStreamError, JsonLinesParseError, JsonStreamError, DataContractError, JsonLexError, JsonParseError, JsonContractError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            result: mutable JsonLinesReadResult = JsonLinesReadResult{}
+            machine over json_lines_file_action(reader) while true:
+                state ReadDocument
+                start ReadDocument
+
+                ReadDocument, JsonLinesFileAction.ReturnComplete:
+                    break
+                ReadDocument, JsonLinesFileAction.FeedBuffered:
+                    available: usize = reader.buffer_bytes - reader.buffer_offset
+                    feed: mutable JsonLinesFeedResult = try feed_json_lines_chunk(reader.parser, json_lines_file_chunk_view(reader))
+                    raise JsonLinesFileError.AccountingInvalid if feed.consumed_bytes > available
+                    reader.buffer_offset <- reader.buffer_offset + feed.consumed_bytes
+                    if feed.outcome == JsonLinesFeedOutcome.NeedInput:
+                        raise JsonLinesFileError.AccountingInvalid if feed.consumed_bytes != available
+                        json_lines_file_clear_buffer(reader)
+                        -> ReadDocument
+                    elif feed.outcome == JsonLinesFeedOutcome.Document:
+                        if reader.buffer_offset == reader.buffer_bytes:
+                            json_lines_file_clear_buffer(reader)
+                        reader.state <- JsonLinesFileReaderState.Complete if reader.parser.stream.state == JsonStreamState.Complete
+                        result <- json_lines_file_feed_result(feed)
+                        break
+                    else:
+                        raise JsonLinesFileError.InvalidState if feed.outcome != JsonLinesFeedOutcome.Complete or reader.parser.stream.state != JsonStreamState.Complete or reader.buffer_offset != reader.buffer_bytes
+                        json_lines_file_clear_buffer(reader)
+                        reader.state <- JsonLinesFileReaderState.Complete
+                        break
+                ReadDocument, JsonLinesFileAction.ReadChunk:
+                    capacity: usize = try json_lines_file_read_capacity(reader)
+                    buffer: mutable u8& = (&reader.chunk_buffer[0]).cast[mutable u8&]
+                    read: FileStreamRead = try file_stream_read_chunk(reader.file, buffer, capacity)
+                    raise JsonLinesFileError.InvalidReadResult if read.count > capacity or (read.eof and read.count != 0)
+                    if read.count != 0:
+                        maximum_loaded_bytes: usize = reader.parser.stream.policy.max_input_bytes + 1
+                        raise JsonLinesFileError.InvalidReadResult if read.count > maximum_loaded_bytes
+                        raise JsonLinesFileError.AccountingInvalid if reader.source_bytes_read > maximum_loaded_bytes - read.count
+                        reader.source_bytes_read <- reader.source_bytes_read + read.count
+                        reader.buffer_offset <- 0
+                        reader.buffer_bytes <- read.count
+                        raise JsonStreamError.InputLimitExceeded if reader.source_bytes_read > reader.parser.stream.policy.max_input_bytes
+                        -> ReadDocument
+                    raise JsonLinesFileError.InvalidReadResult if not read.eof
+                    feed: JsonLinesFeedResult = try feed_json_lines_chunk(reader.parser, "", true)
+                    raise JsonLinesFileError.InvalidState if feed.outcome == JsonLinesFeedOutcome.NeedInput
+                    raise JsonLinesFileError.InvalidState if reader.parser.stream.state != JsonStreamState.Complete
+                    reader.state <- JsonLinesFileReaderState.Complete
+                    result <- json_lines_file_feed_result(feed)
+                    break
+            return result
+
+
+    public:
+        # `path` remains borrowed by FileStream and must outlive this reader.
+        def begin_json_lines_file_reader(path: cstr, limits: DataDecodeLimits = DataDecodeLimits{}, policy: JsonPolicy = JsonPolicy{}, framing: JsonStreamPolicy = JsonStreamPolicy{}) -> JsonLinesFileReader error[FileStreamError, DataContractError, JsonStreamError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic]:
+            try validate_data_decoder(DataDecoder{format: DataFormat.JsonLines, limits: limits})
+            try validate_json_policy(policy)
+            _ = try validate_json_stream(JsonStreamSession{policy: framing})
+            effective_input_bytes: usize = json_lines_file_min(limits.input_bytes, framing.max_input_bytes)
+            effective_input_bytes <- json_lines_file_min(effective_input_bytes, JSON_LINES_FILE_MAX_INPUT_BYTES)
+            effective_limits: mutable DataDecodeLimits = limits
+            effective_limits.input_bytes <- effective_input_bytes
+            effective_framing: mutable JsonStreamPolicy = framing
+            effective_framing.max_input_bytes <- effective_input_bytes
+            parser: JsonLinesChunkReader = try begin_json_lines_chunk_reader(effective_limits, policy, effective_framing)
+            chunk_buffer: mutable darray[u8] = []
+            for _ in 0..<JSON_LINES_FILE_CHUNK_BYTES |chunk_buffer|:
+                chunk_buffer.push(0u8)
+            file: FileStream = try file_stream_open(path, FileStreamMode.ReadBinary, effective_input_bytes + 1, FileStreamEncoding.Bytes)
+            return JsonLinesFileReader{file: file, parser: parser, chunk_buffer: chunk_buffer, cleanup: file_stream_cleanup_begin()}
+
+
+        def validate_json_lines_file_reader(reader: JsonLinesFileReader&) -> bool error[JsonLinesFileError, JsonLinesParseError, JsonStreamError, DataContractError]:
+            try json_lines_file_reader_state_valid(reader)
+            return true
+
+
+        def next_json_lines_file_document(reader: mutable JsonLinesFileReader&) -> JsonLinesReadResult error[JsonLinesFileError, FileStreamError, JsonLinesParseError, JsonStreamError, DataContractError, JsonLexError, JsonParseError, JsonContractError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            try validate_json_lines_file_reader(reader)
+            raise JsonLinesFileError.InvalidState if reader.state == JsonLinesFileReaderState.Failed or reader.state == JsonLinesFileReaderState.Closed
+            catch json_lines_file_next_impl(reader):
+                ok result:
+                    return result
+                error failure:
+                    reader.state <- JsonLinesFileReaderState.Failed
+                    raise failure
+
+
+        def close_json_lines_file_reader(reader: mutable JsonLinesFileReader&) -> bool error[JsonLinesFileError, FileStreamError] can[Blocking.IO, Memory.Release]:
+            if reader.state == JsonLinesFileReaderState.Closed:
+                raise JsonLinesFileError.InvalidState if reader.file.state != FileStreamState.Closed or reader.file.handle != null or reader.cleanup.state == FileStreamCleanupState.Armed
+                return true
+            raise JsonLinesFileError.InvalidState if reader.cleanup.state != FileStreamCleanupState.Armed
+            if reader.state == JsonLinesFileReaderState.Complete:
+                catch file_stream_cleanup_commit(reader.cleanup, reader.file):
+                    ok closed:
+                        _ = closed
+                        reader.state <- JsonLinesFileReaderState.Closed
+                        return true
+                    error failure:
+                        reader.state <- JsonLinesFileReaderState.Closed if reader.file.state == FileStreamState.Closed
+                        raise failure
+            catch file_stream_cleanup_abort(reader.cleanup, reader.file):
+                ok closed:
+                    _ = closed
+                    reader.state <- JsonLinesFileReaderState.Closed
+                    return true
+                error failure:
+                    reader.state <- JsonLinesFileReaderState.Closed if reader.file.state == FileStreamState.Closed
+                    raise failure

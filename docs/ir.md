@@ -240,8 +240,8 @@ resetting per record. When `allow_empty_records` is enabled, zero-byte and
 JSON-whitespace-only frames (including blank CRLF frames) are counted and
 skipped; they do not become fabricated JSON values. A parse or budget failure
 makes the reader terminal and retains the failed record number/start for correlating its
-record-relative diagnostic offset. The reader borrows a complete `sview`; a
-chunked host-file input adapter and schema conversion remain separate work.
+record-relative diagnostic offset. The whole-view reader borrows a complete
+`sview`; schema conversion remains separate work.
 The existing framer ends records only at newlines outside strings and balanced
 containers, so newlines inside containers remain JSON whitespace in one record
 rather than enforcing strict physical-line JSONL. Algorithmic scaling is
@@ -255,8 +255,21 @@ original chunk was final. For a final suffix, the reader checks that the
 resubmitted length matches the previously reported remainder; the caller must
 also preserve the suffix bytes exactly. The chunk view is borrowed only for
 that call, while record bytes are copied into the bounded scratch buffer. This
-keeps host file ownership and I/O effects outside the parser; a `FileStream`
-adapter and runtime qualification remain open.
+keeps host file ownership and I/O effects outside the parser; the POSIX
+`FileStream` adapter is described below, and runtime qualification remains open.
+`EsJsonLinesFilePosix::begin_json_lines_file_reader` opens a caller-path-backed
+binary `FileStream` and feeds the parser in bounded 16 KiB reads. It returns
+one document per `next_json_lines_file_document` call and keeps any already-read
+suffix in the same buffer, so records split across reads and multiple records
+inside one read are both preserved. The adapter caps parser input to the
+smaller of the requested limits and `FILE_STREAM_DEFAULT_MAX_BYTES - 1`, then
+uses the extra FileStream byte-budget slot as a one-byte overflow probe; this
+allows exact-limit EOF to be distinguished from an oversized file. JSON
+lexing, not FileStream text decoding, validates JSON bytes. The path storage
+must remain alive until `close_json_lines_file_reader`, which is explicit and
+idempotent after successful close; failures leave the adapter terminal until
+the caller closes it. The adapter does not use physical-line reads, preserving
+the parser's current newline-inside-balanced-container behavior.
 Detached duplicate candidates keep their node and scalar span in the arena;
 normalization changes ownership/references, not the contiguous payload ledger.
 `EsJsonEncode::encode_json_root` emits one selected root as compact JSON under
@@ -1504,8 +1517,8 @@ framing policy are counted and skipped; the parser also treats whitespace-only
 frames as empty under that policy, including CRLF-only frames. The framer
 intentionally treats newlines inside balanced containers as whitespace within
 one record, so strict physical-line JSONL remains unimplemented. The parser-
-level chunk feed is available and reports consumed-byte boundaries; a host
-`FileStream` adapter and execution evidence remain open.
+level chunk feed and POSIX `FileStream` adapter are available; execution
+evidence remains open.
 
 `EsRecordControl::RecordControlSession` makes AWK-style control keywords
 explicit: `RecordEnd` and `NextRecord` check the record ceiling before closing the current record,
