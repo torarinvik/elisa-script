@@ -210,6 +210,10 @@ subtraction-checked aggregate ceiling no larger than the source-byte ledger.
 document rather than exposing a borrowed view with an unclear lifetime.
 Detached duplicate candidates keep their node and scalar span in the arena;
 normalization changes ownership/references, not the contiguous payload ledger.
+`EsJsonEncode::encode_json_root` emits one selected root as compact JSON under
+an explicit output-byte ceiling. Its iterative container stack preserves
+member order and exact number lexemes, escapes quotes, backslashes, and control
+bytes, and never recurses on the host stack.
 Arrays index an explicit `JsonArrayChild`
 table; each edge names its array owner, value node, and ordinal. Objects index
 their own contiguous member ranges, and each `JsonMember` names its object owner,

@@ -1,0 +1,161 @@
+# Bounded compact JSON encoding over the owned EsJson document model.
+#
+# Encoding consumes a sealed document only. It preserves exact number
+# lexemes, emits retained object members in order, and traverses containers
+# iteratively so document depth never consumes the host call stack.
+
+module EsJsonEncode:
+    using EsData
+    using EsJson
+
+    public:
+        const JSON_ENCODE_MAX_OUTPUT_BYTES: usize = DATA_MAX_INPUT_BYTES
+        const JSON_ENCODE_MAX_FRAMES: usize = 1025
+
+
+        error JsonEncodeError:
+            InvalidDocument
+            InvalidLimit
+            RootIndexInvalid
+            NodeIndexInvalid
+            FrameLimitExceeded
+            OutputLimitExceeded
+
+
+    private:
+        const JSON_ENCODE_HEX: sview = "0123456789abcdef"
+
+
+        struct JsonEncodeFrame:
+            node_index: usize
+            next_item: usize = 0
+
+
+        def json_encode_can_append(output: darray[u8]&, addition: usize, limit: usize) -> bool:
+            return false if output.count > limit
+            return addition <= limit - output.count
+
+
+        def json_encode_byte(output: mutable darray[u8]&, byte: u8, limit: usize) -> void error[JsonEncodeError] can[Memory.Allocate, Abort.Panic]:
+            raise JsonEncodeError.OutputLimitExceeded if output.count >= limit
+            output.push(byte)
+
+
+        def json_encode_literal(output: mutable darray[u8]&, literal: sview, limit: usize) -> void error[JsonEncodeError] can[Memory.Allocate, Abort.Panic]:
+            length: usize = sview_len(literal)
+            raise JsonEncodeError.OutputLimitExceeded if not json_encode_can_append(output, length, limit)
+            for index in 0..<length |output, literal|:
+                output.push(sview_at(literal, index))
+
+
+        def json_encode_bytes(output: mutable darray[u8]&, source: darray[u8]&, start: usize, length: usize, limit: usize) -> void error[JsonEncodeError] can[Memory.Allocate, Abort.Panic]:
+            raise JsonEncodeError.OutputLimitExceeded if not json_encode_can_append(output, length, limit)
+            for offset in 0..<length |output, source, start|:
+                output.push(source[start + offset])
+
+
+        def json_encode_string(output: mutable darray[u8]&, source: darray[u8]&, start: usize, length: usize, limit: usize) -> void error[JsonEncodeError] can[Memory.Allocate, Abort.Panic]:
+            try json_encode_byte(output, 34u8, limit)
+            for offset in 0..<length |output, source, start, limit|:
+                byte: u8 = source[start + offset]
+                if byte == 34u8 or byte == 92u8:
+                    try json_encode_byte(output, 92u8, limit)
+                    try json_encode_byte(output, byte, limit)
+                elif byte == 8u8:
+                    try json_encode_literal(output, "\\b", limit)
+                elif byte == 9u8:
+                    try json_encode_literal(output, "\\t", limit)
+                elif byte == 10u8:
+                    try json_encode_literal(output, "\\n", limit)
+                elif byte == 12u8:
+                    try json_encode_literal(output, "\\f", limit)
+                elif byte == 13u8:
+                    try json_encode_literal(output, "\\r", limit)
+                elif byte < 32u8:
+                    try json_encode_literal(output, "\\u00", limit)
+                    high: u8 = sview_at(JSON_ENCODE_HEX, ((byte >> 4) & 15u8).usize())
+                    low: u8 = sview_at(JSON_ENCODE_HEX, (byte & 15u8).usize())
+                    try json_encode_byte(output, high, limit)
+                    try json_encode_byte(output, low, limit)
+                else:
+                    try json_encode_byte(output, byte, limit)
+            try json_encode_byte(output, 34u8, limit)
+
+
+        def json_encode_emit_node(document: JsonDocument&, node_index: usize, output: mutable darray[u8]&, frames: mutable darray[JsonEncodeFrame]&, limit: usize) -> void error[JsonEncodeError] can[Memory.Allocate, Abort.Panic]:
+            raise JsonEncodeError.NodeIndexInvalid if node_index >= document.nodes.count
+            node: JsonNode = document.nodes[node_index]
+            if node.kind == JsonNodeKind.Null:
+                try json_encode_literal(output, "null", limit)
+            elif node.kind == JsonNodeKind.Bool:
+                try json_encode_literal(output, "true", limit) if node.bool_value
+                try json_encode_literal(output, "false", limit) if not node.bool_value
+            elif node.kind == JsonNodeKind.Number:
+                try json_encode_bytes(output, document.scalar_data, node.scalar_start, node.scalar_bytes, limit)
+            elif node.kind == JsonNodeKind.Text:
+                try json_encode_string(output, document.scalar_data, node.scalar_start, node.scalar_bytes, limit)
+            elif node.kind == JsonNodeKind.Array:
+                try json_encode_byte(output, 91u8, limit)
+                if node.child_count == 0:
+                    try json_encode_byte(output, 93u8, limit)
+                else:
+                    raise JsonEncodeError.FrameLimitExceeded if frames.count >= JSON_ENCODE_MAX_FRAMES
+                    frames.push(JsonEncodeFrame{node_index: node_index})
+            elif node.kind == JsonNodeKind.Object:
+                try json_encode_byte(output, 123u8, limit)
+                if node.member_count == 0:
+                    try json_encode_byte(output, 125u8, limit)
+                else:
+                    raise JsonEncodeError.FrameLimitExceeded if frames.count >= JSON_ENCODE_MAX_FRAMES
+                    frames.push(JsonEncodeFrame{node_index: node_index})
+            else:
+                raise JsonEncodeError.InvalidDocument
+
+
+    public:
+        def encode_json_root(document: JsonDocument&, root_ordinal: usize, max_output_bytes: usize = JSON_ENCODE_MAX_OUTPUT_BYTES) -> darray[u8] error[JsonEncodeError] can[Memory.Allocate, Abort.Panic]:
+            valid_document: mutable bool = false
+            catch validate_json_document(document):
+                ok value:
+                    valid_document <- value
+                error failure:
+                    valid_document <- false
+            raise JsonEncodeError.InvalidDocument if not valid_document or document.state != JsonDocumentState.Sealed
+            raise JsonEncodeError.InvalidLimit if max_output_bytes == 0 or max_output_bytes > JSON_ENCODE_MAX_OUTPUT_BYTES
+            raise JsonEncodeError.RootIndexInvalid if root_ordinal >= document.roots.count
+
+            output: mutable darray[u8] = []
+            frames: mutable darray[JsonEncodeFrame] = []
+            root_index: usize = document.roots[root_ordinal]
+            try json_encode_emit_node(document, root_index, output, frames, max_output_bytes)
+            while frames.count != 0:
+                frame_index: usize = frames.count - 1
+                frame: mutable JsonEncodeFrame = frames[frame_index]
+                node: JsonNode = document.nodes[frame.node_index]
+                if node.kind == JsonNodeKind.Array:
+                    if frame.next_item == node.child_count:
+                        try json_encode_byte(output, 93u8, max_output_bytes)
+                        _ = frames.pop()
+                    else:
+                        try json_encode_byte(output, 44u8, max_output_bytes) if frame.next_item != 0
+                        child_index: usize = node.child_start + frame.next_item
+                        frame.next_item <- frame.next_item + 1
+                        frames[frame_index] <- frame
+                        child: JsonArrayChild = document.children[child_index]
+                        try json_encode_emit_node(document, child.value_index, output, frames, max_output_bytes)
+                elif node.kind == JsonNodeKind.Object:
+                    if frame.next_item == node.member_count:
+                        try json_encode_byte(output, 125u8, max_output_bytes)
+                        _ = frames.pop()
+                    else:
+                        try json_encode_byte(output, 44u8, max_output_bytes) if frame.next_item != 0
+                        member_index: usize = node.member_start + frame.next_item
+                        frame.next_item <- frame.next_item + 1
+                        frames[frame_index] <- frame
+                        member: JsonMember = document.members[member_index]
+                        try json_encode_string(output, document.key_bytes, member.key_start, member.key_bytes, max_output_bytes)
+                        try json_encode_byte(output, 58u8, max_output_bytes)
+                        try json_encode_emit_node(document, member.value_index, output, frames, max_output_bytes)
+                else:
+                    raise JsonEncodeError.InvalidDocument
+            return output

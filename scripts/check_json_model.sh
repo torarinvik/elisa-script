@@ -8,11 +8,29 @@ repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 model="$repo_root/src/runtime/json_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
+encoder="$repo_root/src/runtime/json_encode_model.elisa"
 docs="$repo_root/docs/ir.md"
 plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$ir" "$fixture" "$docs" "$plan"; do
+for required_file in "$model" "$encoder" "$ir" "$fixture" "$docs" "$plan"; do
     [[ -f "$required_file" ]] || { printf 'json model audit: missing %s\n' "$required_file" >&2; exit 1; }
+done
+
+for encoder_contract in \
+    'module EsJsonEncode:' \
+    'error JsonEncodeError:' \
+    'def encode_json_root(' \
+    'JSON_ENCODE_MAX_OUTPUT_BYTES: usize = DATA_MAX_INPUT_BYTES' \
+    'JSON_ENCODE_MAX_FRAMES: usize = 1025' \
+    'return false if output.count > limit' \
+    'return addition <= limit - output.count' \
+    'frames.pop()' \
+    'JsonNodeKind.Number' \
+    'JsonNodeKind.Object' \
+    'if byte == 34u8 or byte == 92u8:' \
+    'elif byte < 32u8:' \
+    'JsonEncodeError.OutputLimitExceeded'; do
+    rg -Fq "$encoder_contract" "$encoder"
 done
 
 for declaration in \
@@ -102,9 +120,18 @@ for boundary in \
 done
 
 rg -Fq 'include "../runtime/json_model.elisa"' "$ir"
+rg -Fq 'include "../runtime/json_encode_model.elisa"' "$ir"
 for fixture_pattern in \
     'typed_json_document_contract_is_bounded_and_sealed_explicitly' \
     'typed_json_document_owns_scalar_values_without_coercing_numbers' \
+    'typed_json_encoder_is_bounded_and_preserves_values' \
+    'encode_json_root(document, 0)' \
+    'encoded_values: darray[u8] = encode_json_root(document, 0)' \
+    'encoded_object: darray[u8] = encode_json_root(object_document, 0)' \
+    'encoded_nested: darray[u8] = encode_json_root(nested_document, 0)' \
+    'encoded_empty: darray[u8] = encode_json_root(empty_document, 0)' \
+    'encoded_null: darray[u8] = encode_json_root(null_document, 0)' \
+    'JsonEncodeError.OutputLimitExceeded' \
     'JsonNodeInput{kind: JsonNodeKind.Number' \
     'JsonDocumentEvent.AppendNode' \
     'JsonDocumentEvent.AppendArrayChild' \
