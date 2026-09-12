@@ -14,6 +14,12 @@ extend EsIr:
             ProcessCapture
 
 
+        const enum RuntimeValueTypeCheckResult of u8:
+            Matches
+            TypeMismatch
+            WorkLimit
+
+
         struct RuntimeValue:
             text: sview = ""
             process_stdout: sview = ""
@@ -430,6 +436,91 @@ extend EsIr:
                 false return if value.kind == RuntimeValueKind.Array and not runtime_array_range_valid(storage, value)
                 false return if value.kind == RuntimeValueKind.Map and not runtime_map_range_valid(storage, value)
             return true
+
+
+    private:
+        # Aliased aggregate views can make recursive type checking revisit the
+        # same flat values many times. Bound total visits independently from
+        # storage size so an externally supplied DAG cannot amplify validation
+        # into unbounded work.
+        const RUNTIME_DEFAULT_MAX_TYPE_CHECK_NODES: usize = 4194304
+
+
+        # Runtime values cross public interpreter and bytecode entrypoints as
+        # erased payloads. Match them against the verified inline type shape
+        # before binding them to SSA parameters; aggregate children share the
+        # same flat pool and must be checked recursively as well.
+        def runtime_integer_payload_matches_type(value: i64, type: Type&) -> bool:
+            return true if type.bits == 64
+            if type.signed:
+                return value >= -128 and value <= 127 if type.bits == 8
+                return value >= -32768 and value <= 32767 if type.bits == 16
+                return value >= -2147483648 and value <= 2147483647 if type.bits == 32
+                return false
+            return value >= 0 and value <= 255 if type.bits == 8
+            return value >= 0 and value <= 65535 if type.bits == 16
+            return value >= 0 and value <= 4294967295 if type.bits == 32
+            return false
+
+
+        def runtime_value_matches_type_bounded(value: RuntimeValue, type: Type&, storage: darray[RuntimeValue]&, depth: usize, visited: mutable usize&) -> RuntimeValueTypeCheckResult:
+            return RuntimeValueTypeCheckResult.WorkLimit if visited >= RUNTIME_DEFAULT_MAX_TYPE_CHECK_NODES
+            visited <- visited + 1
+            return RuntimeValueTypeCheckResult.TypeMismatch if depth >= TYPE_TABLE_MAX_MATCH_DEPTH
+            if type.kind == TypeKind.Void:
+                return RuntimeValueTypeCheckResult.Matches if value.kind == RuntimeValueKind.Void else RuntimeValueTypeCheckResult.TypeMismatch
+            if type.kind == TypeKind.Bool:
+                return RuntimeValueTypeCheckResult.Matches if value.kind == RuntimeValueKind.Bool else RuntimeValueTypeCheckResult.TypeMismatch
+            if type.kind == TypeKind.Int:
+                return RuntimeValueTypeCheckResult.Matches if value.kind == RuntimeValueKind.Int and runtime_integer_payload_matches_type(value.integer, type) else RuntimeValueTypeCheckResult.TypeMismatch
+            if type.kind == TypeKind.Float:
+                return RuntimeValueTypeCheckResult.Matches if (type.bits == 32 or type.bits == 64) and value.kind == RuntimeValueKind.Float else RuntimeValueTypeCheckResult.TypeMismatch
+            if type.kind == TypeKind.Char or type.kind == TypeKind.Text:
+                return RuntimeValueTypeCheckResult.Matches if value.kind == RuntimeValueKind.Text else RuntimeValueTypeCheckResult.TypeMismatch
+            if type.kind == TypeKind.Named:
+                if type.name == "ProcessCapture":
+                    return RuntimeValueTypeCheckResult.Matches if value.kind == RuntimeValueKind.ProcessCapture else RuntimeValueTypeCheckResult.TypeMismatch
+                if type.name in {"Path", "Glob", "Regex", "Executable", "Url"}:
+                    return RuntimeValueTypeCheckResult.Matches if value.kind == RuntimeValueKind.Text else RuntimeValueTypeCheckResult.TypeMismatch
+                return RuntimeValueTypeCheckResult.TypeMismatch
+            if type.kind == TypeKind.Array:
+                return RuntimeValueTypeCheckResult.TypeMismatch if value.kind != RuntimeValueKind.Array or not runtime_array_range_valid(storage, value)
+                element_type: Type = inline_type_child(type, 0)
+                for offset in 0..<value.array_count.usize() |value, storage, element_type, depth, visited|:
+                    child: RuntimeValue = storage[value.array_start.usize() + offset]
+                    child_result: RuntimeValueTypeCheckResult = runtime_value_matches_type_bounded(child, element_type, storage, depth + 1, visited)
+                    return child_result if child_result != RuntimeValueTypeCheckResult.Matches
+                return RuntimeValueTypeCheckResult.Matches
+            if type.kind == TypeKind.Map:
+                return RuntimeValueTypeCheckResult.TypeMismatch if value.kind != RuntimeValueKind.Map or not runtime_map_range_valid(storage, value)
+                key_type: Type = inline_type_child(type, 0)
+                element_type: Type = inline_type_child(type, 1)
+                for offset in 0..<value.map_count.usize() |value, storage, key_type, element_type, depth, visited|:
+                    pair_start: usize = value.map_start.usize() + offset * 2
+                    key_result: RuntimeValueTypeCheckResult = runtime_value_matches_type_bounded(storage[pair_start], key_type, storage, depth + 1, visited)
+                    return key_result if key_result != RuntimeValueTypeCheckResult.Matches
+                    value_result: RuntimeValueTypeCheckResult = runtime_value_matches_type_bounded(storage[pair_start + 1], element_type, storage, depth + 1, visited)
+                    return value_result if value_result != RuntimeValueTypeCheckResult.Matches
+                return RuntimeValueTypeCheckResult.Matches
+            return RuntimeValueTypeCheckResult.TypeMismatch
+
+
+    public:
+        # Validate a complete external call boundary with one shared visit
+        # budget. Resetting the budget per argument would let a large argument
+        # list multiply the maximum work even when each aggregate is small.
+        def runtime_arguments_match_parameters(arguments: darray[RuntimeValue]&, parameters: darray[Parameter]&, storage: darray[RuntimeValue]&) -> RuntimeValueTypeCheckResult:
+            return RuntimeValueTypeCheckResult.TypeMismatch if arguments.count != parameters.count
+            return RuntimeValueTypeCheckResult.WorkLimit if arguments.count > ES_RUNTIME_DEFAULT_MAX_STORAGE_VALUES
+            visited: mutable usize = 0
+            for index in 0..<arguments.count |arguments, parameters, storage, visited|:
+                return RuntimeValueTypeCheckResult.WorkLimit if visited >= RUNTIME_DEFAULT_MAX_TYPE_CHECK_NODES
+                visited <- visited + 1
+                parameter_type: Type = parameters[index].type
+                return RuntimeValueTypeCheckResult.TypeMismatch if not inline_type_shape_valid(parameter_type)
+                result: RuntimeValueTypeCheckResult = runtime_value_matches_type_bounded(arguments[index], parameter_type, storage, 0, visited)
+                return result if result != RuntimeValueTypeCheckResult.Matches
+            return RuntimeValueTypeCheckResult.Matches
 
 
         # Aggregate constructors append payloads to the caller-owned flat pool
