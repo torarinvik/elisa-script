@@ -32,9 +32,11 @@ for declaration in \
     'def materialize_csv_schema_record(' \
     'def materialize_csv_schema_batch(' \
     'SchemaCsvValueKind.Integer' \
+    'SchemaCsvValueKind.Decimal' \
     'schema_csv_prepare_projection(' \
     'schema_csv_materialize_row_with_projection(' \
     'parse_schema_integer(' \
+    'parse_schema_decimal(' \
     'schema_csv_sort_name_indices(' \
     'schema_csv_sort_position_indices(' \
     'SchemaCsvDecodeState.Escaped'; do
@@ -57,6 +59,7 @@ for declaration in \
     'using EsSchemaNumeric' \
     'const enum SchemaJsonValueKind of u8:' \
     'SchemaJsonValueKind.Integer' \
+    'SchemaJsonValueKind.Decimal' \
     'struct SchemaJsonOwnedNode:' \
     'struct SchemaJsonOwnedValueGraph:' \
     'struct SchemaJsonValue:' \
@@ -79,7 +82,9 @@ for declaration in \
     'const enum SchemaSource of u8:' \
     'const enum SchemaValueKind of u8:' \
     'const enum SchemaIntegerTarget of u8:' \
+    'const enum SchemaDecimalTarget of u8:' \
     'struct SchemaIntegerValue:' \
+    'struct SchemaDecimalValue:' \
     'const enum SchemaDecodeState of u8:' \
     'const enum SchemaDecodeEvent of u8:' \
     'struct SchemaField:' \
@@ -102,6 +107,9 @@ for declaration in \
     'SCHEMA_INTEGER_MAX_BYTES' \
     'error SchemaIntegerError:' \
     'def parse_schema_integer(' \
+    'def parse_schema_decimal(' \
+    'SCHEMA_DECIMAL_MAX_BYTES' \
+    'SCHEMA_DECIMAL_MAX_EXPONENT_DIGITS' \
     'allow_underscores: false' \
     'schema_integer_target_limit(' \
     'SchemaIntegerError.TargetOutOfRange'; do
@@ -122,7 +130,10 @@ done
 
 for boundary in \
     'field.integer_target != SchemaIntegerTarget.None and schema.source == SchemaSource.Json and field.kind != SchemaValueKind.Number' \
-    'field.integer_target != SchemaIntegerTarget.None and schema.source != SchemaSource.Json and field.kind != SchemaValueKind.Text'; do
+    'field.integer_target != SchemaIntegerTarget.None and schema.source != SchemaSource.Json and field.kind != SchemaValueKind.Text' \
+    'field.decimal_target != SchemaDecimalTarget.None and schema.source == SchemaSource.Json and field.kind != SchemaValueKind.Number' \
+    'field.decimal_target != SchemaDecimalTarget.None and schema.source != SchemaSource.Json and field.kind != SchemaValueKind.Text' \
+    'field.integer_target != SchemaIntegerTarget.None and field.decimal_target != SchemaDecimalTarget.None'; do
     rg -Fq "$boundary" "$model"
 done
 
@@ -153,7 +164,9 @@ for fixture_pattern in \
     'typed_json_schema_materializer_owns_scalars_and_preserves_schema_order' \
     'typed_json_schema_materializer_owns_nested_values_iteratively_and_preserves_order' \
     'typed_schema_json_integer_targets_convert_exactly_without_float_rounding' \
+    'typed_schema_json_decimal_target_preserves_exact_scale_and_negative_zero' \
     'typed_csv_schema_integer_targets_decode_signed_and_unsigned_fields' \
+    'typed_csv_schema_decimal_target_preserves_exact_scale_and_batch_payload' \
     'typed_csv_schema_materializer_binds_header_aliases_and_optional_fields' \
     'typed_csv_schema_batch_projects_exact_ranges_with_shared_mapping' \
     'typed_csv_schema_materializer_distinguishes_empty_from_missing_and_maps_positions' \

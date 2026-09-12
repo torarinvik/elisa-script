@@ -3397,6 +3397,72 @@ def typed_schema_json_integer_targets_convert_exactly_without_float_rounding() -
 
 
 @test
+def typed_schema_json_decimal_target_preserves_exact_scale_and_negative_zero() -> void:
+    limits: DataDecodeLimits = DataDecodeLimits{input_bytes: 256, tokens: 64, depth: 8, records: 8, fields: 16, field_bytes: 64}
+    document: JsonDocument = parse_json_document(lex_json("{\"negative_zero\":-0.00,\"tenths\":1.0,\"hundredths\":1.00,\"scaled\":1e2,\"fraction\":1.2500e-2,\"leading_fraction\":0.0010,\"cancelled_scale\":1.00e2}", limits))
+    schema: SchemaDescriptor = SchemaDescriptor{name: "exact_decimal", source: SchemaSource.Json, fields: [
+        SchemaField{name: "negative_zero", kind: SchemaValueKind.Number, decimal_target: SchemaDecimalTarget.Exact},
+        SchemaField{name: "tenths", kind: SchemaValueKind.Number, decimal_target: SchemaDecimalTarget.Exact},
+        SchemaField{name: "hundredths", kind: SchemaValueKind.Number, decimal_target: SchemaDecimalTarget.Exact},
+        SchemaField{name: "scaled", kind: SchemaValueKind.Number, decimal_target: SchemaDecimalTarget.Exact},
+        SchemaField{name: "fraction", kind: SchemaValueKind.Number, decimal_target: SchemaDecimalTarget.Exact},
+        SchemaField{name: "leading_fraction", kind: SchemaValueKind.Number, decimal_target: SchemaDecimalTarget.Exact},
+        SchemaField{name: "cancelled_scale", kind: SchemaValueKind.Number, decimal_target: SchemaDecimalTarget.Exact}
+    ]}
+    record: SchemaJsonRecord = materialize_json_schema_record(schema, document, 0)
+    assert record.values.count == 7 and record.payload_bytes == 22
+    assert record.values[0].kind == SchemaJsonValueKind.Decimal and record.values[0].decimal_value.negative
+    assert record.values[0].decimal_value.scale == 2 and record.values[0].decimal_value.coefficient_digits.count == 3
+    assert record.values[0].decimal_value.coefficient_digits[0] == 48 and record.values[0].decimal_value.coefficient_digits[1] == 48 and record.values[0].decimal_value.coefficient_digits[2] == 48
+    assert record.values[1].decimal_value.coefficient_digits.count == 2 and record.values[1].decimal_value.coefficient_digits[0] == 49 and record.values[1].decimal_value.coefficient_digits[1] == 48 and record.values[1].decimal_value.scale == 1
+    assert record.values[2].decimal_value.coefficient_digits.count == 3 and record.values[2].decimal_value.coefficient_digits[0] == 49 and record.values[2].decimal_value.coefficient_digits[2] == 48 and record.values[2].decimal_value.scale == 2
+    assert record.values[3].decimal_value.coefficient_digits.count == 1 and record.values[3].decimal_value.coefficient_digits[0] == 49 and record.values[3].decimal_value.scale == -2
+    assert record.values[4].decimal_value.coefficient_digits.count == 5 and record.values[4].decimal_value.coefficient_digits[0] == 49 and record.values[4].decimal_value.coefficient_digits[4] == 48 and record.values[4].decimal_value.scale == 6
+    assert record.values[5].decimal_value.coefficient_digits.count == 5 and record.values[5].decimal_value.coefficient_digits[0] == 48 and record.values[5].decimal_value.coefficient_digits[2] == 48 and record.values[5].decimal_value.coefficient_digits[3] == 49 and record.values[5].decimal_value.scale == 4
+    assert record.values[6].decimal_value.coefficient_digits.count == 3 and record.values[6].decimal_value.scale == 0
+    assert validate_schema_json_record(record)
+
+    forged: mutable SchemaJsonRecord = record
+    forged.values[1].decimal_value.coefficient_digits[0] <- 46
+    forged_rejected: mutable bool = false
+    catch validate_schema_json_record(forged):
+        ok value:
+            assert not value
+        error failure:
+            assert failure == SchemaJsonMaterializeError.InvalidRecord
+            forged_rejected <- true
+    assert forged_rejected
+
+    invalid_target: mutable bool = false
+    catch validate_schema_descriptor(SchemaDescriptor{name: "wrong_decimal_target", source: SchemaSource.Json, fields: [SchemaField{name: "text", kind: SchemaValueKind.Text, decimal_target: SchemaDecimalTarget.Exact}]}):
+        ok value:
+            assert false
+        error failure:
+            assert failure == SchemaContractError.InvalidDecimalTarget
+            invalid_target <- true
+    assert invalid_target
+
+    conflicting_targets: mutable bool = false
+    catch validate_schema_descriptor(SchemaDescriptor{name: "conflicting_targets", source: SchemaSource.Json, fields: [SchemaField{name: "n", kind: SchemaValueKind.Number, integer_target: SchemaIntegerTarget.I32, decimal_target: SchemaDecimalTarget.Exact}]}):
+        ok value:
+            assert false
+        error failure:
+            assert failure == SchemaContractError.ConflictingNumericTargets
+            conflicting_targets <- true
+    assert conflicting_targets
+
+    bounded_exponent: JsonDocument = parse_json_document(lex_json("{\"n\":1e10000}", limits))
+    exponent_rejected: mutable bool = false
+    catch materialize_json_schema_record(SchemaDescriptor{name: "bounded_exponent", source: SchemaSource.Json, fields: [SchemaField{name: "n", kind: SchemaValueKind.Number, decimal_target: SchemaDecimalTarget.Exact}]}, bounded_exponent, 0):
+        ok value:
+            assert false
+        error failure:
+            assert failure == SchemaDecimalError.InputLimitExceeded
+            exponent_rejected <- true
+    assert exponent_rejected
+
+
+@test
 def typed_csv_schema_integer_targets_decode_signed_and_unsigned_fields() -> void:
     source: sview = "\"-128\",+127,255\n"
     materializer: mutable CsvMaterializer = CsvMaterializer{source: source}
@@ -3458,6 +3524,39 @@ def typed_csv_schema_integer_targets_decode_signed_and_unsigned_fields() -> void
             assert failure == SchemaIntegerError.MalformedInteger
             empty_rejected <- true
     assert empty_rejected
+
+
+@test
+def typed_csv_schema_decimal_target_preserves_exact_scale_and_batch_payload() -> void:
+    source: sview = "+1.00\n-0e3\n"
+    materializer: mutable CsvMaterializer = CsvMaterializer{source: source}
+    _ = advance_csv_materializer(materializer, CsvMaterializerEvent.Begin)
+    _ = advance_csv_materializer(materializer, CsvMaterializerEvent.Field, 0, 5, false)
+    _ = advance_csv_materializer(materializer, CsvMaterializerEvent.Field, 6, 10, false)
+    _ = advance_csv_materializer(materializer, CsvMaterializerEvent.Record, 0, 0, false, 0, 1)
+    _ = advance_csv_materializer(materializer, CsvMaterializerEvent.Record, 0, 0, false, 1, 1)
+    _ = advance_csv_materializer(materializer, CsvMaterializerEvent.End)
+    schema: SchemaDescriptor = SchemaDescriptor{name: "exact_decimal_rows", source: SchemaSource.Csv, fields: [SchemaField{name: "amount", kind: SchemaValueKind.Text, decimal_target: SchemaDecimalTarget.Exact}]}
+    batch: SchemaCsvRecordBatch = materialize_csv_schema_batch(schema, materializer, 0, 2)
+    assert batch.records.count == 2 and batch.value_count == 2 and batch.payload_bytes == 4
+    assert batch.records[0].values[0].kind == SchemaCsvValueKind.Decimal and not batch.records[0].values[0].decimal_value.negative
+    assert batch.records[0].values[0].decimal_value.coefficient_digits.count == 3 and batch.records[0].values[0].decimal_value.scale == 2
+    assert batch.records[1].values[0].kind == SchemaCsvValueKind.Decimal and batch.records[1].values[0].decimal_value.negative
+    assert batch.records[1].values[0].decimal_value.coefficient_digits.count == 1 and batch.records[1].values[0].decimal_value.scale == -3
+
+    malformed: mutable CsvMaterializer = CsvMaterializer{source: "1e\n"}
+    _ = advance_csv_materializer(malformed, CsvMaterializerEvent.Begin)
+    _ = advance_csv_materializer(malformed, CsvMaterializerEvent.Field, 0, 2, false)
+    _ = advance_csv_materializer(malformed, CsvMaterializerEvent.Record, 0, 0, false, 0, 1)
+    _ = advance_csv_materializer(malformed, CsvMaterializerEvent.End)
+    malformed_rejected: mutable bool = false
+    catch materialize_csv_schema_record(SchemaDescriptor{name: "malformed_decimal", source: SchemaSource.Csv, fields: [SchemaField{name: "n", kind: SchemaValueKind.Text, decimal_target: SchemaDecimalTarget.Exact}]}, malformed, 0):
+        ok value:
+            assert false
+        error failure:
+            assert failure == SchemaDecimalError.MalformedDecimal
+            malformed_rejected <- true
+    assert malformed_rejected
 
 
 @test

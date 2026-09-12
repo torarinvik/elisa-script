@@ -1,7 +1,8 @@
-# Exact decimal-integer conversion shared by JSON and CSV schema adapters.
+# Exact integer and decimal conversion shared by JSON and CSV schema adapters.
 #
-# The parser reuses the bounded record-numeric state machine with separators
-# disabled. It retains no lexeme and never passes through a floating type.
+# Both parsers reuse the bounded record-numeric state machine with separators
+# disabled. Integers retain a checked magnitude; decimals own coefficient
+# digits and a signed scale without passing through a floating type.
 
 module EsSchemaNumeric:
     using EsRecordNumeric
@@ -9,6 +10,11 @@ module EsSchemaNumeric:
 
     public:
         const SCHEMA_INTEGER_MAX_BYTES: usize = RECORD_NUMERIC_MAX_BYTES
+        const SCHEMA_DECIMAL_MAX_BYTES: usize = RECORD_NUMERIC_MAX_BYTES
+        const SCHEMA_DECIMAL_MAX_DIGITS: usize = RECORD_NUMERIC_MAX_DIGITS
+        const SCHEMA_DECIMAL_MAX_EXPONENT_DIGITS: usize = RECORD_NUMERIC_MAX_EXPONENT_DIGITS
+        const SCHEMA_DECIMAL_MIN_SCALE: i64 = -9999
+        const SCHEMA_DECIMAL_MAX_SCALE: i64 = 14095
 
 
         error SchemaIntegerError:
@@ -19,7 +25,18 @@ module EsSchemaNumeric:
             NumericStateInvalid
 
 
+        error SchemaDecimalError:
+            InputLimitExceeded
+            MalformedDecimal
+            ScaleOutOfRange
+            NumericStateInvalid
+
+
     private:
+        def schema_decimal_byte_is_digit(byte: u8) -> bool:
+            return byte >= 48 and byte <= 57
+
+
         def schema_integer_target_is_signed(target: SchemaIntegerTarget) -> bool:
             return target == SchemaIntegerTarget.I8 or target == SchemaIntegerTarget.I16 or target == SchemaIntegerTarget.I32 or target == SchemaIntegerTarget.I64
 
@@ -65,7 +82,39 @@ module EsSchemaNumeric:
             return result
 
 
+        def schema_decimal_advance(session: mutable RecordNumericSession&, event: RecordNumericEvent, byte: u8 = 0) -> void error[SchemaDecimalError]:
+            catch advance_record_numeric(session, event, byte):
+                ok state:
+                    _ = state
+                error failure:
+                    raise SchemaDecimalError.InputLimitExceeded if failure == RecordNumericError.TextLimitExceeded or failure == RecordNumericError.DigitLimitExceeded or failure == RecordNumericError.ExponentLimitExceeded
+                    raise SchemaDecimalError.MalformedDecimal
+
+
+        def schema_decimal_result(session: RecordNumericSession&) -> RecordNumericResult error[SchemaDecimalError]:
+            result: mutable RecordNumericResult = RecordNumericResult{kind: session.policy.kind}
+            catch record_numeric_result(session):
+                ok value:
+                    result <- value
+                error failure:
+                    _ = failure
+                    raise SchemaDecimalError.NumericStateInvalid
+            return result
+
+
     public:
+        def schema_decimal_value_valid(value: SchemaDecimalValue) -> bool:
+            return false if value.coefficient_digits.count == 0 or value.coefficient_digits.count > SCHEMA_DECIMAL_MAX_DIGITS
+            return false if value.scale < SCHEMA_DECIMAL_MIN_SCALE or value.scale > SCHEMA_DECIMAL_MAX_SCALE
+            for digit in value.coefficient_digits:
+                return false if digit < 48 or digit > 57
+            return true
+
+
+        def schema_decimal_value_empty(value: SchemaDecimalValue) -> bool:
+            return value.coefficient_digits.count == 0 and not value.negative and value.scale == 0
+
+
         def parse_schema_integer(bytes: darray[u8]&, start: usize, byte_count: usize, target: SchemaIntegerTarget) -> SchemaIntegerValue error[SchemaIntegerError]:
             raise SchemaIntegerError.InvalidTarget if target == SchemaIntegerTarget.None
             raise SchemaIntegerError.MalformedInteger if byte_count == 0
@@ -99,3 +148,43 @@ module EsSchemaNumeric:
                     signed_value <- parsed.magnitude.i64()
                 return SchemaIntegerValue{target: target, signed_value: signed_value}
             return SchemaIntegerValue{target: target, unsigned_value: parsed.magnitude}
+
+
+        def parse_schema_decimal(bytes: darray[u8]&, start: usize, byte_count: usize) -> SchemaDecimalValue error[SchemaDecimalError] can[Memory.Allocate, Abort.Panic]:
+            raise SchemaDecimalError.MalformedDecimal if byte_count == 0
+            raise SchemaDecimalError.InputLimitExceeded if byte_count > SCHEMA_DECIMAL_MAX_BYTES
+            raise SchemaDecimalError.InputLimitExceeded if start > bytes.count
+            raise SchemaDecimalError.InputLimitExceeded if byte_count > bytes.count - start
+
+            policy: RecordNumericPolicy = RecordNumericPolicy{kind: RecordNumericKind.Decimal, max_bytes: byte_count, max_digits: SCHEMA_DECIMAL_MAX_DIGITS, max_exponent_digits: SCHEMA_DECIMAL_MAX_EXPONENT_DIGITS, allow_underscores: false}
+            session: mutable RecordNumericSession = RecordNumericSession{policy: policy}
+            try schema_decimal_advance(session, RecordNumericEvent.Begin)
+            finish: usize = start + byte_count
+            for offset in start..<finish |bytes, session|:
+                try schema_decimal_advance(session, RecordNumericEvent.Byte, bytes[offset])
+            try schema_decimal_advance(session, RecordNumericEvent.Finish)
+
+            parsed: RecordNumericResult = try schema_decimal_result(session)
+            coefficient: mutable darray[u8] = []
+            in_exponent: mutable bool = false
+            for offset in start..<finish |bytes, coefficient, in_exponent|:
+                byte: u8 = bytes[offset]
+                if byte == 69 or byte == 101:
+                    in_exponent <- true
+                elif not in_exponent and schema_decimal_byte_is_digit(byte):
+                    coefficient.push(byte)
+            raise SchemaDecimalError.NumericStateInvalid if coefficient.count != parsed.coefficient_digits
+
+            fractional_digits: i64 = parsed.fraction_digits.i64()
+            exponent: i64 = parsed.exponent_magnitude.i64()
+            scale: mutable i64 = fractional_digits
+            if parsed.exponent_negative:
+                scale <- fractional_digits + exponent
+            elif exponent > fractional_digits:
+                scale <- 0i64 - (exponent - fractional_digits)
+            else:
+                scale <- fractional_digits - exponent
+            raise SchemaDecimalError.ScaleOutOfRange if scale < SCHEMA_DECIMAL_MIN_SCALE or scale > SCHEMA_DECIMAL_MAX_SCALE
+            value: SchemaDecimalValue = SchemaDecimalValue{negative: parsed.negative, coefficient_digits: coefficient, scale: scale}
+            raise SchemaDecimalError.NumericStateInvalid if not schema_decimal_value_valid(value)
+            return value

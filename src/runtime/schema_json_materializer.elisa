@@ -3,9 +3,9 @@
 # Parsing retains a validated JSON document. This adapter projects one object
 # root into schema order and owns each selected scalar payload and generic
 # nested-value graph, so consumers do not borrow storage from the parser's
-# document. Declared integer targets are parsed exactly without floating-point
-# coercion. Nested values preserve JSON kinds and order but are not recursively
-# constrained by nested schema declarations yet.
+# document. Declared integer and decimal targets are parsed exactly without
+# floating-point coercion. Nested values preserve JSON kinds and order but are
+# not recursively constrained by nested schema declarations yet.
 
 module EsSchemaJson:
     using EsData
@@ -28,6 +28,7 @@ module EsSchemaJson:
             Bool
             Number
             Integer
+            Decimal
             Text
             Array
             Object
@@ -72,6 +73,7 @@ module EsSchemaJson:
             kind: SchemaJsonValueKind
             bool_value: bool = false
             integer_value: SchemaIntegerValue = SchemaIntegerValue{}
+            decimal_value: SchemaDecimalValue = SchemaDecimalValue{}
             bytes: darray[u8] = []
             container_root_index: usize = SCHEMA_JSON_INDEX_NONE
 
@@ -301,23 +303,28 @@ module EsSchemaJson:
                 value: SchemaJsonValue = record.values[value_index]
                 raise SchemaJsonMaterializeError.InvalidRecord if value.field_index != value_index
                 if value.kind == SchemaJsonValueKind.Missing or value.kind == SchemaJsonValueKind.Null or value.kind == SchemaJsonValueKind.Bool:
-                    raise SchemaJsonMaterializeError.InvalidRecord if value.bytes.count != 0 or value.container_root_index != SCHEMA_JSON_INDEX_NONE or not schema_json_integer_value_empty(value.integer_value)
+                    raise SchemaJsonMaterializeError.InvalidRecord if value.bytes.count != 0 or value.container_root_index != SCHEMA_JSON_INDEX_NONE or not schema_json_integer_value_empty(value.integer_value) or not schema_decimal_value_empty(value.decimal_value)
                     raise SchemaJsonMaterializeError.InvalidRecord if value.kind != SchemaJsonValueKind.Bool and value.bool_value
                 elif value.kind == SchemaJsonValueKind.Number:
-                    raise SchemaJsonMaterializeError.InvalidRecord if value.container_root_index != SCHEMA_JSON_INDEX_NONE or not schema_json_integer_value_empty(value.integer_value) or value.bool_value
+                    raise SchemaJsonMaterializeError.InvalidRecord if value.container_root_index != SCHEMA_JSON_INDEX_NONE or not schema_json_integer_value_empty(value.integer_value) or not schema_decimal_value_empty(value.decimal_value) or value.bool_value
                     raise SchemaJsonMaterializeError.InvalidScalarPayload if not json_number_bytes_are_valid(value.bytes, 0, value.bytes.count)
                     raise SchemaJsonMaterializeError.PayloadLimitExceeded if value.bytes.count > SCHEMA_JSON_MAX_PAYLOAD_BYTES - computed_payload
                     computed_payload <- computed_payload + value.bytes.count
                 elif value.kind == SchemaJsonValueKind.Text:
-                    raise SchemaJsonMaterializeError.InvalidRecord if value.container_root_index != SCHEMA_JSON_INDEX_NONE or not schema_json_integer_value_empty(value.integer_value) or value.bool_value
+                    raise SchemaJsonMaterializeError.InvalidRecord if value.container_root_index != SCHEMA_JSON_INDEX_NONE or not schema_json_integer_value_empty(value.integer_value) or not schema_decimal_value_empty(value.decimal_value) or value.bool_value
                     raise SchemaJsonMaterializeError.InvalidScalarPayload if not schema_json_utf8_span_valid(value.bytes, 0, value.bytes.count)
                     raise SchemaJsonMaterializeError.PayloadLimitExceeded if value.bytes.count > SCHEMA_JSON_MAX_PAYLOAD_BYTES - computed_payload
                     computed_payload <- computed_payload + value.bytes.count
                 elif value.kind == SchemaJsonValueKind.Integer:
-                    raise SchemaJsonMaterializeError.InvalidRecord if value.bytes.count != 0 or value.container_root_index != SCHEMA_JSON_INDEX_NONE or value.bool_value
+                    raise SchemaJsonMaterializeError.InvalidRecord if value.bytes.count != 0 or value.container_root_index != SCHEMA_JSON_INDEX_NONE or value.bool_value or not schema_decimal_value_empty(value.decimal_value)
                     raise SchemaJsonMaterializeError.InvalidRecord if not schema_json_integer_target_valid(value.integer_value.target) or not schema_json_integer_value_valid(value.integer_value)
+                elif value.kind == SchemaJsonValueKind.Decimal:
+                    raise SchemaJsonMaterializeError.InvalidRecord if value.bytes.count != 0 or value.container_root_index != SCHEMA_JSON_INDEX_NONE or value.bool_value or not schema_json_integer_value_empty(value.integer_value)
+                    raise SchemaJsonMaterializeError.InvalidRecord if not schema_decimal_value_valid(value.decimal_value)
+                    raise SchemaJsonMaterializeError.PayloadLimitExceeded if value.decimal_value.coefficient_digits.count > SCHEMA_JSON_MAX_PAYLOAD_BYTES - computed_payload
+                    computed_payload <- computed_payload + value.decimal_value.coefficient_digits.count
                 elif value.kind == SchemaJsonValueKind.Array or value.kind == SchemaJsonValueKind.Object:
-                    raise SchemaJsonMaterializeError.InvalidRecord if value.bytes.count != 0 or not schema_json_integer_value_empty(value.integer_value) or value.bool_value
+                    raise SchemaJsonMaterializeError.InvalidRecord if value.bytes.count != 0 or not schema_json_integer_value_empty(value.integer_value) or not schema_decimal_value_empty(value.decimal_value) or value.bool_value
                     raise SchemaJsonMaterializeError.InvalidRecord if value.container_root_index != root_count
                     root_count <- root_count + 1
                 else:
@@ -399,7 +406,7 @@ module EsSchemaJson:
             return try schema_json_record_valid(record)
 
 
-        def materialize_json_schema_record(schema: SchemaDescriptor&, document: JsonDocument&, root_ordinal: usize) -> SchemaJsonRecord error[JsonContractError, SchemaContractError, SchemaIntegerError, SchemaJsonMaterializeError] can[Memory.Allocate, Abort.Panic]:
+        def materialize_json_schema_record(schema: SchemaDescriptor&, document: JsonDocument&, root_ordinal: usize) -> SchemaJsonRecord error[JsonContractError, SchemaContractError, SchemaIntegerError, SchemaDecimalError, SchemaJsonMaterializeError] can[Memory.Allocate, Abort.Panic]:
             try validate_schema_descriptor(schema)
             raise SchemaContractError.InvalidSource if schema.source != SchemaSource.Json
             raise JsonContractError.InvalidDocumentState if document.state != JsonDocumentState.Sealed
@@ -433,6 +440,12 @@ module EsSchemaJson:
                     if field.integer_target != SchemaIntegerTarget.None:
                         value.integer_value <- try parse_schema_integer(document.scalar_data, node.scalar_start, node.scalar_bytes, field.integer_target)
                         value.kind <- SchemaJsonValueKind.Integer
+                    elif field.decimal_target == SchemaDecimalTarget.Exact:
+                        value.decimal_value <- try parse_schema_decimal(document.scalar_data, node.scalar_start, node.scalar_bytes)
+                        raise SchemaJsonMaterializeError.PayloadLimitExceeded if record.payload_bytes > SCHEMA_JSON_MAX_PAYLOAD_BYTES
+                        raise SchemaJsonMaterializeError.PayloadLimitExceeded if value.decimal_value.coefficient_digits.count > SCHEMA_JSON_MAX_PAYLOAD_BYTES - record.payload_bytes
+                        record.payload_bytes <- record.payload_bytes + value.decimal_value.coefficient_digits.count
+                        value.kind <- SchemaJsonValueKind.Decimal
                     elif scalar_kind == SchemaJsonValueKind.Number or scalar_kind == SchemaJsonValueKind.Text:
                         raise SchemaJsonMaterializeError.PayloadLimitExceeded if record.payload_bytes > SCHEMA_JSON_MAX_PAYLOAD_BYTES
                         raise SchemaJsonMaterializeError.PayloadLimitExceeded if node.scalar_bytes > SCHEMA_JSON_MAX_PAYLOAD_BYTES - record.payload_bytes

@@ -361,6 +361,18 @@ consumer trusts the public tables. This is generic nested JSON ownership, not
 recursive nested-field schema checking; `Any` remains unsupported. Generated
 native record constructors remain open.
 
+JSON `Number` and CSV/TSV `Text` fields may instead opt into
+`decimal_target: SchemaDecimalTarget.Exact` (mutually exclusive with
+`integer_target`). The owned `SchemaDecimalValue` represents
+`(-1)^negative × coefficient_digits × 10^-scale`; it retains coefficient
+trailing zeroes and the sign of zero, so `1.0`, `1.00`, and `-0.00` remain
+distinguishable without binary floating-point conversion. Decimal lexemes use
+the bounded numeric scanner (4,096 input bytes/digits and at most four exponent
+digits, with separators disabled); JSON continues to enforce JSON's own number
+grammar, while CSV/TSV admit the scanner's optional leading sign. The output
+payload budget counts retained coefficient digits. Binary-float conversion,
+rounding, formatting, and comparison policies remain separate open contracts.
+
 `EsCsv` turns the `CsvPolicy` into a quote-aware streaming state machine.
 `CsvStream` counts input bytes, fields, field bytes, and records against the
 shared limits while distinguishing unquoted, quoted, escaped, and post-quote
