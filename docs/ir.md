@@ -382,8 +382,12 @@ distinguishable without binary floating-point conversion. Decimal lexemes use
 the bounded numeric scanner (4,096 input bytes/digits and at most four exponent
 digits, with separators disabled); JSON continues to enforce JSON's own number
 grammar, while CSV/TSV admit the scanner's optional leading sign. The output
-payload budget counts retained coefficient digits. Binary-float conversion,
-rounding, formatting, and comparison policies remain separate open contracts.
+payload budget counts retained coefficient digits. `compare_schema_decimal`
+compares mathematical values without conversion or allocation: it orders sign
+and decimal magnitude while treating scale-only variants such as `1.0`/`1.00`
+and positive/negative zero as equal. It does not rewrite either preserved
+representation. Decimal rounding and formatting remain open contracts, as do
+binary-float conversion, rounding, formatting, and comparison policies.
 
 `EsCsv` turns the `CsvPolicy` into a quote-aware streaming state machine.
 `CsvStream` counts input bytes, fields, field bytes, and records against the

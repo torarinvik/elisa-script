@@ -123,8 +123,10 @@ for declaration in \
     'def parse_schema_decimal(' \
     'SCHEMA_DECIMAL_MAX_BYTES' \
     'SCHEMA_DECIMAL_MAX_EXPONENT_DIGITS' \
+    'const enum SchemaDecimalOrdering of u8:' \
     'allow_underscores: false' \
     'schema_integer_target_limit(' \
+    'def compare_schema_decimal(' \
     'SchemaIntegerError.TargetOutOfRange'; do
     rg -Fq "$declaration" "$integer_conversion"
 done
@@ -181,6 +183,7 @@ for fixture_pattern in \
     'forged_duplicate_rejected' \
     'typed_schema_json_integer_targets_convert_exactly_without_float_rounding' \
     'typed_schema_json_decimal_target_preserves_exact_scale_and_negative_zero' \
+    'exact_schema_decimal_comparison_uses_numeric_value_not_representation' \
     'typed_csv_schema_integer_targets_decode_signed_and_unsigned_fields' \
     'typed_csv_schema_decimal_target_preserves_exact_scale_and_batch_payload' \
     'typed_csv_schema_materializer_binds_header_aliases_and_optional_fields' \
