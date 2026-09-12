@@ -184,28 +184,50 @@ deltas cumulatively; record boundaries cannot reset field totals or bypass the
 input/offset ledger.
 
 `EsJson` is the namespaced adapter boundary for the vendor JSON parser. A
-`JsonDocument` owns bounded tables of non-recursive `JsonNode` values,
-source ranges, array-child edges, object members, decoded key bytes, and roots, while `JsonPolicy` and
+version-4 `JsonDocument` owns bounded tables of non-recursive `JsonNode`
+values, source ranges, array-child edges, object members, decoded key bytes,
+decoded text/number-lexeme bytes, and roots, while `JsonPolicy` and
 `DataDecodeLimits` remain explicit inputs. `advance_json_document` revalidates
 the complete document ledger before every transition, requires `Empty → Building
 → Sealed` (or `Failed`) transitions, and rejects out-of-range
 children, duplicate object keys, oversized source/token/node/child/member tables, and
 malformed ranges before a renderer or schema decoder can consume the table.
-Validation also reconciles empty/sealed lifecycle shape, maximum node depth, and
-scalar payload bytes against each node's source range; composite nodes cannot
-carry scalar payload accounting. Arrays index an explicit `JsonArrayChild`
+Validation also reconciles empty/sealed lifecycle shape, maximum node depth,
+scalar payload spans, and source ranges; composite nodes cannot carry scalar
+payloads. String, key, and container source spans must meet their minimum
+two-byte lexical width before any width arithmetic is performed. `JsonNodeInput`
+borrows scalar input only for the append call, and
+the document copies it into a bounded byte arena. Text retains decoded UTF-8
+bytes (including empty strings and U+0000), while numbers retain their exact
+JSON number lexemes; the adapter does not coerce numbers through binary float
+or otherwise select a `DataNumberPolicy`. Boolean truth is stored explicitly
+on `JsonNode`; null and composite nodes have no scalar payload. Per-value
+field-byte and aggregate input-byte ceilings are checked before mutation, and
+the document validator checks contiguous arena ownership, UTF-8 text, and the
+JSON number grammar. Retained decoded keys and scalar payloads share a
+subtraction-checked aggregate ceiling no larger than the source-byte ledger.
+`copy_json_scalar` returns an owned copy from a sealed
+document rather than exposing a borrowed view with an unclear lifetime.
+Detached duplicate candidates keep their node and scalar span in the arena;
+normalization changes ownership/references, not the contiguous payload ledger.
+Arrays index an explicit `JsonArrayChild`
 table; each edge names its array owner, value node, and ordinal. Objects index
 their own contiguous member ranges, and each `JsonMember` names its object owner,
 value node, decoded-key byte span, and ordinal. `JsonMemberInput` borrows the
 decoded key only for the append call; the document copies retained decoded keys
 into its bounded byte table, so sealed members do not depend on the parser's
-temporary input buffer. Key spans cover that table contiguously and exactly.
+temporary input buffer. Key spans cover that table contiguously and exactly;
+decoded key bytes must be valid UTF-8, with U+0000 still permitted. Retained
+key-byte accounting participates in that combined source-size ceiling rather
+than receiving an independent allowance.
 Each decoded key is bounded by `DataDecodeLimits.field_bytes` and the model's
 per-key ceiling; retained keys also share a subtraction-checked aggregate arena
 ceiling. A newly retained member supplies its normalized insertion ordinal;
 duplicate candidates ignore theirs and preserve the first member's ordinal.
 Every node is either detached or has exactly one verified array/member/root
 owner; roots cannot be reused and an attached container cannot be changed.
+Multiple roots are ordered and their source ranges cannot overlap, supporting
+record-oriented adapters without allowing aliased input spans.
 Detached subtrees remain legal so KeepFirst/Reject can discard a duplicate and
 KeepLast can detach the superseded value without corrupting its descendants.
 Array child source spans must be ordered and non-overlapping, and each object
@@ -224,8 +246,9 @@ forged duplicate that remains in the final table. A decoder remains responsible
 for supplying decoded keys and building node/edge/member rows in the documented
 order.
 The adapter is intentionally separate from the vendor's global parser names so
-public Elisascript modules retain namespace hygiene; parser translation,
-streaming JSONL, typed schema conversion, and encoding remain open.
+public Elisascript modules retain namespace hygiene; vendor parser translation,
+streaming JSONL materialization, typed schema conversion, and encoding remain
+open.
 
 `EsSchema` adds the checked schema-conversion boundary that follows parsing.
 `SchemaDescriptor` declares named fields, source format, requiredness, and

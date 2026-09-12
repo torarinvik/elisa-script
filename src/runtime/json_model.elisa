@@ -8,14 +8,16 @@
 
 module EsJson:
     using EsData
+    using EsEncoding
 
     public:
-        const JSON_MODEL_FORMAT_VERSION: u8 = 3
+        const JSON_MODEL_FORMAT_VERSION: u8 = 4
         const JSON_MAX_NODES: usize = 16777216
         const JSON_MAX_MEMBERS: usize = 16777216
         const JSON_MAX_ROOTS: usize = 16777216
         const JSON_MAX_KEY_BYTES: usize = 67108864
         const JSON_MAX_TOTAL_KEY_BYTES: usize = 67108864
+        const JSON_MAX_TOTAL_SCALAR_BYTES: usize = 268435456
         # Above every configured table limit, while still representable by
         # the minimum supported 32-bit usize target.
         const JSON_INDEX_NONE: usize = 4294967295
@@ -70,7 +72,19 @@ module EsJson:
             child_count: usize = 0
             member_start: usize = JSON_INDEX_NONE
             member_count: usize = 0
+            scalar_start: usize = JSON_INDEX_NONE
             scalar_bytes: usize = 0
+            bool_value: bool = false
+
+
+        struct JsonNodeInput:
+            kind: JsonNodeKind
+            range: JsonRange = JsonRange{}
+            depth: usize = 0
+            # Borrowed for AppendNode only. Text carries decoded UTF-8 bytes;
+            # Number carries its exact JSON source lexeme.
+            scalar_value: sview = ""
+            bool_value: bool = false
 
 
         struct JsonArrayChild:
@@ -109,6 +123,7 @@ module EsJson:
             children: darray[JsonArrayChild] = []
             members: darray[JsonMember] = []
             key_bytes: darray[u8] = []
+            scalar_data: darray[u8] = []
             roots: darray[usize] = []
 
 
@@ -122,6 +137,7 @@ module EsJson:
             InvalidChildRange
             InvalidArrayChild
             InvalidScalarBytes
+            InvalidScalarPayload
             InvalidMemberKey
             InvalidMemberOwner
             InvalidMemberValue
@@ -142,6 +158,19 @@ module EsJson:
 
 
     private:
+        const enum JsonNumberScanState of u8:
+            Start
+            Minus
+            Zero
+            Integer
+            DecimalPoint
+            Fraction
+            Exponent
+            ExponentSign
+            ExponentDigits
+            Invalid
+
+
         def json_node_kind_valid(kind: JsonNodeKind) -> bool:
             return kind in {JsonNodeKind.Null, JsonNodeKind.Bool, JsonNodeKind.Number, JsonNodeKind.Text, JsonNodeKind.Array, JsonNodeKind.Object}
 
@@ -170,10 +199,17 @@ module EsJson:
             return outer.start <= inner.start and inner.end <= outer.end
 
 
+        def json_text_valid(value: sview) -> bool:
+            cursor: mutable Utf8Cursor = Utf8Cursor{}
+            for offset in 0..<sview_len(value) |value, cursor|:
+                return false if not utf8_feed(sview_at(value, offset), cursor)
+            return utf8_complete(cursor)
+
+
         def json_key_valid(key: sview, field_byte_limit: usize) -> bool:
             # Decoded JSON strings may contain U+0000 (for example `\u0000`);
             # do not apply path/C-string validity rules to object keys.
-            return sview_len(key) <= field_byte_limit and sview_len(key) < JSON_MAX_KEY_BYTES
+            return sview_len(key) <= field_byte_limit and sview_len(key) < JSON_MAX_KEY_BYTES and json_text_valid(key)
 
 
         def json_stored_key_equals_view(document: JsonDocument&, stored: JsonMember, candidate: sview) -> bool:
@@ -190,6 +226,76 @@ module EsJson:
             for offset in 0..<left.key_bytes |key_bytes, left, right, matched|:
                 matched <- false if key_bytes[left.key_start + offset] != key_bytes[right.key_start + offset]
             return matched
+
+
+        def json_number_next_state(state: JsonNumberScanState, byte: u8) -> JsonNumberScanState:
+            if state == JsonNumberScanState.Start:
+                return JsonNumberScanState.Minus if byte == 45
+                return JsonNumberScanState.Zero if byte == 48
+                return JsonNumberScanState.Integer if byte >= 49 and byte <= 57
+                return JsonNumberScanState.Invalid
+            elif state == JsonNumberScanState.Minus:
+                return JsonNumberScanState.Zero if byte == 48
+                return JsonNumberScanState.Integer if byte >= 49 and byte <= 57
+                return JsonNumberScanState.Invalid
+            elif state == JsonNumberScanState.Zero:
+                return JsonNumberScanState.DecimalPoint if byte == 46
+                return JsonNumberScanState.Exponent if byte == 69 or byte == 101
+                return JsonNumberScanState.Invalid
+            elif state == JsonNumberScanState.Integer:
+                return JsonNumberScanState.Integer if byte >= 48 and byte <= 57
+                return JsonNumberScanState.DecimalPoint if byte == 46
+                return JsonNumberScanState.Exponent if byte == 69 or byte == 101
+                return JsonNumberScanState.Invalid
+            elif state == JsonNumberScanState.DecimalPoint:
+                return JsonNumberScanState.Fraction if byte >= 48 and byte <= 57
+                return JsonNumberScanState.Invalid
+            elif state == JsonNumberScanState.Fraction:
+                return JsonNumberScanState.Fraction if byte >= 48 and byte <= 57
+                return JsonNumberScanState.Exponent if byte == 69 or byte == 101
+                return JsonNumberScanState.Invalid
+            elif state == JsonNumberScanState.Exponent:
+                return JsonNumberScanState.ExponentSign if byte == 43 or byte == 45
+                return JsonNumberScanState.ExponentDigits if byte >= 48 and byte <= 57
+                return JsonNumberScanState.Invalid
+            elif state == JsonNumberScanState.ExponentSign:
+                return JsonNumberScanState.ExponentDigits if byte >= 48 and byte <= 57
+                return JsonNumberScanState.Invalid
+            elif state == JsonNumberScanState.ExponentDigits:
+                return JsonNumberScanState.ExponentDigits if byte >= 48 and byte <= 57
+                return JsonNumberScanState.Invalid
+            return JsonNumberScanState.Invalid
+
+
+        def json_number_state_complete(state: JsonNumberScanState) -> bool:
+            return state in {JsonNumberScanState.Zero, JsonNumberScanState.Integer, JsonNumberScanState.Fraction, JsonNumberScanState.ExponentDigits}
+
+
+        def json_number_lexeme_valid(value: sview) -> bool:
+            return false if sview_len(value) == 0
+            state: mutable JsonNumberScanState = JsonNumberScanState.Start
+            offset: mutable usize = 0
+            while offset < sview_len(value) and state != JsonNumberScanState.Invalid:
+                state <- json_number_next_state(state, sview_at(value, offset))
+                offset <- offset + 1
+            return json_number_state_complete(state)
+
+
+        def json_number_span_valid(bytes: darray[u8], start: usize, length: usize) -> bool:
+            return false if length == 0
+            state: mutable JsonNumberScanState = JsonNumberScanState.Start
+            offset: mutable usize = 0
+            while offset < length and state != JsonNumberScanState.Invalid:
+                state <- json_number_next_state(state, bytes[start + offset])
+                offset <- offset + 1
+            return json_number_state_complete(state)
+
+
+        def json_text_span_valid(bytes: darray[u8], start: usize, length: usize) -> bool:
+            cursor: mutable Utf8Cursor = Utf8Cursor{}
+            for offset in 0..<length |bytes, start, cursor|:
+                return false if not utf8_feed(bytes[start + offset], cursor)
+            return utf8_complete(cursor)
 
 
         def json_limits_valid(limits: DataDecodeLimits) -> bool error[JsonContractError]:
@@ -216,16 +322,33 @@ module EsJson:
             raise JsonContractError.InvalidDepth if node.depth > limits.depth
             raise JsonContractError.InvalidScalarBytes if node.scalar_bytes > limits.field_bytes
             raise JsonContractError.InvalidScalarBytes if node.scalar_bytes > node.range.end - node.range.start
+            if node.kind != JsonNodeKind.Array and node.kind != JsonNodeKind.Object:
+                raise JsonContractError.InvalidChildRange if node.child_count != 0 or node.child_start != JSON_INDEX_NONE or node.member_count != 0 or node.member_start != JSON_INDEX_NONE
             if node.kind == JsonNodeKind.Array:
-                raise JsonContractError.InvalidScalarBytes if node.scalar_bytes != 0
+                raise JsonContractError.InvalidScalarPayload if node.scalar_start != JSON_INDEX_NONE or node.scalar_bytes != 0 or node.bool_value
+                raise JsonContractError.InvalidRange if node.range.end - node.range.start < 2
                 raise JsonContractError.InvalidChildRange if node.member_count != 0 or node.member_start != JSON_INDEX_NONE
                 raise JsonContractError.InvalidChildRange if node.child_count == 0 and node.child_start != JSON_INDEX_NONE
             elif node.kind == JsonNodeKind.Object:
-                raise JsonContractError.InvalidScalarBytes if node.scalar_bytes != 0
+                raise JsonContractError.InvalidScalarPayload if node.scalar_start != JSON_INDEX_NONE or node.scalar_bytes != 0 or node.bool_value
+                raise JsonContractError.InvalidRange if node.range.end - node.range.start < 2
                 raise JsonContractError.InvalidChildRange if node.child_count != 0 or node.child_start != JSON_INDEX_NONE
                 raise JsonContractError.InvalidChildRange if node.member_count == 0 and node.member_start != JSON_INDEX_NONE
+            elif node.kind == JsonNodeKind.Text:
+                raise JsonContractError.InvalidScalarPayload if node.scalar_start == JSON_INDEX_NONE or node.bool_value
+                raise JsonContractError.InvalidScalarPayload if node.range.end - node.range.start < 2
+            elif node.kind == JsonNodeKind.Number:
+                raise JsonContractError.InvalidScalarPayload if node.scalar_start == JSON_INDEX_NONE or node.scalar_bytes == 0 or node.bool_value
+                raise JsonContractError.InvalidScalarPayload if node.scalar_bytes != node.range.end - node.range.start
+            elif node.kind == JsonNodeKind.Bool:
+                raise JsonContractError.InvalidScalarPayload if node.scalar_start != JSON_INDEX_NONE or node.scalar_bytes != 0
+                if node.bool_value:
+                    raise JsonContractError.InvalidScalarPayload if node.range.end - node.range.start != 4
+                else:
+                    raise JsonContractError.InvalidScalarPayload if node.range.end - node.range.start != 5
             else:
-                raise JsonContractError.InvalidChildRange if node.child_count != 0 or node.child_start != JSON_INDEX_NONE or node.member_count != 0 or node.member_start != JSON_INDEX_NONE
+                raise JsonContractError.InvalidScalarPayload if node.scalar_start != JSON_INDEX_NONE or node.scalar_bytes != 0 or node.bool_value
+                raise JsonContractError.InvalidScalarPayload if node.range.end - node.range.start != 4
             return true
 
 
@@ -250,20 +373,34 @@ module EsJson:
             raise JsonContractError.NodeLimitExceeded if document.children.count > JSON_MAX_NODES
             raise JsonContractError.MemberLimitExceeded if document.members.count > JSON_MAX_MEMBERS
             raise JsonContractError.InvalidMemberKey if document.key_bytes.count > JSON_MAX_TOTAL_KEY_BYTES
+            raise JsonContractError.InvalidMemberKey if document.key_bytes.count > document.source_bytes
+            raise JsonContractError.InvalidScalarPayload if document.scalar_data.count > JSON_MAX_TOTAL_SCALAR_BYTES
+            raise JsonContractError.InvalidScalarPayload if document.scalar_data.count > document.source_bytes - document.key_bytes.count
+            raise JsonContractError.InvalidScalarPayload if document.scalar_data.count > document.limits.input_bytes
             raise JsonContractError.RootLimitExceeded if document.roots.count > JSON_MAX_ROOTS
             raise JsonContractError.TokenLimitExceeded if document.nodes.count > document.limits.tokens
             raise JsonContractError.TokenLimitExceeded if document.children.count > document.limits.tokens
             raise JsonContractError.MemberLimitExceeded if document.members.count > document.limits.fields
             raise JsonContractError.RootLimitExceeded if document.roots.count > document.limits.records
-            raise JsonContractError.InvalidDocumentState if document.state == JsonDocumentState.Empty and (document.source_bytes != 0 or document.token_count != 0 or document.max_depth != 0 or document.nodes.count != 0 or document.children.count != 0 or document.members.count != 0 or document.key_bytes.count != 0 or document.roots.count != 0)
+            raise JsonContractError.InvalidDocumentState if document.state == JsonDocumentState.Empty and (document.source_bytes != 0 or document.token_count != 0 or document.max_depth != 0 or document.nodes.count != 0 or document.children.count != 0 or document.members.count != 0 or document.key_bytes.count != 0 or document.scalar_data.count != 0 or document.roots.count != 0)
             raise JsonContractError.InvalidDocumentState if document.state == JsonDocumentState.Sealed and (document.nodes.count == 0 or document.roots.count == 0)
             raise JsonContractError.NodeAccountingInvalid if document.token_count < document.nodes.count
             derived_depth: mutable usize = 0
             expected_child_start: mutable usize = 0
             expected_member_start: mutable usize = 0
-            for index in 0..<document.nodes.count |document, expected_child_start, expected_member_start|:
+            expected_scalar_start: mutable usize = 0
+            for index in 0..<document.nodes.count |document, expected_child_start, expected_member_start, expected_scalar_start|:
                 node: JsonNode = document.nodes[index]
                 try json_node_valid(node, document.source_bytes, document.limits)
+                if node.kind == JsonNodeKind.Text or node.kind == JsonNodeKind.Number:
+                    raise JsonContractError.InvalidScalarPayload if node.scalar_start != expected_scalar_start
+                    raise JsonContractError.InvalidScalarPayload if node.scalar_start > document.scalar_data.count
+                    raise JsonContractError.InvalidScalarPayload if node.scalar_bytes > document.scalar_data.count - node.scalar_start
+                    if node.kind == JsonNodeKind.Text:
+                        raise JsonContractError.InvalidScalarPayload if not json_text_span_valid(document.scalar_data, node.scalar_start, node.scalar_bytes)
+                    else:
+                        raise JsonContractError.InvalidScalarPayload if not json_number_span_valid(document.scalar_data, node.scalar_start, node.scalar_bytes)
+                    expected_scalar_start <- expected_scalar_start + node.scalar_bytes
                 if node.owner_kind == JsonNodeOwnerKind.Detached:
                     raise JsonContractError.InvalidNodeOwnership if node.owner_index != JSON_INDEX_NONE or node.owner_ordinal != 0
                 elif node.owner_kind == JsonNodeOwnerKind.ArrayChild:
@@ -315,12 +452,15 @@ module EsJson:
                         raise JsonContractError.InvalidNodeOwnership if value.owner_kind != JsonNodeOwnerKind.ObjectMember or value.owner_index != index or value.owner_ordinal != ordinal
                         raise JsonContractError.InvalidDepth if value.depth != node.depth + 1
                         raise JsonContractError.InvalidMemberValue if not json_range_contains(node.range, value.range)
+                        raise JsonContractError.InvalidRange if not json_range_valid(member.key_range, document.source_bytes)
                         raise JsonContractError.InvalidRange if member.key_range.start == member.key_range.end
+                        raise JsonContractError.InvalidRange if member.key_range.end - member.key_range.start < 2
                         raise JsonContractError.InvalidMemberKey if member.key_start > document.key_bytes.count
                         raise JsonContractError.InvalidMemberKey if member.key_bytes > document.key_bytes.count - member.key_start
                         raise JsonContractError.InvalidMemberKey if member.key_bytes > document.limits.field_bytes
                         raise JsonContractError.InvalidMemberKey if member.key_bytes >= JSON_MAX_KEY_BYTES
                         raise JsonContractError.InvalidMemberKey if member.key_bytes > member.key_range.end - member.key_range.start
+                        raise JsonContractError.InvalidMemberKey if not json_text_span_valid(document.key_bytes, member.key_start, member.key_bytes)
                         raise JsonContractError.InvalidMemberOwner if not json_range_contains(node.range, member.key_range)
                         raise JsonContractError.InvalidMemberOrder if member.key_range.end > value.range.start
                         if ordinal != 0:
@@ -330,6 +470,7 @@ module EsJson:
                 derived_depth <- node.depth if node.depth > derived_depth
             raise JsonContractError.InvalidChildRange if expected_child_start != document.children.count
             raise JsonContractError.InvalidMemberOrder if expected_member_start != document.members.count
+            raise JsonContractError.InvalidScalarPayload if expected_scalar_start != document.scalar_data.count
             for edge in document.children:
                 raise JsonContractError.InvalidArrayChild if edge.owner_index >= document.nodes.count
                 raise JsonContractError.InvalidArrayChild if document.nodes[edge.owner_index].kind != JsonNodeKind.Array
@@ -361,10 +502,25 @@ module EsJson:
                 raise JsonContractError.RootAccountingInvalid if root >= document.nodes.count
                 raise JsonContractError.RootAccountingInvalid if document.nodes[root].depth != 0
                 raise JsonContractError.InvalidNodeOwnership if document.nodes[root].owner_kind != JsonNodeOwnerKind.Root or document.nodes[root].owner_index != JSON_INDEX_NONE or document.nodes[root].owner_ordinal != ordinal
+                if ordinal != 0:
+                    previous_root: usize = document.roots[ordinal - 1]
+                    raise JsonContractError.RootAccountingInvalid if document.nodes[previous_root].range.end > document.nodes[root].range.start
             return true
 
 
-        def advance_json_document(document: mutable JsonDocument&, event: JsonDocumentEvent, node: JsonNode = JsonNode{kind: JsonNodeKind.Null}, member: JsonMemberInput = JsonMemberInput{owner_index: JSON_INDEX_NONE, key: ""}, root_index: usize = JSON_INDEX_NONE, bytes_delta: usize = 0, child: JsonArrayChild = JsonArrayChild{owner_index: JSON_INDEX_NONE, value_index: JSON_INDEX_NONE, ordinal: 0}) -> JsonDocumentState error[JsonContractError]:
+        def copy_json_scalar(document: JsonDocument&, node_index: usize) -> darray[u8] error[JsonContractError] can[Memory.Allocate, Abort.Panic]:
+            try validate_json_document(document)
+            raise JsonContractError.InvalidDocumentState if document.state != JsonDocumentState.Sealed
+            raise JsonContractError.InvalidScalarPayload if node_index >= document.nodes.count
+            node: JsonNode = document.nodes[node_index]
+            raise JsonContractError.InvalidScalarPayload if node.kind != JsonNodeKind.Text and node.kind != JsonNodeKind.Number
+            copied: mutable darray[u8] = []
+            for offset in 0..<node.scalar_bytes |document, node, copied|:
+                copied.push(document.scalar_data[node.scalar_start + offset])
+            return copied
+
+
+        def advance_json_document(document: mutable JsonDocument&, event: JsonDocumentEvent, node: JsonNodeInput = JsonNodeInput{kind: JsonNodeKind.Null}, member: JsonMemberInput = JsonMemberInput{owner_index: JSON_INDEX_NONE, key: ""}, root_index: usize = JSON_INDEX_NONE, bytes_delta: usize = 0, child: JsonArrayChild = JsonArrayChild{owner_index: JSON_INDEX_NONE, value_index: JSON_INDEX_NONE, ordinal: 0}) -> JsonDocumentState error[JsonContractError]:
             try validate_json_document(document)
             raise JsonContractError.InvalidDocumentEvent if not json_document_event_valid(event)
             if event == JsonDocumentEvent.Begin:
@@ -375,17 +531,37 @@ module EsJson:
                 raise JsonContractError.NodeLimitExceeded if document.nodes.count >= JSON_MAX_NODES
                 raise JsonContractError.InputLimitExceeded if not json_bounded_add(document.source_bytes, bytes_delta, document.limits.input_bytes)
                 next_source_bytes: usize = document.source_bytes + bytes_delta
-                try json_node_valid(node, next_source_bytes, document.limits)
-                raise JsonContractError.InvalidNodeOwnership if node.owner_kind != JsonNodeOwnerKind.Detached or node.owner_index != JSON_INDEX_NONE or node.owner_ordinal != 0
-                raise JsonContractError.InvalidChildRange if not json_node_child_range_valid(node, document.children.count)
-                raise JsonContractError.InvalidMemberOrder if not json_node_member_range_valid(node, document.members.count)
-                raise JsonContractError.InvalidChildRange if node.child_count != 0
-                raise JsonContractError.InvalidMemberOrder if node.member_count != 0
+                raise JsonContractError.InvalidRange if not json_range_valid(node.range, next_source_bytes)
+                raise JsonContractError.InvalidRange if node.range.start == node.range.end
+                scalar_length: usize = sview_len(node.scalar_value)
+                if node.kind == JsonNodeKind.Text:
+                    raise JsonContractError.InvalidScalarPayload if node.bool_value
+                    raise JsonContractError.InvalidScalarBytes if scalar_length > document.limits.field_bytes
+                    raise JsonContractError.InvalidScalarPayload if not json_text_valid(node.scalar_value)
+                elif node.kind == JsonNodeKind.Number:
+                    raise JsonContractError.InvalidScalarBytes if scalar_length == 0 or scalar_length > document.limits.field_bytes
+                    raise JsonContractError.InvalidScalarPayload if not json_number_lexeme_valid(node.scalar_value)
+                    raise JsonContractError.InvalidScalarPayload if scalar_length != node.range.end - node.range.start
+                elif node.kind == JsonNodeKind.Bool:
+                    raise JsonContractError.InvalidScalarPayload if scalar_length != 0
+                else:
+                    raise JsonContractError.InvalidScalarPayload if scalar_length != 0 or node.bool_value
+                raise JsonContractError.InvalidScalarPayload if not json_bounded_add(document.scalar_data.count, scalar_length, JSON_MAX_TOTAL_SCALAR_BYTES)
+                raise JsonContractError.InvalidScalarPayload if not json_bounded_add(document.scalar_data.count, scalar_length, document.limits.input_bytes)
+                raise JsonContractError.InvalidScalarPayload if document.key_bytes.count > next_source_bytes
+                raise JsonContractError.InvalidScalarPayload if not json_bounded_add(document.scalar_data.count, scalar_length, next_source_bytes - document.key_bytes.count)
+                stored_node: mutable JsonNode = JsonNode{kind: node.kind, range: node.range, depth: node.depth, bool_value: node.bool_value}
+                if node.kind == JsonNodeKind.Text or node.kind == JsonNodeKind.Number:
+                    stored_node.scalar_start <- document.scalar_data.count
+                    stored_node.scalar_bytes <- scalar_length
+                try json_node_valid(stored_node, next_source_bytes, document.limits)
                 raise JsonContractError.TokenLimitExceeded if not json_bounded_add(document.token_count, 1, document.limits.tokens)
-                document.nodes.push(node)
+                for offset in 0..<scalar_length |document, node|:
+                    document.scalar_data.push(sview_at(node.scalar_value, offset))
+                document.nodes.push(stored_node)
                 document.source_bytes <- next_source_bytes
                 document.token_count <- document.token_count + 1
-                document.max_depth <- node.depth if node.depth > document.max_depth
+                document.max_depth <- stored_node.depth if stored_node.depth > document.max_depth
             elif event == JsonDocumentEvent.AppendArrayChild:
                 raise JsonContractError.AppendNotReady if document.state != JsonDocumentState.Building
                 raise JsonContractError.NodeLimitExceeded if document.children.count >= JSON_MAX_NODES
@@ -432,6 +608,7 @@ module EsJson:
                 raise JsonContractError.InvalidMemberValue if not json_range_contains(owner.range, document.nodes[member.value_index].range)
                 raise JsonContractError.InvalidMemberOwner if not json_range_contains(owner.range, member.key_range)
                 raise JsonContractError.InvalidRange if member.key_range.start == member.key_range.end
+                raise JsonContractError.InvalidRange if member.key_range.end - member.key_range.start < 2
                 raise JsonContractError.InvalidMemberOrder if member.key_range.end > value.range.start
                 raise JsonContractError.InvalidMemberKey if sview_len(member.key) > member.key_range.end - member.key_range.start
                 for index in owner.member_start..<(owner.member_start + owner.member_count) |document, member|:
@@ -463,6 +640,7 @@ module EsJson:
                     raise JsonContractError.InvalidMemberOrder if owner.member_start + owner.member_count != document.members.count
                     raise JsonContractError.InvalidMemberOrder if document.members[document.members.count - 1].owner_index != member.owner_index
                 raise JsonContractError.InvalidMemberKey if not json_bounded_add(document.key_bytes.count, sview_len(member.key), JSON_MAX_TOTAL_KEY_BYTES)
+                raise JsonContractError.InvalidMemberKey if not json_bounded_add(document.key_bytes.count, sview_len(member.key), document.source_bytes - document.scalar_data.count)
                 stored_member: JsonMember = JsonMember{owner_index: member.owner_index, key_start: document.key_bytes.count, key_bytes: sview_len(member.key), key_range: member.key_range, value_index: member.value_index, ordinal: member.ordinal}
                 for offset in 0..<sview_len(member.key) |document, member|:
                     document.key_bytes.push(sview_at(member.key, offset))
@@ -481,6 +659,9 @@ module EsJson:
                 raise JsonContractError.RootAccountingInvalid if document.nodes[root_index].depth != 0
                 root: mutable JsonNode = document.nodes[root_index]
                 raise JsonContractError.InvalidNodeOwnership if root.owner_kind != JsonNodeOwnerKind.Detached or root.owner_index != JSON_INDEX_NONE or root.owner_ordinal != 0
+                if document.roots.count != 0:
+                    previous_root: usize = document.roots[document.roots.count - 1]
+                    raise JsonContractError.RootAccountingInvalid if document.nodes[previous_root].range.end > root.range.start
                 root.owner_kind <- JsonNodeOwnerKind.Root
                 root.owner_index <- JSON_INDEX_NONE
                 root.owner_ordinal <- document.roots.count

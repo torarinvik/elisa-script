@@ -18,13 +18,15 @@ done
 for declaration in \
     'module EsJson:' \
     'using EsData' \
-    'JSON_MODEL_FORMAT_VERSION' \
+    'using EsEncoding' \
+    'JSON_MODEL_FORMAT_VERSION: u8 = 4' \
     'const enum JsonNodeKind of u8:' \
     'const enum JsonNodeOwnerKind of u8:' \
     'const enum JsonDocumentState of u8:' \
     'const enum JsonDocumentEvent of u8:' \
     'struct JsonRange:' \
     'struct JsonNode:' \
+    'struct JsonNodeInput:' \
     'struct JsonArrayChild:' \
     'struct JsonMemberInput:' \
     'struct JsonMember:' \
@@ -35,10 +37,25 @@ for declaration in \
     'def json_node_child_range_valid(' \
     'def json_stored_key_equals_view(' \
     'def json_stored_keys_equal(' \
-    'document.key_bytes.push(sview_at(member.key, offset).u8())' \
+    'def json_number_next_state(' \
+    'def json_number_span_valid(' \
+    'def json_text_valid(' \
+    'def json_text_span_valid(' \
+    'def copy_json_scalar(' \
+    'document.key_bytes.push(sview_at(member.key, offset))' \
+    'document.scalar_data.push(sview_at(node.scalar_value, offset))' \
     'JSON_MAX_TOTAL_KEY_BYTES' \
+    'JSON_MAX_TOTAL_SCALAR_BYTES' \
     'sview_len(key) <= field_byte_limit' \
     'member.key_bytes > document.limits.field_bytes' \
+    'node.scalar_bytes > document.scalar_data.count - node.scalar_start' \
+    'document.scalar_data.count > document.source_bytes - document.key_bytes.count' \
+    'json_bounded_add(document.key_bytes.count, sview_len(member.key), document.source_bytes - document.scalar_data.count)' \
+    'node.range.end - node.range.start < 2' \
+    'member.key_range.end - member.key_range.start < 2' \
+    'json_range_valid(member.key_range, document.source_bytes)' \
+    'node.kind == JsonNodeKind.Number' \
+    'node.kind == JsonNodeKind.Bool' \
     'try validate_json_document(document)'; do
     rg -Fq "$declaration" "$model"
 done
@@ -63,6 +80,9 @@ for boundary in \
     'json_stored_keys_equal(document.key_bytes, earlier, member)' \
     'json_stored_key_equals_view(document, earlier, member.key)' \
     'expected_key_start != document.key_bytes.count' \
+    'expected_scalar_start != document.scalar_data.count' \
+    'document.key_bytes.count > document.source_bytes' \
+    'document.nodes[previous_root].range.end > root.range.start' \
     'document.policy.duplicate_keys == JsonDuplicateKeyPolicy.KeepFirst' \
     'node.scalar_bytes > node.range.end - node.range.start' \
     'if node.kind == JsonNodeKind.Array' \
@@ -84,6 +104,8 @@ done
 rg -Fq 'include "../runtime/json_model.elisa"' "$ir"
 for fixture_pattern in \
     'typed_json_document_contract_is_bounded_and_sealed_explicitly' \
+    'typed_json_document_owns_scalar_values_without_coercing_numbers' \
+    'JsonNodeInput{kind: JsonNodeKind.Number' \
     'JsonDocumentEvent.AppendNode' \
     'JsonDocumentEvent.AppendArrayChild' \
     'JsonDocumentEvent.AppendMember' \
@@ -94,6 +116,13 @@ for fixture_pattern in \
     'unordered_child_rejected' \
     'late_key_rejected' \
     'key_limit_rejected' \
+    'short_container_rejected' \
+    'short_key_rejected' \
+    'reversed_key_range_rejected' \
+    'number_rejected' \
+    'scalar_limit_rejected' \
+    'invalid_utf8_key' \
+    'copy_json_scalar(document, 3)' \
     'nul_key.key_bytes[2] == 0' \
     'JsonArrayChild{owner_index: 1, value_index: 0, ordinal: 0}' \
     'JsonMemberInput{owner_index: 3, key: "name"' \
@@ -108,4 +137,4 @@ done
 rg -Fq '`EsJson` is the namespaced adapter boundary' "$docs"
 rg -Fq 'Latest P08 JSON adapter follow-up' "$plan"
 
-printf 'json model audit: namespaced bounded node-table and document lifecycle contracts are present\n'
+printf 'json model audit: namespaced owned scalar/key arenas and document lifecycle contracts are present\n'
