@@ -1,8 +1,8 @@
-# Exact integer and decimal conversion shared by JSON and CSV schema adapters.
+# Exact integer/decimal conversion plus decimal operations for schema values.
 #
-# Both parsers reuse the bounded record-numeric state machine with separators
+# Parsers reuse the bounded record-numeric state machine with separators
 # disabled. Integers retain a checked magnitude; decimals own coefficient
-# digits and a signed scale without passing through a floating type.
+# digits and a signed scale, compared/rounded/formatted without binary floats.
 
 module EsSchemaNumeric:
     using EsRecordNumeric
@@ -15,6 +15,7 @@ module EsSchemaNumeric:
         const SCHEMA_DECIMAL_MAX_EXPONENT_DIGITS: usize = RECORD_NUMERIC_MAX_EXPONENT_DIGITS
         const SCHEMA_DECIMAL_MIN_SCALE: i64 = -9999
         const SCHEMA_DECIMAL_MAX_SCALE: i64 = 14095
+        const SCHEMA_DECIMAL_MAX_FORMAT_BYTES: usize = 14098
 
 
         error SchemaIntegerError:
@@ -29,6 +30,8 @@ module EsSchemaNumeric:
             InputLimitExceeded
             MalformedDecimal
             ScaleOutOfRange
+            InvalidRoundingMode
+            OutputLimitExceeded
             NumericStateInvalid
 
 
@@ -36,6 +39,15 @@ module EsSchemaNumeric:
             Less
             Equal
             Greater
+
+
+        const enum SchemaDecimalRounding of u8:
+            TowardZero
+            AwayFromZero
+            Floor
+            Ceiling
+            HalfAwayFromZero
+            HalfToEven
 
 
     private:
@@ -122,6 +134,13 @@ module EsSchemaNumeric:
 
 
     private:
+        const enum SchemaDecimalDiscardedRelation of u8:
+            Zero
+            BelowHalf
+            ExactlyHalf
+            AboveHalf
+
+
         def schema_decimal_first_nonzero(value: SchemaDecimalValue&) -> usize:
             index: mutable usize = 0
             while index < value.coefficient_digits.count:
@@ -157,6 +176,76 @@ module EsSchemaNumeric:
             return SchemaDecimalOrdering.Equal
 
 
+        def schema_decimal_rounding_valid(mode: SchemaDecimalRounding) -> bool:
+            return mode in {SchemaDecimalRounding.TowardZero, SchemaDecimalRounding.AwayFromZero, SchemaDecimalRounding.Floor, SchemaDecimalRounding.Ceiling, SchemaDecimalRounding.HalfAwayFromZero, SchemaDecimalRounding.HalfToEven}
+
+
+        def schema_decimal_discarded_relation(value: SchemaDecimalValue&, retained_count: usize, discarded_count: usize) -> SchemaDecimalDiscardedRelation:
+            if discarded_count > value.coefficient_digits.count:
+                for digit in value.coefficient_digits:
+                    return SchemaDecimalDiscardedRelation.BelowHalf if digit != 48
+                return SchemaDecimalDiscardedRelation.Zero
+
+            first_discarded: u8 = value.coefficient_digits[retained_count]
+            return SchemaDecimalDiscardedRelation.AboveHalf if first_discarded > 53
+            if first_discarded < 53:
+                return SchemaDecimalDiscardedRelation.BelowHalf if first_discarded != 48
+                tail: mutable bool = false
+                tail_index: mutable usize = retained_count + 1
+                while tail_index < value.coefficient_digits.count |tail_index, value, tail|:
+                    tail <- true if value.coefficient_digits[tail_index] != 48
+                    tail_index <- tail_index + 1
+                return SchemaDecimalDiscardedRelation.BelowHalf if tail
+                return SchemaDecimalDiscardedRelation.Zero
+
+            tail: mutable bool = false
+            tail_index: mutable usize = retained_count + 1
+            while tail_index < value.coefficient_digits.count |tail_index, value, tail|:
+                tail <- true if value.coefficient_digits[tail_index] != 48
+                tail_index <- tail_index + 1
+            return SchemaDecimalDiscardedRelation.AboveHalf if tail
+            return SchemaDecimalDiscardedRelation.ExactlyHalf
+
+
+        def schema_decimal_increment_coefficient(digits: mutable darray[u8]&) -> void error[SchemaDecimalError] can[Memory.Allocate, Abort.Panic]:
+            raise SchemaDecimalError.NumericStateInvalid if digits.count == 0
+            index: mutable usize = digits.count
+            while index > 0 |index, digits|:
+                index <- index - 1
+                if digits[index] < 57:
+                    digits[index] <- digits[index] + 1
+                    return
+                digits[index] <- 48
+
+            raise SchemaDecimalError.InputLimitExceeded if digits.count >= SCHEMA_DECIMAL_MAX_DIGITS
+            digits.push(48)
+            shift: mutable usize = digits.count - 2
+            while shift > 0 |shift, digits|:
+                digits[shift + 1] <- digits[shift]
+                shift <- shift - 1
+            digits[1] <- digits[0]
+            digits[0] <- 49
+
+
+        def schema_decimal_formatted_byte_count(value: SchemaDecimalValue&) -> usize error[SchemaDecimalError]:
+            sign_bytes: usize = 1 if value.negative else 0
+            raise SchemaDecimalError.OutputLimitExceeded if value.coefficient_digits.count > SCHEMA_DECIMAL_MAX_FORMAT_BYTES - sign_bytes
+            base_bytes: usize = value.coefficient_digits.count + sign_bytes
+            if value.scale < 0:
+                appended_zeroes: usize = (0i64 - value.scale).usize()
+                raise SchemaDecimalError.OutputLimitExceeded if appended_zeroes > SCHEMA_DECIMAL_MAX_FORMAT_BYTES - base_bytes
+                return base_bytes + appended_zeroes
+            if value.scale == 0:
+                return base_bytes
+            if value.scale >= value.coefficient_digits.count.i64():
+                decimal_width: usize = 2 + value.scale.usize()
+                raise SchemaDecimalError.OutputLimitExceeded if decimal_width > SCHEMA_DECIMAL_MAX_FORMAT_BYTES - sign_bytes
+                return decimal_width + sign_bytes
+            decimal_width: usize = base_bytes + 1
+            raise SchemaDecimalError.OutputLimitExceeded if decimal_width > SCHEMA_DECIMAL_MAX_FORMAT_BYTES
+            return decimal_width
+
+
     public:
         # This compares mathematical values, not source representations:
         # 1.0 equals 1.00, and negative zero equals positive zero. The owned
@@ -178,6 +267,93 @@ module EsSchemaNumeric:
             magnitude_ordering: SchemaDecimalOrdering = schema_decimal_compare_magnitude(left, right)
             return schema_decimal_invert_ordering(magnitude_ordering) if left.negative
             return magnitude_ordering
+
+
+        # Quantize to an explicit decimal scale. All modes operate on the
+        # exact coefficient; no binary float or locale-dependent operation is
+        # involved. The original value is never mutated.
+        def round_schema_decimal(value: SchemaDecimalValue&, target_scale: i64, mode: SchemaDecimalRounding) -> SchemaDecimalValue error[SchemaDecimalError] can[Memory.Allocate, Abort.Panic]:
+            raise SchemaDecimalError.NumericStateInvalid if not schema_decimal_value_valid(value)
+            raise SchemaDecimalError.ScaleOutOfRange if target_scale < SCHEMA_DECIMAL_MIN_SCALE or target_scale > SCHEMA_DECIMAL_MAX_SCALE
+            raise SchemaDecimalError.InvalidRoundingMode if not schema_decimal_rounding_valid(mode)
+
+            result: mutable SchemaDecimalValue = SchemaDecimalValue{negative: value.negative, scale: target_scale}
+            if target_scale >= value.scale:
+                added_zeroes: usize = (target_scale - value.scale).usize()
+                raise SchemaDecimalError.InputLimitExceeded if added_zeroes > SCHEMA_DECIMAL_MAX_DIGITS
+                raise SchemaDecimalError.InputLimitExceeded if value.coefficient_digits.count > SCHEMA_DECIMAL_MAX_DIGITS - added_zeroes
+                for digit in value.coefficient_digits |value, result|:
+                    result.coefficient_digits.push(digit)
+                for zero_index in 0..<added_zeroes |result|:
+                    result.coefficient_digits.push(48)
+                return result
+
+            discarded_count: usize = (value.scale - target_scale).usize()
+            retained_count: usize = 0 if discarded_count >= value.coefficient_digits.count else value.coefficient_digits.count - discarded_count
+            for index in 0..<retained_count |value, result|:
+                result.coefficient_digits.push(value.coefficient_digits[index])
+            if retained_count == 0:
+                result.coefficient_digits.push(48)
+
+            relation: SchemaDecimalDiscardedRelation = schema_decimal_discarded_relation(value, retained_count, discarded_count)
+            remainder_exists: bool = relation != SchemaDecimalDiscardedRelation.Zero
+            round_up: mutable bool = false
+            if mode == SchemaDecimalRounding.AwayFromZero:
+                round_up <- remainder_exists
+            elif mode == SchemaDecimalRounding.Floor:
+                round_up <- value.negative and remainder_exists
+            elif mode == SchemaDecimalRounding.Ceiling:
+                round_up <- not value.negative and remainder_exists
+            elif mode == SchemaDecimalRounding.HalfAwayFromZero:
+                round_up <- relation == SchemaDecimalDiscardedRelation.ExactlyHalf or relation == SchemaDecimalDiscardedRelation.AboveHalf
+            elif mode == SchemaDecimalRounding.HalfToEven:
+                round_up <- relation == SchemaDecimalDiscardedRelation.AboveHalf
+                if relation == SchemaDecimalDiscardedRelation.ExactlyHalf:
+                    last_retained: u8 = 48 if retained_count == 0 else result.coefficient_digits[retained_count - 1]
+                    round_up <- (last_retained - 48) % 2 != 0
+            if round_up:
+                try schema_decimal_increment_coefficient(result.coefficient_digits)
+            raise SchemaDecimalError.NumericStateInvalid if not schema_decimal_value_valid(result)
+            return result
+
+
+        # Fixed decimal notation preserves coefficient leading/fractional zero
+        # padding and the negative-zero sign. It never switches to exponent
+        # notation; CSV-origin leading zeroes are not normalized to JSON form.
+        def format_schema_decimal(value: SchemaDecimalValue&, output_limit: usize) -> darray[u8] error[SchemaDecimalError] can[Memory.Allocate, Abort.Panic]:
+            raise SchemaDecimalError.NumericStateInvalid if not schema_decimal_value_valid(value)
+            formatted_bytes: usize = try schema_decimal_formatted_byte_count(value)
+            raise SchemaDecimalError.OutputLimitExceeded if formatted_bytes > output_limit
+
+            output: mutable darray[u8] = []
+            if value.negative:
+                output.push(45)
+            if value.scale < 0:
+                for digit in value.coefficient_digits |value, output|:
+                    output.push(digit)
+                zero_count: usize = (0i64 - value.scale).usize()
+                for zero_index in 0..<zero_count |output|:
+                    output.push(48)
+            elif value.scale == 0:
+                for digit in value.coefficient_digits |value, output|:
+                    output.push(digit)
+            elif value.scale >= value.coefficient_digits.count.i64():
+                output.push(48)
+                output.push(46)
+                zero_count: usize = value.scale.usize() - value.coefficient_digits.count
+                for zero_index in 0..<zero_count |output|:
+                    output.push(48)
+                for digit in value.coefficient_digits |value, output|:
+                    output.push(digit)
+            else:
+                split: usize = value.coefficient_digits.count - value.scale.usize()
+                index: mutable usize = 0
+                while index < value.coefficient_digits.count |index, value, output|:
+                    output.push(46) if index == split
+                    output.push(value.coefficient_digits[index])
+                    index <- index + 1
+            raise SchemaDecimalError.NumericStateInvalid if output.count != formatted_bytes
+            return output
 
 
         def parse_schema_integer(bytes: darray[u8]&, start: usize, byte_count: usize, target: SchemaIntegerTarget) -> SchemaIntegerValue error[SchemaIntegerError]:

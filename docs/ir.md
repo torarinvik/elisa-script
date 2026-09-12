@@ -386,8 +386,17 @@ payload budget counts retained coefficient digits. `compare_schema_decimal`
 compares mathematical values without conversion or allocation: it orders sign
 and decimal magnitude while treating scale-only variants such as `1.0`/`1.00`
 and positive/negative zero as equal. It does not rewrite either preserved
-representation. Decimal rounding and formatting remain open contracts, as do
-binary-float conversion, rounding, formatting, and comparison policies.
+representation. `round_schema_decimal` quantizes to a caller-selected bounded
+scale using an explicit `TowardZero`, `AwayFromZero`, `Floor`, `Ceiling`,
+`HalfAwayFromZero`, or `HalfToEven` policy. Midpoint handling is exact, and a
+rounded coefficient that exceeds the digit ceiling fails with a typed error.
+`format_schema_decimal` emits fixed ASCII decimal notation under a caller's
+output-byte limit; it preserves coefficient leading zeroes, stored fractional
+zeroes, and the sign of zero, and never switches to exponent notation. Thus a
+CSV-origin value such as `001.00` formats as `001.00`; it is a representation-
+preserving decimal formatter, not a JSON-number canonicalizer. Its internal
+fixed-output ceiling is 14,098 bytes. Binary-float conversion, rounding,
+formatting, and comparison policies remain open contracts.
 
 `EsCsv` turns the `CsvPolicy` into a quote-aware streaming state machine.
 `CsvStream` counts input bytes, fields, field bytes, and records against the
