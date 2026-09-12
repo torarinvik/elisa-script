@@ -1941,6 +1941,31 @@ def typed_json_stream_contract_frames_records_and_depth() -> void:
     assert advance_json_stream(exact_boundary, JsonStreamEvent.Byte, 10u8) == JsonStreamState.Reading
     assert exact_boundary.records == 1
     assert advance_json_stream(exact_boundary, JsonStreamEvent.End) == JsonStreamState.Complete
+    physical_line_stream: mutable JsonStreamSession = JsonStreamSession{policy: JsonStreamPolicy{max_input_bytes: 8, max_record_bytes: 4, max_records: 2, max_depth: 2, record_boundary: JsonLineBoundaryMode.PhysicalLines}}
+    _ = advance_json_stream(physical_line_stream, JsonStreamEvent.Begin)
+    _ = advance_json_stream(physical_line_stream, JsonStreamEvent.Byte, 123u8)
+    physical_container_newline_rejected: mutable bool = false
+    catch advance_json_stream(physical_line_stream, JsonStreamEvent.Byte, 10u8):
+        ok value:
+            assert false
+        error failure:
+            assert failure == JsonStreamError.UnterminatedValue
+            physical_container_newline_rejected <- true
+    assert physical_container_newline_rejected
+    assert physical_line_stream.input_bytes == 1 and physical_line_stream.record_bytes == 1 and physical_line_stream.records == 0
+    physical_string_stream: mutable JsonStreamSession = JsonStreamSession{policy: JsonStreamPolicy{max_input_bytes: 8, max_record_bytes: 4, max_records: 2, max_depth: 2, record_boundary: JsonLineBoundaryMode.PhysicalLines}}
+    _ = advance_json_stream(physical_string_stream, JsonStreamEvent.Begin)
+    _ = advance_json_stream(physical_string_stream, JsonStreamEvent.Byte, 34u8)
+    _ = advance_json_stream(physical_string_stream, JsonStreamEvent.Byte, 97u8)
+    physical_string_newline_rejected: mutable bool = false
+    catch advance_json_stream(physical_string_stream, JsonStreamEvent.Byte, 10u8):
+        ok value:
+            assert false
+        error failure:
+            assert failure == JsonStreamError.UnterminatedString
+            physical_string_newline_rejected <- true
+    assert physical_string_newline_rejected
+    assert physical_string_stream.input_bytes == 2 and physical_string_stream.record_bytes == 2 and physical_string_stream.records == 0
     forged_complete: mutable bool = false
     catch validate_json_stream(JsonStreamSession{policy: policy, state: JsonStreamState.Complete, input_bytes: 1, container_stack: [123u8], depth: 1}):
         ok value:
@@ -2091,6 +2116,78 @@ def typed_json_lines_reader_returns_bounded_documents_one_record_at_a_time() -> 
             assert failure == JsonLinesParseError.InvalidState
             reader_stays_failed <- true
     assert reader_stays_failed
+
+    assert JSON_LINES_PARSE_FORMAT_VERSION == 2
+    balanced_multiline_reader: mutable JsonLinesReader = begin_json_lines_reader("{\n\"x\": 1\n}", limits)
+    balanced_multiline: JsonLinesReadResult = next_json_lines_document(balanced_multiline_reader)
+    assert balanced_multiline.has_document and balanced_multiline.document.nodes[balanced_multiline.document.roots[0]].kind == JsonNodeKind.Object
+    assert balanced_multiline_reader.stream.state == JsonStreamState.Complete and validate_json_lines_reader(balanced_multiline_reader)
+
+    physical_framing: JsonStreamPolicy = JsonStreamPolicy{max_input_bytes: 64, max_record_bytes: 32, max_records: 8, max_depth: 8, record_boundary: JsonLineBoundaryMode.PhysicalLines}
+    physical_reader: mutable JsonLinesReader = begin_json_lines_reader("{\"x\": 1}\r\nnull", limits, JsonPolicy{}, physical_framing)
+    physical_object: JsonLinesReadResult = next_json_lines_document(physical_reader)
+    assert physical_object.has_document and physical_object.record_number == 1 and physical_object.document.nodes[physical_object.document.roots[0]].kind == JsonNodeKind.Object
+    physical_final_record: JsonLinesReadResult = next_json_lines_document(physical_reader)
+    assert physical_final_record.has_document and physical_final_record.record_number == 2 and physical_final_record.source_offset == 10
+    physical_end: JsonLinesReadResult = next_json_lines_document(physical_reader)
+    assert not physical_end.has_document and physical_reader.stream.state == JsonStreamState.Complete
+    assert validate_json_lines_reader(physical_reader)
+
+    physical_multiline_reader: mutable JsonLinesReader = begin_json_lines_reader("{\n\"x\": 1\n}", limits, JsonPolicy{}, physical_framing)
+    physical_multiline_rejected: mutable bool = false
+    catch next_json_lines_document(physical_multiline_reader):
+        ok value:
+            assert false
+        error failure:
+            assert failure == JsonStreamError.UnterminatedValue
+            physical_multiline_rejected <- true
+    assert physical_multiline_rejected
+    assert physical_multiline_reader.stream.state == JsonStreamState.Failed and physical_multiline_reader.stream.input_bytes == 1
+    assert physical_multiline_reader.failure_record_start == 0 and validate_json_lines_reader(physical_multiline_reader)
+
+    physical_string_reader: mutable JsonLinesReader = begin_json_lines_reader("\"before\nrest\"", limits, JsonPolicy{}, physical_framing)
+    physical_string_rejected: mutable bool = false
+    catch next_json_lines_document(physical_string_reader):
+        ok value:
+            assert false
+        error failure:
+            assert failure == JsonStreamError.UnterminatedString
+            physical_string_rejected <- true
+    assert physical_string_rejected and physical_string_reader.stream.state == JsonStreamState.Failed
+    assert physical_string_reader.stream.input_bytes == 7 and validate_json_lines_reader(physical_string_reader)
+
+    physical_chunk_reader: mutable JsonLinesChunkReader = begin_json_lines_chunk_reader(limits, JsonPolicy{}, physical_framing)
+    physical_chunk_prefix: JsonLinesFeedResult = feed_json_lines_chunk(physical_chunk_reader, "{")
+    assert physical_chunk_prefix.outcome == JsonLinesFeedOutcome.NeedInput
+    physical_chunk_newline_rejected: mutable bool = false
+    catch feed_json_lines_chunk(physical_chunk_reader, "\n\"x\": 1}"):
+        ok value:
+            assert false
+        error failure:
+            assert failure == JsonStreamError.UnterminatedValue
+            physical_chunk_newline_rejected <- true
+    assert physical_chunk_newline_rejected
+    assert physical_chunk_reader.stream.state == JsonStreamState.Failed and physical_chunk_reader.stream.input_bytes == 1
+    assert validate_json_lines_chunk_reader(physical_chunk_reader)
+
+    physical_chunk_string_reader: mutable JsonLinesChunkReader = begin_json_lines_chunk_reader(limits, JsonPolicy{}, physical_framing)
+    physical_chunk_string_prefix: JsonLinesFeedResult = feed_json_lines_chunk(physical_chunk_string_reader, "\"before")
+    assert physical_chunk_string_prefix.outcome == JsonLinesFeedOutcome.NeedInput
+    physical_chunk_string_rejected: mutable bool = false
+    catch feed_json_lines_chunk(physical_chunk_string_reader, "\nrest\""):
+        ok value:
+            assert false
+        error failure:
+            assert failure == JsonStreamError.UnterminatedString
+            physical_chunk_string_rejected <- true
+    assert physical_chunk_string_rejected and physical_chunk_string_reader.stream.state == JsonStreamState.Failed
+    assert physical_chunk_string_reader.stream.input_bytes == 7 and validate_json_lines_chunk_reader(physical_chunk_string_reader)
+
+    physical_empty_policy: JsonStreamPolicy = JsonStreamPolicy{max_input_bytes: 64, max_record_bytes: 32, max_records: 8, max_depth: 8, allow_empty_records: true, record_boundary: JsonLineBoundaryMode.PhysicalLines}
+    physical_empty_reader: mutable JsonLinesReader = begin_json_lines_reader("\nnull\n", limits, JsonPolicy{}, physical_empty_policy)
+    physical_after_empty: JsonLinesReadResult = next_json_lines_document(physical_empty_reader)
+    assert physical_after_empty.has_document and physical_after_empty.record_number == 2 and physical_after_empty.source_offset == 1
+    assert validate_json_lines_reader(physical_empty_reader)
 
 
 @test

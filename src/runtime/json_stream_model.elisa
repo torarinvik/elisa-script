@@ -1,9 +1,9 @@
 # Bounded JSON/JSONL streaming envelope.
 #
 # This is the framing layer before a full JSON value parser. It recognizes
-# strings, escapes, bracket depth, and newline record boundaries without
-# allocating a whole input document; a JSON parser consumes one sealed record
-# at a time after these limits and lexical boundaries succeed.
+# strings, escapes, bracket depth, and policy-selected newline boundaries
+# without allocating a whole input document; a JSON parser consumes one
+# sealed record at a time after these limits and lexical boundaries succeed.
 
 module EsJsonStream:
     public:
@@ -30,12 +30,18 @@ module EsJsonStream:
             Cancel
 
 
+        const enum JsonLineBoundaryMode of u8:
+            BalancedContainers
+            PhysicalLines
+
+
         struct JsonStreamPolicy:
             max_input_bytes: usize = JSON_STREAM_MAX_INPUT_BYTES
             max_record_bytes: usize = JSON_STREAM_MAX_RECORD_BYTES
             max_records: usize = JSON_STREAM_MAX_RECORDS
             max_depth: usize = JSON_STREAM_MAX_DEPTH
             allow_empty_records: bool = false
+            record_boundary: JsonLineBoundaryMode = JsonLineBoundaryMode.BalancedContainers
 
 
         struct JsonStreamSession:
@@ -78,7 +84,7 @@ module EsJsonStream:
 
 
         def json_stream_policy_valid(policy: JsonStreamPolicy) -> bool:
-            return policy.max_input_bytes != 0 and policy.max_input_bytes <= JSON_STREAM_MAX_INPUT_BYTES and policy.max_record_bytes != 0 and policy.max_record_bytes <= JSON_STREAM_MAX_RECORD_BYTES and policy.max_records != 0 and policy.max_records <= JSON_STREAM_MAX_RECORDS and policy.max_depth != 0 and policy.max_depth <= JSON_STREAM_MAX_DEPTH
+            return policy.max_input_bytes != 0 and policy.max_input_bytes <= JSON_STREAM_MAX_INPUT_BYTES and policy.max_record_bytes != 0 and policy.max_record_bytes <= JSON_STREAM_MAX_RECORD_BYTES and policy.max_records != 0 and policy.max_records <= JSON_STREAM_MAX_RECORDS and policy.max_depth != 0 and policy.max_depth <= JSON_STREAM_MAX_DEPTH and (policy.record_boundary == JsonLineBoundaryMode.BalancedContainers or policy.record_boundary == JsonLineBoundaryMode.PhysicalLines)
 
 
         def json_stream_increment(current: usize, limit: usize) -> bool:
@@ -94,6 +100,16 @@ module EsJsonStream:
 
 
     public:
+        # PhysicalLines treats every LF as a candidate boundary, including
+        # inside strings/containers so the transition can reject malformed
+        # physical-line records with a precise typed error. BalancedContainers
+        # retains the historical top-level-only boundary rule.
+        def json_stream_byte_is_boundary_candidate(session: JsonStreamSession&, byte: u8) -> bool:
+            return false if byte != 10u8
+            return true if session.policy.record_boundary == JsonLineBoundaryMode.PhysicalLines
+            return not session.in_string and session.depth == 0
+
+
         def validate_json_stream(session: JsonStreamSession&) -> bool error[JsonStreamError]:
             raise JsonStreamError.InvalidState if not json_stream_state_valid(session.state)
             raise JsonStreamError.InvalidPolicy if not json_stream_policy_valid(session.policy)
@@ -121,7 +137,9 @@ module EsJsonStream:
             elif event == JsonStreamEvent.Byte:
                 raise JsonStreamError.InvalidState if session.state != JsonStreamState.Reading
                 raise JsonStreamError.InputLimitExceeded if not json_stream_increment(session.input_bytes, session.policy.max_input_bytes)
-                if byte == 10 and not session.in_string and session.depth == 0:
+                if json_stream_byte_is_boundary_candidate(session, byte):
+                    raise JsonStreamError.UnterminatedString if session.in_string or session.escaped
+                    raise JsonStreamError.UnterminatedValue if session.policy.record_boundary == JsonLineBoundaryMode.PhysicalLines and session.depth != 0
                     raise JsonStreamError.EmptyRecord if session.record_bytes == 0 and not session.policy.allow_empty_records
                     raise JsonStreamError.RecordLimitExceeded if session.records >= session.policy.max_records
                     session.input_bytes <- session.input_bytes + 1

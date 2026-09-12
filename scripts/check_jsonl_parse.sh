@@ -6,13 +6,27 @@ set -euo pipefail
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 parser="$repo_root/src/runtime/jsonl_parse_model.elisa"
+stream="$repo_root/src/runtime/json_stream_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 
-for required_file in "$parser" "$ir" "$fixture" "$docs"; do
+for required_file in "$parser" "$stream" "$ir" "$fixture" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'jsonl parse audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
+
+for boundary_contract in \
+    'const enum JsonLineBoundaryMode of u8:' \
+    'BalancedContainers' \
+    'PhysicalLines' \
+    'record_boundary: JsonLineBoundaryMode = JsonLineBoundaryMode.BalancedContainers' \
+    'policy.record_boundary == JsonLineBoundaryMode.BalancedContainers or policy.record_boundary == JsonLineBoundaryMode.PhysicalLines' \
+    'def json_stream_byte_is_boundary_candidate(' \
+    'JsonStreamError.UnterminatedString if session.in_string or session.escaped' \
+    'JsonStreamError.UnterminatedValue if session.policy.record_boundary == JsonLineBoundaryMode.PhysicalLines and session.depth != 0'; do
+    rg -Fq "$boundary_contract" "$stream"
+done
+[[ "$(rg -Fc 'record_boundary: framing.record_boundary' "$parser")" == 2 ]]
 
 for contract in \
     'module EsJsonLinesParse:' \
@@ -35,6 +49,8 @@ for contract in \
     'advance_data_decoder(reader.decoder, DataDecoderEvent.Record' \
     'reader.failure_record_start <- reader.record_start' \
     'reader.stream.policy.allow_empty_records' \
+    'json_stream_byte_is_boundary_candidate(reader.stream, byte)' \
+    'record_boundary: framing.record_boundary' \
     'JsonStreamState.Failed'; do
     rg -Fq "$contract" "$parser"
 done
@@ -60,7 +76,15 @@ for fixture_pattern in \
     'assert validate_json_lines_reader(limited_reader)' \
     'JsonLinesParseError.TokenLimitExceeded' \
     'failure_record_number == 3 and limited_reader.failure_record_start == 10' \
-    'reader_stays_failed'; do
+    'reader_stays_failed' \
+    'JSON_LINES_PARSE_FORMAT_VERSION == 2' \
+    'balanced_multiline_reader' \
+    'JsonLineBoundaryMode.PhysicalLines' \
+    'physical_multiline_reader' \
+    'physical_string_reader' \
+    'physical_chunk_reader' \
+    'physical_chunk_string_reader' \
+    'physical_empty_reader'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 

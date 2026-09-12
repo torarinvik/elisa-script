@@ -242,10 +242,18 @@ skipped; they do not become fabricated JSON values. A parse or budget failure
 makes the reader terminal and retains the failed record number/start for correlating its
 record-relative diagnostic offset. The whole-view reader borrows a complete
 `sview`; schema conversion remains separate work.
-The existing framer ends records only at newlines outside strings and balanced
-containers, so newlines inside containers remain JSON whitespace in one record
-rather than enforcing strict physical-line JSONL. Algorithmic scaling is
-improved, but runtime/performance qualification remains open.
+`JsonStreamPolicy.record_boundary` makes the framing choice explicit. Its
+compatibility default, `JsonLineBoundaryMode.BalancedContainers`, ends records
+only at newlines outside strings and balanced containers, so newlines inside
+containers remain JSON whitespace in one record. The opt-in
+`JsonLineBoundaryMode.PhysicalLines` treats every LF as a physical record
+boundary: an LF while a container is open fails with `UnterminatedValue`, and
+an LF inside a string fails with `UnterminatedString`. Such a rejected LF is
+not charged to input or record counters. In both modes, LF contributes to the
+total input budget but not the record-byte budget, CRLF works as JSON trailing
+whitespace, and a final record without LF is accepted at EOF. The same policy
+is preserved by the whole-view, chunk, and POSIX file readers. Algorithmic
+scaling is improved, but runtime/performance qualification remains open.
 For caller-driven chunk input, `begin_json_lines_chunk_reader` and
 `feed_json_lines_chunk` retain only the current bounded record buffer. A feed
 returns `NeedInput`, `Document`, or `Complete` plus the exact byte count it
@@ -1496,9 +1504,11 @@ remain host/interpreter work.
 
 `EsJsonStream::JsonStreamSession` is the JSON/JSONL framing layer before value
 materialization. It bounds total input, per-record bytes, record count, and
-bracket depth while tracking a typed delimiter stack, quoted strings, and escapes. Newline boundaries are
-recognized only outside strings and balanced containers; exact record-byte
-boundaries are accepted, and final partial records
+bracket depth while tracking a typed delimiter stack, quoted strings, and
+escapes. `JsonStreamPolicy.record_boundary` selects top-level boundaries in
+the compatibility `BalancedContainers` mode or physical LF boundaries in
+`PhysicalLines` mode; the strict mode rejects line breaks inside a string or
+unclosed container. Exact record-byte boundaries are accepted, and final partial records
 are accepted at `End`, while empty records are rejected unless the policy opts
 in, and unterminated strings/values,
 underflow, invalid stack contents, forged ready/complete state, and cancellation
@@ -1514,11 +1524,12 @@ returning its document. Its single reader carries `EsData::DataDecoder`
 counters across records, records absolute source offsets, and becomes terminal
 on malformed JSON or cumulative-budget failure. Empty records admitted by the
 framing policy are counted and skipped; the parser also treats whitespace-only
-frames as empty under that policy, including CRLF-only frames. The framer
-intentionally treats newlines inside balanced containers as whitespace within
-one record, so strict physical-line JSONL remains unimplemented. The parser-
-level chunk feed and POSIX `FileStream` adapter are available; execution
-evidence remains open.
+frames as empty under that policy, including CRLF-only frames. The default
+`BalancedContainers` mode treats newlines inside balanced containers as
+whitespace within one record; callers can select `PhysicalLines` when they
+need strict JSON Lines framing. The parser-level chunk feed and POSIX
+`FileStream` adapter preserve this same policy; execution evidence remains
+open.
 
 `EsRecordControl::RecordControlSession` makes AWK-style control keywords
 explicit: `RecordEnd` and `NextRecord` check the record ceiling before closing the current record,

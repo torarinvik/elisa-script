@@ -31,6 +31,7 @@ for contract in \
     'def begin_json_lines_file_reader(' \
     'def next_json_lines_file_document(' \
     'def close_json_lines_file_reader(' \
+    'effective_framing: mutable JsonStreamPolicy = framing' \
     'FileStreamMode.ReadBinary, effective_input_bytes + 1, FileStreamEncoding.Bytes' \
     'file_stream_read_chunk(reader.file, buffer, capacity)' \
     'feed_json_lines_chunk(reader.parser, json_lines_file_chunk_view(reader))' \
