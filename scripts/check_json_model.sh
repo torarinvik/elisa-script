@@ -20,17 +20,25 @@ for declaration in \
     'using EsData' \
     'JSON_MODEL_FORMAT_VERSION' \
     'const enum JsonNodeKind of u8:' \
+    'const enum JsonNodeOwnerKind of u8:' \
     'const enum JsonDocumentState of u8:' \
     'const enum JsonDocumentEvent of u8:' \
     'struct JsonRange:' \
     'struct JsonNode:' \
     'struct JsonArrayChild:' \
+    'struct JsonMemberInput:' \
     'struct JsonMember:' \
     'struct JsonDocument:' \
     'error JsonContractError:' \
     'def validate_json_document(' \
     'def advance_json_document(' \
     'def json_node_child_range_valid(' \
+    'def json_stored_key_equals_view(' \
+    'def json_stored_keys_equal(' \
+    'document.key_bytes.push(sview_at(member.key, offset).u8())' \
+    'JSON_MAX_TOTAL_KEY_BYTES' \
+    'sview_len(key) <= field_byte_limit' \
+    'member.key_bytes > document.limits.field_bytes' \
     'try validate_json_document(document)'; do
     rg -Fq "$declaration" "$model"
 done
@@ -42,7 +50,19 @@ for boundary in \
     'json_node_member_range_valid(node, document.members.count)' \
     'edge.owner_index != index' \
     'member.owner_index != index' \
-    'earlier.key == member.key' \
+    'value.owner_kind != JsonNodeOwnerKind.ArrayChild' \
+    'value.owner_kind != JsonNodeOwnerKind.ObjectMember' \
+    'node.owner_kind == JsonNodeOwnerKind.Detached' \
+    'node.owner_kind == JsonNodeOwnerKind.Root' \
+    'old_value.owner_kind <- JsonNodeOwnerKind.Detached' \
+    'root.owner_kind <- JsonNodeOwnerKind.Root' \
+    'previous_value.range.end > value.range.start' \
+    'member.key_range.end > value.range.start' \
+    'member.key_bytes > member.key_range.end - member.key_range.start' \
+    'previous_member.key_range.end > member.key_range.start' \
+    'json_stored_keys_equal(document.key_bytes, earlier, member)' \
+    'json_stored_key_equals_view(document, earlier, member.key)' \
+    'expected_key_start != document.key_bytes.count' \
     'document.policy.duplicate_keys == JsonDuplicateKeyPolicy.KeepFirst' \
     'node.scalar_bytes > node.range.end - node.range.start' \
     'if node.kind == JsonNodeKind.Array' \
@@ -67,9 +87,17 @@ for fixture_pattern in \
     'JsonDocumentEvent.AppendNode' \
     'JsonDocumentEvent.AppendArrayChild' \
     'JsonDocumentEvent.AppendMember' \
+    'JsonNodeOwnerKind.ObjectMember' \
+    'JsonNodeOwnerKind.Detached' \
     'JsonContractError.DuplicateObjectKey' \
+    'duplicate_root_rejected' \
+    'unordered_child_rejected' \
+    'late_key_rejected' \
+    'key_limit_rejected' \
+    'nul_key.key_bytes[2] == 0' \
     'JsonArrayChild{owner_index: 1, value_index: 0, ordinal: 0}' \
-    'JsonMember{owner_index: 3, key: "name"' \
+    'JsonMemberInput{owner_index: 3, key: "name"' \
+    'key_bytes: [110, 97, 109, 101, 110, 97, 109, 101]' \
     'nul_key' \
     'forged_policy_duplicates' \
     'forged_empty' \

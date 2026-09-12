@@ -184,8 +184,8 @@ deltas cumulatively; record boundaries cannot reset field totals or bypass the
 input/offset ledger.
 
 `EsJson` is the namespaced adapter boundary for the vendor JSON parser. A
-`JsonDocument` owns a bounded table of non-recursive `JsonNode` values,
-source ranges, array-child edges, object members, and roots, while `JsonPolicy` and
+`JsonDocument` owns bounded tables of non-recursive `JsonNode` values,
+source ranges, array-child edges, object members, decoded key bytes, and roots, while `JsonPolicy` and
 `DataDecodeLimits` remain explicit inputs. `advance_json_document` revalidates
 the complete document ledger before every transition, requires `Empty → Building
 → Sealed` (or `Failed`) transitions, and rejects out-of-range
@@ -196,9 +196,25 @@ scalar payload bytes against each node's source range; composite nodes cannot
 carry scalar payload accounting. Arrays index an explicit `JsonArrayChild`
 table; each edge names its array owner, value node, and ordinal. Objects index
 their own contiguous member ranges, and each `JsonMember` names its object owner,
-value node, and ordinal. The ranges are checked against their respective tables
-(never against the node table), with complete table coverage and owner/order
-checks. Duplicate comparison is scoped to one object and uses decoded key text;
+value node, decoded-key byte span, and ordinal. `JsonMemberInput` borrows the
+decoded key only for the append call; the document copies retained decoded keys
+into its bounded byte table, so sealed members do not depend on the parser's
+temporary input buffer. Key spans cover that table contiguously and exactly.
+Each decoded key is bounded by `DataDecodeLimits.field_bytes` and the model's
+per-key ceiling; retained keys also share a subtraction-checked aggregate arena
+ceiling. A newly retained member supplies its normalized insertion ordinal;
+duplicate candidates ignore theirs and preserve the first member's ordinal.
+Every node is either detached or has exactly one verified array/member/root
+owner; roots cannot be reused and an attached container cannot be changed.
+Detached subtrees remain legal so KeepFirst/Reject can discard a duplicate and
+KeepLast can detach the superseded value without corrupting its descendants.
+Array child source spans must be ordered and non-overlapping, and each object
+key's raw span must precede its value span; retained key spans remain ordered
+and non-overlapping even when KeepLast points an earlier member at a later value.
+The ranges are checked against their
+respective tables (never against the node table), with complete table coverage
+and owner/order checks. Duplicate comparison is scoped to one object and uses
+the document-owned decoded key bytes;
 decoded keys may contain U+0000, which is legal in JSON strings and must not be
 rejected using path/C-string rules.
 Reject, KeepFirst, and KeepLast therefore cannot merge equal names from distinct
