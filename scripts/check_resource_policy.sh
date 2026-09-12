@@ -59,6 +59,19 @@ rg -q 'runtime_resource_usage_within_policy' "$interpreter"
 rg -q 'runtime_resource_add_steps\(machine.resource_usage, machine.resource_policy, 1\)' "$interpreter"
 rg -q 'runtime_resource_add_output\(machine.resource_usage, machine.resource_policy, writer.offset\)' "$interpreter"
 rg -q 'runtime_resource_add_output\(machine.resource_usage, machine.resource_policy, host_size\)' "$interpreter"
+rg -q 'def process_resource_acquire\(' "$interpreter"
+rg -q 'def process_resource_complete\(' "$interpreter"
+rg -q 'waiter.reaped <- true' "$interpreter"
+process_admission_sites="$(rg -F -c 'if not process_resource_acquire(machine)' "$interpreter")"
+if [[ "$process_admission_sites" != "4" ]]; then
+    printf 'resource policy audit: expected four accounted interpreter fork paths, found %s\n' "$process_admission_sites" >&2
+    exit 1
+fi
+process_completion_sites="$(rg -F -c 'if not process_resource_complete(machine, waiter)' "$interpreter")"
+if [[ "$process_completion_sites" != "4" ]]; then
+    printf 'resource policy audit: expected four child-reap accounting paths, found %s\n' "$process_completion_sites" >&2
+    exit 1
+fi
 rg -q 'def regex_work_account\(' "$interpreter"
 rg -q 'runtime_resource_add_regex_work\(machine.resource_usage, machine.resource_policy, delta\)' "$interpreter"
 rg -q 'regex_work_budget_limit\(machine\)' "$interpreter"
@@ -99,6 +112,7 @@ rg -q 'zero_resource_policy: RuntimeResourcePolicy' "$repo_root/test/ir/elisascr
 rg -q 'not runtime_resource_acquire\(zero_resource_usage' "$repo_root/test/ir/elisascript_ir_test.elisa"
 rg -q 'bytecode_compatibility_entrypoints_reject_step_budget_above_shared_ceiling' "$repo_root/test/ir/elisascript_bytecode_test.elisa"
 rg -q 'bytecode_strict_direct_entrypoint_rejects_unaccounted_resource_dimensions' "$repo_root/test/ir/elisascript_bytecode_test.elisa"
+rg -q 'bytecode_process_zero_budget_routes_to_accounted_interpreter' "$repo_root/test/ir/elisascript_bytecode_test.elisa"
 rg -q 'reference\.usage\.output_bytes == 3' "$repo_root/test/ir/elisascript_bytecode_test.elisa"
 rg -q 'compiled\.usage\.output_bytes == reference\.usage\.output_bytes' "$repo_root/test/ir/elisascript_bytecode_test.elisa"
 rg -q 'runtime_resource_policy_with_step_limit' "$bytecode"
@@ -106,6 +120,7 @@ rg -q 'runtime_resource_remaining_policy' "$runtime_model"
 rg -q 'def execute_bytecode_with_resource_policy' "$bytecode"
 rg -q 'def execute_bytecode_direct_only_with_resource_policy' "$bytecode"
 rg -q 'def bytecode_policy_requires_reference' "$bytecode"
+rg -q 'policy.processes != ES_RUNTIME_DEFAULT_MAX_PROCESSES' "$bytecode"
 rg -q 'def bytecode_policy_has_unsupported_dimensions' "$bytecode"
 rg -q 'runtime_resource_policy_has_unaccounted_dimensions\(policy\)' "$bytecode"
 rg -q 'bytecode_policy_requires_reference\(policy\)' "$bytecode"

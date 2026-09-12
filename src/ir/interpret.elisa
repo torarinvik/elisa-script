@@ -304,6 +304,10 @@ extend EsIr:
             pid: int
             status: mutable int
             failed: mutable bool
+            # Release a process slot only after waitpid confirms that the
+            # direct child has been reaped. Failed cleanup retains the slot
+            # rather than under-reporting a possibly live process.
+            reaped: mutable bool = false
             # Negative-PID signaling is safe only after the parent has
             # successfully placed the child in its own process group. Keep
             # this explicit because a failed setpgid must never let cleanup
@@ -5052,8 +5056,11 @@ extend EsIr:
             _ = memset(terminator, 0, size_of(uintptr))
             argv_items: void& = argv.items.cast[void&] can Unsafe.PointerCast
             can Blocking.IO:
+                if not process_resource_acquire(machine):
+                    return runtime_void()
                 pid: int = elisascript_posix_fork()
                 if pid < 0:
+                    process_resource_release(machine)
                     machine.failure <- InterpretFailure.Process
                     return runtime_void()
                 if pid == 0:
@@ -5075,6 +5082,8 @@ extend EsIr:
                         break
                     Wait, ProcessWaitState.Error:
                         break
+                if not process_resource_complete(machine, waiter):
+                    return runtime_void()
                 if waiter.timed_out:
                     machine.failure <- InterpretFailure.Time
                     return runtime_void()
@@ -5158,9 +5167,13 @@ extend EsIr:
                     _ = fclose(stream)
                     machine.failure <- InterpretFailure.Process
                     return runtime_void()
+                if not process_resource_acquire(machine):
+                    _ = fclose(stream)
+                    return runtime_void()
                 pid: int = elisascript_posix_fork()
                 if pid < 0:
                     _ = fclose(stream)
+                    process_resource_release(machine)
                     machine.failure <- InterpretFailure.Process
                     return runtime_void()
                 if pid == 0:
@@ -5181,6 +5194,9 @@ extend EsIr:
                         break
                     Wait, ProcessWaitState.Error:
                         break
+                if not process_resource_complete(machine, waiter):
+                    _ = fclose(stream)
+                    return runtime_void()
                 if waiter.output_exceeded:
                     _ = fclose(stream)
                     machine.failure <- InterpretFailure.OutputLimit
@@ -5312,6 +5328,7 @@ extend EsIr:
                 waited: int = elisascript_posix_waitpid(waiter.pid, waiter.status, INTERPRET_PROCESS_WAIT_NOHANG)
                 if waited == waiter.pid or waited > 0:
                     leader_reaped <- true
+                    waiter.reaped <- true
                     break
                 if waited < 0:
                     errno: mutable int& = elisascript_posix_errno()
@@ -5324,10 +5341,37 @@ extend EsIr:
             retries: mutable usize = 0
             while retries <= INTERPRET_MAX_EINTR_RETRIES:
                 waited: int = elisascript_posix_waitpid(waiter.pid, waiter.status, 0)
-                return if waited == waiter.pid or waited >= 0
+                if waited == waiter.pid or waited > 0:
+                    waiter.reaped <- true
+                    return
+                return if waited >= 0
                 errno: mutable int& = elisascript_posix_errno()
                 return if errno[0] != ES_RUNTIME_ERRNO_EINTR
                 retries <- retries + 1
+
+
+        def process_resource_acquire(machine: mutable Machine&) -> bool:
+            if runtime_resource_acquire(machine.resource_usage, machine.resource_policy, RuntimeResourceCounter.Process):
+                return true
+            machine.failure <- InterpretFailure.Process
+            return false
+
+
+        def process_resource_release(machine: mutable Machine&) -> void:
+            if not runtime_resource_release(machine.resource_usage, RuntimeResourceCounter.Process):
+                machine.failure <- InterpretFailure.Process
+
+
+        def process_resource_complete(machine: mutable Machine&, waiter: ProcessWaiter&) -> bool:
+            if not waiter.reaped:
+                # Continuing through a recoverable Process error could let a
+                # handler launch more children while this one may still live.
+                machine.failure <- InterpretFailure.Panic
+                return false
+            if not runtime_resource_release(machine.resource_usage, RuntimeResourceCounter.Process):
+                machine.failure <- InterpretFailure.Panic
+                return false
+            return true
 
 
         def process_output_remaining(machine: Machine&) -> u64:
@@ -5371,6 +5415,7 @@ extend EsIr:
         def process_wait_next(waiter: mutable ProcessWaiter&) -> ProcessWaitState can[Blocking.IO]:
             waited: int = elisascript_posix_waitpid(waiter.pid, waiter.status, INTERPRET_PROCESS_WAIT_NOHANG)
             if waited == waiter.pid:
+                waiter.reaped <- true
                 waiter.eintr_retries <- 0
                 # A short-lived child may finish between polls after producing
                 # its full output. Recheck both streams after reaping so the
@@ -5405,6 +5450,8 @@ extend EsIr:
                     return ProcessWaitState.Error
                 waiter.polls <- waiter.polls + 1
                 return ProcessWaitState.Progress
+            if waited > 0:
+                waiter.reaped <- true
             return ProcessWaitState.Exited
 
 
@@ -5657,11 +5704,17 @@ extend EsIr:
                     _ = fclose(stderr_stream)
                     machine.failure <- InterpretFailure.Process
                     return runtime_void()
+                if not process_resource_acquire(machine):
+                    _ = fclose(input_stream)
+                    _ = fclose(stdout_stream)
+                    _ = fclose(stderr_stream)
+                    return runtime_void()
                 pid: int = elisascript_posix_fork()
                 if pid < 0:
                     _ = fclose(input_stream)
                     _ = fclose(stdout_stream)
                     _ = fclose(stderr_stream)
+                    process_resource_release(machine)
                     machine.failure <- InterpretFailure.Process
                     return runtime_void()
                 if pid == 0:
@@ -5696,6 +5749,11 @@ extend EsIr:
                         break
                     Wait, ProcessWaitState.Error:
                         break
+                if not process_resource_complete(machine, waiter):
+                    _ = fclose(input_stream)
+                    _ = fclose(stdout_stream)
+                    _ = fclose(stderr_stream)
+                    return runtime_void()
                 if waiter.output_exceeded:
                     _ = fclose(input_stream)
                     _ = fclose(stdout_stream)
@@ -5839,10 +5897,15 @@ extend EsIr:
                     _ = fclose(output_stream)
                     machine.failure <- InterpretFailure.Process
                     return runtime_void()
+                if not process_resource_acquire(machine):
+                    _ = fclose(input_stream)
+                    _ = fclose(output_stream)
+                    return runtime_void()
                 pid: int = elisascript_posix_fork()
                 if pid < 0:
                     _ = fclose(input_stream)
                     _ = fclose(output_stream)
+                    process_resource_release(machine)
                     machine.failure <- InterpretFailure.Process
                     return runtime_void()
                 if pid == 0:
@@ -5864,6 +5927,10 @@ extend EsIr:
                         break
                     Wait, ProcessWaitState.Error:
                         break
+                if not process_resource_complete(machine, waiter):
+                    _ = fclose(input_stream)
+                    _ = fclose(output_stream)
+                    return runtime_void()
                 if waiter.output_exceeded:
                     _ = fclose(input_stream)
                     _ = fclose(output_stream)

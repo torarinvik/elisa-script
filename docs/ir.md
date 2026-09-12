@@ -801,12 +801,22 @@ every bounded dimension; an exhausted parent therefore gives the child zero
 remaining capacity, while an unattached elapsed timer remains the explicit zero
 sentinel. This is a pure admission calculation and does not claim that a host
 bridge has started accounting an otherwise unaccounted dimension.
-Until those host-wide edges exist, the shared
-`runtime_resource_policy_has_unaccounted_dimensions` predicate makes both the
-reference interpreter and bytecode facade reject non-default elapsed, memory,
-open-handle, process, and concurrent-task budgets instead of carrying an
-unenforced promise. Steps, output, regex work, and retained traces remain
-implemented policy dimensions.
+The reference interpreter now acquires a process slot immediately before each
+of its four `fork` sites and releases it only after `waitpid` confirms that the
+direct child was reaped. Fork failure rolls the slot back; uncertain cleanup
+retains the slot and aborts rather than understating live resource use or
+allowing a recoverable handler to continue. This counter covers the
+interpreter-owned child leader, not arbitrary descendants launched by that
+child. The policy-aware bytecode facade routes narrowed process budgets through
+the reference interpreter; strict direct-only execution rejects them because
+its process bridges do not share the packed loop's ledger. Default direct
+bytecode process adapters use the interpreter's default process policy per
+opcode, but do not publish peak process usage into the enclosing bytecode
+snapshot. The shared `runtime_resource_policy_has_unaccounted_dimensions`
+predicate therefore continues to fail closed on non-default elapsed, memory,
+open-handle, and concurrent-task budgets. Steps, output, regex, retained traces,
+and reference-interpreter child-process admission are implemented policy
+dimensions.
 The reference interpreter's `tick` uses the step edge directly, keeping its
 live usage ledger aligned with the step-limit failure path.
 Console writes and completed process-capture streams now charge their admitted
