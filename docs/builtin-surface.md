@@ -172,15 +172,32 @@ source shadowing and element-typed checking while selecting the verified
 `ArrayFind`, `ArrayIndex`, and `Contains` paths;
 recursive element descriptors remain in the existing lowerer type wall.
 
-Run the compiler-free audits:
+Run the compiler-free audits from the repository root:
 
 ```sh
 bash scripts/check_builtin_surface.sh
 bash scripts/check_builtin_registry.sh
 ```
 
+The corresponding `.elisascript` source candidate is
+`scripts/check_builtin_surface.elisascript`; pass the source root as its one
+argument when running through the public launcher. Its fixture matrix is in
+`test/fixtures/script_parity/builtin_surface/EXPECTATIONS.md`. The shell
+reference also accepts an optional source root so both implementations can be
+pointed at the same fixture tree. The candidate enforces a 1 MiB per-source
+limit and a 65,536 raw-name-match limit. Source review and expected-output
+fixtures do not establish executable parity; compiler/script validation remains
+suspended. The source files are assumed to be stable checkout inputs: current
+`read_text` allocates before the post-read size check, so the limit is not a
+hard peak-memory guarantee against a concurrent file replacement. A future
+host API with bounded reads should replace this assumption before untrusted
+roots are admitted.
+
 `check_builtin_surface.sh` still protects the complete legacy seed/lowerer
-surface, including temporary append-only seed spellings during migration.
+surface, including temporary append-only seed spellings during migration. It
+also compares every direct lowerer spelling with the typed global registry, so
+a legacy seed cannot conceal a missing registry row. Receiver method names
+remain excluded.
 `check_builtin_registry.sh` verifies every registry row has a lowerer branch,
 an existing IR opcode, verifier coverage, semantic metadata preservation, and a lowerer
 return/error consumer. It also verifies the receiver-aware `Text` method rows

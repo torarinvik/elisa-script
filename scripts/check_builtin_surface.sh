@@ -1,14 +1,30 @@
 #!/usr/bin/env bash
 
-# Compiler-free builtin-surface audit. The semantic seed table and the IR
-# lowerer currently remain separate authorities; this guard prevents a new
-# lowerer spelling from becoming an unresolved-name hole while Q03 migrates
-# both sides to one typed registry.
+# Compiler-free builtin-surface audit. Direct global lowerer spellings must
+# remain seeded semantically and present in the typed registry; receiver
+# methods remain type-directed and are intentionally excluded.
 
 set -euo pipefail
 
+if [[ $# -gt 1 ]]; then
+    printf 'usage: builtin surface audit [source-root]\n' >&2
+    exit 2
+fi
+if [[ $# -eq 1 && -z "$1" ]]; then
+    printf 'usage: builtin surface audit [source-root]\n' >&2
+    exit 2
+fi
+
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
+if [[ $# -eq 1 ]]; then
+    if [[ "$1" == "/" ]]; then
+        repo_root="/"
+    else
+        repo_root="$1"
+        while [[ "$repo_root" != "/" && "$repo_root" == */ ]]; do repo_root="${repo_root%/}"; done
+    fi
+fi
 semantic_file="$repo_root/vendor/elisa-compiler/src/semantic/symbols.elisa"
 registry_file="$repo_root/vendor/elisa-compiler/src/semantic/builtin_registry.elisa"
 lowerer_file="$repo_root/src/ir/lower_ast.elisa"
@@ -24,23 +40,37 @@ done
 # below it are part of the same semantic authority and must be included too.
 semantic_names() {
     awk '
-        /names: darray\[sview\] = \[/ { capture = 1 }
-        capture { print }
-        capture && /\]/ { exit }
+        /names: darray\[sview\] = \[/ {
+            capture = 1
+            marker_line = NR
+            marker_end = index($0, "names: darray[sview] = [") + length("names: darray[sview] = [")
+        }
+        capture {
+            print
+            tail = $0
+            if (NR == marker_line) tail = substr($0, marker_end)
+            if (tail ~ /\]/) exit
+        }
     ' "$semantic_file" |
         rg -o '"[A-Za-z_][A-Za-z0-9_]*"' |
-        tr -d '"'
+        tr -d '"' || [[ $? -eq 1 ]]
     rg -o 'add_symbol\("[A-Za-z_][A-Za-z0-9_]*"' "$semantic_file" |
-        sed 's/.*("//; s/"$//'
+        sed 's/.*("//; s/"$//' || [[ $? -eq 1 ]]
     # Registry migration may append a spelling to the caller-owned seed array
     # when editing the very long legacy literal would obscure the diff.
     rg -o 'names <- names\.push\("[A-Za-z_][A-Za-z0-9_]*"' "$semantic_file" |
-        sed 's/.*push("//; s/"$//'
+        sed 's/.*push("//; s/"$//' || [[ $? -eq 1 ]]
     # Registry-backed global spellings are seeded by the typed loop rather
     # than individual add_symbol calls; include that authoritative list here.
     sed -n '/def typed_builtin_names/,/^        def /p' "$registry_file" |
         rg -o '"[A-Za-z_][A-Za-z0-9_]*"' |
-        tr -d '"'
+        tr -d '"' || [[ $? -eq 1 ]]
+}
+
+registry_names() {
+    sed -n '/def typed_builtin_names/,/^        def /p' "$registry_file" |
+        rg -o '"[A-Za-z_][A-Za-z0-9_]*"' |
+        tr -d '"' || [[ $? -eq 1 ]]
 }
 
 lowerer_names() {
@@ -48,18 +78,27 @@ lowerer_names() {
     # deliberately stay out of this comparison: they are type-directed and do
     # not need to be seeded as bare identifiers by semantic analysis.
     rg -o 'callee_name == "[A-Za-z_][A-Za-z0-9_]*"' "$lowerer_file" |
-        sed 's/.*== "//; s/"$//' || true
+        sed 's/.*== "//; s/"$//' || [[ $? -eq 1 ]]
 }
 
 semantic_sorted="$(semantic_names | sort -u)"
+registry_sorted="$(registry_names | sort -u)"
 lowerer_sorted="$(lowerer_names | sort -u)"
 missing="$(comm -23 <(printf '%s\n' "$lowerer_sorted") <(printf '%s\n' "$semantic_sorted"))"
+missing_registry="$(comm -23 <(printf '%s\n' "$lowerer_sorted") <(printf '%s\n' "$registry_sorted"))"
 
 printf 'semantic_seed_count\t%s\n' "$(printf '%s\n' "$semantic_sorted" | awk 'NF { count += 1 } END { print count + 0 }')"
 printf 'lowerer_global_count\t%s\n' "$(printf '%s\n' "$lowerer_sorted" | awk 'NF { count += 1 } END { print count + 0 }')"
-if [[ -n "$missing" ]]; then
-    printf 'missing_semantic_seed\t%s\n' "$missing" >&2
-    exit 1
+if [[ -n "$missing_registry" ]]; then
+    while IFS= read -r missing_name; do
+        printf 'missing_registry_row\t%s\n' "$missing_name" >&2
+    done <<< "$missing_registry"
 fi
+if [[ -n "$missing" ]]; then
+    while IFS= read -r missing_name; do
+        printf 'missing_semantic_seed\t%s\n' "$missing_name" >&2
+    done <<< "$missing"
+fi
+if [[ -n "$missing" || -n "$missing_registry" ]]; then exit 1; fi
 
 printf 'builtin surface audit: semantic seeds cover all direct global spellings; registry identity handles global lowering\n'

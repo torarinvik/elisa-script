@@ -1,0 +1,412 @@
+# Bounded Elisascript port of check_builtin_surface.sh.
+# Pass the repository/source root explicitly when invoking outside that root.
+
+module EsBuiltinSurfaceAudit:
+    private:
+        const module Limits:
+            SOURCE_BYTES: usize = 1048576
+            NAME_MATCHES: usize = 65536
+
+
+        const module Paths:
+            SEMANTIC_SOURCE: sview = "vendor/elisa-compiler/src/semantic/symbols.elisa"
+            REGISTRY_SOURCE: sview = "vendor/elisa-compiler/src/semantic/builtin_registry.elisa"
+            LOWERER_SOURCE: sview = "src/ir/lower_ast.elisa"
+
+
+        const module Syntax:
+            SEED_MARKER: sview = "names: darray[sview] = ["
+            REGISTRY_MARKER: sview = "def typed_builtin_names"
+            FUNCTION_PREFIX: sview = "        def "
+            ADD_SYMBOL_PREFIX: sview = "add_symbol("
+            PUSH_NAMES_PREFIX: sview = "names <- names.push("
+            LOWERER_PREFIX: sview = "callee_name == "
+
+
+        const enum QuoteContext of u8:
+            Any
+            SemanticConsumer
+            LowererDispatch
+
+
+        const enum SeedPhase of u8:
+            Seek
+            Capture
+            Done
+
+
+        const enum RegistryPhase of u8:
+            Seek
+            Capture
+            Done
+
+
+        const enum ScanPhase of u8:
+            Read
+            Done
+
+
+        const enum ComparePhase of u8:
+            CheckRegistry
+            CheckSemantic
+            Done
+
+
+        struct SourceLine:
+            value: sview
+            next: usize
+
+
+        def normalized_root(root: sview) -> sview:
+            end: mutable usize = len(root)
+            while end > 1 and root[end - 1:end] == "/":
+                end <- end - 1
+            return root[0:end]
+
+
+        def source_display(root: sview, relative: sview) -> sview can[Memory.Allocate, Abort.Panic]:
+            if root == "/":
+                return "/" + relative
+            return root + "/" + relative
+
+
+        def next_line(source: sview, cursor: usize) -> SourceLine:
+            remaining: sview = source[cursor:len(source)]
+            newline_index: i64 = remaining.index("\n")
+            if newline_index < 0:
+                return SourceLine{value: remaining, next: len(source)}
+
+            newline_offset: usize = newline_index.usize()
+            return SourceLine{value: remaining[0:newline_offset], next: cursor + newline_offset + 1}
+
+
+        def source_is_bounded(source_path: Path, display: sview) -> bool can[Memory.Allocate, Abort.Panic, Console.Write, File.Read]:
+            if not is_file(source_path):
+                eprint(f"builtin surface: missing source file: {display}")
+                return false
+
+            source_size: usize = try file_size(source_path) else err:
+                eprint(f"builtin surface: unable to inspect source file: {display}")
+                return false
+
+            if source_size > Limits::SOURCE_BYTES:
+                eprint(f"builtin surface: source file exceeds audit limit: {display}")
+                return false
+
+            return true
+
+
+        def loaded_source_is_bounded(source: sview, display: sview) -> bool can[Memory.Allocate, Abort.Panic, Console.Write]:
+            if len(source) > Limits::SOURCE_BYTES:
+                eprint(f"builtin surface: source file exceeds audit limit: {display}")
+                return false
+            return true
+
+
+        def append_line_names(line: sview, context: QuoteContext, names: mutable darray[sview]&) -> bool can[Memory.Allocate, Abort.Panic]:
+            identifier_pattern: Regex = regex"^[A-Za-z_][A-Za-z0-9_]*$"
+            line_length: usize = len(line)
+            quote_cursor: mutable usize = 0
+            phase: mutable ScanPhase = ScanPhase.Read
+
+            machine over phase while phase != ScanPhase.Done:
+                state Scan
+                start Scan
+
+                Scan, ScanPhase.Read if quote_cursor >= line_length:
+                    phase <- ScanPhase.Done
+                    -> Scan
+
+                Scan, ScanPhase.Read:
+                    remaining: sview = line[quote_cursor:line_length]
+                    opening_relative: i64 = remaining.index("\"")
+                    if opening_relative < 0:
+                        phase <- ScanPhase.Done
+                        -> Scan
+
+                    opening: usize = quote_cursor + opening_relative.usize()
+                    name_start: usize = opening + 1
+                    after_open: sview = line[name_start:line_length]
+                    closing_relative: i64 = after_open.index("\"")
+                    if closing_relative < 0:
+                        phase <- ScanPhase.Done
+                        -> Scan
+
+                    name_end: usize = name_start + closing_relative.usize()
+                    candidate: sview = line[name_start:name_end]
+                    prefix: sview = line[0:opening]
+                    context_matches: mutable bool = context == QuoteContext.Any
+                    if context == QuoteContext.SemanticConsumer:
+                        context_matches <- prefix.endswith(Syntax::ADD_SYMBOL_PREFIX) or prefix.endswith(Syntax::PUSH_NAMES_PREFIX)
+                    if context == QuoteContext.LowererDispatch:
+                        context_matches <- prefix.endswith(Syntax::LOWERER_PREFIX)
+
+                    if context_matches and identifier_pattern.fullmatch(candidate):
+                        if names.count >= Limits::NAME_MATCHES:
+                            return false
+                        names.push(candidate)
+
+                    quote_cursor <- name_end + 1
+                    -> Scan
+
+                Scan, ScanPhase.Done:
+                    break
+
+            return true
+
+
+        def collect_seed_names(source: sview, names: mutable darray[sview]&) -> bool can[Memory.Allocate, Abort.Panic]:
+            cursor: mutable usize = 0
+            phase: mutable SeedPhase = SeedPhase.Seek
+
+            machine over phase while phase != SeedPhase.Done:
+                state Scan
+                start Scan
+
+                Scan, SeedPhase.Seek if cursor >= len(source):
+                    phase <- SeedPhase.Done
+                    -> Scan
+
+                Scan, SeedPhase.Seek:
+                    current: SourceLine = next_line(source, cursor)
+                    cursor <- current.next
+                    marker_start: i64 = current.value.index(Syntax::SEED_MARKER)
+                    if marker_start >= 0:
+                        if not append_line_names(current.value, QuoteContext.Any, names):
+                            return false
+                        list_start: usize = marker_start.usize() + len(Syntax::SEED_MARKER)
+                        list_tail: sview = current.value[list_start:len(current.value)]
+                        phase <- SeedPhase.Capture if list_tail.index("]") < 0 else SeedPhase.Done
+                    -> Scan
+
+                Scan, SeedPhase.Capture if cursor >= len(source):
+                    phase <- SeedPhase.Done
+                    -> Scan
+
+                Scan, SeedPhase.Capture:
+                    current: SourceLine = next_line(source, cursor)
+                    cursor <- current.next
+                    if not append_line_names(current.value, QuoteContext.Any, names):
+                        return false
+                    phase <- SeedPhase.Done if current.value.index("]") >= 0
+                    -> Scan
+
+                Scan, SeedPhase.Done:
+                    break
+
+            return true
+
+
+        def collect_context_names(source: sview, context: QuoteContext, names: mutable darray[sview]&) -> bool can[Memory.Allocate, Abort.Panic]:
+            cursor: mutable usize = 0
+            phase: mutable ScanPhase = ScanPhase.Read
+
+            machine over phase while phase != ScanPhase.Done:
+                state Scan
+                start Scan
+
+                Scan, ScanPhase.Read if cursor >= len(source):
+                    phase <- ScanPhase.Done
+                    -> Scan
+
+                Scan, ScanPhase.Read:
+                    current: SourceLine = next_line(source, cursor)
+                    cursor <- current.next
+                    if not append_line_names(current.value, context, names):
+                        return false
+                    -> Scan
+
+                Scan, ScanPhase.Done:
+                    break
+
+            return true
+
+
+        def collect_registry_names(source: sview, registry_names: mutable darray[sview]&) -> bool can[Memory.Allocate, Abort.Panic]:
+            cursor: mutable usize = 0
+            phase: mutable RegistryPhase = RegistryPhase.Seek
+
+            machine over phase while phase != RegistryPhase.Done:
+                state Scan
+                start Scan
+
+                Scan, RegistryPhase.Seek if cursor >= len(source):
+                    phase <- RegistryPhase.Done
+                    -> Scan
+
+                Scan, RegistryPhase.Seek:
+                    current: SourceLine = next_line(source, cursor)
+                    cursor <- current.next
+                    if current.value.index(Syntax::REGISTRY_MARKER) >= 0:
+                        if not append_line_names(current.value, QuoteContext.Any, registry_names):
+                            return false
+                        phase <- RegistryPhase.Capture
+                    -> Scan
+
+                Scan, RegistryPhase.Capture if cursor >= len(source):
+                    phase <- RegistryPhase.Done
+                    -> Scan
+
+                Scan, RegistryPhase.Capture:
+                    current: SourceLine = next_line(source, cursor)
+                    cursor <- current.next
+                    if current.value.startswith(Syntax::FUNCTION_PREFIX):
+                        phase <- RegistryPhase.Done
+                        -> Scan
+                    if not append_line_names(current.value, QuoteContext.Any, registry_names):
+                        return false
+                    -> Scan
+
+                Scan, RegistryPhase.Done:
+                    break
+
+            return true
+
+
+        def sorted_unique(values: darray[sview]) -> darray[sview] can[Memory.Allocate, Abort.Panic]:
+            ordered: darray[sview] = sorted(values)
+            unique: mutable darray[sview] = []
+            for value in ordered:
+                if unique.count == 0 or unique[unique.count - 1] != value:
+                    unique.push(value)
+            return unique
+
+
+        def contains_sorted(values: darray[sview], needle: sview) -> bool:
+            low: mutable usize = 0
+            high: mutable usize = values.count
+
+            while low < high:
+                middle: usize = low + (high - low) / 2
+                if values[middle] == needle:
+                    return true
+                if values[middle] < needle:
+                    low <- middle + 1
+                else:
+                    high <- middle
+
+            return false
+
+
+    public:
+        def run(source_root: sview) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, File.Read]:
+            root_text: sview = normalized_root(source_root)
+            root_path: Path = path(root_text)
+            semantic_display: sview = source_display(root_text, Paths::SEMANTIC_SOURCE)
+            registry_display: sview = source_display(root_text, Paths::REGISTRY_SOURCE)
+            lowerer_display: sview = source_display(root_text, Paths::LOWERER_SOURCE)
+            semantic_path: Path = path_join(root_path, Paths::SEMANTIC_SOURCE)
+            registry_path: Path = path_join(root_path, Paths::REGISTRY_SOURCE)
+            lowerer_path: Path = path_join(root_path, Paths::LOWERER_SOURCE)
+
+            if not source_is_bounded(semantic_path, semantic_display):
+                return 2i64
+            if not source_is_bounded(registry_path, registry_display):
+                return 2i64
+            if not source_is_bounded(lowerer_path, lowerer_display):
+                return 2i64
+
+            # The repository inputs are expected to be stable checkout files.
+            # file_size preflights normal reads; read_text itself is not a
+            # bounded-read primitive, so the post-read check cannot constrain
+            # peak allocation if another writer grows a file between the calls.
+            semantic_source: sview = try read_text(semantic_path) else err:
+                eprint(f"builtin surface: unable to read source file: {semantic_display}")
+                return 2i64
+            if not loaded_source_is_bounded(semantic_source, semantic_display):
+                return 2i64
+
+            registry_source: sview = try read_text(registry_path) else err:
+                eprint(f"builtin surface: unable to read source file: {registry_display}")
+                return 2i64
+            if not loaded_source_is_bounded(registry_source, registry_display):
+                return 2i64
+
+            lowerer_source: sview = try read_text(lowerer_path) else err:
+                eprint(f"builtin surface: unable to read source file: {lowerer_display}")
+                return 2i64
+            if not loaded_source_is_bounded(lowerer_source, lowerer_display):
+                return 2i64
+
+            semantic_raw: mutable darray[sview] = []
+            registry_raw: mutable darray[sview] = []
+            lowerer_raw: mutable darray[sview] = []
+
+            if not collect_seed_names(semantic_source, semantic_raw) or not collect_context_names(semantic_source, QuoteContext.SemanticConsumer, semantic_raw):
+                eprint("builtin surface: identifier match count exceeds audit limit")
+                return 2i64
+            if not collect_registry_names(registry_source, registry_raw):
+                eprint("builtin surface: identifier match count exceeds audit limit")
+                return 2i64
+            if not collect_context_names(lowerer_source, QuoteContext.LowererDispatch, lowerer_raw):
+                eprint("builtin surface: identifier match count exceeds audit limit")
+                return 2i64
+
+            if semantic_raw.count + registry_raw.count > Limits::NAME_MATCHES:
+                eprint("builtin surface: identifier match count exceeds audit limit")
+                return 2i64
+            for registry_name in registry_raw:
+                semantic_raw.push(registry_name)
+
+            semantic_names: darray[sview] = sorted_unique(semantic_raw)
+            registry_names: darray[sview] = sorted_unique(registry_raw)
+            lowerer_names: darray[sview] = sorted_unique(lowerer_raw)
+
+            println(f"semantic_seed_count\t{semantic_names.count}")
+            println(f"lowerer_global_count\t{lowerer_names.count}")
+
+            missing: mutable bool = false
+            index: mutable usize = 0
+            phase: mutable ComparePhase = ComparePhase.CheckRegistry
+            machine over phase while phase != ComparePhase.Done:
+                state Compare
+                start Compare
+
+                Compare, ComparePhase.CheckRegistry if index >= lowerer_names.count:
+                    index <- 0
+                    phase <- ComparePhase.CheckSemantic
+                    -> Compare
+
+                Compare, ComparePhase.CheckRegistry:
+                    lowerer_name: sview = lowerer_names[index]
+                    if not contains_sorted(registry_names, lowerer_name):
+                        eprint(f"missing_registry_row\t{lowerer_name}")
+                        missing <- true
+                    index <- index + 1
+                    -> Compare
+
+                Compare, ComparePhase.CheckSemantic if index >= lowerer_names.count:
+                    phase <- ComparePhase.Done
+                    -> Compare
+
+                Compare, ComparePhase.CheckSemantic:
+                    lowerer_name: sview = lowerer_names[index]
+                    if not contains_sorted(semantic_names, lowerer_name):
+                        eprint(f"missing_semantic_seed\t{lowerer_name}")
+                        missing <- true
+                    index <- index + 1
+                    -> Compare
+
+                Compare, ComparePhase.Done:
+                    break
+
+            if missing:
+                return 1i64
+
+            println("builtin surface audit: semantic seeds cover all direct global spellings; registry identity handles global lowering")
+            return 0i64
+
+
+def main(arguments: darray[sview]) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, File.Read]:
+    if arguments.count > 1:
+        eprint("usage: builtin surface audit [source-root]")
+        return 2i64
+
+    source_root: mutable sview = "."
+    if arguments.count == 1:
+        source_root <- arguments[0]
+        if source_root == "":
+            eprint("usage: builtin surface audit [source-root]")
+            return 2i64
+
+    return EsBuiltinSurfaceAudit::run(source_root)

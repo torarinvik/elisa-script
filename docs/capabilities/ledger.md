@@ -1085,3 +1085,12 @@ exhaustion state. The focused
 differential fixture, documentation, and check_differential_timeout_shrink.sh
 audit are static evidence; host process control and fresh-world reruns remain
 open.
+
+The A01 builtin-surface audit now also has a bounded Elisascript candidate in
+`scripts/check_builtin_surface.elisascript`, plus positive, missing-registry-row,
+and mismatched-consumer source fixtures with expected output. It checks direct
+global lowerer spellings against both semantic seeds and `typed_builtin_names()`;
+the optional source-root argument makes the reference and candidate address the
+same fixture tree. This is static implementation evidence only. Candidate
+compilation, shell execution, and fixture parity remain suspended pending
+explicit validation reauthorization.
