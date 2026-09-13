@@ -721,17 +721,23 @@ start-token identity for every declared member; canonicalizes member order with
 bounded in-place heapsort; checks uniqueness/order in linear time; and locates
 the root with binary search. It records graceful request/ack, bounded polls,
 force escalation, clean initial counters, identity-bound reaped accounting,
-cancellation intent, timeout, and failure as explicit state-machine edges. A
-`ReportMemberReaped` event carries a full `(pid, start_token)` identity, supports
-arbitrary observed reap order, and rejects duplicates, unknown members, and
-stale generations. Per-member reaped flags must match the summary count, and
-`Reaped` is refused until every declared member is accounted for. Impossible
-phase/accounting shapes are rejected, including polls, force attempts, or
-reaps during graceful request; force attempts or reaps during graceful wait;
-and a force-requested state with no attempt. This is structural validation of
-host-reported evidence, not proof that the inventory is complete or syscalls
-actually reaped those processes. The focused IR
-fixture, namespace inclusion, documentation, and check_process_termination.sh
+cancellation intent, timeout, and failure as explicit state-machine edges. The
+`report_process_termination_reaps` transition accepts an unordered nonempty
+batch of full `(pid, start_token)` identities; after readiness and size checks
+it sorts in place and preflights all members before atomically updating reaped
+flags and the summary count. It rejects duplicate, unknown, already-reaped, and
+stale-generation identities; receipt-validation failures leave the batch
+sorted. One full-group batch avoids the full membership scan per child; repeated
+small batches and many poll transitions still pay per-call validation cost.
+Per-member reaped flags must match the summary
+count, and `Reaped` is refused until every declared member is accounted for.
+Impossible records are rejected if they remain in `GracefulRequested` with
+polls, force attempts, or reaps, remain in `GracefulWaiting` with force attempts
+or reaps, or enter `ForceRequested` without an attempt. Valid force/reap
+transitions from `GracefulWaiting` update the state accordingly. This is
+structural validation of host-reported evidence, not proof that the
+inventory is complete or syscalls actually reaped those processes. The focused
+IR fixture, namespace inclusion, documentation, and check_process_termination.sh
 audit are static evidence; platform signal delivery, PID-generation lookup,
 wait/reap calls, descendant races, and executed cleanup evidence remain host
 work.

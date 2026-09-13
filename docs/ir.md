@@ -2271,16 +2271,24 @@ polling or escalating. Member records are kept in strictly ascending PID order:
 admission, validation rejects unsorted or duplicate PIDs in one linear pass,
 and root lookup uses binary search. Force attempts and polls are bounded;
 planned and running sessions start with clean poll/force/reap accounting;
-`ReportMemberReaped` carries a full `(pid, start_token)` identity and can report
-members in any observed order. Duplicate reports, unknown members, and stale or
-wrong-generation identities are rejected; each member's reaped flag is checked
-against the summary count, and `Reaped` is impossible until every declared
-member is accounted for. Phase validation rejects polls, force attempts, or
-reaps during graceful request, force attempts or reaps during graceful wait,
-and force-requested state without an attempt. `Cancel` records cancellation
-intent without weakening the same graceful/force/reap sequence, while timeout and
-failure remain distinct terminal outcomes. This module never sends signals or
-calls `waitpid`: it validates host-reported identities and accounting, but
+`report_process_termination_reaps` accepts a nonempty batch of full
+`(pid, start_token)` identities in any input order. After readiness and size
+checks, it sorts the batch in place, preflights every identity and duplicate
+before mutating the session, and then commits all receipts together. Unknown
+members, stale generations, and already-reaped identities are rejected without
+partially changing session accounting; receipt-validation failures leave the
+batch sorted. Per-member reaped flags are checked against the summary count, and
+`Reaped` is impossible until every declared member is accounted for. A single
+full-group batch avoids a full membership scan for every child report; repeated
+small batches and many poll transitions still pay the full session-validation
+cost per call. Phase validation rejects impossible records that remain in
+`GracefulRequested` after polls, force attempts, or reaps, or in
+`GracefulWaiting` after force attempts or reaps; `ForceRequested` also requires
+an attempt. The corresponding valid transitions from `GracefulWaiting` move
+the state to `Reaping` or `ForceRequested`. `Cancel` records cancellation
+intent without weakening the same graceful/force/reap sequence, while timeout
+and failure remain distinct terminal outcomes. This module never sends signals
+or calls `waitpid`: it validates host-reported identities and accounting, but
 cannot prove the host inventory is complete or that a reaped flag came from an
 operating-system observation rather than an externally assembled record.
 

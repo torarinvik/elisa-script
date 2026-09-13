@@ -38,7 +38,9 @@ for boundary in \
     'ProcessTerminationEvent.GracefulAck' \
     'ProcessTerminationEvent.RequestForce' \
     'ProcessTerminationEvent.ForceAck' \
-    'ProcessTerminationEvent.ReportMemberReaped' \
+    'struct ProcessTerminationReapBatch:' \
+    'process_termination_sort_reap_identities' \
+    'def report_process_termination_reaps\(' \
     'struct ProcessTerminationIdentity:' \
     'process_termination_identity_valid' \
     'expected_member.reaped' \
@@ -50,6 +52,8 @@ for boundary in \
     'ProcessTerminationError.MemberOrderInvalid' \
     'ProcessTerminationError.ReapCountInvalid' \
     'ProcessTerminationError.ReapIdentityInvalid' \
+    'ProcessTerminationError.ReapBatchEmpty' \
+    'ProcessTerminationError.ReapBatchTooLarge' \
     'reaped_count' \
     'ProcessTerminationState.Planned and' \
     'ProcessTerminationState.Running and' \
@@ -67,10 +71,14 @@ for fixture_pattern in \
     'typed_process_termination_contract_bounds_escalation_and_reaping' \
     'ProcessTerminationEvent.RequestGraceful' \
     'ProcessTerminationEvent.RequestForce' \
-    'ProcessTerminationEvent.ReportMemberReaped' \
-    'ProcessTerminationIdentity{pid: 102, start_token: 2}' \
+    'report_process_termination_reaps' \
+    'ProcessTerminationReapBatch\{members: \[ProcessTerminationIdentity\{pid: 103, start_token: 3\}' \
     'wrong_generation' \
     'unknown_member' \
+    'bad_mixed_batch' \
+    'duplicate_in_batch' \
+    'empty_reap_batch' \
+    'oversized_reap_batch' \
     'duplicate_reap' \
     'forged_reap_count' \
     'impossible_graceful_reap' \
@@ -83,6 +91,8 @@ for fixture_pattern in \
     'ProcessTerminationError.MemberOrderInvalid' \
     'ProcessTerminationError.DuplicateMember' \
     'ProcessTerminationError.ReapIdentityInvalid' \
+    'ProcessTerminationError.ReapBatchEmpty' \
+    'ProcessTerminationError.ReapBatchTooLarge' \
     'ProcessTerminationError.AccountingInvalid'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
