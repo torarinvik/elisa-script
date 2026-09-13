@@ -518,9 +518,15 @@ silently overrun parallelism or abandon children. A node start is admitted only
 after every named dependency is `Succeeded`, so dependency readiness cannot be
 forged by an otherwise valid topological graph. Aggregate counters are
 reconciled with node states, and terminal graph states reject forged progress
-or unfinished completion; a failure is admitted only when no sibling is still
-running, then marks every remaining planned node as `Cancelled` before the
-failed graph reaches its terminal state.
+or unfinished completion. A node failure is latched immediately, all remaining
+planned nodes become `Cancelled`, and the graph enters `Failing` while active
+siblings are stopped. New starts are forbidden in that state; sibling exits can
+still be accounted individually, or host-confirmed stop/reap acknowledgement
+drains the remaining siblings before the graph reaches `Failed`.
+Graph validation keeps `Running`, `Failing`, `Cancelling`, `Succeeded`,
+`Failed`, and `Cancelled` shapes disjoint: failure cannot be acknowledged as
+ordinary cancellation, and success/cancellation must contain the corresponding
+node outcomes.
 Aggregate log admission proves the accumulated log total before subtracting
 each node's remaining log capacity.
 Cancellation acknowledgement also accounts any still-running nodes as
@@ -3425,16 +3431,18 @@ subtraction-safe steps before active-node capacity is computed;
 cache hits must also consume a currently queued ready node, preventing an
 out-of-order cache completion after queue corruption; validation also rejects
 cache entries for unknown graph nodes and manually
-injected queue entries whose dependencies are not complete. Cancellation
-Cancellation is rejected once the embedded graph has already succeeded;
-acknowledgement is admitted only after active work reaches zero, and a ready
-scheduler cannot carry a pre-injected dispatch queue (preloaded cache entries
-remain valid for the first refresh).
+injected queue entries whose dependencies are not complete. Cancellation is
+rejected once the embedded graph has already succeeded, and a ready scheduler
+cannot carry a pre-injected dispatch queue (preloaded cache entries remain
+valid for the first refresh).
 The scheduler mirrors its active/completed ledger into the embedded graph and
 reconciles both state machines, so a forged complete or failed scheduler cannot
 hide graph progress. Cancellation acknowledgement drains the ready queue and
 marks all remaining planned nodes cancelled, so the terminal scheduler and graph
 ledgers contain no pending work. Failure follows the same fail-closed rule:
-active siblings reject the failure edge, while an admitted failure cancels
-remaining planned nodes, clears the ready queue, and requires complete
-terminal accounting.
+the failing node is recorded immediately, remaining planned nodes are
+cancelled, and the scheduler enters `Failing` while active siblings stop. The
+ready queue is cleared and dispatch/cache hits are blocked; sibling results may
+still be accounted, or host-confirmed stop/reap acknowledgement drains them.
+Only then does the scheduler reach `Failed`, preserving the original failure
+instead of reporting ordinary user cancellation.

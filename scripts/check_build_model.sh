@@ -23,6 +23,7 @@ for declaration in \
     'Limits::LOG_BYTES' \
     'const enum BuildNodeState of u8:' \
     'const enum BuildGraphState of u8:' \
+    'BuildGraphState.Failing' \
     'const enum BuildGraphEvent of u8:' \
     'struct BuildNode:' \
     'struct BuildGraph:' \
@@ -41,7 +42,15 @@ for boundary in \
     'LogLimitExceeded' \
     'total_log_bytes > Limits::LOG_BYTES' \
     'node.log_bytes > Limits::LOG_BYTES - total_log_bytes' \
-    'FailureNotReady' \
+    'planned_nodes' \
+    'graph.failed_nodes == 0 or graph.active_nodes == 0 or planned_nodes != 0' \
+    'failure_in_progress' \
+    'ack_failure' \
+    'cancelled_nodes' \
+    'graph.failed_nodes != 0 or cancelled_nodes != 0 or graph.completed_nodes >= graph.nodes.count' \
+    'graph.active_nodes != 0 or graph.completed_nodes != graph.nodes.count or graph.failed_nodes != 0 or cancelled_nodes == 0' \
+    'graph.failed_nodes != 0 or cancelled_nodes == 0' \
+    'or cancelled_nodes != 0' \
     'CancelNotReady' \
     'terminal_nodes' \
     'graph.state == BuildGraphState.Succeeded' \
@@ -58,7 +67,16 @@ for fixture_pattern in \
     'typed_build_graph_contract_is_ordered_bounded_and_cancelable' \
     'BuildGraphEvent.NodeStart' \
     'BuildGraphEvent.NodeFailure' \
+    'BuildGraphState.Failing' \
+    'BuildGraphEvent.CancelAck' \
     'active_graph' \
+    'forged_cancelling_failure' \
+    'forged_cancelling_complete' \
+    'forged_cancelling_cancelled' \
+    'forged_cancelled_success' \
+    'forged_all_success_cancelled_state' \
+    'graph_success_during_drain' \
+    'cancel_after_failure' \
     'BuildContractError.DependencyOrderInvalid'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
@@ -66,4 +84,4 @@ done
 rg -Fq '`EsBuild` is the shell-replacement boundary' "$docs"
 rg -Fq 'P10 build-graph follow-up' "$plan"
 
-printf 'build model audit: deterministic dependency ordering, bounded parallelism/logs, and cancellation are present\n'
+printf 'build model audit: deterministic dependencies, bounded parallelism/logs, and fail-draining/cancellation are present\n'

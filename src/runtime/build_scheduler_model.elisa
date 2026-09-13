@@ -16,6 +16,7 @@ module EsBuildScheduler:
         const enum BuildSchedulerState of u8:
             Ready
             Running
+            Failing
             Cancelling
             Complete
             Failed
@@ -31,6 +32,8 @@ module EsBuildScheduler:
             NodeFail
             Complete
             Cancel
+            # Host confirms all active children stopped/reaped. In Failing this
+            # drains the latched failure and still finishes as Failed.
             CancelAck
 
 
@@ -64,14 +67,13 @@ module EsBuildScheduler:
             CacheMiss
             ActiveLimitExceeded
             NodeAccountingInvalid
-            FailureNotReady
             CompleteNotReady
             CancelNotReady
 
 
     private:
         def scheduler_state_valid(state: BuildSchedulerState) -> bool:
-            return state in {BuildSchedulerState.Ready, BuildSchedulerState.Running, BuildSchedulerState.Cancelling, BuildSchedulerState.Complete, BuildSchedulerState.Failed, BuildSchedulerState.Cancelled}
+            return state in {BuildSchedulerState.Ready, BuildSchedulerState.Running, BuildSchedulerState.Failing, BuildSchedulerState.Cancelling, BuildSchedulerState.Complete, BuildSchedulerState.Failed, BuildSchedulerState.Cancelled}
 
 
         def scheduler_event_valid(event: BuildSchedulerEvent) -> bool:
@@ -141,6 +143,8 @@ module EsBuildScheduler:
                 raise BuildSchedulerError.NodeAccountingInvalid if scheduler.graph.state != BuildGraphState.Planned or scheduler.active_nodes != 0 or scheduler.completed_nodes != 0 or scheduler.cache_hits != 0
             elif scheduler.state == BuildSchedulerState.Running:
                 raise BuildSchedulerError.NodeAccountingInvalid if scheduler.graph.state != BuildGraphState.Running and scheduler.graph.state != BuildGraphState.Succeeded
+            elif scheduler.state == BuildSchedulerState.Failing:
+                raise BuildSchedulerError.NodeAccountingInvalid if scheduler.graph.state != BuildGraphState.Failing or scheduler.active_nodes == 0 or scheduler.ready_queue.count != 0
             elif scheduler.state == BuildSchedulerState.Cancelling:
                 raise BuildSchedulerError.NodeAccountingInvalid if scheduler.graph.state != BuildGraphState.Cancelling
             elif scheduler.state == BuildSchedulerState.Complete:
@@ -204,10 +208,10 @@ module EsBuildScheduler:
                 scheduler.graph.state <- BuildGraphState.Succeeded if scheduler.graph.completed_nodes == scheduler.graph.nodes.count
                 try scheduler_rebuild_ready(scheduler)
             elif event == BuildSchedulerEvent.NodeComplete or event == BuildSchedulerEvent.NodeFail:
-                raise BuildSchedulerError.InvalidState if scheduler.state != BuildSchedulerState.Running
+                raise BuildSchedulerError.InvalidState if scheduler.state != BuildSchedulerState.Running and scheduler.state != BuildSchedulerState.Failing
                 raise BuildSchedulerError.NodeIndexInvalid if node_index >= scheduler.graph.nodes.count
                 raise BuildSchedulerError.NodeAccountingInvalid if scheduler.active_nodes == 0 or scheduler.graph.nodes[node_index].state != BuildNodeState.Running
-                raise BuildSchedulerError.FailureNotReady if event == BuildSchedulerEvent.NodeFail and scheduler.active_nodes != 1
+                failure_in_progress: bool = scheduler.state == BuildSchedulerState.Failing or event == BuildSchedulerEvent.NodeFail
                 scheduler.graph.nodes[node_index].state <- BuildNodeState.Succeeded if event == BuildSchedulerEvent.NodeComplete else BuildNodeState.Failed
                 scheduler.active_nodes <- scheduler.active_nodes - 1
                 scheduler.completed_nodes <- scheduler.completed_nodes + 1
@@ -221,8 +225,13 @@ module EsBuildScheduler:
                             scheduler.completed_nodes <- scheduler.completed_nodes + 1
                             scheduler.graph.completed_nodes <- scheduler.graph.completed_nodes + 1
                     scheduler.ready_queue <- []
-                    scheduler.graph.state <- BuildGraphState.Failed
-                    scheduler.state <- BuildSchedulerState.Failed
+                if failure_in_progress:
+                    if scheduler.active_nodes == 0:
+                        scheduler.graph.state <- BuildGraphState.Failed
+                        scheduler.state <- BuildSchedulerState.Failed
+                    else:
+                        scheduler.graph.state <- BuildGraphState.Failing
+                        scheduler.state <- BuildSchedulerState.Failing
                 else:
                     scheduler.graph.state <- BuildGraphState.Succeeded if scheduler.graph.completed_nodes == scheduler.graph.nodes.count
                     try scheduler_rebuild_ready(scheduler)
@@ -235,7 +244,8 @@ module EsBuildScheduler:
                 scheduler.state <- BuildSchedulerState.Cancelling
                 scheduler.graph.state <- BuildGraphState.Cancelling
             elif event == BuildSchedulerEvent.CancelAck:
-                raise BuildSchedulerError.CancelNotReady if scheduler.state != BuildSchedulerState.Cancelling
+                raise BuildSchedulerError.CancelNotReady if scheduler.state != BuildSchedulerState.Cancelling and scheduler.state != BuildSchedulerState.Failing
+                ack_failure: bool = scheduler.state == BuildSchedulerState.Failing
                 for index in 0..<scheduler.graph.nodes.count |scheduler|:
                     if scheduler.graph.nodes[index].state == BuildNodeState.Running:
                         scheduler.graph.nodes[index].state <- BuildNodeState.Cancelled
@@ -248,6 +258,6 @@ module EsBuildScheduler:
                         scheduler.completed_nodes <- scheduler.completed_nodes + 1
                         scheduler.graph.completed_nodes <- scheduler.graph.completed_nodes + 1
                 scheduler.ready_queue <- []
-                scheduler.state <- BuildSchedulerState.Cancelled
-                scheduler.graph.state <- BuildGraphState.Cancelled
+                scheduler.state <- BuildSchedulerState.Failed if ack_failure else BuildSchedulerState.Cancelled
+                scheduler.graph.state <- BuildGraphState.Failed if ack_failure else BuildGraphState.Cancelled
             return scheduler.state

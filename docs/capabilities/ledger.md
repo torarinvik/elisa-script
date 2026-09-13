@@ -673,9 +673,13 @@ ES-SCRIPT-002 | EsBuildScheduler supplies deterministic dependency-ready
 queues with clean ready-state admission, exact fingerprint cache admission, bounded parallel dispatch,
 completion/failure accounting, queue-gated cache hits, and cancellation transitions over EsBuild;
 cancellation cannot relabel an already succeeded graph.
-Failure is fail-closed while active siblings remain; an admitted failure cancels
-remaining planned nodes, clears the ready queue, and requires all terminal
-ledgers to account for every graph node.
+Failure is latched immediately even while active siblings remain. The graph and
+scheduler enter `Failing`, cancel unstarted nodes, clear the ready queue, and
+reject new dispatch/cache hits. Sibling results can be reported during draining;
+host-confirmed stop/reap acknowledgement ends it as `Failed`, distinct from
+ordinary `Cancelled`, with all graph nodes accounted for.
+State validation rejects contradictory failure, cancellation, or success
+shapes before an event can advance them.
 The focused IR fixture, namespace inclusion, documentation, and
 check_build_scheduler.sh audit are static evidence; process launch, cache
 persistence, and host cancellation adapters remain open.

@@ -26,6 +26,7 @@ module EsBuild:
         const enum BuildGraphState of u8:
             Planned
             Running
+            Failing
             Cancelling
             Succeeded
             Failed
@@ -38,6 +39,8 @@ module EsBuild:
             NodeSuccess
             NodeFailure
             Cancel
+            # Host confirms all active siblings stopped/reaped. In Failing this
+            # drains the failure without converting it into user cancellation.
             CancelAck
 
 
@@ -78,7 +81,6 @@ module EsBuild:
             LogLimitExceeded
             NodeIndexInvalid
             NodeAccountingInvalid
-            FailureNotReady
             CancelNotReady
 
 
@@ -88,7 +90,7 @@ module EsBuild:
 
 
         def build_graph_state_valid(state: BuildGraphState) -> bool:
-            return state in {BuildGraphState.Planned, BuildGraphState.Running, BuildGraphState.Cancelling, BuildGraphState.Succeeded, BuildGraphState.Failed, BuildGraphState.Cancelled}
+            return state in {BuildGraphState.Planned, BuildGraphState.Running, BuildGraphState.Failing, BuildGraphState.Cancelling, BuildGraphState.Succeeded, BuildGraphState.Failed, BuildGraphState.Cancelled}
 
 
         def build_event_valid(event: BuildGraphEvent) -> bool:
@@ -114,6 +116,8 @@ module EsBuild:
             raise BuildContractError.NodeAccountingInvalid if graph.active_nodes > graph.max_parallel or graph.completed_nodes > graph.nodes.count or graph.failed_nodes > graph.completed_nodes
             raise BuildContractError.LogLimitExceeded if graph.log_bytes > Limits::LOG_BYTES
             running_nodes: mutable usize = 0
+            planned_nodes: mutable usize = 0
+            cancelled_nodes: mutable usize = 0
             terminal_nodes: mutable usize = 0
             failed_nodes: mutable usize = 0
             total_log_bytes: mutable usize = 0
@@ -122,6 +126,8 @@ module EsBuild:
                 raise BuildContractError.InvalidNodeName if not build_name_valid(node.name)
                 raise BuildContractError.InvalidNodeState if not build_node_state_valid(node.state)
                 running_nodes <- running_nodes + 1 if node.state == BuildNodeState.Running
+                planned_nodes <- planned_nodes + 1 if node.state == BuildNodeState.Planned
+                cancelled_nodes <- cancelled_nodes + 1 if node.state == BuildNodeState.Cancelled
                 terminal_nodes <- terminal_nodes + 1 if node.state == BuildNodeState.Succeeded or node.state == BuildNodeState.Failed or node.state == BuildNodeState.Cancelled
                 failed_nodes <- failed_nodes + 1 if node.state == BuildNodeState.Failed
                 raise BuildContractError.FingerprintMissing if node.fingerprint == 0
@@ -144,13 +150,17 @@ module EsBuild:
             if graph.state == BuildGraphState.Planned:
                 raise BuildContractError.NodeAccountingInvalid if graph.active_nodes != 0 or graph.completed_nodes != 0 or graph.failed_nodes != 0
             elif graph.state == BuildGraphState.Running:
-                raise BuildContractError.NodeAccountingInvalid if graph.failed_nodes != 0 or graph.completed_nodes >= graph.nodes.count
+                raise BuildContractError.NodeAccountingInvalid if graph.failed_nodes != 0 or cancelled_nodes != 0 or graph.completed_nodes >= graph.nodes.count
+            elif graph.state == BuildGraphState.Failing:
+                raise BuildContractError.NodeAccountingInvalid if graph.failed_nodes == 0 or graph.active_nodes == 0 or planned_nodes != 0
+            elif graph.state == BuildGraphState.Cancelling:
+                raise BuildContractError.NodeAccountingInvalid if graph.failed_nodes != 0 or cancelled_nodes != 0 or graph.completed_nodes >= graph.nodes.count
             elif graph.state == BuildGraphState.Succeeded:
-                raise BuildContractError.NodeAccountingInvalid if graph.active_nodes != 0 or graph.completed_nodes != graph.nodes.count or graph.failed_nodes != 0
+                raise BuildContractError.NodeAccountingInvalid if graph.active_nodes != 0 or graph.completed_nodes != graph.nodes.count or graph.failed_nodes != 0 or cancelled_nodes != 0
             elif graph.state == BuildGraphState.Failed:
                 raise BuildContractError.NodeAccountingInvalid if graph.failed_nodes == 0 or graph.active_nodes != 0 or graph.completed_nodes != graph.nodes.count
             elif graph.state == BuildGraphState.Cancelled:
-                raise BuildContractError.NodeAccountingInvalid if graph.active_nodes != 0 or graph.completed_nodes != graph.nodes.count or graph.failed_nodes != 0
+                raise BuildContractError.NodeAccountingInvalid if graph.active_nodes != 0 or graph.completed_nodes != graph.nodes.count or graph.failed_nodes != 0 or cancelled_nodes == 0
             for index in 0..<graph.nodes.count |graph|:
                 for earlier in 0..<index |graph|:
                     raise BuildContractError.DuplicateNode if graph.nodes[earlier].name == graph.nodes[index].name
@@ -174,24 +184,24 @@ module EsBuild:
                 graph.nodes[node_index].state <- BuildNodeState.Running
                 graph.active_nodes <- graph.active_nodes + 1
             elif event == BuildGraphEvent.NodeSuccess or event == BuildGraphEvent.NodeFailure:
-                raise BuildContractError.InvalidGraphState if graph.state != BuildGraphState.Running
+                raise BuildContractError.InvalidGraphState if graph.state != BuildGraphState.Running and graph.state != BuildGraphState.Failing
                 raise BuildContractError.NodeIndexInvalid if node_index >= graph.nodes.count
                 raise BuildContractError.InvalidNodeState if graph.nodes[node_index].state != BuildNodeState.Running
                 raise BuildContractError.NodeAccountingInvalid if graph.active_nodes == 0
-                raise BuildContractError.FailureNotReady if event == BuildGraphEvent.NodeFailure and graph.active_nodes != 1
+                failure_in_progress: bool = graph.state == BuildGraphState.Failing or event == BuildGraphEvent.NodeFailure
                 graph.nodes[node_index].state <- BuildNodeState.Succeeded if event == BuildGraphEvent.NodeSuccess else BuildNodeState.Failed
                 graph.active_nodes <- graph.active_nodes - 1
                 graph.completed_nodes <- graph.completed_nodes + 1
                 graph.failed_nodes <- graph.failed_nodes + 1 if event == BuildGraphEvent.NodeFailure
-                if event == BuildGraphEvent.NodeFailure or graph.completed_nodes == graph.nodes.count:
-                    if event == BuildGraphEvent.NodeFailure:
-                        for index in 0..<graph.nodes.count |graph|:
-                            if graph.nodes[index].state == BuildNodeState.Planned:
-                                graph.nodes[index].state <- BuildNodeState.Cancelled
-                                graph.completed_nodes <- graph.completed_nodes + 1
-                        graph.state <- BuildGraphState.Failed
-                    else:
-                        graph.state <- BuildGraphState.Succeeded if graph.failed_nodes == 0 and graph.active_nodes == 0 and graph.completed_nodes == graph.nodes.count
+                if event == BuildGraphEvent.NodeFailure:
+                    for index in 0..<graph.nodes.count |graph|:
+                        if graph.nodes[index].state == BuildNodeState.Planned:
+                            graph.nodes[index].state <- BuildNodeState.Cancelled
+                            graph.completed_nodes <- graph.completed_nodes + 1
+                if failure_in_progress:
+                    graph.state <- BuildGraphState.Failed if graph.active_nodes == 0 else BuildGraphState.Failing
+                elif graph.completed_nodes == graph.nodes.count:
+                    graph.state <- BuildGraphState.Succeeded if graph.failed_nodes == 0 and graph.active_nodes == 0
             elif event == BuildGraphEvent.Cancel:
                 if graph.state == BuildGraphState.Planned:
                     for index in 0..<graph.nodes.count |graph|:
@@ -203,7 +213,8 @@ module EsBuild:
                     raise BuildContractError.CancelNotReady if graph.state != BuildGraphState.Running
                     graph.state <- BuildGraphState.Cancelling
             elif event == BuildGraphEvent.CancelAck:
-                raise BuildContractError.CancelNotReady if graph.state != BuildGraphState.Cancelling
+                raise BuildContractError.CancelNotReady if graph.state != BuildGraphState.Cancelling and graph.state != BuildGraphState.Failing
+                ack_failure: bool = graph.state == BuildGraphState.Failing
                 for index in 0..<graph.nodes.count |graph|:
                     if graph.nodes[index].state == BuildNodeState.Running:
                         graph.nodes[index].state <- BuildNodeState.Cancelled
@@ -212,5 +223,5 @@ module EsBuild:
                     elif graph.nodes[index].state == BuildNodeState.Planned:
                         graph.nodes[index].state <- BuildNodeState.Cancelled
                         graph.completed_nodes <- graph.completed_nodes + 1
-                graph.state <- BuildGraphState.Cancelled
+                graph.state <- BuildGraphState.Failed if ack_failure else BuildGraphState.Cancelled
             return graph.state

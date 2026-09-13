@@ -23,6 +23,7 @@ for declaration in \
     'Limits::CACHE_ENTRIES' \
     'EsBuild::Limits::NODES' \
     'const enum BuildSchedulerState of u8:' \
+    'BuildSchedulerState.Failing' \
     'const enum BuildSchedulerEvent of u8:' \
     'struct BuildCacheEntry:' \
     'struct BuildScheduler:' \
@@ -41,7 +42,10 @@ for boundary in \
     'CacheEntryInvalid' \
     'DependencyNotReady' \
     'ActiveLimitExceeded' \
-    'FailureNotReady' \
+    'BuildGraphState.Failing' \
+    'BuildSchedulerState.Failing' \
+    'failure_in_progress' \
+    'ack_failure' \
     'NodeAccountingInvalid' \
     'scheduler.completed_nodes > scheduler.graph.nodes.count' \
     'scheduler.cache_hits > scheduler.completed_nodes' \
@@ -66,7 +70,14 @@ for fixture_pattern in \
     'BuildSchedulerEvent.CacheHit' \
     'BuildSchedulerEvent.Dispatch' \
     'BuildSchedulerEvent.NodeComplete' \
+    'BuildSchedulerEvent.NodeFail' \
+    'BuildSchedulerState.Failing' \
+    'BuildSchedulerEvent.CancelAck' \
     'active_cancel' \
+    'dispatch_after_failure' \
+    'cache_after_failure' \
+    'completed_during_drain' \
+    'forged_cancelling_failure' \
     'BuildSchedulerState.Complete' \
     'completed_cancel_rejected'; do
     rg -Fq "$fixture_pattern" "$fixture"
@@ -77,4 +88,4 @@ rg -Fq 'cache entries for unknown graph nodes' "$docs"
 rg -Fq 'ES-SCRIPT-002 | EsBuildScheduler' "$ledger"
 rg -Fq 'explicit EsBuildScheduler contract' "$plan"
 
-printf 'build scheduler audit: deterministic ready queue, cache admission, bounded dispatch, accounting, and cancellation are present\n'
+printf 'build scheduler audit: deterministic queue, fail-draining, cache admission, bounded dispatch, and cancellation are present\n'
