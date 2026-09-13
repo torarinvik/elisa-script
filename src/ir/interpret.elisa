@@ -409,6 +409,17 @@ extend EsIr:
             operation_id: u64 = 0
 
 
+        const enum ErrorGuardSearchState of u8:
+            Search
+            Done
+
+
+        struct ErrorGuardSearchCursor:
+            state: mutable ErrorGuardSearchState
+            index: mutable usize
+            match_index: mutable usize
+
+
         const enum TerminatorDispatchState of u8:
             Select
             Done
@@ -7220,6 +7231,29 @@ extend EsIr:
             return machine.failure == InterpretFailure.Raised and machine.failure_family == guard.effect_family and machine.failure_operation == guard.effect_operation and (guard.operation_id == 0 or machine.failure_operation_id == 0 or machine.failure_operation_id == guard.operation_id)
 
 
+        def matching_error_guard_index(machine: Machine&, guards: darray[ErrorGuard]&) -> usize:
+            cursor: mutable ErrorGuardSearchCursor = ErrorGuardSearchCursor{state: ErrorGuardSearchState.Search, index: guards.count, match_index: guards.count}
+            machine over cursor.state:
+                state Search
+                start Search
+
+                Search, ErrorGuardSearchState.Search if cursor.index == 0:
+                    cursor.state <- ErrorGuardSearchState.Done
+                    -> Search
+                Search, ErrorGuardSearchState.Search:
+                    cursor.index <- cursor.index - 1
+                    guard: ErrorGuard = guards[cursor.index]
+                    if error_guard_matches(machine, guard):
+                        cursor.match_index <- cursor.index
+                        cursor.state <- ErrorGuardSearchState.Done
+                    -> Search
+
+                Search, ErrorGuardSearchState.Done:
+                    break
+
+            return cursor.match_index
+
+
         def execute_function(machine: mutable Machine&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, handler_stack: mutable darray[sview]&, module: Module&, function_index: usize, arguments: darray[RuntimeValue]&, resume_block: u32 = 0, resume_instruction: usize = 0, initial_ids: darray[u32] = [], initial_values: darray[RuntimeValue] = [], resume_frame: bool = false) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
             if machine.active_calls.count >= ES_RUNTIME_DEFAULT_MAX_EXECUTION_CALL_DEPTH or handler_stack.count >= ES_RUNTIME_DEFAULT_MAX_EXECUTION_CALL_DEPTH:
                 interpret_set_failure(machine, InterpretFailure.OutputLimit)
@@ -8140,9 +8174,13 @@ extend EsIr:
                         if error_guards.count > 0:
                             _ = error_guards.pop()
                     if machine.failure != InterpretFailure.None and not guard_limit_failure and error_guards.count > 0 and error_guard_recoverable(machine.failure):
-                        guard: ErrorGuard = error_guards[error_guards.count - 1]
-                        if error_guard_matches(machine, guard):
-                            _ = error_guards.pop()
+                        matching_index: usize = matching_error_guard_index(machine, error_guards)
+                        if matching_index < error_guards.count:
+                            guard: ErrorGuard = error_guards[matching_index]
+                            # A typed inner catch may not own this error. Unwind it
+                            # and any guards nested inside the nearest matching
+                            # outer catch, preserving only still-active prefixes.
+                            error_guards.truncate(matching_index)
                             handler_stack.truncate(guard.handler_depth)
                             preserve_payloads: bool = guard.effect_family != "" and guard.effect_operation != ""
                             interpret_set_failure(machine, InterpretFailure.None)

@@ -168,6 +168,8 @@ rg -q 'bytecode_direct_nested_recovered_calls_share_step_budget' "$repo_root/tes
 rg -q 'bytecode_direct_only_verifies_then_rejects_fallback' "$repo_root/test/ir/elisascript_bytecode_test.elisa"
 rg -q 'resume_frame: bool = false' "$interpreter"
 rg -q 'interpreter_replays_post_perform_frame_for_each_multi_shot_resume' "$repo_root/test/ir/elisascript_interpreter_test.elisa"
+rg -q 'def matching_error_guard_index' "$interpreter"
+rg -q 'interpreter_searches_outer_typed_catch_after_inner_mismatch' "$repo_root/test/ir/elisascript_interpreter_test.elisa"
 rg -q 'cursor.output_bytes <- output_ledger' "$bytecode"
 rg -q 'output_ledger <- cursor.output_bytes' "$bytecode"
 rg -q 'bytecode_direct_nested_process_output_is_accounted_once' "$repo_root/test/ir/elisascript_bytecode_test.elisa"

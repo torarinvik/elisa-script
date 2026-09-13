@@ -1923,8 +1923,10 @@ dynamically active handler may discharge a covered effect family, while errors
 must still appear explicitly in the caller's error row.
 Fallible value recovery is represented by `ErrorGuardPush`/`ErrorGuardPop`
 instructions around the guarded expression. A recoverable interpreter failure
-transfers to the guard's fallback block, unwinds handlers installed inside the
-guard, and clears the private failure before the fallback runs. Normal execution
+selects the nearest matching guard from innermost to outermost; nonmatching inner
+variant guards are discarded before control transfers to the selected fallback
+block. Recovery unwinds handlers installed inside that guard and clears the
+private failure before the fallback runs. Normal execution
 pops the guard and jumps to the same typed merge block, so `try f() else value`
 never uses a result wrapper or an eagerly evaluated fallback. Malformed runtime
 values and internal control-flow failures remain fatal and cannot be hidden by a
