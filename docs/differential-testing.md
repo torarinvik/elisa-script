@@ -812,13 +812,20 @@ returning `EntryOrderInvalid`. A snapshot must be sealed before comparison, and
 `compare_differential_filesystem_snapshots` merges the ordered streams to report
 the first missing path, kind, content, size, mode, or executable-bit difference.
 The compact snapshot fingerprint is stable for the sealed ordered record. This
-contract performs no filesystem I/O. Entry paths are still borrowed `sview`s,
-so a host collector must retain their backing storage for the complete snapshot
-lifetime; the logical path-byte budget does not itself provide ownership.
+contract performs no filesystem I/O. An input entry's `path` is a transient
+borrowed `sview`, copied into the snapshot's bounded byte arena before an append
+returns; retained records contain offsets and lengths, not pointers into the
+caller's storage. After unordered sorting, the arena is repacked in record order,
+so its span coverage remains exactly verifiable even though the entries have
+moved. Repacking uses at most one additional 64 MiB bounded scratch buffer while
+sealing. Comparison results identify the reference and candidate entries by
+side-specific indices rather than retaining borrowed path views. Use
+`copy_differential_filesystem_entry_path(snapshot, index)` to obtain owned path
+bytes for a report; those copies are independent of later arena relocation.
 During collection, callers must append through the snapshot APIs rather than
-editing the public entry array or accounting fields directly. Sealing rechecks
-all entries and counters before publication, but direct field edits are detected
-there rather than on every append.
+editing the public entry array or accounting fields directly. Sealing and
+validation recheck all spans, arena coverage, entry order, and counters before
+comparison or fingerprinting.
 Host materializers remain responsible for collecting entries and preserving the
 world lifecycle.
 

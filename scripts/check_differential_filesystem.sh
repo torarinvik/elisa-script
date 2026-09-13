@@ -24,6 +24,7 @@ for declaration in \
     'const enum DifferentialFilesystemState of u8:' \
     'const enum DifferentialFilesystemEvent of u8:' \
     'struct DifferentialFilesystemEntry:' \
+    'struct DifferentialFilesystemEntryRecord:' \
     'struct DifferentialFilesystemSnapshot:' \
     'const enum DifferentialFilesystemDifferenceKind of u8:' \
     'struct DifferentialFilesystemDifference:' \
@@ -33,13 +34,16 @@ for declaration in \
     'def seal_unordered_differential_filesystem_snapshot(' \
     'def advance_differential_filesystem_snapshot(' \
     'def differential_filesystem_snapshot_fingerprint(' \
-    'def compare_differential_filesystem_snapshots('; do
+    'def compare_differential_filesystem_snapshots(' \
+    'def copy_differential_filesystem_entry_path('; do
     rg -Fq "$declaration" "$model"
 done
 
 for boundary in \
     'differential_filesystem_path_safe' \
-    'differential_filesystem_text_less' \
+    'differential_filesystem_path_span_safe' \
+    'differential_filesystem_entries_path_data_contiguous' \
+    'differential_filesystem_compact_sorted_path_data' \
     'differential_filesystem_sort_entries' \
     'PathStorageLimitExceeded' \
     'SnapshotAccountingInvalid' \
@@ -49,7 +53,10 @@ for boundary in \
     'MissingReference' \
     'MissingCandidate' \
     'DifferentialFilesystemDifferenceKind.Content' \
-    'DifferentialFilesystemDifferenceKind.Executable'; do
+    'DifferentialFilesystemDifferenceKind.Executable' \
+    'has_reference_entry' \
+    'has_candidate_entry' \
+    'path_data: darray[u8]'; do
     rg -Fq "$boundary" "$model"
 done
 
@@ -61,6 +68,8 @@ for fixture_pattern in \
     'DifferentialFilesystemError.EntryOrderInvalid' \
     'DifferentialFilesystemDifferenceKind.Equal' \
     'DifferentialFilesystemDifferenceKind.Content' \
+    'copy_differential_filesystem_entry_path' \
+    'path_data.count' \
     'differential_filesystem_unordered_batch_is_bounded_sorted_and_sealed' \
     'DifferentialFilesystemError.PathStorageLimitExceeded' \
     'DifferentialFilesystemState.Cancelled'; do

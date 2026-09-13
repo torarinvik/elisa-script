@@ -790,15 +790,19 @@ up to 1,048,576 entries, 256 MiB aggregate content accounting, stable
 fingerprints, and first-difference comparison for kind/content/size/mode and
 executable metadata. Ordered streaming and unordered collection with in-place
 O(n log n) heapsort both seal into the same ordered contract; duplicate paths
-fail the batch explicitly. Entry paths remain borrowed `sview`s, so the path
-budget does not solve backing-storage ownership, and callers must not mutate
-public collection fields directly (seal audits them, but not on every append).
+fail the batch explicitly. Submitted paths are copied into a bounded
+snapshot-owned byte arena; stored entries contain checked offsets and lengths,
+and the arena is repacked after unordered sorting so exact span coverage remains
+auditable. Comparison reports carry side-specific entry indices instead of
+borrowed path views, with a copying accessor for report paths. Callers must not
+mutate public collection fields directly; seal and validation audit spans,
+coverage, ordering, and accounting.
 The focused differential fixture, namespace inclusion, documentation, and
-check_differential_filesystem.sh audit are static evidence; post-run host
-enumeration, retained path ownership, replay-integrated restoration, and
-crash-safe restore remain open. A separate
-Darwin source slice now materializes an admitted initial world and provides
-bounded cleanup, but it has not been executed or integrated with replay.
+check_differential_filesystem.sh audit are static evidence; post-run
+host enumeration, replay-integrated restoration, and crash-safe restore remain
+open. A separate Darwin source slice now materializes an admitted initial world
+and provides bounded cleanup, but it has not been executed or integrated with
+replay.
 
 ES-SCRIPT-015 | EsDifferentialOrder supplies a bounded dual-order execution
 session, initial/final world fingerprints, duplicate-order rejection, and typed
