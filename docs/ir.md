@@ -2271,6 +2271,14 @@ polling or escalating. Member records are kept in strictly ascending PID order:
 admission, validation rejects unsorted or duplicate PIDs in one linear pass,
 and root lookup uses binary search. Force attempts and polls are bounded;
 planned and running sessions start with clean poll/force/reap accounting;
+`record_process_termination_polls` records a positive count of already-completed
+host polls only in `GracefulWaiting` or `Reaping`. The cumulative count spans
+both phases, may reach the configured ceiling exactly, and rejects an over-limit
+batch without changing the session. Empty batches are rejected, and timeout
+remains a separate explicit state-machine event rather than an inferred poll
+result. Hosts can aggregate multiple observations into one ledger update;
+each update still performs full O(n) session validation, so frequent small poll
+batches retain that cost while aggregation reduces validation frequency.
 `report_process_termination_reaps` accepts a nonempty batch of full
 `(pid, start_token)` identities in any input order. After readiness and size
 checks, it sorts the batch in place, preflights every identity and duplicate
@@ -2280,8 +2288,8 @@ partially changing session accounting; receipt-validation failures leave the
 batch sorted. Per-member reaped flags are checked against the summary count, and
 `Reaped` is impossible until every declared member is accounted for. A single
 full-group batch avoids a full membership scan for every child report; repeated
-small batches and many poll transitions still pay the full session-validation
-cost per call. Phase validation rejects impossible records that remain in
+small reap batches still pay the full session-validation cost per call. Phase
+validation rejects impossible records that remain in
 `GracefulRequested` after polls, force attempts, or reaps, or in
 `GracefulWaiting` after force attempts or reaps; `ForceRequested` also requires
 an attempt. The corresponding valid transitions from `GracefulWaiting` move

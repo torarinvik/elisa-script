@@ -27,6 +27,7 @@ for declaration in \
     'def advance_process_termination\('; do
     rg -q "$declaration" "$model"
 done
+! rg -q '^[[:space:]]+Poll$' "$model"
 
 for boundary in \
     'Limits::MEMBERS' \
@@ -51,6 +52,8 @@ for boundary in \
     'process_termination_member_index' \
     'ProcessTerminationError.MemberOrderInvalid' \
     'ProcessTerminationError.ReapCountInvalid' \
+    'def record_process_termination_polls\(' \
+    'poll_count > session.policy.max_polls - session.polls' \
     'ProcessTerminationError.ReapIdentityInvalid' \
     'ProcessTerminationError.ReapBatchEmpty' \
     'ProcessTerminationError.ReapBatchTooLarge' \
@@ -62,6 +65,7 @@ for boundary in \
     'session.state == ProcessTerminationState.ForceRequested and session.force_attempts == 0' \
     'session.state == ProcessTerminationState.Reaped' \
     'ProcessTerminationError.PollLimitExceeded' \
+    'ProcessTerminationError.PollBatchEmpty' \
     'ProcessTerminationError.ForceLimitExceeded'; do
     rg -q "$boundary" "$model"
 done
@@ -71,6 +75,13 @@ for fixture_pattern in \
     'typed_process_termination_contract_bounds_escalation_and_reaping' \
     'ProcessTerminationEvent.RequestGraceful' \
     'ProcessTerminationEvent.RequestForce' \
+    'record_process_termination_polls(session, 3)' \
+    'premature_poll_batch' \
+    'empty_poll_batch' \
+    'excessive_poll_batch' \
+    'timeout_session' \
+    'ProcessTerminationEvent.Timeout' \
+    'ProcessTerminationState.TimedOut' \
     'report_process_termination_reaps' \
     'ProcessTerminationReapBatch\{members: \[ProcessTerminationIdentity\{pid: 103, start_token: 3\}' \
     'wrong_generation' \
@@ -91,6 +102,9 @@ for fixture_pattern in \
     'ProcessTerminationError.MemberOrderInvalid' \
     'ProcessTerminationError.DuplicateMember' \
     'ProcessTerminationError.ReapIdentityInvalid' \
+    'ProcessTerminationError.PollBatchEmpty' \
+    'ProcessTerminationError.PollLimitExceeded' \
+    'ProcessTerminationError.InvalidTransition' \
     'ProcessTerminationError.ReapBatchEmpty' \
     'ProcessTerminationError.ReapBatchTooLarge' \
     'ProcessTerminationError.AccountingInvalid'; do
@@ -99,4 +113,4 @@ done
 
 rg -q 'EsProcessTermination::ProcessTerminationSession' "$docs"
 rg -q 'ES-SCRIPT-037' "$ledger"
-printf 'process termination audit: canonical bounded membership and identity-bound graceful/force reaping are present\n'
+printf 'process termination audit: bounded membership, batched polls, and identity-bound graceful/force reaping are present\n'

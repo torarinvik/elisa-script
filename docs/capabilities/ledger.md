@@ -727,8 +727,14 @@ batch of full `(pid, start_token)` identities; after readiness and size checks
 it sorts in place and preflights all members before atomically updating reaped
 flags and the summary count. It rejects duplicate, unknown, already-reaped, and
 stale-generation identities; receipt-validation failures leave the batch
-sorted. One full-group batch avoids the full membership scan per child; repeated
-small batches and many poll transitions still pay per-call validation cost.
+sorted. `record_process_termination_polls` accepts positive counts of completed
+host polls only in `GracefulWaiting` or `Reaping`, carries the count across both
+phases, rejects an empty batch, permits an exact ceiling, and rejects an
+excessive batch without mutation. Timeout remains explicit. Poll aggregation
+reduces validation frequency, but every poll-accounting call still fully
+validates the O(n) session;
+frequent small reap or poll batches retain per-call validation cost. One
+full-group reap batch avoids the full membership scan per child.
 Per-member reaped flags must match the summary
 count, and `Reaped` is refused until every declared member is accounted for.
 Impossible records are rejected if they remain in `GracefulRequested` with
@@ -740,7 +746,8 @@ inventory is complete or syscalls actually reaped those processes. The focused
 IR fixture, namespace inclusion, documentation, and check_process_termination.sh
 audit are static evidence; platform signal delivery, PID-generation lookup,
 wait/reap calls, descendant races, and executed cleanup evidence remain host
-work.
+work. The poll-batching fixture and static audit are not executed while
+compiler validation remains suspended.
 
 ES-SCRIPT-008 | EsCliWorkflow maps every accepted launcher mode to a fixed
 typed step sequence, validates mode-specific ordering and state/cursor
