@@ -18,6 +18,10 @@ for required_file in "$interpreter" "$interpreter_tests" "$ir_tests" "$docs" "$p
 done
 
 for required_text in \
+    'const module ContinuationLimits:' \
+    'ContinuationLimits::FRAMES' \
+    'ContinuationLimits::VALUES' \
+    'ContinuationLimits::RESUMPTIONS' \
     'value_snapshot_start: usize' \
     'value_snapshot_count: usize' \
     'frame.snapshot_count != frame.value_snapshot_count' \
