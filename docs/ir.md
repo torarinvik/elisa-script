@@ -80,7 +80,7 @@ filesystem operations and forwarding functions consumed by `EsIr` and
 cannot bind the platform ABI symbol directly or accidentally bypass the typed
 effect/error boundary. The public forwarding names retain the existing
 `elisascript_posix_*` source contract while preserving the native libc symbol.
-`EsRuntime::ES_RUNTIME_CONTRACT_VERSION` is metadata for cache/tooling checks,
+`EsRuntime::Contract::VERSION` is metadata for cache/tooling checks,
 not a promise of cross-platform ABI compatibility. A non-POSIX adapter must
 extend the same namespace with equivalent typed operations rather than leaking
 new global declarations.

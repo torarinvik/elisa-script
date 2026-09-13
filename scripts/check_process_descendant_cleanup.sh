@@ -49,9 +49,9 @@ assert_group_cleanup_after_reap() {
 assert_group_cleanup_after_reap "$interpreter" process_wait_terminate
 assert_group_cleanup_after_reap "$differential" differential_terminate_process
 
-rg -q 'ES_RUNTIME_ERRNO_EACCES: int = 13' "$runtime"
-rg -q 'return true if errno\[0\] == ES_RUNTIME_ERRNO_EACCES' "$interpreter"
-rg -q 'return true if errno\[0\] == ES_RUNTIME_ERRNO_EACCES' "$differential"
+rg -q 'EACCES: int = 13' "$runtime"
+rg -q 'return true if errno\[0\] == DarwinErrno::EACCES' "$interpreter"
+rg -q 'return true if errno\[0\] == DarwinErrno::EACCES' "$differential"
 
 rg -q 'surviving descendants|leader exit.*group|leader.*group.*KILL' "$docs" "$ledger" "$plan"
 rg -q 'differential_process_execution_reports_bounded_timeout' "$tests"
