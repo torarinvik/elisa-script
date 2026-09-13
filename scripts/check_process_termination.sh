@@ -10,9 +10,7 @@ ir="$repo_root/src/ir/ir.elisa"
 fixture_file="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
-
-for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger" "$plan"; do
+for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'process termination audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -41,6 +39,11 @@ for boundary in \
     'ProcessTerminationEvent.RequestForce' \
     'ProcessTerminationEvent.ForceAck' \
     'ProcessTerminationEvent.ReportReaped' \
+    'canonicalize_process_termination_members' \
+    'process_termination_sort_members' \
+    'process_termination_sift_members' \
+    'process_termination_member_index' \
+    'ProcessTerminationError.MemberOrderInvalid' \
     'ProcessTerminationError.ReapCountInvalid' \
     'ProcessTerminationState.Planned and' \
     'ProcessTerminationState.Running and' \
@@ -57,6 +60,8 @@ for fixture_pattern in \
     'ProcessTerminationEvent.RequestForce' \
     'ProcessTerminationEvent.ReportReaped' \
     'ProcessTerminationEvent.Cancel' \
+    'canonicalize_process_termination_members' \
+    'ProcessTerminationError.MemberOrderInvalid' \
     'ProcessTerminationError.DuplicateMember' \
     'ProcessTerminationError.AccountingInvalid'; do
     rg -q "$fixture_pattern" "$fixture_file"
@@ -64,6 +69,4 @@ done
 
 rg -q 'EsProcessTermination::ProcessTerminationSession' "$docs"
 rg -q 'ES-SCRIPT-037' "$ledger"
-rg -q 'P10 process-group termination follow-up' "$plan"
-
-printf 'process termination audit: bounded graceful/force escalation and complete reaping are present\n'
+printf 'process termination audit: canonical bounded membership and graceful/force reaping are present\n'

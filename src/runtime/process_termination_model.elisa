@@ -54,6 +54,9 @@ module EsProcessTermination:
             owner_token: u64
             group_id: u64
             root_pid: u64
+            # Canonical membership order is ascending PID. Call
+            # canonicalize_process_termination_members before the lifecycle
+            # starts when importing an unsorted host process inventory.
             members: darray[ProcessTerminationMember] = []
             state: ProcessTerminationState = ProcessTerminationState.Planned
             polls: usize = 0
@@ -70,6 +73,7 @@ module EsProcessTermination:
             InvalidGroup
             InvalidRoot
             InvalidMember
+            MemberOrderInvalid
             DuplicateMember
             RootNotOwned
             MemberLimitExceeded
@@ -102,9 +106,51 @@ module EsProcessTermination:
 
 
         def process_termination_member_index(session: ProcessTerminationSession&, pid: u64) -> usize:
-            for index in 0..<session.members.count |session, pid|:
-                return index if session.members[index].pid == pid
+            lower: mutable usize = 0
+            upper: mutable usize = session.members.count
+            while lower < upper:
+                middle: usize = lower + (upper - lower) / 2
+                member: ProcessTerminationMember = session.members[middle]
+                return middle if member.pid == pid
+                if member.pid < pid:
+                    lower <- middle + 1
+                else:
+                    upper <- middle
             return session.members.count
+
+
+        def process_termination_swap_members(session: mutable ProcessTerminationSession&, left: usize, right: usize) -> void:
+            saved: ProcessTerminationMember = session.members[left]
+            session.members[left] <- session.members[right]
+            session.members[right] <- saved
+
+
+        def process_termination_sift_members(session: mutable ProcessTerminationSession&, start: usize, end: usize) -> void:
+            root: mutable usize = start
+            while root < end:
+                # MemberLimitExceeded caps `end`, so the child index stays in
+                # range after this half-span check.
+                break if root >= end / 2
+                child: mutable usize = root * 2 + 1
+                if child + 1 < end and session.members[child].pid < session.members[child + 1].pid:
+                    child <- child + 1
+                break if session.members[root].pid >= session.members[child].pid
+                process_termination_swap_members(session, root, child)
+                root <- child
+
+
+        def process_termination_sort_members(session: mutable ProcessTerminationSession&) -> void:
+            # In-place heapsort uses O(1) scratch space and keeps canonicalize
+            # bounded even when a supervisor imports a large process list.
+            heap_start: mutable usize = session.members.count / 2
+            while heap_start > 0:
+                heap_start <- heap_start - 1
+                process_termination_sift_members(session, heap_start, session.members.count)
+            heap_end: mutable usize = session.members.count
+            while heap_end > 1:
+                process_termination_swap_members(session, 0, heap_end - 1)
+                heap_end <- heap_end - 1
+                process_termination_sift_members(session, 0, heap_end)
 
 
         def process_termination_active(state: ProcessTerminationState) -> bool:
@@ -129,10 +175,28 @@ module EsProcessTermination:
             for index in 0..<session.members.count |session|:
                 member: ProcessTerminationMember = session.members[index]
                 raise ProcessTerminationError.InvalidMember if not process_termination_member_valid(member)
-                for earlier in 0..<index |session, member|:
-                    raise ProcessTerminationError.DuplicateMember if session.members[earlier].pid == member.pid
+                if index > 0:
+                    previous: ProcessTerminationMember = session.members[index - 1]
+                    raise ProcessTerminationError.DuplicateMember if previous.pid == member.pid
+                    raise ProcessTerminationError.MemberOrderInvalid if previous.pid > member.pid
             raise ProcessTerminationError.RootNotOwned if process_termination_member_index(session, session.root_pid) == session.members.count
             return true
+
+
+        # Canonicalize host-discovered members before the session is admitted.
+        # Sorting is in place and remains visible if full validation later
+        # rejects the session (for example, duplicate PIDs); member records are
+        # reordered as whole values, never rewritten. Validation thereafter
+        # checks adjacent order/duplicates in one linear pass, and root lookup
+        # remains logarithmic.
+        def canonicalize_process_termination_members(session: mutable ProcessTerminationSession&) -> void error[ProcessTerminationError]:
+            raise ProcessTerminationError.InvalidState if not process_termination_state_valid(session.state) or session.state != ProcessTerminationState.Planned
+            raise ProcessTerminationError.InvalidPolicy if not process_termination_policy_valid(session.policy)
+            raise ProcessTerminationError.MemberLimitExceeded if session.members.count == 0 or session.members.count > session.policy.max_members
+            for member in session.members:
+                raise ProcessTerminationError.InvalidMember if not process_termination_member_valid(member)
+            process_termination_sort_members(session)
+            _ = try validate_process_termination(session)
 
 
         def advance_process_termination(session: mutable ProcessTerminationSession&, event: ProcessTerminationEvent, reaped_members: usize = 0) -> ProcessTerminationState error[ProcessTerminationError]:

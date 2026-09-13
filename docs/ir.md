@@ -2264,17 +2264,21 @@ an exit, or a timeout. The session never performs
 fork/exec or signal operations itself.
 
 `EsProcessTermination::ProcessTerminationSession` is the process-group
-cleanup boundary. A host supervisor must first publish the exact root and
-member identities (including start tokens), then acknowledge a graceful group
-request before polling or escalating. Force attempts and polls are bounded;
+cleanup ledger. A host supervisor reports the root and member identities
+(including start tokens), then acknowledges a graceful group request before
+polling or escalating. Member records are kept in strictly ascending PID order:
+`canonicalize_process_termination_members` performs a bounded in-place sort at
+admission, validation rejects unsorted or duplicate PIDs in one linear pass,
+and root lookup uses binary search. Force attempts and polls are bounded;
 planned and running sessions start with clean poll/force/reap accounting;
 reaped-member counts are monotonic and `Reaped` is impossible until every
-owned member is accounted for; externally assembled `Reaped` records with a
-partial count are rejected as well. `Cancel` records cancellation intent without
-weakening the same graceful/force/reap sequence, while timeout and failure
-remain distinct terminal outcomes. The contract never sends signals or calls
-`waitpid`; it prevents a host adapter from targeting an unowned PID or
-claiming cleanup before all descendants are reaped.
+declared member is accounted for; externally assembled `Reaped` records with a
+partial count are rejected as well. `Cancel` records cancellation intent
+without weakening the same graceful/force/reap sequence, while timeout and
+failure remain distinct terminal outcomes. This module never sends signals or
+calls `waitpid`: it validates host-reported identities and accounting, but
+cannot prove the host inventory is complete or that reaping was observed from
+the operating system.
 
 `EsTask::TaskScope` and `TaskChannel` define the corresponding concurrency
 boundary. A scope caps active children, records completed/failed children, and
