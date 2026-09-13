@@ -1972,7 +1972,7 @@ The raw ABI ceiling is the public derived `ES_LAUNCHER_MAX_ARGC` contract
 (executable plus source plus admitted script arguments), so the native shim and
 typed parser share one source of truth.
 Before copying the source view into a terminated path buffer, the driver also
-enforces `EsIr::ELISASCRIPT_MAX_FILENAME_BYTES`; an overlong source path is
+enforces `EsIr::SourceLimits::FILENAME_BYTES`; an overlong source path is
 reported without echoing the unbounded borrowed text into stderr.
 The raw host collector applies that same filename bound to the source slot, so
 it does not scan an overlong path through the general 64 MiB C-string budget;
