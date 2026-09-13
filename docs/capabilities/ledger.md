@@ -803,11 +803,14 @@ semantics, coverage, ordering, and accounting. Host enumeration and replay
 integration remain open. Materialization plans copy root bytes rather than
 retaining the caller's input views.
 The focused differential fixture, namespace inclusion, documentation, and
-check_differential_filesystem.sh audit are static evidence; post-run
-host enumeration, replay-integrated restoration, and crash-safe restore remain
-open. A separate Darwin source slice now materializes an admitted initial world
-and provides bounded cleanup, but it has not been executed or integrated with
-replay.
+check_differential_filesystem.sh audit are static evidence; post-run host
+enumeration, replay integration, and crash-safe restore remain open. Do not
+connect filesystem equality to completed process runs yet: the current runner
+reaps only the direct child and uses temporary regular files for output, so it
+has neither true stdout/stderr EOF evidence nor authoritative descendant-tree
+quiescence. A private process group is not a containment proof. A separate
+Darwin source slice materializes an admitted initial world and provides bounded
+cleanup, but it has not been executed or integrated with replay.
 
 ES-SCRIPT-015 | EsDifferentialOrder supplies a bounded dual-order execution
 session, initial/final world fingerprints, duplicate-order rejection, and typed

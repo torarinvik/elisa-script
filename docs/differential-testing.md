@@ -843,6 +843,36 @@ and counters before comparison or fingerprinting.
 Host materializers remain responsible for collecting entries and preserving the
 world lifecycle.
 
+#### Filesystem-capture integration gate
+
+The snapshot model is not yet connected to `DifferentialCaseReplaySession`, and
+there is no host post-run tree collector. Do not treat a caller-supplied,
+sealed snapshot or a matching snapshot fingerprint as proof that a run's
+filesystem effects have stopped changing. Before replay can attach such a
+snapshot, each side needs explicit evidence that its output is stable and its
+owned process scope is finished.
+
+The current process adapter does not provide that evidence. It waits for and
+reaps the direct child, but stdout/stderr are temporary regular files rather
+than pipes, so reaching the files' current end is not stream EOF. A descendant
+that inherited those descriptors may still append output after the leader
+exits. The adapter also has no process inventory or authoritative descendant
+containment: its private process group is useful for timeout cleanup, but a
+descendant can leave that group. `ProcessSessionState.Exited`, a run
+fingerprint, successful signaling, or a caller-reported reaped-member count
+must not be promoted to whole-tree quiescence evidence.
+
+The first safe integration must name the evidence scope precisely. A direct
+leader reaped plus both captured streams drained to actual EOF is stronger than
+today's contract, but is not proof that no descendant can later mutate the
+world. A process-group-empty observation proves only that group is empty unless
+the runner can also establish that children cannot escape it. Full descendant
+quiescence requires an authoritative containment/supervisor boundary that
+accounts for every member. If the host cannot provide that boundary, report the
+limitation and withhold filesystem-equivalence claims rather than treating an
+unknown scope as quiescent. This is a host-lifecycle requirement; changing the
+pure snapshot comparator cannot satisfy it.
+
 `EsDifferentialOrder::DifferentialOrderSession` makes order-contamination checks
 explicit. A bounded session records at most one `ReferenceThenCandidate` and one
 `CandidateThenReference` observation, including the initial and final world
