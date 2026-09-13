@@ -404,8 +404,13 @@ output-byte limit; it preserves coefficient leading zeroes, stored fractional
 zeroes, and the sign of zero, and never switches to exponent notation. Thus a
 CSV-origin value such as `001.00` formats as `001.00`; it is a representation-
 preserving decimal formatter, not a JSON-number canonicalizer. Its internal
-fixed-output ceiling is 14,098 bytes. Binary-float conversion, rounding,
-formatting, and comparison policies remain open contracts.
+fixed-output ceiling is 14,098 bytes. The shared `parse_float` evaluator bounds
+decimal text at 64 MiB, rescales its mantissa before applying fractional and
+explicit exponents, and bounds the effective scale walk at 4,096 steps. This
+prevents intermediate overflow/underflow for compensated mantissas, but does
+not establish correctly-rounded decimal-to-binary conversion. Binary-float
+schema conversion, rounding, formatting, and comparison policies remain open
+contracts.
 
 `EsCsv` turns the `CsvPolicy` into a quote-aware streaming state machine.
 `CsvStream` counts input bytes, fields, field bytes, and records against the
@@ -2937,10 +2942,12 @@ value's static type.
 `ParseFloat` has type `Text -> Float(64)` and shares the `ParseError` row. Its
 validation machine requires a decimal mantissa and, when present, a complete
 exponent before invoking the shared decimal evaluator; malformed input therefore
-cannot silently become zero. The evaluator saturates exponent accumulation and
-scaling at 4096 steps, which is beyond the useful range of an IEEE-754 `f64` and
-keeps hostile exponent text from wrapping or forcing an unbounded walk. `FormatFloat`
-has type `Float(32|64) -> Text` and copies
+cannot silently become zero. Decimal text is bounded at 64 MiB. The evaluator
+rescales its mantissa before applying fractional and explicit exponents, then
+saturates exponent accumulation with those scales accounted for and bounds the
+effective scaling walk at 4,096 steps. This prevents intermediate range loss
+and unbounded exponent work, but does not specify correctly-rounded conversion.
+`FormatFloat` has type `Float(32|64) -> Text` and copies
 the core `%g` spelling into permanent storage before returning its view. These
 opcodes are classified into the packed text dispatch family. `FormatBool` has
 type `Bool -> Text` and emits canonical lowercase `true` or `false`; it is

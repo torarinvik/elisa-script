@@ -405,8 +405,9 @@ extend EsIr:
         # this alias tied to the cross-backend default prevents direct-bytecode
         # adapters from accepting more work than policy-aware interpretation.
         const INTERPRET_MAX_REGEX_WORK: u64 = ES_RUNTIME_DEFAULT_MAX_REGEX_WORK
+        const INTERPRET_MAX_DECIMAL_TEXT_BYTES: usize = 67108864
         # IEEE-754 values have already saturated to zero or infinity long before
-        # this many decimal scale steps. Cap the textual exponent so malformed
+        # this many decimal scale steps. Cap the effective exponent so malformed
         # input cannot overflow the parser's i64 accumulator or turn one float
         # literal into an unbounded state-machine walk.
         const INTERPRET_MAX_DECIMAL_EXPONENT_STEPS: i64 = 4096
@@ -470,8 +471,10 @@ extend EsIr:
         struct DecimalParser:
             text: sview
             value: mutable f64
-            place: mutable f64
+            digit_weight: mutable f64
             exponent: mutable i64
+            fractional_digits: mutable i64
+            scale_adjustment: mutable i64
             index: mutable usize
             negative: mutable bool
             exponent_negative: mutable bool
@@ -629,6 +632,7 @@ extend EsIr:
 
 
         def decimal_text_valid(text: sview) -> bool:
+            return false if sview_len(text) > INTERPRET_MAX_DECIMAL_TEXT_BYTES
             cursor: mutable DecimalValidationCursor = DecimalValidationCursor{text: text, index: 0, digits: 0, exponent_digits: 0, valid: true}
             machine over decimal_validation_class(cursor):
                 state Start
@@ -792,27 +796,46 @@ extend EsIr:
 
         def consume_decimal_digit(parser: mutable DecimalParser&, fractional: bool) -> void:
             digit: f64 = (sview_at(parser.text, parser.index) - 48).f64()
-            if fractional:
-                parser.value <- parser.value + digit * parser.place
-                parser.place <- parser.place * 0.1
-            else:
-                parser.value <- parser.value * 10.0 + digit
+            # Treat the mantissa as one digit stream and account for the
+            # fractional scale only after every digit has been consumed. This
+            # avoids losing leading fractional digits when a repeated 0.1
+            # place underflows, and avoids overflowing a long integer before
+            # its explicit exponent can compensate it.
+            parser.value <- parser.value * 10.0 + digit * parser.digit_weight
+            parser.fractional_digits <- parser.fractional_digits + 1 if fractional
+            # Keep the accumulated mantissa below 1e301. The accumulator and
+            # digit weight represent the original integer mantissa divided by
+            # 10^scale_adjustment, so rescaling both preserves its value.
+            if parser.value >= 1e300:
+                parser.value <- parser.value * 1e-100
+                parser.digit_weight <- parser.digit_weight * 1e-100
+                parser.scale_adjustment <- parser.scale_adjustment + 100
             parser.index <- parser.index + 1
+
+
+        def decimal_exponent_magnitude_limit(parser: DecimalParser&) -> i64:
+            # Preserve enough exponent digits to cancel the already-seen
+            # fractional and accumulator scales, plus the bounded IEEE range.
+            # The validated text ceiling keeps this sum far inside i64.
+            return INTERPRET_MAX_DECIMAL_EXPONENT_STEPS + parser.fractional_digits + parser.scale_adjustment
 
 
         def consume_exponent_digit(parser: mutable DecimalParser&) -> void:
             digit: i64 = (sview_at(parser.text, parser.index) - 48).i64()
             # Exponents are non-negative while their digits are consumed. Keep
-            # the accumulator saturated at the scale cap; the sign is applied
-            # only after the state machine reaches its terminal state.
-            if parser.exponent < INTERPRET_MAX_DECIMAL_EXPONENT_STEPS:
-                parser.exponent <- INTERPRET_MAX_DECIMAL_EXPONENT_STEPS if parser.exponent > (INTERPRET_MAX_DECIMAL_EXPONENT_STEPS - digit) / 10
-                parser.exponent <- parser.exponent * 10 + digit if parser.exponent < INTERPRET_MAX_DECIMAL_EXPONENT_STEPS
+            # enough magnitude for the mantissa scales to cancel, then saturate
+            # so exponent text cannot overflow i64 or create unbounded work.
+            limit: i64 = decimal_exponent_magnitude_limit(parser)
+            if parser.exponent < limit:
+                if parser.exponent > (limit - digit) / 10:
+                    parser.exponent <- limit
+                else:
+                    parser.exponent <- parser.exponent * 10 + digit
             parser.index <- parser.index + 1
 
 
         def parse_decimal(text: sview) -> f64:
-            parser: mutable DecimalParser = DecimalParser{text: text, value: 0.0, place: 0.1, exponent: 0, index: 0, negative: false, exponent_negative: false}
+            parser: mutable DecimalParser = DecimalParser{text: text, value: 0.0, digit_weight: 1.0, exponent: 0, fractional_digits: 0, scale_adjustment: 0, index: 0, negative: false, exponent_negative: false}
             machine over decimal_class(parser) while parser.index < sview_len(parser.text):
                 state Lead
                 state Whole
@@ -887,6 +910,9 @@ extend EsIr:
                     break
 
             parser.exponent <- -parser.exponent if parser.exponent_negative
+            parser.exponent <- parser.exponent - parser.fractional_digits + parser.scale_adjustment
+            parser.exponent <- INTERPRET_MAX_DECIMAL_EXPONENT_STEPS if parser.exponent > INTERPRET_MAX_DECIMAL_EXPONENT_STEPS
+            parser.exponent <- -INTERPRET_MAX_DECIMAL_EXPONENT_STEPS if parser.exponent < -INTERPRET_MAX_DECIMAL_EXPONENT_STEPS
             machine over parser.exponent > 0 while parser.exponent != 0:
                 state Scale
                 start Scale
@@ -1053,6 +1079,9 @@ extend EsIr:
                 TypeKind.Int:
                     return runtime_int(instruction.integer)
                 TypeKind.Float:
+                    if not decimal_text_valid(instruction.decimal):
+                        interpret_set_failure(machine, InterpretFailure.InvalidNumber)
+                        return runtime_void()
                     return runtime_float(parse_decimal(instruction.decimal))
                 TypeKind.Text | TypeKind.Char | TypeKind.Named:
                     return runtime_text(decode_literal_text(instruction.text))
@@ -8390,7 +8419,8 @@ extend EsIr:
             return path_shape_result_valid(value)
 
 
-        def parse_decimal_value(text: sview) -> f64:
+        def parse_decimal_value(text: sview) -> f64 error[InterpretError]:
+            raise InterpretError.InvalidNumber if not decimal_text_valid(text)
             return parse_decimal(text)
 
 
@@ -8414,8 +8444,7 @@ extend EsIr:
 
 
         def parse_float_value(text: sview) -> f64 error[InterpretError]:
-            raise InterpretError.InvalidNumber if not decimal_text_valid(text)
-            return parse_decimal(text)
+            return try parse_decimal_value(text)
 
 
         def format_float_value(value: f64) -> sview can[Memory.Allocate, Console.Format, Abort.Panic]:

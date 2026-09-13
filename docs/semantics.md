@@ -1163,10 +1163,15 @@ share exact behavior between the reference interpreter and packed bytecode.
 `parse_float(text) -> f64 error[ParseError]` accepts decimal mantissas with an
 optional sign, fractional part, and `e`/`E` exponent (including an exponent sign);
 underscores may separate adjacent digits in each mantissa or exponent component.
-It rejects missing digits, trailing characters, and incomplete exponents. The
-exponent accumulator is saturated at a 4096-step IEEE-754 scale bound, so
-oversized exponent text cannot wrap or create unbounded scaling work; values
-past that bound have already rounded to zero or infinity in `f64`. The matching
+It rejects missing digits, trailing characters, incomplete exponents, and
+lexemes longer than 64 MiB. Mantissa digits are accumulated with an explicit
+decimal-scale adjustment, then the fractional digit count and explicit
+exponent are combined; this prevents an intermediate overflow or underflow
+from corrupting a result that is in range. Exponent accumulation is saturated
+after accounting for those scales, and the effective exponent is bounded at
+4096 IEEE-754 scale steps, so oversized exponent text cannot wrap or create
+unbounded scaling work; values past that range round to zero or infinity in
+`f64`. This conversion is not yet specified as correctly rounded. The matching
 `format_float(value: f64) -> sview` uses Elisa's `%g`-style canonical
 runtime spelling and keeps the returned text in permanent storage.
 The interpreter and bytecode-facing format adapters bound the returned host
