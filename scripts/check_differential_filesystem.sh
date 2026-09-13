@@ -44,10 +44,12 @@ for boundary in \
     'differential_filesystem_path_span_safe' \
     'differential_filesystem_entries_path_data_contiguous' \
     'differential_filesystem_entries_content_data_contiguous' \
+    'differential_filesystem_entries_ancestors_valid' \
     'differential_filesystem_compact_sorted_data' \
     'differential_filesystem_sort_entries' \
     'PathStorageLimitExceeded' \
     'SnapshotAccountingInvalid' \
+    'AncestorNotDirectory' \
     'EntryOrderInvalid' \
     'ByteLimitExceeded' \
     'SnapshotNotSealed' \
@@ -80,6 +82,8 @@ for fixture_pattern in \
     'path_data.count' \
     'content_data.count' \
     'differential_filesystem_unordered_batch_is_bounded_sorted_and_sealed' \
+    'differential_filesystem_rejects_non_directory_ancestors' \
+    'DifferentialFilesystemError.AncestorNotDirectory' \
     'DifferentialFilesystemError.PathStorageLimitExceeded' \
     'DifferentialFilesystemState.Cancelled'; do
     rg -Fq "$fixture_pattern" "$fixture"
@@ -89,4 +93,4 @@ rg -Fq 'EsDifferentialFilesystem::DifferentialFilesystemSnapshot' "$docs"
 rg -Fq 'Exact-payload snapshot contract' "$docs"
 rg -Fq 'backslash is an' "$docs"
 
-printf 'differential filesystem audit: exact bounded payload snapshots, fingerprints, and first-difference comparison are present\n'
+printf 'differential filesystem audit: bounded exact payload snapshots, valid tree ancestors, fingerprints, and first-difference comparison are present\n'

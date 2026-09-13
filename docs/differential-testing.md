@@ -813,7 +813,12 @@ entry-count ceiling, and typed metadata. Regular files carry exact bytes
 (including NUL and non-UTF-8 bytes), symlinks carry their non-empty raw target
 bytes (non-UTF-8 is allowed, NUL is not), and directories carry no content.
 Only `/` separates components in this POSIX path contract; backslash is an
-ordinary filename byte.
+ordinary filename byte. Every ancestor entry that is present must be a
+directory: a file or symlink cannot also contain a descendant path. This is
+checked after ordering with a bounded binary search for each non-directory's
+descendant range, both during sealing and at later validation/comparison
+boundaries. The model does not require collectors to emit a record for every
+implicit parent directory.
 Payload length is the sole source of file/link size. Appends account only for
 the new entry; the complete record list is revalidated at seal rather than
 rescanned on each append. The unordered path detects duplicate names after

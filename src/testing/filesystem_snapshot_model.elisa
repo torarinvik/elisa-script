@@ -114,6 +114,7 @@ module EsDifferentialFilesystem:
             SnapshotNotSealed
             ComparisonInvalid
             CancelNotReady
+            AncestorNotDirectory
 
 
     private:
@@ -263,6 +264,53 @@ module EsDifferentialFilesystem:
                     previous: DifferentialFilesystemEntryRecord = snapshot.entries[index - 1]
                     current: DifferentialFilesystemEntryRecord = snapshot.entries[index]
                     return false if not differential_filesystem_path_spans_less(snapshot.path_data, previous.path_start, previous.path_bytes, snapshot.path_data, current.path_start, current.path_bytes)
+            return true
+
+
+        def differential_filesystem_entry_path_less_slash(snapshot: DifferentialFilesystemSnapshot&, entry: DifferentialFilesystemEntryRecord, ancestor: DifferentialFilesystemEntryRecord) -> bool:
+            target_bytes: usize = ancestor.path_bytes + 1
+            shared: usize = entry.path_bytes if entry.path_bytes < target_bytes else target_bytes
+            index: mutable usize = 0
+            while index < shared:
+                left_byte: u8 = snapshot.path_data[entry.path_start + index]
+                right_byte: u8 = 47 if index == ancestor.path_bytes else snapshot.path_data[ancestor.path_start + index]
+                return left_byte < right_byte if left_byte != right_byte
+                index <- index + 1
+            return entry.path_bytes < target_bytes
+
+
+        def differential_filesystem_record_is_descendant(snapshot: DifferentialFilesystemSnapshot&, entry: DifferentialFilesystemEntryRecord, ancestor: DifferentialFilesystemEntryRecord) -> bool:
+            return false if entry.path_bytes <= ancestor.path_bytes
+            for index in 0..<ancestor.path_bytes |snapshot, entry, ancestor|:
+                return false if snapshot.path_data[entry.path_start + index] != snapshot.path_data[ancestor.path_start + index]
+            return snapshot.path_data[entry.path_start + ancestor.path_bytes] == 47
+
+
+        def differential_filesystem_find_first_descendant(snapshot: DifferentialFilesystemSnapshot&, ancestor_index: usize) -> usize:
+            ancestor: DifferentialFilesystemEntryRecord = snapshot.entries[ancestor_index]
+            low: mutable usize = ancestor_index + 1
+            high: mutable usize = snapshot.entries.count
+            while low < high:
+                middle: usize = low + (high - low) / 2
+                entry: DifferentialFilesystemEntryRecord = snapshot.entries[middle]
+                if differential_filesystem_entry_path_less_slash(snapshot, entry, ancestor):
+                    low <- middle + 1
+                else:
+                    high <- middle
+            return snapshot.entries.count if low >= snapshot.entries.count
+            return low if differential_filesystem_record_is_descendant(snapshot, snapshot.entries[low], ancestor)
+            return snapshot.entries.count
+
+
+        # Called only for path-ordered records. Each non-directory uses one
+        # bounded binary search for its descendant range, avoiding an all-pairs
+        # scan or a search for every component prefix.
+        def differential_filesystem_entries_ancestors_valid(snapshot: DifferentialFilesystemSnapshot&) -> bool:
+            for index in 0..<snapshot.entries.count |snapshot|:
+                entry: DifferentialFilesystemEntryRecord = snapshot.entries[index]
+                if entry.kind != DifferentialFilesystemEntryKind.Directory:
+                    descendant_index: usize = differential_filesystem_find_first_descendant(snapshot, index)
+                    return false if descendant_index < snapshot.entries.count
             return true
 
 
@@ -429,6 +477,7 @@ module EsDifferentialFilesystem:
                 raise DifferentialFilesystemError.PathStorageLimitExceeded if entry.path_bytes > snapshot.max_path_bytes - path_total
                 path_total <- path_total + entry.path_bytes
             raise DifferentialFilesystemError.EntryOrderInvalid if not differential_filesystem_entries_ordered(snapshot)
+            raise DifferentialFilesystemError.AncestorNotDirectory if not differential_filesystem_entries_ancestors_valid(snapshot)
             total: mutable usize = 0
             for entry in snapshot.entries:
                 raise DifferentialFilesystemError.ByteLimitExceeded if entry.content_bytes > snapshot.max_bytes - total
@@ -467,6 +516,9 @@ module EsDifferentialFilesystem:
                 # reordered Collecting snapshot after returning an error.
                 snapshot.state <- DifferentialFilesystemState.Failed
                 raise DifferentialFilesystemError.EntryOrderInvalid
+            if not differential_filesystem_entries_ancestors_valid(snapshot):
+                snapshot.state <- DifferentialFilesystemState.Failed
+                raise DifferentialFilesystemError.AncestorNotDirectory
             snapshot.state <- DifferentialFilesystemState.Sealed
             return snapshot.state
 
@@ -496,7 +548,12 @@ module EsDifferentialFilesystem:
                 raise DifferentialFilesystemError.PathStorageLimitExceeded if snapshot.path_data.count > snapshot.max_path_bytes
                 raise DifferentialFilesystemError.SnapshotAccountingInvalid if not differential_filesystem_snapshot_unordered_records_valid(snapshot) or not differential_filesystem_entries_path_data_contiguous(snapshot) or not differential_filesystem_entries_content_data_contiguous(snapshot)
             else:
-                try validate_differential_filesystem_snapshot(snapshot)
+                catch validate_differential_filesystem_snapshot(snapshot):
+                    ok validated:
+                        pass
+                    error failure:
+                        snapshot.state <- DifferentialFilesystemState.Failed if failure == DifferentialFilesystemError.AncestorNotDirectory
+                        raise failure
             if event == DifferentialFilesystemEvent.Begin:
                 raise DifferentialFilesystemError.InvalidState if snapshot.state != DifferentialFilesystemState.Planned
                 snapshot.state <- DifferentialFilesystemState.Collecting
@@ -513,7 +570,7 @@ module EsDifferentialFilesystem:
 
 
         def differential_filesystem_snapshot_fingerprint(snapshot: DifferentialFilesystemSnapshot&) -> u64:
-            return 0 if not differential_filesystem_snapshot_valid(snapshot) or not differential_filesystem_snapshot_unordered_records_valid(snapshot) or not differential_filesystem_entries_ordered(snapshot) or snapshot.state != DifferentialFilesystemState.Sealed
+            return 0 if not differential_filesystem_snapshot_valid(snapshot) or not differential_filesystem_snapshot_unordered_records_valid(snapshot) or not differential_filesystem_entries_ordered(snapshot) or not differential_filesystem_entries_ancestors_valid(snapshot) or snapshot.state != DifferentialFilesystemState.Sealed
             result: mutable u64 = DIFFERENTIAL_FILESYSTEM_HASH_OFFSET
             result <- result * DIFFERENTIAL_FILESYSTEM_HASH_PRIME + snapshot.entries.count.u64()
             result <- result * DIFFERENTIAL_FILESYSTEM_HASH_PRIME + snapshot.total_bytes.u64()
@@ -524,7 +581,7 @@ module EsDifferentialFilesystem:
 
         def compare_differential_filesystem_snapshots(reference: DifferentialFilesystemSnapshot&, candidate: DifferentialFilesystemSnapshot&) -> DifferentialFilesystemDifference:
             return DifferentialFilesystemDifference{equal: false, kind: DifferentialFilesystemDifferenceKind.SnapshotNotSealed, reason: "filesystem snapshots must be sealed before comparison"} if reference.state != DifferentialFilesystemState.Sealed or candidate.state != DifferentialFilesystemState.Sealed
-            return DifferentialFilesystemDifference{equal: false, kind: DifferentialFilesystemDifferenceKind.InvalidSnapshot, reason: "filesystem snapshot validation failed"} if not differential_filesystem_snapshot_valid(reference) or not differential_filesystem_snapshot_valid(candidate) or not differential_filesystem_snapshot_unordered_records_valid(reference) or not differential_filesystem_snapshot_unordered_records_valid(candidate) or not differential_filesystem_entries_ordered(reference) or not differential_filesystem_entries_ordered(candidate)
+            return DifferentialFilesystemDifference{equal: false, kind: DifferentialFilesystemDifferenceKind.InvalidSnapshot, reason: "filesystem snapshot validation failed"} if not differential_filesystem_snapshot_valid(reference) or not differential_filesystem_snapshot_valid(candidate) or not differential_filesystem_snapshot_unordered_records_valid(reference) or not differential_filesystem_entries_ordered(reference) or not differential_filesystem_entries_ancestors_valid(reference) or not differential_filesystem_snapshot_unordered_records_valid(candidate) or not differential_filesystem_entries_ordered(candidate) or not differential_filesystem_entries_ancestors_valid(candidate)
             reference_index: mutable usize = 0
             candidate_index: mutable usize = 0
             while reference_index < reference.entries.count or candidate_index < candidate.entries.count:

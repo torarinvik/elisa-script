@@ -827,9 +827,11 @@ arenas are repacked after unordered sorting so exact coverage remains auditable.
 Comparison reports carry side-specific entry indices instead of borrowed
 views, with copying accessors for paths and payloads. Callers must not mutate
 public collection fields directly; seal and validation audit spans, payload
-semantics, coverage, ordering, and accounting. Host enumeration and replay
-integration remain open. Materialization plans copy root bytes rather than
-retaining the caller's input views.
+semantics, coverage, ordering, accounting, and present ancestor kinds (files
+and symlinks cannot contain descendants). The model permits omitted implicit
+parent-directory records. Host enumeration and replay integration remain open.
+Materialization plans copy root bytes rather than retaining the caller's input
+views.
 The focused differential fixture, namespace inclusion, documentation, and
 check_differential_filesystem.sh audit are static evidence; post-run host
 enumeration, replay integration, and crash-safe restore remain open. Do not
