@@ -30,7 +30,7 @@ for declaration in \
 done
 
 for boundary in \
-    'DIFFERENTIAL_TIMEOUT_SHRINK_MAX_CANDIDATES' \
+    'Limits::CANDIDATES' \
     'CandidateNotSmaller' \
     'CandidateOrderInvalid' \
     'MismatchCategory' \

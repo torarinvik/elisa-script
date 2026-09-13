@@ -17,8 +17,8 @@ done
 
 for declaration in \
     'module EsDifferentialTraceWindow:' \
-    'DIFFERENTIAL_TRACE_WINDOW_MAX_STEPS' \
-    'DIFFERENTIAL_TRACE_WINDOW_MAX_EVENTS' \
+    'Limits::STEPS' \
+    'Limits::EVENTS' \
     'const enum DifferentialTraceWindowState of u8:' \
     'const enum DifferentialTraceWindowEvent of u8:' \
     'const enum DifferentialTraceWindowPosition of u8:' \

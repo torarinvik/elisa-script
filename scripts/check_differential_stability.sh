@@ -17,7 +17,7 @@ done
 
 for declaration in \
     'module EsDifferentialStability:' \
-    'DIFFERENTIAL_STABILITY_MAX_REPEATS' \
+    'Limits::REPEATS' \
     'const enum DifferentialStabilityState of u8:' \
     'const enum DifferentialStabilityEvent of u8:' \
     'const enum DifferentialStabilityClassification of u8:' \

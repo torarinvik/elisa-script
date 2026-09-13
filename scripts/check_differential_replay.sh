@@ -17,7 +17,7 @@ done
 
 for declaration in \
     'module EsDifferentialReplay:' \
-    'DIFFERENTIAL_REPLAY_MAX_RUNS' \
+    'Limits::RUNS' \
     'const enum DifferentialReplayOrder of u8:' \
     'const enum DifferentialReplayState of u8:' \
     'const enum DifferentialReplayEvent of u8:' \

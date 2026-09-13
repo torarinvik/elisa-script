@@ -17,7 +17,7 @@ done
 
 for declaration in \
     'module EsDifferentialOrder:' \
-    'DIFFERENTIAL_ORDER_MAX_OBSERVATIONS' \
+    'Limits::OBSERVATIONS' \
     'const enum DifferentialExecutionOrder of u8:' \
     'const enum DifferentialOrderState of u8:' \
     'const enum DifferentialOrderEvent of u8:' \
