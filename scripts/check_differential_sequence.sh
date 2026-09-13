@@ -17,7 +17,7 @@ done
 
 for declaration in \
     'module EsDifferentialSequence:' \
-    'DIFFERENTIAL_SEQUENCE_MAX_STEPS' \
+    'Limits::STEPS' \
     'const enum DifferentialSequenceState of u8:' \
     'const enum DifferentialSequenceEvent of u8:' \
     'struct DifferentialSequenceStep:' \

@@ -33,8 +33,8 @@ for declaration in \
 done
 
 for boundary in \
-    'STRUCTURED_TASK_MAX_CHILDREN' \
-    'STRUCTURED_TASK_MAX_CLEANUP_DEPTH' \
+    'Limits::CHILDREN' \
+    'Limits::CLEANUP_DEPTH' \
     'StructuredTaskEvent.RequestChildCancel' \
     'StructuredTaskEvent.EnterCleanup' \
     'StructuredTaskEvent.ChildCancelAck' \

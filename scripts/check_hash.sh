@@ -32,9 +32,9 @@ for declaration in \
 done
 
 for boundary in \
-    'HASH_MAX_INPUT_BYTES' \
-    'HASH_MAX_CHUNK_BYTES' \
-    'HASH_MAX_CHUNKS' \
+    'Limits::INPUT_BYTES' \
+    'Limits::CHUNK_BYTES' \
+    'Limits::CHUNKS' \
     'HashAlgorithm.Sha256' \
     'HashAlgorithm.Sha512' \
     'HashError.DigestAlgorithmMismatch' \

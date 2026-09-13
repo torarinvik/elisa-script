@@ -17,9 +17,9 @@ done
 
 for declaration in \
     'module EsDifferentialReport:' \
-    'DIFFERENTIAL_REPORT_MAX_TEXT_BYTES' \
-    'DIFFERENTIAL_REPORT_MAX_MESSAGES' \
-    'DIFFERENTIAL_REPORT_MAX_REPEATS' \
+    'Limits::TEXT_BYTES' \
+    'Limits::MESSAGES' \
+    'Limits::REPEATS' \
     'const enum DifferentialReportFormat of u8:' \
     'const enum DifferentialReportStatus of u8:' \
     'const enum DifferentialReportCategory of u8:' \

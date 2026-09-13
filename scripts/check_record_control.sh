@@ -30,8 +30,8 @@ for declaration in \
 done
 
 for boundary in \
-    'RECORD_CONTROL_MAX_FILES' \
-    'RECORD_CONTROL_MAX_RECORDS' \
+    'Limits::FILES' \
+    'Limits::RECORDS' \
     'RecordControlEvent.NextRecord' \
     'RecordControlEvent.NextFile' \
     'RecordControlEvent.Exit' \

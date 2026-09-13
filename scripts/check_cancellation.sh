@@ -34,10 +34,10 @@ for declaration in \
 done
 
 for boundary in \
-    'CANCELLATION_MAX_TOKENS' \
-    'CANCELLATION_MAX_CHILDREN' \
-    'CANCELLATION_MAX_POLLS' \
-    'CANCELLATION_MAX_REASON_BYTES' \
+    'Limits::TOKENS' \
+    'Limits::CHILDREN' \
+    'Limits::POLLS' \
+    'Limits::REASON_BYTES' \
     'CancellationEvent.Propagate' \
     'CancellationEvent.Acknowledge' \
     'CancellationPoint.HostBeforeBlock' \

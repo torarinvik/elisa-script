@@ -32,9 +32,9 @@ for declaration in \
 done
 
 for boundary in \
-    'RECORD_WINDOW_MAX_WIDTH' \
-    'RECORD_WINDOW_MAX_EVENTS' \
-    'RECORD_WINDOW_MAX_SUM' \
+    'Limits::WIDTH' \
+    'Limits::EVENTS' \
+    'Limits::SUM' \
     'active_start' \
     'record_window_sum_valid' \
     'for value in session.values' \

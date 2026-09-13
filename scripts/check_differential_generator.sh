@@ -17,8 +17,8 @@ done
 
 for declaration in \
     'module EsDifferentialGenerator:' \
-    'DIFFERENTIAL_GENERATOR_MAX_CASES' \
-    'DIFFERENTIAL_GENERATOR_MAX_BYTES' \
+    'Limits::CASES' \
+    'Limits::BYTES' \
     'const enum DifferentialGeneratorState of u8:' \
     'const enum DifferentialGeneratorEvent of u8:' \
     'struct DifferentialGeneratorPolicy:' \

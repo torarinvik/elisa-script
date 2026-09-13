@@ -33,9 +33,9 @@ for declaration in \
 done
 
 for boundary in \
-    'ERROR_PROVENANCE_MAX_ENVELOPES' \
-    'ERROR_PROVENANCE_MAX_TEXT_BYTES' \
-    'ERROR_PROVENANCE_MAX_CAUSE_DEPTH' \
+    'Limits::ENVELOPES' \
+    'Limits::TEXT_BYTES' \
+    'Limits::CAUSE_DEPTH' \
     'ErrorOrigin.InvalidCompilerOutput' \
     'ErrorOrigin.LimitExceeded' \
     'ErrorProvenanceEvent.Forward' \

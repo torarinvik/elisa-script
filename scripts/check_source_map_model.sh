@@ -17,7 +17,8 @@ done
 
 for declaration in \
     'module EsSourceMap:' \
-    'SOURCE_MAP_MAX_ENTRIES' \
+    'Limits::ENTRIES' \
+    'Format::VERSION' \
     'const enum SourceMapState of u8:' \
     'const enum SourceMapEvent of u8:' \
     'struct SourceLocation:' \
@@ -35,7 +36,7 @@ for boundary in \
     'DuplicateFile' \
     'FileIndexInvalid' \
     'SourceMapEvent.AddFile' \
-    'map.files.count >= SOURCE_MAP_MAX_FILES' \
+    'map.files.count >= Limits::FILES' \
     'map.state == SourceMapState.Empty' \
     'AppendNotReady' \
     'source_location_before' \
