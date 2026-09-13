@@ -600,8 +600,10 @@ module EsDifferential:
         struct DifferentialWorldMaterializationPlan:
             format_version: u8 = 1
             snapshot_fingerprint: u64 = 0
-            reference_root: sview = ""
-            candidate_root: sview = ""
+            # Root paths are owned bytes, not borrowed caller views. Adapters
+            # obtain temporary sviews through the accessors below.
+            reference_root_bytes: darray[u8] = []
+            candidate_root_bytes: darray[u8] = []
             state: DifferentialWorldMaterializationState = DifferentialWorldMaterializationState.Planned
             has_materialization_attempt: bool = false
             has_reference_restoration: bool = false
@@ -4786,12 +4788,21 @@ module EsDifferential:
             return child[0:parent_length] == parent and sview_at(child, parent_length) == 47
 
 
+        def differential_world_materialization_copy_root(root: sview) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+            copied: mutable darray[u8] = []
+            for byte in root |copied|:
+                copied.push(byte)
+            return copied
+
+
         def differential_world_materialization_plan_valid(plan: DifferentialWorldMaterializationPlan&) -> bool:
             return false if plan.format_version != 1 or plan.snapshot_fingerprint == 0 or not differential_world_materialization_state_valid(plan.state)
-            return false if not differential_world_materialization_root_valid(plan.reference_root) or not differential_world_materialization_root_valid(plan.candidate_root)
-            return false if plan.reference_root == plan.candidate_root
-            return false if differential_world_materialization_root_contains(plan.reference_root, plan.candidate_root)
-            return false if differential_world_materialization_root_contains(plan.candidate_root, plan.reference_root)
+            reference_root: sview = bytes_view(plan.reference_root_bytes)
+            candidate_root: sview = bytes_view(plan.candidate_root_bytes)
+            return false if not differential_world_materialization_root_valid(reference_root) or not differential_world_materialization_root_valid(candidate_root)
+            return false if reference_root == candidate_root
+            return false if differential_world_materialization_root_contains(reference_root, candidate_root)
+            return false if differential_world_materialization_root_contains(candidate_root, reference_root)
             return false if plan.state == DifferentialWorldMaterializationState.Planned and (plan.has_materialization_attempt or plan.has_reference_restoration or plan.has_candidate_restoration or plan.reference_restored_world_fingerprint != 0 or plan.candidate_restored_world_fingerprint != 0)
             return false if plan.state != DifferentialWorldMaterializationState.Planned and not plan.has_materialization_attempt
             return false if plan.state == DifferentialWorldMaterializationState.Restored and (not plan.has_reference_restoration or not plan.has_candidate_restoration)
@@ -4842,9 +4853,23 @@ module EsDifferential:
         # admission and replay planning.
         def make_differential_world_materialization_plan(snapshot: DifferentialWorldSnapshot&, reference_root: sview, candidate_root: sview) -> DifferentialWorldMaterializationPlan error[DifferentialRunnerError] can[Memory.Allocate, Abort.Panic]:
             raise DifferentialRunnerError.Invalid if not differential_world_snapshot_valid(snapshot)
-            plan: DifferentialWorldMaterializationPlan = DifferentialWorldMaterializationPlan{snapshot_fingerprint: snapshot.world_fingerprint, reference_root: reference_root, candidate_root: candidate_root}
+            raise DifferentialRunnerError.Invalid if not differential_world_materialization_root_valid(reference_root) or not differential_world_materialization_root_valid(candidate_root)
+            raise DifferentialRunnerError.Invalid if reference_root == candidate_root or differential_world_materialization_root_contains(reference_root, candidate_root) or differential_world_materialization_root_contains(candidate_root, reference_root)
+            plan: DifferentialWorldMaterializationPlan = DifferentialWorldMaterializationPlan{snapshot_fingerprint: snapshot.world_fingerprint, reference_root_bytes: differential_world_materialization_copy_root(reference_root), candidate_root_bytes: differential_world_materialization_copy_root(candidate_root)}
             raise DifferentialRunnerError.Invalid if not differential_world_materialization_plan_valid(plan)
             return plan
+
+
+        # Root views borrow from the plan's owned arrays and remain valid only
+        # while the plan (and its root arrays) remain alive and unmodified.
+        def differential_world_materialization_reference_root(plan: DifferentialWorldMaterializationPlan&) -> sview error[DifferentialRunnerError]:
+            raise DifferentialRunnerError.Invalid if not differential_world_materialization_plan_valid(plan)
+            return bytes_view(plan.reference_root_bytes)
+
+
+        def differential_world_materialization_candidate_root(plan: DifferentialWorldMaterializationPlan&) -> sview error[DifferentialRunnerError]:
+            raise DifferentialRunnerError.Invalid if not differential_world_materialization_plan_valid(plan)
+            return bytes_view(plan.candidate_root_bytes)
 
 
         # Validate the lifecycle identity before an adapter performs any host
@@ -5128,7 +5153,7 @@ module EsDifferential:
             return false if session.case_timeout_steps != case.timeout_steps or session.case_max_output_bytes != case.max_output_bytes
             return false if session.reference_runner_fingerprint == 0 or session.candidate_runner_fingerprint == 0
             return false if session.reference_runner_fingerprint != differential_runner_configuration_fingerprint(case.reference) or session.candidate_runner_fingerprint != differential_runner_configuration_fingerprint(case.candidate)
-            return false if not differential_case_replay_root_binding_matches(session.materialization.reference_root, session.reference_root_binding) or not differential_case_replay_root_binding_matches(session.materialization.candidate_root, session.candidate_root_binding)
+            return false if not differential_case_replay_root_binding_matches(bytes_view(session.materialization.reference_root_bytes), session.reference_root_binding) or not differential_case_replay_root_binding_matches(bytes_view(session.materialization.candidate_root_bytes), session.candidate_root_binding)
             components_synchronized: bool = try differential_case_replay_components_synchronized(session)
             return false if not components_synchronized
             return false if session.has_reference_run and differential_case_replay_run_fingerprint(session.manifest, DifferentialArtifactSide.Reference, session.reference_run) != session.reference_run_fingerprint

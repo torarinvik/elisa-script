@@ -751,7 +751,10 @@ mutations. Only `complete_differential_world_restoration` may mark the plan
 `Restored`; it validates both isolated restored worlds against the original
 snapshot fingerprint first, leaving a rejected restore in `Restoring`. A future
 adapter must perform fixture creation, cwd/environment setup, cleanup, and
-restoration around these states. The plan is a public value record, so its
+restoration around these states. Root paths are copied into plan-owned byte
+arrays at construction, and the reference/candidate root accessors return views
+borrowed from those arrays; callers must keep the plan alive and avoid mutating
+its public storage while using a view. The plan is a public value record, so its
 validator establishes structural consistency, not tamper-proof provenance; a
 host adapter must keep ownership of the live plan and must not trust a
 caller-constructed terminal record as proof that filesystem cleanup occurred.

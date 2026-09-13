@@ -800,7 +800,8 @@ auditable. Comparison reports carry side-specific entry indices instead of
 borrowed path views, with a copying accessor for report paths. Callers must not
 mutate public collection fields directly; seal and validation audit spans,
 coverage, ordering, and accounting. Invalid snapshots and reserved zero content
-fingerprints have distinct typed classifications.
+fingerprints have distinct typed classifications. Materialization plans copy
+root bytes rather than retaining the caller's input views.
 The focused differential fixture, namespace inclusion, documentation, and
 check_differential_filesystem.sh audit are static evidence; post-run
 host enumeration, replay-integrated restoration, and crash-safe restore remain
