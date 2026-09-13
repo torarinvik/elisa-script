@@ -34,6 +34,31 @@ forwarders while still preserving their stable link names.
 The vendored `Semantic` and standard-library namespaces are intentionally
 outside this check and remain governed by `vendor/elisa-compiler/SOURCE.md`.
 
+`scripts/check_namespace_manifest.elisascript` is the Elisascript port candidate.
+It implements these same declaration, import, include, runtime visibility,
+renderer/reset, required-module, and TSV-manifest checks. It accepts an optional
+source root and parser-token source so both implementations can inspect the
+same fixtures. For byte-for-byte comparison, pass both paths explicitly: the
+shell script defaults relative to its own location, while the Elisascript
+candidate defaults to `src` and `vendor/elisa-compiler/src/parser/parser_tokens.elisa`
+relative to the caller's working directory.
+
+The candidate bounds its input to 4,096 source files, 4,096 directories,
+65,536 visited entries, 16,384 entries in any one directory, 2 MiB per source
+file, 16 MiB aggregate source bytes, and 2 MiB for the separately supplied
+parser-token file. It walks iteratively through `Path.iterdir`, skips hidden
+components and symlinks, and does not apply ripgrep ignore-file rules; parity is
+therefore currently scoped to tracked, visible source roots without ignored
+`.elisa` files. The runtime materializes one directory listing before the
+candidate can apply its 16,384-entry policy; that individual listing is itself
+capped by the filesystem API at 262,144 entries / 64 MiB of names. The source
+must remain stable during the run: `file_size` preflights and `read_text` is
+checked afterward, but a concurrent replacement can still exceed the intended
+peak allocation before that post-read check. These differences and the fixtures
+are documented but not runtime-qualified; the candidate is not yet accepted as
+a replacement until its status/stdout/stderr and fixture matrix are executed
+through the public launcher after compiler validation is reauthorized.
+
 Every new public symbol must be added to its owning namespace deliberately and
 documented at the boundary. Tests should use public inspection APIs rather than
 making cursor, state-machine, or host-ABI representation details public.

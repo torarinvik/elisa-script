@@ -7,7 +7,13 @@
 set -u
 
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+if [ "$#" -gt 2 ]; then
+    echo "usage: check_namespace_manifest.sh [source-root [parser-token-source]]" >&2
+    exit 2
+fi
+
 source_root="${1:-$script_dir/../src}"
+parser_tokens_file="${2:-$script_dir/../vendor/elisa-compiler/src/parser/parser_tokens.elisa}"
 if [ ! -d "$source_root" ]; then
     echo "check_namespace_manifest: source root does not exist: $source_root" >&2
     exit 2
@@ -162,7 +168,6 @@ done
 # Parser diagnostics are rendered by the host driver rather than flattened to
 # one generic parse failure. Keep this small frontend enum exhaustive so a new
 # parser failure category cannot silently lose its typed spelling.
-parser_tokens_file="$script_dir/../vendor/elisa-compiler/src/parser/parser_tokens.elisa"
 if [ ! -f "$parser_tokens_file" ]; then
     echo "check_namespace_manifest: parser token source is missing: $parser_tokens_file" >&2
     exit 1

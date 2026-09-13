@@ -1,0 +1,594 @@
+# Compiler-free namespace, include, and visibility audit.
+#
+# The source tree is treated as a stable checkout while this audit runs. File
+# sizes are preflighted and rechecked after read_text, but read_text itself is
+# not yet a bounded-read primitive and therefore retains a TOCTOU peak-memory
+# caveat for concurrently modified or adversarial trees. Directory enumeration
+# is iterative; each `Path.iterdir` result is checked against a per-directory
+# limit immediately after the runtime's bounded materialization.
+
+module EsNamespaceManifestAudit:
+    private:
+        const module Limits:
+            FILES: usize = 4096
+            DIRECTORIES: usize = 4096
+            DIRECTORY_ENTRIES: usize = 65536
+            ENTRIES_PER_DIRECTORY: usize = 16384
+            SOURCE_FILE_BYTES: usize = 2097152
+            SOURCE_TOTAL_BYTES: usize = 16777216
+
+
+        const module Paths:
+            PARSER_TOKENS: sview = "vendor/elisa-compiler/src/parser/parser_tokens.elisa"
+            IR_MODEL_SUFFIX: sview = "/ir/ir_model.elisa"
+            LOWER_AST_SUFFIX: sview = "/ir/lower_ast.elisa"
+            RUNNER_SUFFIX: sview = "/ir/runner.elisa"
+            DRIVER_SUFFIX: sview = "/driver/elisascript.elisa"
+
+
+        const module Syntax:
+            MODULE_DECLARATION: sview = "^module [A-Za-z_][A-Za-z0-9_]*:"
+            EXTENSION_DECLARATION: sview = "^extend [A-Za-z_][A-Za-z0-9_]*:"
+            USING_DECLARATION: sview = "^using [A-Za-z_][A-Za-z0-9_]*$"
+            IDENTIFIER: sview = "^[A-Za-z_][A-Za-z0-9_]*$"
+            FIELD_DECLARATION: sview = "^            [a-z_][a-z0-9_]*:"
+            INCLUDE_DECLARATION: sview = "^include\\s*\"[^\"]*\".*$"
+            RUNTIME_DECLARATION: sview = "^(extern|@link_name)"
+            POSIX_IMPL_CALL: sview = "elisascript_posix_[A-Za-z0-9_]+_impl\\("
+
+
+        struct SourceInput:
+            path: sview
+            size: usize
+
+
+        struct SourceFile:
+            path: sview
+            text: sview
+
+
+        struct NamespaceFile:
+            name: sview
+            path: sview
+            has_public: mutable bool
+            has_private: mutable bool
+
+
+        enum ScanPhase of u8:
+            Seek
+            Capture
+            Done
+
+
+        def sorted_unique(values: darray[sview]) -> darray[sview] can[Memory.Allocate, Abort.Panic]:
+            ordered: darray[sview] = sorted(values)
+            unique: mutable darray[sview] = []
+            for value in ordered:
+                if unique.count == 0 or unique[unique.count - 1] != value:
+                    unique.push(value)
+            return unique
+
+
+        def contains_sorted(values: darray[sview], needle: sview) -> bool:
+            low: mutable usize = 0
+            high: mutable usize = values.count
+
+            while low < high:
+                middle: usize = low + (high - low) / 2
+                if values[middle] == needle:
+                    return true
+                if values[middle] < needle:
+                    low <- middle + 1
+                else:
+                    high <- middle
+
+            return false
+
+
+        def rooted_source_path(root: sview, suffix: sview) -> sview can[Memory.Allocate, Abort.Panic]:
+            return suffix if root == "/" else root + suffix
+
+
+        def file_text(files: darray[SourceFile], root: sview, suffix: sview) -> sview can[Memory.Allocate, Abort.Panic]:
+            target: sview = rooted_source_path(root, suffix)
+            for file in files:
+                if file.path == target:
+                    return file.text
+            return ""
+
+
+        def has_file(files: darray[SourceFile], root: sview, suffix: sview) -> bool can[Memory.Allocate, Abort.Panic]:
+            target: sview = rooted_source_path(root, suffix)
+            for file in files:
+                if file.path == target:
+                    return true
+            return false
+
+
+        def extract_region(source: sview, start_prefix: sview, end_prefix: sview) -> sview can[Memory.Allocate, Abort.Panic]:
+            lines: darray[sview] = split_lines(source)
+            captured: mutable darray[sview] = []
+            phase: mutable ScanPhase = ScanPhase.Seek
+            index: mutable usize = 0
+
+            machine over phase while phase != ScanPhase.Done:
+                state Scan
+                start Scan
+
+                Scan, ScanPhase.Seek if index >= lines.count:
+                    phase <- ScanPhase.Done
+                    -> Scan
+
+                Scan, ScanPhase.Seek if lines[index].startswith(start_prefix):
+                    captured.push(lines[index])
+                    phase <- ScanPhase.Capture
+                    index <- index + 1
+                    -> Scan
+
+                Scan, ScanPhase.Seek:
+                    index <- index + 1
+                    -> Scan
+
+                Scan, ScanPhase.Capture if index >= lines.count:
+                    phase <- ScanPhase.Done
+                    -> Scan
+
+                Scan, ScanPhase.Capture if lines[index].startswith(end_prefix):
+                    phase <- ScanPhase.Done
+                    -> Scan
+
+                Scan, ScanPhase.Capture:
+                    captured.push(lines[index])
+                    index <- index + 1
+                    -> Scan
+
+                Scan, ScanPhase.Done:
+                    break
+
+            return join(captured, "\n")
+
+
+        def extract_enum_members(source: sview, start_header: sview, end_header: sview) -> darray[sview] can[Memory.Allocate, Abort.Panic]:
+            lines: darray[sview] = split_lines(source)
+            members: mutable darray[sview] = []
+            identifier_pattern: Regex = regex(Syntax::IDENTIFIER)
+            phase: mutable ScanPhase = ScanPhase.Seek
+            index: mutable usize = 0
+
+            machine over phase while phase != ScanPhase.Done:
+                state Scan
+                start Scan
+
+                Scan, ScanPhase.Seek if index >= lines.count:
+                    phase <- ScanPhase.Done
+                    -> Scan
+
+                Scan, ScanPhase.Seek if lines[index].strip().startswith(start_header.strip()):
+                    phase <- ScanPhase.Capture
+                    index <- index + 1
+                    -> Scan
+
+                Scan, ScanPhase.Seek:
+                    index <- index + 1
+                    -> Scan
+
+                Scan, ScanPhase.Capture if index >= lines.count:
+                    phase <- ScanPhase.Done
+                    -> Scan
+
+                Scan, ScanPhase.Capture if lines[index].strip().startswith(end_header.strip()):
+                    phase <- ScanPhase.Done
+                    -> Scan
+
+                Scan, ScanPhase.Capture:
+                    member: sview = lines[index].strip()
+                    if identifier_pattern.fullmatch(member):
+                        members.push(member)
+                    index <- index + 1
+                    -> Scan
+
+                Scan, ScanPhase.Done:
+                    break
+
+            return members
+
+
+        def append_namespace_rows(source_file: SourceFile, rows: mutable darray[NamespaceFile]&, modules: mutable darray[sview]&, extensions: mutable darray[sview]&, imports: mutable darray[sview]&) can[Memory.Allocate, Abort.Panic]:
+            lines: darray[sview] = split_lines(source_file.text)
+            module_pattern: Regex = regex(Syntax::MODULE_DECLARATION)
+            extension_pattern: Regex = regex(Syntax::EXTENSION_DECLARATION)
+            using_pattern: Regex = regex(Syntax::USING_DECLARATION)
+            public_pattern: Regex = regex"^\s+public:"
+            private_pattern: Regex = regex"^\s+private:"
+            has_public: mutable bool = false
+            has_private: mutable bool = false
+
+            for line in lines:
+                has_public <- true if public_pattern.match(line)
+                has_private <- true if private_pattern.match(line)
+                if module_pattern.match(line):
+                    separator: i64 = line.index(":")
+                    name: sview = line[7:separator]
+                    modules.push(name)
+                    rows.push(NamespaceFile{name: name, path: source_file.path, has_public: has_public, has_private: has_private})
+                elif extension_pattern.match(line):
+                    separator: i64 = line.index(":")
+                    name: sview = line[7:separator]
+                    extensions.push(name)
+                    rows.push(NamespaceFile{name: name, path: source_file.path, has_public: has_public, has_private: has_private})
+                elif using_pattern.fullmatch(line):
+                    imports.push(line[6:len(line)])
+
+            # Namespace visibility markers may occur before or after their
+            # declaration. Update the rows for this file after the full scan.
+            row_index: mutable usize = 0
+            while row_index < rows.count:
+                if rows[row_index].path == source_file.path:
+                    rows[row_index].has_public <- has_public
+                    rows[row_index].has_private <- has_private
+                row_index <- row_index + 1
+
+
+        def has_include_failure(files: darray[SourceFile]) -> bool can[Memory.Allocate, Abort.Panic, Console.Write, File.Read]:
+            include_pattern: Regex = regex(Syntax::INCLUDE_DECLARATION)
+            for source_file in files:
+                lines: darray[sview] = split_lines(source_file.text)
+                for line in lines:
+                    included_line: sview = line.strip()
+                    if include_pattern.fullmatch(included_line):
+                        opening: i64 = included_line.index("\"")
+                        if opening < 0:
+                            continue
+                        after_open: sview = included_line[opening + 1:len(included_line)]
+                        closing: i64 = after_open.index("\"")
+                        if closing < 0:
+                            continue
+                        include_path: sview = after_open[0:closing]
+                        if include_path == "":
+                            continue
+                        include_target: Path = path(source_file.path).parent().joinpath(include_path)
+                        if not is_file(include_target):
+                            eprint(f"check_namespace_manifest: missing include: {source_file.path} -> {include_path}")
+                            return true
+            return false
+
+
+        def is_runtime_path(source_path: sview) -> bool:
+            return source_path.index("/runtime/") >= 0
+
+
+        def runtime_visibility_failure(source_file: SourceFile) -> bool can[Memory.Allocate, Abort.Panic, Console.Write]:
+            lines: darray[sview] = split_lines(source_file.text)
+            runtime_decl_pattern: Regex = regex(Syntax::RUNTIME_DECLARATION)
+            has_abi_declaration: mutable bool = false
+            has_runtime_extension: mutable bool = false
+            line_number: mutable usize = 0
+
+            for line in lines:
+                line_number <- line_number + 1
+                trimmed: sview = line.strip()
+                has_abi_declaration <- true if runtime_decl_pattern.match(trimmed)
+                has_runtime_extension <- true if line.startswith("extend EsRuntime:")
+
+            if has_abi_declaration and not has_runtime_extension:
+                eprint(f"check_namespace_manifest: POSIX ABI declaration is outside EsRuntime: {source_file.path}")
+                return true
+
+            in_private: mutable bool = false
+            line_number <- 0
+            for line in lines:
+                line_number <- line_number + 1
+                trimmed: sview = line.strip()
+                indented: bool = line.startswith(" ") or line.startswith("\t")
+                if indented and trimmed.startswith("private:"):
+                    in_private <- true
+                    continue
+                if indented and trimmed.startswith("public:"):
+                    in_private <- false
+                    continue
+                if runtime_decl_pattern.match(trimmed) and not in_private:
+                    println(f"{source_file.path}: POSIX ABI declaration is not private at line {line_number}")
+                    return true
+
+            return false
+
+
+        def leaked_impls(files: darray[SourceFile]) -> bool can[Memory.Allocate, Abort.Panic, Console.Write]:
+            leak_pattern: Regex = regex(Syntax::POSIX_IMPL_CALL)
+            leaks: mutable darray[sview] = []
+
+            for source_file in files:
+                if is_runtime_path(source_file.path):
+                    continue
+                lines: darray[sview] = split_lines(source_file.text)
+                line_number: mutable usize = 0
+                for line in lines:
+                    line_number <- line_number + 1
+                    if leak_pattern.search(line):
+                        leaks.push(f"{source_file.path}:{line_number}:{line}")
+
+            if leaks.count > 0:
+                eprint("check_namespace_manifest: private POSIX _impl call leaked outside runtime:")
+                for leak in leaks:
+                    eprint(leak)
+                return true
+
+            return false
+
+
+        def render_missing(members: darray[sview], renderer: sview, kind_prefix: sview, diagnostic_prefix: sview) -> bool can[Memory.Allocate, Abort.Panic, Console.Write]:
+            for member in members:
+                qualified: sview = kind_prefix + member
+                if renderer.index(qualified) < 0:
+                    eprint(f"check_namespace_manifest: {diagnostic_prefix}{qualified}")
+                    return true
+            return false
+
+
+        def print_manifest(modules: darray[sview], rows: darray[NamespaceFile]) can[Memory.Allocate, Abort.Panic, Console.Write]:
+            println("module\tfiles\tpublic_sections\tprivate_sections")
+            for module_name in modules:
+                namespace_paths: mutable darray[sview] = []
+                public_count: mutable usize = 0
+                private_count: mutable usize = 0
+                previous_path: mutable sview = ""
+
+                for namespace_file in rows:
+                    if namespace_file.name != module_name or namespace_file.path == previous_path:
+                        continue
+                    namespace_paths.push(namespace_file.path)
+                    if namespace_file.has_public:
+                        public_count <- public_count + 1
+                    if namespace_file.has_private:
+                        private_count <- private_count + 1
+                    previous_path <- namespace_file.path
+
+                files_text: mutable sview = join(namespace_paths, ";")
+                if namespace_paths.count > 0:
+                    files_text <- files_text + ";"
+                println(f"{module_name}\t{files_text}\t{public_count}\t{private_count}")
+
+
+    public:
+        def run(source_root: sview, parser_tokens_path: sview) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, File.Read, Directory.Read]:
+            root_text: mutable sview = source_root
+            while root_text.endswith("/") and len(root_text) > 1:
+                root_text <- root_text[0:len(root_text) - 1]
+
+            root_path: Path = path(root_text)
+            if not is_directory(root_path):
+                eprint(f"check_namespace_manifest: source root does not exist: {source_root}")
+                return 2i64
+
+            directories: mutable darray[sview] = [root_text]
+            discovered_paths: mutable darray[sview] = []
+            directory_index: mutable usize = 0
+            visited_entries: mutable usize = 0
+            while directory_index < directories.count:
+                if directory_index >= Limits::DIRECTORIES:
+                    eprint("check_namespace_manifest: directory count exceeds audit limit")
+                    return 2i64
+
+                current_directory: sview = directories[directory_index]
+                children: darray[sview] = try path(current_directory).iterdir() else err:
+                    eprint(f"check_namespace_manifest: unable to enumerate directory: {current_directory}")
+                    return 2i64
+                if children.count > Limits::ENTRIES_PER_DIRECTORY:
+                    eprint(f"check_namespace_manifest: directory entry count exceeds audit limit: {current_directory}")
+                    return 2i64
+
+                for child in children:
+                    if visited_entries >= Limits::DIRECTORY_ENTRIES:
+                        eprint("check_namespace_manifest: total directory entries exceed audit limit")
+                        return 2i64
+                    visited_entries <- visited_entries + 1
+
+                    child_name: sview = path(child).name()
+                    if child_name.startswith("."):
+                        continue
+                    if is_symlink(path(child)):
+                        continue
+                    if is_directory(path(child)):
+                        if directories.count >= Limits::DIRECTORIES:
+                            eprint("check_namespace_manifest: directory count exceeds audit limit")
+                            return 2i64
+                        directories.push(child)
+                    elif child_name.endswith(".elisa") and is_file(path(child)):
+                        if discovered_paths.count >= Limits::FILES:
+                            eprint("check_namespace_manifest: source file count exceeds audit limit")
+                            return 2i64
+                        discovered_paths.push(child)
+
+                directory_index <- directory_index + 1
+
+            discovered_paths <- sorted(discovered_paths)
+
+            inputs: mutable darray[SourceInput] = []
+            total_size: mutable usize = 0
+            for source_path in discovered_paths:
+                if not is_file(path(source_path)):
+                    continue
+                source_size: usize = try file_size(path(source_path)) else err:
+                    eprint(f"check_namespace_manifest: unable to inspect source file: {source_path}")
+                    return 2i64
+
+                if source_size > Limits::SOURCE_FILE_BYTES:
+                    eprint(f"check_namespace_manifest: source file exceeds audit limit: {source_path}")
+                    return 2i64
+                if total_size > Limits::SOURCE_TOTAL_BYTES or source_size > Limits::SOURCE_TOTAL_BYTES - total_size:
+                    eprint("check_namespace_manifest: aggregate source size exceeds audit limit")
+                    return 2i64
+
+                total_size <- total_size + source_size
+                inputs.push(SourceInput{path: source_path, size: source_size})
+
+            files: mutable darray[SourceFile] = []
+            for input in inputs:
+                source: sview = try read_text(path(input.path)) else err:
+                    eprint(f"check_namespace_manifest: unable to read source file: {input.path}")
+                    return 2i64
+                if len(source) > Limits::SOURCE_FILE_BYTES or len(source) > input.size:
+                    eprint(f"check_namespace_manifest: source file changed or exceeds audit limit: {input.path}")
+                    return 2i64
+                files.push(SourceFile{path: input.path, text: source})
+
+            module_names_raw: mutable darray[sview] = []
+            extension_names_raw: mutable darray[sview] = []
+            using_names_raw: mutable darray[sview] = []
+            namespace_rows: mutable darray[NamespaceFile] = []
+            for source_file in files:
+                append_namespace_rows(source_file, namespace_rows, module_names_raw, extension_names_raw, using_names_raw)
+
+            ordered_modules: darray[sview] = sorted(module_names_raw)
+            duplicate_names: mutable darray[sview] = []
+            index: mutable usize = 1
+            while index < ordered_modules.count:
+                if ordered_modules[index] == ordered_modules[index - 1] and (duplicate_names.count == 0 or duplicate_names[duplicate_names.count - 1] != ordered_modules[index]):
+                    duplicate_names.push(ordered_modules[index])
+                index <- index + 1
+
+            if duplicate_names.count > 0:
+                eprint("check_namespace_manifest: duplicate module declarations:")
+                for duplicate in duplicate_names:
+                    eprint(duplicate)
+                return 1i64
+
+            modules: darray[sview] = sorted_unique(module_names_raw)
+            extensions: darray[sview] = sorted_unique(extension_names_raw)
+            for extension in extensions:
+                if not contains_sorted(modules, extension):
+                    eprint(f"check_namespace_manifest: extension targets undeclared module: {extension}")
+                    return 1i64
+
+            using_names: darray[sview] = sorted_unique(using_names_raw)
+            for using_name in using_names:
+                if contains_sorted(modules, using_name) or using_name == "Ast" or using_name == "Lexer":
+                    continue
+                eprint(f"check_namespace_manifest: using imports undeclared module: {using_name}")
+                return 1i64
+
+            runtime_root: Path = path_join(root_path, "runtime")
+            if is_directory(runtime_root):
+                runtime_prefix: mutable sview = root_text + "/runtime/"
+                if root_text == "/":
+                    runtime_prefix <- "/runtime/"
+                for source_file in files:
+                    if not source_file.path.startswith(runtime_prefix):
+                        continue
+                    if runtime_visibility_failure(source_file):
+                        return 1i64
+
+                if leaked_impls(files):
+                    return 1i64
+
+            if has_include_failure(files):
+                return 1i64
+
+            ir_model: sview = file_text(files, root_text, Paths::IR_MODEL_SUFFIX)
+            lower_ast: sview = file_text(files, root_text, Paths::LOWER_AST_SUFFIX)
+            runner: sview = file_text(files, root_text, Paths::RUNNER_SUFFIX)
+            driver: sview = file_text(files, root_text, Paths::DRIVER_SUFFIX)
+
+            issue_kinds: darray[sview] = extract_enum_members(ir_model, "        const enum IssueKind of u8:", "        struct Issue:")
+            issue_renderer: sview = extract_region(driver, "        def bytecode_issue_detail", "        def runtime_error_detail")
+            if render_missing(issue_kinds, issue_renderer, "IssueKind.", "bytecode diagnostic renderer omits "):
+                return 1i64
+
+            lower_issue_kinds: darray[sview] = extract_enum_members(lower_ast, "        const enum LowerIssueKind of u8:", "        struct LowerIssue:")
+            lower_issue_renderer: sview = extract_region(driver, "        def lower_issue_detail", "        def entrypoint_error_detail")
+            if render_missing(lower_issue_kinds, lower_issue_renderer, "LowerIssueKind.", "source diagnostic renderer omits "):
+                return 1i64
+
+            if not has_file(files, root_text, Paths::RUNNER_SUFFIX):
+                eprint(f"check_namespace_manifest: runner source is missing: {root_text}/ir/runner.elisa")
+                return 1i64
+
+            runner_lines: darray[sview] = split_lines(runner)
+            saw_reset_definition: mutable bool = false
+            saw_reset_call: mutable bool = false
+            for line in runner_lines:
+                saw_reset_definition <- true if line.startswith("        def elisascript_program_diagnostic_reset(")
+                saw_reset_call <- true if line.index("elisascript_program_diagnostic_reset(result)") >= 0
+            if not saw_reset_definition or not saw_reset_call:
+                eprint("check_namespace_manifest: diagnostic pipeline is missing its complete reset operation")
+                return 1i64
+
+            diagnostic_fields: mutable darray[sview] = []
+            field_phase: mutable ScanPhase = ScanPhase.Seek
+            field_index: mutable usize = 0
+            field_pattern: Regex = regex(Syntax::FIELD_DECLARATION)
+            while field_phase != ScanPhase.Done:
+                if field_index >= runner_lines.count:
+                    field_phase <- ScanPhase.Done
+                elif field_phase == ScanPhase.Seek and runner_lines[field_index].startswith("        struct ElisascriptProgramDiagnostic:"):
+                    field_phase <- ScanPhase.Capture
+                    field_index <- field_index + 1
+                elif field_phase == ScanPhase.Seek:
+                    field_index <- field_index + 1
+                elif field_phase == ScanPhase.Capture and runner_lines[field_index].strip() == "":
+                    field_phase <- ScanPhase.Done
+                elif field_phase == ScanPhase.Capture and field_pattern.match(runner_lines[field_index]):
+                    field_parts: darray[sview] = split(runner_lines[field_index].strip(), ":")
+                    if field_parts.count > 0:
+                        diagnostic_fields.push(field_parts[0])
+                    field_index <- field_index + 1
+                elif field_phase == ScanPhase.Capture:
+                    field_index <- field_index + 1
+
+            reset_body: sview = extract_region(runner, "        def elisascript_program_diagnostic_reset", "        # Parse argv after the launcher name")
+            for diagnostic_field in diagnostic_fields:
+                reset_target: sview = "result." + diagnostic_field
+                reset_present: bool = reset_body.index(reset_target + " ") >= 0 or reset_body.index(reset_target + "\t") >= 0 or reset_body.index(reset_target + "<-") >= 0 or reset_body.index(reset_target + ":") >= 0
+                if not reset_present:
+                    eprint(f"check_namespace_manifest: diagnostic reset omits {diagnostic_field}")
+                    return 1i64
+
+            parser_path: Path = path(parser_tokens_path)
+            if not is_file(parser_path):
+                eprint(f"check_namespace_manifest: parser token source is missing: {parser_tokens_path}")
+                return 1i64
+            parser_size: usize = try file_size(parser_path) else err:
+                eprint(f"check_namespace_manifest: parser token source is missing: {parser_tokens_path}")
+                return 1i64
+            if parser_size > Limits::SOURCE_FILE_BYTES:
+                eprint("check_namespace_manifest: parser token source exceeds audit limit")
+                return 2i64
+            parser_tokens: sview = try read_text(parser_path) else err:
+                eprint(f"check_namespace_manifest: parser token source is missing: {parser_tokens_path}")
+                return 1i64
+            if len(parser_tokens) > Limits::SOURCE_FILE_BYTES or len(parser_tokens) > parser_size:
+                eprint("check_namespace_manifest: parser token source exceeds audit limit")
+                return 2i64
+
+            parse_error_kinds: darray[sview] = extract_enum_members(parser_tokens, "enum ParseErrorKind:", "struct ParseError:")
+            parse_error_renderer: sview = extract_region(driver, "        def parse_error_detail", "        def report_program_failure")
+            if render_missing(parse_error_kinds, parse_error_renderer, "ParseErrorKind.", "parse diagnostic renderer omits "):
+                return 1i64
+
+            expected_modules: darray[sview] = ["EsArtifactCache", "EsBytecode", "EsDifferential", "EsDriver", "EsIr", "EsIrArtifact", "EsRuntime"]
+            for expected in expected_modules:
+                if not contains_sorted(modules, expected):
+                    eprint(f"check_namespace_manifest: required module is missing: {expected}")
+                    return 1i64
+
+            print_manifest(modules, namespace_rows)
+            return 0i64
+
+
+        def run_default(source_root: sview) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, File.Read, Directory.Read]:
+            return run(source_root, Paths::PARSER_TOKENS)
+
+
+def main(arguments: darray[sview]) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, File.Read, Directory.Read]:
+    if arguments.count > 2:
+        eprint("usage: namespace manifest audit [source-root [parser-token-source]]")
+        return 2i64
+
+    source_root: mutable sview = "src"
+    if arguments.count >= 1 and arguments[0] != "":
+        source_root <- arguments[0]
+
+    if arguments.count == 2 and arguments[1] != "":
+        return EsNamespaceManifestAudit::run(source_root, arguments[1])
+
+    return EsNamespaceManifestAudit::run_default(source_root)
