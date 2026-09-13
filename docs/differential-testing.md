@@ -736,9 +736,8 @@ its deterministic fingerprint. `validate_differential_world_snapshot` checks
 the current world, the stored snapshot, and the post-run fingerprint in a fixed
 state-machine order, so changes to fixture bytes/metadata, cwd, environment,
 argv, stdin, locale, timezone, or seed become a typed contamination failure
-before comparison. This is the identity and reset boundary for future host
-materializers; it does not claim that filesystem creation/restoration has been
-executed yet.
+before comparison. This is the identity boundary for host materializers; it
+does not itself capture or restore a post-run filesystem tree.
 
 `DifferentialWorldMaterializationPlan` makes that host boundary explicit for
 two separate absolute roots. Its lifecycle is `Planned → Materializing →
@@ -767,13 +766,28 @@ written with bounded short-write/EINTR handling, then assigned and checked
 against the requested exact mode and byte length. The directory/stat ABI and
 this adapter are Darwin-arm64-specific.
 
-This is not yet a replay-ready host adapter: there is no public cleanup or
-restoration operation, recursive post-run filesystem snapshot capture, readback
-of fixture contents, world argv/environment/stdin/locale/timezone/seed merge,
-paired-root orchestration, or process launch. Partial failures can leave a
-temporary tree and retained descriptors, and Elisa does not enforce the root
-record's single-owner descriptor contract. Do not use the slice for repeated
-cases until cleanup/restoration and lifecycle integration are implemented.
+Cleanup is now available through cleanup_darwin_differential_world, but this
+is still not a replay-ready host adapter: it has no recursive post-run world
+snapshot/readback, world argv/environment/stdin/locale/timezone/seed merge,
+paired-root orchestration, or process launch. Materialization preflights a
+conservative count of fixture and inferred-directory entries plus a maximum
+directory depth so an admitted initial world fits the cleaner's fixed limits
+(1,048,576 entries and 1,024 nested directories). A child can exceed those
+limits; cleanup then stops with a typed error and may be retried after the tree
+is brought back within bounds. The operating system's open-descriptor limit
+can also stop a deep traversal before the configured depth ceiling; this is a
+typed host-I/O failure, not a reason to retry while the same resource pressure
+persists. The traversal is iterative, checks device and directory identity,
+treats symlinks as unlink-only leaves, and recovers
+runner-restricted directory permissions with descriptor-relative
+fchmodat(..., AT_SYMLINK_NOFOLLOW) before opening them. It requires the child
+and every other writer to be stopped; it is not safe against a concurrent
+hostile mutator. Partial failures can leave a partially cleared temporary tree
+and retained descriptors, and Elisa does not enforce the root record's
+single-owner descriptor contract. A successful unlink interrupted before its
+outcome is recorded is resolved from the held parent descriptor on retry;
+descriptor-close outcomes that remain ambiguous fail closed rather than
+reusing a possibly stale descriptor number.
 It is not a sandbox; a launched process would still be able to access host
 paths outside the root. `fdopendir` takes ownership of its descriptor on
 success; a retained root must be enumerated through a separate descriptor.

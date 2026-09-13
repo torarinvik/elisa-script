@@ -789,7 +789,10 @@ tree snapshots with strict path ordering, aggregate byte accounting, stable
 fingerprints, and first-difference comparison for kind/content/size/mode and
 executable metadata. The focused differential fixture, namespace inclusion,
 documentation, and check_differential_filesystem.sh audit are static evidence;
-filesystem enumeration/materialization and crash-safe restore remain host work.
+post-run host enumeration, replay-integrated restoration, and crash-safe restore
+remain open. A separate Darwin source slice now materializes an admitted initial
+world and provides bounded cleanup, but it has not been executed or integrated
+with replay.
 
 ES-SCRIPT-015 | EsDifferentialOrder supplies a bounded dual-order execution
 session, initial/final world fingerprints, duplicate-order rejection, and typed

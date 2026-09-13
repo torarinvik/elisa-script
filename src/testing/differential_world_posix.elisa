@@ -1,13 +1,17 @@
 # Darwin host adapter for the first physical DifferentialWorld materialization
 # slice. This creates one private temporary root and writes only validated
-# regular text/byte fixtures plus inferred private directories.
+# regular text/byte fixtures plus inferred private directories. Cleanup can
+# later remove the resulting tree after its child and other writers stop.
 #
 # This is not a sandbox: a process launched later may still access host paths
 # outside this root. Raw POSIX descriptors are owned by this adapter record;
 # callers must treat the record as a single owner and must not duplicate,
 # close, or mutate its descriptors. Elisa records do not yet enforce affine
-# descriptor ownership. Process launch, post-run scanning/restoration, and a
-# public cleanup API are deliberately not claimed by this initial slice.
+# descriptor ownership. This adapter does not sandbox a child or prevent it
+# from modifying paths outside the root. Cleanup is descriptor-relative and
+# never follows symlinks, but requires all writers to be quiescent: POSIX has
+# no unlink-by-open-descriptor operation, so name checks cannot close every
+# race against a concurrent hostile mutator.
 
 include "./differential.elisa"
 
@@ -20,6 +24,11 @@ module EsDifferentialWorldPosix:
             InvalidSnapshot
             InvalidRoot
             InvalidState
+            InvalidEntry
+            DirectoryChanged
+            DepthLimitExceeded
+            EntryLimitExceeded
+            DescriptorCloseFailed
             HostIo
 
 
@@ -28,6 +37,11 @@ module EsDifferentialWorldPosix:
             Materializing
             Materialized
             Failed
+            Removing
+            CleanupFailed
+            RootEntryRemoved
+            CleanupComplete
+            CleanupCompleteWithCloseError
 
 
         # The strings retain their trailing NUL for libc, while the explicit
@@ -44,6 +58,15 @@ module EsDifferentialWorldPosix:
             root_descriptor: int = -1
             snapshot_fingerprint: u64 = 0
             state: DarwinDifferentialWorldRootState = DarwinDifferentialWorldRootState.Created
+            root_entry_removed: bool = false
+            root_entry_unlink_attempted: bool = false
+            root_entry_unlink_outcome_known: bool = false
+            root_descriptor_close_attempted: bool = false
+            parent_descriptor_close_attempted: bool = false
+            root_descriptor_close_outcome_known: bool = false
+            parent_descriptor_close_outcome_known: bool = false
+            root_descriptor_close_failed: bool = false
+            parent_descriptor_close_failed: bool = false
 
 
     private:
@@ -56,10 +79,15 @@ module EsDifferentialWorldPosix:
             ROOT_PATH_LENGTH: usize = 37
             ROOT_BASENAME_OFFSET: usize = 13
             ROOT_BASENAME_LENGTH: usize = 24
+            ROOT_BASENAME_PREFIX: sview = "elisascript-world-"
+            ROOT_BASENAME_PREFIX_LENGTH: usize = 18
             PRIVATE_DIRECTORY_MODE: u32 = 448
             POSIX_PERMISSION_MASK: u16 = 511
             MAX_EINTR_RETRIES: usize = 8
             MAX_WRITE_CALLS: usize = 1048576
+            MAX_CLEANUP_DEPTH: usize = 1024
+            MAX_CLEANUP_ENTRIES: usize = 1048576
+            MAX_DIRENT_NAME_BYTES: usize = 255
 
 
         const enum DarwinDifferentialWorldWriteState of u8:
@@ -73,6 +101,66 @@ module EsDifferentialWorldPosix:
             offset: mutable usize = 0
             eintr_retries: mutable usize = 0
             write_calls: mutable usize = 0
+
+
+        # Cleanup uses a fixed-size explicit stack, so neither path depth nor
+        # allocation pressure can turn recursive host-tree traversal into an
+        # unbounded call stack. A frame's stream owns its scan descriptor.
+        struct DarwinDifferentialWorldCleanupFrame:
+            directory: mutable heap void&? = null
+            name: u8[256]
+            device: u32 = 0
+            inode: u64 = 0
+
+
+        const enum DarwinDifferentialWorldCleanupState of u8:
+            OpenRoot
+            Scan
+            FinishDirectory
+            Unwind
+            Done
+
+
+        const enum DarwinDifferentialWorldCleanupResult of u8:
+            Complete
+            HostIo
+            InvalidEntry
+            DirectoryChanged
+            DepthLimitExceeded
+            EntryLimitExceeded
+            DescriptorCloseFailed
+
+
+        def darwin_differential_world_cleanup_bounds(world: DifferentialWorld&) -> DarwinDifferentialWorldCleanupResult:
+            # Count fixture leaves plus a conservative upper bound on their
+            # inferred parent directories. Shared prefixes are counted more
+            # than once intentionally; admission must never create a world
+            # which the bounded cleaner cannot remove.
+            required_entries: mutable usize = world.files.count
+            return DarwinDifferentialWorldCleanupResult.EntryLimitExceeded if required_entries > DarwinDifferentialWorldPolicy::MAX_CLEANUP_ENTRIES
+
+            working_depth: mutable usize = 0
+            working_index: mutable usize = 0
+            while working_index < sview_len(world.working_directory):
+                working_depth <- working_depth + 1 if sview_at(world.working_directory, working_index) == 47
+                working_index <- working_index + 1
+            if world.working_directory != "":
+                working_depth <- working_depth + 1
+                return DarwinDifferentialWorldCleanupResult.DepthLimitExceeded if working_depth > DarwinDifferentialWorldPolicy::MAX_CLEANUP_DEPTH
+                return DarwinDifferentialWorldCleanupResult.EntryLimitExceeded if working_depth > DarwinDifferentialWorldPolicy::MAX_CLEANUP_ENTRIES - required_entries
+                required_entries <- required_entries + working_depth
+
+            for fixture in world.files |required_entries|:
+                fixture_parent_depth: mutable usize = 0
+                fixture_index: mutable usize = 0
+                while fixture_index < sview_len(fixture.path):
+                    fixture_parent_depth <- fixture_parent_depth + 1 if sview_at(fixture.path, fixture_index) == 47
+                    fixture_index <- fixture_index + 1
+                return DarwinDifferentialWorldCleanupResult.DepthLimitExceeded if fixture_parent_depth > DarwinDifferentialWorldPolicy::MAX_CLEANUP_DEPTH
+                return DarwinDifferentialWorldCleanupResult.EntryLimitExceeded if fixture_parent_depth > DarwinDifferentialWorldPolicy::MAX_CLEANUP_ENTRIES - required_entries
+                required_entries <- required_entries + fixture_parent_depth
+
+            return DarwinDifferentialWorldCleanupResult.Complete
 
 
         # Copy a borrowed Elisa view into a NUL-terminated context allocation.
@@ -274,6 +362,313 @@ module EsDifferentialWorldPosix:
             return valid
 
 
+        def darwin_differential_world_directory_info_matches(info: ElisascriptStat&, device: u32, inode: u64) -> bool:
+            return (info.mode & DarwinStatMode::MASK) == DarwinStatMode::DIRECTORY and info.device == device and info.inode == inode
+
+
+        def darwin_differential_world_entry_identity_matches(left: ElisascriptStat&, right: ElisascriptStat&) -> bool:
+            return left.device == right.device and left.inode == right.inode and (left.mode & DarwinStatMode::MASK) == (right.mode & DarwinStatMode::MASK)
+
+
+        def darwin_differential_world_root_identity_matches(parent_fd: int, basename: cstr, root_fd: int) -> bool can[Blocking.IO]:
+            opened_info: mutable ElisascriptStat = zeroed
+            entry_info: mutable ElisascriptStat = zeroed
+            return false if elisascript_posix_fstat(root_fd, opened_info) != 0
+            return false if (opened_info.mode & DarwinStatMode::MASK) != DarwinStatMode::DIRECTORY
+            return false if elisascript_posix_fstatat(parent_fd, basename, entry_info, DarwinAtFlag::SYMLINK_NOFOLLOW) != 0
+            return darwin_differential_world_entry_identity_matches(opened_info, entry_info)
+
+
+        # Best-effort rollback for the empty directory just returned by
+        # mkdtemp when opening its descriptor fails. Never remove a different
+        # entry that has appeared under the generated name.
+        def darwin_differential_world_discard_created_root(parent_fd: int, basename: cstr, expected: ElisascriptStat&) -> bool can[Blocking.IO]:
+            current: mutable ElisascriptStat = zeroed
+            return false if elisascript_posix_fstatat(parent_fd, basename, current, DarwinAtFlag::SYMLINK_NOFOLLOW) != 0
+            return false if not darwin_differential_world_directory_info_matches(current, expected.device, expected.inode)
+            return elisascript_posix_unlinkat(parent_fd, basename, DarwinAtFlag::REMOVE_DIRECTORY) == 0
+
+
+        # Remove the contents using only one-component descriptor-relative
+        # operations. Each DIR stream owns the descriptor returned by fdopendir;
+        # the root record's descriptors are never passed to fdopendir/closedir.
+        # The fixed stack bounds both depth and transient descriptor ownership.
+        def darwin_differential_world_empty_tree(root_fd: int) -> DarwinDifferentialWorldCleanupResult can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic]:
+            root_info: mutable ElisascriptStat = zeroed
+            return DarwinDifferentialWorldCleanupResult.HostIo if elisascript_posix_fstat(root_fd, root_info) != 0
+            return DarwinDifferentialWorldCleanupResult.InvalidEntry if (root_info.mode & DarwinStatMode::MASK) != DarwinStatMode::DIRECTORY
+            root_device: u32 = root_info.device
+            root_inode: u64 = root_info.inode
+
+            # A child may have chmodded its cwd. Restore only the already-open
+            # private root descriptor; fail closed if ownership/permissions do
+            # not permit that operation.
+            return DarwinDifferentialWorldCleanupResult.HostIo if elisascript_posix_fchmod(root_fd, DarwinDifferentialWorldPolicy::PRIVATE_DIRECTORY_MODE) != 0
+            root_info <- zeroed
+            return DarwinDifferentialWorldCleanupResult.HostIo if elisascript_posix_fstat(root_fd, root_info) != 0
+            return DarwinDifferentialWorldCleanupResult.InvalidEntry if not darwin_differential_world_directory_info_matches(root_info, root_device, root_inode) or not darwin_differential_world_directory_stat_matches(root_info)
+
+            current_directory: dstr = darwin_differential_world_cstring(".")
+            return DarwinDifferentialWorldCleanupResult.HostIo if current_directory.items == null
+            current_directory_items: u8& = current_directory.items
+            scan_descriptor: int = elisascript_posix_openat(root_fd, current_directory_items.cast[cstr], DarwinOpenFlags::RDONLY | DarwinOpenFlags::DIRECTORY | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC, 0u32)
+            return DarwinDifferentialWorldCleanupResult.HostIo if scan_descriptor < 0
+            scan_info: mutable ElisascriptStat = zeroed
+            if elisascript_posix_fstat(scan_descriptor, scan_info) != 0 or not darwin_differential_world_directory_info_matches(scan_info, root_device, root_inode):
+                close_status: int = elisascript_posix_close(scan_descriptor)
+                return DarwinDifferentialWorldCleanupResult.DescriptorCloseFailed if close_status != 0
+                return DarwinDifferentialWorldCleanupResult.DirectoryChanged
+            root_stream: mutable heap void&? = elisascript_posix_fdopendir(scan_descriptor)
+            if root_stream == null:
+                close_status: int = elisascript_posix_close(scan_descriptor)
+                return DarwinDifferentialWorldCleanupResult.DescriptorCloseFailed if close_status != 0
+                return DarwinDifferentialWorldCleanupResult.HostIo
+
+            # Depth 0 is the root; 1024 child levels require 1025 fixed frames.
+            frames: mutable DarwinDifferentialWorldCleanupFrame[1025] = zeroed
+            frames[0].directory <- root_stream
+            frames[0].device <- root_device
+            frames[0].inode <- root_inode
+            stack_count: mutable usize = 1
+            entries_seen: mutable usize = 0
+            readdir_eintr_retries: mutable usize = 0
+            close_failed: mutable bool = false
+            result: mutable DarwinDifferentialWorldCleanupResult = DarwinDifferentialWorldCleanupResult.Complete
+            state: mutable DarwinDifferentialWorldCleanupState = DarwinDifferentialWorldCleanupState.OpenRoot
+
+            # OpenRoot is already established before entering the machine. It
+            # is retained as an explicit phase so every transition remains
+            # visible in this state-machine-only walk.
+            machine over state:
+                state OpenRoot
+                start OpenRoot
+
+                OpenRoot, DarwinDifferentialWorldCleanupState.OpenRoot:
+                    state <- DarwinDifferentialWorldCleanupState.Scan
+                    -> OpenRoot
+
+                Scan, DarwinDifferentialWorldCleanupState.Scan if stack_count == 0:
+                    state <- DarwinDifferentialWorldCleanupState.Done
+                    -> Scan
+                Scan, DarwinDifferentialWorldCleanupState.Scan:
+                    frame_index: usize = stack_count - 1
+                    if frames[frame_index].directory == null:
+                        result <- DarwinDifferentialWorldCleanupResult.HostIo
+                        state <- DarwinDifferentialWorldCleanupState.Unwind
+                        -> Scan
+                    directory: mutable heap void& = frames[frame_index].directory
+                    errno: mutable int& = elisascript_posix_errno()
+                    errno[0] <- 0
+                    entry_pointer: mutable ElisascriptDirectoryEntry&? = elisascript_posix_readdir(directory)
+                    if entry_pointer == null:
+                        if errno[0] == DarwinErrno::EINTR and readdir_eintr_retries < DarwinDifferentialWorldPolicy::MAX_EINTR_RETRIES:
+                            readdir_eintr_retries <- readdir_eintr_retries + 1
+                            -> Scan
+                        if errno[0] != 0:
+                            result <- DarwinDifferentialWorldCleanupResult.HostIo
+                            state <- DarwinDifferentialWorldCleanupState.Unwind
+                            -> Scan
+                        readdir_eintr_retries <- 0
+                        state <- DarwinDifferentialWorldCleanupState.FinishDirectory
+                        -> Scan
+
+                    readdir_eintr_retries <- 0
+                    entry: mutable ElisascriptDirectoryEntry& = entry_pointer
+                    name_length: usize = entry.name_length.usize()
+                    if name_length == 0 or name_length > DarwinDifferentialWorldPolicy::MAX_DIRENT_NAME_BYTES or entry.name[name_length] != 0:
+                        result <- DarwinDifferentialWorldCleanupResult.InvalidEntry
+                        state <- DarwinDifferentialWorldCleanupState.Unwind
+                        -> Scan
+                    invalid_name: mutable bool = false
+                    for name_offset in 0..<name_length |entry, invalid_name|:
+                        invalid_name <- true if entry.name[name_offset] == 0 or entry.name[name_offset] == 47
+                    if invalid_name:
+                        result <- DarwinDifferentialWorldCleanupResult.InvalidEntry
+                        state <- DarwinDifferentialWorldCleanupState.Unwind
+                        -> Scan
+                    if name_length == 1 and entry.name[0] == 46:
+                        -> Scan
+                    if name_length == 2 and entry.name[0] == 46 and entry.name[1] == 46:
+                        -> Scan
+                    if entries_seen >= DarwinDifferentialWorldPolicy::MAX_CLEANUP_ENTRIES:
+                        result <- DarwinDifferentialWorldCleanupResult.EntryLimitExceeded
+                        state <- DarwinDifferentialWorldCleanupState.Unwind
+                        -> Scan
+                    entries_seen <- entries_seen + 1
+
+                    parent_descriptor: int = elisascript_posix_dirfd(directory)
+                    if parent_descriptor < 0:
+                        result <- DarwinDifferentialWorldCleanupResult.HostIo
+                        state <- DarwinDifferentialWorldCleanupState.Unwind
+                        -> Scan
+                    entry_name: u8& = &entry.name[0]
+                    before_info: mutable ElisascriptStat = zeroed
+                    if elisascript_posix_fstatat(parent_descriptor, entry_name.cast[cstr], before_info, DarwinAtFlag::SYMLINK_NOFOLLOW) != 0:
+                        result <- DarwinDifferentialWorldCleanupResult.HostIo
+                        state <- DarwinDifferentialWorldCleanupState.Unwind
+                        -> Scan
+                    if before_info.device != root_device:
+                        result <- DarwinDifferentialWorldCleanupResult.DirectoryChanged
+                        state <- DarwinDifferentialWorldCleanupState.Unwind
+                        -> Scan
+
+                    if (before_info.mode & DarwinStatMode::MASK) == DarwinStatMode::DIRECTORY:
+                        if stack_count > DarwinDifferentialWorldPolicy::MAX_CLEANUP_DEPTH:
+                            result <- DarwinDifferentialWorldCleanupResult.DepthLimitExceeded
+                            state <- DarwinDifferentialWorldCleanupState.Unwind
+                            -> Scan
+                        # Restore search/read permissions through the already
+                        # opened parent before opening a runner-restricted
+                        # directory. AT_SYMLINK_NOFOLLOW prevents a replaced
+                        # symlink from redirecting chmod outside this tree.
+                        if elisascript_posix_fchmodat(parent_descriptor, entry_name.cast[cstr], DarwinDifferentialWorldPolicy::PRIVATE_DIRECTORY_MODE, DarwinAtFlag::SYMLINK_NOFOLLOW) != 0:
+                            result <- DarwinDifferentialWorldCleanupResult.HostIo
+                            state <- DarwinDifferentialWorldCleanupState.Unwind
+                            -> Scan
+                        restored_name_info: mutable ElisascriptStat = zeroed
+                        if elisascript_posix_fstatat(parent_descriptor, entry_name.cast[cstr], restored_name_info, DarwinAtFlag::SYMLINK_NOFOLLOW) != 0 or not darwin_differential_world_directory_info_matches(restored_name_info, before_info.device, before_info.inode):
+                            result <- DarwinDifferentialWorldCleanupResult.DirectoryChanged
+                            state <- DarwinDifferentialWorldCleanupState.Unwind
+                            -> Scan
+                        child_descriptor: int = elisascript_posix_openat(parent_descriptor, entry_name.cast[cstr], DarwinOpenFlags::RDONLY | DarwinOpenFlags::DIRECTORY | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC, 0u32)
+                        if child_descriptor < 0:
+                            result <- DarwinDifferentialWorldCleanupResult.HostIo
+                            state <- DarwinDifferentialWorldCleanupState.Unwind
+                            -> Scan
+                        child_info: mutable ElisascriptStat = zeroed
+                        if elisascript_posix_fstat(child_descriptor, child_info) != 0 or not darwin_differential_world_directory_info_matches(child_info, before_info.device, before_info.inode):
+                            failed_open_close_status: int = elisascript_posix_close(child_descriptor)
+                            close_failed <- true if failed_open_close_status != 0
+                            result <- DarwinDifferentialWorldCleanupResult.DirectoryChanged
+                            state <- DarwinDifferentialWorldCleanupState.Unwind
+                            -> Scan
+                        if elisascript_posix_fchmod(child_descriptor, DarwinDifferentialWorldPolicy::PRIVATE_DIRECTORY_MODE) != 0:
+                            failed_permission_close_status: int = elisascript_posix_close(child_descriptor)
+                            close_failed <- true if failed_permission_close_status != 0
+                            result <- DarwinDifferentialWorldCleanupResult.HostIo
+                            state <- DarwinDifferentialWorldCleanupState.Unwind
+                            -> Scan
+                        child_info <- zeroed
+                        opened_directory_matches: bool = elisascript_posix_fstat(child_descriptor, child_info) == 0 and darwin_differential_world_directory_info_matches(child_info, before_info.device, before_info.inode) and darwin_differential_world_directory_stat_matches(child_info)
+                        named_info: mutable ElisascriptStat = zeroed
+                        named_directory_matches: bool = opened_directory_matches and elisascript_posix_fstatat(parent_descriptor, entry_name.cast[cstr], named_info, DarwinAtFlag::SYMLINK_NOFOLLOW) == 0 and darwin_differential_world_directory_info_matches(named_info, child_info.device, child_info.inode)
+                        if not named_directory_matches:
+                            failed_name_close_status: int = elisascript_posix_close(child_descriptor)
+                            close_failed <- true if failed_name_close_status != 0
+                            result <- DarwinDifferentialWorldCleanupResult.DirectoryChanged
+                            state <- DarwinDifferentialWorldCleanupState.Unwind
+                            -> Scan
+                        child_stream: mutable heap void&? = elisascript_posix_fdopendir(child_descriptor)
+                        if child_stream == null:
+                            failed_stream_close_status: int = elisascript_posix_close(child_descriptor)
+                            close_failed <- true if failed_stream_close_status != 0
+                            result <- DarwinDifferentialWorldCleanupResult.HostIo
+                            state <- DarwinDifferentialWorldCleanupState.Unwind
+                            -> Scan
+                        child_frame_index: usize = stack_count
+                        frames[child_frame_index].directory <- child_stream
+                        frames[child_frame_index].device <- child_info.device
+                        frames[child_frame_index].inode <- child_info.inode
+                        child_name_buffer: mutable u8& = &frames[child_frame_index].name[0]
+                        for name_offset in 0..<name_length |entry, child_name_buffer|:
+                            child_name_buffer[name_offset] <- entry.name[name_offset]
+                        child_name_buffer[name_length] <- 0
+                        stack_count <- stack_count + 1
+                        -> Scan
+                    else:
+                        after_info: mutable ElisascriptStat = zeroed
+                        if elisascript_posix_fstatat(parent_descriptor, entry_name.cast[cstr], after_info, DarwinAtFlag::SYMLINK_NOFOLLOW) != 0:
+                            result <- DarwinDifferentialWorldCleanupResult.HostIo
+                            state <- DarwinDifferentialWorldCleanupState.Unwind
+                            -> Scan
+                        if not darwin_differential_world_entry_identity_matches(before_info, after_info):
+                            result <- DarwinDifferentialWorldCleanupResult.DirectoryChanged
+                            state <- DarwinDifferentialWorldCleanupState.Unwind
+                            -> Scan
+                        if elisascript_posix_unlinkat(parent_descriptor, entry_name.cast[cstr], 0) != 0:
+                            result <- DarwinDifferentialWorldCleanupResult.HostIo
+                            state <- DarwinDifferentialWorldCleanupState.Unwind
+                            -> Scan
+                        -> Scan
+
+                FinishDirectory, DarwinDifferentialWorldCleanupState.FinishDirectory:
+                    frame_index: usize = stack_count - 1
+                    if frame_index == 0:
+                        if frames[frame_index].directory == null:
+                            result <- DarwinDifferentialWorldCleanupResult.HostIo
+                            stack_count <- 0
+                            state <- DarwinDifferentialWorldCleanupState.Done
+                            -> FinishDirectory
+                        directory_to_close: mutable heap void& = frames[frame_index].directory
+                        frames[frame_index].directory <- null
+                        stack_count <- 0
+                        close_status: int = elisascript_posix_closedir(directory_to_close)
+                        if close_status != 0:
+                            close_failed <- true
+                            result <- DarwinDifferentialWorldCleanupResult.DescriptorCloseFailed
+                        state <- DarwinDifferentialWorldCleanupState.Done if close_status == 0 else DarwinDifferentialWorldCleanupState.Unwind
+                        -> FinishDirectory
+
+                    if frames[frame_index - 1].directory == null or frames[frame_index].directory == null:
+                        result <- DarwinDifferentialWorldCleanupResult.DirectoryChanged
+                        state <- DarwinDifferentialWorldCleanupState.Unwind
+                        -> FinishDirectory
+                    parent_stream: mutable heap void& = frames[frame_index - 1].directory
+                    parent_descriptor: int = elisascript_posix_dirfd(parent_stream)
+                    child_stream: mutable heap void& = frames[frame_index].directory
+                    child_descriptor: int = elisascript_posix_dirfd(child_stream)
+                    before_close_info: mutable ElisascriptStat = zeroed
+                    before_unlink_info: mutable ElisascriptStat = zeroed
+                    if parent_descriptor < 0 or child_descriptor < 0 or elisascript_posix_fstat(child_descriptor, before_close_info) != 0 or not darwin_differential_world_directory_info_matches(before_close_info, frames[frame_index].device, frames[frame_index].inode):
+                        result <- DarwinDifferentialWorldCleanupResult.DirectoryChanged
+                        state <- DarwinDifferentialWorldCleanupState.Unwind
+                        -> FinishDirectory
+                    child_name: u8& = &frames[frame_index].name[0]
+                    if elisascript_posix_fstatat(parent_descriptor, child_name.cast[cstr], before_unlink_info, DarwinAtFlag::SYMLINK_NOFOLLOW) != 0 or not darwin_differential_world_directory_info_matches(before_unlink_info, frames[frame_index].device, frames[frame_index].inode):
+                        result <- DarwinDifferentialWorldCleanupResult.DirectoryChanged
+                        state <- DarwinDifferentialWorldCleanupState.Unwind
+                        -> FinishDirectory
+                    frames[frame_index].directory <- null
+                    close_status: int = elisascript_posix_closedir(child_stream)
+                    if close_status != 0:
+                        close_failed <- true
+                        result <- DarwinDifferentialWorldCleanupResult.DescriptorCloseFailed
+                        state <- DarwinDifferentialWorldCleanupState.Unwind
+                        -> FinishDirectory
+                    after_close_info: mutable ElisascriptStat = zeroed
+                    if elisascript_posix_fstatat(parent_descriptor, child_name.cast[cstr], after_close_info, DarwinAtFlag::SYMLINK_NOFOLLOW) != 0 or not darwin_differential_world_directory_info_matches(after_close_info, frames[frame_index].device, frames[frame_index].inode):
+                        result <- DarwinDifferentialWorldCleanupResult.DirectoryChanged
+                        state <- DarwinDifferentialWorldCleanupState.Unwind
+                        -> FinishDirectory
+                    if elisascript_posix_unlinkat(parent_descriptor, child_name.cast[cstr], DarwinAtFlag::REMOVE_DIRECTORY) != 0:
+                        result <- DarwinDifferentialWorldCleanupResult.HostIo
+                        state <- DarwinDifferentialWorldCleanupState.Unwind
+                        -> FinishDirectory
+                    stack_count <- stack_count - 1
+                    state <- DarwinDifferentialWorldCleanupState.Scan
+                    -> FinishDirectory
+
+                Unwind, DarwinDifferentialWorldCleanupState.Unwind if stack_count == 0:
+                    state <- DarwinDifferentialWorldCleanupState.Done
+                    -> Unwind
+                Unwind, DarwinDifferentialWorldCleanupState.Unwind:
+                    frame_index: usize = stack_count - 1
+                    directory_to_close: mutable heap void&? = frames[frame_index].directory
+                    frames[frame_index].directory <- null
+                    stack_count <- stack_count - 1
+                    if directory_to_close != null:
+                        owned_stream: mutable heap void& = directory_to_close
+                        close_status: int = elisascript_posix_closedir(owned_stream)
+                        close_failed <- true if close_status != 0
+                    -> Unwind
+
+                Done, DarwinDifferentialWorldCleanupState.Done:
+                    break
+
+            return DarwinDifferentialWorldCleanupResult.DescriptorCloseFailed if close_failed
+            return result
+
+
     public:
         # Create an atomically named private root under Darwin's canonical
         # `/private/tmp`, retain both the parent and opened-root descriptors,
@@ -310,11 +705,21 @@ module EsDifferentialWorldPosix:
             basename.count <- DarwinDifferentialWorldPolicy::ROOT_BASENAME_LENGTH
             basename_items: u8& = basename.items
 
+            created_info: mutable ElisascriptStat = zeroed
+            if elisascript_posix_fstatat(parent_fd, basename_items.cast[cstr], created_info, DarwinAtFlag::SYMLINK_NOFOLLOW) != 0:
+                _ = elisascript_posix_close(parent_fd)
+                raise DifferentialWorldPosixError.HostIo
+            if not darwin_differential_world_directory_stat_matches(created_info):
+                _ = darwin_differential_world_discard_created_root(parent_fd, basename_items.cast[cstr], created_info)
+                _ = elisascript_posix_close(parent_fd)
+                raise DifferentialWorldPosixError.InvalidRoot
             root_fd: mutable int = elisascript_posix_openat(parent_fd, basename_items.cast[cstr], DarwinOpenFlags::RDONLY | DarwinOpenFlags::DIRECTORY | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC, 0u32)
             if root_fd < 0:
+                _ = darwin_differential_world_discard_created_root(parent_fd, basename_items.cast[cstr], created_info)
                 _ = elisascript_posix_close(parent_fd)
                 raise DifferentialWorldPosixError.HostIo
             if not darwin_differential_world_root_entry_matches(parent_fd, basename_items.cast[cstr], root_fd):
+                _ = darwin_differential_world_discard_created_root(parent_fd, basename_items.cast[cstr], created_info)
                 _ = elisascript_posix_close(root_fd)
                 _ = elisascript_posix_close(parent_fd)
                 raise DifferentialWorldPosixError.InvalidRoot
@@ -329,6 +734,9 @@ module EsDifferentialWorldPosix:
             snapshot_check: DifferentialWorldSnapshotCheck = validate_differential_world_snapshot(snapshot.world, snapshot)
             raise DifferentialWorldPosixError.InvalidSnapshot if not snapshot_check.valid
             raise DifferentialWorldPosixError.InvalidState if root.state != DarwinDifferentialWorldRootState.Created or root.parent_descriptor < 0 or root.root_descriptor < 0
+            cleanup_bounds: DarwinDifferentialWorldCleanupResult = darwin_differential_world_cleanup_bounds(snapshot.world)
+            raise DifferentialWorldPosixError.DepthLimitExceeded if cleanup_bounds == DarwinDifferentialWorldCleanupResult.DepthLimitExceeded
+            raise DifferentialWorldPosixError.EntryLimitExceeded if cleanup_bounds == DarwinDifferentialWorldCleanupResult.EntryLimitExceeded
             basename_items: u8& = root.basename.items
             if not darwin_differential_world_root_entry_matches(root.parent_descriptor, basename_items.cast[cstr], root.root_descriptor):
                 root.state <- DarwinDifferentialWorldRootState.Failed
@@ -351,3 +759,110 @@ module EsDifferentialWorldPosix:
 
             root.snapshot_fingerprint <- snapshot.world_fingerprint
             root.state <- DarwinDifferentialWorldRootState.Materialized
+
+
+        # Remove a completed or partially materialized world after its child
+        # and every other writer have stopped. Traversal is rooted in the held
+        # descriptors, treats every symlink as an unlink-only leaf, and refuses
+        # cross-device entries, malformed names, identity changes, and limit
+        # overruns. This is not safe against a concurrent hostile mutator and
+        # does not constrain what the child did outside this root.
+        def cleanup_darwin_differential_world(root: mutable DarwinDifferentialWorldRoot&) -> void error[DifferentialWorldPosixError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic]:
+            if root.state == DarwinDifferentialWorldRootState.CleanupComplete:
+                return
+            if root.state == DarwinDifferentialWorldRootState.CleanupCompleteWithCloseError:
+                raise DifferentialWorldPosixError.DescriptorCloseFailed
+
+            # If an effect interrupted unlinkat before its result was recorded,
+            # resolve the name against the held descriptor. Missing means the
+            # root entry was removed; the same identity means retry cleanup.
+            # The adapter requires quiescent writers, so another actor cannot
+            # legitimately replace a just-removed private root here.
+            if not root.root_entry_removed and root.root_entry_unlink_attempted and not root.root_entry_unlink_outcome_known:
+                raise DifferentialWorldPosixError.InvalidState if root.parent_descriptor < 0 or root.root_descriptor < 0 or root.basename.items == null
+                basename_items: u8& = root.basename.items
+                recovery_info: mutable ElisascriptStat = zeroed
+                if elisascript_posix_fstatat(root.parent_descriptor, basename_items.cast[cstr], recovery_info, DarwinAtFlag::SYMLINK_NOFOLLOW) != 0:
+                    errno: mutable int& = elisascript_posix_errno()
+                    if errno[0] == DarwinErrno::ENOENT:
+                        root.root_entry_removed <- true
+                        root.root_entry_unlink_outcome_known <- true
+                        root.state <- DarwinDifferentialWorldRootState.RootEntryRemoved
+                    else:
+                        root.state <- DarwinDifferentialWorldRootState.CleanupFailed
+                        raise DifferentialWorldPosixError.HostIo
+                else:
+                    if not darwin_differential_world_root_identity_matches(root.parent_descriptor, basename_items.cast[cstr], root.root_descriptor):
+                        root.state <- DarwinDifferentialWorldRootState.CleanupFailed
+                        raise DifferentialWorldPosixError.DirectoryChanged
+                    root.root_entry_unlink_outcome_known <- true
+
+            if not root.root_entry_removed:
+                raise DifferentialWorldPosixError.InvalidState if root.state not in {DarwinDifferentialWorldRootState.Created, DarwinDifferentialWorldRootState.Materialized, DarwinDifferentialWorldRootState.Failed, DarwinDifferentialWorldRootState.Removing, DarwinDifferentialWorldRootState.CleanupFailed}
+                raise DifferentialWorldPosixError.InvalidState if root.parent_descriptor < 0 or root.root_descriptor < 0 or root.root_descriptor_close_attempted or root.parent_descriptor_close_attempted
+                raise DifferentialWorldPosixError.InvalidRoot if root.basename.items == null
+                raise DifferentialWorldPosixError.InvalidRoot if root.basename_length != DarwinDifferentialWorldPolicy::ROOT_BASENAME_LENGTH or root.basename.count != root.basename_length
+                basename_items: u8& = root.basename.items
+                raise DifferentialWorldPosixError.InvalidRoot if basename_items[root.basename_length] != 0
+                for basename_offset in 0..<root.basename_length |basename_items|:
+                    raise DifferentialWorldPosixError.InvalidRoot if basename_items[basename_offset] == 0 or basename_items[basename_offset] == 47
+                for prefix_offset in 0..<DarwinDifferentialWorldPolicy::ROOT_BASENAME_PREFIX_LENGTH |basename_items|:
+                    raise DifferentialWorldPosixError.InvalidRoot if basename_items[prefix_offset] != sview_at(DarwinDifferentialWorldPolicy::ROOT_BASENAME_PREFIX, prefix_offset)
+                raise DifferentialWorldPosixError.InvalidRoot if not darwin_differential_world_root_identity_matches(root.parent_descriptor, basename_items.cast[cstr], root.root_descriptor)
+
+                root.state <- DarwinDifferentialWorldRootState.Removing
+                walk_result: DarwinDifferentialWorldCleanupResult = darwin_differential_world_empty_tree(root.root_descriptor)
+                if walk_result != DarwinDifferentialWorldCleanupResult.Complete:
+                    root.state <- DarwinDifferentialWorldRootState.CleanupFailed
+                    raise DifferentialWorldPosixError.InvalidEntry if walk_result == DarwinDifferentialWorldCleanupResult.InvalidEntry
+                    raise DifferentialWorldPosixError.DirectoryChanged if walk_result == DarwinDifferentialWorldCleanupResult.DirectoryChanged
+                    raise DifferentialWorldPosixError.DepthLimitExceeded if walk_result == DarwinDifferentialWorldCleanupResult.DepthLimitExceeded
+                    raise DifferentialWorldPosixError.EntryLimitExceeded if walk_result == DarwinDifferentialWorldCleanupResult.EntryLimitExceeded
+                    raise DifferentialWorldPosixError.DescriptorCloseFailed if walk_result == DarwinDifferentialWorldCleanupResult.DescriptorCloseFailed
+                    raise DifferentialWorldPosixError.HostIo
+
+                if not darwin_differential_world_root_identity_matches(root.parent_descriptor, basename_items.cast[cstr], root.root_descriptor):
+                    root.state <- DarwinDifferentialWorldRootState.CleanupFailed
+                    raise DifferentialWorldPosixError.DirectoryChanged
+                root.root_entry_unlink_attempted <- true
+                root.root_entry_unlink_outcome_known <- false
+                unlink_status: int = elisascript_posix_unlinkat(root.parent_descriptor, basename_items.cast[cstr], DarwinAtFlag::REMOVE_DIRECTORY)
+                root.root_entry_unlink_outcome_known <- true
+                if unlink_status != 0:
+                    root.state <- DarwinDifferentialWorldRootState.CleanupFailed
+                    raise DifferentialWorldPosixError.HostIo
+                # Persist the successful unlink before attempting either close.
+                # A later close error must not make a retry walk/delete again.
+                root.root_entry_removed <- true
+                root.state <- DarwinDifferentialWorldRootState.RootEntryRemoved
+            else:
+                raise DifferentialWorldPosixError.InvalidState if root.state != DarwinDifferentialWorldRootState.RootEntryRemoved and root.state != DarwinDifferentialWorldRootState.CleanupFailed
+
+            # An effect or host interruption between the close call and its
+            # return-value publication leaves the outcome unknown. Never retry
+            # that descriptor number: it may already have been reused.
+            if root.root_descriptor_close_attempted and not root.root_descriptor_close_outcome_known:
+                root.root_descriptor_close_failed <- true
+                root.root_descriptor_close_outcome_known <- true
+            if root.parent_descriptor_close_attempted and not root.parent_descriptor_close_outcome_known:
+                root.parent_descriptor_close_failed <- true
+                root.parent_descriptor_close_outcome_known <- true
+            if not root.root_descriptor_close_attempted:
+                raise DifferentialWorldPosixError.InvalidState if root.root_descriptor < 0
+                root_fd: int = root.root_descriptor
+                root.root_descriptor_close_attempted <- true
+                root.root_descriptor <- -1
+                root.root_descriptor_close_failed <- elisascript_posix_close(root_fd) != 0
+                root.root_descriptor_close_outcome_known <- true
+            if not root.parent_descriptor_close_attempted:
+                raise DifferentialWorldPosixError.InvalidState if root.parent_descriptor < 0
+                parent_fd: int = root.parent_descriptor
+                root.parent_descriptor_close_attempted <- true
+                root.parent_descriptor <- -1
+                root.parent_descriptor_close_failed <- elisascript_posix_close(parent_fd) != 0
+                root.parent_descriptor_close_outcome_known <- true
+
+            if root.root_descriptor_close_failed or root.parent_descriptor_close_failed:
+                root.state <- DarwinDifferentialWorldRootState.CleanupCompleteWithCloseError
+                raise DifferentialWorldPosixError.DescriptorCloseFailed
+            root.state <- DarwinDifferentialWorldRootState.CleanupComplete

@@ -1,4 +1,4 @@
-include "../../src/testing/differential.elisa"
+include "../../src/testing/differential_world_posix.elisa"
 include "../../src/testing/timeout_shrink_model.elisa"
 
 using EsDifferential
@@ -13,6 +13,8 @@ using EsDifferentialReplay
 using EsDifferentialRedaction
 using EsDifferentialGenerator
 using EsDifferentialTimeout
+using EsDifferentialWorldPosix
+using EsRuntime
 
 
 def int_value(value: i64) -> DifferentialValue:
@@ -1281,6 +1283,56 @@ def differential_world_snapshot_detects_order_contamination() -> void:
         malformed_check: DifferentialWorldSnapshotCheck = validate_differential_world_snapshot(world, malformed)
         assert not malformed_check.valid
         assert malformed_check.issue == DifferentialWorldSnapshotIssue.InvalidSnapshot
+
+
+@test
+def differential_posix_world_cleanup_recovers_restricted_private_directories() -> void:
+    can Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic:
+        world: DifferentialWorld = DifferentialWorld{working_directory: "locked/cwd"}
+        snapshot: DifferentialWorldSnapshot = make_differential_world_snapshot(world)
+        root: mutable DarwinDifferentialWorldRoot = try create_darwin_differential_world_root(snapshot) else DarwinDifferentialWorldRoot{}
+        assert root.root_descriptor >= 0
+
+        # Cleanup must not race an active materializer; reject this state before
+        # touching either descriptor or pathname, then restore the test owner.
+        root.state <- DarwinDifferentialWorldRootState.Materializing
+        materializing_rejected: mutable bool = false
+        catch cleanup_darwin_differential_world(root):
+            ok:
+                assert false
+            error failure:
+                materializing_rejected <- failure == DifferentialWorldPosixError.InvalidState
+        assert materializing_rejected
+        assert root.root_descriptor >= 0
+        root.state <- DarwinDifferentialWorldRootState.Created
+
+        materialized: mutable bool = false
+        catch materialize_darwin_differential_world(root, snapshot):
+            ok:
+                materialized <- true
+            error failure:
+                materialized <- false
+
+        restricted_directory: bool = false
+        close_ok: bool = false
+        locked_name: static u8& = "locked\0"
+        locked_descriptor: int = elisascript_posix_openat(root.root_descriptor, locked_name.cast[cstr], DarwinOpenFlags::RDONLY | DarwinOpenFlags::DIRECTORY | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC, 0u32) if materialized else -1
+        if locked_descriptor >= 0:
+            restricted_directory <- elisascript_posix_fchmod(locked_descriptor, 0u32) == 0
+            close_ok <- elisascript_posix_close(locked_descriptor) == 0
+
+        cleanup_ok: mutable bool = false
+        catch cleanup_darwin_differential_world(root):
+            ok:
+                cleanup_ok <- true
+            error failure:
+                cleanup_ok <- false
+        assert materialized
+        assert restricted_directory
+        assert close_ok
+        assert cleanup_ok
+        assert root.root_entry_removed
+        assert root.state == DarwinDifferentialWorldRootState.CleanupComplete
 
 
 @test
