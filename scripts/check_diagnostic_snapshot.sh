@@ -40,9 +40,10 @@ fields=$(awk '
     { sub(cr "$", "") }
     /^        struct ElisascriptProgramDiagnostic:/ { inside=1; next }
     inside && /^$/ { exit }
-    inside && /^            [a-z_][a-z0-9_]*:/ {
-        field=$1
-        sub(/:$/, "", field)
+    inside && /^            [a-z_][a-z0-9_]*[[:space:]]*:/ {
+        field=$0
+        sub(/^            /, "", field)
+        sub(/[[:space:]]*:.*$/, "", field)
         print field
     }
 ' "$runner")
