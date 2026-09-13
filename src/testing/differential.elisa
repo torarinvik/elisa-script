@@ -94,6 +94,7 @@ module EsDifferential:
         # A comparison artifact must not retain an effectively unbounded flat
         # value pool even when every individual offset is representable.
         const DIFFERENTIAL_DEFAULT_MAX_VALUES: usize = 1048576
+        const DIFFERENTIAL_DEFAULT_MAX_OBSERVATION_SITES: usize = 65536
         # Equality may revisit shared or cyclic aggregate views. Bound the
         # number of selected pairs independently from pool size so a malformed
         # DAG cannot turn comparison into an unbounded work loop.
@@ -110,6 +111,38 @@ module EsDifferential:
         # invariants.
         def differential_value_kind_valid(kind: DifferentialValueKind) -> bool:
             return kind in {DifferentialValueKind.Void, DifferentialValueKind.Bool, DifferentialValueKind.Int, DifferentialValueKind.Float, DifferentialValueKind.Array, DifferentialValueKind.Map, DifferentialValueKind.Text, DifferentialValueKind.ProcessCapture}
+
+
+        def differential_observation_schema_valid(schema: DifferentialObservationSchema&) -> bool:
+            return false if schema.sites.count > DIFFERENTIAL_DEFAULT_MAX_OBSERVATION_SITES
+            required_observations_remaining: mutable usize = ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS
+            for index in 0..<schema.sites.count |schema|:
+                site: DifferentialObservationSite = schema.sites[index]
+                return false if site.trace == 0 or not differential_value_kind_valid(site.value_kind)
+                return false if site.maximum_count == 0 or site.maximum_count.usize() > ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS
+                return false if site.minimum_count > site.maximum_count
+                return false if index != 0 and schema.sites[index - 1].trace >= site.trace
+                required_count: usize = site.minimum_count.usize()
+                return false if required_count > required_observations_remaining
+                required_observations_remaining <- required_observations_remaining - required_count
+            return true
+
+
+        def differential_observation_schema_canonical_bytes(schema: DifferentialObservationSchema&) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+            return [] if not differential_observation_schema_valid(schema)
+            output: mutable darray[u8] = []
+            EsIr::canonical_artifact_emit_byte(output, 69)
+            EsIr::canonical_artifact_emit_byte(output, 83)
+            EsIr::canonical_artifact_emit_byte(output, 79)
+            EsIr::canonical_artifact_emit_byte(output, 83)
+            EsIr::canonical_artifact_emit_byte(output, 1)
+            EsIr::canonical_artifact_emit_u64(output, schema.sites.count.u64())
+            for site in schema.sites |output|:
+                EsIr::canonical_artifact_emit_u64(output, site.trace)
+                EsIr::canonical_artifact_emit_byte(output, site.value_kind.u8())
+                EsIr::canonical_artifact_emit_u64(output, site.minimum_count.u64())
+                EsIr::canonical_artifact_emit_u64(output, site.maximum_count.u64())
+            return output
 
 
         # Serialized readers receive raw ordinals before an enum value exists.
@@ -154,7 +187,7 @@ module EsDifferential:
 
 
         def differential_difference_kind_byte_valid(value: u8) -> bool:
-            return value == DifferentialDifferenceKind.Equal.u8() or value == DifferentialDifferenceKind.Engine.u8() or value == DifferentialDifferenceKind.ExitStatus.u8() or value == DifferentialDifferenceKind.Error.u8() or value == DifferentialDifferenceKind.Stdout.u8() or value == DifferentialDifferenceKind.Stderr.u8() or value == DifferentialDifferenceKind.ReturnValue.u8() or value == DifferentialDifferenceKind.ObservationCount.u8() or value == DifferentialDifferenceKind.ObservationTrace.u8() or value == DifferentialDifferenceKind.ObservationValue.u8() or value == DifferentialDifferenceKind.Outcome.u8()
+            return value == DifferentialDifferenceKind.Equal.u8() or value == DifferentialDifferenceKind.Engine.u8() or value == DifferentialDifferenceKind.ExitStatus.u8() or value == DifferentialDifferenceKind.Error.u8() or value == DifferentialDifferenceKind.Stdout.u8() or value == DifferentialDifferenceKind.Stderr.u8() or value == DifferentialDifferenceKind.ReturnValue.u8() or value == DifferentialDifferenceKind.ObservationCount.u8() or value == DifferentialDifferenceKind.ObservationTrace.u8() or value == DifferentialDifferenceKind.ObservationValue.u8() or value == DifferentialDifferenceKind.Outcome.u8() or value == DifferentialDifferenceKind.CaseInvalid.u8() or value == DifferentialDifferenceKind.ObservationContract.u8()
 
 
         def differential_execution_engine_byte_valid(value: u8) -> bool:
@@ -217,6 +250,19 @@ module EsDifferential:
         struct DifferentialObservation:
             trace: u64
             value: DifferentialValue
+
+
+        # Trace identifiers are canonicalized in strict ascending order. This
+        # lets cases share a bounded, deterministic observation contract.
+        struct DifferentialObservationSite:
+            trace: u64
+            value_kind: DifferentialValueKind
+            minimum_count: u32 = 1
+            maximum_count: u32 = 1
+
+
+        struct DifferentialObservationSchema:
+            sites: darray[DifferentialObservationSite] = []
 
 
         # Environment overrides are kept as an ordered list rather than a runtime
@@ -599,6 +645,7 @@ module EsDifferential:
             candidate: DifferentialRunner
             world: DifferentialWorld = DifferentialWorld{}
             comparator: DifferentialComparatorPolicy = DifferentialComparatorPolicy{}
+            observation_schema: DifferentialObservationSchema = DifferentialObservationSchema{}
             tolerance: DifferentialFloatTolerance = DifferentialFloatTolerance{}
             engine_requirement: DifferentialEngineRequirement = DifferentialEngineRequirement.Ignore
             timeout_steps: u64 = 0
@@ -627,7 +674,12 @@ module EsDifferential:
             module_digest_1: u64 = 0
             module_digest_2: u64 = 0
             module_digest_3: u64 = 0
+            module_digest_present: bool = false
             comparator: DifferentialComparatorPolicy = DifferentialComparatorPolicy{}
+            observation_schema_digest_0: u64 = 0
+            observation_schema_digest_1: u64 = 0
+            observation_schema_digest_2: u64 = 0
+            observation_schema_digest_3: u64 = 0
 
 
         struct DifferentialArtifactManifestDecode:
@@ -814,6 +866,7 @@ module EsDifferential:
             InvalidEngineRequirement
             InvalidTolerance
             InvalidComparator
+            InvalidObservationSchema
             InvalidLimit
 
 
@@ -822,6 +875,12 @@ module EsDifferential:
             valid: mutable bool
             issue: mutable DifferentialCaseIssueKind
             runner_issue: mutable DifferentialRunnerIssueKind = DifferentialRunnerIssueKind.None
+
+
+        struct DifferentialObservationSchemaCheck:
+            valid: bool
+            index: u32 = 0
+            reason: sview = ""
 
 
         const enum DifferentialShrinkKind of u8:
@@ -910,6 +969,7 @@ module EsDifferential:
             Reference
             Candidate
             World
+            ObservationSchema
             Limits
             Done
 
@@ -1124,6 +1184,43 @@ module EsDifferential:
             return case_limit
 
 
+        # The schema is stored in trace order, so each emitted observation is
+        # checked with a bounded binary search. Counts are allocated once per
+        # declared site; this keeps validation O(observations * log(sites))
+        # instead of rescanning the whole schema for every runtime event.
+        def differential_observation_site_index(schema: DifferentialObservationSchema&, trace: u64) -> usize:
+            low: mutable usize = 0
+            high: mutable usize = schema.sites.count
+            while low < high:
+                middle: usize = low + (high - low) / 2
+                if schema.sites[middle].trace < trace:
+                    low <- middle + 1
+                else:
+                    high <- middle
+            return schema.sites.count if low >= schema.sites.count
+            return schema.sites.count if schema.sites[low].trace != trace
+            return low
+
+
+        def differential_run_observation_schema_check(run: DifferentialRun&, schema: DifferentialObservationSchema&) -> DifferentialObservationSchemaCheck can[Memory.Allocate, Abort.Panic]:
+            return DifferentialObservationSchemaCheck{valid: false, reason: "run observation count exceeds schema budget"} if run.observations.count > ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS
+            counts: mutable darray[u32] = []
+            counts.reserve(schema.sites.count)
+            for _ in 0..<schema.sites.count |counts|:
+                counts.push(0)
+            for observation_index in 0..<run.observations.count |run, schema, counts|:
+                observation: DifferentialObservation = run.observations[observation_index]
+                site_index: usize = differential_observation_site_index(schema, observation.trace)
+                return DifferentialObservationSchemaCheck{valid: false, index: observation_index.u32(), reason: "run emitted an undeclared observation trace"} if site_index >= schema.sites.count
+                site: DifferentialObservationSite = schema.sites[site_index]
+                return DifferentialObservationSchemaCheck{valid: false, index: site_index.u32(), reason: "observation value kind violates its site schema"} if not differential_value_kind_valid(observation.value.kind) or observation.value.kind != site.value_kind
+                return DifferentialObservationSchemaCheck{valid: false, index: observation_index.u32(), reason: "observation site exceeded its maximum occurrence count"} if counts[site_index] >= site.maximum_count
+                counts[site_index] <- counts[site_index] + 1
+            for site_index in 0..<schema.sites.count |schema, counts|:
+                return DifferentialObservationSchemaCheck{valid: false, index: site_index.u32(), reason: "required observation site was omitted"} if counts[site_index] < schema.sites[site_index].minimum_count
+            return DifferentialObservationSchemaCheck{valid: true}
+
+
         # Reconstruct the whole runner so narrowing execution limits cannot
         # accidentally discard adapter configuration or dynamic handler state.
         def differential_case_runner_with_limits(runner: DifferentialRunner&, timeout_steps: u64, max_output_bytes: u64) -> DifferentialRunner:
@@ -1174,11 +1271,20 @@ module EsDifferential:
                 Validate, DifferentialCaseCheckState.World:
                     world_issue: DifferentialCaseIssueKind = differential_world_issue(case.world)
                     if world_issue == DifferentialCaseIssueKind.None:
-                        cursor.state <- DifferentialCaseCheckState.Limits
+                        cursor.state <- DifferentialCaseCheckState.ObservationSchema
                     else:
                         cursor.result.valid <- false
                         cursor.result.issue <- world_issue
                         cursor.result.reason <- "differential world is invalid"
+                    -> Validate
+
+                Validate, DifferentialCaseCheckState.ObservationSchema if differential_observation_schema_valid(case.observation_schema):
+                    cursor.state <- DifferentialCaseCheckState.Limits
+                    -> Validate
+                Validate, DifferentialCaseCheckState.ObservationSchema:
+                    cursor.result.valid <- false
+                    cursor.result.issue <- DifferentialCaseIssueKind.InvalidObservationSchema
+                    cursor.result.reason <- "differential observation schema is invalid"
                     -> Validate
 
                 Validate, DifferentialCaseCheckState.Limits if (case.timeout_steps == 0 or case.timeout_steps <= DIFFERENTIAL_DEFAULT_MAX_TIMEOUT_STEPS) and (case.max_output_bytes == 0 or case.max_output_bytes <= DIFFERENTIAL_DEFAULT_MAX_OUTPUT_BYTES) and differential_artifact_policy_valid(case.artifact_policy) and differential_engine_requirement_valid(case.engine_requirement) and differential_float_tolerance_valid(case.tolerance) and differential_comparator_policy_valid(case.comparator):
@@ -1218,22 +1324,27 @@ module EsDifferential:
             return differential_case_runner_with_limits(selected, timeout_steps, max_output_bytes)
 
 
-        def make_differential_artifact_manifest(case: DifferentialCase&, module_fingerprint: u64 = 0, module_digest_0: u64 = 0, module_digest_1: u64 = 0, module_digest_2: u64 = 0, module_digest_3: u64 = 0) -> DifferentialArtifactManifest error[DifferentialRunnerError] can[Memory.Allocate, Abort.Panic]:
+        def make_differential_artifact_manifest(case: DifferentialCase&, module_fingerprint: u64 = 0, module_digest_0: u64 = 0, module_digest_1: u64 = 0, module_digest_2: u64 = 0, module_digest_3: u64 = 0, bind_module_digest: bool = false) -> DifferentialArtifactManifest error[DifferentialRunnerError] can[Memory.Allocate, Abort.Panic]:
             check: DifferentialCaseCheck = validate_differential_case(case)
             raise DifferentialRunnerError.Invalid if not check.valid
             world_fingerprint: u64 = differential_world_fingerprint(case.world)
             raise DifferentialRunnerError.Invalid if world_fingerprint == 0
-            format_version: u8 = 4 if module_digest_0 != 0 or module_digest_1 != 0 or module_digest_2 != 0 or module_digest_3 != 0 else 3
-            return DifferentialArtifactManifest{format_version: format_version, case_name: case.name, reference_name: case.reference.name, candidate_name: case.candidate.name, world_seed: case.world.seed, world_fingerprint: world_fingerprint, case_seed: case.seed, engine_requirement: case.engine_requirement, artifact_policy: case.artifact_policy, module_fingerprint: module_fingerprint, module_digest_0: module_digest_0, module_digest_1: module_digest_1, module_digest_2: module_digest_2, module_digest_3: module_digest_3, comparator: differential_case_comparator(case)}
+            schema_bytes: darray[u8] = differential_observation_schema_canonical_bytes(case.observation_schema)
+            schema_digest: darray[u8] = EsIr::canonical_bytes_sha256(schema_bytes)
+            raise DifferentialRunnerError.Invalid if schema_digest.count != 32
+            has_module_digest: bool = bind_module_digest or module_digest_0 != 0 or module_digest_1 != 0 or module_digest_2 != 0 or module_digest_3 != 0
+            return DifferentialArtifactManifest{format_version: 5, case_name: case.name, reference_name: case.reference.name, candidate_name: case.candidate.name, world_seed: case.world.seed, world_fingerprint: world_fingerprint, case_seed: case.seed, engine_requirement: case.engine_requirement, artifact_policy: case.artifact_policy, module_fingerprint: module_fingerprint, module_digest_0: module_digest_0, module_digest_1: module_digest_1, module_digest_2: module_digest_2, module_digest_3: module_digest_3, module_digest_present: has_module_digest, comparator: differential_case_comparator(case), observation_schema_digest_0: EsIr::canonical_digest_word(schema_digest, 0), observation_schema_digest_1: EsIr::canonical_digest_word(schema_digest, 1), observation_schema_digest_2: EsIr::canonical_digest_word(schema_digest, 2), observation_schema_digest_3: EsIr::canonical_digest_word(schema_digest, 3)}
 
 
         # Preferred constructor for an Elisascript-backed differential case.
         # Keeping digest derivation here prevents callers from accidentally
-        # passing only the compact fingerprint and producing an unbound ESDF
-        # manifest when the verified module is available.
+        # passing only the compact fingerprint and omitting module-code
+        # binding when the verified module is available.
         def make_differential_artifact_manifest_for_module(case: DifferentialCase&, module: Module&) -> DifferentialArtifactManifest error[DifferentialRunnerError] can[Memory.Allocate, Abort.Panic]:
-            manifest: DifferentialArtifactManifest = make_differential_artifact_manifest(case, module_fingerprint(module), canonical_module_digest_word(module, 0), canonical_module_digest_word(module, 1), canonical_module_digest_word(module, 2), canonical_module_digest_word(module, 3))
-            raise DifferentialRunnerError.Invalid if manifest.format_version != 4
+            module_digest: darray[u8] = canonical_module_digest(module)
+            raise DifferentialRunnerError.Invalid if module_digest.count != 32
+            manifest: DifferentialArtifactManifest = make_differential_artifact_manifest(case, module_fingerprint(module), canonical_digest_word(module_digest, 0), canonical_digest_word(module_digest, 1), canonical_digest_word(module_digest, 2), canonical_digest_word(module_digest, 3), true)
+            raise DifferentialRunnerError.Invalid if manifest.format_version != 5
             return manifest
 
 
@@ -1254,16 +1365,17 @@ module EsDifferential:
 
 
         def differential_artifact_manifest_valid(manifest: DifferentialArtifactManifest&) -> bool:
-            return false if manifest.format_version != 1 and manifest.format_version != 2 and manifest.format_version != 3 and manifest.format_version != 4
+            return false if manifest.format_version != 1 and manifest.format_version != 2 and manifest.format_version != 3 and manifest.format_version != 4 and manifest.format_version != 5
             return false if manifest.case_name == "" or manifest.reference_name == "" or manifest.candidate_name == ""
             return false if not differential_manifest_text_bytes_fits(manifest)
             return false if differential_sview_has_nul(manifest.case_name) or differential_sview_has_nul(manifest.reference_name) or differential_sview_has_nul(manifest.candidate_name)
             return false if manifest.format_version == 2 and manifest.world_fingerprint == 0
             return false if manifest.format_version == 3 and manifest.world_fingerprint == 0
             return false if manifest.format_version == 4 and manifest.world_fingerprint == 0
-            return false if manifest.format_version == 4 and (manifest.module_digest_0 == 0 or manifest.module_digest_1 == 0 or manifest.module_digest_2 == 0 or manifest.module_digest_3 == 0)
+            return false if manifest.format_version == 5 and manifest.world_fingerprint == 0
+            return false if manifest.format_version == 5 and not manifest.module_digest_present and (manifest.module_digest_0 != 0 or manifest.module_digest_1 != 0 or manifest.module_digest_2 != 0 or manifest.module_digest_3 != 0)
             return false if not differential_artifact_policy_valid(manifest.artifact_policy) or not differential_engine_requirement_valid(manifest.engine_requirement)
-            return false if manifest.format_version == 3 and not differential_comparator_policy_valid(manifest.comparator)
+            return false if manifest.format_version >= 3 and not differential_comparator_policy_valid(manifest.comparator)
             return true
 
 
@@ -1288,10 +1400,16 @@ module EsDifferential:
             EsIr::canonical_artifact_emit_byte(output, manifest.artifact_policy.u8())
             EsIr::canonical_artifact_emit_u64(output, manifest.module_fingerprint)
             if manifest.format_version >= 4:
+                EsIr::canonical_artifact_emit_byte(output, 1 if manifest.module_digest_present else 0) if manifest.format_version >= 5
                 EsIr::canonical_artifact_emit_u64(output, manifest.module_digest_0)
                 EsIr::canonical_artifact_emit_u64(output, manifest.module_digest_1)
                 EsIr::canonical_artifact_emit_u64(output, manifest.module_digest_2)
                 EsIr::canonical_artifact_emit_u64(output, manifest.module_digest_3)
+            if manifest.format_version >= 5:
+                EsIr::canonical_artifact_emit_u64(output, manifest.observation_schema_digest_0)
+                EsIr::canonical_artifact_emit_u64(output, manifest.observation_schema_digest_1)
+                EsIr::canonical_artifact_emit_u64(output, manifest.observation_schema_digest_2)
+                EsIr::canonical_artifact_emit_u64(output, manifest.observation_schema_digest_3)
             if manifest.format_version >= 3:
                 EsIr::canonical_artifact_emit_byte(output, manifest.comparator.text.u8())
                 EsIr::canonical_artifact_emit_byte(output, manifest.comparator.maps.u8())
@@ -1358,7 +1476,7 @@ module EsDifferential:
         def differential_decode_artifact_manifest(bytes: darray[u8]&) -> DifferentialArtifactManifestDecode can[Unsafe.PointerCast]:
             invalid: DifferentialArtifactManifest = DifferentialArtifactManifest{case_name: "", reference_name: "", candidate_name: ""}
             return DifferentialArtifactManifestDecode{valid: false, manifest: invalid} if bytes.count < 5 or bytes.count > DIFFERENTIAL_MAX_MANIFEST_BYTES
-            return DifferentialArtifactManifestDecode{valid: false, manifest: invalid} if bytes[0] != 69 or bytes[1] != 83 or bytes[2] != 68 or bytes[3] != 70 or (bytes[4] != 1 and bytes[4] != 2 and bytes[4] != 3 and bytes[4] != 4)
+            return DifferentialArtifactManifestDecode{valid: false, manifest: invalid} if bytes[0] != 69 or bytes[1] != 83 or bytes[2] != 68 or bytes[3] != 70 or (bytes[4] != 1 and bytes[4] != 2 and bytes[4] != 3 and bytes[4] != 4 and bytes[4] != 5)
             format_version: u8 = bytes[4]
             offset: mutable usize = 5
             case_start: mutable usize = 0
@@ -1388,7 +1506,20 @@ module EsDifferential:
             module_digest_1: mutable u64 = 0
             module_digest_2: mutable u64 = 0
             module_digest_3: mutable u64 = 0
+            module_digest_present: mutable bool = false
+            if format_version >= 5:
+                return DifferentialArtifactManifestDecode{valid: false, manifest: invalid} if offset >= bytes.count
+                module_digest_present_byte: u8 = bytes[offset]
+                offset <- offset + 1
+                return DifferentialArtifactManifestDecode{valid: false, manifest: invalid} if module_digest_present_byte > 1
+                module_digest_present <- module_digest_present_byte == 1
+            module_digest_present <- true if format_version == 4
             return DifferentialArtifactManifestDecode{valid: false, manifest: invalid} if format_version >= 4 and (not differential_manifest_read_u64(bytes, offset, module_digest_0) or not differential_manifest_read_u64(bytes, offset, module_digest_1) or not differential_manifest_read_u64(bytes, offset, module_digest_2) or not differential_manifest_read_u64(bytes, offset, module_digest_3))
+            observation_schema_digest_0: mutable u64 = 0
+            observation_schema_digest_1: mutable u64 = 0
+            observation_schema_digest_2: mutable u64 = 0
+            observation_schema_digest_3: mutable u64 = 0
+            return DifferentialArtifactManifestDecode{valid: false, manifest: invalid} if format_version >= 5 and (not differential_manifest_read_u64(bytes, offset, observation_schema_digest_0) or not differential_manifest_read_u64(bytes, offset, observation_schema_digest_1) or not differential_manifest_read_u64(bytes, offset, observation_schema_digest_2) or not differential_manifest_read_u64(bytes, offset, observation_schema_digest_3))
             engine: DifferentialEngineRequirement = DifferentialEngineRequirement.Ignore
             engine <- DifferentialEngineRequirement.RequireKnown if engine_byte == DifferentialEngineRequirement.RequireKnown.u8()
             engine <- DifferentialEngineRequirement.RequireDistinct if engine_byte == DifferentialEngineRequirement.RequireDistinct.u8()
@@ -1411,7 +1542,7 @@ module EsDifferential:
                 comparator.float_tolerance.absolute <- differential_float_from_bits(absolute_bits)
                 comparator.float_tolerance.relative <- differential_float_from_bits(relative_bits)
             return DifferentialArtifactManifestDecode{valid: false, manifest: invalid} if offset != bytes.count
-            manifest: DifferentialArtifactManifest = DifferentialArtifactManifest{format_version: format_version, case_name: differential_manifest_text_view(bytes, case_start, case_end), reference_name: differential_manifest_text_view(bytes, reference_start, reference_end), candidate_name: differential_manifest_text_view(bytes, candidate_start, candidate_end), world_seed: world_seed, world_fingerprint: world_fingerprint, case_seed: case_seed, engine_requirement: engine, artifact_policy: policy, module_fingerprint: module_fingerprint, module_digest_0: module_digest_0, module_digest_1: module_digest_1, module_digest_2: module_digest_2, module_digest_3: module_digest_3, comparator: comparator}
+            manifest: DifferentialArtifactManifest = DifferentialArtifactManifest{format_version: format_version, case_name: differential_manifest_text_view(bytes, case_start, case_end), reference_name: differential_manifest_text_view(bytes, reference_start, reference_end), candidate_name: differential_manifest_text_view(bytes, candidate_start, candidate_end), world_seed: world_seed, world_fingerprint: world_fingerprint, case_seed: case_seed, engine_requirement: engine, artifact_policy: policy, module_fingerprint: module_fingerprint, module_digest_0: module_digest_0, module_digest_1: module_digest_1, module_digest_2: module_digest_2, module_digest_3: module_digest_3, module_digest_present: module_digest_present, comparator: comparator, observation_schema_digest_0: observation_schema_digest_0, observation_schema_digest_1: observation_schema_digest_1, observation_schema_digest_2: observation_schema_digest_2, observation_schema_digest_3: observation_schema_digest_3}
             return DifferentialArtifactManifestDecode{valid: false, manifest: invalid} if not differential_artifact_manifest_valid(manifest)
             return DifferentialArtifactManifestDecode{valid: true, manifest: manifest}
 
@@ -1421,13 +1552,13 @@ module EsDifferential:
             return differential_decode_artifact_manifest(bytes).valid
 
 
-        # Version 1--3 manifests remain readable for source compatibility but
-        # do not bind a differential run to the canonical module digest.  A
+        # Version 1--4 manifests remain readable for source compatibility but
+        # do not bind a differential run to the observation schema contract. A
         # cache/reproduce loader can use this predicate to require an explicit
-        # migration before admitting an old manifest into a digest-bound run.
+        # migration before admitting an old manifest into a schema-bound run.
         def differential_artifact_manifest_requires_migration(bytes: darray[u8]&) -> bool can[Unsafe.PointerCast]:
             decoded: DifferentialArtifactManifestDecode = differential_decode_artifact_manifest(bytes)
-            return decoded.valid and decoded.manifest.format_version != 4
+            return decoded.valid and decoded.manifest.format_version != 5
 
 
         def decode_differential_artifact_manifest(bytes: darray[u8]&) -> DifferentialArtifactManifestDecode can[Unsafe.PointerCast]:
@@ -3055,12 +3186,18 @@ module EsDifferential:
             ObservationTrace
             ObservationValue
             Outcome
+            CaseInvalid
+            ObservationContract
 
 
         struct DifferentialComparison:
             equal: mutable bool
             kind: mutable DifferentialDifferenceKind
             index: mutable u32 = 0
+            observation_schema_digest_0: mutable u64 = 0
+            observation_schema_digest_1: mutable u64 = 0
+            observation_schema_digest_2: mutable u64 = 0
+            observation_schema_digest_3: mutable u64 = 0
             reason: mutable sview = ""
             reference_text: mutable sview = ""
             candidate_text: mutable sview = ""
@@ -3406,6 +3543,44 @@ module EsDifferential:
             return compare_differential_runs_with_engine_requirement_policy(reference, candidate, requirement, DifferentialComparatorPolicy{float_tolerance: tolerance})
 
 
+        # Strong case-aware comparison first preserves ordinary first-difference
+        # precedence, then checks each run against the case's closed observation
+        # schema. This catches shared omissions that pairwise run comparison
+        # cannot detect while keeping that low-level comparator source-compatible.
+        def compare_differential_case_runs(case: DifferentialCase&, reference: DifferentialRun&, candidate: DifferentialRun&) -> DifferentialComparison can[Memory.Allocate, Abort.Panic]:
+            case_check: DifferentialCaseCheck = validate_differential_case(case)
+            if not case_check.valid:
+                invalid_case: mutable DifferentialComparison = differential_comparison(DifferentialDifferenceKind.CaseInvalid, 0, "differential case is invalid")
+                invalid_case.reference_text <- case_check.reason
+                return invalid_case
+            comparison: mutable DifferentialComparison = compare_differential_runs_with_engine_requirement_policy(reference, candidate, case.engine_requirement, differential_case_comparator(case))
+            return comparison if not comparison.equal
+            schema_bytes: darray[u8] = differential_observation_schema_canonical_bytes(case.observation_schema)
+            schema_digest: darray[u8] = EsIr::canonical_bytes_sha256(schema_bytes)
+            if schema_digest.count != 32:
+                fingerprint_failure: mutable DifferentialComparison = differential_comparison(DifferentialDifferenceKind.CaseInvalid, 0, "case observation schema could not be fingerprinted")
+                return fingerprint_failure
+            reference_schema_check: DifferentialObservationSchemaCheck = differential_run_observation_schema_check(reference, case.observation_schema)
+            if not reference_schema_check.valid:
+                mismatch: mutable DifferentialComparison = differential_comparison(DifferentialDifferenceKind.ObservationContract, reference_schema_check.index, "reference run violates the case observation schema")
+                mismatch.reference_text <- reference_schema_check.reason
+                mismatch.observation_schema_digest_0 <- EsIr::canonical_digest_word(schema_digest, 0)
+                mismatch.observation_schema_digest_1 <- EsIr::canonical_digest_word(schema_digest, 1)
+                mismatch.observation_schema_digest_2 <- EsIr::canonical_digest_word(schema_digest, 2)
+                mismatch.observation_schema_digest_3 <- EsIr::canonical_digest_word(schema_digest, 3)
+                return mismatch
+            candidate_schema_check: DifferentialObservationSchemaCheck = differential_run_observation_schema_check(candidate, case.observation_schema)
+            if not candidate_schema_check.valid:
+                mismatch: mutable DifferentialComparison = differential_comparison(DifferentialDifferenceKind.ObservationContract, candidate_schema_check.index, "candidate run violates the case observation schema")
+                mismatch.candidate_text <- candidate_schema_check.reason
+                mismatch.observation_schema_digest_0 <- EsIr::canonical_digest_word(schema_digest, 0)
+                mismatch.observation_schema_digest_1 <- EsIr::canonical_digest_word(schema_digest, 1)
+                mismatch.observation_schema_digest_2 <- EsIr::canonical_digest_word(schema_digest, 2)
+                mismatch.observation_schema_digest_3 <- EsIr::canonical_digest_word(schema_digest, 3)
+                return mismatch
+            return comparison
+
+
         # The policy-aware entry point is the only comparison path that can
         # opt into text normalization or ordered maps.  The legacy tolerance
         # wrapper below remains source-compatible and selects exact text plus
@@ -3521,7 +3696,7 @@ module EsDifferential:
 
 
         def differential_difference_kind_valid(kind: DifferentialDifferenceKind) -> bool:
-            return kind in {DifferentialDifferenceKind.Equal, DifferentialDifferenceKind.Engine, DifferentialDifferenceKind.ExitStatus, DifferentialDifferenceKind.Error, DifferentialDifferenceKind.Stdout, DifferentialDifferenceKind.Stderr, DifferentialDifferenceKind.ReturnValue, DifferentialDifferenceKind.ObservationCount, DifferentialDifferenceKind.ObservationTrace, DifferentialDifferenceKind.ObservationValue, DifferentialDifferenceKind.Outcome}
+            return kind in {DifferentialDifferenceKind.Equal, DifferentialDifferenceKind.Engine, DifferentialDifferenceKind.ExitStatus, DifferentialDifferenceKind.Error, DifferentialDifferenceKind.Stdout, DifferentialDifferenceKind.Stderr, DifferentialDifferenceKind.ReturnValue, DifferentialDifferenceKind.ObservationCount, DifferentialDifferenceKind.ObservationTrace, DifferentialDifferenceKind.ObservationValue, DifferentialDifferenceKind.Outcome, DifferentialDifferenceKind.CaseInvalid, DifferentialDifferenceKind.ObservationContract}
 
 
         def differential_run_outcome_valid(outcome: DifferentialRunOutcome) -> bool:
@@ -3547,10 +3722,11 @@ module EsDifferential:
 
 
         def differential_comparison_artifact_valid(artifact: DifferentialComparisonArtifact&) -> bool:
-            return false if artifact.format_version != 2
+            return false if artifact.format_version != 2 and artifact.format_version != 3
             return false if artifact.manifest_fingerprint == 0
             return false if artifact.equal and artifact.kind != DifferentialDifferenceKind.Equal
             return false if not artifact.equal and artifact.kind == DifferentialDifferenceKind.Equal
+            return false if artifact.format_version == 2 and (artifact.kind == DifferentialDifferenceKind.CaseInvalid or artifact.kind == DifferentialDifferenceKind.ObservationContract)
             return false if not differential_difference_kind_valid(artifact.kind)
             return false if not differential_execution_engine_valid(artifact.reference_engine) or not differential_execution_engine_valid(artifact.candidate_engine)
             return false if not differential_value_kind_valid(artifact.reference_value_kind) or not differential_value_kind_valid(artifact.candidate_value_kind)
@@ -3564,7 +3740,10 @@ module EsDifferential:
         # store larger value pools and process streams in separate files.
         def make_differential_comparison_artifact(manifest: DifferentialArtifactManifest&, comparison: DifferentialComparison&) -> DifferentialComparisonArtifact error[DifferentialRunnerError] can[Memory.Allocate, Abort.Panic]:
             raise DifferentialRunnerError.Invalid if not differential_artifact_manifest_valid(manifest)
-            artifact: DifferentialComparisonArtifact = DifferentialComparisonArtifact{manifest_fingerprint: differential_artifact_manifest_fingerprint(manifest), equal: comparison.equal, kind: comparison.kind, index: comparison.index, reference_engine: comparison.reference_engine, candidate_engine: comparison.candidate_engine, reference_value_kind: comparison.reference_value.kind, candidate_value_kind: comparison.candidate_value.kind, reference_outcome: comparison.reference_outcome, candidate_outcome: comparison.candidate_outcome, reason: comparison.reason, reference_text: comparison.reference_text, candidate_text: comparison.candidate_text}
+            raise DifferentialRunnerError.Invalid if comparison.kind == DifferentialDifferenceKind.ObservationContract and manifest.format_version != 5
+            raise DifferentialRunnerError.Invalid if comparison.kind == DifferentialDifferenceKind.ObservationContract and (manifest.observation_schema_digest_0 != comparison.observation_schema_digest_0 or manifest.observation_schema_digest_1 != comparison.observation_schema_digest_1 or manifest.observation_schema_digest_2 != comparison.observation_schema_digest_2 or manifest.observation_schema_digest_3 != comparison.observation_schema_digest_3)
+            artifact_version: u8 = 3 if comparison.kind == DifferentialDifferenceKind.CaseInvalid or comparison.kind == DifferentialDifferenceKind.ObservationContract else 2
+            artifact: DifferentialComparisonArtifact = DifferentialComparisonArtifact{format_version: artifact_version, manifest_fingerprint: differential_artifact_manifest_fingerprint(manifest), equal: comparison.equal, kind: comparison.kind, index: comparison.index, reference_engine: comparison.reference_engine, candidate_engine: comparison.candidate_engine, reference_value_kind: comparison.reference_value.kind, candidate_value_kind: comparison.candidate_value.kind, reference_outcome: comparison.reference_outcome, candidate_outcome: comparison.candidate_outcome, reason: comparison.reason, reference_text: comparison.reference_text, candidate_text: comparison.candidate_text}
             raise DifferentialRunnerError.Invalid if artifact.manifest_fingerprint == 0 or not differential_difference_kind_valid(artifact.kind)
             raise DifferentialRunnerError.OutputLimit if not differential_comparison_artifact_text_bytes_fits(artifact)
             return artifact
@@ -3610,7 +3789,8 @@ module EsDifferential:
         def differential_decode_comparison_artifact(bytes: darray[u8]&) -> DifferentialComparisonArtifactDecode can[Unsafe.PointerCast]:
             invalid: DifferentialComparisonArtifact = DifferentialComparisonArtifact{}
             return DifferentialComparisonArtifactDecode{valid: false, artifact: invalid} if bytes.count < 5 or bytes.count > DIFFERENTIAL_MAX_COMPARISON_ARTIFACT_BYTES
-            return DifferentialComparisonArtifactDecode{valid: false, artifact: invalid} if bytes[0] != 69 or bytes[1] != 83 or bytes[2] != 67 or bytes[3] != 82 or bytes[4] != 2
+            return DifferentialComparisonArtifactDecode{valid: false, artifact: invalid} if bytes[0] != 69 or bytes[1] != 83 or bytes[2] != 67 or bytes[3] != 82 or (bytes[4] != 2 and bytes[4] != 3)
+            format_version: u8 = bytes[4]
             offset: mutable usize = 5
             manifest_fingerprint: mutable u64 = 0
             return DifferentialComparisonArtifactDecode{valid: false, artifact: invalid} if not differential_manifest_read_u64(bytes, offset, manifest_fingerprint)
@@ -3622,6 +3802,7 @@ module EsDifferential:
             kind_byte: u8 = bytes[offset]
             offset <- offset + 1
             return DifferentialComparisonArtifactDecode{valid: false, artifact: invalid} if not differential_difference_kind_byte_valid(kind_byte)
+            return DifferentialComparisonArtifactDecode{valid: false, artifact: invalid} if format_version == 2 and (kind_byte == DifferentialDifferenceKind.CaseInvalid.u8() or kind_byte == DifferentialDifferenceKind.ObservationContract.u8())
             index_value: mutable u64 = 0
             return DifferentialComparisonArtifactDecode{valid: false, artifact: invalid} if not differential_manifest_read_u64(bytes, offset, index_value) or index_value > 4294967295
             return DifferentialComparisonArtifactDecode{valid: false, artifact: invalid} if offset > bytes.count
@@ -3657,6 +3838,8 @@ module EsDifferential:
             kind <- DifferentialDifferenceKind.ObservationTrace if kind_byte == DifferentialDifferenceKind.ObservationTrace.u8()
             kind <- DifferentialDifferenceKind.ObservationValue if kind_byte == DifferentialDifferenceKind.ObservationValue.u8()
             kind <- DifferentialDifferenceKind.Outcome if kind_byte == DifferentialDifferenceKind.Outcome.u8()
+            kind <- DifferentialDifferenceKind.CaseInvalid if kind_byte == DifferentialDifferenceKind.CaseInvalid.u8()
+            kind <- DifferentialDifferenceKind.ObservationContract if kind_byte == DifferentialDifferenceKind.ObservationContract.u8()
             reference_engine: EsIr::ExecutionEngine = EsIr::ExecutionEngine.ReferenceInterpreter
             reference_engine <- EsIr::ExecutionEngine.DirectBytecode if reference_engine_byte == EsIr::ExecutionEngine.DirectBytecode.u8()
             reference_engine <- EsIr::ExecutionEngine.BytecodeInterpreterFallback if reference_engine_byte == EsIr::ExecutionEngine.BytecodeInterpreterFallback.u8()
@@ -3693,7 +3876,7 @@ module EsDifferential:
             candidate_outcome <- DifferentialRunOutcome.Timeout if candidate_outcome_byte == DifferentialRunOutcome.Timeout.u8()
             candidate_outcome <- DifferentialRunOutcome.OutputLimit if candidate_outcome_byte == DifferentialRunOutcome.OutputLimit.u8()
             candidate_outcome <- DifferentialRunOutcome.CompileFailure if candidate_outcome_byte == DifferentialRunOutcome.CompileFailure.u8()
-            artifact: DifferentialComparisonArtifact = DifferentialComparisonArtifact{format_version: 2, manifest_fingerprint: manifest_fingerprint, equal: equal_byte == 1, kind: kind, index: index_value.u32(), reference_engine: reference_engine, candidate_engine: candidate_engine, reference_value_kind: reference_value_kind, candidate_value_kind: candidate_value_kind, reference_outcome: reference_outcome, candidate_outcome: candidate_outcome, reason: differential_manifest_text_view(bytes, reason_start, reason_end), reference_text: differential_manifest_text_view(bytes, reference_start, reference_end), candidate_text: differential_manifest_text_view(bytes, candidate_start, candidate_end)}
+            artifact: DifferentialComparisonArtifact = DifferentialComparisonArtifact{format_version: format_version, manifest_fingerprint: manifest_fingerprint, equal: equal_byte == 1, kind: kind, index: index_value.u32(), reference_engine: reference_engine, candidate_engine: candidate_engine, reference_value_kind: reference_value_kind, candidate_value_kind: candidate_value_kind, reference_outcome: reference_outcome, candidate_outcome: candidate_outcome, reason: differential_manifest_text_view(bytes, reason_start, reason_end), reference_text: differential_manifest_text_view(bytes, reference_start, reference_end), candidate_text: differential_manifest_text_view(bytes, candidate_start, candidate_end)}
             return DifferentialComparisonArtifactDecode{valid: false, artifact: invalid} if not differential_comparison_artifact_valid(artifact)
             return DifferentialComparisonArtifactDecode{valid: true, artifact: artifact}
 
@@ -4585,7 +4768,7 @@ module EsDifferential:
 
 
         def differential_shrink_trace_kind_valid(kind: DifferentialDifferenceKind) -> bool:
-            return differential_difference_kind_valid(kind) and kind != DifferentialDifferenceKind.Equal
+            return differential_difference_kind_valid(kind) and kind != DifferentialDifferenceKind.Equal and kind != DifferentialDifferenceKind.CaseInvalid and kind != DifferentialDifferenceKind.ObservationContract
 
 
         def differential_shrink_trace_run_kind_valid(kind: DifferentialRunShrinkKind) -> bool:

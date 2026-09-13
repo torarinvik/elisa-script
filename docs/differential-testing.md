@@ -41,6 +41,14 @@ World binary stdin uses the same explicit mode and bounded owned-byte rule as
 binary files, and its bytes participate in the world fingerprint. `validate_differential_case` validates both nested runners, rejects NULs, duplicate
 fixture paths, oversized world data, invalid engine or artifact policies, comparator
 policy, and preserves the nested runner issue kind.
+Each case also owns a closed `DifferentialObservationSchema`. Its sites are
+strictly sorted by nonzero trace ID and declare a root `DifferentialValueKind`
+plus minimum/maximum occurrence counts. Every emitted trace must be declared,
+its root kind must match, and every site's count must fall in range. An empty
+schema therefore means “no observations are allowed.” The schema is capped at
+65,536 sites and each maximum count is bounded by the runtime observation
+ceiling. This first version checks root kinds only; recursive aggregate shapes
+remain a later extension.
 A case may also set `timeout_steps` and `max_output_bytes` as shared ceilings for
 both sides. Zero means “inherit this side's runner value”; a nonzero case ceiling
 is combined with each runner by taking the smaller value, so case policy can
@@ -88,14 +96,16 @@ calls fail-closed even when they bypass the ordered top-level case validator.
 A validated case can produce a `DifferentialArtifactManifest` with case/runner
 identities, seeds, engine requirement, artifact policy, a deterministic
 fingerprint of the complete validated world (including fixture kind, bytes, mode,
-and executable bit), a complete comparator policy, and
-optional verified-module fingerprint;
+and executable bit), a complete comparator policy, a SHA-256 digest of the
+canonical observation schema (including the empty schema), and an optional
+verified-module fingerprint/digest;
 `canonical_differential_artifact_manifest_bytes` emits a bounded versioned `ESDF`
 sidecar and `differential_artifact_manifest_fingerprint` provides a deterministic
-correlation key. Version 2 adds the world fingerprint while version 3 adds text
-comparison, map ordering, and exact float-tolerance bits; the borrowed decoder
-continues to admit version-1 and version-2 manifests with the exact historical
-default policy. The decoder validates magic, version, lengths, enum ordinals,
+correlation key. Version 2 adds the world fingerprint, version 3 adds text
+comparison, map ordering, and exact float-tolerance bits, version 4 adds the
+verified-module digest words, and version 5 binds the observation-schema digest.
+The borrowed decoder continues to admit version-1 through version-4 manifests
+for explicit migration. It validates magic, version, lengths, enum ordinals,
 float payloads, and trailing bytes before exposing borrowed metadata; truncated
 or malformed sidecars fail closed. Adapters remain responsible for materializing
 the separate worlds and writing the complete output artifact.
@@ -107,6 +117,14 @@ observation count, and then each `(trace, value)` pair in that fixed order. It r
 text or values; identical runs return `DifferentialDifferenceKind.Equal`. The
 comparator is implemented as an explicit Elisa state machine, so it cannot skip a
 comparison phase or silently continue after a mismatch.
+This low-level comparator intentionally has no case context, so it cannot detect
+two runs that omit the same required observation. Use
+`compare_differential_case_runs(case, reference, candidate)` for case-level
+claims: it first preserves the ordinary comparison's first-difference order,
+then validates both observation streams against the case schema. A violation
+returns `DifferentialDifferenceKind.ObservationContract`; an invalid case is
+reported as `DifferentialDifferenceKind.CaseInvalid`. These new report kinds
+use ESCR version 3 while version-2 reports remain readable.
 
 Process invocations also distinguish text stdin from an owned binary stdin buffer.
 `stdin_binary` is required for byte payloads, mixed text/byte inputs are rejected,
@@ -578,18 +596,21 @@ digest words and rejects legacy version-1 records until they are migrated. Its
 `bytecode_artifact_fingerprint` is a deterministic cache/correlation key only;
 the artifact still must satisfy `bytecode_artifact_matches_module` against the
 exact verified module and capability report before execution.
-`canonical_differential_artifact_manifest_bytes` uses the same four-word binding
-when a module digest is available, emitting ESDF version 4; older version-1/2/3
-manifests remain decodable for compatibility but are explicitly unbound. A
-version-4 manifest with an all-zero or incomplete digest is rejected before a
-replay bundle is opened. `differential_artifact_manifest_requires_migration`
-reports when a valid legacy manifest needs an explicit digest-upgrade step;
-malformed bytes remain invalid rather than being mislabeled as migratable.
+`canonical_differential_artifact_manifest_bytes` emits ESDF version 5 and binds
+the canonical observation schema with four SHA-256 words; a complete verified
+module digest remains available as a separate four-word binding. Versions 1–4
+remain decodable for compatibility but are explicitly unbound from the schema.
+Version 5 carries an explicit module-digest presence bit and always includes all
+four schema-digest words; inconsistent presence metadata and truncated fields
+are rejected before a replay bundle is opened.
+`differential_artifact_manifest_requires_migration` reports when a valid legacy
+manifest needs an explicit schema-upgrade step; malformed bytes remain invalid
+rather than being mislabeled as migratable.
 Use `make_differential_artifact_manifest_for_module` when the verified module is
 in hand; it derives both the compact fingerprint and all digest words in one
 typed constructor so callers cannot accidentally omit the cryptographic bind.
 It fails with `DifferentialRunnerError.Invalid` if canonical digest production
-returns an unavailable/oversized sentinel instead of downgrading to ESDF v3.
+returns an unavailable/oversized sentinel rather than producing a partial bind.
 All ESDF, ESPS, ESRP, ESVP, and ESCR borrowed text fields now use the shared
 `runtime_bounded_slice_end` subtraction guard; fixed-width lookahead admission
 also checks remaining bytes before indexing, so malformed sidecars fail before
