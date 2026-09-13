@@ -39,10 +39,14 @@ payload, so NULs and other binary data never cross a C-string boundary. Mixed
 text/byte payloads and unknown fixture kinds are rejected rather than guessed.
 Fixture `mode` accepts only ordinary permission bits (`0000` through `0777`);
 setuid, setgid, and sticky bits are rejected because they are host identity
-policy rather than portable test input. The separate `executable` marker is
-also fingerprinted, but its physical mapping alongside `mode` is not yet
-implemented; the host adapter must not claim mode restoration until that mapping
-is explicit.
+policy rather than portable test input. The separately fingerprinted
+`executable` marker is canonical metadata: it must be true exactly when any
+owner/group/other execute bit is present in `mode`. It does not claim that the
+current host identity can execute the file. A physical materializer must create
+with restrictive permissions, apply the exact admitted mode after writing, and
+read the mode back; the process umask must not silently alter fixture identity.
+Filesystem snapshots derive the executable marker from regular-file mode bits,
+not from directory or symlink permissions.
 World binary stdin uses the same explicit mode and bounded owned-byte rule as
 binary files, and its bytes participate in the world fingerprint. `validate_differential_case` validates both nested runners, rejects NULs, duplicate
 fixture paths, oversized world data, invalid engine or artifact policies, comparator
@@ -752,6 +756,21 @@ restoration around these states. The plan is a public value record, so its
 validator establishes structural consistency, not tamper-proof provenance; a
 host adapter must keep ownership of the live plan and must not trust a
 caller-constructed terminal record as proof that filesystem cleanup occurred.
+The current Darwin runtime bridge now also exposes `open`, `readlinkat`,
+`fdopendir`, `fstatat`, `fstat`, `fchdir`, and the no-follow stat flag needed by a
+descriptor-relative adapter. These are low-level primitives only: no world
+materializer consumes them yet, their directory/stat ABI is Darwin-arm64
+specific, and path-component walking, descriptor ownership, cleanup, and
+restoration still require an adapter with platform-qualified implementations.
+`fdopendir` takes ownership of its descriptor on success; a retained root must
+be enumerated through a separate descriptor. `fchdir` mutates process-global
+state and belongs only in a forked child. `fstat(fd, ...)` is required to verify
+metadata on the opened object itself; `fstatat(..., SYMLINK_NOFOLLOW)` observes
+an entry without following its final component, but callers must still walk one
+validated path component at a time.
+`readlinkat` returns raw target bytes without a NUL terminator; a return equal to
+the supplied buffer capacity is potentially truncated and requires a bounded
+retry or explicit rejection.
 
 `EsDifferentialFilesystem::DifferentialFilesystemSnapshot` is the post-run file
 tree boundary. Adapters submit relative file, directory, and symlink entries in
