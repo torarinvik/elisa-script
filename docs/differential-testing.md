@@ -802,41 +802,44 @@ component, but callers must still walk one validated path component at a time.
 the supplied buffer capacity is potentially truncated and requires a bounded
 retry or explicit rejection.
 
+#### Exact-payload snapshot contract
+
 `EsDifferentialFilesystem::DifferentialFilesystemSnapshot` is the post-run file
 tree boundary. Adapters may submit relative file, directory, and symlink entries
 in strict byte order, or collect an unordered batch and seal it with the
 bounded in-place O(n log n) heapsort. Both paths enforce 4 KiB per path, a
-64 MiB aggregate path-byte budget, a 256 MiB content-byte budget, the entry
-count ceiling, and typed metadata. Appends account only for the new entry; the
-complete record list is revalidated at seal rather than rescanned on each
-append. The unordered path detects duplicate names after sorting; because that sort has
-mutated the batch, a duplicate transitions the snapshot to `Failed` before
-returning `EntryOrderInvalid`. A snapshot must be sealed before comparison, and
-`compare_differential_filesystem_snapshots` merges the ordered streams to report
-the first missing path, kind, content, size, mode, or executable-bit difference.
-Malformed sealed inputs produce `InvalidSnapshot`, not a content difference or
-an entry-limit diagnosis. Every entry now carries a typed SHA-256 `HashDigest`;
-non-SHA-256 algorithms and malformed digest shapes are rejected as
-`InvalidContentDigest`. Comparison checks all four digest words plus file size.
-The model validates digest metadata, not the hash computation itself: host
-capture must hash regular-file bytes and raw symlink-target bytes with SHA-256
-(directories use the canonical empty payload), and the digest remains
-cryptographic evidence rather than a mathematical proof of byte identity. The
-compact snapshot fingerprint is stable for the sealed ordered record. This
-contract performs no filesystem I/O. An input entry's `path` is a transient
-borrowed `sview`, copied into the snapshot's bounded byte arena before an append
-returns; retained records contain offsets and lengths, not pointers into the
-caller's storage. After unordered sorting, the arena is repacked in record order,
-so its span coverage remains exactly verifiable even though the entries have
-moved. Repacking uses at most one additional 64 MiB bounded scratch buffer while
-sealing. Comparison results identify the reference and candidate entries by
-side-specific indices rather than retaining borrowed path views. Use
-`copy_differential_filesystem_entry_path(snapshot, index)` to obtain owned path
-bytes for a report; those copies are independent of later arena relocation.
-During collection, callers must append through the snapshot APIs rather than
-editing the public entry array or accounting fields directly. Sealing and
-validation recheck all spans, arena coverage, entry order, and counters before
-comparison or fingerprinting.
+64 MiB aggregate path-byte budget, a 256 MiB exact content-byte budget, the
+entry-count ceiling, and typed metadata. Regular files carry exact bytes
+(including NUL and non-UTF-8 bytes), symlinks carry their non-empty raw target
+bytes (non-UTF-8 is allowed, NUL is not), and directories carry no content.
+Only `/` separates components in this POSIX path contract; backslash is an
+ordinary filename byte.
+Payload length is the sole source of file/link size. Appends account only for
+the new entry; the complete record list is revalidated at seal rather than
+rescanned on each append. The unordered path detects duplicate names after
+sorting; because that sort has mutated the batch, a duplicate transitions the
+snapshot to `Failed` before returning `EntryOrderInvalid`. A snapshot must be
+sealed before comparison, and `compare_differential_filesystem_snapshots`
+merges the ordered streams to report the first missing path, kind, size, exact
+content-byte, mode, or executable-bit difference. Content equality is a direct
+byte-for-byte comparison, not an equality claim based on a digest. The compact
+FNV-style snapshot fingerprint is only a correlation aid; it can collide and
+must not substitute for the exact comparator. This contract performs no
+filesystem I/O. Input paths and payload arrays are copied into separate,
+snapshot-owned byte arenas before an append returns; records keep checked spans,
+not caller views. After unordered sorting, both arenas are repacked in record
+order so exact span coverage remains verifiable. This needs at most 320 MiB of
+logical scratch bytes during sealing (64 MiB paths plus 256 MiB payloads), in
+addition to the retained arenas; staging one incoming entry also makes a bounded
+temporary copy of its payload. Comparison results identify reference and
+candidate entries by side-specific indices rather than retaining borrowed
+views. Use `copy_differential_filesystem_entry_path(snapshot, index)` and
+`copy_differential_filesystem_entry_content(snapshot, index)` to obtain owned
+report data; the latter returns file bytes or a raw symlink target. During
+collection, callers must append through the snapshot APIs rather than editing
+the public record array, byte arenas, or counters directly. Sealing and
+validation recheck all spans, arena coverage, entry order, payload semantics,
+and counters before comparison or fingerprinting.
 Host materializers remain responsible for collecting entries and preserving the
 world lifecycle.
 

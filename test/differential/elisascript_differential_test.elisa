@@ -14,7 +14,6 @@ using EsDifferentialRedaction
 using EsDifferentialGenerator
 using EsDifferentialTimeout
 using EsDifferentialWorldPosix
-using EsHash
 using EsRuntime
 
 
@@ -28,10 +27,6 @@ def text_value(value: sview) -> DifferentialValue:
 
 def float_value(value: f64) -> DifferentialValue:
     return DifferentialValue{kind: DifferentialValueKind.Float, decimal: value}
-
-
-def filesystem_test_digest(value: u64) -> EsHash::HashDigest:
-    return EsHash::HashDigest{algorithm: EsHash::HashAlgorithm.Sha256, word_count: 4, word0: value}
 
 
 @test
@@ -187,15 +182,22 @@ def differential_filesystem_snapshot_contract_orders_entries_and_reports_first_d
     assert advance_differential_filesystem_snapshot(reference, DifferentialFilesystemEvent.Begin) == DifferentialFilesystemState.Collecting
     order_error: mutable DifferentialFilesystemSnapshot = DifferentialFilesystemSnapshot{}
     _ = advance_differential_filesystem_snapshot(order_error, DifferentialFilesystemEvent.Begin)
-    _ = advance_differential_filesystem_snapshot(order_error, DifferentialFilesystemEvent.Entry, DifferentialFilesystemEntry{path: "same", content_digest: filesystem_test_digest(41)})
+    _ = advance_differential_filesystem_snapshot(order_error, DifferentialFilesystemEvent.Entry, DifferentialFilesystemEntry{path: "same"})
     duplicate_rejected: mutable bool = false
-    catch advance_differential_filesystem_snapshot(order_error, DifferentialFilesystemEvent.Entry, DifferentialFilesystemEntry{path: "same", content_digest: filesystem_test_digest(42)}):
+    catch advance_differential_filesystem_snapshot(order_error, DifferentialFilesystemEvent.Entry, DifferentialFilesystemEntry{path: "same"}):
         ok value:
             assert false
         error failure:
             assert failure == DifferentialFilesystemError.EntryOrderInvalid
             duplicate_rejected <- true
     assert duplicate_rejected
+
+    posix_backslash_path: mutable DifferentialFilesystemSnapshot = DifferentialFilesystemSnapshot{}
+    _ = advance_differential_filesystem_snapshot(posix_backslash_path, DifferentialFilesystemEvent.Begin)
+    _ = advance_differential_filesystem_snapshot(posix_backslash_path, DifferentialFilesystemEvent.Entry, DifferentialFilesystemEntry{path: "back\\slash"})
+    assert advance_differential_filesystem_snapshot(posix_backslash_path, DifferentialFilesystemEvent.Seal) == DifferentialFilesystemState.Sealed
+    assert posix_backslash_path.path_data.count == 10
+
     forged_redaction_duplicate: mutable bool = false
     forged_redaction: DifferentialRedactionSession = DifferentialRedactionSession{
         state: DifferentialRedactionState.Capturing,
@@ -214,22 +216,26 @@ def differential_filesystem_snapshot_contract_orders_entries_and_reports_first_d
     assert forged_redaction_duplicate
 
     # Entries are required to arrive in byte order, so add the directory before
-    # its child.
+    # its child. The file payload is retained exactly rather than represented
+    # by a caller-supplied digest.
     _ = advance_differential_filesystem_snapshot(reference, DifferentialFilesystemEvent.Begin)
-    _ = advance_differential_filesystem_snapshot(reference, DifferentialFilesystemEvent.Entry, DifferentialFilesystemEntry{path: "out", kind: DifferentialFilesystemEntryKind.Directory, content_digest: filesystem_test_digest(32), size: 0, mode: 493})
-    _ = advance_differential_filesystem_snapshot(reference, DifferentialFilesystemEvent.Entry, DifferentialFilesystemEntry{path: "out/data.txt", kind: DifferentialFilesystemEntryKind.File, content_digest: filesystem_test_digest(31), size: 12, mode: 420})
+    _ = advance_differential_filesystem_snapshot(reference, DifferentialFilesystemEvent.Entry, DifferentialFilesystemEntry{path: "out", kind: DifferentialFilesystemEntryKind.Directory, mode: 493})
+    original_bytes: mutable darray[u8] = [104, 101, 108, 108, 111, 32, 119, 111, 114, 108, 100, 33]
+    _ = advance_differential_filesystem_snapshot(reference, DifferentialFilesystemEvent.Entry, DifferentialFilesystemEntry{path: "out/data.txt", kind: DifferentialFilesystemEntryKind.File, content: original_bytes, mode: 420})
+    original_bytes[0] <- 88
+    assert reference.content_data[0] == 104
     assert advance_differential_filesystem_snapshot(reference, DifferentialFilesystemEvent.Seal) == DifferentialFilesystemState.Sealed
 
     candidate: mutable DifferentialFilesystemSnapshot = DifferentialFilesystemSnapshot{}
     _ = advance_differential_filesystem_snapshot(candidate, DifferentialFilesystemEvent.Begin)
-    _ = advance_differential_filesystem_snapshot(candidate, DifferentialFilesystemEvent.Entry, DifferentialFilesystemEntry{path: "out", kind: DifferentialFilesystemEntryKind.Directory, content_digest: filesystem_test_digest(32), size: 0, mode: 493})
-    _ = advance_differential_filesystem_snapshot(candidate, DifferentialFilesystemEvent.Entry, DifferentialFilesystemEntry{path: "out/data.txt", kind: DifferentialFilesystemEntryKind.File, content_digest: filesystem_test_digest(31), size: 12, mode: 420})
+    _ = advance_differential_filesystem_snapshot(candidate, DifferentialFilesystemEvent.Entry, DifferentialFilesystemEntry{path: "out", kind: DifferentialFilesystemEntryKind.Directory, mode: 493})
+    _ = advance_differential_filesystem_snapshot(candidate, DifferentialFilesystemEvent.Entry, DifferentialFilesystemEntry{path: "out/data.txt", kind: DifferentialFilesystemEntryKind.File, content: [104, 101, 108, 108, 111, 32, 119, 111, 114, 108, 100, 33], mode: 420})
     _ = advance_differential_filesystem_snapshot(candidate, DifferentialFilesystemEvent.Seal)
     equal: DifferentialFilesystemDifference = compare_differential_filesystem_snapshots(reference, candidate)
     assert equal.equal
     assert equal.kind == DifferentialFilesystemDifferenceKind.Equal
     assert differential_filesystem_snapshot_fingerprint(reference) != 0
-    candidate.entries[1].content_digest <- filesystem_test_digest(33)
+    candidate.content_data[0] <- 72
     changed: DifferentialFilesystemDifference = compare_differential_filesystem_snapshots(reference, candidate)
     assert not changed.equal
     assert changed.kind == DifferentialFilesystemDifferenceKind.Content
@@ -239,19 +245,47 @@ def differential_filesystem_snapshot_contract_orders_entries_and_reports_first_d
     candidate_path: darray[u8] = try copy_differential_filesystem_entry_path(candidate, changed.candidate_entry_index)
     assert bytes_view(reference_path) == "out/data.txt"
     assert bytes_view(candidate_path) == "out/data.txt"
-    candidate.entries[1].content_digest <- EsHash::HashDigest{algorithm: EsHash::HashAlgorithm.Sha256, word_count: 4}
+    reference_content: darray[u8] = try copy_differential_filesystem_entry_content(reference, changed.reference_entry_index)
+    assert reference_content[0] == 104
+    assert differential_filesystem_snapshot_fingerprint(reference) != differential_filesystem_snapshot_fingerprint(candidate)
+    candidate.entries[1].content_start <- candidate.content_data.count
     invalid_snapshot: DifferentialFilesystemDifference = compare_differential_filesystem_snapshots(reference, candidate)
     assert not invalid_snapshot.equal
     assert invalid_snapshot.kind == DifferentialFilesystemDifferenceKind.InvalidSnapshot
 
 
 @test
+def differential_filesystem_compares_binary_files_and_raw_symlink_targets() -> void:
+    reference: mutable DifferentialFilesystemSnapshot = DifferentialFilesystemSnapshot{}
+    _ = advance_differential_filesystem_snapshot(reference, DifferentialFilesystemEvent.Begin)
+    _ = advance_differential_filesystem_snapshot(reference, DifferentialFilesystemEvent.Entry, DifferentialFilesystemEntry{path: "binary", content: [0, 255]})
+    _ = advance_differential_filesystem_snapshot(reference, DifferentialFilesystemEvent.Entry, DifferentialFilesystemEntry{path: "link", kind: DifferentialFilesystemEntryKind.Symlink, content: [255, 97]})
+    _ = advance_differential_filesystem_snapshot(reference, DifferentialFilesystemEvent.Seal)
+
+    candidate: mutable DifferentialFilesystemSnapshot = DifferentialFilesystemSnapshot{}
+    _ = advance_differential_filesystem_snapshot(candidate, DifferentialFilesystemEvent.Begin)
+    _ = advance_differential_filesystem_snapshot(candidate, DifferentialFilesystemEvent.Entry, DifferentialFilesystemEntry{path: "binary", content: [0, 255]})
+    _ = advance_differential_filesystem_snapshot(candidate, DifferentialFilesystemEvent.Entry, DifferentialFilesystemEntry{path: "link", kind: DifferentialFilesystemEntryKind.Symlink, content: [255, 97]})
+    _ = advance_differential_filesystem_snapshot(candidate, DifferentialFilesystemEvent.Seal)
+    assert compare_differential_filesystem_snapshots(reference, candidate).equal
+
+    target: darray[u8] = try copy_differential_filesystem_entry_content(reference, 1)
+    assert target == [255, 97]
+    candidate.content_data[3] <- 98
+    changed_target: DifferentialFilesystemDifference = compare_differential_filesystem_snapshots(reference, candidate)
+    assert not changed_target.equal
+    assert changed_target.kind == DifferentialFilesystemDifferenceKind.Content
+    assert changed_target.reference_entry_index == 1
+    assert changed_target.candidate_entry_index == 1
+
+
+@test
 def differential_filesystem_unordered_batch_is_bounded_sorted_and_sealed() -> void:
     snapshot: mutable DifferentialFilesystemSnapshot = DifferentialFilesystemSnapshot{}
     _ = advance_differential_filesystem_snapshot(snapshot, DifferentialFilesystemEvent.Begin)
-    _ = collect_unordered_differential_filesystem_entry(snapshot, DifferentialFilesystemEntry{path: "a/x", content_digest: filesystem_test_digest(41), size: 2})
-    _ = collect_unordered_differential_filesystem_entry(snapshot, DifferentialFilesystemEntry{path: "a-b", content_digest: filesystem_test_digest(42), size: 1})
-    _ = collect_unordered_differential_filesystem_entry(snapshot, DifferentialFilesystemEntry{path: "a", kind: DifferentialFilesystemEntryKind.Directory, content_digest: filesystem_test_digest(43)})
+    _ = collect_unordered_differential_filesystem_entry(snapshot, DifferentialFilesystemEntry{path: "a/x", content: [1, 2]})
+    _ = collect_unordered_differential_filesystem_entry(snapshot, DifferentialFilesystemEntry{path: "a-b", content: [3]})
+    _ = collect_unordered_differential_filesystem_entry(snapshot, DifferentialFilesystemEntry{path: "a", kind: DifferentialFilesystemEntryKind.Directory})
     assert snapshot.path_data.count == 7
     assert snapshot.total_bytes == 3
     assert seal_unordered_differential_filesystem_snapshot(snapshot) == DifferentialFilesystemState.Sealed
@@ -261,13 +295,20 @@ def differential_filesystem_unordered_batch_is_bounded_sorted_and_sealed() -> vo
     assert bytes_view(first_path) == "a"
     assert bytes_view(second_path) == "a-b"
     assert bytes_view(third_path) == "a/x"
+    first_content: darray[u8] = try copy_differential_filesystem_entry_content(snapshot, 0)
+    second_content: darray[u8] = try copy_differential_filesystem_entry_content(snapshot, 1)
+    third_content: darray[u8] = try copy_differential_filesystem_entry_content(snapshot, 2)
+    assert first_content.count == 0
+    assert second_content == [3]
+    assert third_content == [1, 2]
+    assert snapshot.content_data.count == 3
     assert validate_differential_filesystem_snapshot(snapshot)
 
     bounded: mutable DifferentialFilesystemSnapshot = DifferentialFilesystemSnapshot{max_path_bytes: 3}
     _ = advance_differential_filesystem_snapshot(bounded, DifferentialFilesystemEvent.Begin)
-    _ = collect_unordered_differential_filesystem_entry(bounded, DifferentialFilesystemEntry{path: "a/x", content_digest: filesystem_test_digest(44)})
+    _ = collect_unordered_differential_filesystem_entry(bounded, DifferentialFilesystemEntry{path: "a/x"})
     path_limit_rejected: mutable bool = false
-    catch collect_unordered_differential_filesystem_entry(bounded, DifferentialFilesystemEntry{path: "b/x", content_digest: filesystem_test_digest(45)}):
+    catch collect_unordered_differential_filesystem_entry(bounded, DifferentialFilesystemEntry{path: "b/x"}):
         ok value:
             assert false
         error failure:
@@ -277,29 +318,55 @@ def differential_filesystem_unordered_batch_is_bounded_sorted_and_sealed() -> vo
             path_limit_rejected <- true
     assert path_limit_rejected
 
-    invalid_digest: mutable DifferentialFilesystemSnapshot = DifferentialFilesystemSnapshot{}
-    _ = advance_differential_filesystem_snapshot(invalid_digest, DifferentialFilesystemEvent.Begin)
-    invalid_digest_rejected: mutable bool = false
-    catch collect_unordered_differential_filesystem_entry(invalid_digest, DifferentialFilesystemEntry{path: "file", content_digest: EsHash::HashDigest{algorithm: EsHash::HashAlgorithm.Fnv1a64, word_count: 1, word0: 9}}):
+    invalid_directory: mutable DifferentialFilesystemSnapshot = DifferentialFilesystemSnapshot{}
+    _ = advance_differential_filesystem_snapshot(invalid_directory, DifferentialFilesystemEvent.Begin)
+    invalid_content_rejected: mutable bool = false
+    catch collect_unordered_differential_filesystem_entry(invalid_directory, DifferentialFilesystemEntry{path: "directory", kind: DifferentialFilesystemEntryKind.Directory, content: [1]}):
         ok value:
             assert false
         error failure:
-            assert failure == DifferentialFilesystemError.InvalidContentDigest
-            assert invalid_digest.entries.count == 0
-            assert invalid_digest.path_data.count == 0
-            invalid_digest_rejected <- true
-    assert invalid_digest_rejected
+            assert failure == DifferentialFilesystemError.InvalidContent
+            assert invalid_directory.entries.count == 0
+            assert invalid_directory.path_data.count == 0
+            assert invalid_directory.content_data.count == 0
+            invalid_content_rejected <- true
+    assert invalid_content_rejected
+
+    invalid_symlink: mutable DifferentialFilesystemSnapshot = DifferentialFilesystemSnapshot{}
+    _ = advance_differential_filesystem_snapshot(invalid_symlink, DifferentialFilesystemEvent.Begin)
+    invalid_symlink_rejected: mutable bool = false
+    catch collect_unordered_differential_filesystem_entry(invalid_symlink, DifferentialFilesystemEntry{path: "link", kind: DifferentialFilesystemEntryKind.Symlink, content: [97, 0, 98]}):
+        ok value:
+            assert false
+        error failure:
+            assert failure == DifferentialFilesystemError.InvalidContent
+            invalid_symlink_rejected <- true
+    assert invalid_symlink_rejected
+
+    payload_bounded: mutable DifferentialFilesystemSnapshot = DifferentialFilesystemSnapshot{max_bytes: 2}
+    _ = advance_differential_filesystem_snapshot(payload_bounded, DifferentialFilesystemEvent.Begin)
+    _ = collect_unordered_differential_filesystem_entry(payload_bounded, DifferentialFilesystemEntry{path: "a", content: [1, 2]})
+    payload_limit_rejected: mutable bool = false
+    catch collect_unordered_differential_filesystem_entry(payload_bounded, DifferentialFilesystemEntry{path: "b", content: [3]}):
+        ok value:
+            assert false
+        error failure:
+            assert failure == DifferentialFilesystemError.ByteLimitExceeded
+            assert payload_bounded.entries.count == 1
+            assert payload_bounded.content_data.count == 2
+            payload_limit_rejected <- true
+    assert payload_limit_rejected
 
     cancelled: mutable DifferentialFilesystemSnapshot = DifferentialFilesystemSnapshot{}
     _ = advance_differential_filesystem_snapshot(cancelled, DifferentialFilesystemEvent.Begin)
-    _ = collect_unordered_differential_filesystem_entry(cancelled, DifferentialFilesystemEntry{path: "z", content_digest: filesystem_test_digest(46)})
-    _ = collect_unordered_differential_filesystem_entry(cancelled, DifferentialFilesystemEntry{path: "a", content_digest: filesystem_test_digest(47)})
+    _ = collect_unordered_differential_filesystem_entry(cancelled, DifferentialFilesystemEntry{path: "z"})
+    _ = collect_unordered_differential_filesystem_entry(cancelled, DifferentialFilesystemEntry{path: "a"})
     assert advance_differential_filesystem_snapshot(cancelled, DifferentialFilesystemEvent.Cancel) == DifferentialFilesystemState.Cancelled
 
     duplicates: mutable DifferentialFilesystemSnapshot = DifferentialFilesystemSnapshot{}
     _ = advance_differential_filesystem_snapshot(duplicates, DifferentialFilesystemEvent.Begin)
-    _ = collect_unordered_differential_filesystem_entry(duplicates, DifferentialFilesystemEntry{path: "same", content_digest: filesystem_test_digest(51)})
-    _ = collect_unordered_differential_filesystem_entry(duplicates, DifferentialFilesystemEntry{path: "same", content_digest: filesystem_test_digest(52)})
+    _ = collect_unordered_differential_filesystem_entry(duplicates, DifferentialFilesystemEntry{path: "same"})
+    _ = collect_unordered_differential_filesystem_entry(duplicates, DifferentialFilesystemEntry{path: "same"})
     duplicate_failed: mutable bool = false
     catch seal_unordered_differential_filesystem_snapshot(duplicates):
         ok value:
@@ -312,8 +379,8 @@ def differential_filesystem_unordered_batch_is_bounded_sorted_and_sealed() -> vo
 
     forged_layout: mutable DifferentialFilesystemSnapshot = DifferentialFilesystemSnapshot{}
     _ = advance_differential_filesystem_snapshot(forged_layout, DifferentialFilesystemEvent.Begin)
-    _ = collect_unordered_differential_filesystem_entry(forged_layout, DifferentialFilesystemEntry{path: "ab", content_digest: filesystem_test_digest(61)})
-    _ = collect_unordered_differential_filesystem_entry(forged_layout, DifferentialFilesystemEntry{path: "bcd", content_digest: filesystem_test_digest(62)})
+    _ = collect_unordered_differential_filesystem_entry(forged_layout, DifferentialFilesystemEntry{path: "ab", content: [1]})
+    _ = collect_unordered_differential_filesystem_entry(forged_layout, DifferentialFilesystemEntry{path: "bcd", content: [2]})
     _ = seal_unordered_differential_filesystem_snapshot(forged_layout)
     # Keep both individual paths valid and strictly ordered while making their
     # spans overlap and leave an unreferenced arena byte.
@@ -327,15 +394,30 @@ def differential_filesystem_unordered_batch_is_bounded_sorted_and_sealed() -> vo
             forged_layout_rejected <- true
     assert forged_layout_rejected
 
+    forged_content_layout: mutable DifferentialFilesystemSnapshot = DifferentialFilesystemSnapshot{}
+    _ = advance_differential_filesystem_snapshot(forged_content_layout, DifferentialFilesystemEvent.Begin)
+    _ = collect_unordered_differential_filesystem_entry(forged_content_layout, DifferentialFilesystemEntry{path: "a", content: [11]})
+    _ = collect_unordered_differential_filesystem_entry(forged_content_layout, DifferentialFilesystemEntry{path: "b", content: [22]})
+    _ = seal_unordered_differential_filesystem_snapshot(forged_content_layout)
+    forged_content_layout.entries[1].content_start <- 0
+    forged_content_rejected: mutable bool = false
+    catch validate_differential_filesystem_snapshot(forged_content_layout):
+        ok value:
+            assert false
+        error failure:
+            assert failure == DifferentialFilesystemError.SnapshotAccountingInvalid
+            forged_content_rejected <- true
+    assert forged_content_rejected
+
     first_partition: mutable DifferentialFilesystemSnapshot = DifferentialFilesystemSnapshot{}
     _ = advance_differential_filesystem_snapshot(first_partition, DifferentialFilesystemEvent.Begin)
-    _ = advance_differential_filesystem_snapshot(first_partition, DifferentialFilesystemEvent.Entry, DifferentialFilesystemEntry{path: "ab", content_digest: filesystem_test_digest(63)})
-    _ = advance_differential_filesystem_snapshot(first_partition, DifferentialFilesystemEvent.Entry, DifferentialFilesystemEntry{path: "c", content_digest: filesystem_test_digest(64)})
+    _ = advance_differential_filesystem_snapshot(first_partition, DifferentialFilesystemEvent.Entry, DifferentialFilesystemEntry{path: "ab", content: [7]})
+    _ = advance_differential_filesystem_snapshot(first_partition, DifferentialFilesystemEvent.Entry, DifferentialFilesystemEntry{path: "c", content: [8]})
     _ = advance_differential_filesystem_snapshot(first_partition, DifferentialFilesystemEvent.Seal)
     second_partition: mutable DifferentialFilesystemSnapshot = DifferentialFilesystemSnapshot{}
     _ = advance_differential_filesystem_snapshot(second_partition, DifferentialFilesystemEvent.Begin)
-    _ = advance_differential_filesystem_snapshot(second_partition, DifferentialFilesystemEvent.Entry, DifferentialFilesystemEntry{path: "a", content_digest: filesystem_test_digest(63)})
-    _ = advance_differential_filesystem_snapshot(second_partition, DifferentialFilesystemEvent.Entry, DifferentialFilesystemEntry{path: "bc", content_digest: filesystem_test_digest(64)})
+    _ = advance_differential_filesystem_snapshot(second_partition, DifferentialFilesystemEvent.Entry, DifferentialFilesystemEntry{path: "a", content: [7]})
+    _ = advance_differential_filesystem_snapshot(second_partition, DifferentialFilesystemEvent.Entry, DifferentialFilesystemEntry{path: "bc", content: [8]})
     _ = advance_differential_filesystem_snapshot(second_partition, DifferentialFilesystemEvent.Seal)
     # These snapshots have the same aggregate path bytes and entry metadata,
     # but different per-entry path boundaries; their canonical fingerprints
