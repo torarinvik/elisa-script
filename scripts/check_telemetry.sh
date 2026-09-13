@@ -36,11 +36,11 @@ for declaration in \
 done
 
 for boundary in \
-    'TELEMETRY_MAX_METRICS' \
-    'TELEMETRY_MAX_EVENTS' \
-    'TELEMETRY_MAX_NAME_BYTES' \
-    'TELEMETRY_MAX_PAYLOAD_BYTES' \
-    'TELEMETRY_MAX_SPANS' \
+    'Limits::METRICS' \
+    'Limits::EVENTS' \
+    'Limits::NAME_BYTES' \
+    'Limits::PAYLOAD_BYTES' \
+    'Limits::SPANS' \
     'TelemetryMode.Disabled' \
     'TelemetryRecordOutcome.Sampled' \
     'TelemetryError.EventLimitExceeded' \
