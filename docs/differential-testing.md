@@ -37,6 +37,12 @@ timezone, and seed. A fixture is explicitly `DifferentialWorldFileKind.Text` or
 `DifferentialWorldFileKind.Bytes`; byte fixtures own their bounded `darray[u8]`
 payload, so NULs and other binary data never cross a C-string boundary. Mixed
 text/byte payloads and unknown fixture kinds are rejected rather than guessed.
+Fixture `mode` accepts only ordinary permission bits (`0000` through `0777`);
+setuid, setgid, and sticky bits are rejected because they are host identity
+policy rather than portable test input. The separate `executable` marker is
+also fingerprinted, but its physical mapping alongside `mode` is not yet
+implemented; the host adapter must not claim mode restoration until that mapping
+is explicit.
 World binary stdin uses the same explicit mode and bounded owned-byte rule as
 binary files, and its bytes participate in the world fingerprint. `validate_differential_case` validates both nested runners, rejects NULs, duplicate
 fixture paths, oversized world data, invalid engine or artifact policies, comparator
