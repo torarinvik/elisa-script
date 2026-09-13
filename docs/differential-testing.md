@@ -756,18 +756,31 @@ restoration around these states. The plan is a public value record, so its
 validator establishes structural consistency, not tamper-proof provenance; a
 host adapter must keep ownership of the live plan and must not trust a
 caller-constructed terminal record as proof that filesystem cleanup occurred.
-The current Darwin runtime bridge now also exposes `open`, `readlinkat`,
-`fdopendir`, `fstatat`, `fstat`, `fchdir`, and the no-follow stat flag needed by a
-descriptor-relative adapter. These are low-level primitives only: no world
-materializer consumes them yet, their directory/stat ABI is Darwin-arm64
-specific, and path-component walking, descriptor ownership, cleanup, and
-restoration still require an adapter with platform-qualified implementations.
-`fdopendir` takes ownership of its descriptor on success; a retained root must
-be enumerated through a separate descriptor. `fchdir` mutates process-global
-state and belongs only in a forked child. `fstat(fd, ...)` is required to verify
-metadata on the opened object itself; `fstatat(..., SYMLINK_NOFOLLOW)` observes
-an entry without following its final component, but callers must still walk one
-validated path component at a time.
+The Darwin runtime bridge exposes `open`, `openat`, `readlinkat`, `fdopendir`,
+`fstatat`, `fstat`, `fchdir`, and the no-follow stat flag. The first
+source-only host slice, `EsDifferentialWorldPosix`, consumes the descriptor-
+relative primitives to create a unique 0700 temporary root, retain parent/root
+descriptors, and materialize one already-validated snapshot's inferred cwd
+directories and regular text/byte fixtures. Each path component is opened
+individually with `O_NOFOLLOW`; fixture files are created no broader than 0600,
+written with bounded short-write/EINTR handling, then assigned and checked
+against the requested exact mode and byte length. The directory/stat ABI and
+this adapter are Darwin-arm64-specific.
+
+This is not yet a replay-ready host adapter: there is no public cleanup or
+restoration operation, recursive post-run filesystem snapshot capture, readback
+of fixture contents, world argv/environment/stdin/locale/timezone/seed merge,
+paired-root orchestration, or process launch. Partial failures can leave a
+temporary tree and retained descriptors, and Elisa does not enforce the root
+record's single-owner descriptor contract. Do not use the slice for repeated
+cases until cleanup/restoration and lifecycle integration are implemented.
+It is not a sandbox; a launched process would still be able to access host
+paths outside the root. `fdopendir` takes ownership of its descriptor on
+success; a retained root must be enumerated through a separate descriptor.
+`fchdir` mutates process-global state and belongs only in a forked child.
+`fstat(fd, ...)` verifies metadata on the opened object itself;
+`fstatat(..., SYMLINK_NOFOLLOW)` observes an entry without following its final
+component, but callers must still walk one validated path component at a time.
 `readlinkat` returns raw target bytes without a NUL terminator; a return equal to
 the supplied buffer capacity is potentially truncated and requires a bounded
 retry or explicit rejection.

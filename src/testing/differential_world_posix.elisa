@@ -1,0 +1,353 @@
+# Darwin host adapter for the first physical DifferentialWorld materialization
+# slice. This creates one private temporary root and writes only validated
+# regular text/byte fixtures plus inferred private directories.
+#
+# This is not a sandbox: a process launched later may still access host paths
+# outside this root. Raw POSIX descriptors are owned by this adapter record;
+# callers must treat the record as a single owner and must not duplicate,
+# close, or mutate its descriptors. Elisa records do not yet enforce affine
+# descriptor ownership. Process launch, post-run scanning/restoration, and a
+# public cleanup API are deliberately not claimed by this initial slice.
+
+include "./differential.elisa"
+
+module EsDifferentialWorldPosix:
+    using EsDifferential
+    using EsRuntime
+
+    public:
+        error DifferentialWorldPosixError:
+            InvalidSnapshot
+            InvalidRoot
+            InvalidState
+            HostIo
+
+
+        const enum DarwinDifferentialWorldRootState of u8:
+            Created
+            Materializing
+            Materialized
+            Failed
+
+
+        # The strings retain their trailing NUL for libc, while the explicit
+        # lengths describe only their path bytes. `parent_descriptor` anchors
+        # the mkdtemp entry and `root_descriptor` anchors all fixture writes.
+        # Treat this as an adapter-owned descriptor capability, not a plain
+        # copyable pathname value; the current type system cannot enforce this.
+        struct DarwinDifferentialWorldRoot:
+            path: dstr
+            path_length: usize
+            basename: dstr
+            basename_length: usize
+            parent_descriptor: int = -1
+            root_descriptor: int = -1
+            snapshot_fingerprint: u64 = 0
+            state: DarwinDifferentialWorldRootState = DarwinDifferentialWorldRootState.Created
+
+
+    private:
+        const module DarwinDifferentialWorldPolicy:
+            ROOT_PARENT: sview = "/private/tmp"
+            ROOT_TEMPLATE_PREFIX: sview = "/private/tmp/elisascript-world-"
+            ROOT_TEMPLATE_SUFFIX: sview = "XXXXXX"
+            ROOT_PREFIX_LENGTH: usize = 31
+            ROOT_SUFFIX_LENGTH: usize = 6
+            ROOT_PATH_LENGTH: usize = 37
+            ROOT_BASENAME_OFFSET: usize = 13
+            ROOT_BASENAME_LENGTH: usize = 24
+            PRIVATE_DIRECTORY_MODE: u32 = 448
+            POSIX_PERMISSION_MASK: u16 = 511
+            MAX_EINTR_RETRIES: usize = 8
+            MAX_WRITE_CALLS: usize = 1048576
+
+
+        const enum DarwinDifferentialWorldWriteState of u8:
+            Write
+            Done
+            Failed
+
+
+        struct DarwinDifferentialWorldWriteCursor:
+            state: mutable DarwinDifferentialWorldWriteState = DarwinDifferentialWorldWriteState.Write
+            offset: mutable usize = 0
+            eintr_retries: mutable usize = 0
+            write_calls: mutable usize = 0
+
+
+        # Copy a borrowed Elisa view into a NUL-terminated context allocation.
+        # The returned dstr owns the buffer for the adapter operation.
+        def darwin_differential_world_cstring(value: sview) -> dstr can[Memory.Allocate, Abort.Panic]:
+            length: usize = sview_len(value)
+            allocation_length: usize = length + 1
+            allocation_i64: i64 = allocation_length.i64()
+            return [] if allocation_i64 < 0 or allocation_i64.usize() != allocation_length
+            bytes: mutable dstr = ctx_fstr_alloc(allocation_length)
+            return [] if bytes.items == null
+            ctx_fstr_append(bytes, value.data, length)
+            ctx_fstr_append(bytes, "\0", 1)
+            bytes.count <- length
+            return bytes
+
+
+        def darwin_differential_world_cstring_slice(value: sview, start: usize, end: usize) -> dstr can[Memory.Allocate, Abort.Panic]:
+            return [] if end < start or end > sview_len(value)
+            length: usize = end - start
+            allocation_length: usize = length + 1
+            allocation_i64: i64 = allocation_length.i64()
+            return [] if allocation_i64 < 0 or allocation_i64.usize() != allocation_length
+            bytes: mutable dstr = ctx_fstr_alloc(allocation_length)
+            return [] if bytes.items == null
+            return [] if length > 0 and value.data == null
+            ctx_fstr_append(bytes, value.data + start, length) if length > 0
+            ctx_fstr_append(bytes, "\0", 1)
+            bytes.count <- length
+            return bytes
+
+
+        def darwin_differential_world_directory_stat_matches(info: ElisascriptStat&) -> bool:
+            return (info.mode & DarwinStatMode::MASK) == DarwinStatMode::DIRECTORY
+                and (info.mode & DarwinDifferentialWorldPolicy::POSIX_PERMISSION_MASK) == DarwinDifferentialWorldPolicy::PRIVATE_DIRECTORY_MODE.u16()
+
+
+        def darwin_differential_world_root_entry_matches(parent_fd: int, basename: cstr, root_fd: int) -> bool can[Blocking.IO]:
+            opened_info: mutable ElisascriptStat = zeroed
+            entry_info: mutable ElisascriptStat = zeroed
+            return false if elisascript_posix_fstat(root_fd, opened_info) != 0
+            return false if elisascript_posix_fstatat(parent_fd, basename, entry_info, DarwinAtFlag::SYMLINK_NOFOLLOW) != 0
+            return false if not darwin_differential_world_directory_stat_matches(opened_info)
+            return false if not darwin_differential_world_directory_stat_matches(entry_info)
+            return opened_info.device == entry_info.device and opened_info.inode == entry_info.inode
+
+
+        def darwin_differential_world_verify_file(fd: int, expected_mode: u32, expected_length: usize) -> bool can[Blocking.IO]:
+            info: mutable ElisascriptStat = zeroed
+            return false if elisascript_posix_fstat(fd, info) != 0
+            return false if (info.mode & DarwinStatMode::MASK) != DarwinStatMode::REGULAR
+            return false if (info.mode & DarwinDifferentialWorldPolicy::POSIX_PERMISSION_MASK).u32() != expected_mode
+            return false if info.size < 0 or info.size.usize() != expected_length
+            return info.link_count == 1
+
+
+        # Newly-created files stay at most 0600 until their complete payload is
+        # present. Umask may make this stricter; it must not make it broader.
+        def darwin_differential_world_new_file_matches(fd: int) -> bool can[Blocking.IO]:
+            info: mutable ElisascriptStat = zeroed
+            return false if elisascript_posix_fstat(fd, info) != 0
+            return false if (info.mode & DarwinStatMode::MASK) != DarwinStatMode::REGULAR
+            return false if info.size != 0 or info.link_count != 1
+            return ((info.mode & DarwinDifferentialWorldPolicy::POSIX_PERMISSION_MASK).u32() & 127u32) == 0u32
+
+
+        # Open/create each validated path component independently. `O_NOFOLLOW`
+        # applies to every component because each openat receives one segment.
+        # The returned descriptor is owned by the caller unless it is root_fd.
+        def darwin_differential_world_ensure_directory(root_fd: int, path: sview) -> int can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            path_length: usize = sview_len(path)
+            return root_fd if path_length == 0
+            current_fd: mutable int = root_fd
+            segment_start: mutable usize = 0
+            index: mutable usize = 0
+            while index <= path_length:
+                at_end: bool = index == path_length
+                at_separator: bool = not at_end and sview_at(path, index) == 47
+                if at_end or at_separator:
+                    segment: dstr = darwin_differential_world_cstring_slice(path, segment_start, index)
+                    if segment.items == null:
+                        if current_fd != root_fd:
+                            _ = elisascript_posix_close(current_fd)
+                        return -1
+                    segment_items: u8& = segment.items
+                    _ = elisascript_posix_mkdirat(current_fd, segment_items.cast[cstr], DarwinDifferentialWorldPolicy::PRIVATE_DIRECTORY_MODE.i32())
+                    next_fd: int = elisascript_posix_openat(current_fd, segment_items.cast[cstr], DarwinOpenFlags::RDONLY | DarwinOpenFlags::DIRECTORY | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC, 0u32)
+                    if next_fd < 0:
+                        if current_fd != root_fd:
+                            _ = elisascript_posix_close(current_fd)
+                        return -1
+                    info: mutable ElisascriptStat = zeroed
+                    if elisascript_posix_fstat(next_fd, info) != 0 or (info.mode & DarwinStatMode::MASK) != DarwinStatMode::DIRECTORY:
+                        _ = elisascript_posix_close(next_fd)
+                        if current_fd != root_fd:
+                            _ = elisascript_posix_close(current_fd)
+                        return -1
+                    if elisascript_posix_fchmod(next_fd, DarwinDifferentialWorldPolicy::PRIVATE_DIRECTORY_MODE) != 0:
+                        _ = elisascript_posix_close(next_fd)
+                        if current_fd != root_fd:
+                            _ = elisascript_posix_close(current_fd)
+                        return -1
+                    info <- zeroed
+                    if elisascript_posix_fstat(next_fd, info) != 0 or not darwin_differential_world_directory_stat_matches(info):
+                        _ = elisascript_posix_close(next_fd)
+                        if current_fd != root_fd:
+                            _ = elisascript_posix_close(current_fd)
+                        return -1
+                    if current_fd != root_fd and elisascript_posix_close(current_fd) != 0:
+                        _ = elisascript_posix_close(next_fd)
+                        return -1
+                    current_fd <- next_fd
+                    segment_start <- index + 1
+                index <- index + 1
+            return current_fd
+
+
+        def darwin_differential_world_write_buffer_fully(fd: int, buffer: u8&, length: usize) -> bool can[Blocking.IO]:
+            cursor: mutable DarwinDifferentialWorldWriteCursor = DarwinDifferentialWorldWriteCursor{}
+            machine over cursor.state:
+                state Write
+                start Write
+
+                Write, DarwinDifferentialWorldWriteState.Write if cursor.offset >= length:
+                    cursor.state <- DarwinDifferentialWorldWriteState.Done
+                    -> Write
+                Write, DarwinDifferentialWorldWriteState.Write:
+                    if cursor.write_calls >= DarwinDifferentialWorldPolicy::MAX_WRITE_CALLS:
+                        cursor.state <- DarwinDifferentialWorldWriteState.Failed
+                        -> Write
+                    remaining: usize = length - cursor.offset
+                    next_bytes: mutable u8& = buffer + cursor.offset
+                    amount: isize = elisascript_posix_write(fd, next_bytes.cast[void&], remaining)
+                    cursor.write_calls <- cursor.write_calls + 1
+                    if amount < 0:
+                        errno: mutable int& = elisascript_posix_errno()
+                        if errno[0] == DarwinErrno::EINTR and cursor.eintr_retries < DarwinDifferentialWorldPolicy::MAX_EINTR_RETRIES:
+                            cursor.eintr_retries <- cursor.eintr_retries + 1
+                            -> Write
+                        cursor.state <- DarwinDifferentialWorldWriteState.Failed
+                        -> Write
+                    if amount == 0 or amount.usize() > remaining:
+                        cursor.state <- DarwinDifferentialWorldWriteState.Failed
+                        -> Write
+                    cursor.offset <- cursor.offset + amount.usize()
+                    cursor.eintr_retries <- 0
+                    -> Write
+
+                Write, DarwinDifferentialWorldWriteState.Done:
+                    break
+                Write, DarwinDifferentialWorldWriteState.Failed:
+                    break
+
+            return cursor.state == DarwinDifferentialWorldWriteState.Done
+
+
+        def darwin_differential_world_write_fixture(root_fd: int, fixture: DifferentialWorldFile&) -> bool can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            path_length: usize = sview_len(fixture.path)
+            last_separator: mutable usize = path_length
+            scan: mutable usize = 0
+            while scan < path_length:
+                last_separator <- scan if sview_at(fixture.path, scan) == 47
+                scan <- scan + 1
+            leaf_start: usize = last_separator + 1 if last_separator < path_length else 0
+            parent_fd: mutable int = root_fd
+            if last_separator < path_length:
+                parent_path: sview = fixture.path[0:last_separator]
+                parent_fd <- darwin_differential_world_ensure_directory(root_fd, parent_path)
+                return false if parent_fd < 0
+
+            leaf: dstr = darwin_differential_world_cstring_slice(fixture.path, leaf_start, path_length)
+            if leaf.items == null:
+                if parent_fd != root_fd:
+                    _ = elisascript_posix_close(parent_fd)
+                return false
+            leaf_items: u8& = leaf.items
+            descriptor: mutable int = elisascript_posix_openat(parent_fd, leaf_items.cast[cstr], DarwinOpenFlags::WRONLY | DarwinOpenFlags::CREATE | DarwinOpenFlags::EXCLUSIVE | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC, 384u32)
+            if descriptor < 0:
+                if parent_fd != root_fd:
+                    _ = elisascript_posix_close(parent_fd)
+                return false
+
+            file_length: usize = sview_len(fixture.contents) if fixture.kind == DifferentialWorldFileKind.Text else fixture.bytes.count
+            valid: mutable bool = darwin_differential_world_new_file_matches(descriptor)
+            if valid and file_length > 0:
+                if fixture.kind == DifferentialWorldFileKind.Text:
+                    valid <- darwin_differential_world_write_buffer_fully(descriptor, fixture.contents.data, file_length)
+                else:
+                    bytes_items: mutable u8&? = fixture.bytes.items
+                    valid <- false if bytes_items == null
+                    valid <- darwin_differential_world_write_buffer_fully(descriptor, bytes_items, file_length) if valid
+            valid <- false if valid and elisascript_posix_fchmod(descriptor, fixture.mode) != 0
+            valid <- false if valid and not darwin_differential_world_verify_file(descriptor, fixture.mode, file_length)
+            close_status: int = elisascript_posix_close(descriptor)
+            valid <- false if close_status != 0
+            if parent_fd != root_fd:
+                parent_close_status: int = elisascript_posix_close(parent_fd)
+                valid <- false if parent_close_status != 0
+            return valid
+
+
+    public:
+        # Create an atomically named private root under Darwin's canonical
+        # `/private/tmp`, retain both the parent and opened-root descriptors,
+        # and verify that the named entry is the same 0700 directory as the
+        # open capability before returning it.
+        def create_darwin_differential_world_root(snapshot: DifferentialWorldSnapshot&) -> DarwinDifferentialWorldRoot error[DifferentialWorldPosixError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            snapshot_check: DifferentialWorldSnapshotCheck = validate_differential_world_snapshot(snapshot.world, snapshot)
+            raise DifferentialWorldPosixError.InvalidSnapshot if not snapshot_check.valid
+
+            parent_path: dstr = darwin_differential_world_cstring(DarwinDifferentialWorldPolicy::ROOT_PARENT)
+            template: mutable dstr = ctx_fstr_alloc(DarwinDifferentialWorldPolicy::ROOT_PATH_LENGTH + 1)
+            basename: mutable dstr = ctx_fstr_alloc(DarwinDifferentialWorldPolicy::ROOT_BASENAME_LENGTH + 1)
+            raise DifferentialWorldPosixError.HostIo if parent_path.items == null or template.items == null or basename.items == null
+            ctx_fstr_append(template, DarwinDifferentialWorldPolicy::ROOT_TEMPLATE_PREFIX.data, DarwinDifferentialWorldPolicy::ROOT_PREFIX_LENGTH)
+            ctx_fstr_append(template, DarwinDifferentialWorldPolicy::ROOT_TEMPLATE_SUFFIX.data, DarwinDifferentialWorldPolicy::ROOT_SUFFIX_LENGTH)
+            ctx_fstr_append(template, "\0", 1)
+            template.count <- DarwinDifferentialWorldPolicy::ROOT_PATH_LENGTH
+            parent_items: u8& = parent_path.items
+            template_items: mutable u8& = template.items
+
+            parent_fd: mutable int = elisascript_posix_open(parent_items.cast[cstr], DarwinOpenFlags::RDONLY | DarwinOpenFlags::DIRECTORY | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC, 0u32)
+            raise DifferentialWorldPosixError.HostIo if parent_fd < 0
+            parent_info: mutable ElisascriptStat = zeroed
+            if elisascript_posix_fstat(parent_fd, parent_info) != 0 or (parent_info.mode & DarwinStatMode::MASK) != DarwinStatMode::DIRECTORY:
+                _ = elisascript_posix_close(parent_fd)
+                raise DifferentialWorldPosixError.HostIo
+
+            created: mutable u8&? = elisascript_posix_mkdtemp(template_items)
+            if created == null:
+                _ = elisascript_posix_close(parent_fd)
+                raise DifferentialWorldPosixError.HostIo
+            ctx_fstr_append(basename, template_items + DarwinDifferentialWorldPolicy::ROOT_BASENAME_OFFSET, DarwinDifferentialWorldPolicy::ROOT_BASENAME_LENGTH)
+            ctx_fstr_append(basename, "\0", 1)
+            basename.count <- DarwinDifferentialWorldPolicy::ROOT_BASENAME_LENGTH
+            basename_items: u8& = basename.items
+
+            root_fd: mutable int = elisascript_posix_openat(parent_fd, basename_items.cast[cstr], DarwinOpenFlags::RDONLY | DarwinOpenFlags::DIRECTORY | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC, 0u32)
+            if root_fd < 0:
+                _ = elisascript_posix_close(parent_fd)
+                raise DifferentialWorldPosixError.HostIo
+            if not darwin_differential_world_root_entry_matches(parent_fd, basename_items.cast[cstr], root_fd):
+                _ = elisascript_posix_close(root_fd)
+                _ = elisascript_posix_close(parent_fd)
+                raise DifferentialWorldPosixError.InvalidRoot
+
+            return DarwinDifferentialWorldRoot{path: template, path_length: DarwinDifferentialWorldPolicy::ROOT_PATH_LENGTH, basename: basename, basename_length: DarwinDifferentialWorldPolicy::ROOT_BASENAME_LENGTH, parent_descriptor: parent_fd, root_descriptor: root_fd}
+
+
+        # Materialize exactly one validated snapshot into an empty owned root.
+        # Every fixture component is resolved with one openat/mkdirat at a time;
+        # file modes are applied after creation and then checked using fstat.
+        def materialize_darwin_differential_world(root: mutable DarwinDifferentialWorldRoot&, snapshot: DifferentialWorldSnapshot&) -> void error[DifferentialWorldPosixError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            snapshot_check: DifferentialWorldSnapshotCheck = validate_differential_world_snapshot(snapshot.world, snapshot)
+            raise DifferentialWorldPosixError.InvalidSnapshot if not snapshot_check.valid
+            raise DifferentialWorldPosixError.InvalidState if root.state != DarwinDifferentialWorldRootState.Created or root.parent_descriptor < 0 or root.root_descriptor < 0
+            basename_items: u8& = root.basename.items
+            if not darwin_differential_world_root_entry_matches(root.parent_descriptor, basename_items.cast[cstr], root.root_descriptor):
+                root.state <- DarwinDifferentialWorldRootState.Failed
+                raise DifferentialWorldPosixError.InvalidRoot
+            root.state <- DarwinDifferentialWorldRootState.Materializing
+
+            if snapshot.world.working_directory != "":
+                working_directory_fd: int = darwin_differential_world_ensure_directory(root.root_descriptor, snapshot.world.working_directory)
+                if working_directory_fd < 0:
+                    root.state <- DarwinDifferentialWorldRootState.Failed
+                    raise DifferentialWorldPosixError.HostIo
+                if working_directory_fd != root.root_descriptor and elisascript_posix_close(working_directory_fd) != 0:
+                    root.state <- DarwinDifferentialWorldRootState.Failed
+                    raise DifferentialWorldPosixError.HostIo
+
+            for fixture in snapshot.world.files |root|:
+                if not darwin_differential_world_write_fixture(root.root_descriptor, fixture):
+                    root.state <- DarwinDifferentialWorldRootState.Failed
+                    raise DifferentialWorldPosixError.HostIo
+
+            root.snapshot_fingerprint <- snapshot.world_fingerprint
+            root.state <- DarwinDifferentialWorldRootState.Materialized
