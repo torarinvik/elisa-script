@@ -19,8 +19,8 @@ done
 
 for declaration in \
     'module EsNetworkSession:' \
-    'NETWORK_SESSION_MAX_POLLS' \
-    'NETWORK_SESSION_MAX_REDIRECTS' \
+    'Limits::POLLS' \
+    'Limits::REDIRECTS' \
     'const enum NetworkSessionState of u8:' \
     'const enum NetworkSessionEvent of u8:' \
     'struct NetworkSession:' \
