@@ -17,8 +17,8 @@ done
 
 for declaration in \
     'module EsDifferentialFilesystem:' \
-    'DIFFERENTIAL_FILESYSTEM_MAX_ENTRIES' \
-    'DIFFERENTIAL_FILESYSTEM_MAX_TOTAL_BYTES' \
+    'Limits::ENTRIES' \
+    'Limits::TOTAL_BYTES' \
     'const enum DifferentialFilesystemEntryKind of u8:' \
     'const enum DifferentialFilesystemState of u8:' \
     'const enum DifferentialFilesystemEvent of u8:' \

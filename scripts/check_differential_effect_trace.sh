@@ -17,8 +17,8 @@ done
 
 for declaration in \
     'module EsDifferentialEffectTrace:' \
-    'DIFFERENTIAL_EFFECT_TRACE_MAX_EVENTS' \
-    'DIFFERENTIAL_EFFECT_TRACE_MAX_RESUMPTIONS' \
+    'Limits::EVENTS' \
+    'Limits::RESUMPTIONS' \
     'const enum DifferentialEffectTraceState of u8:' \
     'const enum DifferentialEffectTraceEvent of u8:' \
     'struct DifferentialEffectEvent:' \

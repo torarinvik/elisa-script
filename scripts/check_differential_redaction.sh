@@ -20,8 +20,8 @@ rg -q 'value_length > available - 2' "$model"
 
 for declaration in \
     'module EsDifferentialRedaction:' \
-    'DIFFERENTIAL_REDACTION_MAX_RULES' \
-    'DIFFERENTIAL_REDACTION_MAX_ENTRIES' \
+    'Limits::RULES' \
+    'Limits::ENTRIES' \
     'const enum DifferentialRedactionState of u8:' \
     'const enum DifferentialRedactionEvent of u8:' \
     'struct DifferentialRedactionPolicy:' \
