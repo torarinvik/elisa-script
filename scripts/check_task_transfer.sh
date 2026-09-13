@@ -32,9 +32,9 @@ for declaration in \
 done
 
 for boundary in \
-    'TASK_TRANSFER_MAX_ITEMS' \
-    'TASK_TRANSFER_MAX_BYTES' \
-    'TASK_TRANSFER_MAX_BORROW_TICKS' \
+    'Limits::ITEMS' \
+    'Limits::BYTES' \
+    'Limits::BORROW_TICKS' \
     'TaskTransferMode.Copy' \
     'TaskTransferMode.Move' \
     'TaskTransferMode.Borrow' \
