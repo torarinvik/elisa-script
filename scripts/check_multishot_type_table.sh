@@ -15,7 +15,7 @@ done
 if ! rg -q 'def type_table_contains_mutable_aggregate\(type_id: u32, table: TypeTable&' "$verifier_file" || \
    ! rg -q 'return true if row\.kind in \{TypeKind\.Array, TypeKind\.Map\}' "$verifier_file" || \
    ! rg -q 'type_table_contains_mutable_aggregate\(child_id, table, depth \+ 1\)' "$verifier_file" || \
-   ! rg -q 'depth >= TYPE_TABLE_MAX_MATCH_DEPTH' "$verifier_file"; then
+   ! rg -q 'depth >= TypeTableLimits::MATCH_DEPTH' "$verifier_file"; then
     printf '%s\n' 'multi-shot TypeTable audit: bounded recursive aggregate walk is incomplete' >&2
     exit 1
 fi
@@ -28,8 +28,8 @@ if ! rg -q 'type_table_child\(type_id, position\.u16\(\), table\)' "$verifier_fi
    ! rg -q 'IssueKind\.UnsafeMultiShot\) == 1' "$ir_test_file" || \
    ! rg -q 'return 0 if not type_kind_valid\(kind\) or not type_descriptor_child_arity_valid' "$type_table_file" || \
    ! rg -q 'return 0 if child_id == 0 or child_id\.usize\(\) > table\.rows\.count' "$type_table_file" || \
-   ! rg -q 'return 0 if table\.children\.count > TYPE_TABLE_U32_MAX' "$type_table_file" || \
-   ! rg -q 'return 0 if children\.count > TYPE_TABLE_U32_MAX - table\.children\.count' "$type_table_file" || \
+   ! rg -q 'return 0 if table\.children\.count > TypeTableLimits::U32_MAX' "$type_table_file" || \
+   ! rg -q 'return 0 if children\.count > TypeTableLimits::U32_MAX - table\.children\.count' "$type_table_file" || \
    ! rg -q 'invalid_forward_child' "$ir_test_file"; then
     printf '%s\n' 'multi-shot TypeTable audit: descriptor admission/docs are incomplete' >&2
     exit 1
