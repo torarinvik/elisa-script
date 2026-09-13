@@ -577,10 +577,16 @@ arguments, stdin, resource limits, and random seed before launch.
 Fixture file names are relative to the materialized world root. Case validation
 rejects absolute names, empty path components, `.` and `..` components, NULs,
 backslashes (fixture paths use `/` as their only separator), and duplicate paths
-before any filesystem operation. The world working directory
-is still an adapter-owned location; adapters must create it inside the case's
-isolated root rather than treating a caller-provided path as permission to
-escape the fixture tree.
+before any filesystem operation. It also rejects a fixture file used as an
+ancestor of another fixture or as the world working directory.
+`DifferentialWorld.working_directory` is likewise empty (meaning the root) or a
+canonical relative path beneath that root; absolute paths, traversal
+components, and backslashes are rejected. The
+adapter must create and bind that directory inside the isolated root rather
+than treating caller input as permission to escape the fixture tree. This
+world-level path is distinct from each runner's working-directory setting;
+current case preparation still does not merge either world setting into a
+runner invocation.
 
 ## Reproducible failures
 
