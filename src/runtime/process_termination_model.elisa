@@ -32,7 +32,7 @@ module EsProcessTermination:
             Poll
             RequestForce
             ForceAck
-            ReportReaped
+            ReportMemberReaped
             Timeout
             Cancel
             Fail
@@ -45,6 +45,13 @@ module EsProcessTermination:
 
 
         struct ProcessTerminationMember:
+            pid: u64
+            start_token: u64
+            # Structural host report; this flag is not kernel-verifiable here.
+            reaped: bool = false
+
+
+        struct ProcessTerminationIdentity:
             pid: u64
             start_token: u64
 
@@ -61,6 +68,8 @@ module EsProcessTermination:
             state: ProcessTerminationState = ProcessTerminationState.Planned
             polls: usize = 0
             force_attempts: usize = 0
+            # Reap reports may arrive in any order. Each member's `reaped`
+            # flag is the identity-bound receipt; this count is its summary.
             reaped_members: usize = 0
             cancel_requested: bool = false
 
@@ -80,6 +89,7 @@ module EsProcessTermination:
             PollLimitExceeded
             ForceLimitExceeded
             ReapCountInvalid
+            ReapIdentityInvalid
             AccountingInvalid
             GracefulNotReady
             ForceNotReady
@@ -94,7 +104,7 @@ module EsProcessTermination:
 
 
         def process_termination_event_valid(event: ProcessTerminationEvent) -> bool:
-            return event in {ProcessTerminationEvent.Begin, ProcessTerminationEvent.RequestGraceful, ProcessTerminationEvent.GracefulAck, ProcessTerminationEvent.Poll, ProcessTerminationEvent.RequestForce, ProcessTerminationEvent.ForceAck, ProcessTerminationEvent.ReportReaped, ProcessTerminationEvent.Timeout, ProcessTerminationEvent.Cancel, ProcessTerminationEvent.Fail}
+            return event in {ProcessTerminationEvent.Begin, ProcessTerminationEvent.RequestGraceful, ProcessTerminationEvent.GracefulAck, ProcessTerminationEvent.Poll, ProcessTerminationEvent.RequestForce, ProcessTerminationEvent.ForceAck, ProcessTerminationEvent.ReportMemberReaped, ProcessTerminationEvent.Timeout, ProcessTerminationEvent.Cancel, ProcessTerminationEvent.Fail}
 
 
         def process_termination_policy_valid(policy: ProcessTerminationPolicy) -> bool:
@@ -117,6 +127,10 @@ module EsProcessTermination:
                 else:
                     upper <- middle
             return session.members.count
+
+
+        def process_termination_identity_valid(identity: ProcessTerminationIdentity) -> bool:
+            return identity.pid != 0 and identity.start_token != 0
 
 
         def process_termination_swap_members(session: mutable ProcessTerminationSession&, left: usize, right: usize) -> void:
@@ -172,14 +186,20 @@ module EsProcessTermination:
             raise ProcessTerminationError.ReapCountInvalid if session.state != ProcessTerminationState.Reaped and session.reaped_members == session.members.count
             raise ProcessTerminationError.AccountingInvalid if session.state == ProcessTerminationState.Planned and (session.polls != 0 or session.force_attempts != 0 or session.reaped_members != 0 or session.cancel_requested)
             raise ProcessTerminationError.AccountingInvalid if session.state == ProcessTerminationState.Running and (session.polls != 0 or session.force_attempts != 0 or session.reaped_members != 0 or session.cancel_requested)
+            raise ProcessTerminationError.AccountingInvalid if session.state == ProcessTerminationState.GracefulRequested and (session.polls != 0 or session.force_attempts != 0 or session.reaped_members != 0)
+            raise ProcessTerminationError.AccountingInvalid if session.state == ProcessTerminationState.GracefulWaiting and (session.force_attempts != 0 or session.reaped_members != 0)
+            raise ProcessTerminationError.AccountingInvalid if session.state == ProcessTerminationState.ForceRequested and session.force_attempts == 0
+            reaped_count: mutable usize = 0
             for index in 0..<session.members.count |session|:
                 member: ProcessTerminationMember = session.members[index]
                 raise ProcessTerminationError.InvalidMember if not process_termination_member_valid(member)
+                reaped_count <- reaped_count + 1 if member.reaped
                 if index > 0:
                     previous: ProcessTerminationMember = session.members[index - 1]
                     raise ProcessTerminationError.DuplicateMember if previous.pid == member.pid
                     raise ProcessTerminationError.MemberOrderInvalid if previous.pid > member.pid
             raise ProcessTerminationError.RootNotOwned if process_termination_member_index(session, session.root_pid) == session.members.count
+            raise ProcessTerminationError.ReapCountInvalid if session.reaped_members != reaped_count
             return true
 
 
@@ -199,7 +219,7 @@ module EsProcessTermination:
             _ = try validate_process_termination(session)
 
 
-        def advance_process_termination(session: mutable ProcessTerminationSession&, event: ProcessTerminationEvent, reaped_members: usize = 0) -> ProcessTerminationState error[ProcessTerminationError]:
+        def advance_process_termination(session: mutable ProcessTerminationSession&, event: ProcessTerminationEvent, reaped_member: ProcessTerminationIdentity = ProcessTerminationIdentity{pid: 0, start_token: 0}) -> ProcessTerminationState error[ProcessTerminationError]:
             try validate_process_termination(session)
             raise ProcessTerminationError.InvalidEvent if not process_termination_event_valid(event)
             if event == ProcessTerminationEvent.Begin:
@@ -227,10 +247,15 @@ module EsProcessTermination:
             elif event == ProcessTerminationEvent.ForceAck:
                 raise ProcessTerminationError.ForceNotReady if session.state != ProcessTerminationState.ForceRequested
                 session.state <- ProcessTerminationState.Reaping
-            elif event == ProcessTerminationEvent.ReportReaped:
+            elif event == ProcessTerminationEvent.ReportMemberReaped:
                 raise ProcessTerminationError.ReapNotReady if session.state != ProcessTerminationState.GracefulWaiting and session.state != ProcessTerminationState.Reaping
-                raise ProcessTerminationError.ReapCountInvalid if reaped_members < session.reaped_members or reaped_members > session.members.count
-                session.reaped_members <- reaped_members
+                raise ProcessTerminationError.ReapIdentityInvalid if not process_termination_identity_valid(reaped_member)
+                member_index: usize = process_termination_member_index(session, reaped_member.pid)
+                raise ProcessTerminationError.ReapIdentityInvalid if member_index == session.members.count
+                expected_member: ProcessTerminationMember = session.members[member_index]
+                raise ProcessTerminationError.ReapIdentityInvalid if reaped_member.start_token != expected_member.start_token or expected_member.reaped
+                session.members[member_index].reaped <- true
+                session.reaped_members <- session.reaped_members + 1
                 session.state <- ProcessTerminationState.Reaped if session.reaped_members == session.members.count else ProcessTerminationState.Reaping
             elif event == ProcessTerminationEvent.Timeout:
                 raise ProcessTerminationError.TimeoutNotReady if not process_termination_active(session.state)

@@ -2271,14 +2271,18 @@ polling or escalating. Member records are kept in strictly ascending PID order:
 admission, validation rejects unsorted or duplicate PIDs in one linear pass,
 and root lookup uses binary search. Force attempts and polls are bounded;
 planned and running sessions start with clean poll/force/reap accounting;
-reaped-member counts are monotonic and `Reaped` is impossible until every
-declared member is accounted for; externally assembled `Reaped` records with a
-partial count are rejected as well. `Cancel` records cancellation intent
-without weakening the same graceful/force/reap sequence, while timeout and
+`ReportMemberReaped` carries a full `(pid, start_token)` identity and can report
+members in any observed order. Duplicate reports, unknown members, and stale or
+wrong-generation identities are rejected; each member's reaped flag is checked
+against the summary count, and `Reaped` is impossible until every declared
+member is accounted for. Phase validation rejects polls, force attempts, or
+reaps during graceful request, force attempts or reaps during graceful wait,
+and force-requested state without an attempt. `Cancel` records cancellation
+intent without weakening the same graceful/force/reap sequence, while timeout and
 failure remain distinct terminal outcomes. This module never sends signals or
 calls `waitpid`: it validates host-reported identities and accounting, but
-cannot prove the host inventory is complete or that reaping was observed from
-the operating system.
+cannot prove the host inventory is complete or that a reaped flag came from an
+operating-system observation rather than an externally assembled record.
 
 `EsTask::TaskScope` and `TaskChannel` define the corresponding concurrency
 boundary. A scope caps active children, records completed/failed children, and

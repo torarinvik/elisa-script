@@ -38,15 +38,24 @@ for boundary in \
     'ProcessTerminationEvent.GracefulAck' \
     'ProcessTerminationEvent.RequestForce' \
     'ProcessTerminationEvent.ForceAck' \
-    'ProcessTerminationEvent.ReportReaped' \
+    'ProcessTerminationEvent.ReportMemberReaped' \
+    'struct ProcessTerminationIdentity:' \
+    'process_termination_identity_valid' \
+    'expected_member.reaped' \
+    'session.members\[member_index\].reaped <- true' \
     'canonicalize_process_termination_members' \
     'process_termination_sort_members' \
     'process_termination_sift_members' \
     'process_termination_member_index' \
     'ProcessTerminationError.MemberOrderInvalid' \
     'ProcessTerminationError.ReapCountInvalid' \
+    'ProcessTerminationError.ReapIdentityInvalid' \
+    'reaped_count' \
     'ProcessTerminationState.Planned and' \
     'ProcessTerminationState.Running and' \
+    'session.state == ProcessTerminationState.GracefulRequested and \(session.polls != 0 or session.force_attempts != 0 or session.reaped_members != 0\)' \
+    'session.state == ProcessTerminationState.GracefulWaiting and \(session.force_attempts != 0 or session.reaped_members != 0\)' \
+    'session.state == ProcessTerminationState.ForceRequested and session.force_attempts == 0' \
     'session.state == ProcessTerminationState.Reaped' \
     'ProcessTerminationError.PollLimitExceeded' \
     'ProcessTerminationError.ForceLimitExceeded'; do
@@ -58,15 +67,26 @@ for fixture_pattern in \
     'typed_process_termination_contract_bounds_escalation_and_reaping' \
     'ProcessTerminationEvent.RequestGraceful' \
     'ProcessTerminationEvent.RequestForce' \
-    'ProcessTerminationEvent.ReportReaped' \
+    'ProcessTerminationEvent.ReportMemberReaped' \
+    'ProcessTerminationIdentity{pid: 102, start_token: 2}' \
+    'wrong_generation' \
+    'unknown_member' \
+    'duplicate_reap' \
+    'forged_reap_count' \
+    'impossible_graceful_reap' \
+    'graceful_poll' \
+    'waiting_force_attempt' \
+    'force_without_attempt' \
+    'session.members\[1\].reaped' \
     'ProcessTerminationEvent.Cancel' \
     'canonicalize_process_termination_members' \
     'ProcessTerminationError.MemberOrderInvalid' \
     'ProcessTerminationError.DuplicateMember' \
+    'ProcessTerminationError.ReapIdentityInvalid' \
     'ProcessTerminationError.AccountingInvalid'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 
 rg -q 'EsProcessTermination::ProcessTerminationSession' "$docs"
 rg -q 'ES-SCRIPT-037' "$ledger"
-printf 'process termination audit: canonical bounded membership and graceful/force reaping are present\n'
+printf 'process termination audit: canonical bounded membership and identity-bound graceful/force reaping are present\n'
