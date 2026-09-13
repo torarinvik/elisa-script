@@ -72,6 +72,24 @@ if [[ "$process_completion_sites" != "4" ]]; then
     printf 'resource policy audit: expected four child-reap accounting paths, found %s\n' "$process_completion_sites" >&2
     exit 1
 fi
+for lease_helper in interpret_open_file interpret_open_tmpfile interpret_close_file interpret_open_directory interpret_close_directory; do
+    if ! rg -q "def ${lease_helper}\\(" "$interpreter"; then
+        printf 'resource policy audit: interpreter omits %s\n' "$lease_helper" >&2
+        exit 1
+    fi
+done
+rg -q 'RuntimeResourceCounter.OpenHandle' "$interpreter"
+# Keep every raw libc/POSIX stream acquisition and release inside the lease
+# helpers. This catches a future bridge that would otherwise bypass the
+# per-machine active-handle ceiling.
+for raw_host_edge in 'fopen(' 'fclose(' 'elisascript_posix_tmpfile(' 'elisascript_posix_opendir(' 'elisascript_posix_closedir(' 'elisascript_posix_mkstemp(' 'elisascript_posix_close('; do
+    raw_edge_count="$(rg -F -o "$raw_host_edge" "$interpreter" | wc -l | tr -d '[:space:]')"
+    if [[ "$raw_edge_count" != "1" ]]; then
+        printf 'resource policy audit: expected one leased host edge %s, found %s\n' "$raw_host_edge" "$raw_edge_count" >&2
+        exit 1
+    fi
+done
+rg -q 'read_owned_directory\(machine: mutable Machine&' "$interpreter"
 rg -q 'def regex_work_account\(' "$interpreter"
 rg -q 'runtime_resource_add_regex_work\(machine.resource_usage, machine.resource_policy, delta\)' "$interpreter"
 rg -q 'regex_work_budget_limit\(machine\)' "$interpreter"
@@ -108,6 +126,7 @@ rg -q 'tiny_policy: RuntimeResourcePolicy' "$repo_root/test/ir/elisascript_ir_te
 rg -q 'tiny_usage: mutable RuntimeResourceUsage' "$repo_root/test/ir/elisascript_ir_test.elisa"
 rg -q 'not runtime_resource_acquire\(tiny_usage' "$repo_root/test/ir/elisascript_ir_test.elisa"
 rg -q 'not runtime_resource_release\(tiny_usage' "$repo_root/test/ir/elisascript_ir_test.elisa"
+rg -q 'handle_limited: RuntimeResourcePolicy' "$repo_root/test/ir/elisascript_ir_test.elisa"
 rg -q 'zero_resource_policy: RuntimeResourcePolicy' "$repo_root/test/ir/elisascript_ir_test.elisa"
 rg -q 'not runtime_resource_acquire\(zero_resource_usage' "$repo_root/test/ir/elisascript_ir_test.elisa"
 rg -q 'bytecode_compatibility_entrypoints_reject_step_budget_above_shared_ceiling' "$repo_root/test/ir/elisascript_bytecode_test.elisa"

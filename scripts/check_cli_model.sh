@@ -60,8 +60,14 @@ done
 rg -Fq '`EsCli::CliInvocation`' "$docs"
 rg -Fq 'using EsCli' "$driver"
 rg -Fq 'request.mode <- invocation.mode' "$driver"
+rg -Fq 'request.mode == EsCli::CliMode.Check' "$driver"
+rg -Fq 'check_elisascript_program_file_diagnostic' "$driver"
 rg -Fq 'requested launcher mode is not implemented' "$driver"
 rg -Fq 'mode: mutable CliMode' "$runner"
+rg -Fq 'def check_elisascript_program_file_diagnostic' "$runner"
+rg -Fq 'const enum ElisascriptProgramDiagnosticMode of u8:' "$runner"
+rg -Fq 'return if mode == ElisascriptProgramDiagnosticMode.VerifyOnly' "$runner"
+rg -Fq 'diagnostic_check_accepts_modules_without_main_and_never_executes' "$repo_root/test/ir/elisascript_runner_test.elisa"
 rg -Fq 'P14 CLI follow-up' "$plan"
 
-printf 'cli model audit: typed modes, option boundaries, script-argument preservation, and bounded validation are present\n'
+printf 'cli model audit: typed modes and bounded options are present; --check validates without executing\n'

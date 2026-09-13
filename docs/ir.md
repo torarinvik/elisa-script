@@ -105,10 +105,12 @@ source-free help/version modes, and rejects repeated colors through
 missing option values before source loading.
 
 `EsDriver::run` now consumes that typed invocation directly. Help/version exit
-before source allocation, while check/test/fmt/doc currently return an explicit
-unsupported-mode diagnostic rather than silently taking the run path; source
-arguments and the `--` boundary are copied into the typed runner request only
-for an actual run.
+before source allocation. `--check` loads and type-checks the source, lowers
+and verifies its IR/bytecode, and returns success without requiring `main`,
+staging script arguments, or executing code. Test/fmt/doc still return an
+explicit unsupported-mode diagnostic rather than silently taking the run
+path; source arguments and the `--` boundary are passed to the typed runner
+only for an actual run.
 
 EsCliWorkflow separates planning from host execution. Each accepted mode maps
 to a fixed step sequence: run/test load, lower, verify, execute, and render;
@@ -817,6 +819,16 @@ predicate therefore continues to fail closed on non-default elapsed, memory,
 open-handle, and concurrent-task budgets. Steps, output, regex, retained traces,
 and reference-interpreter child-process admission are implemented policy
 dimensions.
+Short-lived reference-interpreter filesystem streams, process-capture temporary
+files, secure `mkstemp` descriptors, and directory scans now acquire an
+open-handle slot before `fopen`, `tmpfile`, `mkstemp`, or `opendir`; failed opens
+roll the slot back, and every close path retires it after the host close
+attempt. An uncertain `close` failure retains the slot and aborts. This applies
+the shared default handle ceiling during interpretation. Narrower
+caller-supplied handle policies remain fail-closed until the standalone
+`EsRuntime::FileStream` lifetime can carry the same per-run ledger;
+`open_handles` currently measures active leases, not the peak number observed
+during a completed run.
 The reference interpreter's `tick` uses the step edge directly, keeping its
 live usage ledger aligned with the step-limit failure path.
 Console writes and completed process-capture streams now charge their admitted
