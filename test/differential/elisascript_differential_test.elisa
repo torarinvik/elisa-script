@@ -905,6 +905,137 @@ def differential_case_observation_schema_catches_shared_omissions() -> void:
 
 
 @test
+def differential_case_replay_uses_case_comparator_and_restores_before_artifact_access() -> void:
+    can Memory.Allocate, Abort.Panic, Unsafe.PointerCast:
+        reference_runner: DifferentialRunner = DifferentialRunner{kind: DifferentialRunnerKind.NativeProcess, name: "reference", target: "/usr/bin/reference", arguments: [], timeout_steps: 10}
+        candidate_runner: DifferentialRunner = DifferentialRunner{kind: DifferentialRunnerKind.ElisascriptProgram, name: "candidate", target: "candidate.elisascript", arguments: [], timeout_steps: 10}
+        case: DifferentialCase = DifferentialCase{name: "case-replay-schema", reference: reference_runner, candidate: candidate_runner, observation_schema: DifferentialObservationSchema{sites: [DifferentialObservationSite{trace: 17u64, value_kind: DifferentialValueKind.Int}]}}
+        session: mutable DifferentialCaseReplaySession = make_differential_case_replay_session(case, EsDifferentialReplay::DifferentialReplayOrder.ReferenceThenCandidate, "/tmp/case-replay-reference", "/tmp/case-replay-candidate")
+        assert validate_differential_case_replay_session(case, session)
+        assert admit_differential_case_replay(case, session) == EsDifferentialReplay::DifferentialReplayState.Admitted
+        assert begin_differential_case_replay_materialization(case, session) == EsDifferentialReplay::DifferentialReplayState.Materializing
+        assert mark_differential_case_worlds_ready(case, session, case.world, case.world) == EsDifferentialReplay::DifferentialReplayState.Running
+
+        wrong_side_rejected: mutable bool = false
+        catch prepare_differential_case_replay_runner(case, session, DifferentialCaseSide.Candidate):
+            ok runner:
+                assert false
+            error failure:
+                assert failure == DifferentialCaseReplayError.RunOrderInvalid
+                wrong_side_rejected <- true
+        assert wrong_side_rejected
+        prepared_reference: DifferentialRunner = prepare_differential_case_replay_runner(case, session, DifferentialCaseSide.Reference)
+        assert prepared_reference.name == "reference"
+
+        empty_reference: DifferentialRun = DifferentialRun{observations: []}
+        empty_candidate: DifferentialRun = DifferentialRun{observations: []}
+        assert complete_differential_case_replay_run(case, session, DifferentialCaseSide.Reference, empty_reference) == EsDifferentialReplay::DifferentialReplayState.Running
+        assert complete_differential_case_replay_run(case, session, DifferentialCaseSide.Candidate, empty_candidate) == EsDifferentialReplay::DifferentialReplayState.Comparing
+        assert compare_differential_case_replay(case, session) == EsDifferentialReplay::DifferentialReplayState.Restoring
+
+        early_artifact_rejected: mutable bool = false
+        catch make_differential_case_replay_comparison_artifact(case, session):
+            ok artifact:
+                assert false
+            error failure:
+                assert failure == DifferentialCaseReplayError.ArtifactNotReady
+                early_artifact_rejected <- true
+        assert early_artifact_rejected
+
+        contaminated_world: mutable DifferentialWorld = case.world
+        contaminated_world.seed <- 999u64
+        rejected_restore: DifferentialWorldMaterializationCheck = restore_differential_case_replay_worlds(case, session, contaminated_world, case.world)
+        assert not rejected_restore.valid
+        assert session.replay.state == EsDifferentialReplay::DifferentialReplayState.Restoring
+        assert session.materialization.state == DifferentialWorldMaterializationState.Restoring
+
+        restored: DifferentialWorldMaterializationCheck = restore_differential_case_replay_worlds(case, session, case.world, case.world)
+        assert restored.valid
+        assert session.replay.state == EsDifferentialReplay::DifferentialReplayState.Completed
+        comparison: DifferentialComparison = differential_case_replay_comparison(case, session)
+        assert not comparison.equal
+        assert comparison.kind == DifferentialDifferenceKind.ObservationContract
+        artifact: DifferentialComparisonArtifact = make_differential_case_replay_comparison_artifact(case, session)
+        assert artifact.format_version == 3
+        assert artifact.kind == DifferentialDifferenceKind.ObservationContract
+
+        session.candidate_run.resource_usage.steps <- session.candidate_run.resource_usage.steps + 1
+        assert not validate_differential_case_replay_session(case, session)
+        mutated_run_artifact_rejected: mutable bool = false
+        catch make_differential_case_replay_comparison_artifact(case, session):
+            ok value:
+                assert false
+            error failure:
+                assert failure == DifferentialCaseReplayError.InvalidSession
+                mutated_run_artifact_rejected <- true
+        assert mutated_run_artifact_rejected
+
+
+@test
+def differential_case_replay_failure_enters_world_cleanup() -> void:
+    can Memory.Allocate, Abort.Panic, Unsafe.PointerCast:
+        reference_runner: DifferentialRunner = DifferentialRunner{kind: DifferentialRunnerKind.NativeProcess, name: "reference", target: "/usr/bin/reference", arguments: [], timeout_steps: 10}
+        candidate_runner: DifferentialRunner = DifferentialRunner{kind: DifferentialRunnerKind.ElisascriptProgram, name: "candidate", target: "candidate.elisascript", arguments: [], timeout_steps: 10}
+        case: DifferentialCase = DifferentialCase{name: "case-replay-failure", reference: reference_runner, candidate: candidate_runner}
+        session: mutable DifferentialCaseReplaySession = make_differential_case_replay_session(case, EsDifferentialReplay::DifferentialReplayOrder.CandidateThenReference, "/tmp/failure-reference", "/tmp/failure-candidate")
+        _ = admit_differential_case_replay(case, session)
+        assert begin_differential_case_replay_materialization(case, session) == EsDifferentialReplay::DifferentialReplayState.Materializing
+        assert fail_differential_case_replay(session) == EsDifferentialReplay::DifferentialReplayState.Restoring
+        assert session.materialization.state == DifferentialWorldMaterializationState.Restoring
+        restored: DifferentialWorldMaterializationCheck = restore_differential_case_replay_worlds(case, session, case.world, case.world)
+        assert restored.valid
+        assert session.replay.state == EsDifferentialReplay::DifferentialReplayState.Failed
+        assert session.materialization.state == DifferentialWorldMaterializationState.Restored
+
+
+@test
+def differential_case_replay_cancel_and_mismatched_cleanup_are_checked() -> void:
+    can Memory.Allocate, Abort.Panic, Unsafe.PointerCast:
+        reference_runner: DifferentialRunner = DifferentialRunner{kind: DifferentialRunnerKind.NativeProcess, name: "reference", target: "/usr/bin/reference", arguments: [], timeout_steps: 10}
+        candidate_runner: DifferentialRunner = DifferentialRunner{kind: DifferentialRunnerKind.ElisascriptProgram, name: "candidate", target: "candidate.elisascript", arguments: [], timeout_steps: 10}
+        case: DifferentialCase = DifferentialCase{name: "case-replay-cancel", reference: reference_runner, candidate: candidate_runner}
+        session: mutable DifferentialCaseReplaySession = make_differential_case_replay_session(case, EsDifferentialReplay::DifferentialReplayOrder.ReferenceThenCandidate, "/tmp/cancel-reference", "/tmp/cancel-candidate")
+        _ = admit_differential_case_replay(case, session)
+        _ = begin_differential_case_replay_materialization(case, session)
+        _ = mark_differential_case_worlds_ready(case, session, case.world, case.world)
+        assert cancel_differential_case_replay(session) == EsDifferentialReplay::DifferentialReplayState.Restoring
+        assert session.materialization.state == DifferentialWorldMaterializationState.Restoring
+        restored: DifferentialWorldMaterializationCheck = restore_differential_case_replay_worlds(case, session, case.world, case.world)
+        assert restored.valid
+        assert session.replay.state == EsDifferentialReplay::DifferentialReplayState.Cancelled
+        assert session.materialization.state == DifferentialWorldMaterializationState.Restored
+
+        mismatched: mutable DifferentialCaseReplaySession = make_differential_case_replay_session(case, EsDifferentialReplay::DifferentialReplayOrder.ReferenceThenCandidate, "/tmp/mismatch-reference", "/tmp/mismatch-candidate")
+        mismatched.materialization.state <- DifferentialWorldMaterializationState.Running
+        mismatch_rejected: mutable bool = false
+        catch fail_differential_case_replay(mismatched):
+            ok value:
+                assert false
+            error failure:
+                assert failure == EsDifferentialReplay::DifferentialReplayError.InvalidState
+                mismatch_rejected <- true
+        assert mismatch_rejected
+        assert mismatched.replay.state == EsDifferentialReplay::DifferentialReplayState.Planned
+
+
+@test
+def differential_case_replay_binds_runner_and_materialization_roots() -> void:
+    can Memory.Allocate, Abort.Panic, Unsafe.PointerCast:
+        reference_runner: DifferentialRunner = DifferentialRunner{kind: DifferentialRunnerKind.NativeProcess, name: "reference", target: "/usr/bin/reference", arguments: [], timeout_steps: 10}
+        candidate_runner: DifferentialRunner = DifferentialRunner{kind: DifferentialRunnerKind.ElisascriptProgram, name: "candidate", target: "candidate.elisascript", arguments: [], timeout_steps: 10}
+        case: mutable DifferentialCase = DifferentialCase{name: "case-replay-bindings", reference: reference_runner, candidate: candidate_runner}
+        runner_session: mutable DifferentialCaseReplaySession = make_differential_case_replay_session(case, EsDifferentialReplay::DifferentialReplayOrder.ReferenceThenCandidate, "/tmp/binding-reference", "/tmp/binding-candidate")
+        case.candidate.target <- "substituted.elisascript"
+        assert not validate_differential_case_replay_session(case, runner_session)
+
+        original_case: DifferentialCase = DifferentialCase{name: "case-replay-root-binding", reference: reference_runner, candidate: candidate_runner}
+        root_session: mutable DifferentialCaseReplaySession = make_differential_case_replay_session(original_case, EsDifferentialReplay::DifferentialReplayOrder.CandidateThenReference, "/tmp/root-reference", "/tmp/root-candidate")
+        root_session.materialization.candidate_root <- "/tmp/alternate-candidate"
+        assert differential_case_replay_bound_candidate_root(root_session) == "/tmp/root-candidate"
+        assert not validate_differential_case_replay_session(original_case, root_session)
+
+
+@test
 def differential_world_payload_is_aggregate_bounded() -> void:
     reference: DifferentialRunner = DifferentialRunner{kind: DifferentialRunnerKind.NativeProcess, name: "reference", target: "/usr/bin/reference", arguments: [], timeout_steps: 10}
     candidate: DifferentialRunner = DifferentialRunner{kind: DifferentialRunnerKind.ElisascriptProgram, name: "candidate", target: "candidate.elisascript", arguments: [], timeout_steps: 10}

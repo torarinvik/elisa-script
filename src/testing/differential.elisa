@@ -3209,6 +3209,43 @@ module EsDifferential:
             candidate_outcome: mutable DifferentialRunOutcome = DifferentialRunOutcome.Completed
 
 
+        error DifferentialCaseReplayError:
+            InvalidOrder
+            InvalidCase
+            InvalidSession
+            ManifestMismatch
+            RunnerNotReady
+            RunOrderInvalid
+            ComparisonNotReady
+            ArtifactNotReady
+
+
+        # Host adapters own this case-bound lifecycle while performing actual
+        # filesystem and process I/O. It composes the existing replay and world
+        # materialization state machines, retains the exact typed runs, and
+        # stores a comparison only after both sides have completed.
+        struct DifferentialCaseReplaySession:
+            format_version: u8 = 1
+            manifest: DifferentialArtifactManifest
+            world_snapshot: DifferentialWorldSnapshot
+            materialization: DifferentialWorldMaterializationPlan
+            replay: EsDifferentialReplay::DifferentialReplaySession
+            reference_root_binding: darray[u8] = []
+            candidate_root_binding: darray[u8] = []
+            reference_runner_fingerprint: u64 = 0
+            candidate_runner_fingerprint: u64 = 0
+            case_timeout_steps: u64 = 0
+            case_max_output_bytes: u64 = 0
+            reference_run: DifferentialRun = DifferentialRun{observations: []}
+            candidate_run: DifferentialRun = DifferentialRun{observations: []}
+            reference_run_fingerprint: u64 = 0
+            candidate_run_fingerprint: u64 = 0
+            has_reference_run: bool = false
+            has_candidate_run: bool = false
+            comparison: DifferentialComparison = DifferentialComparison{equal: false, kind: DifferentialDifferenceKind.Equal}
+            has_comparison: bool = false
+
+
         const enum DifferentialResourceDifferenceKind of u8:
             Equal
             Unknown
@@ -4708,6 +4745,454 @@ module EsDifferential:
             plan.has_candidate_restoration <- true
             plan.state <- DifferentialWorldMaterializationState.Restored
             return DifferentialWorldMaterializationCheck{valid: true, issue: DifferentialWorldMaterializationIssue.None}
+
+
+    private:
+        def differential_case_replay_manifest_matches(case: DifferentialCase&, manifest: DifferentialArtifactManifest&) -> bool error[DifferentialRunnerError] can[Memory.Allocate, Abort.Panic]:
+            return false if manifest.format_version != 5 or not differential_artifact_manifest_valid(manifest)
+            expected: DifferentialArtifactManifest = make_differential_artifact_manifest(case, manifest.module_fingerprint, manifest.module_digest_0, manifest.module_digest_1, manifest.module_digest_2, manifest.module_digest_3, manifest.module_digest_present)
+            expected_bytes: darray[u8] = canonical_differential_artifact_manifest_bytes(expected)
+            actual_bytes: darray[u8] = canonical_differential_artifact_manifest_bytes(manifest)
+            return false if expected_bytes.count == 0 or expected_bytes.count != actual_bytes.count
+            for index in 0..<expected_bytes.count |expected_bytes, actual_bytes|:
+                return false if expected_bytes[index] != actual_bytes[index]
+            return true
+
+
+        def differential_case_replay_hash_u32(hash: u64, value: u32) -> u64:
+            result: mutable u64 = hash
+            for shift in 0..<4 |result, value|:
+                result <- EsIr::canonical_artifact_hash_byte(result, (value.u64() >> (shift * 8)).u8())
+            return result
+
+
+        def differential_case_replay_hash_value(hash: u64, value: DifferentialValue) -> u64 can[Unsafe.PointerCast]:
+            result: mutable u64 = EsIr::canonical_artifact_hash_byte(hash, value.kind.u8())
+            result <- EsIr::canonical_artifact_hash_byte(result, 1 if value.boolean else 0)
+            result <- differential_world_hash_u64(result, value.integer.u64())
+            result <- differential_world_hash_u64(result, differential_float_bits(value.decimal))
+            result <- differential_world_hash_u64(result, value.process_exit_status.u64())
+            result <- differential_world_hash_text(result, value.text)
+            result <- differential_world_hash_text(result, value.process_stdout)
+            result <- differential_world_hash_text(result, value.process_stderr)
+            result <- differential_case_replay_hash_u32(result, value.array_start)
+            result <- differential_case_replay_hash_u32(result, value.array_count)
+            result <- differential_case_replay_hash_u32(result, value.map_start)
+            result <- differential_case_replay_hash_u32(result, value.map_count)
+            return result
+
+
+        def differential_case_replay_value_encoded_size(value: DifferentialValue) -> usize:
+            return 66 + sview_len(value.text) + sview_len(value.process_stdout) + sview_len(value.process_stderr)
+
+
+        def differential_case_replay_run_fingerprint(manifest: DifferentialArtifactManifest&, side: DifferentialArtifactSide, run: DifferentialRun&) -> u64 can[Unsafe.PointerCast]:
+            return 0 if not differential_artifact_manifest_valid(manifest) or not differential_artifact_side_valid(side) or not differential_run_outcome_valid(run.outcome)
+            return 0 if not differential_execution_engine_valid(run.engine)
+            return 0 if not differential_engine_metadata_valid(run)
+            manifest_fingerprint: u64 = differential_artifact_manifest_fingerprint(manifest)
+            return 0 if manifest_fingerprint == 0
+            process: DifferentialProcessStreamArtifact = DifferentialProcessStreamArtifact{manifest_fingerprint: manifest_fingerprint, side: side, outcome: run.outcome, exit_status: run.exit_status, error_text: run.error_text, stdout: run.stdout, stderr: run.stderr}
+            return 0 if not differential_process_stream_artifact_text_bytes_fits(process)
+            values: DifferentialValuePoolArtifact = DifferentialValuePoolArtifact{manifest_fingerprint: manifest_fingerprint, side: side, outcome: run.outcome, exit_status: run.exit_status, root_value: run.return_value, values: run.values, observations: run.observations}
+            return 0 if not differential_value_pool_artifact_valid(values)
+            encoded_value_bytes: mutable usize = 39
+            next_size: mutable usize = differential_case_replay_value_encoded_size(values.root_value)
+            return 0 if next_size > DIFFERENTIAL_MAX_VALUE_POOL_ARTIFACT_BYTES - encoded_value_bytes
+            encoded_value_bytes <- encoded_value_bytes + next_size
+            for value in values.values |encoded_value_bytes|:
+                next_size <- differential_case_replay_value_encoded_size(value)
+                return 0 if next_size > DIFFERENTIAL_MAX_VALUE_POOL_ARTIFACT_BYTES - encoded_value_bytes
+                encoded_value_bytes <- encoded_value_bytes + next_size
+            for observation in values.observations |encoded_value_bytes|:
+                return 0 if 8 > DIFFERENTIAL_MAX_VALUE_POOL_ARTIFACT_BYTES - encoded_value_bytes
+                encoded_value_bytes <- encoded_value_bytes + 8
+                next_size <- differential_case_replay_value_encoded_size(observation.value)
+                return 0 if next_size > DIFFERENTIAL_MAX_VALUE_POOL_ARTIFACT_BYTES - encoded_value_bytes
+                encoded_value_bytes <- encoded_value_bytes + next_size
+            fingerprint: mutable u64 = 14695981039346656037
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, 69)
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, 83)
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, 80)
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, 83)
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, 1)
+            fingerprint <- differential_world_hash_u64(fingerprint, manifest_fingerprint)
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, side.u8())
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, run.outcome.u8())
+            fingerprint <- differential_world_hash_u64(fingerprint, run.exit_status.u64())
+            fingerprint <- differential_world_hash_text(fingerprint, run.error_text)
+            fingerprint <- differential_world_hash_text(fingerprint, run.stdout)
+            fingerprint <- differential_world_hash_text(fingerprint, run.stderr)
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, 69)
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, 83)
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, 86)
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, 80)
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, 1)
+            fingerprint <- differential_world_hash_u64(fingerprint, manifest_fingerprint)
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, side.u8())
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, run.outcome.u8())
+            fingerprint <- differential_world_hash_u64(fingerprint, run.exit_status.u64())
+            fingerprint <- differential_world_hash_u64(fingerprint, values.values.count.u64())
+            fingerprint <- differential_world_hash_u64(fingerprint, values.observations.count.u64())
+            fingerprint <- differential_case_replay_hash_value(fingerprint, values.root_value)
+            for value in values.values |fingerprint|:
+                fingerprint <- differential_case_replay_hash_value(fingerprint, value)
+            for observation in values.observations |fingerprint|:
+                fingerprint <- differential_world_hash_u64(fingerprint, observation.trace)
+                fingerprint <- differential_case_replay_hash_value(fingerprint, observation.value)
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, 1 if run.engine_known else 0)
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, run.engine.u8())
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, 1 if run.capability_known else 0)
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, 1 if run.capability.direct_supported else 0)
+            fingerprint <- differential_world_hash_u64(fingerprint, run.capability.function_count)
+            fingerprint <- differential_world_hash_u64(fingerprint, run.capability.instruction_count)
+            fingerprint <- differential_world_hash_u64(fingerprint, run.capability.global_count)
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, 1 if run.resource_policy_known else 0)
+            fingerprint <- differential_world_hash_u64(fingerprint, run.resource_policy.steps)
+            fingerprint <- differential_world_hash_u64(fingerprint, run.resource_policy.elapsed_micros)
+            fingerprint <- differential_world_hash_u64(fingerprint, run.resource_policy.memory_bytes.u64())
+            fingerprint <- differential_world_hash_u64(fingerprint, run.resource_policy.open_handles.u64())
+            fingerprint <- differential_world_hash_u64(fingerprint, run.resource_policy.processes.u64())
+            fingerprint <- differential_world_hash_u64(fingerprint, run.resource_policy.output_bytes.u64())
+            fingerprint <- differential_world_hash_u64(fingerprint, run.resource_policy.regex_work)
+            fingerprint <- differential_world_hash_u64(fingerprint, run.resource_policy.retained_traces.u64())
+            fingerprint <- differential_world_hash_u64(fingerprint, run.resource_policy.concurrent_tasks.u64())
+            fingerprint <- differential_world_hash_u64(fingerprint, run.resource_usage.steps)
+            fingerprint <- differential_world_hash_u64(fingerprint, run.resource_usage.elapsed_micros)
+            fingerprint <- differential_world_hash_u64(fingerprint, run.resource_usage.memory_bytes.u64())
+            fingerprint <- differential_world_hash_u64(fingerprint, run.resource_usage.open_handles.u64())
+            fingerprint <- differential_world_hash_u64(fingerprint, run.resource_usage.processes.u64())
+            fingerprint <- differential_world_hash_u64(fingerprint, run.resource_usage.output_bytes.u64())
+            fingerprint <- differential_world_hash_u64(fingerprint, run.resource_usage.regex_work)
+            fingerprint <- differential_world_hash_u64(fingerprint, run.resource_usage.retained_traces.u64())
+            fingerprint <- differential_world_hash_u64(fingerprint, run.resource_usage.concurrent_tasks.u64())
+            return fingerprint
+
+
+        def differential_runner_configuration_fingerprint(runner: DifferentialRunner&) -> u64:
+            handler_module: EsIr::Module = EsIr::Module{name: "differential-runner-handlers", functions: [], handlers: runner.handlers}
+            handler_fingerprint: u64 = EsIr::module_fingerprint(handler_module)
+            return 0 if handler_fingerprint == 0
+            fingerprint: mutable u64 = 14695981039346656037
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, runner.kind.u8())
+            fingerprint <- differential_world_hash_text(fingerprint, runner.name)
+            fingerprint <- differential_world_hash_text(fingerprint, runner.target)
+            fingerprint <- differential_world_hash_text(fingerprint, runner.entry)
+            fingerprint <- differential_world_hash_u64(fingerprint, runner.arguments.count.u64())
+            for argument in runner.arguments |fingerprint|:
+                fingerprint <- differential_world_hash_text(fingerprint, argument)
+            fingerprint <- differential_world_hash_text(fingerprint, runner.working_directory)
+            fingerprint <- differential_world_hash_u64(fingerprint, runner.environment.count.u64())
+            for entry in runner.environment |fingerprint|:
+                fingerprint <- differential_world_hash_text(fingerprint, entry.name)
+                fingerprint <- differential_world_hash_text(fingerprint, entry.value)
+            fingerprint <- differential_world_hash_text(fingerprint, runner.stdin)
+            fingerprint <- differential_world_hash_bytes(fingerprint, runner.stdin_bytes)
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, 1 if runner.stdin_binary else 0)
+            fingerprint <- differential_world_hash_text(fingerprint, runner.protocol)
+            fingerprint <- differential_world_hash_u64(fingerprint, runner.timeout_steps)
+            fingerprint <- differential_world_hash_u64(fingerprint, runner.max_output_bytes)
+            fingerprint <- differential_world_hash_u64(fingerprint, runner.required_effects.count.u64())
+            for effect in runner.required_effects |fingerprint|:
+                fingerprint <- differential_world_hash_text(fingerprint, effect)
+            fingerprint <- differential_world_hash_u64(fingerprint, runner.required_errors.count.u64())
+            for error_name in runner.required_errors |fingerprint|:
+                fingerprint <- differential_world_hash_text(fingerprint, error_name)
+            fingerprint <- differential_world_hash_u64(fingerprint, handler_fingerprint)
+            return fingerprint
+
+
+        def differential_case_replay_copy_root_binding(root: sview) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+            binding: mutable darray[u8] = []
+            for byte in root |binding|:
+                binding.push(byte)
+            return binding
+
+
+        def differential_case_replay_root_binding_matches(root: sview, binding: darray[u8]&) -> bool:
+            return false if sview_len(root) != binding.count
+            for index in 0..<binding.count |root, binding|:
+                return false if sview_at(root, index) != binding[index]
+            return true
+
+
+        def differential_case_replay_components_synchronized(session: DifferentialCaseReplaySession&) -> bool error[EsDifferentialReplay::DifferentialReplayError]:
+            try EsDifferentialReplay::validate_differential_replay_session(session.replay)
+            return false if not differential_world_materialization_plan_valid(session.materialization)
+            return false if session.materialization.snapshot_fingerprint != session.world_snapshot.world_fingerprint
+            return false if session.has_reference_run != session.replay.has_reference or session.has_candidate_run != session.replay.has_candidate or session.has_comparison != session.replay.has_comparison
+            return false if session.has_reference_run != (session.reference_run_fingerprint != 0) or session.has_candidate_run != (session.candidate_run_fingerprint != 0)
+            return false if session.has_reference_run and session.reference_run_fingerprint != session.replay.reference_run_fingerprint
+            return false if session.has_candidate_run and session.candidate_run_fingerprint != session.replay.candidate_run_fingerprint
+            match session.replay.state:
+                EsDifferentialReplay::DifferentialReplayState.Planned:
+                    return false if session.materialization.state != DifferentialWorldMaterializationState.Planned
+                EsDifferentialReplay::DifferentialReplayState.Admitted:
+                    return false if session.materialization.state != DifferentialWorldMaterializationState.Planned
+                EsDifferentialReplay::DifferentialReplayState.Materializing:
+                    return false if session.materialization.state != DifferentialWorldMaterializationState.Materializing
+                EsDifferentialReplay::DifferentialReplayState.Running:
+                    return false if session.materialization.state != DifferentialWorldMaterializationState.Running
+                EsDifferentialReplay::DifferentialReplayState.Comparing:
+                    return false if session.materialization.state != DifferentialWorldMaterializationState.Running
+                EsDifferentialReplay::DifferentialReplayState.Restoring:
+                    return false if session.materialization.state != DifferentialWorldMaterializationState.Restoring
+                EsDifferentialReplay::DifferentialReplayState.Completed:
+                    return false if session.materialization.state != DifferentialWorldMaterializationState.Restored
+                EsDifferentialReplay::DifferentialReplayState.Failed:
+                    return false if session.replay.has_materialization_attempt and (session.materialization.state != DifferentialWorldMaterializationState.Restored or not session.replay.has_restoration)
+                    return false if not session.replay.has_materialization_attempt and session.materialization.state != DifferentialWorldMaterializationState.Planned
+                EsDifferentialReplay::DifferentialReplayState.Cancelled:
+                    return false if session.replay.has_materialization_attempt and (session.materialization.state != DifferentialWorldMaterializationState.Restored or not session.replay.has_restoration)
+                    return false if not session.replay.has_materialization_attempt and session.materialization.state != DifferentialWorldMaterializationState.Planned
+                _:
+                    return false
+            return true
+
+
+        def differential_case_replay_session_valid(case: DifferentialCase&, session: DifferentialCaseReplaySession&) -> bool error[DifferentialRunnerError, EsDifferentialReplay::DifferentialReplayError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            return false if session.format_version != 1
+            return false if not differential_case_replay_manifest_matches(case, session.manifest)
+            return false if not validate_differential_world_snapshot(case.world, session.world_snapshot).valid
+            return false if session.replay.expected_manifest_fingerprint != differential_artifact_manifest_fingerprint(session.manifest)
+            return false if session.replay.expected_world_fingerprint != session.world_snapshot.world_fingerprint
+            return false if session.case_timeout_steps != case.timeout_steps or session.case_max_output_bytes != case.max_output_bytes
+            return false if session.reference_runner_fingerprint == 0 or session.candidate_runner_fingerprint == 0
+            return false if session.reference_runner_fingerprint != differential_runner_configuration_fingerprint(case.reference) or session.candidate_runner_fingerprint != differential_runner_configuration_fingerprint(case.candidate)
+            return false if not differential_case_replay_root_binding_matches(session.materialization.reference_root, session.reference_root_binding) or not differential_case_replay_root_binding_matches(session.materialization.candidate_root, session.candidate_root_binding)
+            components_synchronized: bool = try differential_case_replay_components_synchronized(session)
+            return false if not components_synchronized
+            return false if session.has_reference_run and differential_case_replay_run_fingerprint(session.manifest, DifferentialArtifactSide.Reference, session.reference_run) != session.reference_run_fingerprint
+            return false if session.has_candidate_run and differential_case_replay_run_fingerprint(session.manifest, DifferentialArtifactSide.Candidate, session.candidate_run) != session.candidate_run_fingerprint
+            return false if session.has_comparison and session.comparison.equal and session.comparison.kind != DifferentialDifferenceKind.Equal
+            return false if session.has_comparison and not session.comparison.equal and session.comparison.kind == DifferentialDifferenceKind.Equal
+            if session.has_comparison:
+                artifact: DifferentialComparisonArtifact = make_differential_comparison_artifact(session.manifest, session.comparison)
+                return false if differential_comparison_artifact_fingerprint(artifact) != session.replay.comparison_fingerprint
+            return true
+
+
+        def differential_case_replay_side_identity(side: DifferentialCaseSide) -> EsDifferentialReplay::DifferentialReplaySide error[DifferentialCaseReplayError]:
+            match side:
+                DifferentialCaseSide.Reference:
+                    return EsDifferentialReplay::DifferentialReplaySide.Reference
+                DifferentialCaseSide.Candidate:
+                    return EsDifferentialReplay::DifferentialReplaySide.Candidate
+                _:
+                    raise DifferentialCaseReplayError.InvalidCase
+
+
+        def differential_case_replay_expected_side(session: DifferentialCaseReplaySession&) -> EsDifferentialReplay::DifferentialReplaySide error[EsDifferentialReplay::DifferentialReplayError]:
+            match session.replay.order:
+                EsDifferentialReplay::DifferentialReplayOrder.ReferenceThenCandidate:
+                    match session.replay.next_run:
+                        0:
+                            return EsDifferentialReplay::DifferentialReplaySide.Reference
+                        1:
+                            return EsDifferentialReplay::DifferentialReplaySide.Candidate
+                        _:
+                            raise EsDifferentialReplay::DifferentialReplayError.RunLimitExceeded
+                EsDifferentialReplay::DifferentialReplayOrder.CandidateThenReference:
+                    match session.replay.next_run:
+                        0:
+                            return EsDifferentialReplay::DifferentialReplaySide.Candidate
+                        1:
+                            return EsDifferentialReplay::DifferentialReplaySide.Reference
+                        _:
+                            raise EsDifferentialReplay::DifferentialReplayError.RunLimitExceeded
+                _:
+                    raise EsDifferentialReplay::DifferentialReplayError.InvalidOrder
+
+
+        def request_differential_case_replay_termination(session: mutable DifferentialCaseReplaySession&, disposition: EsDifferentialReplay::DifferentialReplayDisposition) -> EsDifferentialReplay::DifferentialReplayState error[EsDifferentialReplay::DifferentialReplayError]:
+            components_synchronized: bool = try differential_case_replay_components_synchronized(session)
+            raise EsDifferentialReplay::DifferentialReplayError.InvalidState if not components_synchronized
+            cleanup_needed: mutable bool = false
+            match session.replay.state:
+                EsDifferentialReplay::DifferentialReplayState.Planned:
+                    cleanup_needed <- false
+                EsDifferentialReplay::DifferentialReplayState.Admitted:
+                    cleanup_needed <- false
+                EsDifferentialReplay::DifferentialReplayState.Materializing:
+                    cleanup_needed <- true
+                EsDifferentialReplay::DifferentialReplayState.Running:
+                    cleanup_needed <- true
+                EsDifferentialReplay::DifferentialReplayState.Comparing:
+                    cleanup_needed <- true
+                EsDifferentialReplay::DifferentialReplayState.Restoring:
+                    cleanup_needed <- false
+                _:
+                    raise EsDifferentialReplay::DifferentialReplayError.InvalidState
+            raise EsDifferentialReplay::DifferentialReplayError.TerminationAlreadyRequested if session.replay.disposition != EsDifferentialReplay::DifferentialReplayDisposition.Normal
+            if cleanup_needed:
+                raise EsDifferentialReplay::DifferentialReplayError.InvalidState if not differential_world_materialization_transition_allowed(session.materialization.state, DifferentialWorldMaterializationState.Restoring)
+            raise EsDifferentialReplay::DifferentialReplayError.InvalidState if disposition != EsDifferentialReplay::DifferentialReplayDisposition.Failed and disposition != EsDifferentialReplay::DifferentialReplayDisposition.Cancelled
+            if cleanup_needed:
+                cleanup: DifferentialWorldMaterializationCheck = advance_differential_world_materialization(session.materialization, DifferentialWorldMaterializationState.Restoring)
+                raise EsDifferentialReplay::DifferentialReplayError.InvalidState if not cleanup.valid
+            match disposition:
+                EsDifferentialReplay::DifferentialReplayDisposition.Failed:
+                    _ = EsDifferentialReplay::advance_differential_replay(session.replay, EsDifferentialReplay::DifferentialReplayEvent.Fail)
+                EsDifferentialReplay::DifferentialReplayDisposition.Cancelled:
+                    _ = EsDifferentialReplay::advance_differential_replay(session.replay, EsDifferentialReplay::DifferentialReplayEvent.Cancel)
+                _:
+                    raise EsDifferentialReplay::DifferentialReplayError.InvalidState
+            return session.replay.state
+
+
+    public:
+        # Create a typed, case-bound paired-run lifecycle. The host adapter still
+        # performs all filesystem/process work; this record binds its evidence,
+        # run order, comparator, observation schema, and cleanup acknowledgments.
+        def make_differential_case_replay_session(case: DifferentialCase&, order: EsDifferentialReplay::DifferentialReplayOrder, reference_root: sview, candidate_root: sview) -> DifferentialCaseReplaySession error[DifferentialRunnerError, DifferentialCaseReplayError] can[Memory.Allocate, Abort.Panic]:
+            case_check: DifferentialCaseCheck = validate_differential_case(case)
+            raise DifferentialCaseReplayError.InvalidCase if not case_check.valid
+            raise DifferentialCaseReplayError.InvalidOrder if order != EsDifferentialReplay::DifferentialReplayOrder.ReferenceThenCandidate and order != EsDifferentialReplay::DifferentialReplayOrder.CandidateThenReference
+            snapshot: DifferentialWorldSnapshot = make_differential_world_snapshot(case.world)
+            manifest: DifferentialArtifactManifest = make_differential_artifact_manifest(case)
+            manifest_fingerprint: u64 = differential_artifact_manifest_fingerprint(manifest)
+            raise DifferentialRunnerError.Invalid if manifest_fingerprint == 0
+            reference_runner_fingerprint: u64 = differential_runner_configuration_fingerprint(case.reference)
+            candidate_runner_fingerprint: u64 = differential_runner_configuration_fingerprint(case.candidate)
+            raise DifferentialRunnerError.Invalid if reference_runner_fingerprint == 0 or candidate_runner_fingerprint == 0
+            materialization: DifferentialWorldMaterializationPlan = make_differential_world_materialization_plan(snapshot, reference_root, candidate_root)
+            replay: EsDifferentialReplay::DifferentialReplaySession = EsDifferentialReplay::DifferentialReplaySession{expected_manifest_fingerprint: manifest_fingerprint, expected_world_fingerprint: snapshot.world_fingerprint, order: order}
+            session: DifferentialCaseReplaySession = DifferentialCaseReplaySession{manifest: manifest, world_snapshot: snapshot, materialization: materialization, reference_root_binding: differential_case_replay_copy_root_binding(reference_root), candidate_root_binding: differential_case_replay_copy_root_binding(candidate_root), reference_runner_fingerprint: reference_runner_fingerprint, candidate_runner_fingerprint: candidate_runner_fingerprint, case_timeout_steps: case.timeout_steps, case_max_output_bytes: case.max_output_bytes, replay: replay}
+            raise DifferentialCaseReplayError.InvalidSession if not differential_case_replay_session_valid(case, session)
+            return session
+
+
+        def validate_differential_case_replay_session(case: DifferentialCase&, session: DifferentialCaseReplaySession&) -> bool error[DifferentialRunnerError, EsDifferentialReplay::DifferentialReplayError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            return differential_case_replay_session_valid(case, session)
+
+
+        # Return borrowed views of the session-owned root bytes. Host adapters
+        # should use these stable bindings for filesystem work instead of
+        # retaining caller-provided path views.
+        def differential_case_replay_bound_reference_root(session: DifferentialCaseReplaySession&) -> sview error[DifferentialCaseReplayError]:
+            root: sview = bytes_view(session.reference_root_binding)
+            raise DifferentialCaseReplayError.InvalidSession if not differential_world_materialization_root_valid(root)
+            return root
+
+
+        def differential_case_replay_bound_candidate_root(session: DifferentialCaseReplaySession&) -> sview error[DifferentialCaseReplayError]:
+            root: sview = bytes_view(session.candidate_root_binding)
+            raise DifferentialCaseReplayError.InvalidSession if not differential_world_materialization_root_valid(root)
+            return root
+
+
+        def admit_differential_case_replay(case: DifferentialCase&, session: mutable DifferentialCaseReplaySession&) -> EsDifferentialReplay::DifferentialReplayState error[DifferentialRunnerError, DifferentialCaseReplayError, EsDifferentialReplay::DifferentialReplayError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            raise DifferentialCaseReplayError.InvalidSession if not differential_case_replay_session_valid(case, session)
+            fingerprint: u64 = differential_artifact_manifest_fingerprint(session.manifest)
+            return try EsDifferentialReplay::advance_differential_replay(session.replay, EsDifferentialReplay::DifferentialReplayEvent.Admit, fingerprint)
+
+
+        def begin_differential_case_replay_materialization(case: DifferentialCase&, session: mutable DifferentialCaseReplaySession&) -> EsDifferentialReplay::DifferentialReplayState error[DifferentialRunnerError, DifferentialCaseReplayError, EsDifferentialReplay::DifferentialReplayError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            raise DifferentialCaseReplayError.InvalidSession if not differential_case_replay_session_valid(case, session)
+            _ = EsDifferentialReplay::advance_differential_replay(session.replay, EsDifferentialReplay::DifferentialReplayEvent.Materialize)
+            materializing: DifferentialWorldMaterializationCheck = advance_differential_world_materialization(session.materialization, DifferentialWorldMaterializationState.Materializing)
+            raise DifferentialCaseReplayError.InvalidSession if not materializing.valid
+            return session.replay.state
+
+
+        # Call only after the adapter has prepared both isolated roots. The typed
+        # declarations and lifecycle are checked here; actual filesystem writes
+        # remain the adapter's responsibility.
+        def mark_differential_case_worlds_ready(case: DifferentialCase&, session: mutable DifferentialCaseReplaySession&, reference_world: DifferentialWorld&, candidate_world: DifferentialWorld&) -> EsDifferentialReplay::DifferentialReplayState error[DifferentialRunnerError, DifferentialCaseReplayError, EsDifferentialReplay::DifferentialReplayError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            raise DifferentialCaseReplayError.InvalidSession if not differential_case_replay_session_valid(case, session)
+            reference_check: DifferentialWorldMaterializationCheck = validate_differential_world_materialization(session.materialization, session.world_snapshot, reference_world)
+            raise DifferentialCaseReplayError.InvalidSession if not reference_check.valid
+            candidate_check: DifferentialWorldMaterializationCheck = validate_differential_world_materialization(session.materialization, session.world_snapshot, candidate_world)
+            raise DifferentialCaseReplayError.InvalidSession if not candidate_check.valid
+            materialized: DifferentialWorldMaterializationCheck = advance_differential_world_materialization(session.materialization, DifferentialWorldMaterializationState.Materialized)
+            raise DifferentialCaseReplayError.InvalidSession if not materialized.valid
+            _ = EsDifferentialReplay::advance_differential_replay(session.replay, EsDifferentialReplay::DifferentialReplayEvent.WorldReady, session.world_snapshot.world_fingerprint)
+            running: DifferentialWorldMaterializationCheck = advance_differential_world_materialization(session.materialization, DifferentialWorldMaterializationState.Running)
+            raise DifferentialCaseReplayError.InvalidSession if not running.valid
+            return session.replay.state
+
+
+        def prepare_differential_case_replay_runner(case: DifferentialCase&, session: DifferentialCaseReplaySession&, side: DifferentialCaseSide) -> DifferentialRunner error[DifferentialRunnerError, DifferentialCaseReplayError, EsDifferentialReplay::DifferentialReplayError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            raise DifferentialCaseReplayError.InvalidSession if not differential_case_replay_session_valid(case, session)
+            raise DifferentialCaseReplayError.RunnerNotReady if session.replay.state != EsDifferentialReplay::DifferentialReplayState.Running or session.materialization.state != DifferentialWorldMaterializationState.Running
+            expected: EsDifferentialReplay::DifferentialReplaySide = try differential_case_replay_expected_side(session)
+            selected: EsDifferentialReplay::DifferentialReplaySide = try differential_case_replay_side_identity(side)
+            raise DifferentialCaseReplayError.RunOrderInvalid if selected != expected
+            return try prepare_differential_case_runner(case, side)
+
+
+        def complete_differential_case_replay_run(case: DifferentialCase&, session: mutable DifferentialCaseReplaySession&, side: DifferentialCaseSide, run: DifferentialRun&) -> EsDifferentialReplay::DifferentialReplayState error[DifferentialRunnerError, DifferentialCaseReplayError, EsDifferentialReplay::DifferentialReplayError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            raise DifferentialCaseReplayError.InvalidSession if not differential_case_replay_session_valid(case, session)
+            raise DifferentialCaseReplayError.RunnerNotReady if session.replay.state != EsDifferentialReplay::DifferentialReplayState.Running or session.materialization.state != DifferentialWorldMaterializationState.Running
+            side_identity: EsDifferentialReplay::DifferentialReplaySide = try differential_case_replay_side_identity(side)
+            expected: EsDifferentialReplay::DifferentialReplaySide = try differential_case_replay_expected_side(session)
+            raise DifferentialCaseReplayError.RunOrderInvalid if side_identity != expected
+            artifact_side: DifferentialArtifactSide = DifferentialArtifactSide.Reference if side_identity == EsDifferentialReplay::DifferentialReplaySide.Reference else DifferentialArtifactSide.Candidate
+            run_fingerprint: u64 = differential_case_replay_run_fingerprint(session.manifest, artifact_side, run)
+            raise DifferentialCaseReplayError.InvalidSession if run_fingerprint == 0
+            if side_identity == EsDifferentialReplay::DifferentialReplaySide.Reference:
+                session.reference_run <- run
+            else:
+                session.candidate_run <- run
+            next_state: EsDifferentialReplay::DifferentialReplayState = EsDifferentialReplay::advance_differential_replay(session.replay, EsDifferentialReplay::DifferentialReplayEvent.RunComplete, run_fingerprint, side_identity)
+            if side_identity == EsDifferentialReplay::DifferentialReplaySide.Reference:
+                session.reference_run_fingerprint <- run_fingerprint
+                session.has_reference_run <- true
+            else:
+                session.candidate_run_fingerprint <- run_fingerprint
+                session.has_candidate_run <- true
+            return next_state
+
+
+        # Case-aware comparison is the only comparison path exposed by this
+        # paired lifecycle. It must complete before restoration can finish;
+        # adapters should publish no artifact until the session is Completed.
+        def compare_differential_case_replay(case: DifferentialCase&, session: mutable DifferentialCaseReplaySession&) -> EsDifferentialReplay::DifferentialReplayState error[DifferentialRunnerError, DifferentialCaseReplayError, EsDifferentialReplay::DifferentialReplayError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            raise DifferentialCaseReplayError.InvalidSession if not differential_case_replay_session_valid(case, session)
+            raise DifferentialCaseReplayError.ComparisonNotReady if session.replay.state != EsDifferentialReplay::DifferentialReplayState.Comparing or not session.has_reference_run or not session.has_candidate_run
+            raise DifferentialCaseReplayError.InvalidSession if differential_case_replay_run_fingerprint(session.manifest, DifferentialArtifactSide.Reference, session.reference_run) != session.reference_run_fingerprint or differential_case_replay_run_fingerprint(session.manifest, DifferentialArtifactSide.Candidate, session.candidate_run) != session.candidate_run_fingerprint
+            comparison: DifferentialComparison = compare_differential_case_runs(case, session.reference_run, session.candidate_run)
+            comparison_artifact: DifferentialComparisonArtifact = make_differential_comparison_artifact(session.manifest, comparison)
+            comparison_fingerprint: u64 = differential_comparison_artifact_fingerprint(comparison_artifact)
+            raise DifferentialCaseReplayError.InvalidSession if comparison_fingerprint == 0
+            _ = EsDifferentialReplay::advance_differential_replay(session.replay, EsDifferentialReplay::DifferentialReplayEvent.CompareComplete, comparison_fingerprint)
+            restoring: DifferentialWorldMaterializationCheck = advance_differential_world_materialization(session.materialization, DifferentialWorldMaterializationState.Restoring)
+            raise DifferentialCaseReplayError.InvalidSession if not restoring.valid
+            session.comparison <- comparison
+            session.has_comparison <- true
+            return session.replay.state
+
+
+        def fail_differential_case_replay(session: mutable DifferentialCaseReplaySession&) -> EsDifferentialReplay::DifferentialReplayState error[EsDifferentialReplay::DifferentialReplayError]:
+            return try request_differential_case_replay_termination(session, EsDifferentialReplay::DifferentialReplayDisposition.Failed)
+
+
+        def cancel_differential_case_replay(session: mutable DifferentialCaseReplaySession&) -> EsDifferentialReplay::DifferentialReplayState error[EsDifferentialReplay::DifferentialReplayError]:
+            return try request_differential_case_replay_termination(session, EsDifferentialReplay::DifferentialReplayDisposition.Cancelled)
+
+
+        def restore_differential_case_replay_worlds(case: DifferentialCase&, session: mutable DifferentialCaseReplaySession&, reference_restored_world: DifferentialWorld&, candidate_restored_world: DifferentialWorld&) -> DifferentialWorldMaterializationCheck error[DifferentialRunnerError, DifferentialCaseReplayError, EsDifferentialReplay::DifferentialReplayError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            if session.replay.state == EsDifferentialReplay::DifferentialReplayState.Restoring and session.materialization.state == DifferentialWorldMaterializationState.Restoring:
+                cleanup_state_valid: bool = try differential_case_replay_components_synchronized(session)
+                raise DifferentialCaseReplayError.InvalidSession if not cleanup_state_valid
+            else:
+                raise DifferentialCaseReplayError.InvalidSession if not differential_case_replay_session_valid(case, session)
+                raise DifferentialCaseReplayError.ArtifactNotReady
+            restored: DifferentialWorldMaterializationCheck = complete_differential_world_restoration(session.materialization, session.world_snapshot, reference_restored_world, candidate_restored_world)
+            return restored if not restored.valid
+            _ = EsDifferentialReplay::advance_differential_replay(session.replay, EsDifferentialReplay::DifferentialReplayEvent.RestoreComplete, session.world_snapshot.world_fingerprint)
+            return restored
+
+
+        def differential_case_replay_comparison(case: DifferentialCase&, session: DifferentialCaseReplaySession&) -> DifferentialComparison error[DifferentialRunnerError, DifferentialCaseReplayError, EsDifferentialReplay::DifferentialReplayError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            raise DifferentialCaseReplayError.InvalidSession if not differential_case_replay_session_valid(case, session)
+            raise DifferentialCaseReplayError.ArtifactNotReady if session.replay.state != EsDifferentialReplay::DifferentialReplayState.Completed or session.materialization.state != DifferentialWorldMaterializationState.Restored or not session.has_comparison
+            return session.comparison
+
+
+        def make_differential_case_replay_comparison_artifact(case: DifferentialCase&, session: DifferentialCaseReplaySession&) -> DifferentialComparisonArtifact error[DifferentialRunnerError, DifferentialCaseReplayError, EsDifferentialReplay::DifferentialReplayError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            comparison: DifferentialComparison = try differential_case_replay_comparison(case, session)
+            return try make_differential_comparison_artifact(session.manifest, comparison)
 
 
     public:

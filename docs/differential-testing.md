@@ -127,10 +127,11 @@ reported as `DifferentialDifferenceKind.CaseInvalid`. These new report kinds
 use ESCR version 3 while version-2 reports remain readable.
 The library currently exposes single-run adapters and has no paired case
 orchestrator. A host adapter making a case-level parity claim must call the
-case-aware comparator after both prepared sides have produced runs (and the
-case world has been restored/validated), before it creates comparison
-artifacts. The generic captured-run shrinker remains case-agnostic; it cannot
-prove a case schema without receiving the case itself.
+case-aware comparator after both prepared sides have produced runs. The replay
+lifecycle compares while the captured runs are retained, then requires world
+restoration before exposing the comparison artifact or completing the session.
+The generic captured-run shrinker remains case-agnostic; it cannot prove a case
+schema without receiving the case itself.
 
 Process invocations also distinguish text stdin from an owned binary stdin buffer.
 `stdin_binary` is required for byte payloads, mixed text/byte inputs are rejected,
@@ -781,6 +782,26 @@ Conflicting termination requests, rejected order, stale admission, wrong-world,
 missing-comparison, forged phase flags, and failed-restore edges remain typed
 state errors. The contract does not launch the reproduction entry or perform
 cleanup itself.
+
+`DifferentialCaseReplaySession` composes that lifecycle with a validated
+`DifferentialCase`, its exact ESDF v5 manifest, the world snapshot, and the two-
+root materialization plan. The adapter admits the case, records materialization
+before host mutation, acknowledges both ready roots, obtains sides only in the
+declared order, and submits typed completed runs. The coordinator computes run
+identities from bounded process/value-pool artifacts and all capability and
+resource metadata, and binds the session to both runner configurations, case
+limits, and owned root-byte snapshots. Adapters can obtain borrowed views of
+those stable roots for host I/O instead of retaining caller-provided path
+views. It routes the paired comparison through
+`compare_differential_case_runs`, including the observation schema. Success,
+failure, and cancellation after materialization enter cleanup; mismatched
+composite state is rejected before termination changes either lifecycle.
+Retained run evidence is re-fingerprinted on validation, so post-comparison
+mutation prevents artifact access. A rejected restore remains retryable.
+Comparison-artifact access is withheld until both restored-world declarations
+match the snapshot and the replay reaches `Completed`. These APIs coordinate
+and validate adapter claims; they do not create directories, launch processes,
+or prove host I/O provenance.
 
 `EsDifferentialRedaction::DifferentialRedactionPolicy` is the explicit secret
 boundary for environment metadata captured into artifacts. Policies select exact
