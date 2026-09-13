@@ -942,11 +942,23 @@ module EsBytecode:
             return type.kind == TypeKind.Int and (type.bits == 64 or type.bits == 8)
 
 
-        def bytecode_direct_global_type(type: Type&) -> bool:
+        def bytecode_direct_global_scalar_type(type: Type&) -> bool:
             return true if type.kind in {TypeKind.Bool, TypeKind.Text, TypeKind.Char}
             return true if type.kind == TypeKind.Named and type.name in {"Path", "Glob", "Regex", "Executable", "Url"}
             return true if type.kind == TypeKind.Float and type.bits == 64
             return type.kind == TypeKind.Int and (type.bits == 64 or type.bits == 8)
+
+
+        def bytecode_direct_global_type(type: Type&) -> bool:
+            return true if bytecode_direct_global_scalar_type(type)
+            if type.kind == TypeKind.Array:
+                element_type: Type = Type{kind: type.element_kind, name: type.element_name, bits: type.element_bits, signed: type.element_signed}
+                return bytecode_direct_global_scalar_type(element_type)
+            if type.kind == TypeKind.Map:
+                key_type: Type = Type{kind: type.element_kind, name: type.element_name, bits: type.element_bits, signed: type.element_signed}
+                value_type: Type = Type{kind: type.element_element_kind, name: type.element_element_name, bits: type.element_element_bits, signed: type.element_element_signed}
+                return bytecode_direct_global_scalar_type(key_type) and bytecode_direct_global_scalar_type(value_type)
+            return false
 
 
         def bytecode_direct_global_integer_fits(value: i64, type: Type&) -> bool:
@@ -964,11 +976,38 @@ module EsBytecode:
             return value.kind == RuntimeValueKind.Float if type.kind == TypeKind.Float and type.bits == 64
             return value.kind == RuntimeValueKind.Text if type.kind in {TypeKind.Text, TypeKind.Char}
             return value.kind == RuntimeValueKind.Text if type.kind == TypeKind.Named and type.name in {"Path", "Glob", "Regex", "Executable", "Url"}
+            return value.kind == RuntimeValueKind.Array if type.kind == TypeKind.Array
+            return value.kind == RuntimeValueKind.Map if type.kind == TypeKind.Map
             return false
 
 
+        def bytecode_direct_global_literal_supported(literal: GlobalLiteral, type: Type&) -> bool:
+            return false if literal.kind != type.kind
+            return bytecode_direct_global_integer_fits(literal.integer, type) if type.kind == TypeKind.Int
+            if type.kind == TypeKind.Float:
+                _ = try EsIr::parse_float_value(literal.decimal) else return false
+            return true if type.kind in {TypeKind.Bool, TypeKind.Text, TypeKind.Char}
+            return type.kind == TypeKind.Named and type.name in {"Path", "Glob", "Regex", "Executable", "Url"}
+
+
         def bytecode_direct_global_initializer_supported(binding: Global) -> bool:
-            return false if not bytecode_direct_global_type(binding.type) or binding.aggregate_values.count != 0
+            return false if not bytecode_direct_global_type(binding.type)
+            if binding.type.kind == TypeKind.Array:
+                return true if not binding.initialized
+                element_type: Type = Type{kind: binding.type.element_kind, name: binding.type.element_name, bits: binding.type.element_bits, signed: binding.type.element_signed}
+                for literal in binding.aggregate_values |element_type|:
+                    return false if not bytecode_direct_global_literal_supported(literal, element_type)
+                return true
+            if binding.type.kind == TypeKind.Map:
+                return true if not binding.initialized
+                return false if binding.aggregate_values.count % 2 != 0
+                key_type: Type = Type{kind: binding.type.element_kind, name: binding.type.element_name, bits: binding.type.element_bits, signed: binding.type.element_signed}
+                value_type: Type = Type{kind: binding.type.element_element_kind, name: binding.type.element_element_name, bits: binding.type.element_element_bits, signed: binding.type.element_element_signed}
+                for index in 0..<binding.aggregate_values.count |binding, key_type, value_type|:
+                    expected_type: Type = key_type if index % 2 == 0 else value_type
+                    return false if not bytecode_direct_global_literal_supported(binding.aggregate_values[index], expected_type)
+                return true
+            return false if binding.aggregate_values.count != 0
             return true if not binding.initialized
             return bytecode_direct_global_integer_fits(binding.integer, binding.type) if binding.type.kind == TypeKind.Int
             if binding.type.kind == TypeKind.Float:
@@ -976,8 +1015,31 @@ module EsBytecode:
             return true
 
 
-        def bytecode_direct_global_value(binding: Global) -> RuntimeValue error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+        def bytecode_direct_global_literal_value(literal: GlobalLiteral) -> RuntimeValue error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+            return runtime_bool(literal.boolean) if literal.kind == TypeKind.Bool
+            return runtime_int(literal.integer) if literal.kind == TypeKind.Int
+            if literal.kind == TypeKind.Float:
+                return runtime_float(try EsIr::parse_float_value(literal.decimal))
+            return runtime_text(try EsIr::decode_literal_text_value(literal.text)) if literal.kind in {TypeKind.Text, TypeKind.Char, TypeKind.Named}
+            raise InterpretError.UnsupportedInstruction
+
+
+        def bytecode_direct_global_value(binding: Global, storage: mutable darray[RuntimeValue]&) -> RuntimeValue error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             raise InterpretError.UnsupportedInstruction if not bytecode_direct_global_initializer_supported(binding)
+            if binding.type.kind == TypeKind.Array:
+                return runtime_array(0, 0) if not binding.initialized
+                raise InterpretError.IntegerOverflow if not runtime_storage_span_u32_valid(storage, binding.aggregate_values.count)
+                start: u32 = storage.count.u32()
+                for literal in binding.aggregate_values |storage|:
+                    storage.push(try bytecode_direct_global_literal_value(literal))
+                return runtime_array(start, binding.aggregate_values.count.u32())
+            if binding.type.kind == TypeKind.Map:
+                return runtime_map(0, 0) if not binding.initialized
+                raise InterpretError.IntegerOverflow if not runtime_storage_span_u32_valid(storage, binding.aggregate_values.count)
+                start: u32 = storage.count.u32()
+                for literal in binding.aggregate_values |storage|:
+                    storage.push(try bytecode_direct_global_literal_value(literal))
+                return runtime_map(start, (binding.aggregate_values.count / 2).u32())
             if binding.type.kind == TypeKind.Bool:
                 return runtime_bool(binding.boolean) if binding.initialized else runtime_bool(false)
             if binding.type.kind == TypeKind.Int:
@@ -993,12 +1055,12 @@ module EsBytecode:
             raise InterpretError.UnsupportedInstruction
 
 
-        def bytecode_direct_global_values(module: BytecodeModule&) -> darray[RuntimeValue] error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+        def bytecode_direct_global_values(module: BytecodeModule&, storage: mutable darray[RuntimeValue]&) -> darray[RuntimeValue] error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             raise InterpretError.OutputLimit if module.globals.count > ES_RUNTIME_DEFAULT_MAX_STORAGE_VALUES
             globals: mutable darray[RuntimeValue] = []
             globals.reserve(module.globals.count)
-            for binding in module.globals |globals|:
-                globals.push(try bytecode_direct_global_value(binding))
+            for binding in module.globals |globals, storage|:
+                globals.push(try bytecode_direct_global_value(binding, storage))
             return globals
 
 
@@ -3294,7 +3356,12 @@ module EsBytecode:
         # remains charged even when an inner frame is recovered or fails.
         def execute_bytecode_direct(module: BytecodeModule&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, step_limit: u64 = 1000000, call_depth: usize = 0, observation_limit: usize = EsIr::ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS, output_base: usize = 0) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             output_ledger: mutable usize = output_base
-            globals: mutable darray[RuntimeValue] = try bytecode_direct_global_values(module)
+            raise InterpretError.OutputLimit if step_limit > EsIr::ES_RUNTIME_DEFAULT_MAX_STEPS
+            raise InterpretError.OutputLimit if observation_limit > EsIr::ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS
+            raise InterpretError.OutputLimit if call_depth >= ES_RUNTIME_DEFAULT_MAX_EXECUTION_CALL_DEPTH
+            function_index: usize = bytecode_function_index(module, entry)
+            raise InterpretError.UnknownFunction if function_index == module.functions.count
+            globals: mutable darray[RuntimeValue] = try bytecode_direct_global_values(module, storage)
             return try execute_bytecode_direct_with_ledger(module, entry, arguments, observations, storage, globals, step_limit, call_depth, observation_limit, output_ledger)
 
 
