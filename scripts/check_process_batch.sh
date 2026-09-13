@@ -19,6 +19,7 @@ done
 rg -q '^module EsProcessBatch:' "$model"
 rg -q 'include "\.\./runtime/process_batch_model\.elisa"' "$ir"
 for declaration in \
+    'const module Limits:' \
     'const enum ProcessBatchFailureMode of u8' \
     'const enum ProcessBatchState of u8' \
     'const enum ProcessBatchJobState of u8' \
@@ -33,9 +34,9 @@ for declaration in \
 done
 
 for boundary in \
-    'PROCESS_BATCH_MAX_JOBS' \
-    'PROCESS_BATCH_MAX_PARALLEL' \
-    'PROCESS_BATCH_MAX_ATTEMPTS' \
+    'Limits::JOBS' \
+    'Limits::PARALLEL' \
+    'Limits::ATTEMPTS' \
     'process_batch_pending_index' \
     'process_batch_all_terminal' \
     'process_batch_job_requires_attempt' \

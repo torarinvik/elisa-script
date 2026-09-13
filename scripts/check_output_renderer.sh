@@ -19,7 +19,9 @@ done
 
 for declaration in \
     'module EsOutputRender:' \
-    'OUTPUT_RENDER_MAX_CHUNKS' \
+    'const module Limits:' \
+    'Limits::CHUNKS' \
+    'CHUNKS: usize = EsOutput::Limits::RECORDS + 2' \
     'const enum OutputRenderState of u8:' \
     'const enum OutputRenderEvent of u8:' \
     'struct OutputRender:' \

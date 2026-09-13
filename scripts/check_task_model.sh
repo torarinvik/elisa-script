@@ -18,9 +18,10 @@ done
 
 for declaration in \
     'module EsTask:' \
-    'TASK_MAX_CHILDREN' \
-    'TASK_MAX_MESSAGES' \
-    'TASK_MAX_MESSAGE_BYTES' \
+    'const module Limits:' \
+    'Limits::CHILDREN' \
+    'Limits::MESSAGES' \
+    'Limits::MESSAGE_BYTES' \
     'const enum TaskFailureMode of u8:' \
     'const enum TaskScopeState of u8:' \
     'const enum TaskScopeEvent of u8:' \

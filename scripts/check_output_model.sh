@@ -17,7 +17,10 @@ done
 
 for declaration in \
     'module EsOutput:' \
-    'OUTPUT_MAX_RECORDS' \
+    'const module Limits:' \
+    'Limits::RECORDS' \
+    'Limits::TEXT_BYTES' \
+    'Limits::NAME_BYTES' \
     'const enum OutputFormat of u8:' \
     'const enum OutputStatus of u8:' \
     'const enum OutputDocumentState of u8:' \

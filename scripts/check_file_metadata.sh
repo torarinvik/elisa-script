@@ -19,6 +19,7 @@ done
 rg -q '^module EsFileMetadata:' "$model"
 rg -q 'include "\.\./runtime/file_metadata_model\.elisa"' "$ir"
 for declaration in \
+    'const module Limits:' \
     'const enum FileMetadataKind of u8' \
     'const enum FileMetadataState of u8' \
     'const enum FileMetadataEvent of u8' \
@@ -33,10 +34,10 @@ for declaration in \
 done
 
 for boundary in \
-    'FILE_METADATA_MAX_ENTRIES' \
-    'FILE_METADATA_MAX_PATH_BYTES' \
-    'FILE_METADATA_MAX_TARGET_BYTES' \
-    'FILE_METADATA_MAX_TOTAL_BYTES' \
+    'Limits::ENTRIES' \
+    'Limits::PATH_BYTES' \
+    'Limits::TARGET_BYTES' \
+    'Limits::TOTAL_BYTES' \
     'file_metadata_index' \
     'allow_missing' \
     'preserve_symlink' \

@@ -18,6 +18,7 @@ done
 for declaration in \
     'module EsCsv:' \
     'using EsData' \
+    'const module Limits:' \
     'const enum CsvStreamState of u8:' \
     'PendingRecordTerminator' \
     'const enum CsvStreamEvent of u8:' \
@@ -29,6 +30,9 @@ for declaration in \
 done
 
 for boundary in \
+    'Limits::RECORDS' \
+    'Limits::FIELDS' \
+    'Limits::FIELD_BYTES' \
     'InputLimitExceeded' \
     'FieldBytesLimitExceeded' \
     'UnexpectedQuote' \
