@@ -125,6 +125,12 @@ then validates both observation streams against the case schema. A violation
 returns `DifferentialDifferenceKind.ObservationContract`; an invalid case is
 reported as `DifferentialDifferenceKind.CaseInvalid`. These new report kinds
 use ESCR version 3 while version-2 reports remain readable.
+The library currently exposes single-run adapters and has no paired case
+orchestrator. A host adapter making a case-level parity claim must call the
+case-aware comparator after both prepared sides have produced runs (and the
+case world has been restored/validated), before it creates comparison
+artifacts. The generic captured-run shrinker remains case-agnostic; it cannot
+prove a case schema without receiving the case itself.
 
 Process invocations also distinguish text stdin from an owned binary stdin buffer.
 `stdin_binary` is required for byte payloads, mixed text/byte inputs are rejected,
