@@ -51,13 +51,19 @@ module EsDifferential:
     # child-side chdir call while retaining the broader text ceiling elsewhere.
     const DIFFERENTIAL_DEFAULT_MAX_PROCESS_PATH_BYTES: usize = 4096
     const DIFFERENTIAL_DEFAULT_MAX_PROCESS_INPUT_BYTES: usize = 67108864
-    # A complete hermetic world is fingerprinted and materialized as one
-    # admission unit. Bound its aggregate payload independently from each
-    # fixture/channel limit so many individually valid entries cannot create an
-    # unbounded hash or staging workload.
-    const DIFFERENTIAL_DEFAULT_MAX_WORLD_BYTES: usize = 268435456
-    const DIFFERENTIAL_DEFAULT_MAX_WORLD_PATH_BYTES: usize = 4096
-    const DIFFERENTIAL_DEFAULT_MAX_WORLD_METADATA_BYTES: usize = 4096
+
+    const module DifferentialWorldLimits:
+        # A complete hermetic world is fingerprinted and materialized as one
+        # admission unit. Bound its aggregate payload independently from each
+        # fixture/channel limit so many individually valid entries cannot create
+        # an unbounded hash or staging workload.
+        BYTES: usize = 268435456
+        PATH_BYTES: usize = 4096
+        METADATA_BYTES: usize = 4096
+        # Snapshots duplicate the small typed record vectors while packing all
+        # strings and byte payloads into one bounded arena. Cap their combined
+        # record count so metadata remains bounded independently of payload bytes.
+        SNAPSHOT_RECORDS: usize = 1048576
 
     public:
         const enum DifferentialValueKind of u8:
@@ -566,10 +572,40 @@ module EsDifferential:
             seed: u64 = 0
 
 
+        # Snapshot strings are spans into one owned immutable-after-construction
+        # byte arena. No borrowed sview or nested caller-owned darray is retained.
+        struct DifferentialWorldSnapshotSpan:
+            start: usize = 0
+            length: usize = 0
+
+
+        struct DifferentialWorldSnapshotFile:
+            path: DifferentialWorldSnapshotSpan
+            kind: DifferentialWorldFileKind = DifferentialWorldFileKind.Text
+            payload: DifferentialWorldSnapshotSpan
+            mode: u32 = 0
+            executable: bool = false
+
+
+        struct DifferentialWorldSnapshotEnvironmentEntry:
+            name: DifferentialWorldSnapshotSpan
+            value: DifferentialWorldSnapshotSpan
+
+
         struct DifferentialWorldSnapshot:
-            format_version: u8 = 1
+            format_version: u8 = 2
             world_fingerprint: u64 = 0
-            world: DifferentialWorld
+            payload: darray[u8] = []
+            working_directory: mutable DifferentialWorldSnapshotSpan = DifferentialWorldSnapshotSpan{}
+            locale: mutable DifferentialWorldSnapshotSpan = DifferentialWorldSnapshotSpan{}
+            timezone: mutable DifferentialWorldSnapshotSpan = DifferentialWorldSnapshotSpan{}
+            stdin: mutable DifferentialWorldSnapshotSpan = DifferentialWorldSnapshotSpan{}
+            stdin_bytes: mutable DifferentialWorldSnapshotSpan = DifferentialWorldSnapshotSpan{}
+            stdin_binary: bool = false
+            argv: darray[DifferentialWorldSnapshotSpan] = []
+            environment: darray[DifferentialWorldSnapshotEnvironmentEntry] = []
+            files: darray[DifferentialWorldSnapshotFile] = []
+            seed: u64 = 0
 
 
         const enum DifferentialWorldSnapshotIssue of u8:
@@ -583,6 +619,11 @@ module EsDifferential:
             valid: mutable bool
             issue: mutable DifferentialWorldSnapshotIssue
             reason: mutable sview = ""
+
+
+        struct DifferentialWorldSnapshotView:
+            valid: bool
+            value: sview = ""
 
 
         const enum DifferentialWorldMaterializationState of u8:
@@ -1004,7 +1045,7 @@ module EsDifferential:
         # traversal, and noncanonical backslash separators before host I/O.
         def differential_world_relative_path_safe(path: sview) -> bool:
             length: usize = sview_len(path)
-            return false if length == 0 or length > DIFFERENTIAL_DEFAULT_MAX_WORLD_PATH_BYTES
+            return false if length == 0 or length > DifferentialWorldLimits::PATH_BYTES
             return false if differential_sview_has_nul(path) or sview_contains_byte(path, 92) or sview_at(path, 0) == 47
             segment_start: mutable usize = 0
             index: mutable usize = 0
@@ -1042,8 +1083,8 @@ module EsDifferential:
 
 
         def differential_world_payload_add_fits(total: mutable usize&, amount: usize) -> bool:
-            return false if total > DIFFERENTIAL_DEFAULT_MAX_WORLD_BYTES
-            return false if amount > DIFFERENTIAL_DEFAULT_MAX_WORLD_BYTES - total
+            return false if total > DifferentialWorldLimits::BYTES
+            return false if amount > DifferentialWorldLimits::BYTES - total
             total <- total + amount
             return true
 
@@ -1070,26 +1111,34 @@ module EsDifferential:
             for fixture in world.files |total|:
                 return false if not differential_world_payload_text_fits(total, fixture.path)
                 return false if not differential_world_payload_text_fits(total, fixture.contents) or not differential_world_payload_bytes_fits(total, fixture.bytes)
-            return total <= DIFFERENTIAL_DEFAULT_MAX_WORLD_BYTES
+            return total <= DifferentialWorldLimits::BYTES
+
+
+        def differential_world_snapshot_record_counts_valid(world: DifferentialWorld&) -> bool:
+            return false if world.argv.count > DifferentialWorldLimits::SNAPSHOT_RECORDS
+            remaining: mutable usize = DifferentialWorldLimits::SNAPSHOT_RECORDS - world.argv.count
+            return false if world.environment.count > remaining
+            remaining <- remaining - world.environment.count
+            return world.files.count <= remaining
 
 
         # Check only lengths before any NUL, duplicate, or path scan. This
         # keeps borrowed hostile views out of byte-walking helpers even when
         # the caller bypasses a typed world builder.
         def differential_world_text_field_lengths_valid(world: DifferentialWorld&) -> bool:
-            return false if sview_len(world.working_directory) > DIFFERENTIAL_DEFAULT_MAX_WORLD_PATH_BYTES or sview_len(world.locale) > DIFFERENTIAL_DEFAULT_MAX_WORLD_METADATA_BYTES or sview_len(world.timezone) > DIFFERENTIAL_DEFAULT_MAX_WORLD_METADATA_BYTES
+            return false if sview_len(world.working_directory) > DifferentialWorldLimits::PATH_BYTES or sview_len(world.locale) > DifferentialWorldLimits::METADATA_BYTES or sview_len(world.timezone) > DifferentialWorldLimits::METADATA_BYTES
             return false if sview_len(world.stdin) > DIFFERENTIAL_DEFAULT_MAX_PROCESS_INPUT_BYTES
             for argument in world.argv:
                 return false if sview_len(argument) > DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES
             for entry in world.environment:
                 return false if sview_len(entry.name) > DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES or sview_len(entry.value) > DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES
             for fixture in world.files:
-                return false if sview_len(fixture.path) > DIFFERENTIAL_DEFAULT_MAX_WORLD_PATH_BYTES
+                return false if sview_len(fixture.path) > DifferentialWorldLimits::PATH_BYTES
             return true
 
 
         def differential_case_name_valid(value: sview) -> bool:
-            return false if sview_len(value) == 0 or sview_len(value) > DIFFERENTIAL_DEFAULT_MAX_WORLD_METADATA_BYTES
+            return false if sview_len(value) == 0 or sview_len(value) > DifferentialWorldLimits::METADATA_BYTES
             return not differential_sview_has_nul(value)
 
 
@@ -1098,6 +1147,7 @@ module EsDifferential:
             return DifferentialCaseIssueKind.EmbeddedNul if differential_sview_has_nul(world.working_directory) or differential_sview_has_nul(world.locale) or differential_sview_has_nul(world.timezone)
             return DifferentialCaseIssueKind.InvalidWorldWorkingDirectory if world.working_directory != "" and not differential_world_relative_path_safe(world.working_directory)
             return DifferentialCaseIssueKind.InvalidLimit if sview_len(world.stdin) > DIFFERENTIAL_DEFAULT_MAX_PROCESS_INPUT_BYTES or world.files.count > DIFFERENTIAL_DEFAULT_MAX_ARGUMENTS or world.environment.count > DIFFERENTIAL_DEFAULT_MAX_ENVIRONMENT_ENTRIES or world.argv.count > DIFFERENTIAL_DEFAULT_MAX_ARGUMENTS
+            return DifferentialCaseIssueKind.InvalidLimit if not differential_world_snapshot_record_counts_valid(world)
             return DifferentialCaseIssueKind.InvalidWorldStdinPayload if world.stdin_binary and world.stdin != ""
             return DifferentialCaseIssueKind.InvalidWorldStdinPayload if not world.stdin_binary and world.stdin_bytes.count != 0
             return DifferentialCaseIssueKind.InvalidLimit if world.stdin_bytes.count > DIFFERENTIAL_DEFAULT_MAX_PROCESS_INPUT_BYTES
@@ -2408,7 +2458,7 @@ module EsDifferential:
 
 
         def differential_runner_name_valid(value: sview) -> bool:
-            return false if sview_len(value) == 0 or sview_len(value) > DIFFERENTIAL_DEFAULT_MAX_WORLD_METADATA_BYTES
+            return false if sview_len(value) == 0 or sview_len(value) > DifferentialWorldLimits::METADATA_BYTES
             return not differential_sview_has_nul(value)
 
 
@@ -4616,7 +4666,7 @@ module EsDifferential:
 
 
         def differential_oracle_name_valid(value: sview) -> bool:
-            return false if sview_len(value) == 0 or sview_len(value) > DIFFERENTIAL_DEFAULT_MAX_WORLD_METADATA_BYTES
+            return false if sview_len(value) == 0 or sview_len(value) > DifferentialWorldLimits::METADATA_BYTES
             return not differential_sview_has_nul(value)
 
 
@@ -4683,10 +4733,151 @@ module EsDifferential:
 
 
     private:
+        def differential_world_snapshot_consume_span(snapshot: DifferentialWorldSnapshot&, span: DifferentialWorldSnapshotSpan, cursor: mutable usize&) -> bool:
+            return false if span.start != cursor or span.start > snapshot.payload.count
+            return false if span.length > snapshot.payload.count - span.start
+            cursor <- cursor + span.length
+            return true
+
+
+        def differential_world_snapshot_spans_valid(snapshot: DifferentialWorldSnapshot&) -> bool:
+            return false if snapshot.payload.count > DifferentialWorldLimits::BYTES
+            return false if snapshot.argv.count > DIFFERENTIAL_DEFAULT_MAX_ARGUMENTS or snapshot.environment.count > DIFFERENTIAL_DEFAULT_MAX_ENVIRONMENT_ENTRIES or snapshot.files.count > DIFFERENTIAL_DEFAULT_MAX_ARGUMENTS
+            return false if snapshot.argv.count > DifferentialWorldLimits::SNAPSHOT_RECORDS
+            remaining: mutable usize = DifferentialWorldLimits::SNAPSHOT_RECORDS - snapshot.argv.count
+            return false if snapshot.environment.count > remaining
+            remaining <- remaining - snapshot.environment.count
+            return false if snapshot.files.count > remaining
+
+            cursor: mutable usize = 0
+            return false if not differential_world_snapshot_consume_span(snapshot, snapshot.working_directory, cursor)
+            return false if not differential_world_snapshot_consume_span(snapshot, snapshot.locale, cursor)
+            return false if not differential_world_snapshot_consume_span(snapshot, snapshot.timezone, cursor)
+            return false if not differential_world_snapshot_consume_span(snapshot, snapshot.stdin, cursor)
+            return false if not differential_world_snapshot_consume_span(snapshot, snapshot.stdin_bytes, cursor)
+            for argument in snapshot.argv |cursor|:
+                return false if not differential_world_snapshot_consume_span(snapshot, argument, cursor)
+            for entry in snapshot.environment |cursor|:
+                return false if not differential_world_snapshot_consume_span(snapshot, entry.name, cursor)
+                return false if not differential_world_snapshot_consume_span(snapshot, entry.value, cursor)
+            for fixture in snapshot.files |cursor|:
+                return false if not differential_world_snapshot_consume_span(snapshot, fixture.path, cursor)
+                return false if not differential_world_snapshot_consume_span(snapshot, fixture.payload, cursor)
+            return cursor == snapshot.payload.count
+
+
+        def differential_world_snapshot_file_kind_valid(kind: DifferentialWorldFileKind) -> bool:
+            return kind in {DifferentialWorldFileKind.Text, DifferentialWorldFileKind.Bytes}
+
+
+        # Internal only: callers must first establish packed span validity.
+        def differential_world_snapshot_span_text(snapshot: DifferentialWorldSnapshot&, span: DifferentialWorldSnapshotSpan) -> sview:
+            data: sview = bytes_view(snapshot.payload)
+            return "" if span.length == 0
+            return data[span.start:span.start + span.length]
+
+
+        def differential_world_snapshot_semantics_valid(snapshot: DifferentialWorldSnapshot&) -> bool:
+            return false if snapshot.stdin_binary and snapshot.stdin.length != 0
+            return false if not snapshot.stdin_binary and snapshot.stdin_bytes.length != 0
+            return false if snapshot.working_directory.length > DifferentialWorldLimits::PATH_BYTES or snapshot.locale.length > DifferentialWorldLimits::METADATA_BYTES or snapshot.timezone.length > DifferentialWorldLimits::METADATA_BYTES
+            return false if snapshot.stdin.length > DIFFERENTIAL_DEFAULT_MAX_PROCESS_INPUT_BYTES or snapshot.stdin_bytes.length > DIFFERENTIAL_DEFAULT_MAX_PROCESS_INPUT_BYTES
+
+            working_directory: sview = differential_world_snapshot_span_text(snapshot, snapshot.working_directory)
+            locale: sview = differential_world_snapshot_span_text(snapshot, snapshot.locale)
+            timezone: sview = differential_world_snapshot_span_text(snapshot, snapshot.timezone)
+            return false if differential_sview_has_nul(working_directory) or differential_sview_has_nul(locale) or differential_sview_has_nul(timezone)
+            return false if working_directory != "" and not differential_world_relative_path_safe(working_directory)
+
+            for argument in snapshot.argv:
+                return false if argument.length > DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES
+                return false if differential_sview_has_nul(differential_world_snapshot_span_text(snapshot, argument))
+
+            for index in 0..<snapshot.environment.count |snapshot|:
+                entry: DifferentialWorldSnapshotEnvironmentEntry = snapshot.environment[index]
+                return false if entry.name.length == 0 or entry.name.length > DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES or entry.value.length > DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES
+                name: sview = differential_world_snapshot_span_text(snapshot, entry.name)
+                value: sview = differential_world_snapshot_span_text(snapshot, entry.value)
+                return false if differential_sview_has_nul(name) or sview_contains_byte(name, 61) or differential_sview_has_nul(value)
+                for prior in 0..<index |snapshot, name|:
+                    return false if differential_world_snapshot_span_text(snapshot, snapshot.environment[prior].name) == name
+
+            for index in 0..<snapshot.files.count |snapshot, working_directory|:
+                fixture: DifferentialWorldSnapshotFile = snapshot.files[index]
+                return false if fixture.path.length > DifferentialWorldLimits::PATH_BYTES
+                path: sview = differential_world_snapshot_span_text(snapshot, fixture.path)
+                return false if not differential_world_relative_path_safe(path)
+                return false if not differential_world_snapshot_file_kind_valid(fixture.kind)
+                return false if not differential_world_file_mode_valid(fixture.mode)
+                return false if fixture.executable != ((fixture.mode & 73u32) != 0u32)
+                return false if fixture.payload.length > DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES
+                return false if working_directory != "" and (path == working_directory or differential_world_relative_path_contains(path, working_directory))
+                for prior in 0..<index |snapshot, fixture, path|:
+                    prior_path: sview = differential_world_snapshot_span_text(snapshot, snapshot.files[prior].path)
+                    return false if prior_path == path
+                    return false if differential_world_relative_path_contains(prior_path, path) or differential_world_relative_path_contains(path, prior_path)
+            return true
+
+
+        def differential_world_snapshot_hash_text(hash: u64, snapshot: DifferentialWorldSnapshot&, span: DifferentialWorldSnapshotSpan) -> u64:
+            result: mutable u64 = differential_world_hash_u64(hash, span.length.u64())
+            index: mutable usize = 0
+            while index < span.length:
+                result <- EsIr::canonical_artifact_hash_byte(result, snapshot.payload[span.start + index])
+                index <- index + 1
+            return result
+
+
+        def differential_world_snapshot_hash_bytes(hash: u64, snapshot: DifferentialWorldSnapshot&, span: DifferentialWorldSnapshotSpan) -> u64:
+            result: mutable u64 = differential_world_hash_u64(hash, span.length.u64())
+            index: mutable usize = 0
+            while index < span.length:
+                result <- EsIr::canonical_artifact_hash_byte(result, snapshot.payload[span.start + index])
+                index <- index + 1
+            return result
+
+
+        def differential_world_snapshot_fingerprint(snapshot: DifferentialWorldSnapshot&) -> u64:
+            fingerprint: mutable u64 = 14695981039346656037
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, 1)
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, 1)
+            fingerprint <- differential_world_snapshot_hash_text(fingerprint, snapshot, snapshot.working_directory)
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, 2)
+            fingerprint <- differential_world_snapshot_hash_text(fingerprint, snapshot, snapshot.locale)
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, 3)
+            fingerprint <- differential_world_snapshot_hash_text(fingerprint, snapshot, snapshot.timezone)
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, 4)
+            fingerprint <- differential_world_snapshot_hash_text(fingerprint, snapshot, snapshot.stdin) if not snapshot.stdin_binary
+            if snapshot.stdin_binary:
+                fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, 9)
+                fingerprint <- differential_world_snapshot_hash_bytes(fingerprint, snapshot, snapshot.stdin_bytes)
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, 5)
+            fingerprint <- differential_world_hash_u64(fingerprint, snapshot.argv.count.u64())
+            for argument in snapshot.argv |fingerprint|:
+                fingerprint <- differential_world_snapshot_hash_text(fingerprint, snapshot, argument)
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, 6)
+            fingerprint <- differential_world_hash_u64(fingerprint, snapshot.environment.count.u64())
+            for entry in snapshot.environment |fingerprint|:
+                fingerprint <- differential_world_snapshot_hash_text(fingerprint, snapshot, entry.name)
+                fingerprint <- differential_world_snapshot_hash_text(fingerprint, snapshot, entry.value)
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, 7)
+            fingerprint <- differential_world_hash_u64(fingerprint, snapshot.files.count.u64())
+            for fixture in snapshot.files |fingerprint|:
+                fingerprint <- differential_world_snapshot_hash_text(fingerprint, snapshot, fixture.path)
+                fingerprint <- differential_world_hash_u64(fingerprint, fixture.kind.u8().u64())
+                fingerprint <- differential_world_snapshot_hash_text(fingerprint, snapshot, fixture.payload) if fixture.kind == DifferentialWorldFileKind.Text
+                fingerprint <- differential_world_snapshot_hash_bytes(fingerprint, snapshot, fixture.payload) if fixture.kind == DifferentialWorldFileKind.Bytes
+                fingerprint <- differential_world_hash_u64(fingerprint, fixture.mode.u64())
+                fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, 1 if fixture.executable else 0)
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, 8)
+            return differential_world_hash_u64(fingerprint, snapshot.seed)
+
+
         def differential_world_snapshot_valid(snapshot: DifferentialWorldSnapshot&) -> bool:
-            return false if snapshot.format_version != 1 or snapshot.world_fingerprint == 0
-            return false if differential_world_issue(snapshot.world) != DifferentialCaseIssueKind.None
-            return differential_world_fingerprint(snapshot.world) == snapshot.world_fingerprint
+            return false if snapshot.format_version != 2 or snapshot.world_fingerprint == 0
+            return false if not differential_world_snapshot_spans_valid(snapshot)
+            return false if not differential_world_snapshot_semantics_valid(snapshot)
+            return differential_world_snapshot_fingerprint(snapshot) == snapshot.world_fingerprint
 
 
         const enum DifferentialWorldSnapshotState of u8:
@@ -4705,16 +4896,105 @@ module EsDifferential:
             return DifferentialWorldSnapshotCheck{valid: false, issue: issue, reason: reason}
 
 
+        # Call only after differential_world_issue succeeds; its admission check
+        # proves this sum is within the 256 MiB world budget.
+        def differential_world_payload_size(world: DifferentialWorld&) -> usize:
+            total: mutable usize = sview_len(world.working_directory) + sview_len(world.locale) + sview_len(world.timezone)
+            total <- total + world.stdin_bytes.count if world.stdin_binary
+            total <- total + sview_len(world.stdin) if not world.stdin_binary
+            for argument in world.argv |total|:
+                total <- total + sview_len(argument)
+            for entry in world.environment |total|:
+                total <- total + sview_len(entry.name) + sview_len(entry.value)
+            for fixture in world.files |total|:
+                total <- total + sview_len(fixture.path)
+                total <- total + sview_len(fixture.contents) if fixture.kind == DifferentialWorldFileKind.Text
+                total <- total + fixture.bytes.count if fixture.kind == DifferentialWorldFileKind.Bytes
+            return total
+
+
+        def differential_world_snapshot_empty_span(snapshot: DifferentialWorldSnapshot&) -> DifferentialWorldSnapshotSpan:
+            return DifferentialWorldSnapshotSpan{start: snapshot.payload.count, length: 0}
+
+
+        def differential_world_snapshot_append_text(snapshot: mutable DifferentialWorldSnapshot&, value: sview) -> DifferentialWorldSnapshotSpan can[Memory.Allocate, Abort.Panic]:
+            start: usize = snapshot.payload.count
+            for index in 0..<sview_len(value) |snapshot|:
+                snapshot.payload.push(sview_at(value, index))
+            return DifferentialWorldSnapshotSpan{start: start, length: sview_len(value)}
+
+
+        def differential_world_snapshot_append_bytes(snapshot: mutable DifferentialWorldSnapshot&, value: darray[u8]&) -> DifferentialWorldSnapshotSpan can[Memory.Allocate, Abort.Panic]:
+            start: usize = snapshot.payload.count
+            for byte in value |snapshot|:
+                snapshot.payload.push(byte)
+            return DifferentialWorldSnapshotSpan{start: start, length: value.count}
+
+
     public:
+        # Return a checked short-lived view over one owned snapshot span. The
+        # view borrows the snapshot payload and must not outlive or overlap a
+        # mutation of that snapshot.
+        def differential_world_snapshot_span_view(snapshot: DifferentialWorldSnapshot&, span: DifferentialWorldSnapshotSpan) -> DifferentialWorldSnapshotView:
+            return DifferentialWorldSnapshotView{valid: false} if span.start > snapshot.payload.count
+            return DifferentialWorldSnapshotView{valid: false} if span.length > snapshot.payload.count - span.start
+            return DifferentialWorldSnapshotView{valid: true, value: ""} if span.length == 0
+            data: sview = bytes_view(snapshot.payload)
+            return DifferentialWorldSnapshotView{valid: true, value: data[span.start:span.start + span.length]}
+
+
+        # Validate a sealed owned snapshot without referring to the caller's
+        # original DifferentialWorld value.
+        def validate_differential_world_snapshot_storage(snapshot: DifferentialWorldSnapshot&) -> DifferentialWorldSnapshotCheck:
+            if differential_world_snapshot_valid(snapshot):
+                return DifferentialWorldSnapshotCheck{valid: true, issue: DifferentialWorldSnapshotIssue.None}
+            return differential_world_snapshot_failure(DifferentialWorldSnapshotIssue.InvalidSnapshot, "differential world snapshot is invalid")
+
+
         # Capture a deterministic identity for a validated hermetic world. The
-        # snapshot retains the typed fixture/environment vectors so a host
-        # materializer can later restore the same contract without rebuilding a
-        # shell command or relying on ambient process state.
+        # snapshot owns a bounded packed payload arena and span-only records, so
+        # caller mutation or reallocation cannot change the captured contract.
         def make_differential_world_snapshot(world: DifferentialWorld&) -> DifferentialWorldSnapshot error[DifferentialRunnerError] can[Memory.Allocate, Abort.Panic]:
             raise DifferentialRunnerError.Invalid if differential_world_issue(world) != DifferentialCaseIssueKind.None
             fingerprint: u64 = differential_world_fingerprint(world)
             raise DifferentialRunnerError.Invalid if fingerprint == 0
-            return DifferentialWorldSnapshot{world_fingerprint: fingerprint, world: world}
+            snapshot: mutable DifferentialWorldSnapshot = DifferentialWorldSnapshot{world_fingerprint: fingerprint, stdin_binary: world.stdin_binary, seed: world.seed}
+            snapshot.payload.reserve(differential_world_payload_size(world))
+            snapshot.argv.reserve(world.argv.count)
+            snapshot.environment.reserve(world.environment.count)
+            snapshot.files.reserve(world.files.count)
+
+            working_directory: DifferentialWorldSnapshotSpan = differential_world_snapshot_append_text(snapshot, world.working_directory)
+            snapshot.working_directory <- working_directory
+            locale: DifferentialWorldSnapshotSpan = differential_world_snapshot_append_text(snapshot, world.locale)
+            snapshot.locale <- locale
+            timezone: DifferentialWorldSnapshotSpan = differential_world_snapshot_append_text(snapshot, world.timezone)
+            snapshot.timezone <- timezone
+            if world.stdin_binary:
+                snapshot.stdin <- differential_world_snapshot_empty_span(snapshot)
+                stdin_bytes: DifferentialWorldSnapshotSpan = differential_world_snapshot_append_bytes(snapshot, world.stdin_bytes)
+                snapshot.stdin_bytes <- stdin_bytes
+            else:
+                stdin: DifferentialWorldSnapshotSpan = differential_world_snapshot_append_text(snapshot, world.stdin)
+                snapshot.stdin <- stdin
+                snapshot.stdin_bytes <- differential_world_snapshot_empty_span(snapshot)
+            for argument in world.argv |snapshot|:
+                argument_span: DifferentialWorldSnapshotSpan = differential_world_snapshot_append_text(snapshot, argument)
+                snapshot.argv.push(argument_span)
+            for entry in world.environment |snapshot|:
+                name: DifferentialWorldSnapshotSpan = differential_world_snapshot_append_text(snapshot, entry.name)
+                value: DifferentialWorldSnapshotSpan = differential_world_snapshot_append_text(snapshot, entry.value)
+                snapshot.environment.push(DifferentialWorldSnapshotEnvironmentEntry{name: name, value: value})
+            for fixture in world.files |snapshot|:
+                path: DifferentialWorldSnapshotSpan = differential_world_snapshot_append_text(snapshot, fixture.path)
+                payload: mutable DifferentialWorldSnapshotSpan = differential_world_snapshot_empty_span(snapshot)
+                if fixture.kind == DifferentialWorldFileKind.Text:
+                    payload <- differential_world_snapshot_append_text(snapshot, fixture.contents)
+                else:
+                    payload <- differential_world_snapshot_append_bytes(snapshot, fixture.bytes)
+                snapshot.files.push(DifferentialWorldSnapshotFile{path: path, kind: fixture.kind, payload: payload, mode: fixture.mode, executable: fixture.executable})
+            raise DifferentialRunnerError.Invalid if not differential_world_snapshot_valid(snapshot)
+            return snapshot
 
 
         # Verify both the stored snapshot and the post-run world before a case

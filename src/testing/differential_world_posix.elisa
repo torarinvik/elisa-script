@@ -131,30 +131,36 @@ module EsDifferentialWorldPosix:
             DescriptorCloseFailed
 
 
-        def darwin_differential_world_cleanup_bounds(world: DifferentialWorld&) -> DarwinDifferentialWorldCleanupResult:
+        def darwin_differential_world_cleanup_bounds(snapshot: DifferentialWorldSnapshot&) -> DarwinDifferentialWorldCleanupResult:
             # Count fixture leaves plus a conservative upper bound on their
             # inferred parent directories. Shared prefixes are counted more
             # than once intentionally; admission must never create a world
             # which the bounded cleaner cannot remove.
-            required_entries: mutable usize = world.files.count
+            required_entries: mutable usize = snapshot.files.count
             return DarwinDifferentialWorldCleanupResult.EntryLimitExceeded if required_entries > DarwinDifferentialWorldPolicy::MAX_CLEANUP_ENTRIES
 
+            working_directory_view: DifferentialWorldSnapshotView = differential_world_snapshot_span_view(snapshot, snapshot.working_directory)
+            return DarwinDifferentialWorldCleanupResult.InvalidEntry if not working_directory_view.valid
+            working_directory: sview = working_directory_view.value
             working_depth: mutable usize = 0
             working_index: mutable usize = 0
-            while working_index < sview_len(world.working_directory):
-                working_depth <- working_depth + 1 if sview_at(world.working_directory, working_index) == 47
+            while working_index < sview_len(working_directory):
+                working_depth <- working_depth + 1 if sview_at(working_directory, working_index) == 47
                 working_index <- working_index + 1
-            if world.working_directory != "":
+            if working_directory != "":
                 working_depth <- working_depth + 1
                 return DarwinDifferentialWorldCleanupResult.DepthLimitExceeded if working_depth > DarwinDifferentialWorldPolicy::MAX_CLEANUP_DEPTH
                 return DarwinDifferentialWorldCleanupResult.EntryLimitExceeded if working_depth > DarwinDifferentialWorldPolicy::MAX_CLEANUP_ENTRIES - required_entries
                 required_entries <- required_entries + working_depth
 
-            for fixture in world.files |required_entries|:
+            for fixture in snapshot.files |required_entries|:
+                path_view: DifferentialWorldSnapshotView = differential_world_snapshot_span_view(snapshot, fixture.path)
+                return DarwinDifferentialWorldCleanupResult.InvalidEntry if not path_view.valid
+                path: sview = path_view.value
                 fixture_parent_depth: mutable usize = 0
                 fixture_index: mutable usize = 0
-                while fixture_index < sview_len(fixture.path):
-                    fixture_parent_depth <- fixture_parent_depth + 1 if sview_at(fixture.path, fixture_index) == 47
+                while fixture_index < sview_len(path):
+                    fixture_parent_depth <- fixture_parent_depth + 1 if sview_at(path, fixture_index) == 47
                     fixture_index <- fixture_index + 1
                 return DarwinDifferentialWorldCleanupResult.DepthLimitExceeded if fixture_parent_depth > DarwinDifferentialWorldPolicy::MAX_CLEANUP_DEPTH
                 return DarwinDifferentialWorldCleanupResult.EntryLimitExceeded if fixture_parent_depth > DarwinDifferentialWorldPolicy::MAX_CLEANUP_ENTRIES - required_entries
@@ -317,21 +323,26 @@ module EsDifferentialWorldPosix:
             return cursor.state == DarwinDifferentialWorldWriteState.Done
 
 
-        def darwin_differential_world_write_fixture(root_fd: int, fixture: DifferentialWorldFile&) -> bool can[Blocking.IO, Memory.Allocate, Abort.Panic]:
-            path_length: usize = sview_len(fixture.path)
+        def darwin_differential_world_write_fixture(root_fd: int, snapshot: DifferentialWorldSnapshot&, fixture: DifferentialWorldSnapshotFile&) -> bool can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            path_view: DifferentialWorldSnapshotView = differential_world_snapshot_span_view(snapshot, fixture.path)
+            payload_view: DifferentialWorldSnapshotView = differential_world_snapshot_span_view(snapshot, fixture.payload)
+            return false if not path_view.valid or not payload_view.valid
+            path: sview = path_view.value
+            payload: sview = payload_view.value
+            path_length: usize = sview_len(path)
             last_separator: mutable usize = path_length
             scan: mutable usize = 0
             while scan < path_length:
-                last_separator <- scan if sview_at(fixture.path, scan) == 47
+                last_separator <- scan if sview_at(path, scan) == 47
                 scan <- scan + 1
             leaf_start: usize = last_separator + 1 if last_separator < path_length else 0
             parent_fd: mutable int = root_fd
             if last_separator < path_length:
-                parent_path: sview = fixture.path[0:last_separator]
+                parent_path: sview = path[0:last_separator]
                 parent_fd <- darwin_differential_world_ensure_directory(root_fd, parent_path)
                 return false if parent_fd < 0
 
-            leaf: dstr = darwin_differential_world_cstring_slice(fixture.path, leaf_start, path_length)
+            leaf: dstr = darwin_differential_world_cstring_slice(path, leaf_start, path_length)
             if leaf.items == null:
                 if parent_fd != root_fd:
                     _ = elisascript_posix_close(parent_fd)
@@ -343,15 +354,10 @@ module EsDifferentialWorldPosix:
                     _ = elisascript_posix_close(parent_fd)
                 return false
 
-            file_length: usize = sview_len(fixture.contents) if fixture.kind == DifferentialWorldFileKind.Text else fixture.bytes.count
+            file_length: usize = fixture.payload.length
             valid: mutable bool = darwin_differential_world_new_file_matches(descriptor)
             if valid and file_length > 0:
-                if fixture.kind == DifferentialWorldFileKind.Text:
-                    valid <- darwin_differential_world_write_buffer_fully(descriptor, fixture.contents.data, file_length)
-                else:
-                    bytes_items: mutable u8&? = fixture.bytes.items
-                    valid <- false if bytes_items == null
-                    valid <- darwin_differential_world_write_buffer_fully(descriptor, bytes_items, file_length) if valid
+                valid <- darwin_differential_world_write_buffer_fully(descriptor, payload.data, file_length)
             valid <- false if valid and elisascript_posix_fchmod(descriptor, fixture.mode) != 0
             valid <- false if valid and not darwin_differential_world_verify_file(descriptor, fixture.mode, file_length)
             close_status: int = elisascript_posix_close(descriptor)
@@ -675,7 +681,7 @@ module EsDifferentialWorldPosix:
         # and verify that the named entry is the same 0700 directory as the
         # open capability before returning it.
         def create_darwin_differential_world_root(snapshot: DifferentialWorldSnapshot&) -> DarwinDifferentialWorldRoot error[DifferentialWorldPosixError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
-            snapshot_check: DifferentialWorldSnapshotCheck = validate_differential_world_snapshot(snapshot.world, snapshot)
+            snapshot_check: DifferentialWorldSnapshotCheck = validate_differential_world_snapshot_storage(snapshot)
             raise DifferentialWorldPosixError.InvalidSnapshot if not snapshot_check.valid
 
             parent_path: dstr = darwin_differential_world_cstring(DarwinDifferentialWorldPolicy::ROOT_PARENT)
@@ -731,10 +737,10 @@ module EsDifferentialWorldPosix:
         # Every fixture component is resolved with one openat/mkdirat at a time;
         # file modes are applied after creation and then checked using fstat.
         def materialize_darwin_differential_world(root: mutable DarwinDifferentialWorldRoot&, snapshot: DifferentialWorldSnapshot&) -> void error[DifferentialWorldPosixError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
-            snapshot_check: DifferentialWorldSnapshotCheck = validate_differential_world_snapshot(snapshot.world, snapshot)
+            snapshot_check: DifferentialWorldSnapshotCheck = validate_differential_world_snapshot_storage(snapshot)
             raise DifferentialWorldPosixError.InvalidSnapshot if not snapshot_check.valid
             raise DifferentialWorldPosixError.InvalidState if root.state != DarwinDifferentialWorldRootState.Created or root.parent_descriptor < 0 or root.root_descriptor < 0
-            cleanup_bounds: DarwinDifferentialWorldCleanupResult = darwin_differential_world_cleanup_bounds(snapshot.world)
+            cleanup_bounds: DarwinDifferentialWorldCleanupResult = darwin_differential_world_cleanup_bounds(snapshot)
             raise DifferentialWorldPosixError.DepthLimitExceeded if cleanup_bounds == DarwinDifferentialWorldCleanupResult.DepthLimitExceeded
             raise DifferentialWorldPosixError.EntryLimitExceeded if cleanup_bounds == DarwinDifferentialWorldCleanupResult.EntryLimitExceeded
             basename_items: u8& = root.basename.items
@@ -743,8 +749,12 @@ module EsDifferentialWorldPosix:
                 raise DifferentialWorldPosixError.InvalidRoot
             root.state <- DarwinDifferentialWorldRootState.Materializing
 
-            if snapshot.world.working_directory != "":
-                working_directory_fd: int = darwin_differential_world_ensure_directory(root.root_descriptor, snapshot.world.working_directory)
+            working_directory_view: DifferentialWorldSnapshotView = differential_world_snapshot_span_view(snapshot, snapshot.working_directory)
+            if not working_directory_view.valid:
+                root.state <- DarwinDifferentialWorldRootState.Failed
+                raise DifferentialWorldPosixError.InvalidSnapshot
+            if working_directory_view.value != "":
+                working_directory_fd: int = darwin_differential_world_ensure_directory(root.root_descriptor, working_directory_view.value)
                 if working_directory_fd < 0:
                     root.state <- DarwinDifferentialWorldRootState.Failed
                     raise DifferentialWorldPosixError.HostIo
@@ -752,8 +762,8 @@ module EsDifferentialWorldPosix:
                     root.state <- DarwinDifferentialWorldRootState.Failed
                     raise DifferentialWorldPosixError.HostIo
 
-            for fixture in snapshot.world.files |root|:
-                if not darwin_differential_world_write_fixture(root.root_descriptor, fixture):
+            for fixture in snapshot.files |root|:
+                if not darwin_differential_world_write_fixture(root.root_descriptor, snapshot, fixture):
                     root.state <- DarwinDifferentialWorldRootState.Failed
                     raise DifferentialWorldPosixError.HostIo
 
