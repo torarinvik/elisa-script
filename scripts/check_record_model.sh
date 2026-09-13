@@ -35,8 +35,8 @@ for declaration in \
 done
 
 for boundary in \
-    'RECORD_MAX_TEXT_BYTES' \
-    'RECORD_MAX_FIELDS' \
+    'Limits::TEXT_BYTES' \
+    'Limits::FIELDS' \
     'record_text_length_valid' \
     'sview_contains_byte' \
     'record_fixed_widths_fit' \

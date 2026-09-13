@@ -33,7 +33,7 @@ for declaration in \
 done
 
 for boundary in \
-    'RECORD_FIELD_EDIT_MAX_EDITS' \
+    'Limits::EDITS' \
     'max_fields' \
     'max_output_bytes' \
     'output_separator' \

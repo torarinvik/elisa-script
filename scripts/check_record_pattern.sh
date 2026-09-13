@@ -33,8 +33,8 @@ for declaration in \
 done
 
 for boundary in \
-    'RECORD_PATTERN_MAX_CLAUSES' \
-    'RECORD_PATTERN_MAX_RECORDS' \
+    'Limits::CLAUSES' \
+    'Limits::RECORDS' \
     'RecordPatternPredicateKind.External' \
     'RecordPatternEvent.Record' \
     'RecordPatternError.ObservationShapeInvalid' \
