@@ -2616,9 +2616,10 @@ array/map construction and key/value extraction, nominal path/glob/regex/URL con
 join, typed integer/float parsing and formatting, regex search/replacement/splitting/extraction, indexed updates, unary/binary operators,
 observations, pure direct calls, and typed filesystem/process/time operations) take a
 direct packed-instruction path. Calls use recursive state-machine frames with one
-shared step budget, storage, and
-observation stream, so helper functions remain behaviorally identical to the
-reference interpreter. The first filesystem operations (`PathExists`, `ReadText`,
+shared step ledger, storage, and observation stream; child step charges remain
+consumed when a recoverable error is caught by the caller, matching the
+reference interpreter's budget accounting. The first filesystem operations
+(`PathExists`, `ReadText`,
 `WriteText`, `RemovePath`, and `MakeExecutable`) use the same typed resource
 wrappers as the oracle, while retaining the packed program-counter machine. Its
 value dispatcher is itself an explicit state machine, and its direct binary helper
