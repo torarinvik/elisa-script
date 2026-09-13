@@ -104,6 +104,13 @@ source-free help/version modes, and rejects repeated colors through
 `parse_cli_arguments` rejects unknown options, duplicate modes/options, and
 missing option values before source loading.
 
+For `--run`, `--strict-engine` selects the direct bytecode engine and fails with
+`UnsupportedInstruction` if the verified program requires interpreter
+fallback; it never silently changes engines. Without the option, ordinary runs
+retain the compatibility behavior and may use the verified interpreter
+fallback. With `--check`, strict-engine is intentionally inert: check validates
+source and bytecode but does not select or execute a backend.
+
 `EsDriver::run` now consumes that typed invocation directly. Help/version exit
 before source allocation. `--check` loads and type-checks the source, lowers
 and verifies its IR/bytecode, and returns success without requiring `main`,
