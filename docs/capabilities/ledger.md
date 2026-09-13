@@ -788,10 +788,11 @@ ES-SCRIPT-014 | EsDifferentialFilesystem supplies bounded sealed post-run file
 tree snapshots with strict path ordering, a 64 MiB aggregate path-byte ceiling,
 up to 1,048,576 entries, 256 MiB aggregate content accounting, stable snapshot
 fingerprints, and first-difference comparison for kind/content/size/mode and
-executable metadata. Content equality currently relies on caller-supplied 64-bit
-fingerprints and is collision-prone, not conclusive byte-for-byte evidence;
-strong filesystem parity remains open pending a specified digest policy or
-retained-byte comparison. Ordered streaming and unordered collection with in-place
+executable metadata. Entry content identity is represented by typed SHA-256
+digests; comparison checks the complete digest and size, while validation
+ensures algorithm/shape but not that a host actually hashed the corresponding
+bytes. Host enumeration and digest-computation evidence remain open, and hashes
+are cryptographic rather than mathematical proof. Ordered streaming and unordered collection with in-place
 O(n log n) heapsort both seal into the same ordered contract; duplicate paths
 fail the batch explicitly. Submitted paths are copied into a bounded
 snapshot-owned byte arena; stored entries contain checked offsets and lengths,
@@ -799,8 +800,8 @@ and the arena is repacked after unordered sorting so exact span coverage remains
 auditable. Comparison reports carry side-specific entry indices instead of
 borrowed path views, with a copying accessor for report paths. Callers must not
 mutate public collection fields directly; seal and validation audit spans,
-coverage, ordering, and accounting. Invalid snapshots and reserved zero content
-fingerprints have distinct typed classifications. Materialization plans copy
+coverage, ordering, and accounting. Invalid snapshots and malformed content
+digest shapes have distinct typed classifications. Materialization plans copy
 root bytes rather than retaining the caller's input views.
 The focused differential fixture, namespace inclusion, documentation, and
 check_differential_filesystem.sh audit are static evidence; post-run

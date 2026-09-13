@@ -815,12 +815,13 @@ returning `EntryOrderInvalid`. A snapshot must be sealed before comparison, and
 `compare_differential_filesystem_snapshots` merges the ordered streams to report
 the first missing path, kind, content, size, mode, or executable-bit difference.
 Malformed sealed inputs produce `InvalidSnapshot`, not a content difference or
-an entry-limit diagnosis. The reserved zero content fingerprint is rejected as
-`InvalidContentFingerprint`. Content equality still compares caller-supplied
-64-bit fingerprints and size; it is therefore collision-prone and is not an
-exact byte-for-byte parity proof. A host capture adapter must use a specified
-collision-resistant digest policy, or the model must retain and compare bounded
-content bytes, before filesystem equality can be presented as conclusive. The
+an entry-limit diagnosis. Every entry now carries a typed SHA-256 `HashDigest`;
+non-SHA-256 algorithms and malformed digest shapes are rejected as
+`InvalidContentDigest`. Comparison checks all four digest words plus file size.
+The model validates digest metadata, not the hash computation itself: host
+capture must hash regular-file bytes and raw symlink-target bytes with SHA-256
+(directories use the canonical empty payload), and the digest remains
+cryptographic evidence rather than a mathematical proof of byte identity. The
 compact snapshot fingerprint is stable for the sealed ordered record. This
 contract performs no filesystem I/O. An input entry's `path` is a transient
 borrowed `sview`, copied into the snapshot's bounded byte arena before an append
