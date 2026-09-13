@@ -488,6 +488,9 @@ module EsDifferential:
             handlers: darray[Handler] = []
             working_directory: sview = ""
             environment: darray[DifferentialEnvironmentEntry] = []
+            # Inherit overlays these values onto the host environment; Replace
+            # uses exactly this vector; Clear requires an empty vector.
+            environment_mode: EsProcess::ProcessEnvironmentMode = EsProcess::ProcessEnvironmentMode.Inherit
             stdin: sview = ""
             # Binary stdin is an owned byte payload, never a C string. The
             # explicit mode bit makes mixed payloads fail closed.
@@ -842,6 +845,8 @@ module EsDifferential:
             TooManyProcessTextBytes
             TooMuchProcessInput
             InvalidProcessInputPayload
+            InvalidEnvironmentMode
+            ClearModeHasEntries
 
 
         struct DifferentialRunnerCheck:
@@ -933,6 +938,7 @@ module EsDifferential:
             Entry
             Arguments
             WorkingDirectory
+            EnvironmentMode
             Environment
             ProcessBounds
             Timeout
@@ -956,6 +962,7 @@ module EsDifferential:
             arguments: darray[sview]
             working_directory: sview = ""
             environment: darray[DifferentialEnvironmentEntry] = []
+            environment_mode: EsProcess::ProcessEnvironmentMode = EsProcess::ProcessEnvironmentMode.Inherit
             stdin: sview = ""
             stdin_bytes: mutable darray[u8] = []
             stdin_binary: bool = false
@@ -1233,7 +1240,7 @@ module EsDifferential:
         # Reconstruct the whole runner so narrowing execution limits cannot
         # accidentally discard adapter configuration or dynamic handler state.
         def differential_case_runner_with_limits(runner: DifferentialRunner&, timeout_steps: u64, max_output_bytes: u64) -> DifferentialRunner:
-            return DifferentialRunner{kind: runner.kind, name: runner.name, target: runner.target, entry: runner.entry, arguments: runner.arguments, handlers: runner.handlers, working_directory: runner.working_directory, environment: runner.environment, stdin: runner.stdin, stdin_bytes: runner.stdin_bytes, stdin_binary: runner.stdin_binary, protocol: runner.protocol, timeout_steps: timeout_steps, max_output_bytes: max_output_bytes, required_effects: runner.required_effects, required_errors: runner.required_errors}
+            return DifferentialRunner{kind: runner.kind, name: runner.name, target: runner.target, entry: runner.entry, arguments: runner.arguments, handlers: runner.handlers, working_directory: runner.working_directory, environment: runner.environment, environment_mode: runner.environment_mode, stdin: runner.stdin, stdin_bytes: runner.stdin_bytes, stdin_binary: runner.stdin_binary, protocol: runner.protocol, timeout_steps: timeout_steps, max_output_bytes: max_output_bytes, required_effects: runner.required_effects, required_errors: runner.required_errors}
 
 
     public:
@@ -2374,6 +2381,10 @@ module EsDifferential:
             return false
 
 
+        def differential_process_environment_mode_valid(mode: EsProcess::ProcessEnvironmentMode) -> bool:
+            return mode in {EsProcess::ProcessEnvironmentMode.Inherit, EsProcess::ProcessEnvironmentMode.Replace, EsProcess::ProcessEnvironmentMode.Clear}
+
+
         def differential_runner_name_valid(value: sview) -> bool:
             return false if sview_len(value) == 0 or sview_len(value) > DIFFERENTIAL_DEFAULT_MAX_WORLD_METADATA_BYTES
             return not differential_sview_has_nul(value)
@@ -2473,6 +2484,22 @@ module EsDifferential:
                     cursor.result.reason <- "runner working directory contains NUL"
                     -> Validate
                 Validate, DifferentialRunnerCheckState.WorkingDirectory:
+                    cursor.state <- DifferentialRunnerCheckState.EnvironmentMode
+                    -> Validate
+
+                Validate, DifferentialRunnerCheckState.EnvironmentMode if not differential_process_environment_mode_valid(runner.environment_mode):
+                    cursor.result.valid <- false
+                    cursor.result.issue <- DifferentialRunnerIssueKind.InvalidEnvironmentMode
+                    cursor.result.reason <- "runner environment mode is unknown"
+                    cursor.state <- DifferentialRunnerCheckState.Done
+                    -> Validate
+                Validate, DifferentialRunnerCheckState.EnvironmentMode if runner.environment_mode == EsProcess::ProcessEnvironmentMode.Clear and runner.environment.count != 0:
+                    cursor.result.valid <- false
+                    cursor.result.issue <- DifferentialRunnerIssueKind.ClearModeHasEntries
+                    cursor.result.reason <- "clear environment mode cannot carry environment entries"
+                    cursor.state <- DifferentialRunnerCheckState.Done
+                    -> Validate
+                Validate, DifferentialRunnerCheckState.EnvironmentMode:
                     cursor.state <- DifferentialRunnerCheckState.Environment
                     -> Validate
 
@@ -2585,7 +2612,91 @@ module EsDifferential:
                     break
 
             entry: sview = runner.entry if runner.kind == DifferentialRunnerKind.PythonAdapter else ""
-            return DifferentialProcessInvocation{executable: runner.target, entry: entry, arguments: runner.arguments, working_directory: runner.working_directory, environment: runner.environment, stdin: runner.stdin, stdin_bytes: runner.stdin_bytes, stdin_binary: runner.stdin_binary, protocol: runner.protocol, timeout_steps: runner.timeout_steps, max_output_bytes: runner.max_output_bytes}
+            return DifferentialProcessInvocation{executable: runner.target, entry: entry, arguments: runner.arguments, working_directory: runner.working_directory, environment: runner.environment, environment_mode: runner.environment_mode, stdin: runner.stdin, stdin_bytes: runner.stdin_bytes, stdin_binary: runner.stdin_binary, protocol: runner.protocol, timeout_steps: runner.timeout_steps, max_output_bytes: runner.max_output_bytes}
+
+
+    private:
+        const DIFFERENTIAL_DEFAULT_MAX_EXEC_SEARCH_PATHS: usize = 4096
+
+
+        struct DifferentialExecutableSearch:
+            owned_paths: mutable darray[dstr] = []
+            candidates: mutable darray[cstr] = []
+
+
+        def differential_process_candidate_path_fits(directory: sview, executable: sview) -> bool:
+            directory_length: usize = sview_len(directory)
+            executable_length: usize = sview_len(executable)
+            prefix_length: mutable usize = 2
+            if directory_length > 0:
+                has_separator: bool = sview_at(directory, directory_length - 1) == 47
+                prefix_length <- directory_length if has_separator else directory_length + 1
+            return false if prefix_length > DIFFERENTIAL_DEFAULT_MAX_PROCESS_PATH_BYTES
+            return false if executable_length >= DIFFERENTIAL_DEFAULT_MAX_PROCESS_PATH_BYTES - prefix_length
+            return true
+
+
+        def differential_process_make_candidate_path(directory: sview, executable: sview) -> dstr can[Memory.Allocate, Abort.Panic]:
+            directory_length: usize = sview_len(directory)
+            executable_length: usize = sview_len(executable)
+            has_directory: bool = directory_length > 0
+            has_separator: mutable bool = false
+            if has_directory:
+                has_separator <- sview_at(directory, directory_length - 1) == 47
+            prefix_length: usize = 2 if not has_directory else directory_length if has_separator else directory_length + 1
+            total_length: usize = prefix_length + executable_length
+            path: mutable dstr = ctx_fstr_alloc(total_length + 1)
+            ctx_fstr_append(path, "./", 2) if not has_directory
+            ctx_fstr_append(path, directory.data, directory_length) if has_directory
+            ctx_fstr_append(path, "/", 1) if has_directory and not has_separator
+            ctx_fstr_append(path, executable.data, executable_length)
+            ctx_fstr_append(path, "\0", 1)
+            return path
+
+
+        # Exact environments use execve, which deliberately has no implicit
+        # PATH fallback. Resolve PATH from the selected replacement vector
+        # before fork and preserve its entry order for child-side attempts.
+        def differential_process_executable_search(invocation: DifferentialProcessInvocation) -> DifferentialExecutableSearch error[DifferentialRunnerError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            search: mutable DifferentialExecutableSearch = DifferentialExecutableSearch{}
+            return search if invocation.environment_mode == EsProcess::ProcessEnvironmentMode.Inherit
+            if sview_contains_byte(invocation.executable, 47):
+                raise DifferentialRunnerError.Invalid if sview_len(invocation.executable) >= DIFFERENTIAL_DEFAULT_MAX_PROCESS_PATH_BYTES
+                direct_path: dstr = differential_cstring(invocation.executable)
+                raise DifferentialRunnerError.Process if direct_path.items == null
+                search.owned_paths.push(direct_path)
+                direct_items: mutable u8&? = search.owned_paths[search.owned_paths.count - 1].items
+                raise DifferentialRunnerError.Process if direct_items == null
+                search.candidates.push(direct_items.cast[cstr])
+                return search
+
+            path_index: mutable usize = invocation.environment.count
+            for index in 0..<invocation.environment.count |invocation|:
+                if invocation.environment[index].name == "PATH":
+                    path_index <- index
+                    break
+            raise DifferentialRunnerError.Invalid if path_index >= invocation.environment.count
+            path_value: sview = invocation.environment[path_index].value
+            raise DifferentialRunnerError.Invalid if sview_len(path_value) > DIFFERENTIAL_DEFAULT_MAX_PROCESS_PATH_BYTES
+            cursor: mutable usize = 0
+            path_length: usize = sview_len(path_value)
+            while cursor <= path_length:
+                segment_end: mutable usize = cursor
+                while segment_end < path_length and sview_at(path_value, segment_end) != 58:
+                    segment_end <- segment_end + 1
+                directory: sview = string_view_slice(path_value, cursor.i64(), segment_end.i64())
+                raise DifferentialRunnerError.Invalid if not differential_process_candidate_path_fits(directory, invocation.executable)
+                raise DifferentialRunnerError.Invalid if search.candidates.count >= DIFFERENTIAL_DEFAULT_MAX_EXEC_SEARCH_PATHS
+                candidate_path: dstr = differential_process_make_candidate_path(directory, invocation.executable)
+                raise DifferentialRunnerError.Process if candidate_path.items == null
+                search.owned_paths.push(candidate_path)
+                candidate_items: mutable u8&? = search.owned_paths[search.owned_paths.count - 1].items
+                raise DifferentialRunnerError.Process if candidate_items == null
+                search.candidates.push(candidate_items.cast[cstr])
+                if segment_end >= path_length:
+                    break
+                cursor <- segment_end + 1
+            return search
 
 
         # Adapt the differential invocation to the shared command contract
@@ -2604,7 +2715,7 @@ module EsDifferential:
             for entry in invocation.environment |flat_environment|:
                 flat_environment.push(entry.name)
                 flat_environment.push(entry.value)
-            command: ProcessCommand = ProcessCommand{executable: invocation.executable, arguments: command_arguments, working_directory: invocation.working_directory, environment: flat_environment, stdin_mode: ProcessStdioMode.Capture, stdout_mode: ProcessStdioMode.Capture, stderr_mode: ProcessStdioMode.Capture, failure_mode: ProcessFailureMode.Allow}
+            command: ProcessCommand = ProcessCommand{executable: invocation.executable, arguments: command_arguments, working_directory: invocation.working_directory, environment: flat_environment, environment_mode: invocation.environment_mode, stdin_mode: ProcessStdioMode.Capture, stdout_mode: ProcessStdioMode.Capture, stderr_mode: ProcessStdioMode.Capture, failure_mode: ProcessFailureMode.Allow}
             catch validate_process_command(command):
                 ok:
                     return true
@@ -2876,6 +2987,7 @@ module EsDifferential:
             raise DifferentialRunnerError.Invalid if not differential_process_text_bytes_fits(invocation.executable, invocation.entry, invocation.arguments, invocation.working_directory, invocation.environment) or sview_len(invocation.stdin) > DIFFERENTIAL_DEFAULT_MAX_PROCESS_INPUT_BYTES or invocation.stdin_bytes.count > DIFFERENTIAL_DEFAULT_MAX_PROCESS_INPUT_BYTES
             raise DifferentialRunnerError.Invalid if invocation.stdin_binary and invocation.stdin != ""
             raise DifferentialRunnerError.Invalid if not invocation.stdin_binary and invocation.stdin_bytes.count != 0
+            raise DifferentialRunnerError.Invalid if not differential_process_environment_mode_valid(invocation.environment_mode)
             raise DifferentialRunnerError.Invalid if not differential_process_command_valid(invocation)
             for argument in invocation.arguments:
                 raise DifferentialRunnerError.Invalid if differential_sview_has_nul(argument)
@@ -2889,14 +3001,15 @@ module EsDifferential:
             if executable_bytes.items == null:
                 raise DifferentialRunnerError.Process
             executable_items: u8& = executable_bytes.items
+            executable_search: DifferentialExecutableSearch = try differential_process_executable_search(invocation)
             owned_arguments: mutable darray[dstr] = []
             argv: mutable darray[cstr] = []
-            owned_environment_names: mutable darray[dstr] = []
-            owned_environment_values: mutable darray[dstr] = []
+            owned_environment_entries: mutable darray[dstr] = []
+            environment_vector: mutable darray[cstr] = []
             owned_arguments.reserve(invocation.arguments.count)
             argv.reserve(invocation.arguments.count)
-            owned_environment_names.reserve(invocation.environment.count)
-            owned_environment_values.reserve(invocation.environment.count)
+            owned_environment_entries.reserve(invocation.environment.count)
+            environment_vector.reserve(invocation.environment.count + 1)
             argv.push(executable_items.cast[cstr])
             if invocation.entry != "":
                 entry_bytes: dstr = differential_cstring(invocation.entry)
@@ -2916,17 +3029,31 @@ module EsDifferential:
                 if argument_items == null:
                     raise DifferentialRunnerError.Process
                 argv.push(argument_items.cast[cstr])
-            for entry in invocation.environment |owned_environment_names, owned_environment_values|:
-                name_bytes: dstr = differential_cstring(entry.name)
-                value_bytes: dstr = differential_cstring(entry.value)
-                if name_bytes.items == null or value_bytes.items == null:
+            for entry in invocation.environment |owned_environment_entries, environment_vector|:
+                name_length: usize = sview_len(entry.name)
+                value_length: usize = sview_len(entry.value)
+                entry_length: usize = name_length + value_length + 2
+                entry_bytes: mutable dstr = ctx_fstr_alloc(entry_length)
+                if entry_bytes.items == null:
                     raise DifferentialRunnerError.Process
-                owned_environment_names.push(name_bytes)
-                owned_environment_values.push(value_bytes)
+                ctx_fstr_append(entry_bytes, entry.name.data, name_length)
+                ctx_fstr_append(entry_bytes, "=", 1)
+                ctx_fstr_append(entry_bytes, entry.value.data, value_length)
+                ctx_fstr_append(entry_bytes, "\0", 1)
+                owned_environment_entries.push(entry_bytes)
+                if invocation.environment_mode != EsProcess::ProcessEnvironmentMode.Inherit:
+                    entry_items: mutable u8&? = owned_environment_entries[owned_environment_entries.count - 1].items
+                    if entry_items == null:
+                        raise DifferentialRunnerError.Process
+                    environment_vector.push(entry_items.cast[cstr])
             argv.push(executable_items.cast[cstr])
             terminator: mutable void& = (&argv[argv.count - 1]).cast[mutable void&] can Unsafe.PointerCast
             _ = memset(terminator, 0, size_of(uintptr))
             argv_items: void& = (&argv[0]).cast[void&] can Unsafe.PointerCast
+            environment_vector.push(executable_items.cast[cstr])
+            environment_terminator: mutable void& = (&environment_vector[environment_vector.count - 1]).cast[mutable void&] can Unsafe.PointerCast
+            _ = memset(environment_terminator, 0, size_of(uintptr))
+            environment_items: void& = (&environment_vector[0]).cast[void&] can Unsafe.PointerCast
 
             can Blocking.IO, Memory.Allocate, Memory.Release:
                 input_handle: mutable heap void&? = elisascript_posix_tmpfile()
@@ -2987,17 +3114,29 @@ module EsDifferential:
                     if invocation.working_directory != "":
                         working_directory_bytes: dstr = differential_cstring(invocation.working_directory)
                         elisascript_posix_exit(126) if working_directory_bytes.items == null or elisascript_posix_chdir(working_directory_bytes.items.cast[cstr]) != 0
-                    for offset in 0..<owned_environment_names.count |owned_environment_names, owned_environment_values|:
-                        name_storage: mutable u8&? = owned_environment_names[offset].items
-                        value_storage: mutable u8&? = owned_environment_values[offset].items
-                        if name_storage == null or value_storage == null:
-                            elisascript_posix_exit(126)
-                        else:
-                            name_items: mutable u8& = name_storage
-                            value_items: mutable u8& = value_storage
-                            elisascript_posix_exit(126) if elisascript_posix_setenv(name_items.cast[cstr], value_items.cast[cstr], 1) != 0
-                    _ = elisascript_posix_execvp(executable_items.cast[cstr], argv_items)
-                    elisascript_posix_exit(127)
+                    if invocation.environment_mode == EsProcess::ProcessEnvironmentMode.Inherit:
+                        for offset in 0..<owned_environment_entries.count |owned_environment_entries, invocation|:
+                            entry_storage: mutable u8&? = owned_environment_entries[offset].items
+                            if entry_storage == null:
+                                elisascript_posix_exit(126)
+                            else:
+                                entry_items: mutable u8& = entry_storage
+                                name_length: usize = sview_len(invocation.environment[offset].name)
+                                entry_items[name_length] <- 0
+                                value_items: mutable u8& = entry_items + name_length + 1
+                                set_status: int = elisascript_posix_setenv(entry_items.cast[cstr], value_items.cast[cstr], 1)
+                                entry_items[name_length] <- 61
+                                elisascript_posix_exit(126) if set_status != 0
+                        _ = elisascript_posix_execvp(executable_items.cast[cstr], argv_items)
+                        elisascript_posix_exit(127)
+                    else:
+                        saw_access_denied: mutable bool = false
+                        for candidate in executable_search.candidates |executable_search, argv_items, environment_items, saw_access_denied|:
+                            _ = elisascript_posix_execve(candidate, argv_items, environment_items)
+                            errno: mutable int& = elisascript_posix_errno()
+                            saw_access_denied <- true if errno[0] == ES_RUNTIME_ERRNO_EACCES
+                        elisascript_posix_exit(126) if saw_access_denied
+                        elisascript_posix_exit(127)
                     return DifferentialRun{observations: []}
 
                 status: mutable int = 0
@@ -3113,7 +3252,7 @@ module EsDifferential:
         # here would mutate global state or make stdin nondeterministic, so the
         # adapter rejects them rather than silently ignoring a runner field.
         def differential_elisascript_world_configuration_supported(runner: DifferentialRunner&) -> bool:
-            return runner.working_directory == "" and runner.environment.count == 0 and runner.stdin == "" and runner.protocol == ""
+            return runner.working_directory == "" and runner.environment.count == 0 and runner.environment_mode == EsProcess::ProcessEnvironmentMode.Inherit and runner.stdin == "" and runner.stdin_bytes.count == 0 and not runner.stdin_binary and runner.protocol == ""
 
 
     public:
@@ -4891,6 +5030,7 @@ module EsDifferential:
             for argument in runner.arguments |fingerprint|:
                 fingerprint <- differential_world_hash_text(fingerprint, argument)
             fingerprint <- differential_world_hash_text(fingerprint, runner.working_directory)
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, runner.environment_mode.u8())
             fingerprint <- differential_world_hash_u64(fingerprint, runner.environment.count.u64())
             for entry in runner.environment |fingerprint|:
                 fingerprint <- differential_world_hash_text(fingerprint, entry.name)

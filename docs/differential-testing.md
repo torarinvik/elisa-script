@@ -273,9 +273,18 @@ For `PythonAdapter`, `target` is the Python interpreter and `entry` names the ad
 script or module; the host adapter keeps that entry separate until it constructs the
 argv vector. The validator rejects NUL bytes in executable-facing fields, including
 the working directory, while stdin remains length-delimited so binary-compatible
-fixtures are possible. Child environment overrides are ordered typed
-`(name, value)` entries and are applied only after `fork`, so the parent
-runner's environment remains unchanged.
+fixtures are possible. Runner-level environment entries are ordered typed
+`(name, value)` settings and never mutate the parent's environment. The
+`environment_mode` field applies only to `DifferentialRunner.environment`; it
+does not materialize or merge `DifferentialWorld.environment` into either side.
+Case-world environment application remains the host adapter's open contract.
+`environment_mode` defines how these entries relate to the child environment:
+`Inherit` preserves the host environment and overlays the listed entries,
+`Replace` passes exactly the listed entries, and `Clear` passes an empty
+environment and rejects any entries. Exact modes use the provided `PATH` entry
+for bare executable names; without one, use an executable path containing `/`.
+Empty or relative `PATH` components retain POSIX meaning and are evaluated
+after the requested working directory is selected.
 The validator also caps the aggregate terminated C-string payload for the
 executable, adapter entry, arguments, working directory, and environment at
 64 MiB; each environment entry includes the `=` separator materialized by
@@ -335,9 +344,13 @@ change the differential run or introduce a second process invocation.
 The standalone host boundary `execute_differential_process` consumes the same
 `DifferentialProcessInvocation` produced by `prepare_differential_process`. It
 constructs an argv vector directly (never a shell command), feeds stdin through
-a temporary file, captures stdout and stderr independently, and applies an
-optional working directory and explicit environment overrides in the child just
-before `execvp`; its terminator is cleared with `size_of(uintptr)` so the argv
+a temporary file, captures stdout and stderr independently, and applies the
+selected environment mode in the child. `Inherit` overlays entries before
+`execvp`; exact `Replace` and `Clear` modes pass a terminated environment vector
+to `execve`, which does not perform the POSIX `ENOEXEC` shell fallback. The
+`Inherit`/`execvp` path retains that platform fallback, so use an explicit
+interpreter executable when a script requires one; no shell command string is
+ever assembled. The argv terminator is cleared with `size_of(uintptr)` so the
 slot is correct on both 32-bit and 64-bit targets. The timeout is a
 bounded wait-poll budget; an expired child is killed and raises
 `DifferentialRunnerError.Timeout`. A normal nonzero process status, including
@@ -449,9 +462,11 @@ standard-stream write before emission. Process captures in the reference path
 are charged against the remaining combined output budget before allocation;
 the direct engine currently rejects an over-budget combined capture after its
 capture instruction returns, as called out above.
-The in-process adapter rejects nonempty `working_directory`, `environment`,
-`stdin`, or `protocol` fields with `DifferentialRunnerError.UnsupportedConfiguration`;
-use a process runner when a candidate must execute in a separate configured world.
+The in-process adapter rejects a nonempty `working_directory`, `environment`,
+text or binary stdin payload, or `protocol`, as well as any non-`Inherit`
+`environment_mode` or enabled binary-stdin mode, with
+`DifferentialRunnerError.UnsupportedConfiguration`; use a process runner when
+a candidate must execute in a separate configured world.
 Source targets also respect the source loader's 4 KiB filename ceiling and are
 rejected before terminated-buffer allocation when they reach that bound.
 
