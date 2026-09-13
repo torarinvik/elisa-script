@@ -29,7 +29,7 @@ for ordered_guard in \
 done
 rg -Fq 'return false if start > end' "$bytecode_file"
 rg -Fq 'return false if end > sview_len(value)' "$bytecode_file"
-rg -Fq 'return false if output.count > BYTECODE_MAX_TEXT_OUTPUT_BYTES' "$bytecode_file"
+rg -Fq 'return false if output.count > Limits::TEXT_OUTPUT_BYTES' "$bytecode_file"
 rg -Fq 'false return if start > text_length' "$bytecode_file"
 rg -Fq 'false return if separator_length > text_length - start' "$bytecode_file"
 

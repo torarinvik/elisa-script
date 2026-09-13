@@ -3355,8 +3355,8 @@ and sends that request through `parse_elisascript_cli`. The parser requires a
 typed argument, and preserves every
 remaining argv element—including spaces and empty strings—as one typed value.
 It enforces the same public launcher budgets as the native adapter before
-allocating the request (`ES_LAUNCHER_MAX_ARGUMENTS` script arguments and
-`ES_LAUNCHER_MAX_ARGUMENT_BYTES` aggregate script-argument bytes), reporting
+allocating the request (`EsIr::LauncherLimits::ARGUMENTS` script arguments and
+`EsIr::LauncherLimits::ARGUMENT_BYTES` aggregate script-argument bytes), reporting
 typed `TooManyArguments` or `ArgumentsTooLarge` errors instead of relying on
 the host-side collector alone.
 Usage failures return status `2`; allocation, source, entrypoint, bytecode, and
@@ -3369,9 +3369,9 @@ record. The underlying
 library APIs continue to propagate their typed `error[...]` families. The adapter copies the borrowed source view into a NUL-terminated
 buffer only at the file-I/O boundary, so the script itself never receives a
 raw C string or a command-string escape hatch. The public launcher contracts
-are `EsIr::ES_LAUNCHER_MAX_ARGUMENTS` (1,048,576 script arguments),
-`EsIr::ES_LAUNCHER_MAX_ARGUMENT_BYTES` (64 MiB aggregate text), and the
-derived raw-ABI ceiling `EsIr::ES_LAUNCHER_MAX_ARGC`. The native
+are `EsIr::LauncherLimits::ARGUMENTS` (1,048,576 script arguments),
+`EsIr::LauncherLimits::ARGUMENT_BYTES` (64 MiB aggregate text), and the
+derived raw-ABI ceiling `EsIr::LauncherLimits::ARGC`. The native
 `main(argc, argv)` shim rejects an `argc` outside the corresponding executable
 plus-script range before walking host argv storage, and rejects a source path
 whose borrowed view would place its NUL terminator at or beyond the shared

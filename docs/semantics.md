@@ -1956,8 +1956,8 @@ typed `darray[sview]` request. It performs no shell quoting, splitting, globbing
 or environment interpolation. `parse_elisascript_cli` requires the first value
 to name a `.elisascript` file, rejects embedded NUL bytes, and preserves all
 following values exactly. The parser itself enforces the public launcher
-budgets before allocating its result: at most `ES_LAUNCHER_MAX_ARGUMENTS`
-script arguments and at most `ES_LAUNCHER_MAX_ARGUMENT_BYTES` aggregate
+budgets before allocating its result: at most `EsIr::LauncherLimits::ARGUMENTS`
+script arguments and at most `EsIr::LauncherLimits::ARGUMENT_BYTES` aggregate
 script-argument bytes. Count and byte-budget violations are typed
 `TooManyArguments` and `ArgumentsTooLarge` CLI errors, so library callers
 cannot bypass the driver's pre-admission checks. Usage errors use process
@@ -1968,7 +1968,7 @@ source lowering, entrypoint, runtime, and bytecode phases include the exact
 retained enum or verification-issue kind spelling;
 the underlying runner still preserves its typed `error[...]` family for library
 and programmatic callers.
-The raw ABI ceiling is the public derived `ES_LAUNCHER_MAX_ARGC` contract
+The raw ABI ceiling is the public derived `EsIr::LauncherLimits::ARGC` contract
 (executable plus source plus admitted script arguments), so the native shim and
 typed parser share one source of truth.
 Before copying the source view into a terminated path buffer, the driver also
