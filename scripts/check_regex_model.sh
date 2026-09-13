@@ -18,12 +18,12 @@ done
 
 for declaration in \
     'module EsRegex:' \
-    'REGEX_MAX_PATTERN_BYTES' \
-    'REGEX_MAX_INPUT_BYTES' \
-    'REGEX_MAX_REPLACEMENT_BYTES' \
-    'REGEX_MAX_GROUPS' \
-    'REGEX_MAX_MATCHES' \
-    'REGEX_MAX_WORK' \
+    'Limits::PATTERN_BYTES' \
+    'Limits::INPUT_BYTES' \
+    'Limits::REPLACEMENT_BYTES' \
+    'Limits::GROUPS' \
+    'Limits::MATCHES' \
+    'Limits::WORK' \
     'const enum RegexOperation of u8:' \
     'const enum RegexState of u8:' \
     'const enum RegexEvent of u8:' \

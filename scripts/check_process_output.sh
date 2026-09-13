@@ -37,9 +37,10 @@ for declaration in \
 done
 
 for boundary in \
-    'PROCESS_OUTPUT_MAX_DESTINATIONS' \
-    'PROCESS_OUTPUT_MAX_CHUNKS' \
-    'PROCESS_OUTPUT_MAX_BYTES' \
+    'Limits::DESTINATIONS' \
+    'Limits::CHUNKS' \
+    'Limits::BYTES' \
+    'Limits::PATH_BYTES' \
     'ProcessOutputDestinationKind.TruncateFile' \
     'ProcessOutputDestinationKind.AppendFile' \
     'ProcessOutputError.DuplicateDestination' \

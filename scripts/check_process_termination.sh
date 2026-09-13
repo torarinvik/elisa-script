@@ -31,9 +31,9 @@ for declaration in \
 done
 
 for boundary in \
-    'PROCESS_TERMINATION_MAX_MEMBERS' \
-    'PROCESS_TERMINATION_MAX_POLLS' \
-    'PROCESS_TERMINATION_MAX_FORCE_ATTEMPTS' \
+    'Limits::MEMBERS' \
+    'Limits::POLLS' \
+    'Limits::FORCE_ATTEMPTS' \
     'start_token' \
     'RootNotOwned' \
     'ProcessTerminationEvent.RequestGraceful' \

@@ -34,10 +34,11 @@ for declaration in \
 done
 
 for boundary in \
-    'DIRECTORY_TREE_MAX_DEPTH' \
-    'DIRECTORY_TREE_MAX_ENTRIES' \
-    'DIRECTORY_TREE_MAX_BYTES' \
-    'DIRECTORY_TREE_MAX_IDENTITIES' \
+    'Limits::DEPTH' \
+    'Limits::ENTRIES' \
+    'Limits::BYTES' \
+    'Limits::IDENTITIES' \
+    'Limits::PATH_BYTES' \
     'directory_tree_identity_index' \
     'DirectoryTreeSymlinkPolicy.DoNotFollow' \
     'DirectoryTreeFailureMode.Collect' \

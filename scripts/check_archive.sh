@@ -34,10 +34,10 @@ for declaration in \
 done
 
 for boundary in \
-    'ARCHIVE_MAX_ENTRIES' \
-    'ARCHIVE_MAX_PATH_BYTES' \
-    'ARCHIVE_MAX_ENTRY_BYTES' \
-    'ARCHIVE_MAX_TOTAL_BYTES' \
+    'Limits::ENTRIES' \
+    'Limits::PATH_BYTES' \
+    'Limits::ENTRY_BYTES' \
+    'Limits::TOTAL_BYTES' \
     'ArchiveError.AbsolutePath' \
     'ArchiveError.TraversalPath' \
     'ArchiveError.LinkRejected' \

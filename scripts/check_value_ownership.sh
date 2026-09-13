@@ -33,9 +33,9 @@ for declaration in \
 done
 
 for boundary in \
-    'VALUE_OWNERSHIP_MAX_VALUES' \
-    'VALUE_OWNERSHIP_MAX_BORROWS' \
-    'VALUE_OWNERSHIP_MAX_BYTES' \
+    'Limits::VALUES' \
+    'Limits::BORROWS' \
+    'Limits::BYTES' \
     'ValueOwnershipKind.Linear' \
     'ValueOwnershipKind.BorrowedView' \
     'ValueOwnershipEvent.BeginBorrow' \
