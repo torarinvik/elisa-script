@@ -35,9 +35,10 @@ for declaration in \
 done
 
 for boundary in \
-    'DEBUGGER_MAX_BREAKPOINTS' \
-    'DEBUGGER_MAX_FRAMES' \
-    'DEBUGGER_MAX_BRANCHES' \
+    'Limits::BREAKPOINTS' \
+    'Limits::FRAMES' \
+    'Limits::BRANCHES' \
+    'Limits::NAME_BYTES' \
     'DebuggerEvent.SelectBranch' \
     'DebuggerEvent.Step' \
     'DebuggerError.InvalidTransition' \

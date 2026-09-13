@@ -35,8 +35,8 @@ for declaration in \
 done
 
 for boundary in \
-    'BINARY_MAX_INPUT_BYTES' \
-    'BINARY_MAX_READS' \
+    'Limits::INPUT_BYTES' \
+    'Limits::READS' \
     'BinaryByteOrder.Little' \
     'BinaryByteOrder.Big' \
     'BinaryError.Truncated' \

@@ -35,8 +35,8 @@ for declaration in \
 done
 
 for boundary in \
-    'DEADLINE_MAX_WAITS' \
-    'DEADLINE_MAX_ADVANCE' \
+    'Limits::WAITS' \
+    'Limits::ADVANCE' \
     'DeadlineClockMode.HostMonotonic' \
     'DeadlineClockMode.Virtual' \
     'DeadlineError.DeadlineInPast' \
