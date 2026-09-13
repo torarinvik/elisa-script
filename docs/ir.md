@@ -758,11 +758,11 @@ those APIs rather than reaching into VM state.
 `EsBytecode.execute_bytecode` selects the packed loop whenever all instructions
 belong to the direct subset, including guarded error recovery. It rebuilds the
 verified IR shape and delegates to `EsIr.interpret` only for modules that still
-contain dynamic effects, handlers, continuations, shared module globals, or
-another unsupported family. Global-bearing bytecode modules retain their global
-table and use the interpreter fallback until the packed frame owns a global arena.
-Both paths are checked against the same result, step count, and observation
-trace/value contract in the bytecode tests.
+contain dynamic effects, handlers, continuations, aggregate globals, unsupported
+global types/widths, or another unsupported family. The direct bytecode runner
+initializes scalar global values once per top-level run and shares that arena
+across nested calls. Both paths are checked against the same result, step count,
+and observation trace/value contract in the bytecode tests.
 Every `Execution` also records its `engine`: `ReferenceInterpreter` for direct
 interpreter calls, `DirectBytecode` for the packed state machine, and
 `BytecodeInterpreterFallback` when the compatibility entrypoint deliberately
@@ -1032,6 +1032,14 @@ instead of falling back. Differential and backend conformance tests should use
 this mode when they need to prove that the packed bytecode engine itself ran;
 the ordinary `execute_bytecode` API remains the compatibility path that may use
 the verified interpreter for unsupported features.
+
+The direct subset supports initialized and defaulted scalar module globals,
+including typed loads/stores shared across nested calls. Aggregate globals and
+global initializers outside the direct scalar type/width set remain on the
+verified interpreter fallback path; strict direct-only execution rejects them.
+Both execution engines reject modules with more than
+`ES_RUNTIME_DEFAULT_MAX_STORAGE_VALUES` globals before materializing the
+per-run global arena.
 
 ## Algebraic effects
 

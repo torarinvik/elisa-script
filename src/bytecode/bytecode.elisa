@@ -942,6 +942,66 @@ module EsBytecode:
             return type.kind == TypeKind.Int and (type.bits == 64 or type.bits == 8)
 
 
+        def bytecode_direct_global_type(type: Type&) -> bool:
+            return true if type.kind in {TypeKind.Bool, TypeKind.Text, TypeKind.Char}
+            return true if type.kind == TypeKind.Named and type.name in {"Path", "Glob", "Regex", "Executable", "Url"}
+            return true if type.kind == TypeKind.Float and type.bits == 64
+            return type.kind == TypeKind.Int and (type.bits == 64 or type.bits == 8)
+
+
+        def bytecode_direct_global_integer_fits(value: i64, type: Type&) -> bool:
+            return true if type.bits == 64
+            if type.signed:
+                return value >= -128 and value <= 127 if type.bits == 8
+                return false
+            return value >= 0 and value <= 255 if type.bits == 8
+            return false
+
+
+        def bytecode_direct_global_value_matches(value: RuntimeValue, type: Type&) -> bool:
+            return value.kind == RuntimeValueKind.Bool if type.kind == TypeKind.Bool
+            return value.kind == RuntimeValueKind.Int and bytecode_direct_global_integer_fits(value.integer, type) if type.kind == TypeKind.Int
+            return value.kind == RuntimeValueKind.Float if type.kind == TypeKind.Float and type.bits == 64
+            return value.kind == RuntimeValueKind.Text if type.kind in {TypeKind.Text, TypeKind.Char}
+            return value.kind == RuntimeValueKind.Text if type.kind == TypeKind.Named and type.name in {"Path", "Glob", "Regex", "Executable", "Url"}
+            return false
+
+
+        def bytecode_direct_global_initializer_supported(binding: Global) -> bool:
+            return false if not bytecode_direct_global_type(binding.type) or binding.aggregate_values.count != 0
+            return true if not binding.initialized
+            return bytecode_direct_global_integer_fits(binding.integer, binding.type) if binding.type.kind == TypeKind.Int
+            if binding.type.kind == TypeKind.Float:
+                _ = try EsIr::parse_float_value(binding.decimal) else return false
+            return true
+
+
+        def bytecode_direct_global_value(binding: Global) -> RuntimeValue error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+            raise InterpretError.UnsupportedInstruction if not bytecode_direct_global_initializer_supported(binding)
+            if binding.type.kind == TypeKind.Bool:
+                return runtime_bool(binding.boolean) if binding.initialized else runtime_bool(false)
+            if binding.type.kind == TypeKind.Int:
+                return runtime_int(binding.integer) if binding.initialized else runtime_int(0)
+            if binding.type.kind == TypeKind.Float:
+                if binding.initialized:
+                    return runtime_float(try EsIr::parse_float_value(binding.decimal))
+                return runtime_float(0.0)
+            if binding.type.kind in {TypeKind.Text, TypeKind.Char} or (binding.type.kind == TypeKind.Named and binding.type.name in {"Path", "Glob", "Regex", "Executable", "Url"}):
+                if binding.initialized:
+                    return runtime_text(try EsIr::decode_literal_text_value(binding.text))
+                return runtime_text("")
+            raise InterpretError.UnsupportedInstruction
+
+
+        def bytecode_direct_global_values(module: BytecodeModule&) -> darray[RuntimeValue] error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+            raise InterpretError.OutputLimit if module.globals.count > ES_RUNTIME_DEFAULT_MAX_STORAGE_VALUES
+            globals: mutable darray[RuntimeValue] = []
+            globals.reserve(module.globals.count)
+            for binding in module.globals |globals|:
+                globals.push(try bytecode_direct_global_value(binding))
+            return globals
+
+
         def bytecode_array_element_type_legacy(array_type: Type&) -> Type:
             return Type{kind: array_type.element_kind, name: array_type.element_name, bits: array_type.element_bits, signed: array_type.element_signed, element_kind: array_type.element_element_kind, element_name: array_type.element_element_name, element_bits: array_type.element_element_bits, element_signed: array_type.element_element_signed, element_element_kind: array_type.element_element_element_kind, element_element_name: array_type.element_element_element_name, element_element_bits: array_type.element_element_element_bits, element_element_signed: array_type.element_element_element_signed, element_element_element_kind: array_type.element_element_element_element_kind, element_element_element_name: array_type.element_element_element_element_name, element_element_element_bits: array_type.element_element_element_element_bits, element_element_element_signed: array_type.element_element_element_element_signed, element_element_element_element_kind: array_type.element_element_element_element_element_kind, element_element_element_element_name: array_type.element_element_element_element_element_name, element_element_element_element_element_bits: array_type.element_element_element_element_element_bits, element_element_element_element_element_signed: array_type.element_element_element_element_element_signed}
 
@@ -1825,9 +1885,23 @@ module EsBytecode:
         # Evaluate the closed scalar, aggregate, filesystem, and process subset
         # through a state machine driven by the instruction cursor. Unsupported
         # families never enter this path.
-        def bytecode_direct_instruction(module: BytecodeModule&, instruction: Instruction, fn: BytecodeFunction&, ids: darray[u32]&, values: darray[RuntimeValue]&, storage: mutable darray[RuntimeValue]&, observations: mutable darray[Observation]&, step_limit: u64, steps: mutable u64&, call_depth: usize, output_bytes: mutable usize&, observation_limit: usize = EsIr::ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS) -> RuntimeValue error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+        def bytecode_direct_instruction(module: BytecodeModule&, instruction: Instruction, fn: BytecodeFunction&, ids: darray[u32]&, values: darray[RuntimeValue]&, storage: mutable darray[RuntimeValue]&, globals: mutable darray[RuntimeValue]&, observations: mutable darray[Observation]&, step_limit: u64, steps: mutable u64&, call_depth: usize, output_bytes: mutable usize&, observation_limit: usize = EsIr::ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS) -> RuntimeValue error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             raise InterpretError.Panic if instruction.opcode == Opcode.Panic
             raise InterpretError.Raised if instruction.opcode == Opcode.Raise
+            global_loaded: mutable RuntimeValue = runtime_void()
+            if instruction.opcode == Opcode.LoadGlobal or instruction.opcode == Opcode.StoreGlobal:
+                raise InterpretError.InvalidControlFlow if instruction.integer < 0 or instruction.integer > 4294967295 or instruction.integer.usize() >= module.globals.count or instruction.integer.usize() >= globals.count
+                global_index: usize = instruction.integer.usize()
+                global_type: Type = module.globals[global_index].type
+                if instruction.opcode == Opcode.LoadGlobal:
+                    raise InterpretError.InvalidControlFlow if instruction.operand_count != 0 or instruction.result == 0
+                    global_loaded <- globals[global_index]
+                    raise InterpretError.TypeMismatch if not bytecode_direct_global_value_matches(global_loaded, global_type) or not bytecode_direct_global_value_matches(global_loaded, instruction.result_type)
+                else:
+                    raise InterpretError.InvalidControlFlow if instruction.operand_count != 1 or instruction.operand_start.usize() >= fn.operand_pool.count
+                    global_stored: RuntimeValue = bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()])
+                    raise InterpretError.TypeMismatch if not bytecode_direct_global_value_matches(global_stored, global_type)
+                    globals[global_index] <- global_stored
             operand: mutable RuntimeValue = runtime_void()
             if instruction.opcode == Opcode.Negate or instruction.opcode == Opcode.Not or instruction.opcode == Opcode.BitNot:
                 operand <- bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()])
@@ -2531,7 +2605,7 @@ module EsBytecode:
                 for offset in 0..<instruction.operand_count.usize() |module, instruction, fn, ids, values, call_arguments|:
                     call_arguments.push(bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + offset]))
                 remaining: u64 = step_limit - steps
-                nested: Execution = try execute_bytecode_direct_with_ledger(module, instruction.symbol, call_arguments, observations, storage, remaining, call_depth + 1, observation_limit, output_bytes)
+                nested: Execution = try execute_bytecode_direct_with_ledger(module, instruction.symbol, call_arguments, observations, storage, globals, remaining, call_depth + 1, observation_limit, output_bytes)
                 steps <- steps + nested.steps
                 # Child calls share the parent's output ledger.  Without this
                 # hand-off, nested stdout/process capture could exceed the
@@ -2588,6 +2662,14 @@ module EsBytecode:
                     -> Execute
                 Execute, BytecodeValueState.Execute if instruction.opcode == Opcode.Copy:
                     cursor.value <- bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()])
+                    cursor.state <- BytecodeValueState.Done
+                    -> Execute
+                Execute, BytecodeValueState.Execute if instruction.opcode == Opcode.LoadGlobal:
+                    cursor.value <- global_loaded
+                    cursor.state <- BytecodeValueState.Done
+                    -> Execute
+                Execute, BytecodeValueState.Execute if instruction.opcode == Opcode.StoreGlobal:
+                    cursor.value <- runtime_void()
                     cursor.state <- BytecodeValueState.Done
                     -> Execute
                 Execute, BytecodeValueState.Execute if instruction.opcode == Opcode.Negate and operand.kind == RuntimeValueKind.Int:
@@ -2870,9 +2952,9 @@ module EsBytecode:
             return failure in {InterpretError.DivisionByZero, InterpretError.IntegerOverflow, InterpretError.InvalidNumber, InterpretError.FileIo, InterpretError.Process, InterpretError.OutputLimit, InterpretError.Environment, InterpretError.Directory, InterpretError.Console, InterpretError.Time, InterpretError.RangeStepZero, InterpretError.InvalidShift, InterpretError.IndexOutOfBounds, InterpretError.Assertion, InterpretError.Raised}
 
 
-        def bytecode_direct_instruction_guarded(module: BytecodeModule&, instruction: Instruction, fn: BytecodeFunction&, ids: darray[u32]&, values: darray[RuntimeValue]&, storage: mutable darray[RuntimeValue]&, observations: mutable darray[Observation]&, step_limit: u64, steps: mutable u64&, guards: mutable darray[BytecodeErrorGuard]&, recovered: mutable bool&, recovery_target: mutable u32&, call_depth: usize, output_bytes: mutable usize&, observation_limit: usize = EsIr::ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS) -> RuntimeValue error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+        def bytecode_direct_instruction_guarded(module: BytecodeModule&, instruction: Instruction, fn: BytecodeFunction&, ids: darray[u32]&, values: darray[RuntimeValue]&, storage: mutable darray[RuntimeValue]&, globals: mutable darray[RuntimeValue]&, observations: mutable darray[Observation]&, step_limit: u64, steps: mutable u64&, guards: mutable darray[BytecodeErrorGuard]&, recovered: mutable bool&, recovery_target: mutable u32&, call_depth: usize, output_bytes: mutable usize&, observation_limit: usize = EsIr::ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS) -> RuntimeValue error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             recovered <- false
-            catch bytecode_direct_instruction(module, instruction, fn, ids, values, storage, observations, step_limit, steps, call_depth, output_bytes, observation_limit):
+            catch bytecode_direct_instruction(module, instruction, fn, ids, values, storage, globals, observations, step_limit, steps, call_depth, output_bytes, observation_limit):
                 ok:
                     return ok
                 error failure:
@@ -2886,10 +2968,9 @@ module EsBytecode:
 
     public:
         def bytecode_direct_supported(module: BytecodeModule&) -> bool:
-            # Shared module storage currently uses the reference interpreter
-            # fallback; keep the direct engine stateless until its frame model
-            # grows a global arena.
-            return false if module.globals.count != 0
+            return false if module.globals.count > ES_RUNTIME_DEFAULT_MAX_STORAGE_VALUES
+            for binding in module.globals:
+                return false if not bytecode_direct_global_initializer_supported(binding)
             for function in module.functions:
                 if function.return_type.kind != TypeKind.Void and not bytecode_direct_value_type(function.return_type):
                     return false
@@ -2929,6 +3010,15 @@ module EsBytecode:
                     continue if instruction.opcode == Opcode.UnpackArray
                     continue if instruction.opcode == Opcode.FormatAggregate
                     continue if instruction.opcode == Opcode.Panic or instruction.opcode == Opcode.Raise
+                    if instruction.opcode == Opcode.LoadGlobal:
+                        return false if instruction.operand_count != 0 or instruction.result == 0
+                        return false if instruction.integer < 0 or instruction.integer > 4294967295 or instruction.integer.usize() >= module.globals.count
+                        return false if not bytecode_direct_global_type(instruction.result_type)
+                        continue
+                    if instruction.opcode == Opcode.StoreGlobal:
+                        return false if instruction.operand_count != 1 or instruction.result != 0 or instruction.result_type.kind != TypeKind.Void
+                        return false if instruction.integer < 0 or instruction.integer > 4294967295 or instruction.integer.usize() >= module.globals.count
+                        continue
                     return false if instruction.opcode == Opcode.ErrorPayload
                     if instruction.opcode == Opcode.PathIterDir:
                         return false if instruction.result_type.kind != TypeKind.Array or instruction.result_type.element_kind != TypeKind.Text
@@ -3026,7 +3116,7 @@ module EsBytecode:
             return function.blocks.count
 
 
-        def execute_bytecode_direct_with_ledger(module: BytecodeModule&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, step_limit: u64, call_depth: usize, observation_limit: usize, output_ledger: mutable usize&) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+        def execute_bytecode_direct_with_ledger(module: BytecodeModule&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, globals: mutable darray[RuntimeValue]&, step_limit: u64, call_depth: usize, observation_limit: usize, output_ledger: mutable usize&) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             raise InterpretError.OutputLimit if step_limit > EsIr::ES_RUNTIME_DEFAULT_MAX_STEPS
             raise InterpretError.OutputLimit if observation_limit > EsIr::ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS
             raise InterpretError.OutputLimit if call_depth >= ES_RUNTIME_DEFAULT_MAX_EXECUTION_CALL_DEPTH
@@ -3118,7 +3208,7 @@ module EsBytecode:
                     # before and after the guarded instruction so recovery
                     # cannot discard those already-emitted bytes.
                     cursor.output_bytes <- output_ledger
-                    cursor.value <- try bytecode_direct_instruction_guarded(module, instruction, fn, ids, values, storage, observations, step_limit, cursor.steps, error_guards, cursor.recovered, cursor.recovery_target, call_depth, output_ledger, observation_limit)
+                    cursor.value <- try bytecode_direct_instruction_guarded(module, instruction, fn, ids, values, storage, globals, observations, step_limit, cursor.steps, error_guards, cursor.recovered, cursor.recovery_target, call_depth, output_ledger, observation_limit)
                     cursor.output_bytes <- output_ledger
                     produced_output: usize = 0
                     if instruction.opcode == Opcode.CaptureProcessStdout or instruction.opcode == Opcode.CaptureProcessStderr or instruction.opcode == Opcode.CaptureProcessStdoutWithStdin or instruction.opcode == Opcode.CaptureProcessStderrWithStdin or instruction.opcode == Opcode.CaptureProcessResult or instruction.opcode == Opcode.CaptureProcessResultInDirectory or instruction.opcode == Opcode.CaptureProcessResultWithEnvironment or instruction.opcode == Opcode.CaptureProcessResultInDirectoryWithEnvironment:
@@ -3147,7 +3237,7 @@ module EsBytecode:
                     cursor.state <- BytecodeExecutionState.EnterBlock
                     -> Execute
 
-                Execute, BytecodeExecutionState.StoreInstruction if fn.instructions[fn.blocks[cursor.control.block_index].instruction_offset.usize() + cursor.control.instruction_index - 1].opcode != Opcode.Observe and fn.instructions[fn.blocks[cursor.control.block_index].instruction_offset.usize() + cursor.control.instruction_index - 1].opcode != Opcode.Assert and fn.instructions[fn.blocks[cursor.control.block_index].instruction_offset.usize() + cursor.control.instruction_index - 1].opcode != Opcode.Panic:
+                Execute, BytecodeExecutionState.StoreInstruction if fn.instructions[fn.blocks[cursor.control.block_index].instruction_offset.usize() + cursor.control.instruction_index - 1].result != 0:
                     instruction_index: usize = fn.blocks[cursor.control.block_index].instruction_offset.usize() + cursor.control.instruction_index - 1
                     bytecode_direct_set_frame_value(ids, values, fn.instructions[instruction_index].result, cursor.value)
                     cursor.control.state <- BytecodeControlState.Instruction
@@ -3204,7 +3294,8 @@ module EsBytecode:
         # remains charged even when an inner frame is recovered or fails.
         def execute_bytecode_direct(module: BytecodeModule&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, step_limit: u64 = 1000000, call_depth: usize = 0, observation_limit: usize = EsIr::ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS, output_base: usize = 0) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             output_ledger: mutable usize = output_base
-            return try execute_bytecode_direct_with_ledger(module, entry, arguments, observations, storage, step_limit, call_depth, observation_limit, output_ledger)
+            globals: mutable darray[RuntimeValue] = try bytecode_direct_global_values(module)
+            return try execute_bytecode_direct_with_ledger(module, entry, arguments, observations, storage, globals, step_limit, call_depth, observation_limit, output_ledger)
 
 
     public:
@@ -3255,6 +3346,7 @@ module EsBytecode:
 
         def execute_bytecode(module: BytecodeModule&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, step_limit: u64 = ES_RUNTIME_DEFAULT_MAX_STEPS, observation_limit: usize = ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             raise InterpretError.OutputLimit if observation_limit > ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS
+            raise InterpretError.OutputLimit if module.globals.count > ES_RUNTIME_DEFAULT_MAX_STORAGE_VALUES
             raise InterpretError.VerificationFailed if not bytecode_dispatch_table_valid(module)
             region bytecode_execution(1048576) using malloc:
                 ir_module: Module = bytecode_to_ir(module)
@@ -3276,6 +3368,7 @@ module EsBytecode:
         # orchestration even while host-bridge counters are still specialized.
         def execute_bytecode_with_resource_policy(module: BytecodeModule&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, policy: RuntimeResourcePolicy) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             raise InterpretError.OutputLimit if not runtime_resource_policy_valid(policy)
+            raise InterpretError.OutputLimit if module.globals.count > ES_RUNTIME_DEFAULT_MAX_STORAGE_VALUES
             raise InterpretError.UnsupportedInstruction if bytecode_policy_has_unsupported_dimensions(policy)
             result: mutable Execution = Execution{value: runtime_void(), steps: 0}
             if bytecode_policy_requires_reference(policy):
@@ -3297,6 +3390,7 @@ module EsBytecode:
         # failure when the module is outside the packed loop's proven subset.
         def execute_bytecode_direct_only(module: BytecodeModule&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, step_limit: u64 = ES_RUNTIME_DEFAULT_MAX_STEPS, observation_limit: usize = ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             raise InterpretError.OutputLimit if observation_limit > ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS
+            raise InterpretError.OutputLimit if module.globals.count > ES_RUNTIME_DEFAULT_MAX_STORAGE_VALUES
             raise InterpretError.VerificationFailed if not bytecode_dispatch_table_valid(module)
             capability: BytecodeCapabilityReport = bytecode_capability_report(module)
             raise InterpretError.UnsupportedInstruction if not capability.direct_supported
@@ -3309,6 +3403,7 @@ module EsBytecode:
 
         def execute_bytecode_direct_only_with_resource_policy(module: BytecodeModule&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, policy: RuntimeResourcePolicy) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             raise InterpretError.OutputLimit if not runtime_resource_policy_valid(policy)
+            raise InterpretError.OutputLimit if module.globals.count > ES_RUNTIME_DEFAULT_MAX_STORAGE_VALUES
             raise InterpretError.UnsupportedInstruction if bytecode_policy_requires_reference(policy) or bytecode_policy_has_unsupported_dimensions(policy)
             result: mutable Execution = try execute_bytecode_direct_only(module, entry, arguments, observations, storage, policy.steps, policy.retained_traces)
             raise InterpretError.OutputLimit if not runtime_resource_usage_within_policy(result.usage, policy)

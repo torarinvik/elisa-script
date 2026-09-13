@@ -501,27 +501,51 @@ def bytecode_keeps_panic_outside_error_recovery() -> void:
 
 
 @test
-def bytecode_globals_use_verified_interpreter_fallback() -> void:
+def bytecode_scalar_globals_execute_direct_with_shared_state() -> void:
     can Memory.Allocate, Abort.Panic, Unsafe.PointerCast:
-        source: static u8& = "global counter: i64 = 7\ndef bump() -> i64:\n    counter += 1i64\n    return counter\n\ndef sequence() -> i64:\n    first: i64 = bump()\n    return bump()\n"
-        module: Module = lower_program(source)
+        source: static u8& = "global counter: i64 = 7\nglobal zero: i64\nglobal ready: bool\nglobal ratio: f64 = 1.25\nglobal title: sview = \"seed\"\ndef bump() -> i64:\n    counter += 1i64\n    return counter\n\ndef sequence() -> i64:\n    first: i64 = bump()\n    return bump()\n\ndef read_zero() -> i64:\n    return zero\n\ndef read_ready() -> bool:\n    return ready\n\ndef read_ratio() -> f64:\n    return ratio\n\ndef read_title() -> sview:\n    return title\n"
+        module: mutable Module = lower_program(source)
+        module.globals[1].integer <- 42
+        module.globals[2].boolean <- true
         lowered: BytecodeLowerResult = lower_bytecode(module)
         assert lowered.issues.count == 0
-        assert lowered.module.globals.count == 1
+        assert lowered.module.globals.count == 5
+        assert not lowered.module.globals[1].initialized and lowered.module.globals[1].integer == 42
+        assert not lowered.module.globals[2].initialized and lowered.module.globals[2].boolean
         assert bytecode_opcode_class(Opcode.LoadGlobal) == BytecodeDispatchClass.Frame
         assert bytecode_opcode_class(Opcode.StoreGlobal) == BytecodeDispatchClass.Frame
-        assert not bytecode_direct_supported(lowered.module)
+        assert bytecode_direct_supported(lowered.module)
         capability: BytecodeCapabilityReport = bytecode_capability_report(lowered.module)
-        assert not capability.direct_supported
-        assert capability.engine == ExecutionEngine.BytecodeInterpreterFallback
-        assert capability.global_count == 1u64
+        assert capability.direct_supported
+        assert capability.engine == ExecutionEngine.DirectBytecode
+        assert capability.global_count == 5u64
         arguments: darray[RuntimeValue] = []
         observations: mutable darray[Observation] = []
         storage: mutable darray[RuntimeValue] = []
         execution: Execution = try execute_bytecode(lowered.module, "sequence", arguments, observations, storage) else failed_execution()
-        assert execution.engine == ExecutionEngine.BytecodeInterpreterFallback
+        reference_observations: mutable darray[Observation] = []
+        reference_storage: mutable darray[RuntimeValue] = []
+        reference: Execution = try interpret(module, "sequence", arguments, reference_observations, reference_storage) else failed_execution()
+        assert execution.engine == ExecutionEngine.DirectBytecode
         assert execution.value.kind == RuntimeValueKind.Int
         assert execution.value.integer == 9
+        assert reference.value.kind == RuntimeValueKind.Int
+        assert execution.value.integer == reference.value.integer
+
+        default_value: Execution = try execute_bytecode_direct_only(lowered.module, "read_zero", arguments, observations, storage) else failed_execution()
+        default_flag: Execution = try execute_bytecode_direct_only(lowered.module, "read_ready", arguments, observations, storage) else failed_execution()
+        default_reference_observations: mutable darray[Observation] = []
+        default_reference_storage: mutable darray[RuntimeValue] = []
+        default_reference_value: Execution = try interpret(module, "read_zero", arguments, default_reference_observations, default_reference_storage) else failed_execution()
+        default_reference_flag: Execution = try interpret(module, "read_ready", arguments, default_reference_observations, default_reference_storage) else failed_execution()
+        float_global: Execution = try execute_bytecode_direct_only(lowered.module, "read_ratio", arguments, observations, storage) else failed_execution()
+        text_global: Execution = try execute_bytecode_direct_only(lowered.module, "read_title", arguments, observations, storage) else failed_execution()
+        assert default_value.value.kind == RuntimeValueKind.Int and default_value.value.integer == 0
+        assert default_flag.value.kind == RuntimeValueKind.Bool and not default_flag.value.boolean
+        assert default_reference_value.value.kind == RuntimeValueKind.Int and default_reference_value.value.integer == default_value.value.integer
+        assert default_reference_flag.value.kind == RuntimeValueKind.Bool and default_reference_flag.value.boolean == default_flag.value.boolean
+        assert float_global.value.kind == RuntimeValueKind.Float and float_global.value.decimal == 1.25
+        assert text_global.value.kind == RuntimeValueKind.Text and text_global.value.text == "seed"
 
 
 @test
@@ -545,7 +569,7 @@ def bytecode_literal_collection_globals_use_interpreter_fallback() -> void:
 @test
 def bytecode_direct_only_rejects_interpreter_fallback() -> void:
     can Memory.Allocate, Abort.Panic, Unsafe.PointerCast:
-        source: static u8& = "global counter: i64 = 7\ndef sequence() -> i64:\n    return counter\n"
+        source: static u8& = "global values: darray[i64] = [1i64, 2i64]\ndef sequence() -> i64:\n    return values[0]\n"
         module: Module = lower_program(source)
         lowered: BytecodeLowerResult = lower_bytecode(module)
         assert lowered.issues.count == 0
@@ -553,10 +577,14 @@ def bytecode_direct_only_rejects_interpreter_fallback() -> void:
         arguments: darray[RuntimeValue] = []
         observations: mutable darray[Observation] = []
         storage: mutable darray[RuntimeValue] = []
-        execution: Execution = try execute_bytecode_direct_only(lowered.module, "sequence", arguments, observations, storage) else failed_execution()
-        # The strict path reports unsupported direct execution rather than
-        # returning the valid integer that execute_bytecode obtains by fallback.
-        assert execution.value.kind == RuntimeValueKind.Void
+        rejected: mutable bool = false
+        catch execute_bytecode_direct_only(lowered.module, "sequence", arguments, observations, storage):
+            ok execution:
+                assert false
+            error failure:
+                assert failure == InterpretError.UnsupportedInstruction
+                rejected <- true
+        assert rejected
 
 
 @test
