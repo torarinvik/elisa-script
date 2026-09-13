@@ -58,6 +58,15 @@ cleanup error; it never silently resumes a consumed continuation. Retained
 multi-shot snapshots are reclaimed after the callback and all private replay
 suffixes return.
 
+Each captured frame also retains a bounded snapshot of its active error guards,
+including the handler depth at which each guard was installed. If a resumed
+suffix raises a recoverable failure, its own restored guards are searched first;
+when none match, the failure remains active while replay advances through
+suspended callers from nearest to outermost. The first matching caller guard
+unwinds to its saved handler depth and transfers to its recovery block. Fatal
+failures bypass this search. Guard spans and handler depths are validated before
+replay, and every guard-pool suffix is reclaimed with the other frame storage.
+
 ## Cancellation, escape, and budgets
 
 Cancellation is cooperative inside the VM and enforceable at blocking host

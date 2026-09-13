@@ -1944,6 +1944,10 @@ have the guarded call's exact type. `Raise` itself carries ordered payload
 operands, and the interpreter preserves those values while unwinding. A single
 error arm may instead use `return` and terminate its fallback block after normal
 return-type checking, including an explicit variant arm that binds payloads.
+When a guarded computation suspends at `perform`, the interpreter snapshots its
+active guards with the captured frame and caller chain. A recoverable failure in
+the resumed suffix searches those restored guards from the performing frame
+outward through suspended callers; fatal failures still bypass recovery.
 `PathExists` is the first concrete filesystem opcode. Its verified signature is
 `Named(Path) -> Bool`, and verification also requires `File.Read` in the containing
 function's effect row. Lowering adds that effect automatically. The interpreter
