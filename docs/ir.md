@@ -1036,7 +1036,9 @@ the verified interpreter for unsupported features.
 
 The direct subset supports initialized and defaulted scalar module globals and
 flat literal arrays/maps whose elements, keys, and values are supported scalar
-types. It supports typed loads/stores shared across nested calls. Nested
+types. Direct integers include signed and unsigned 8-, 16-, 32-, and 64-bit
+types, while direct floating-point values are f64. It supports typed
+loads/stores shared across nested calls. Nested
 aggregate global types remain invalid at IR verification; valid global
 initializers outside the direct scalar type/width set use the verified
 interpreter fallback, and strict direct-only execution rejects them. Aggregate
