@@ -19,6 +19,7 @@ done
 rg -q '^module EsExecutable:' "$model"
 rg -q 'include "\.\./runtime/executable_model\.elisa"' "$ir"
 for declaration in \
+    'const module Limits:' \
     'const enum ExecutableDiscoveryState of u8' \
     'const enum ExecutableDiscoveryEvent of u8' \
     'struct ExecutableDiscoveryRequest:' \
@@ -33,9 +34,10 @@ for declaration in \
 done
 
 for boundary in \
-    'EXECUTABLE_MAX_NAME_BYTES' \
-    'EXECUTABLE_MAX_PATH_ENTRIES' \
-    'EXECUTABLE_MAX_CANDIDATES' \
+    'Limits::NAME_BYTES' \
+    'Limits::PATH_ENTRIES' \
+    'Limits::CANDIDATES' \
+    'Limits::PATH_BYTES' \
     'ExecutableDiscoveryEvent.Candidate' \
     'ExecutableDiscoveryError.MissingNotReady' \
     'ExecutableDiscoveryError.CandidateOrderInvalid' \
