@@ -19,7 +19,8 @@ done
 
 for declaration in \
     'module EsCliWorkflow:' \
-    'CLI_WORKFLOW_MAX_STEPS' \
+    'const module Limits:' \
+    'Limits::STEPS' \
     'const enum CliWorkflowStep of u8:' \
     'const enum CliWorkflowState of u8:' \
     'const enum CliWorkflowEvent of u8:' \

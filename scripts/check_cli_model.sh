@@ -19,9 +19,10 @@ done
 
 for declaration in \
     'module EsCli:' \
-    'CLI_MAX_ARGUMENTS' \
-    'CLI_MAX_TEXT_BYTES' \
-    'CLI_MAX_SOURCE_PATH_BYTES' \
+    'const module Limits:' \
+    'Limits::ARGUMENTS' \
+    'Limits::TEXT_BYTES' \
+    'Limits::SOURCE_PATH_BYTES' \
     'const enum CliMode of u8:' \
     'const enum CliColorMode of u8:' \
     'struct CliInvocation:' \
