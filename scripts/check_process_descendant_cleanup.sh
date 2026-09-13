@@ -38,7 +38,7 @@ assert_group_cleanup_after_reap() {
     [[ -n "$block" ]]
     [[ "$block" == *'leader_reaped: mutable bool = false'* ]]
     [[ "$block" == *'leader_reaped <- true'* ]]
-    [[ "$block" == *'process_wait_signal(-waiter.pid, INTERPRET_PROCESS_WAIT_KILL) if waiter.group_ready'* || "$block" == *'differential_signal_process(-pid, DIFFERENTIAL_SIGNAL_KILL) if group_ready'* ]]
+    [[ "$block" == *'process_wait_signal(-waiter.pid, ProcessWait::SIGNAL_KILL) if waiter.group_ready'* || "$block" == *'differential_signal_process(-pid, DIFFERENTIAL_SIGNAL_KILL) if group_ready'* ]]
     [[ "$block" == *'return if leader_reaped'* ]]
     local group_kill_line return_line
     group_kill_line="$(printf '%s\n' "$block" | rg -n -m1 'KILL.*if (waiter\.group_ready|group_ready)' | cut -d: -f1)"

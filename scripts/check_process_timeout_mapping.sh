@@ -26,7 +26,7 @@ wait_block="$(awk '
     active { print }
     active && /^        def / && !/^        def process_wait_next\(/ { exit }
 ' "$interpreter")"
-[[ "$wait_block" == *'if waiter.polls >= INTERPRET_PROCESS_WAIT_MAX_POLLS:'* ]]
+[[ "$wait_block" == *'if waiter.polls >= ProcessWait::MAX_POLLS:'* ]]
 [[ "$wait_block" == *'waiter.timed_out <- true'* ]]
 [[ "$wait_block" == *'process_wait_terminate(waiter)'* ]]
 [[ "$wait_block" == *'waiter.failed <- true'* ]]
