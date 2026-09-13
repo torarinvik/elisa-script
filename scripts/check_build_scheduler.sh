@@ -19,7 +19,9 @@ done
 
 for declaration in \
     'module EsBuildScheduler:' \
-    'BUILD_SCHEDULER_MAX_CACHE' \
+    'const module Limits:' \
+    'Limits::CACHE_ENTRIES' \
+    'EsBuild::Limits::NODES' \
     'const enum BuildSchedulerState of u8:' \
     'const enum BuildSchedulerEvent of u8:' \
     'struct BuildCacheEntry:' \

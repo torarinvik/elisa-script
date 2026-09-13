@@ -17,7 +17,10 @@ done
 
 for declaration in \
     'module EsBuild:' \
-    'BUILD_MAX_NODES' \
+    'const module Limits:' \
+    'Limits::NODES' \
+    'Limits::DEPENDENCIES' \
+    'Limits::LOG_BYTES' \
     'const enum BuildNodeState of u8:' \
     'const enum BuildGraphState of u8:' \
     'const enum BuildGraphEvent of u8:' \
@@ -36,8 +39,8 @@ for boundary in \
     'DependencyNotReady' \
     'FingerprintMissing' \
     'LogLimitExceeded' \
-    'total_log_bytes > BUILD_MAX_LOG_BYTES' \
-    'node.log_bytes > BUILD_MAX_LOG_BYTES - total_log_bytes' \
+    'total_log_bytes > Limits::LOG_BYTES' \
+    'node.log_bytes > Limits::LOG_BYTES - total_log_bytes' \
     'FailureNotReady' \
     'CancelNotReady' \
     'terminal_nodes' \
