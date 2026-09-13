@@ -785,14 +785,20 @@ check_differential_stability.sh audit are static evidence; scheduler-seed
 control, host repeat execution, and fresh-environment qualification remain open.
 
 ES-SCRIPT-014 | EsDifferentialFilesystem supplies bounded sealed post-run file
-tree snapshots with strict path ordering, aggregate byte accounting, stable
+tree snapshots with strict path ordering, a 64 MiB aggregate path-byte ceiling,
+up to 1,048,576 entries, 256 MiB aggregate content accounting, stable
 fingerprints, and first-difference comparison for kind/content/size/mode and
-executable metadata. The focused differential fixture, namespace inclusion,
-documentation, and check_differential_filesystem.sh audit are static evidence;
-post-run host enumeration, replay-integrated restoration, and crash-safe restore
-remain open. A separate Darwin source slice now materializes an admitted initial
-world and provides bounded cleanup, but it has not been executed or integrated
-with replay.
+executable metadata. Ordered streaming and unordered collection with in-place
+O(n log n) heapsort both seal into the same ordered contract; duplicate paths
+fail the batch explicitly. Entry paths remain borrowed `sview`s, so the path
+budget does not solve backing-storage ownership, and callers must not mutate
+public collection fields directly (seal audits them, but not on every append).
+The focused differential fixture, namespace inclusion, documentation, and
+check_differential_filesystem.sh audit are static evidence; post-run host
+enumeration, retained path ownership, replay-integrated restoration, and
+crash-safe restore remain open. A separate
+Darwin source slice now materializes an admitted initial world and provides
+bounded cleanup, but it has not been executed or integrated with replay.
 
 ES-SCRIPT-015 | EsDifferentialOrder supplies a bounded dual-order execution
 session, initial/final world fingerprints, duplicate-order rejection, and typed

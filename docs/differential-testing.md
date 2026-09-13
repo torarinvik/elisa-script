@@ -800,14 +800,26 @@ the supplied buffer capacity is potentially truncated and requires a bounded
 retry or explicit rejection.
 
 `EsDifferentialFilesystem::DifferentialFilesystemSnapshot` is the post-run file
-tree boundary. Adapters submit relative file, directory, and symlink entries in
-strict byte order with bounded path lengths, content fingerprints, modes, and
-sizes; aggregate bytes and entry count are capped before publication. A snapshot
-must be sealed before comparison, and `compare_differential_filesystem_snapshots`
-merges the ordered streams to report the first missing path, kind, content, size,
-mode, or executable-bit difference. The compact snapshot fingerprint is stable
-for the sealed ordered record. This contract performs no filesystem I/O; host
-materializers remain responsible for collecting entries and preserving the
+tree boundary. Adapters may submit relative file, directory, and symlink entries
+in strict byte order, or collect an unordered batch and seal it with the
+bounded in-place O(n log n) heapsort. Both paths enforce 4 KiB per path, a
+64 MiB aggregate path-byte budget, a 256 MiB content-byte budget, the entry
+count ceiling, and typed metadata. Appends account only for the new entry; the
+complete record list is revalidated at seal rather than rescanned on each
+append. The unordered path detects duplicate names after sorting; because that sort has
+mutated the batch, a duplicate transitions the snapshot to `Failed` before
+returning `EntryOrderInvalid`. A snapshot must be sealed before comparison, and
+`compare_differential_filesystem_snapshots` merges the ordered streams to report
+the first missing path, kind, content, size, mode, or executable-bit difference.
+The compact snapshot fingerprint is stable for the sealed ordered record. This
+contract performs no filesystem I/O. Entry paths are still borrowed `sview`s,
+so a host collector must retain their backing storage for the complete snapshot
+lifetime; the logical path-byte budget does not itself provide ownership.
+During collection, callers must append through the snapshot APIs rather than
+editing the public entry array or accounting fields directly. Sealing rechecks
+all entries and counters before publication, but direct field edits are detected
+there rather than on every append.
+Host materializers remain responsible for collecting entries and preserving the
 world lifecycle.
 
 `EsDifferentialOrder::DifferentialOrderSession` makes order-contamination checks

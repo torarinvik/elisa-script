@@ -2,15 +2,18 @@
 #
 # Differential adapters materialize a world before execution and may collect a
 # relative file-tree snapshot after execution. This module keeps that result
-# typed and deterministic: entries are path-ordered, aggregate sizes are
-# bounded, snapshots must be sealed before comparison, and the first difference
-# is reported without performing host filesystem I/O.
+# typed and deterministic: entries are path-ordered either as they arrive or by
+# an explicit bounded batch seal, aggregate path/content sizes are capped,
+# snapshots must be sealed before comparison, and the first difference is
+# reported without performing host filesystem I/O. Entry paths are borrowed
+# views; callers retain their backing bytes for the snapshot lifetime.
 
 module EsDifferentialFilesystem:
     public:
         const module Limits:
             ENTRIES: usize = 1048576
             PATH_BYTES: usize = 4096
+            PATH_STORAGE_BYTES: usize = 67108864
             TOTAL_BYTES: usize = 268435456
 
 
@@ -47,9 +50,11 @@ module EsDifferentialFilesystem:
 
         struct DifferentialFilesystemSnapshot:
             max_entries: usize = Limits::ENTRIES
+            max_path_bytes: usize = Limits::PATH_STORAGE_BYTES
             max_bytes: usize = Limits::TOTAL_BYTES
             state: DifferentialFilesystemState = DifferentialFilesystemState.Planned
             entries: darray[DifferentialFilesystemEntry] = []
+            path_bytes: usize = 0
             total_bytes: usize = 0
 
 
@@ -82,9 +87,11 @@ module EsDifferentialFilesystem:
             InvalidPath
             EmbeddedNul
             PathLimitExceeded
+            PathStorageLimitExceeded
             EntryLimitExceeded
             ByteLimitExceeded
             EntryOrderInvalid
+            SnapshotAccountingInvalid
             SnapshotNotSealed
             ComparisonInvalid
             CancelNotReady
@@ -145,7 +152,22 @@ module EsDifferentialFilesystem:
 
 
         def differential_filesystem_snapshot_valid(snapshot: DifferentialFilesystemSnapshot&) -> bool:
-            return differential_filesystem_state_valid(snapshot.state) and snapshot.max_entries != 0 and snapshot.max_entries <= Limits::ENTRIES and snapshot.max_bytes != 0 and snapshot.max_bytes <= Limits::TOTAL_BYTES and snapshot.entries.count <= snapshot.max_entries and snapshot.total_bytes <= snapshot.max_bytes
+            return differential_filesystem_state_valid(snapshot.state) and snapshot.max_entries != 0 and snapshot.max_entries <= Limits::ENTRIES and snapshot.max_path_bytes != 0 and snapshot.max_path_bytes <= Limits::PATH_STORAGE_BYTES and snapshot.max_bytes != 0 and snapshot.max_bytes <= Limits::TOTAL_BYTES
+
+
+        def differential_filesystem_snapshot_unordered_records_valid(snapshot: DifferentialFilesystemSnapshot&) -> bool:
+            return false if not differential_filesystem_snapshot_valid(snapshot)
+            return false if snapshot.entries.count > snapshot.max_entries or snapshot.path_bytes > snapshot.max_path_bytes or snapshot.total_bytes > snapshot.max_bytes
+            path_bytes: mutable usize = 0
+            total_bytes: mutable usize = 0
+            for entry in snapshot.entries |snapshot, path_bytes, total_bytes|:
+                return false if not differential_filesystem_entry_valid(entry)
+                entry_path_bytes: usize = sview_len(entry.path)
+                return false if entry_path_bytes > snapshot.max_path_bytes - path_bytes
+                return false if entry.size > snapshot.max_bytes - total_bytes
+                path_bytes <- path_bytes + entry_path_bytes
+                total_bytes <- total_bytes + entry.size
+            return path_bytes == snapshot.path_bytes and total_bytes == snapshot.total_bytes
 
 
         def differential_filesystem_entries_ordered(entries: darray[DifferentialFilesystemEntry]&) -> bool:
@@ -154,6 +176,40 @@ module EsDifferentialFilesystem:
                 if index > 0:
                     return false if not differential_filesystem_text_less(entries[index - 1].path, entries[index].path)
             return true
+
+
+        def differential_filesystem_swap_entries(entries: mutable darray[DifferentialFilesystemEntry]&, left: usize, right: usize) -> void:
+            saved: DifferentialFilesystemEntry = entries[left]
+            entries[left] <- entries[right]
+            entries[right] <- saved
+
+
+        def differential_filesystem_sift_down(entries: mutable darray[DifferentialFilesystemEntry]&, start: usize, end: usize) -> void:
+            root: mutable usize = start
+            while root < end:
+                # EntryLimitExceeded caps end at 1,048,576, so these child-index
+                # operations cannot overflow usize on supported targets.
+                break if root >= end / 2
+                child: mutable usize = root * 2 + 1
+                if child + 1 < end and differential_filesystem_text_less(entries[child].path, entries[child + 1].path):
+                    child <- child + 1
+                break if not differential_filesystem_text_less(entries[root].path, entries[child].path)
+                differential_filesystem_swap_entries(entries, root, child)
+                root <- child
+
+
+        def differential_filesystem_sort_entries(entries: mutable darray[DifferentialFilesystemEntry]&) -> void:
+            # In-place heapsort bounds scratch memory independently of the entry
+            # count and produces ascending byte order in O(n log n) comparisons.
+            heap_start: mutable usize = entries.count / 2
+            while heap_start > 0:
+                heap_start <- heap_start - 1
+                differential_filesystem_sift_down(entries, heap_start, entries.count)
+            heap_end: mutable usize = entries.count
+            while heap_end > 1:
+                differential_filesystem_swap_entries(entries, 0, heap_end - 1)
+                heap_end <- heap_end - 1
+                differential_filesystem_sift_down(entries, 0, heap_end)
 
 
         def differential_filesystem_hash_entry(hash: u64, entry: DifferentialFilesystemEntry) -> u64:
@@ -173,35 +229,104 @@ module EsDifferentialFilesystem:
             raise DifferentialFilesystemError.InvalidState if not differential_filesystem_snapshot_valid(snapshot)
             raise DifferentialFilesystemError.EntryLimitExceeded if snapshot.entries.count > snapshot.max_entries
             raise DifferentialFilesystemError.ByteLimitExceeded if snapshot.total_bytes > snapshot.max_bytes
+            raise DifferentialFilesystemError.PathStorageLimitExceeded if snapshot.path_bytes > snapshot.max_path_bytes
+            for entry in snapshot.entries:
+                raise DifferentialFilesystemError.InvalidEntryKind if not differential_filesystem_entry_kind_valid(entry.kind)
+                raise DifferentialFilesystemError.PathLimitExceeded if sview_len(entry.path) == 0 or sview_len(entry.path) > Limits::PATH_BYTES
+                raise DifferentialFilesystemError.EmbeddedNul if sview_contains_byte(entry.path, 0)
+                raise DifferentialFilesystemError.InvalidPath if not differential_filesystem_path_safe(entry.path)
+                raise DifferentialFilesystemError.InvalidPath if entry.content_fingerprint == 0
             raise DifferentialFilesystemError.EntryOrderInvalid if not differential_filesystem_entries_ordered(snapshot.entries)
             total: mutable usize = 0
+            path_total: mutable usize = 0
             for entry in snapshot.entries:
-                raise DifferentialFilesystemError.PathLimitExceeded if sview_len(entry.path) > Limits::PATH_BYTES
                 raise DifferentialFilesystemError.ByteLimitExceeded if entry.size > snapshot.max_bytes - total
+                raise DifferentialFilesystemError.PathStorageLimitExceeded if sview_len(entry.path) > snapshot.max_path_bytes - path_total
                 total <- total + entry.size
-            raise DifferentialFilesystemError.ByteLimitExceeded if total != snapshot.total_bytes
+                path_total <- path_total + sview_len(entry.path)
+            raise DifferentialFilesystemError.SnapshotAccountingInvalid if total != snapshot.total_bytes or path_total != snapshot.path_bytes
             return true
 
 
+        # Admit each record and aggregate counter in O(path length); batch seal
+        # performs the full stored-record audit once before sorting.
+        def collect_unordered_differential_filesystem_entry(snapshot: mutable DifferentialFilesystemSnapshot&, entry: DifferentialFilesystemEntry) -> void error[DifferentialFilesystemError]:
+            raise DifferentialFilesystemError.InvalidState if not differential_filesystem_snapshot_valid(snapshot) or snapshot.state != DifferentialFilesystemState.Collecting
+            raise DifferentialFilesystemError.EntryLimitExceeded if snapshot.entries.count >= snapshot.max_entries
+            raise DifferentialFilesystemError.ByteLimitExceeded if snapshot.total_bytes > snapshot.max_bytes
+            raise DifferentialFilesystemError.PathStorageLimitExceeded if snapshot.path_bytes > snapshot.max_path_bytes
+            raise DifferentialFilesystemError.InvalidEntryKind if not differential_filesystem_entry_kind_valid(entry.kind)
+            raise DifferentialFilesystemError.PathLimitExceeded if sview_len(entry.path) == 0 or sview_len(entry.path) > Limits::PATH_BYTES
+            raise DifferentialFilesystemError.EmbeddedNul if sview_contains_byte(entry.path, 0)
+            raise DifferentialFilesystemError.InvalidPath if not differential_filesystem_path_safe(entry.path)
+            raise DifferentialFilesystemError.InvalidPath if entry.content_fingerprint == 0
+            raise DifferentialFilesystemError.ByteLimitExceeded if entry.size > snapshot.max_bytes - snapshot.total_bytes
+            raise DifferentialFilesystemError.PathStorageLimitExceeded if sview_len(entry.path) > snapshot.max_path_bytes - snapshot.path_bytes
+            snapshot.entries.push(entry)
+            snapshot.total_bytes <- snapshot.total_bytes + entry.size
+            snapshot.path_bytes <- snapshot.path_bytes + sview_len(entry.path)
+
+
+        def seal_unordered_differential_filesystem_snapshot(snapshot: mutable DifferentialFilesystemSnapshot&) -> DifferentialFilesystemState error[DifferentialFilesystemError]:
+            raise DifferentialFilesystemError.InvalidState if not differential_filesystem_snapshot_valid(snapshot) or snapshot.state != DifferentialFilesystemState.Collecting
+            raise DifferentialFilesystemError.EntryLimitExceeded if snapshot.entries.count > snapshot.max_entries
+            raise DifferentialFilesystemError.ByteLimitExceeded if snapshot.total_bytes > snapshot.max_bytes
+            raise DifferentialFilesystemError.PathStorageLimitExceeded if snapshot.path_bytes > snapshot.max_path_bytes
+            raise DifferentialFilesystemError.SnapshotAccountingInvalid if not differential_filesystem_snapshot_unordered_records_valid(snapshot)
+            differential_filesystem_sort_entries(snapshot.entries)
+            if not differential_filesystem_entries_ordered(snapshot.entries):
+                # At this point every entry is individually valid, so failure can
+                # only be a duplicate path. Sorting has mutated the batch; make
+                # that terminal outcome explicit rather than leaving a retryable,
+                # reordered Collecting snapshot after returning an error.
+                snapshot.state <- DifferentialFilesystemState.Failed
+                raise DifferentialFilesystemError.EntryOrderInvalid
+            snapshot.state <- DifferentialFilesystemState.Sealed
+            return snapshot.state
+
+
         def advance_differential_filesystem_snapshot(snapshot: mutable DifferentialFilesystemSnapshot&, event: DifferentialFilesystemEvent, entry: DifferentialFilesystemEntry = DifferentialFilesystemEntry{path: ""}) -> DifferentialFilesystemState error[DifferentialFilesystemError]:
-            try validate_differential_filesystem_snapshot(snapshot)
             raise DifferentialFilesystemError.InvalidEvent if not differential_filesystem_event_valid(event)
+            if event == DifferentialFilesystemEvent.Entry:
+                # Appends validate only the new entry and bounded counters. The
+                # complete record array is revalidated once at Seal, avoiding an
+                # O(n^2) full-prefix scan for large snapshots.
+                raise DifferentialFilesystemError.InvalidState if not differential_filesystem_snapshot_valid(snapshot) or snapshot.state != DifferentialFilesystemState.Collecting
+                raise DifferentialFilesystemError.EntryLimitExceeded if snapshot.entries.count >= snapshot.max_entries
+                raise DifferentialFilesystemError.ByteLimitExceeded if snapshot.total_bytes > snapshot.max_bytes
+                raise DifferentialFilesystemError.PathStorageLimitExceeded if snapshot.path_bytes > snapshot.max_path_bytes
+                raise DifferentialFilesystemError.InvalidEntryKind if not differential_filesystem_entry_kind_valid(entry.kind)
+                raise DifferentialFilesystemError.PathLimitExceeded if sview_len(entry.path) == 0 or sview_len(entry.path) > Limits::PATH_BYTES
+                raise DifferentialFilesystemError.EmbeddedNul if sview_contains_byte(entry.path, 0)
+                raise DifferentialFilesystemError.InvalidPath if not differential_filesystem_path_safe(entry.path)
+                raise DifferentialFilesystemError.InvalidPath if entry.content_fingerprint == 0
+                if snapshot.entries.count > 0:
+                    previous: DifferentialFilesystemEntry = snapshot.entries[snapshot.entries.count - 1]
+                    raise DifferentialFilesystemError.InvalidEntryKind if not differential_filesystem_entry_kind_valid(previous.kind)
+                    raise DifferentialFilesystemError.PathLimitExceeded if sview_len(previous.path) == 0 or sview_len(previous.path) > Limits::PATH_BYTES
+                    raise DifferentialFilesystemError.EmbeddedNul if sview_contains_byte(previous.path, 0)
+                    raise DifferentialFilesystemError.InvalidPath if not differential_filesystem_path_safe(previous.path) or previous.content_fingerprint == 0
+                    raise DifferentialFilesystemError.EntryOrderInvalid if not differential_filesystem_text_less(previous.path, entry.path)
+                raise DifferentialFilesystemError.ByteLimitExceeded if entry.size > snapshot.max_bytes - snapshot.total_bytes
+                raise DifferentialFilesystemError.PathStorageLimitExceeded if sview_len(entry.path) > snapshot.max_path_bytes - snapshot.path_bytes
+                snapshot.entries.push(entry)
+                snapshot.total_bytes <- snapshot.total_bytes + entry.size
+                snapshot.path_bytes <- snapshot.path_bytes + sview_len(entry.path)
+                return snapshot.state
+            if (event == DifferentialFilesystemEvent.Fail or event == DifferentialFilesystemEvent.Cancel) and snapshot.state == DifferentialFilesystemState.Collecting:
+                # Failure and cancellation remain available while an unordered
+                # batch is collecting; they need valid records/accounting, but
+                # do not require the final sort that sealing performs.
+                raise DifferentialFilesystemError.InvalidState if not differential_filesystem_snapshot_valid(snapshot)
+                raise DifferentialFilesystemError.EntryLimitExceeded if snapshot.entries.count > snapshot.max_entries
+                raise DifferentialFilesystemError.ByteLimitExceeded if snapshot.total_bytes > snapshot.max_bytes
+                raise DifferentialFilesystemError.PathStorageLimitExceeded if snapshot.path_bytes > snapshot.max_path_bytes
+                raise DifferentialFilesystemError.SnapshotAccountingInvalid if not differential_filesystem_snapshot_unordered_records_valid(snapshot)
+            else:
+                try validate_differential_filesystem_snapshot(snapshot)
             if event == DifferentialFilesystemEvent.Begin:
                 raise DifferentialFilesystemError.InvalidState if snapshot.state != DifferentialFilesystemState.Planned
                 snapshot.state <- DifferentialFilesystemState.Collecting
-            elif event == DifferentialFilesystemEvent.Entry:
-                raise DifferentialFilesystemError.InvalidState if snapshot.state != DifferentialFilesystemState.Collecting
-                raise DifferentialFilesystemError.EntryLimitExceeded if snapshot.entries.count >= snapshot.max_entries
-                raise DifferentialFilesystemError.InvalidEntryKind if not differential_filesystem_entry_kind_valid(entry.kind)
-                raise DifferentialFilesystemError.PathLimitExceeded if sview_len(entry.path) == 0 or sview_len(entry.path) > Limits::PATH_BYTES
-                raise DifferentialFilesystemError.InvalidPath if not differential_filesystem_path_safe(entry.path)
-                raise DifferentialFilesystemError.EmbeddedNul if sview_contains_byte(entry.path, 0)
-                raise DifferentialFilesystemError.InvalidPath if entry.content_fingerprint == 0
-                if snapshot.entries.count > 0:
-                    raise DifferentialFilesystemError.EntryOrderInvalid if not differential_filesystem_text_less(snapshot.entries[snapshot.entries.count - 1].path, entry.path)
-                raise DifferentialFilesystemError.ByteLimitExceeded if entry.size > snapshot.max_bytes - snapshot.total_bytes
-                snapshot.entries.push(entry)
-                snapshot.total_bytes <- snapshot.total_bytes + entry.size
             elif event == DifferentialFilesystemEvent.Seal:
                 raise DifferentialFilesystemError.InvalidState if snapshot.state != DifferentialFilesystemState.Collecting
                 snapshot.state <- DifferentialFilesystemState.Sealed
@@ -215,7 +340,7 @@ module EsDifferentialFilesystem:
 
 
         def differential_filesystem_snapshot_fingerprint(snapshot: DifferentialFilesystemSnapshot&) -> u64 can[Memory.Allocate, Abort.Panic]:
-            return 0 if not differential_filesystem_snapshot_valid(snapshot) or not differential_filesystem_entries_ordered(snapshot.entries) or snapshot.state != DifferentialFilesystemState.Sealed
+            return 0 if not differential_filesystem_snapshot_valid(snapshot) or not differential_filesystem_snapshot_unordered_records_valid(snapshot) or not differential_filesystem_entries_ordered(snapshot.entries) or snapshot.state != DifferentialFilesystemState.Sealed
             result: mutable u64 = DIFFERENTIAL_FILESYSTEM_HASH_OFFSET
             result <- result * DIFFERENTIAL_FILESYSTEM_HASH_PRIME + snapshot.entries.count.u64()
             result <- result * DIFFERENTIAL_FILESYSTEM_HASH_PRIME + snapshot.total_bytes.u64()
@@ -226,7 +351,7 @@ module EsDifferentialFilesystem:
 
         def compare_differential_filesystem_snapshots(reference: DifferentialFilesystemSnapshot&, candidate: DifferentialFilesystemSnapshot&) -> DifferentialFilesystemDifference:
             return DifferentialFilesystemDifference{equal: false, kind: DifferentialFilesystemDifferenceKind.SnapshotNotSealed, reason: "filesystem snapshots must be sealed before comparison"} if reference.state != DifferentialFilesystemState.Sealed or candidate.state != DifferentialFilesystemState.Sealed
-            return DifferentialFilesystemDifference{equal: false, kind: DifferentialFilesystemDifferenceKind.EntryLimit, reason: "filesystem snapshot validation failed"} if not differential_filesystem_snapshot_valid(reference) or not differential_filesystem_snapshot_valid(candidate) or not differential_filesystem_entries_ordered(reference.entries) or not differential_filesystem_entries_ordered(candidate.entries)
+            return DifferentialFilesystemDifference{equal: false, kind: DifferentialFilesystemDifferenceKind.EntryLimit, reason: "filesystem snapshot validation failed"} if not differential_filesystem_snapshot_valid(reference) or not differential_filesystem_snapshot_valid(candidate) or not differential_filesystem_snapshot_unordered_records_valid(reference) or not differential_filesystem_snapshot_unordered_records_valid(candidate) or not differential_filesystem_entries_ordered(reference.entries) or not differential_filesystem_entries_ordered(candidate.entries)
             reference_index: mutable usize = 0
             candidate_index: mutable usize = 0
             while reference_index < reference.entries.count or candidate_index < candidate.entries.count:

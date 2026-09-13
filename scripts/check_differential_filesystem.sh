@@ -18,6 +18,7 @@ done
 for declaration in \
     'module EsDifferentialFilesystem:' \
     'Limits::ENTRIES' \
+    'Limits::PATH_STORAGE_BYTES' \
     'Limits::TOTAL_BYTES' \
     'const enum DifferentialFilesystemEntryKind of u8:' \
     'const enum DifferentialFilesystemState of u8:' \
@@ -28,6 +29,8 @@ for declaration in \
     'struct DifferentialFilesystemDifference:' \
     'error DifferentialFilesystemError:' \
     'def validate_differential_filesystem_snapshot(' \
+    'def collect_unordered_differential_filesystem_entry(' \
+    'def seal_unordered_differential_filesystem_snapshot(' \
     'def advance_differential_filesystem_snapshot(' \
     'def differential_filesystem_snapshot_fingerprint(' \
     'def compare_differential_filesystem_snapshots('; do
@@ -37,6 +40,9 @@ done
 for boundary in \
     'differential_filesystem_path_safe' \
     'differential_filesystem_text_less' \
+    'differential_filesystem_sort_entries' \
+    'PathStorageLimitExceeded' \
+    'SnapshotAccountingInvalid' \
     'EntryOrderInvalid' \
     'ByteLimitExceeded' \
     'SnapshotNotSealed' \
@@ -54,7 +60,10 @@ for fixture_pattern in \
     'DifferentialFilesystemEntryKind.Directory' \
     'DifferentialFilesystemError.EntryOrderInvalid' \
     'DifferentialFilesystemDifferenceKind.Equal' \
-    'DifferentialFilesystemDifferenceKind.Content'; do
+    'DifferentialFilesystemDifferenceKind.Content' \
+    'differential_filesystem_unordered_batch_is_bounded_sorted_and_sealed' \
+    'DifferentialFilesystemError.PathStorageLimitExceeded' \
+    'DifferentialFilesystemState.Cancelled'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 
