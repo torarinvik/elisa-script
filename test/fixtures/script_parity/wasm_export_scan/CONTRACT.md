@@ -150,9 +150,11 @@ pinned target-regex edge, nested relative includes, diamond de-duplication,
 cycles, missing leaves, absolute includes, mixed quote delimiters, and
 existing/missing leaves beneath a symlink prefix including `..` after the
 symlink. Generated temporary inputs
-also cover CRLF/bare-CR normalization, no-final-newline splicing, and invalid
-UTF-8, plus an overlong source spelling rejected by the path-byte cap. Positive
-snapshots are also checked against their checked-in JSON. The
+also cover CRLF/bare-CR normalization, no-final-newline splicing, invalid
+UTF-8, an overlong source spelling rejected by the path-byte cap, and repeated
+relative includes expected to exceed the aggregate path-component-work cap
+with an exact-diagnostic assertion. Positive snapshots are also checked against
+their checked-in JSON. The
 Python adapter verifies the working-tree scanner blob against the pinned Git
 commit before calling it.
 Before invoking the reference's recursive loader, the adapter performs a
@@ -161,10 +163,9 @@ output-byte, path, path-component-work, directive, and depth ceilings; this
 avoids unbounded oracle reads while retaining the pinned loader as the
 accepted-input reference. It also normalizes host `OSError` read failures to
 the candidate's stable path diagnostic. This test source has not been run: it
-remains behind the disabled bounded compiler wrapper and does not cover
-aggregate path-component-work or other resource-bound rejection, unreadable
-input under a non-root user, dangling symlinks, CLI launch integration, or
-caller integration.
+remains behind the disabled bounded compiler wrapper and does not cover other
+resource-bound rejection, unreadable input under a non-root user, dangling
+symlinks, CLI launch integration, or caller integration.
 Once validation is explicitly reauthorized, run this test from the repository
 root only through scripts/run_bounded_test.sh
 test/script_parity/wasm_export_scan_test.elisascript; do not bypass the pinned
