@@ -32,6 +32,7 @@ done
 for boundary in \
     'process_pipeline_state_valid' \
     'process_pipeline_event_valid' \
+    'ProcessPipelineEvent.StageFailure, ProcessPipelineEvent.StageCancel, ProcessPipelineEvent.Cancel' \
     'process_pipeline_failure_mode_valid' \
     '            LastStage' \
     '            Pipefail' \
