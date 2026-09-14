@@ -9,8 +9,12 @@ until a maintainer reviews the record.
 
 The scanner resolves the requested root to a canonical absolute path (a
 symlink used as the root is resolved), includes hidden entries, and does not
-consult ignore files or ripgrep configuration. In a quiescent tree, child
-symlinks are excluded rather than traversed or emitted. The Bash reference
+consult ignore files or ripgrep configuration. Root spelling follows the
+Bash reference's default logical `cd` rule: normalize `..` before resolving
+symlinks, then use the physical result. Relative roots use a valid inherited
+`PWD` spelling when it names the actual working directory; otherwise they use
+the physical working directory. In a quiescent tree, child symlinks are
+excluded rather than traversed or emitted. The Bash reference
 uses path-based `find`; the current Darwin Elisascript candidate uses
 descriptor-relative traversal with no-follow lookups and opened-directory
 identity checks. This narrows the child-symlink check/use race, but does not
@@ -32,6 +36,10 @@ descendant entries, 64 MiB aggregate descendant-path bytes, 40 MiB aggregate
 candidate-path bytes, and 64 MiB final manifest bytes. A larger root must be
 partitioned before inventory. Both implementations enforce entry, depth, and
 path budgets while traversing rather than after collecting an unbounded census.
+These logical limits are not a measured RSS ceiling: candidate classification
+temporarily splits paths, and manifest records are rebuilt during preflight and
+emission. A strict host-memory ceiling still requires profiling or a streaming
+representation with explicit scratch accounting.
 The shell reference streams a NUL-delimited `find` pipeline into its bounded path list;
 the current Darwin Elisascript candidate uses descriptor-relative `openat` /
 `fstatat` / `readdir` traversal and owned path arrays. It opens canonical-root
@@ -46,12 +54,13 @@ Ordinary traversal errors and the shared entry ceiling use the canonical-root
 diagnostic. Exceeding the 64-level bound uses
 `inventory_candidates: directory depth exceeds limit (64) for <root>\n`.
 
-The process-parity fixture always supplies an explicit root. The Bash reference
-derives its omitted-root default from its own script location, while the current
-Elisascript `main` uses `..` relative to the process working directory; those
-defaults are not yet claimed equivalent when launched from an arbitrary working
-directory. Default-root parity remains open until the launcher exposes a stable
-script-relative path or both tools adopt an explicit shared default contract.
+The source-level process-parity fixture covers an explicit canonical root,
+logical symlink/`..` root normalization, relative roots with a valid or stale
+`PWD`, and omitted-root launches through symlinked script paths. The Bash
+reference derives its omitted-root default from its own script location; the
+Elisascript `main` derives it from `Script::source_path()`. These cases remain
+unqualified until the public-launcher matrix is run after explicit validation
+reauthorization; source fixtures alone are not evidence of parity.
 
 `docs/migration-project-roots.tsv` is the checked-in partition manifest for the
 declared project roots. `scripts/check_migration_roots.sh` validates its shape,
