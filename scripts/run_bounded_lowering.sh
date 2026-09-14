@@ -234,6 +234,8 @@ kill_process_tree() {
 
 compiler_pid=""
 compiler_pgid=""
+source_snapshot_dir=""
+source_snapshot=""
 validation_wrapper_pgid="$(process_group_for_pid "$$")"
 case "$validation_wrapper_pgid" in
     ''|*[!0-9]*)
@@ -342,6 +344,14 @@ cleanup_bounded_lowering() {
             kill_process_tree "$compiler_pid" "$compiler_pgid"
         fi
     fi
+    if [ -n "$source_snapshot" ]; then
+        rm -f "$source_snapshot" 2>/dev/null || true
+        source_snapshot=""
+    fi
+    if [ -n "$source_snapshot_dir" ]; then
+        rmdir "$source_snapshot_dir" 2>/dev/null || true
+        source_snapshot_dir=""
+    fi
     if [ -n "$log_file" ] && [ "$metadata_finalized" -eq 0 ]; then
         if [ -n "$metadata_file" ]; then
             printf '%s\n' 'run_status=incomplete_or_interrupted' >>"$metadata_file" 2>/dev/null || true
@@ -416,19 +426,28 @@ for source_file in "$@"; do
         echo "run_bounded_lowering: refusing symlinked source file: $source_file" >&2
         exit 2
     fi
-    if ! source_bytes_raw="$(wc -c <"$source_file" 2>/dev/null)"; then
-        echo "run_bounded_lowering: unable to measure source size; refusing to launch" >&2
+    source_snapshot_dir="$(mktemp -d "$validation_log_dir/source.XXXXXX")" || {
+        echo "run_bounded_lowering: unable to create a private source snapshot directory; refusing to launch" >&2
+        exit 125
+    }
+    source_snapshot="$source_snapshot_dir/source.elisascript"
+    if ! head -c "$((source_limit_bytes + 1))" <"$source_file" >"$source_snapshot"; then
+        echo "run_bounded_lowering: unable to capture bounded source bytes; refusing to launch" >&2
+        exit 125
+    fi
+    if ! source_bytes_raw="$(wc -c <"$source_snapshot" 2>/dev/null)"; then
+        echo "run_bounded_lowering: unable to measure captured source size; refusing to launch" >&2
         exit 125
     fi
     source_bytes="$(printf '%s\n' "$source_bytes_raw" | tr -d '[:space:]')"
     case "$source_bytes" in
         ''|*[!0-9]*)
-            echo "run_bounded_lowering: source-size measurement was invalid; refusing to launch" >&2
+            echo "run_bounded_lowering: captured source-size measurement was invalid; refusing to launch" >&2
             exit 125
             ;;
     esac
     if [ "$source_bytes" -gt "$source_limit_bytes" ]; then
-        echo "run_bounded_lowering: source is $source_bytes bytes, above the $source_limit_bytes-byte fixture limit: $source_file" >&2
+        echo "run_bounded_lowering: captured source is $source_bytes bytes, above the $source_limit_bytes-byte fixture limit: $source_file" >&2
         exit 2
     fi
     retained_log_bytes="$(validation_log_bytes_used)" || {
@@ -456,20 +475,22 @@ for source_file in "$@"; do
     }
     metadata_file="$log_file.meta"
     source_path_hex="$(printf '%s' "$source_file" | od -An -tx1 | tr -d '[:space:]')"
+    snapshot_path_hex="$(printf '%s' "$source_snapshot" | od -An -tx1 | tr -d '[:space:]')"
     working_directory_hex="$(pwd -P | od -An -tx1 | tr -d '[:space:]')"
     if ! (set -C; {
         printf 'compiler_path=%s\ncompiler_revision=%s\ncompiler_sha256=%s\n' "$compiler_path" "$validation_compiler_revision" "$validation_compiler_sha256"
         printf 'configuration_key=%s\noptimization=O0\ntarget=native\nmode=lowered\nlog_dir_hex=%s\n' "$validation_configuration_key" "$(printf '%s' "$validation_log_dir" | od -An -tx1 | tr -d '[:space:]')"
         printf 'wrapper=run_bounded_lowering\nsource_path_hex=%s\n' "$source_path_hex"
+        printf 'snapshot_path_hex=%s\n' "$snapshot_path_hex"
         printf 'working_directory_hex=%s\nstarted_epoch=%s\n' "$working_directory_hex" "$started_at"
         printf 'source_bytes=%s\nsource_limit_bytes=%s\nrss_limit_kb=%s\ntime_limit_seconds=%s\nconfigured_log_limit_bytes=%s\neffective_log_limit_bytes=%s\nretained_log_budget_bytes=%s\n' "$source_bytes" "$source_limit_bytes" "$rss_limit_kb" "$time_limit_seconds" "$log_limit_bytes" "$effective_log_limit_bytes" "$retained_log_budget_bytes"
-        printf 'argv0=%s\nargv1=-O0\nargv2=-emit\nargv3=lowered\nargv4_hex=%s\n' "$compiler_path" "$source_path_hex"
+        printf 'argv0=%s\nargv1=-O0\nargv2=-emit\nargv3=lowered\nargv4_hex=%s\n' "$compiler_path" "$snapshot_path_hex"
     } >"$metadata_file") 2>/dev/null; then
         echo "run_bounded_lowering: unable to create run metadata; refusing to launch" >&2
         exit 125
     fi
     metadata_finalized=0
-    "$setsid_path" "$compiler_path" -O0 -emit lowered "$source_file" >"$log_file" 2>&1 &
+    "$setsid_path" "$compiler_path" -O0 -emit lowered "$source_snapshot" >"$log_file" 2>&1 &
     compiler_pid=$!
     compiler_pgid="$(process_group_for_pid "$compiler_pid")"
     if ! {
@@ -607,6 +628,12 @@ for source_file in "$@"; do
         tail -80 "$log_file"
         exit 1
     fi
+    if ! rm -f "$source_snapshot" || ! rmdir "$source_snapshot_dir"; then
+        echo "run_bounded_lowering: unable to remove the completed source snapshot; preserving run evidence" >&2
+        exit 125
+    fi
+    source_snapshot=""
+    source_snapshot_dir=""
     log_file=""
     metadata_file=""
     metadata_finalized=0

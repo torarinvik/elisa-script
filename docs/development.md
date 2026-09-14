@@ -61,17 +61,23 @@ rejected before any compiler process is created. The log ceiling defaults to 64
 MiB and cannot exceed the 1 GiB retained evidence budget per
 compiler/configuration identity. Both are monitored by
 polling, not a hard file-size quota: a fast writer can overshoot before it is
-stopped. Before launch, each primary fixture must be a non-symlink regular
-`.elisascript` file no larger than 65,536 bytes; the actual size and fixed limit
-are recorded in the manifest. This is a source-size admission bound, not a bound
-on transitive includes or compiler memory. Keep include graphs and repro work
-small as well. Successful, failed, and interrupted runs retain a combined
+stopped. Before launch, each primary fixture must pass the wrapper's regular,
+non-symlink path check. The wrapper copies at most 65,537 bytes into a private
+temporary `.elisascript` snapshot, rejects it if it exceeds 65,536 bytes, and
+launches the compiler on that exact captured file. The captured size and both
+the original and snapshot paths are recorded in the manifest. This prevents a
+post-check replacement or growth from giving the compiler a larger primary
+source; it is not a bound on transitive includes or compiler memory, nor a
+security boundary against a hostile concurrent in-place writer while the copy
+is being made. Keep include graphs and repro work small as well. Successful,
+failed, and interrupted runs retain a combined
 stdout/stderr log and sidecar manifest under
 `.validation/<configuration-key>/logs/` (or the configured output root). The
 manifest records compiler identity, limits, source path as hex, admitted
-primary-source size, process ownership, observed RSS samples, exit status, and
-guard results. Old evidence is never pruned automatically; review it before
-removing it to make room. The wrapper installs signal/exit cleanup for its owned compiler tree and
+primary-source size, the captured snapshot path, process ownership, observed
+RSS samples, exit status, and guard results. Old evidence is never pruned
+automatically; review it before removing it to make room. The wrapper installs
+signal/exit cleanup for its owned compiler tree and
 clears the child PID after `wait` so cleanup cannot act on a reused PID. Each
 compiler is launched by an absolute `setsid` helper in a private process group.
 The watchdog samples RSS for processes in that group and the currently

@@ -29,14 +29,26 @@ for wrapper in "$lowering" "$test_wrapper"; do
     rg -q 'refusing symlinked compiler path' "$wrapper"
     rg -q 'process_group_rss_kb' "$wrapper"
     rg -Fq 'source_limit_bytes=65536' "$wrapper"
-    rg -Fq 'wc -c <"$source_file" 2>/dev/null' "$wrapper"
+    rg -Fq 'head -c "$((source_limit_bytes + 1))" <"$source_file" >"$source_snapshot"' "$wrapper"
+    rg -Fq 'wc -c <"$source_snapshot" 2>/dev/null' "$wrapper"
     rg -Fq 'if [ -L "$source_file" ]; then' "$wrapper"
     rg -Fq 'source_bytes=%s\nsource_limit_bytes=%s\n' "$wrapper"
+    rg -Fq 'snapshot_path_hex=%s\n' "$wrapper"
+    rg -Fq 'source_snapshot_dir="$(mktemp -d "$validation_log_dir/source.XXXXXX")"' "$wrapper"
+    rg -Fq 'rm -f "$source_snapshot"' "$wrapper"
+    rg -Fq 'rmdir "$source_snapshot_dir"' "$wrapper"
     rg -q 'process_tree_pids "\$process_root_pid"' "$wrapper"
     rg -q 'tree_pid\[\$1\]' "$wrapper"
     rg -q 'setsid_path' "$wrapper"
     rg -q 'case "\$setsid_path" in' "$wrapper"
-    rg -Fq '"$setsid_path" "$compiler_path"' "$wrapper"
+    case "$wrapper" in
+        "$lowering")
+            rg -Fq '"$setsid_path" "$compiler_path" -O0 -emit lowered "$source_snapshot"' "$wrapper"
+            ;;
+        "$test_wrapper")
+            rg -Fq '"$setsid_path" "$compiler_path" -O0 -emit test "$source_snapshot"' "$wrapper"
+            ;;
+    esac
     rg -q 'compiler_pgid' "$wrapper"
     rg -q 'validation_wrapper_pgid=' "$wrapper"
     rg -Fq '0|*[!0-9]*|"$validation_wrapper_pgid"' "$wrapper"
@@ -83,4 +95,4 @@ rg -q 'process_tree_snapshot' "$stopper"
 rg -q 'process_group_for_pid' "$stopper"
 rg -q 'kill -TERM -- "-\$process_group_id"' "$stopper"
 rg -q 'kill -KILL -- "-\$process_group_id"' "$stopper"
-printf 'validation wrapper audit: disabled gate, StructPy pin, source-size admission, sampled guards, evidence retention, lease, and owned stop path present\n'
+printf 'validation wrapper audit: disabled gate, StructPy pin, bounded source snapshots, sampled guards, evidence retention, lease, and owned stop path present\n'
