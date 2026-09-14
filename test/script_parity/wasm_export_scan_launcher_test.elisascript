@@ -1,8 +1,8 @@
 # Process-level acceptance slice. Run only through the bounded validation
 # wrapper after explicit reauthorization; it also verifies the pinned local
-# compiler environment and requires an absolute launcher path. The caller must
-# supply the intended locally built public launcher; this source does not
-# independently verify the launcher's build identity.
+# compiler environment and requires an absolute launcher path plus a recorded
+# launcher SHA-256. The hash binds the path's bytes to a digest but does not
+# prove that the digest was produced by the intended build.
 include "../../src/testing/differential.elisa"
 
 using EsDifferential
@@ -14,9 +14,48 @@ module EsWasmExportScanLauncherParity:
             PYTHON: sview = "python3"
             REFERENCE_ADAPTER: sview = "scripts/wasm_export_scan_reference.py"
             CANDIDATE_SCRIPT: sview = "scripts/wasm_export_scan.elisascript"
+            SHA256_TOOL: sview = "/usr/bin/shasum"
             PINNED_COMPILER: sview = "/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac"
+            MAX_LAUNCHER_BYTES: usize = 67108864
+            MAX_HASH_OUTPUT_BYTES: u64 = 8192
             MAX_OUTPUT_BYTES: u64 = 16777217
             TIMEOUT_STEPS: u64 = 10000
+
+
+        def lowercase_sha256_hex_byte(value: u8) -> bool:
+            return value >= 48u8 and value <= 57u8 or value >= 97u8 and value <= 102u8
+
+
+        def launcher_has_expected_sha256(launcher: sview, expected_hex: sview) -> bool can[Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Unsafe.PointerCast]:
+            return false if len(expected_hex) != 64
+            launcher_path: Path = path(launcher)
+            return false if not is_file(launcher_path)
+            launcher_size: usize = try file_size(launcher_path) else err:
+                return false
+            return false if launcher_size == 0 or launcher_size > Commands::MAX_LAUNCHER_BYTES
+            hash_runner: DifferentialRunner = DifferentialRunner{
+                kind: DifferentialRunnerKind.NativeProcess,
+                name: "public-elisascript-launcher-sha256",
+                target: Commands::SHA256_TOOL,
+                arguments: ["-a", "256", launcher],
+                environment_mode: EsProcess::ProcessEnvironmentMode.Clear,
+                timeout_steps: Commands::TIMEOUT_STEPS,
+                max_output_bytes: Commands::MAX_HASH_OUTPUT_BYTES
+            }
+            hash_run: mutable DifferentialRun = DifferentialRun{observations: []}
+            catch run_differential_process(hash_runner):
+                ok value:
+                    hash_run <- value
+                error failure:
+                    return false
+
+            return false if hash_run.outcome != DifferentialRunOutcome.Completed
+            return false if hash_run.exit_status != 0 or hash_run.stderr != ""
+            expected_line: sview = expected_hex + "  " + launcher + "\n"
+            return false if hash_run.stdout != expected_line
+            for index in 0..<64 |hash_run, expected_hex|:
+                return false if not lowercase_sha256_hex_byte(sview_at(expected_hex, index))
+            return true
 
 
         def launcher_pair_matches(launcher: sview, source_path: sview) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, Unsafe.PointerCast]:
@@ -82,15 +121,21 @@ module EsWasmExportScanLauncherParity:
 
 @test
 def wasm_export_scan_public_launcher_matches_pinned_python_process_output() -> void:
-    can Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, Environment.Read, Unsafe.PointerCast:
+    can Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, Environment.Read, File.Read, Unsafe.PointerCast:
         reauthorized: sview = try getenv("ELISASCRIPT_VALIDATION_REAUTHORIZED", "") else err:
             ""
         compiler: sview = try getenv("ELISA_LOCAL_COMPILER", "") else err:
             ""
         launcher: sview = try getenv("ELISASCRIPT_PUBLIC_LAUNCHER", "") else err:
             ""
+        launcher_hash: sview = try getenv("ELISASCRIPT_PUBLIC_LAUNCHER_SHA256", "") else err:
+            ""
         assert reauthorized == "1"
         assert compiler == EsWasmExportScanLauncherParity::pinned_compiler_path()
         assert launcher != ""
         assert launcher.startswith("/")
+        assert EsWasmExportScanLauncherParity::launcher_has_expected_sha256(launcher, launcher_hash)
+        println("public_launcher_path=" + launcher)
+        println("public_launcher_sha256=" + launcher_hash)
         assert EsWasmExportScanLauncherParity::all_public_launcher_cases_match(launcher)
+        assert EsWasmExportScanLauncherParity::launcher_has_expected_sha256(launcher, launcher_hash)

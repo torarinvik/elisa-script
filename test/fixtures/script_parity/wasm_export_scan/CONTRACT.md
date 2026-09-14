@@ -229,20 +229,33 @@ Python process across every checked-in top-level `.input` case, including
 positive output, target-regex compatibility, duplicate-export, greedy-header,
 ABI, and no-export failures, plus diamond, mixed-quote, missing, nested, and
 cyclic include graphs. It requires
-`ELISASCRIPT_PUBLIC_LAUNCHER` to name an absolute path and compares captured
-exit status, stdout, and stderr directly. The test trusts that the supplied
-path identifies the intended launcher; it does not verify the executable's
-build identity, so a qualified run must record and verify that identity
-separately. This does not claim caller adoption or substitute for the direct
-structured parity suite. The test fails closed unless
+`ELISASCRIPT_PUBLIC_LAUNCHER` to name an absolute path and
+`ELISASCRIPT_PUBLIC_LAUNCHER_SHA256` to provide its lowercase SHA-256 from a
+recorded build identity. It invokes `/usr/bin/shasum -a 256` through the
+differential process runner before and after comparisons, with an empty
+environment and bounded output/time. `/usr/bin/shasum` is a current macOS
+harness dependency; portability needs a reviewed platform adapter. Before
+hashing, the test requires a
+regular file no larger than 64 MiB. It checks the full digest-tool output line
+and prints the verified path and digest into the bounded run log. This binds
+the tested path's bytes to the supplied digest but does not establish that the
+digest came from this checkout's intended build; the qualification record must
+tie it to the launcher build/revision separately. Size/hash checks and process
+execution are path-based, so the launcher artifact must remain immutable for
+the duration of the run; pre/post hashing is not a defense against a transient
+concurrent replacement. Process output still compares captured exit status,
+stdout, and stderr directly. This does not claim caller adoption or substitute
+for the direct structured parity suite. The test fails closed unless
 `ELISASCRIPT_VALIDATION_REAUTHORIZED` is `1` and `ELISA_LOCAL_COMPILER` names
 the pinned StructPy compiler. Even then, run it only through the bounded
-wrapper so the RSS monitor covers the launcher child.
+wrapper so the RSS monitor covers the launcher, reference, and digest-tool
+children.
 
 Neither test has run. Once validation is explicitly reauthorized, run each
 test from the repository root only through `scripts/run_bounded_test.sh`, with
-`ELISASCRIPT_PUBLIC_LAUNCHER` set to the absolute public launcher path for the
-second test. Pin the local compiler and use the wrapper's RSS monitoring as
+`ELISASCRIPT_PUBLIC_LAUNCHER` set to the absolute public launcher path and
+`ELISASCRIPT_PUBLIC_LAUNCHER_SHA256` set to the digest recorded for that exact
+launcher build. Pin the local compiler and use the wrapper's RSS monitoring as
 specified in `docs/development.md`; do not invoke the compiler directly.
 
 Existing pinned Python tests cover only a subset: selected `int`/`i64` and
