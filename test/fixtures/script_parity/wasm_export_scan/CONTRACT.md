@@ -160,7 +160,7 @@ only unless they are valid Elisa programs.
 | Case group | Required cases |
 | --- | --- |
 | Record shape | zero parameters, default/no return, explicit target, line numbers, source order, exact optional-key presence, permissive target-regex behavior |
-| ABI | every scalar mapping, `cstr`, `&`, `&&`, nullable, unsupported aggregate, modifier/whitespace normalization, greedy nested-signature suffix selection, Python-compatible diagnostic quoting for Unicode C1 controls |
+| ABI | every scalar mapping, `cstr`, `&`, `&&`, nullable, unsupported aggregate, modifier/whitespace normalization, greedy nested-signature suffix selection, Python-compatible diagnostic quoting for Unicode C1 controls and U+00AD SOFT HYPHEN |
 | Parameter scanner | nested delimiters including `{}`, quoted commas/equals, escapes, empty segments, missing colon, invalid name |
 | Link annotation | quoted/bare, blank/comment retention, overwrite, empty, dangling, reset by ordinary text, implicit-main exclusion |
 | `main` | implicit position and fields, repeated definitions, explicit-before/after behavior, duplicate line diagnostic |
@@ -198,8 +198,8 @@ Python differential case covers explicit `main` before implicit `main` and
 implicit `main` before a later explicit duplicate, plus repeated implicit
 definitions that must yield only one row. The ordering cases include many
 ordinary lines between exports to exercise the maintained presence flag. A generated
-unsupported-type diagnostic containing U+009F is also compared with the pinned
-Python adapter to check C1 `repr` escaping. Newline-dense inputs check that
+unsupported-type diagnostic containing U+009F and U+00AD is also compared with
+the pinned Python adapter to check C1 and soft-hyphen `repr` escaping. Newline-dense inputs check that
 131,072 lines reach the ordinary no-export diagnostic while 131,073 lines hit
 the candidate-only line-view cap, without entering Python. These are static
 source contracts, not executed evidence. Positive snapshots are also checked against their
