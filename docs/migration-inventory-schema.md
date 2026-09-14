@@ -208,7 +208,8 @@ review.
 The current Elisascript draft uses NUL-delimited `find`/`rg` output internally,
 rejects tab/CR/LF paths before producing TSV, caps scanned regular-file path
 bytes at 60 MiB, accounts a conservative 64 MiB header-plus-row ceiling while
-building pre-sort/pre-dedup rows, and fails closed on a nonzero `find` or sort
+building pre-sort/pre-dedup rows, and now checks each row's byte budget before
+constructing the row string. It fails closed on a nonzero `find` or sort
 status. These are intentional safety-policy differences from the shell
 reference: the post-capture resource ceilings and fail-closed handling of
 descendant paths with TSV delimiters still need matching shell limits or
@@ -234,12 +235,14 @@ excluded child directories, an outside-root symlink, TSV-delimiter rejection,
 and a marker proving discoveries are not executed. A NUL-containing file and
 an over-8-MiB file both contain otherwise-matching shebangs, exercising
 ripgrep's binary and size policies. The fixture is uncompiled and unrun;
-symlinked candidate-launch-path behavior, tool-spawn failures, and larger
-resource-boundary behavior remain uncovered. Private
-`find` and `rg` shims define executable-traversal and first-search failures; a
-deterministic `sort` shim defines the nonzero-exit stdout/stderr/status
-comparison. The candidate forwards sort's streams and status after printing
-the reference's header. All these process fixtures are uncompiled and unrun.
+symlinked candidate-launch-path behavior, post-preflight tool-spawn failures,
+and larger resource-boundary behavior remain uncovered. Private `find` and
+`rg` shims define executable-traversal and first-search failures; a deterministic
+`sort` shim defines the nonzero-exit stdout/stderr/status comparison. A private
+PATH with `find` and `rg` but no `sort` checks the status-127 preflight result,
+and verifies that the excluded-root fast path remains tool-free. The candidate
+forwards sort's streams and status after printing the reference's header. All
+these process fixtures are uncompiled and unrun.
 Root resolution and subsequent process traversals are separate filesystem
 operations, so concurrent root replacement remains a time-of-check/time-of-use
 risk; parity is intended for quiescent trees. The
