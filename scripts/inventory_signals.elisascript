@@ -37,6 +37,34 @@ module EsInventorySignals:
             return value.index("\t") < 0 and value.index("\r") < 0 and value.index("\n") < 0
 
 
+        def excluded_directory_name(name: sview) -> bool:
+            return name == ".git" or name == "node_modules" or name == ".venv" or name == "__pycache__" or name == "vendor" or name == "third_party"
+
+
+        # Match Bash `cd -L` before shared physical-root resolution: normalize
+        # `..` before resolving symlink components, and only trust inherited
+        # PWD for relative roots when it names the actual cwd.
+        def logical_root_operand(requested_root: sview) -> sview can[Memory.Allocate, Abort.Panic, Environment.Read, File.Read]:
+            requested_path: Path = path(requested_root)
+            if path_is_absolute(requested_path):
+                normalized_absolute: Path = path_normalize(requested_path)
+                return f"{normalized_absolute}"
+
+            physical_cwd: Path = try current_directory() else err:
+                return ""
+            logical_cwd: mutable sview = f"{physical_cwd}"
+            inherited_pwd: sview = try getenv("PWD", "") else err:
+                ""
+            if inherited_pwd.startswith("/"):
+                resolved_pwd: Path = try path_real(path(inherited_pwd)) else err:
+                    physical_cwd
+                logical_cwd <- inherited_pwd if resolved_pwd == physical_cwd
+
+            joined_root: Path = path_join(path(logical_cwd), requested_root)
+            normalized_root: Path = path_normalize(joined_root)
+            return f"{normalized_root}"
+
+
         def append_row(rows: mutable darray[sview]&, output_bytes: mutable usize&, row: sview) -> bool can[Memory.Allocate, Abort.Panic]:
             row_bytes: usize = len(row) + 1
             return false if output_bytes > Limits::OUTPUT_BYTES or row_bytes > Limits::OUTPUT_BYTES - output_bytes
@@ -151,7 +179,7 @@ module EsInventorySignals:
 
 
     public:
-        def run(root: sview) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, File.Read, Process.Run]:
+        def run(root: sview) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, Environment.Read, File.Read, Directory.Read, Process.Run]:
             if not path_is_tsv_safe(root):
                 eprint("inventory_signals: scan root contains a TSV delimiter or line break")
                 return 2i64
@@ -159,7 +187,26 @@ module EsInventorySignals:
                 eprint("inventory_signals: scan root does not exist: " + root)
                 return 2i64
 
-            count: CountResult = count_regular_files(root)
+            logical_root: sview = logical_root_operand(root)
+            if logical_root == "":
+                eprint("inventory_signals: unable to resolve scan root")
+                return 3i64
+            resolved_root_path: Path = try path_real(path(logical_root)) else err:
+                eprint("inventory_signals: unable to resolve scan root")
+                return 3i64
+            scan_root: sview = f"{resolved_root_path}"
+            if not path_is_tsv_safe(scan_root):
+                eprint("inventory_signals: scan root contains a TSV delimiter or line break")
+                return 2i64
+
+            # Match find's pruning rule even when the excluded directory is
+            # itself the requested root; rg's root-relative globs alone do not
+            # reliably express that boundary.
+            if excluded_directory_name(path(scan_root).name()):
+                println(Output::HEADER)
+                return 0i64
+
+            count: CountResult = count_regular_files(scan_root)
             if count.failure != "":
                 eprint(count.failure)
                 return 3i64
@@ -169,15 +216,15 @@ module EsInventorySignals:
 
             rows: mutable darray[sview] = []
             output_bytes: mutable usize = len(Output::HEADER) + 1
-            failure: sview = append_executable_rows(root, rows, output_bytes)
+            failure: sview = append_executable_rows(scan_root, rows, output_bytes)
             if failure != "":
                 eprint(failure)
                 return 3i64
-            failure <- append_ripgrep_rows(root, Patterns::SHEBANG, Output::SHEBANG_SIGNAL, Output::SHEBANG_DETAIL, "inventory_signals: shebang search failed for ", rows, output_bytes)
+            failure <- append_ripgrep_rows(scan_root, Patterns::SHEBANG, Output::SHEBANG_SIGNAL, Output::SHEBANG_DETAIL, "inventory_signals: shebang search failed for ", rows, output_bytes)
             if failure != "":
                 eprint(failure)
                 return 3i64
-            failure <- append_ripgrep_rows(root, Patterns::INLINE, Output::INLINE_SIGNAL, Output::INLINE_DETAIL, "inventory_signals: inline-invocation search failed for ", rows, output_bytes)
+            failure <- append_ripgrep_rows(scan_root, Patterns::INLINE, Output::INLINE_SIGNAL, Output::INLINE_DETAIL, "inventory_signals: inline-invocation search failed for ", rows, output_bytes)
             if failure != "":
                 eprint(failure)
                 return 3i64
@@ -200,7 +247,7 @@ module EsInventorySignals:
             return 0i64
 
 
-def main(arguments: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, Directory.Read, File.Read, Process.Run]:
+def main(arguments: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, Environment.Read, Directory.Read, File.Read, Process.Run]:
     if arguments.count > 1:
         eprint("usage: inventory_signals.sh [CODING_PROJECTS_ROOT]")
         return 2i64
@@ -210,8 +257,8 @@ def main(arguments: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Memo
         root <- arguments[0]
     else:
         script_path: Path = Script::source_path()
-        # The shell reference uses logical `cd`/`pwd`: normalize `..` before
-        # resolving symlink components, preserving the launch spelling.
+        # The shell reference uses logical `cd` before physical root
+        # resolution: normalize `..` before resolving symlink components.
         script_directory: Path = try path_absolute(path_parent(script_path)) else err:
             eprint("inventory_signals: unable to resolve script directory")
             return 3i64

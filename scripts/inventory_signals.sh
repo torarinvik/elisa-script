@@ -15,10 +15,51 @@ fi
 
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 scan_root="${1:-$(CDPATH= cd -- "$script_dir/../.." && pwd)}"
+tab="$(printf '\t')"
+carriage_return="$(printf '\r')"
+line_feed="$(printf '\nX')"
+line_feed="${line_feed%X}"
+case "$scan_root" in
+    *"$tab"*|*"$carriage_return"*|*"$line_feed"*)
+        echo "inventory_signals: scan root contains a TSV delimiter or line break" >&2
+        exit 2
+        ;;
+esac
 if [ ! -d "$scan_root" ]; then
     echo "inventory_signals: scan root does not exist: $scan_root" >&2
     exit 2
 fi
+
+# Normalize `..` logically first, then follow an explicit root symlink once.
+# A sentinel preserves a trailing newline in the physical path long enough for
+# the delimiter check below; command substitution normally strips it.
+physical_scan_root="$(
+    CDPATH= cd -L -- "$scan_root" 2>/dev/null || exit 1
+    pwd -P || exit 1
+    printf '.'
+)" || {
+    echo "inventory_signals: unable to resolve scan root" >&2
+    exit 3
+}
+physical_scan_root="${physical_scan_root%.}"
+physical_scan_root="${physical_scan_root%?}"
+case "$physical_scan_root" in
+    *"$tab"*|*"$carriage_return"*|*"$line_feed"*)
+        echo "inventory_signals: scan root contains a TSV delimiter or line break" >&2
+        exit 2
+        ;;
+esac
+scan_root="$physical_scan_root"
+
+# find prunes these names even at the starting point. Make that behavior
+# explicit for rg too, whose globs are relative to the selected root.
+scan_root_name="${scan_root##*/}"
+case "$scan_root_name" in
+    .git|node_modules|.venv|__pycache__|vendor|third_party)
+        printf 'path\tsignal\tdetail\n'
+        exit 0
+        ;;
+esac
 
 # Signal discovery is intentionally bounded before any content search starts.
 # A broad projects directory can contain generated or dependency trees that are

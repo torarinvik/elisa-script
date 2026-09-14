@@ -162,7 +162,15 @@ signal parity or adoption.
 
 The signal reference excludes `.git`, `node_modules`, `.venv`, `__pycache__`,
 `vendor`, and `third_party` from its `find` traversal and refuses a root reported
-to contain more than 200,000 regular files. Executable discovery uses
+to contain more than 200,000 regular files. A root whose own physical basename
+is one of those excluded names produces only the header. Both implementations
+first apply Bash-logical `cd` normalization and then resolve the selected root
+physically once; output paths are absolute physical paths even when the input is
+relative or a symlink to a directory. This follows an explicit root symlink,
+but does not follow descendant symlinks. Relative roots beginning with `-` are
+therefore passed to host tools only as absolute paths. A tab, CR, or LF in
+either the supplied or resolved root is rejected before traversal.
+Executable discovery uses
 `find -type f -perm -111`: this requires all three user/group/other execute
 permission bits, not merely any one execute bit. Child symlinks are not
 followed. The two content searches use ripgrep with `--hidden`,
@@ -203,8 +211,13 @@ peak workspace is not equal to the manifest cap. The 200,000-file ceiling also
 does not bound a tree containing arbitrarily many empty directories; the
 process deadline is the only current traversal-work bound.
 Default-root construction lexically absolutizes the source directory and
-normalizes `../..` to match the shell's logical `cd`/`pwd` intent, but that
-symlinked-launch case still needs a fixture. The draft is uncompiled and unrun,
+normalizes `../..` before the shared physical-root resolution, matching the
+shell's logical `cd` followed by physical `pwd -P` behavior. Explicit symlink
+roots, dash-leading relative roots, excluded roots, and symlinked launch paths
+still need fixtures. Root resolution and subsequent process traversals are
+separate filesystem operations, so concurrent root replacement remains a
+time-of-check/time-of-use risk; parity is intended for quiescent trees. The
+draft is uncompiled and unrun,
 and its public-launcher behavior, platform/tool differences, resource behavior,
 and exact row equality remain unqualified.
 
