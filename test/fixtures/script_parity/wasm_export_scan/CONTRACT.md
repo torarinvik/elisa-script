@@ -152,6 +152,9 @@ human-readable output.
 
 ## Required acceptance matrix
 
+The generated unsupported-type diagnostic also covers U+FEFF ZERO WIDTH
+NO-BREAK SPACE.
+
 Every case must compare the pinned Python reference and Elisascript adapter on
 decoded structured output or exact failure status/diagnostic. Also compare
 valid source cases with `src/driver/emit_wasm_exports.elisa`; that emitter is an
