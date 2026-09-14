@@ -1,14 +1,44 @@
 # Migration candidate manifest schema
 
-`scripts/inventory_candidates.sh` emits a tab-separated, machine-readable
-candidate manifest. It is a discovery artifact only: paths are never executed,
-and `classify`/`classify-generated`/`retain-external` are provisional
-dispositions until a maintainer reviews the record. The scanner refuses roots
-with more than 200,000 regular files, emits mutually exclusive filename
-patterns into a private temporary path list, and reads that list through an
-explicit bounded state machine rather than a global de-duplication buffer;
-regular-file traversal and filename-search failures fail closed; split larger
-roots before generating a manifest.
+`scripts/inventory_candidates.sh` is the reference for
+`scripts/inventory_candidates.elisascript`. Both emit a tab-separated,
+machine-readable candidate manifest. It is a discovery artifact only: paths
+are never read as program contents, parsed, imported, or executed, and
+`classify`/`classify-generated`/`retain-external` are provisional dispositions
+until a maintainer reviews the record.
+
+The scanner resolves the requested root to a canonical absolute path (a
+symlink used as the root is resolved), includes hidden entries, and does not
+consult ignore files or ripgrep configuration. It does not follow or emit
+symlink entries. It prunes exactly `.git`, `node_modules`, `.venv`,
+`__pycache__`, `vendor`, and `third_party`, wherever those names occur as
+directory components. Matching is case-sensitive: `*.py`, `*.pl`, `*.pm`,
+`*.awk`, `*.sh`, `*.bash`, `*.zsh`, `*.fish`, and exact `Makefile` or
+`makefile` basenames. Candidate paths are globally sorted by unsigned
+byte-lexicographic order. Spaces and UTF-8 names are retained; any path with a
+tab, CR, or LF is rejected because those bytes cannot be represented
+unambiguously in the TSV stream. Any traversal or resource failure exits before
+the header is written.
+
+Limits are 200,000 regular files, 200,000 traversed non-pruned directories,
+262,144 descendant entries, 64 MiB aggregate descendant-path bytes, 40 MiB
+aggregate candidate-path bytes, and 64 MiB final manifest bytes. A larger root
+must be partitioned before inventory. `Path.iterdir()` also applies its
+per-directory adapter bound; the shared global entry limit is no larger than
+that ceiling. Both implementations enforce entry and path budgets while
+traversing rather than after collecting an unbounded census. The shell
+reference streams a NUL-delimited `find` pipeline into its bounded path list;
+the Elisascript port uses native directory traversal and owned path arrays.
+Failures from either a traversal error or the shared entry ceiling use the same
+canonical-root diagnostic; the native directory adapter does not expose whether
+its own per-directory ceiling or a filesystem error caused the failure.
+
+The process-parity fixture always supplies an explicit root. The Bash reference
+derives its omitted-root default from its own script location, while the current
+Elisascript `main` uses `..` relative to the process working directory; those
+defaults are not yet claimed equivalent when launched from an arbitrary working
+directory. Default-root parity remains open until the launcher exposes a stable
+script-relative path or both tools adopt an explicit shared default contract.
 
 `docs/migration-project-roots.tsv` is the checked-in partition manifest for the
 declared project roots. `scripts/check_migration_roots.sh` validates its shape,
@@ -26,11 +56,9 @@ the declared manifest path for review. The coordinator repeats the manifest
 shape, ownership-state, duplicate-name, and duplicate-path preflight itself so
 direct invocation cannot bypass the fail-closed audit.
 
-Both candidate and signal scanners skip `.git`, `node_modules`, `.venv`,
-`__pycache__`, `vendor`, and `third_party` consistently. The candidate scanner
-also recognizes a `Makefile` or `makefile` directly at the scan root (not only
-when it has a parent directory), so the filename census and kind classification
-cannot disagree on that common build entry point.
+The candidate scanner recognizes a `Makefile` or `makefile` directly at the
+scan root (not only when it has a parent directory). The separate signal
+scanner continues to use its own documented discovery policy.
 
 The candidate scanner's first row is the exact seven-column header below. Every
 later row has the same fields and order:
@@ -41,8 +69,8 @@ path	kind	owner	entrypoint	disposition	risk	notes
 
 | Field | Meaning |
 |---|---|
-| `path` | Absolute candidate path as discovered by `rg --files` |
-| `kind` | `python`, `perl`, `awk`, `shell`, `makefile`, or `unknown` |
+| `path` | Canonical absolute candidate path |
+| `kind` | `python`, `perl`, `awk`, `shell`, or `makefile` |
 | `owner` | Maintainer identity; starts as `unassigned` |
 | `entrypoint` | Direct executable, imported module, build recipe, CI hook, generated output, or `unknown` |
 | `disposition` | `classify`, `classify-generated`, `retain-external`, `port`, `wrap-temporarily`, `archive`, or `remove-after-acceptance` |

@@ -1,0 +1,208 @@
+# Read-only, bounded project-candidate inventory. Paths are data and are never
+# parsed, imported, or executed. Run from the repository root or pass a root.
+
+module EsInventoryCandidates:
+    private:
+        const module Limits:
+            REGULAR_FILES: usize = 200000
+            DIRECTORIES: usize = 200000
+            DIRECTORY_ENTRIES: usize = 262144
+            TOTAL_PATH_BYTES: usize = 67108864
+            CANDIDATE_PATH_BYTES: usize = 41943040
+            OUTPUT_BYTES: usize = 67108864
+
+
+        const module Output:
+            HEADER: sview = "path\tkind\towner\tentrypoint\tdisposition\trisk\tnotes"
+            OWNER: sview = "unassigned"
+            ENTRYPOINT: sview = "unknown"
+            NOTES: sview = "read-only candidate; classify before porting or deletion"
+
+
+        const enum Phase of u8:
+            Walk
+            Preflight
+            Emit
+            Done
+
+
+        def path_is_tsv_safe(path_text: sview) -> bool:
+            return path_text.index("\t") < 0 and path_text.index("\n") < 0 and path_text.index("\r") < 0
+
+
+        def excluded_directory_name(name: sview) -> bool:
+            return name == ".git" or name == "node_modules" or name == ".venv" or name == "__pycache__" or name == "vendor" or name == "third_party"
+
+
+        def path_has_component(path_text: sview, expected: sview) -> bool can[Memory.Allocate, Abort.Panic]:
+            components: darray[sview] = split(path_text, "/")
+            for component in components:
+                return true if component == expected
+            return false
+
+
+        def path_has_component_prefix(path_text: sview, prefix: sview) -> bool can[Memory.Allocate, Abort.Panic]:
+            components: darray[sview] = split(path_text, "/")
+            for component in components:
+                return true if component.startswith(prefix)
+            return false
+
+
+        def parent_path_has_component_prefix(path_text: sview, prefix: sview) -> bool can[Memory.Allocate, Abort.Panic]:
+            parent_path: sview = f"{path(path_text).parent()}"
+            return path_has_component_prefix(parent_path, prefix)
+
+
+        def candidate_kind(name: sview) -> sview:
+            return "makefile" if name == "Makefile" or name == "makefile" else "python" if name.endswith(".py") else "perl" if name.endswith(".pl") or name.endswith(".pm") else "awk" if name.endswith(".awk") else "shell" if name.endswith(".sh") or name.endswith(".bash") or name.endswith(".zsh") or name.endswith(".fish") else "unknown"
+
+
+        def candidate_risk(candidate_path: sview) -> sview can[Memory.Allocate, Abort.Panic]:
+            if path_has_component(candidate_path, "release") or path_has_component(candidate_path, "deploy") or path_has_component(candidate_path, "publish") or path_has_component(candidate_path, "install"):
+                return "release"
+            if path_has_component(candidate_path, "test") or path_has_component(candidate_path, "tests") or parent_path_has_component_prefix(candidate_path, "fixture"):
+                return "test"
+            if path_has_component(candidate_path, "build") or path_has_component(candidate_path, "target") or path_has_component(candidate_path, ".github") or path_has_component(candidate_path, ".gitlab") or path_has_component(candidate_path, ".circleci"):
+                return "build"
+            return "unknown"
+
+
+        def candidate_disposition(candidate_path: sview) -> sview can[Memory.Allocate, Abort.Panic]:
+            if path_has_component(candidate_path, "vendor") or path_has_component(candidate_path, "third_party") or path_has_component(candidate_path, "node_modules") or path_has_component(candidate_path, ".git"):
+                return "retain-external"
+            if path_has_component(candidate_path, "build") or path_has_component(candidate_path, "target") or path_has_component(candidate_path, "dist") or path_has_component(candidate_path, "generated"):
+                return "classify-generated"
+            return "classify"
+
+
+        def candidate_record(candidate_path: sview) -> sview can[Memory.Allocate, Abort.Panic]:
+            candidate_name: sview = path(candidate_path).name()
+            kind: sview = candidate_kind(candidate_name)
+            risk: sview = candidate_risk(candidate_path)
+            disposition: sview = candidate_disposition(candidate_path)
+            return candidate_path + "\t" + kind + "\t" + Output::OWNER + "\t" + Output::ENTRYPOINT + "\t" + disposition + "\t" + risk + "\t" + Output::NOTES
+
+
+    public:
+        def run(requested_root: sview) -> i64 can[Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, File.Read, Directory.Read]:
+            if not path_is_tsv_safe(requested_root):
+                eprint("inventory_candidates: unsupported scan root contains a TSV delimiter or line break")
+                return 2i64
+            requested_path: Path = path(requested_root)
+            if not is_directory(requested_path):
+                eprint("inventory_candidates: scan root does not exist: " + requested_root)
+                return 2i64
+
+            root_path: Path = try path_real(requested_path) else err:
+                eprint("inventory_candidates: unable to resolve scan root")
+                return 3i64
+            canonical_root: sview = f"{root_path}"
+            if not path_is_tsv_safe(canonical_root):
+                eprint("inventory_candidates: unsupported scan root contains a TSV delimiter or line break")
+                return 2i64
+
+            directories: mutable darray[sview] = []
+            if not excluded_directory_name(path(canonical_root).name()):
+                directories.push(canonical_root)
+            candidate_paths: mutable darray[sview] = []
+            ordered_paths: mutable darray[sview] = []
+            directory_index: mutable usize = 0
+            directory_count: mutable usize = 0
+            visited_entries: mutable usize = 0
+            regular_files: mutable usize = 0
+            total_path_bytes: mutable usize = 0
+            candidate_path_bytes: mutable usize = 0
+            phase: mutable Phase = Phase.Walk
+
+            machine over phase while phase != Phase.Done:
+                state Scan
+                start Scan
+
+                Scan, Phase.Walk if directory_index >= directories.count:
+                    phase <- Phase.Preflight
+                    -> Scan
+
+                Scan, Phase.Walk:
+                    current_directory: sview = directories[directory_index]
+                    children: darray[sview] = try path(current_directory).iterdir() else err:
+                        eprint("inventory_candidates: traversal failed or exceeded a traversal limit for " + canonical_root)
+                        return 3i64
+                    for child in children |directories, candidate_paths, visited_entries, regular_files, total_path_bytes, candidate_path_bytes, directory_count|:
+                        visited_entries <- visited_entries + 1
+                        if visited_entries > Limits::DIRECTORY_ENTRIES:
+                            eprint("inventory_candidates: traversal failed or exceeded a traversal limit for " + canonical_root)
+                            return 3i64
+
+                        child_path: sview = f"{child}"
+                        if not path_is_tsv_safe(child_path):
+                            eprint("inventory_candidates: unsupported path contains a TSV delimiter or line break")
+                            return 3i64
+                        child_path_bytes: usize = len(child_path)
+                        if total_path_bytes > Limits::TOTAL_PATH_BYTES or child_path_bytes > Limits::TOTAL_PATH_BYTES - total_path_bytes:
+                            eprint("inventory_candidates: aggregate path bytes exceed limit (67108864)")
+                            return 3i64
+                        total_path_bytes <- total_path_bytes + child_path_bytes
+
+                        child_name: sview = path(child).name()
+                        if is_symlink(path(child)):
+                            continue
+                        if is_directory(path(child)):
+                            if excluded_directory_name(child_name):
+                                continue
+                            if directory_count >= Limits::DIRECTORIES:
+                                eprint("inventory_candidates: directory count exceeds limit (200000)")
+                                return 3i64
+                            directory_count <- directory_count + 1
+                            directories.push(child_path)
+                            continue
+                        if not is_file(path(child)):
+                            continue
+
+                        regular_files <- regular_files + 1
+                        if regular_files > Limits::REGULAR_FILES:
+                            eprint("inventory_candidates: root contains more than 200000 regular files; split the root (limit 200000)")
+                            return 3i64
+
+                        if candidate_kind(child_name) == "unknown":
+                            continue
+                        if candidate_path_bytes > Limits::CANDIDATE_PATH_BYTES or child_path_bytes > Limits::CANDIDATE_PATH_BYTES - candidate_path_bytes:
+                            eprint("inventory_candidates: candidate path bytes exceed limit (41943040)")
+                            return 3i64
+                        candidate_path_bytes <- candidate_path_bytes + child_path_bytes
+                        candidate_paths.push(child_path)
+                    directory_index <- directory_index + 1
+                    -> Scan
+
+                Scan, Phase.Preflight:
+                    ordered_paths <- sorted(candidate_paths)
+                    output_bytes: mutable usize = len(Output::HEADER) + 1
+                    for candidate_path in ordered_paths |output_bytes|:
+                        record: sview = candidate_record(candidate_path)
+                        record_bytes: usize = len(record) + 1
+                        if output_bytes > Limits::OUTPUT_BYTES or record_bytes > Limits::OUTPUT_BYTES - output_bytes:
+                            eprint("inventory_candidates: manifest output exceeds limit (67108864)")
+                            return 3i64
+                        output_bytes <- output_bytes + record_bytes
+                    phase <- Phase.Emit
+                    -> Scan
+
+                Scan, Phase.Emit:
+                    println(Output::HEADER)
+                    for candidate_path in ordered_paths:
+                        println(candidate_record(candidate_path))
+                    phase <- Phase.Done
+                    -> Scan
+
+                Scan, Phase.Done:
+                    break
+
+            return 0i64
+
+def main(arguments: darray[sview]) -> i64 can[Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, File.Read, Directory.Read]:
+    if arguments.count > 1:
+        eprint("usage: inventory_candidates.sh [CODING_PROJECTS_ROOT]")
+        return 2i64
+    requested_root: sview = ".."
+    if arguments.count == 1 and arguments[0] != "":
+        requested_root <- arguments[0]
+    return EsInventoryCandidates::run(requested_root)
