@@ -200,8 +200,10 @@ symlink. Generated dangling-link cases put relative links below a directory
 distinct from the including source, retain child and parent-traversal components
 after the link, cover nested and absolute targets, cancel a missing target
 component with `..`, and compare a still-missing target's exact path diagnostic.
-A candidate-only two-link cycle checks the 128-hop bound. A generated link-name
-case places `@link_name("")` after a nonempty
+A candidate-only two-link cycle checks the 128-hop bound. A second candidate-only
+case chains 60 relative links whose targets each contain 400 `./` components;
+it asserts the shared weighted path-work rejection without invoking Python.
+A generated link-name case places `@link_name("")` after a nonempty
 annotation and compares the omitted optional key with Python. Generated temporary inputs
 also cover CRLF/bare-CR normalization, all additional Python `splitlines`
 separators (vertical tab, form feed, U+001C..U+001E, NEL, U+2028, and U+2029)
