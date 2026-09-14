@@ -6,7 +6,9 @@ private temporary tree and passes its canonical absolute path to both
 tree includes hidden and ignored-by-`.gitignore` files, spaces, a UTF-8 name,
 every recognized suffix family, root and nested Makefiles, classified risk and
 generated paths, all six pruned directory names, a file symlink, a directory
-symlink, and a shell-looking file that would create a marker if executed.
+symlink to an in-root directory, a directory symlink to a separately created
+outside-root candidate, and a shell-looking file that would create a marker if
+executed.
 Neither scanner may execute candidate contents.
 
 For the successful fixture both processes must exit 0, write an empty stderr,
