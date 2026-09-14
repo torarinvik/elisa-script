@@ -63,14 +63,15 @@ compiler/configuration identity. Both are monitored by
 polling, not a hard file-size quota: a fast writer can overshoot before it is
 stopped. Before launch, each primary fixture must pass the wrapper's regular,
 non-symlink path check. The wrapper copies at most 65,537 bytes into a private
-temporary `.elisascript` snapshot, rejects it if it exceeds 65,536 bytes, and
-launches the compiler on that exact captured file. The captured size and both
-the original and snapshot paths are recorded in the manifest. This prevents a
-post-check replacement or growth from giving the compiler a larger primary
-source; it is not a bound on transitive includes or compiler memory, nor a
-security boundary against a hostile concurrent in-place writer while the copy
-is being made. Keep include graphs and repro work small as well. Successful,
-failed, and interrupted runs retain a combined
+temporary sibling file in the source directory, rejects it if it exceeds
+65,536 bytes, and launches the compiler on that exact captured file. Keeping
+the snapshot beside the original preserves the relative base for `include`.
+The captured size and both the original and snapshot paths are recorded in the
+manifest. This prevents a post-check replacement or growth from giving the
+compiler a larger primary source; it is not a bound on transitive includes or
+compiler memory, nor a security boundary against a hostile concurrent in-place
+writer while the copy is being made. Keep include graphs and repro work small
+as well. Successful, failed, and interrupted runs retain a combined
 stdout/stderr log and sidecar manifest under
 `.validation/<configuration-key>/logs/` (or the configured output root). The
 manifest records compiler identity, limits, source path as hex, admitted

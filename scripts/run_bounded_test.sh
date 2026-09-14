@@ -234,7 +234,6 @@ kill_process_tree() {
 
 compiler_pid=""
 compiler_pgid=""
-source_snapshot_dir=""
 source_snapshot=""
 validation_wrapper_pgid="$(process_group_for_pid "$$")"
 case "$validation_wrapper_pgid" in
@@ -348,10 +347,6 @@ cleanup_bounded_test() {
         rm -f "$source_snapshot" 2>/dev/null || true
         source_snapshot=""
     fi
-    if [ -n "$source_snapshot_dir" ]; then
-        rmdir "$source_snapshot_dir" 2>/dev/null || true
-        source_snapshot_dir=""
-    fi
     if [ -n "$log_file" ] && [ "$metadata_finalized" -eq 0 ]; then
         if [ -n "$metadata_file" ]; then
             printf '%s\n' 'run_status=incomplete_or_interrupted' >>"$metadata_file" 2>/dev/null || true
@@ -426,11 +421,21 @@ for source_file in "$@"; do
         echo "run_bounded_test: refusing symlinked source file: $source_file" >&2
         exit 2
     fi
-    source_snapshot_dir="$(mktemp -d "$validation_log_dir/source.XXXXXX")" || {
-        echo "run_bounded_test: unable to create a private source snapshot directory; refusing to launch" >&2
+    case "$source_file" in
+        */*)
+            source_parent="${source_file%/*}"
+            if [ -z "$source_parent" ]; then
+                source_parent="/"
+            fi
+            ;;
+        *)
+            source_parent="."
+            ;;
+    esac
+    source_snapshot="$(mktemp "$source_parent/.elisascript-validation.XXXXXXXX")" || {
+        echo "run_bounded_test: unable to create a private sibling source snapshot; refusing to launch" >&2
         exit 125
     }
-    source_snapshot="$source_snapshot_dir/source.elisascript"
     if ! head -c "$((source_limit_bytes + 1))" <"$source_file" >"$source_snapshot"; then
         echo "run_bounded_test: unable to capture bounded source bytes; refusing to launch" >&2
         exit 125
@@ -628,12 +633,11 @@ for source_file in "$@"; do
         tail -80 "$log_file"
         exit 1
     fi
-    if ! rm -f "$source_snapshot" || ! rmdir "$source_snapshot_dir"; then
+    if ! rm -f "$source_snapshot"; then
         echo "run_bounded_test: unable to remove the completed source snapshot; preserving run evidence" >&2
         exit 125
     fi
     source_snapshot=""
-    source_snapshot_dir=""
     log_file=""
     metadata_file=""
     metadata_finalized=0
