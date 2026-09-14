@@ -13,7 +13,18 @@ if [ "$#" -gt 1 ]; then
     exit 2
 fi
 
-script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+case "$0" in
+    */*)
+        script_dir_operand="${0%/*}"
+        if [ -z "$script_dir_operand" ]; then
+            script_dir_operand=/
+        fi
+        ;;
+    *)
+        script_dir_operand=.
+        ;;
+esac
+script_dir="$(CDPATH= cd -- "$script_dir_operand" && pwd)"
 scan_root="${1:-$(CDPATH= cd -- "$script_dir/../.." && pwd)}"
 tab="$(printf '\t')"
 carriage_return="$(printf '\r')"
@@ -60,6 +71,16 @@ case "$scan_root_name" in
         exit 0
         ;;
 esac
+
+# Resolve every required external utility before emitting output or starting a
+# scan. This gives callers the same stable missing-tool status and diagnostic
+# rather than leaking shell-specific "command not found" output later.
+for required_tool in find rg sort; do
+    if ! command -v "$required_tool" >/dev/null 2>&1; then
+        printf 'inventory_signals: required tool not found: %s\n' "$required_tool" >&2
+        exit 127
+    fi
+done
 
 # Signal discovery is intentionally bounded before any content search starts.
 # A broad projects directory can contain generated or dependency trees that are

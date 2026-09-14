@@ -182,6 +182,16 @@ matches and is successful; other nonzero search statuses are errors. Rows from
 the executable, shebang, and inline-command categories are combined and sorted
 uniquely under the C locale.
 
+After resolving and validating the selected root, both implementations preflight
+the presence of `find`, `rg`, and `sort`, except that an excluded root returns
+its header before tool lookup. A missing required tool produces status 127, no
+stdout, and the stable diagnostic
+`inventory_signals: required tool not found: NAME`. The shell uses `command -v`;
+the Elisascript draft checks PATH entries for regular executable files. This is
+an availability check, not a reservation: a tool can still disappear or be
+replaced before process creation, so tool-spawn failures remain a separate
+runtime failure case.
+
 The shell reference's line-oriented path lists and TSV output cannot represent
 tabs or line breaks in paths unambiguously, and it has no explicit final-output
 byte ceiling. Its initial `find | wc -l | tr` count also does not preserve the
