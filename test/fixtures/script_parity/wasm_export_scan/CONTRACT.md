@@ -198,10 +198,11 @@ with an exact-diagnostic assertion. A separate candidate-only generated case
 checks the explicit-export and implicit-main header-work failures without
 calling the unbounded Python parser, and another checks the shared aggregate
 budget across multiple individually-under-limit headers;
-`scripts/check_wasm_export_scan_bounds.sh` statically checks both guard paths
-and the rejection fixtures. Another candidate-only generated case asserts the
-unique-export comparison-work limit without invoking Python. A generated
-Python differential case covers explicit `main` before implicit `main` and
+`scripts/check_wasm_export_scan_bounds.sh` statically checks both header-work
+guard paths, the parameter-count cap, and the rejection fixtures. Another
+candidate-only generated case asserts the unique-export comparison-work limit
+without invoking Python. A generated Python differential case covers explicit
+`main` before implicit `main` and
 implicit `main` before a later explicit duplicate, plus repeated implicit
 definitions that must yield only one row. The ordering cases include many
 ordinary lines between exports to exercise the maintained presence flag. A
@@ -212,9 +213,11 @@ The checked-in `unsupported_type.input` fixture also carries U+FEFF in the
 type span for public-launcher coverage. Newline-dense inputs check that 131,072
 lines reach the ordinary no-export diagnostic while 131,073 lines hit the
 candidate-only line-view cap, without entering Python. These are static source
-contracts, not executed evidence. Positive snapshots are also checked against
-their checked-in JSON. The Python adapter verifies the working-tree scanner
-blob against the pinned Git commit before calling it.
+contracts, not executed evidence. A candidate-only generated input also
+exercises rejection of 4,097 parameters before creating `Parameter` records,
+without entering Python. Positive snapshots are also checked against their
+checked-in JSON. The Python adapter verifies the working-tree scanner blob
+against the pinned Git commit before calling it.
 Before invoking the reference's recursive loader, the adapter performs a
 streaming include-graph preflight with the same per-file, graph-byte,
 output-byte, path, path-component-work, directive, and depth ceilings; this

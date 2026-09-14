@@ -21,9 +21,17 @@ rg -Fq 'SOURCE_LINES: usize = 131072' "$candidate"
 rg -Fq 'def source_lines(source: sview) -> (lines: darray[sview], failure: sview)' "$candidate"
 rg -Fq 'parsed_lines.failure != ""' "$candidate"
 rg -Fq 'WASM source line count exceeds Elisascript scan limit' "$candidate"
+rg -Fq 'PARAMETERS_PER_EXPORT: usize = 4096' "$candidate"
+rg -Fq 'parameter_slices.count > Limits::PARAMETERS_PER_EXPORT' "$candidate"
+rg -Fq 'WASM export parameter count exceeds Elisascript scan limit' "$candidate"
 line_guard_count="$(rg -F -c 'if lines.count >= Limits::SOURCE_LINES:' "$candidate" || true)"
 if [ "$line_guard_count" != 2 ]; then
     printf 'W09 bounds audit: both source-line append sites must enforce the metadata cap\n' >&2
+    exit 1
+fi
+parameter_guard_count="$(rg -F -c 'if parameter_slices.count > Limits::PARAMETERS_PER_EXPORT:' "$candidate" || true)"
+if [ "$parameter_guard_count" != 2 ]; then
+    printf 'W09 bounds audit: explicit and implicit exports must enforce the parameter cap\n' >&2
     exit 1
 fi
 
@@ -74,6 +82,10 @@ rg -Fq 'def wasm_export_scan_preserves_main_seen_ordering()' "$fixture"
 rg -Fq 'repeated_implicit_matches <- scanner_pair_matches' "$fixture"
 rg -Fq 'def source_line_descriptor_count_is_bounded()' "$fixture"
 rg -Fq 'def wasm_export_scan_bounds_line_descriptor_count()' "$fixture"
+rg -Fq 'def parameter_count_is_bounded()' "$fixture"
+rg -Fq 'def wasm_export_scan_bounds_parameter_count()' "$fixture"
+rg -Fq 'for index in 0..<4097 |source_bytes, index|' "$fixture"
+rg -Fq 'WASM export parameter count exceeds Elisascript scan limit' "$fixture"
 rg -Fq 'def append_source_text(output: mutable darray[u8]&, value: sview)' "$fixture"
 rg -Fq 'def append_repeated_source_text(output: mutable darray[u8]&, value: sview, repetitions: usize)' "$fixture"
 rg -Fq 'for _ in 0..<512 |export_header_bytes|' "$fixture"
@@ -93,4 +105,4 @@ rg -Fq '1,048,576' "$contract"
 rg -Fq 'aggregate weighted work ceiling' "$contract"
 rg -Fq 'multiple' "$contract"
 
-printf 'W09 bounds audit: source lines, header scans, and export-name scans have bounded-resource coverage\n'
+printf 'W09 bounds audit: parameter counts, source lines, header scans, and export-name scans have bounded-resource coverage\n'
