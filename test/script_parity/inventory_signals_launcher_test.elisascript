@@ -1,0 +1,453 @@
+# Process-level differential coverage for the read-only signal inventory.
+# This test creates only private temporary fixtures and never executes them.
+# Run through the bounded launcher wrapper after explicit reauthorization.
+include "../../src/testing/differential.elisa"
+
+using EsDifferential
+
+
+module EsInventorySignalsLauncherParity:
+    private:
+        const module Commands:
+            REFERENCE_SHELL: sview = "/bin/sh"
+            REFERENCE_SCRIPT: sview = "scripts/inventory_signals.sh"
+            CANDIDATE_SCRIPT: sview = "scripts/inventory_signals.elisascript"
+            SHA256_TOOL: sview = "/usr/bin/shasum"
+            # `rg` is installed by Homebrew on the supported development host.
+            CONTROLLED_PATH: sview = "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+            PINNED_COMPILER: sview = "/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac"
+            MAX_LAUNCHER_BYTES: usize = 67108864
+            MAX_HASH_OUTPUT_BYTES: u64 = 8192
+            MAX_OUTPUT_BYTES: u64 = 1048576
+            TIMEOUT_STEPS: u64 = 10000
+
+
+        const module Output:
+            HEADER: sview = "path\tsignal\tdetail"
+            EXECUTABLE_SIGNAL: sview = "executable-file"
+            EXECUTABLE_DETAIL: sview = "permission bit; inspect file type and shebang before classifying"
+            SHEBANG_SIGNAL: sview = "legacy-shebang"
+            SHEBANG_DETAIL: sview = "interpreter shebang; review runtime, argv, cwd, environment, and exit behavior"
+            INLINE_SIGNAL: sview = "inline-legacy-invocation"
+            INLINE_DETAIL: sview = "content references python/perl/awk command syntax; inspect callers and embedded program text"
+
+
+        struct TemporaryDirectory:
+            path: Path
+            created: bool = false
+
+
+        struct FixtureFile:
+            relative_path: sview
+            contents: sview
+            mode: u64
+
+
+        def pinned_compiler_path() -> sview:
+            return Commands::PINNED_COMPILER
+
+
+        def make_temporary_directory(prefix: sview) -> TemporaryDirectory can[Memory.Allocate, Abort.Panic, File.Write]:
+            created_path: Path = try temp_directory(prefix) else err:
+                return TemporaryDirectory{path: path("."), created: false}
+            return TemporaryDirectory{path: created_path, created: true}
+
+
+        def create_fixture_directory(target: Path) -> bool can[Memory.Allocate, Abort.Panic, File.Write, Directory.Write]:
+            return try create_directory(target) else false
+
+
+        def write_fixture_file(target: Path, contents: sview, mode: u64) -> bool can[Memory.Allocate, Abort.Panic, File.Write]:
+            written: usize = try write_text(target, contents) else 0u64
+            return false if written != len(contents)
+            return try chmod(target, mode) else false
+
+
+        def create_fixture_symlink(target: Path, link: Path) -> bool can[Memory.Allocate, Abort.Panic, File.Write]:
+            return try symlink(target, link) else false
+
+
+        def remove_temporary_tree(target: Path) -> bool can[Memory.Allocate, Abort.Panic, File.Read, File.Write, Directory.Read, Directory.Write]:
+            return try remove_tree(target) else false
+
+
+        def lowercase_sha256_hex_byte(value: u8) -> bool:
+            return value >= 48u8 and value <= 57u8 or value >= 97u8 and value <= 102u8
+
+
+        def launcher_has_expected_sha256(launcher: sview, expected_hex: sview) -> bool can[Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Unsafe.PointerCast]:
+            return false if len(expected_hex) != 64
+            launcher_path: Path = path(launcher)
+            return false if not is_file(launcher_path)
+            launcher_size: usize = try file_size(launcher_path) else err:
+                return false
+            return false if launcher_size == 0 or launcher_size > Commands::MAX_LAUNCHER_BYTES
+            hash_runner: DifferentialRunner = DifferentialRunner{
+                kind: DifferentialRunnerKind.NativeProcess,
+                name: "public-elisascript-inventory-signals-sha256",
+                target: Commands::SHA256_TOOL,
+                arguments: ["-a", "256", launcher],
+                environment_mode: EsProcess::ProcessEnvironmentMode.Clear,
+                timeout_steps: Commands::TIMEOUT_STEPS,
+                max_output_bytes: Commands::MAX_HASH_OUTPUT_BYTES
+            }
+            hash_run: mutable DifferentialRun = DifferentialRun{observations: []}
+            catch run_differential_process(hash_runner):
+                ok value:
+                    hash_run <- value
+                error failure:
+                    return false
+
+            return false if hash_run.outcome != DifferentialRunOutcome.Completed
+            return false if hash_run.exit_status != 0 or hash_run.stderr != ""
+            return false if hash_run.stdout != expected_hex + "  " + launcher + "\n"
+            for index in 0..<64 |hash_run, expected_hex|:
+                return false if not lowercase_sha256_hex_byte(sview_at(expected_hex, index))
+            return true
+
+
+        def controlled_environment(temp_root: sview, working_directory: sview) -> darray[DifferentialEnvironmentEntry] can[Memory.Allocate, Abort.Panic]:
+            environment: mutable darray[DifferentialEnvironmentEntry] = [
+                DifferentialEnvironmentEntry{name: "PATH", value: Commands::CONTROLLED_PATH},
+                DifferentialEnvironmentEntry{name: "LC_ALL", value: "C"},
+                DifferentialEnvironmentEntry{name: "TMPDIR", value: temp_root},
+                DifferentialEnvironmentEntry{name: "ELISA_LOCAL_COMPILER", value: Commands::PINNED_COMPILER},
+                DifferentialEnvironmentEntry{name: "ELISACORE_BIN", value: Commands::PINNED_COMPILER}
+            ]
+            if working_directory != "":
+                environment.push(DifferentialEnvironmentEntry{name: "PWD", value: working_directory})
+            return environment
+
+
+        def inventory_process_pair_matches(launcher: sview, logical_arguments: darray[sview], expected_status: i64, expected_stdout: sview, expected_stderr: sview, temp_root: sview, working_directory: sview, reference_script_override: sview = "", candidate_script_override: sview = "") -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, File.Read, Directory.Read, Unsafe.PointerCast]:
+            reference_script_argument: mutable sview = reference_script_override
+            candidate_script_argument: mutable sview = candidate_script_override
+            if reference_script_argument == "":
+                reference_script_path: Path = try path_real(path(Commands::REFERENCE_SCRIPT)) else err:
+                    return false
+                reference_script_argument <- f"{reference_script_path}"
+            if candidate_script_argument == "":
+                candidate_script_path: Path = try path_real(path(Commands::CANDIDATE_SCRIPT)) else err:
+                    return false
+                candidate_script_argument <- f"{candidate_script_path}"
+
+            reference_arguments: mutable darray[sview] = [reference_script_argument]
+            candidate_arguments: mutable darray[sview] = [candidate_script_argument]
+            for argument in logical_arguments |reference_arguments, candidate_arguments|:
+                reference_arguments.push(argument)
+                candidate_arguments.push(argument)
+
+            environment: darray[DifferentialEnvironmentEntry] = controlled_environment(temp_root, working_directory)
+            reference_runner: DifferentialRunner = DifferentialRunner{
+                kind: DifferentialRunnerKind.NativeProcess,
+                name: "shell-inventory-signals-reference",
+                target: Commands::REFERENCE_SHELL,
+                arguments: reference_arguments,
+                working_directory: working_directory,
+                environment: environment,
+                environment_mode: EsProcess::ProcessEnvironmentMode.Replace,
+                timeout_steps: Commands::TIMEOUT_STEPS,
+                max_output_bytes: Commands::MAX_OUTPUT_BYTES
+            }
+            reference_run: mutable DifferentialRun = DifferentialRun{observations: []}
+            catch run_differential_process(reference_runner):
+                ok value:
+                    reference_run <- value
+                error failure:
+                    eprint("inventory signals reference process failed")
+                    return false
+
+            candidate_runner: DifferentialRunner = DifferentialRunner{
+                kind: DifferentialRunnerKind.NativeProcess,
+                name: "public-elisascript-inventory-signals",
+                target: launcher,
+                arguments: candidate_arguments,
+                working_directory: working_directory,
+                environment: environment,
+                environment_mode: EsProcess::ProcessEnvironmentMode.Replace,
+                timeout_steps: Commands::TIMEOUT_STEPS,
+                max_output_bytes: Commands::MAX_OUTPUT_BYTES
+            }
+            candidate_run: mutable DifferentialRun = DifferentialRun{observations: []}
+            catch run_differential_process(candidate_runner):
+                ok value:
+                    candidate_run <- value
+                error failure:
+                    eprint("inventory signals Elisascript process failed")
+                    return false
+
+            comparison: DifferentialComparison = compare_differential_runs(reference_run, candidate_run)
+            if reference_run.outcome != DifferentialRunOutcome.Completed or candidate_run.outcome != DifferentialRunOutcome.Completed or not comparison.equal:
+                eprint("inventory signals process parity mismatch")
+                return false
+            if reference_run.exit_status != expected_status or reference_run.stdout != expected_stdout or reference_run.stderr != expected_stderr:
+                eprint("inventory signals shell reference golden mismatch")
+                return false
+            if candidate_run.exit_status != expected_status or candidate_run.stdout != expected_stdout or candidate_run.stderr != expected_stderr:
+                eprint("Elisascript inventory signals golden mismatch")
+                return false
+            return true
+
+
+        # Candidate-only on purpose: the shell oracle uses newline-delimited
+        # path lists and cannot promise the candidate's fail-closed TSV policy.
+        def candidate_rejects_delimiter_path(launcher: sview, argument: sview, expected_stderr: sview, temp_root: sview, working_directory: sview) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, File.Read, Directory.Read, Unsafe.PointerCast]:
+            candidate_script_path: Path = try path_real(path(Commands::CANDIDATE_SCRIPT)) else err:
+                return false
+            arguments: darray[sview] = [f"{candidate_script_path}", argument]
+            runner: DifferentialRunner = DifferentialRunner{
+                kind: DifferentialRunnerKind.NativeProcess,
+                name: "public-elisascript-inventory-signals-delimiter-safety",
+                target: launcher,
+                arguments: arguments,
+                working_directory: working_directory,
+                environment: controlled_environment(temp_root, working_directory),
+                environment_mode: EsProcess::ProcessEnvironmentMode.Replace,
+                timeout_steps: Commands::TIMEOUT_STEPS,
+                max_output_bytes: Commands::MAX_OUTPUT_BYTES
+            }
+            run: mutable DifferentialRun = DifferentialRun{observations: []}
+            catch run_differential_process(runner):
+                ok value:
+                    run <- value
+                error failure:
+                    eprint("inventory signals delimiter safety process failed")
+                    return false
+            return run.outcome == DifferentialRunOutcome.Completed and run.exit_status == 3i64 and run.stdout == "" and run.stderr == expected_stderr
+
+
+        def expected_positive_manifest(root: sview) -> sview can[Memory.Allocate, Abort.Panic]:
+            rows: mutable darray[sview] = [
+                f"{root}/.hidden.sh\t{Output::SHEBANG_SIGNAL}\t{Output::SHEBANG_DETAIL}",
+                f"{root}/both.sh\t{Output::EXECUTABLE_SIGNAL}\t{Output::EXECUTABLE_DETAIL}",
+                f"{root}/both.sh\t{Output::SHEBANG_SIGNAL}\t{Output::SHEBANG_DETAIL}",
+                f"{root}/inline.txt\t{Output::INLINE_SIGNAL}\t{Output::INLINE_DETAIL}",
+                f"{root}/partial.sh\t{Output::SHEBANG_SIGNAL}\t{Output::SHEBANG_DETAIL}",
+                f"{root}/permissions/ugo\t{Output::EXECUTABLE_SIGNAL}\t{Output::EXECUTABLE_DETAIL}"
+            ]
+            rows <- sorted(rows)
+            return Output::HEADER + "\n" + join(rows, "\n") + "\n"
+
+
+        def run_inventory_signal_cases(launcher: sview) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, File.Read, File.Write, Directory.Read, Directory.Write, Unsafe.PointerCast]:
+            workspace_temporary: TemporaryDirectory = make_temporary_directory("elisascript-inventory-signals-workspace")
+            return false if not workspace_temporary.created
+            tmp_temporary: TemporaryDirectory = make_temporary_directory("elisascript-inventory-signals-tmp")
+            if not tmp_temporary.created:
+                _ = remove_temporary_tree(workspace_temporary.path)
+                return false
+
+            workspace_path: Path = try path_real(workspace_temporary.path) else err:
+                workspace_temporary.path
+            tmp_path: Path = try path_real(tmp_temporary.path) else err:
+                tmp_temporary.path
+            root_path: Path = workspace_path.joinpath("scan root")
+            no_match_path: Path = workspace_path.joinpath("no-match")
+            dash_root_path: Path = workspace_path.joinpath("-dash-root")
+            default_root_path: Path = workspace_path.joinpath("default-root")
+            default_vendor_path: Path = default_root_path.joinpath("vendor")
+            default_scripts_path: Path = default_vendor_path.joinpath("scripts")
+            tab_root_path: Path = workspace_path.joinpath("tab\troot")
+            tab_root_alias_path: Path = workspace_path.joinpath("safe-tab-root-alias")
+            logical_link_path: Path = root_path.joinpath("logical-hop")
+            tmp_nested_path: Path = tmp_path.joinpath("nested")
+            setup_ok: mutable bool = workspace_path.is_absolute() and tmp_path.is_absolute()
+            setup_ok <- false if not create_fixture_directory(root_path)
+            setup_ok <- false if not create_fixture_directory(no_match_path)
+            setup_ok <- false if not create_fixture_directory(dash_root_path)
+            setup_ok <- false if not create_fixture_directory(default_root_path)
+            setup_ok <- false if not create_fixture_directory(default_vendor_path)
+            setup_ok <- false if not create_fixture_directory(default_scripts_path)
+            setup_ok <- false if not create_fixture_directory(tab_root_path)
+            setup_ok <- false if not create_fixture_directory(tmp_nested_path)
+
+            # Keep shell mktemp output outside every scanned fixture root.
+            root_resolved: Path = try path_real(root_path) else err:
+                root_path
+            no_match_resolved: Path = try path_real(no_match_path) else err:
+                no_match_path
+            dash_root_resolved: Path = try path_real(dash_root_path) else err:
+                dash_root_path
+            default_root_resolved: Path = try path_real(default_root_path) else err:
+                default_root_path
+            workspace_resolved: Path = try path_real(workspace_path) else err:
+                workspace_path
+            tmp_resolved: Path = try path_real(tmp_path) else err:
+                tmp_path
+            root_text: sview = f"{root_resolved}"
+            no_match_text: sview = f"{no_match_resolved}"
+            dash_root_text: sview = f"{dash_root_resolved}"
+            default_root_text: sview = f"{default_root_resolved}"
+            workspace_text: sview = f"{workspace_resolved}"
+            tmp_text: sview = f"{tmp_resolved}"
+            setup_ok <- false if tmp_text == root_text or tmp_text.startswith(root_text + "/")
+            setup_ok <- false if tmp_text == workspace_text or tmp_text.startswith(workspace_text + "/")
+            setup_ok <- false if workspace_text.startswith(tmp_text + "/")
+
+            excluded_directory_names: darray[sview] = [".git", "node_modules", ".venv", "__pycache__", "vendor", "third_party"]
+            for name in excluded_directory_names |root_path, setup_ok|:
+                setup_ok <- false if not create_fixture_directory(root_path.joinpath(name))
+            setup_ok <- false if not create_fixture_directory(root_path.joinpath("permissions"))
+
+            files: darray[FixtureFile] = [
+                FixtureFile{relative_path: ".gitignore", contents: "ignored.py\n", mode: 0x1a4u64},
+                FixtureFile{relative_path: ".git/HEAD", contents: "ref: refs/heads/main\n", mode: 0x1a4u64},
+                FixtureFile{relative_path: ".hidden.sh", contents: "#!/usr/bin/env perl\n# hidden shebang fixture\n", mode: 0x1a4u64},
+                FixtureFile{relative_path: "both.sh", contents: "#!/bin/sh\n: > ", mode: 0x1edu64},
+                FixtureFile{relative_path: "ignored.py", contents: "#!/usr/bin/env python3\n", mode: 0x1a4u64},
+                FixtureFile{relative_path: "inline.txt", contents: "example: python -c 'print(1)'\n", mode: 0x1a4u64},
+                FixtureFile{relative_path: "partial.sh", contents: "#!/usr/bin/env python3\n", mode: 0x1e4u64},
+                FixtureFile{relative_path: "permissions/u-only", contents: "permission fixture\n", mode: 0x164u64},
+                FixtureFile{relative_path: "permissions/g-only", contents: "permission fixture\n", mode: 0x12cu64},
+                FixtureFile{relative_path: "permissions/o-only", contents: "permission fixture\n", mode: 0x125u64},
+                FixtureFile{relative_path: "permissions/ug", contents: "permission fixture\n", mode: 0x16cu64},
+                FixtureFile{relative_path: "permissions/uo", contents: "permission fixture\n", mode: 0x165u64},
+                FixtureFile{relative_path: "permissions/go", contents: "permission fixture\n", mode: 0x12du64},
+                FixtureFile{relative_path: "permissions/ugo", contents: "permission fixture\n", mode: 0x16du64},
+                FixtureFile{relative_path: ".git/excluded.sh", contents: "#!/bin/sh\n", mode: 0x1edu64},
+                FixtureFile{relative_path: "__pycache__/excluded.py", contents: "#!/usr/bin/env python3\n", mode: 0x1edu64},
+                FixtureFile{relative_path: "node_modules/excluded.pl", contents: "#!/usr/bin/env perl\n", mode: 0x1edu64},
+                FixtureFile{relative_path: "third_party/excluded.awk", contents: "#!/usr/bin/env awk\n", mode: 0x1edu64},
+                FixtureFile{relative_path: "vendor/excluded.sh", contents: "#!/bin/sh\n", mode: 0x1edu64},
+                FixtureFile{relative_path: ".venv/excluded.py", contents: "#!/usr/bin/env python3\n", mode: 0x1edu64}
+            ]
+            for fixture in files |root_path, setup_ok|:
+                target: Path = root_path.joinpath(fixture.relative_path)
+                contents: mutable sview = fixture.contents
+                if fixture.relative_path == "both.sh":
+                    contents <- contents + "\"" + root_text + "/executed.marker\"\n"
+                setup_ok <- write_fixture_file(target, contents, fixture.mode) and setup_ok
+            setup_ok <- write_fixture_file(no_match_path.joinpath("plain.txt"), "ordinary data only\n", 0x1a4u64) and setup_ok
+            setup_ok <- write_fixture_file(dash_root_path.joinpath(".dash.py"), "#!/usr/bin/env python3\n", 0x1a4u64) and setup_ok
+
+            external_script: Path = tmp_path.joinpath("outside.sh")
+            setup_ok <- write_fixture_file(external_script, "#!/bin/sh\n", 0x1edu64) and setup_ok
+            nested_external_script: Path = tmp_nested_path.joinpath("outside-nested.sh")
+            setup_ok <- write_fixture_file(nested_external_script, "#!/usr/bin/env python3\n", 0x1edu64) and setup_ok
+            outside_link: Path = root_path.joinpath("outside-link.sh")
+            setup_ok <- create_fixture_symlink(external_script, outside_link) and setup_ok
+            setup_ok <- create_fixture_symlink(tmp_nested_path, logical_link_path) and setup_ok
+            root_alias: Path = workspace_path.joinpath("signals-alias")
+            setup_ok <- create_fixture_symlink(root_resolved, root_alias) and setup_ok
+            setup_ok <- create_fixture_symlink(tab_root_path, tab_root_alias_path) and setup_ok
+
+            reference_source_path: Path = try path_real(path(Commands::REFERENCE_SCRIPT)) else err:
+                path(".")
+            reference_script_copy: Path = default_scripts_path.joinpath("inventory_signals.sh")
+            candidate_script_copy: Path = default_scripts_path.joinpath("inventory_signals.elisascript")
+            setup_ok <- reference_source_path.is_absolute() and setup_ok
+            setup_ok <- create_fixture_symlink(reference_source_path, reference_script_copy) and setup_ok
+            candidate_source: sview = try read_text(path(Commands::CANDIDATE_SCRIPT)) else err:
+                ""
+            setup_ok <- false if candidate_source == ""
+            setup_ok <- write_fixture_file(candidate_script_copy, candidate_source, 0x1a4u64) and setup_ok
+            setup_ok <- write_fixture_file(default_root_path.joinpath("bootstrap.sh"), "#!/usr/bin/env perl\n", 0x1a4u64) and setup_ok
+
+            expected_root: sview = expected_positive_manifest(root_text)
+            empty_stdout: sview = Output::HEADER + "\n"
+            marker_path: Path = root_path.joinpath("executed.marker")
+            if setup_ok:
+                positive_arguments: darray[sview] = [root_text]
+                setup_ok <- inventory_process_pair_matches(launcher, positive_arguments, 0i64, expected_root, "", tmp_text, workspace_text)
+                setup_ok <- setup_ok and not is_file(marker_path)
+
+                # A symlink selected as the explicit root is resolved once;
+                # rows name the physical root and descendants are not followed.
+                alias_arguments: darray[sview] = [f"{root_alias}"]
+                setup_ok <- setup_ok and inventory_process_pair_matches(launcher, alias_arguments, 0i64, expected_root, "", tmp_text, workspace_text)
+
+                # Bash-style logical normalization must consume `..` before
+                # following this directory symlink to the private outside tree.
+                logical_root_argument: sview = root_text + "/logical-hop/.."
+                logical_root_arguments: darray[sview] = [logical_root_argument]
+                setup_ok <- setup_ok and inventory_process_pair_matches(launcher, logical_root_arguments, 0i64, expected_root, "", tmp_text, workspace_text)
+
+                # With no explicit root, both launchers derive default-root
+                # from their script path under the excluded vendor/scripts
+                # subtree. The candidate source is a private copy there.
+                default_root_arguments: darray[sview] = []
+                default_stdout: sview = Output::HEADER + "\n" + f"{default_root_text}/bootstrap.sh\t{Output::SHEBANG_SIGNAL}\t{Output::SHEBANG_DETAIL}\n"
+                reference_default_script: sview = f"{reference_script_copy}"
+                candidate_default_script: sview = f"{candidate_script_copy}"
+                setup_ok <- setup_ok and inventory_process_pair_matches(launcher, default_root_arguments, 0i64, default_stdout, "", tmp_text, workspace_text, reference_default_script, candidate_default_script)
+
+                # The argument is a safe symlink path, but its physical target
+                # contains a tab; both launchers must reject after resolution.
+                safe_tab_root_argument: sview = f"{tab_root_alias_path}"
+                setup_ok <- false if safe_tab_root_argument.index("\t") >= 0
+                safe_tab_root_arguments: darray[sview] = [safe_tab_root_argument]
+                unsafe_physical_root_stderr: sview = "inventory_signals: scan root contains a TSV delimiter or line break\n"
+                setup_ok <- inventory_process_pair_matches(launcher, safe_tab_root_arguments, 2i64, "", unsafe_physical_root_stderr, tmp_text, workspace_text) and setup_ok
+
+                # Relative paths beginning with '-' must be made absolute
+                # before find/rg interpret their operands.
+                dash_arguments: darray[sview] = ["-dash-root"]
+                dash_stdout: sview = Output::HEADER + "\n" + f"{dash_root_text}/.dash.py\t{Output::SHEBANG_SIGNAL}\t{Output::SHEBANG_DETAIL}\n"
+                setup_ok <- setup_ok and inventory_process_pair_matches(launcher, dash_arguments, 0i64, dash_stdout, "", tmp_text, workspace_text)
+
+                no_match_arguments: darray[sview] = [no_match_text]
+                setup_ok <- setup_ok and inventory_process_pair_matches(launcher, no_match_arguments, 0i64, empty_stdout, "", tmp_text, workspace_text)
+
+                # Every excluded basename is excluded both as a child and as
+                # the requested root itself.
+                for name in excluded_directory_names |root_text, tmp_text, workspace_text, empty_stdout, setup_ok|:
+                    excluded_root: sview = root_text + "/" + name
+                    excluded_arguments: darray[sview] = [excluded_root]
+                    setup_ok <- inventory_process_pair_matches(launcher, excluded_arguments, 0i64, empty_stdout, "", tmp_text, workspace_text) and setup_ok
+
+                missing_root: sview = root_text + "/missing-root"
+                missing_arguments: darray[sview] = [missing_root]
+                missing_stderr: sview = "inventory_signals: scan root does not exist: " + missing_root + "\n"
+                setup_ok <- setup_ok and inventory_process_pair_matches(launcher, missing_arguments, 2i64, "", missing_stderr, tmp_text, workspace_text)
+
+                bad_arity_arguments: darray[sview] = [root_text, "unexpected"]
+                setup_ok <- setup_ok and inventory_process_pair_matches(launcher, bad_arity_arguments, 2i64, "", "usage: inventory_signals.sh [CODING_PROJECTS_ROOT]\n", tmp_text, workspace_text)
+
+                # Descendant tabs are not representable safely in the TSV
+                # manifest; assert the candidate fails closed without asking
+                # the line-oriented shell reference to imitate that policy.
+                delimiter_path: Path = root_path.joinpath("bad\tname.txt")
+                if write_fixture_file(delimiter_path, "plain data\n", 0x1a4u64):
+                    delimiter_stderr: sview = "inventory_signals: path contains a TSV delimiter or line break under " + root_text + "\n"
+                    setup_ok <- candidate_rejects_delimiter_path(launcher, root_text, delimiter_stderr, tmp_text, workspace_text) and setup_ok
+                else:
+                    setup_ok <- false
+
+            setup_ok <- setup_ok and not is_file(marker_path)
+            workspace_removed: mutable bool = true
+            if workspace_temporary.created:
+                workspace_removed <- remove_temporary_tree(workspace_path)
+            tmp_removed: mutable bool = true
+            if tmp_temporary.created:
+                tmp_removed <- remove_temporary_tree(tmp_path)
+            return setup_ok and workspace_removed and tmp_removed
+
+
+    public:
+        def pinned_compiler_path() -> sview:
+            return Commands::PINNED_COMPILER
+
+
+@test
+def inventory_signals_public_launcher_matches_shell_and_golden_output() -> void:
+    can Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, Environment.Read, File.Read, File.Write, Directory.Read, Directory.Write, Unsafe.PointerCast:
+        reauthorized: sview = try getenv("ELISASCRIPT_VALIDATION_REAUTHORIZED", "") else err:
+            ""
+        compiler: sview = try getenv("ELISA_LOCAL_COMPILER", "") else err:
+            ""
+        elisacore_bin: sview = try getenv("ELISACORE_BIN", "") else err:
+            ""
+        launcher: sview = try getenv("ELISASCRIPT_PUBLIC_LAUNCHER", "") else err:
+            ""
+        launcher_hash: sview = try getenv("ELISASCRIPT_PUBLIC_LAUNCHER_SHA256", "") else err:
+            ""
+        assert reauthorized == "1"
+        assert compiler == EsInventorySignalsLauncherParity::pinned_compiler_path()
+        assert elisacore_bin == EsInventorySignalsLauncherParity::pinned_compiler_path()
+        assert launcher != ""
+        assert launcher.startswith("/")
+        assert EsInventorySignalsLauncherParity::launcher_has_expected_sha256(launcher, launcher_hash)
+        println("public_launcher_path=" + launcher)
+        println("public_launcher_sha256=" + launcher_hash)
+        assert EsInventorySignalsLauncherParity::run_inventory_signal_cases(launcher)
+        assert EsInventorySignalsLauncherParity::launcher_has_expected_sha256(launcher, launcher_hash)

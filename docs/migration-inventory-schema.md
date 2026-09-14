@@ -199,9 +199,11 @@ The current Elisascript draft uses NUL-delimited `find`/`rg` output internally,
 rejects tab/CR/LF paths before producing TSV, caps scanned regular-file path
 bytes at 60 MiB, accounts a conservative 64 MiB header-plus-row ceiling while
 building pre-sort/pre-dedup rows, and fails closed on a nonzero `find` or sort
-status. These are intentional safety-policy differences
-from the shell reference, which still needs a matching update and boundary
-fixtures before exact parity can be claimed. The runtime also caps each
+status. These are intentional safety-policy differences from the shell
+reference: the post-capture resource ceilings and fail-closed handling of
+descendant paths with TSV delimiters still need matching shell limits or
+explicit candidate-only contracts and boundary fixtures before exact parity can
+be claimed. The runtime also caps each
 captured process stream at 64 MiB and applies its process deadline; those host
 guards do not establish a measured peak-RSS bound. The file-count/path/output
 checks occur after process capture and byte-wise NUL scanning, so they are
@@ -213,13 +215,20 @@ process deadline is the only current traversal-work bound.
 Default-root construction lexically absolutizes the source directory and
 normalizes `../..` before the shared physical-root resolution, matching the
 shell's logical `cd` followed by physical `pwd -P` behavior. Explicit symlink
-roots, dash-leading relative roots, excluded roots, and symlinked launch paths
-still need fixtures. Root resolution and subsequent process traversals are
-separate filesystem operations, so concurrent root replacement remains a
+roots, dash-leading relative roots, excluded roots, Bash-logical
+`symlink/..` normalization, and omitted-root/default-root behavior now have a
+source-only fixture defining process-parity cases at
+`test/script_parity/inventory_signals_launcher_test.elisascript`. It also
+covers the six partial execute-bit combinations, hidden and ignored files,
+excluded child directories, an outside-root symlink, TSV-delimiter rejection,
+and a marker proving discoveries are not executed. The fixture is uncompiled
+and unrun; symlinked candidate-launch-path behavior, binary and oversized
+content files, synthetic tool errors, and resource-boundary behavior remain
+uncovered. Root resolution and subsequent process traversals are separate
+filesystem operations, so concurrent root replacement remains a
 time-of-check/time-of-use risk; parity is intended for quiescent trees. The
-draft is uncompiled and unrun,
-and its public-launcher behavior, platform/tool differences, resource behavior,
-and exact row equality remain unqualified.
+draft and fixture do not establish public-launcher parity, platform/tool
+equivalence, resource behavior, or exact row equality.
 
 Regenerate the signal report outside the repository:
 
