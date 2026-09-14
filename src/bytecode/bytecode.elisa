@@ -20,6 +20,7 @@ module EsBytecode:
             Time
             Environment
             Directory
+            Invocation
             Stdio
             Binary
             Call
@@ -496,6 +497,9 @@ module EsBytecode:
                     break
                 Classify, BytecodeOpcodeClassState.Classify if cursor.opcode == Opcode.GetEnvironment or cursor.opcode == Opcode.SetEnvironment or cursor.opcode == Opcode.UnsetEnvironment:
                     cursor.result <- BytecodeDispatchClass.Environment
+                    break
+                Classify, BytecodeOpcodeClassState.Classify if cursor.opcode == Opcode.ScriptSourcePath:
+                    cursor.result <- BytecodeDispatchClass.Invocation
                     break
                 Classify, BytecodeOpcodeClassState.Classify if cursor.opcode == Opcode.CreateDirectory or cursor.opcode == Opcode.CreateDirectories or cursor.opcode == Opcode.RemoveDirectory or cursor.opcode == Opcode.CurrentDirectory or cursor.opcode == Opcode.ChangeDirectory or cursor.opcode == Opcode.ListDirectory or cursor.opcode == Opcode.IsDirectory or cursor.opcode == Opcode.ExpandGlob:
                     cursor.result <- BytecodeDispatchClass.Directory
@@ -1944,7 +1948,7 @@ module EsBytecode:
         # Evaluate the closed scalar, aggregate, filesystem, and process subset
         # through a state machine driven by the instruction cursor. Unsupported
         # families never enter this path.
-        def bytecode_direct_instruction(module: BytecodeModule&, instruction: Instruction, fn: BytecodeFunction&, ids: darray[u32]&, values: darray[RuntimeValue]&, storage: mutable darray[RuntimeValue]&, globals: mutable darray[RuntimeValue]&, observations: mutable darray[Observation]&, step_limit: u64, steps: mutable u64&, call_depth: usize, output_bytes: mutable usize&, observation_limit: usize = EsIr::ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS) -> RuntimeValue error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+        def bytecode_direct_instruction(module: BytecodeModule&, instruction: Instruction, fn: BytecodeFunction&, ids: darray[u32]&, values: darray[RuntimeValue]&, storage: mutable darray[RuntimeValue]&, globals: mutable darray[RuntimeValue]&, observations: mutable darray[Observation]&, step_limit: u64, steps: mutable u64&, call_depth: usize, invocation_context: ScriptInvocationContext, output_bytes: mutable usize&, observation_limit: usize = EsIr::ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS) -> RuntimeValue error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             raise InterpretError.Panic if instruction.opcode == Opcode.Panic
             raise InterpretError.Raised if instruction.opcode == Opcode.Raise
             global_loaded: mutable RuntimeValue = runtime_void()
@@ -2645,6 +2649,10 @@ module EsBytecode:
                 directory_result <- runtime_bool(try EsIr::is_directory_value(directory_path.text))
             if instruction.opcode == Opcode.ExpandGlob:
                 directory_result <- try EsIr::expand_glob_value(storage, directory_path.text)
+            invocation_result: mutable RuntimeValue = runtime_void()
+            if instruction.opcode == Opcode.ScriptSourcePath:
+                raise InterpretError.InvocationContextUnavailable if not invocation_context.available or not path_shape_result_valid(invocation_context.source_path) or not path_is_absolute_value(invocation_context.source_path)
+                invocation_result <- runtime_text(invocation_context.source_path)
             stdio_text: mutable RuntimeValue = runtime_void()
             if instruction.opcode == Opcode.WriteStdout or instruction.opcode == Opcode.WriteStderr:
                 stdio_text <- bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()])
@@ -2663,7 +2671,7 @@ module EsBytecode:
                 call_arguments: mutable darray[RuntimeValue] = []
                 for offset in 0..<instruction.operand_count.usize() |module, instruction, fn, ids, values, call_arguments|:
                     call_arguments.push(bytecode_direct_frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + offset]))
-                nested: Execution = try execute_bytecode_direct_with_ledger(module, instruction.symbol, call_arguments, observations, storage, globals, step_limit, steps, call_depth + 1, observation_limit, output_bytes)
+                nested: Execution = try execute_bytecode_direct_with_ledger(module, instruction.symbol, call_arguments, observations, storage, globals, step_limit, steps, call_depth + 1, observation_limit, output_bytes, invocation_context)
                 # Child calls share the parent's output ledger.  Without this
                 # hand-off, nested stdout/process capture could exceed the
                 # caller's policy while each frame remained below the limit.
@@ -2966,6 +2974,10 @@ module EsBytecode:
                     cursor.value <- directory_result
                     cursor.state <- BytecodeValueState.Done
                     -> Execute
+                Execute, BytecodeValueState.Execute if instruction.opcode == Opcode.ScriptSourcePath:
+                    cursor.value <- invocation_result
+                    cursor.state <- BytecodeValueState.Done
+                    -> Execute
                 Execute, BytecodeValueState.Execute if instruction.opcode == Opcode.ReadStdin or instruction.opcode == Opcode.ReadStdinLine or instruction.opcode == Opcode.WriteStdout or instruction.opcode == Opcode.WriteStderr:
                     cursor.value <- stdio_result
                     cursor.state <- BytecodeValueState.Done
@@ -3009,9 +3021,9 @@ module EsBytecode:
             return failure in {InterpretError.DivisionByZero, InterpretError.IntegerOverflow, InterpretError.InvalidNumber, InterpretError.FileIo, InterpretError.Process, InterpretError.OutputLimit, InterpretError.Environment, InterpretError.Directory, InterpretError.Console, InterpretError.Time, InterpretError.RangeStepZero, InterpretError.InvalidShift, InterpretError.IndexOutOfBounds, InterpretError.Assertion, InterpretError.Raised}
 
 
-        def bytecode_direct_instruction_guarded(module: BytecodeModule&, instruction: Instruction, fn: BytecodeFunction&, ids: darray[u32]&, values: darray[RuntimeValue]&, storage: mutable darray[RuntimeValue]&, globals: mutable darray[RuntimeValue]&, observations: mutable darray[Observation]&, step_limit: u64, steps: mutable u64&, guards: mutable darray[BytecodeErrorGuard]&, recovered: mutable bool&, recovery_target: mutable u32&, call_depth: usize, output_bytes: mutable usize&, observation_limit: usize = EsIr::ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS) -> RuntimeValue error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+        def bytecode_direct_instruction_guarded(module: BytecodeModule&, instruction: Instruction, fn: BytecodeFunction&, ids: darray[u32]&, values: darray[RuntimeValue]&, storage: mutable darray[RuntimeValue]&, globals: mutable darray[RuntimeValue]&, observations: mutable darray[Observation]&, step_limit: u64, steps: mutable u64&, guards: mutable darray[BytecodeErrorGuard]&, recovered: mutable bool&, recovery_target: mutable u32&, call_depth: usize, invocation_context: ScriptInvocationContext, output_bytes: mutable usize&, observation_limit: usize = EsIr::ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS) -> RuntimeValue error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             recovered <- false
-            catch bytecode_direct_instruction(module, instruction, fn, ids, values, storage, globals, observations, step_limit, steps, call_depth, output_bytes, observation_limit):
+            catch bytecode_direct_instruction(module, instruction, fn, ids, values, storage, globals, observations, step_limit, steps, call_depth, invocation_context, output_bytes, observation_limit):
                 ok:
                     return ok
                 error failure:
@@ -3080,7 +3092,7 @@ module EsBytecode:
                     if instruction.opcode == Opcode.PathIterDir:
                         return false if instruction.result_type.kind != TypeKind.Array or instruction.result_type.element_kind != TypeKind.Text
                         continue
-                    if instruction.opcode not in {Opcode.Constant, Opcode.Copy, Opcode.Negate, Opcode.Not, Opcode.BitNot, Opcode.Add, Opcode.Subtract, Opcode.Multiply, Opcode.Divide, Opcode.Equal, Opcode.Less, Opcode.Remainder, Opcode.NotEqual, Opcode.LessEqual, Opcode.Greater, Opcode.GreaterEqual, Opcode.BitAnd, Opcode.BitOr, Opcode.BitXor, Opcode.ShiftLeft, Opcode.ShiftRight, Opcode.RangeCondition, Opcode.Observe, Opcode.Assert, Opcode.MakeArray, Opcode.MakeMap, Opcode.MapKeys, Opcode.MapValues, Opcode.MakePath, Opcode.MakeGlob, Opcode.MakeRegex, Opcode.MakeUrl, Opcode.Index, Opcode.IndexValid, Opcode.Length, Opcode.Slice, Opcode.PopArrayValue, Opcode.PopArray, Opcode.PopMapValue, Opcode.PopMap, Opcode.SetDefaultMapValue, Opcode.SetDefaultMap, Opcode.Contains, Opcode.StartsWith, Opcode.EndsWith, Opcode.TextCount, Opcode.TextFind, Opcode.TextRFind, Opcode.TextPredicate, Opcode.TextPartition, Opcode.TextReplace, Opcode.TrimText, Opcode.LowerText, Opcode.UpperText, Opcode.SetIndex, Opcode.DeleteIndex, Opcode.Concat, Opcode.Split, Opcode.SplitLines, Opcode.Join, Opcode.ParseInt, Opcode.FormatInt, Opcode.ParseFloat, Opcode.FormatFloat, Opcode.RegexSearch, Opcode.RegexReplace, Opcode.RegexSplit, Opcode.RegexFind, Opcode.RegexCapture, Opcode.RegexCaptureNamed, Opcode.PathJoin, Opcode.PathGlob, Opcode.PathRGlob, Opcode.PathParent, Opcode.PathName, Opcode.PathExtension, Opcode.PathStem, Opcode.PathIsAbsolute, Opcode.PathNormalize, Opcode.PathAbsolute, Opcode.PathReal, Opcode.PathRelative, Opcode.CreateTemporary, Opcode.PathExists, Opcode.IsFile, Opcode.PathAccess, Opcode.TouchPath, Opcode.ChmodPath, Opcode.FileSize, Opcode.FileMode, Opcode.FileMTime, Opcode.FileATime, Opcode.FileCTime, Opcode.IsSymlink, Opcode.ReadLink, Opcode.SymlinkPath, Opcode.RemoveTree, Opcode.CopyTree, Opcode.ReadText, Opcode.ReadBytes, Opcode.WriteText, Opcode.WriteBytes, Opcode.AppendText, Opcode.AppendBytes, Opcode.RemovePath, Opcode.CopyPath, Opcode.MovePath, Opcode.MakeExecutable, Opcode.RunProcess, Opcode.CaptureProcessStdout, Opcode.CaptureProcessStderr, Opcode.CaptureProcessStdoutWithStdin, Opcode.CaptureProcessStderrWithStdin, Opcode.CaptureProcessResult, Opcode.CaptureProcessPipeline, Opcode.CaptureProcessResultInDirectory, Opcode.CaptureProcessResultWithEnvironment, Opcode.CaptureProcessResultInDirectoryWithEnvironment, Opcode.ProcessResultExitStatus, Opcode.ProcessResultStdout, Opcode.ProcessResultStderr, Opcode.GetEnvironment, Opcode.SetEnvironment, Opcode.UnsetEnvironment, Opcode.CreateDirectory, Opcode.CreateDirectories, Opcode.RemoveDirectory, Opcode.ChangeDirectory, Opcode.CurrentDirectory, Opcode.ListDirectory, Opcode.IsDirectory, Opcode.ExpandGlob, Opcode.ReadStdin, Opcode.ReadStdinLine, Opcode.WriteStdout, Opcode.WriteStderr, Opcode.Call}:
+                    if instruction.opcode not in {Opcode.Constant, Opcode.Copy, Opcode.Negate, Opcode.Not, Opcode.BitNot, Opcode.Add, Opcode.Subtract, Opcode.Multiply, Opcode.Divide, Opcode.Equal, Opcode.Less, Opcode.Remainder, Opcode.NotEqual, Opcode.LessEqual, Opcode.Greater, Opcode.GreaterEqual, Opcode.BitAnd, Opcode.BitOr, Opcode.BitXor, Opcode.ShiftLeft, Opcode.ShiftRight, Opcode.RangeCondition, Opcode.Observe, Opcode.Assert, Opcode.MakeArray, Opcode.MakeMap, Opcode.MapKeys, Opcode.MapValues, Opcode.MakePath, Opcode.MakeGlob, Opcode.MakeRegex, Opcode.MakeUrl, Opcode.Index, Opcode.IndexValid, Opcode.Length, Opcode.Slice, Opcode.PopArrayValue, Opcode.PopArray, Opcode.PopMapValue, Opcode.PopMap, Opcode.SetDefaultMapValue, Opcode.SetDefaultMap, Opcode.Contains, Opcode.StartsWith, Opcode.EndsWith, Opcode.TextCount, Opcode.TextFind, Opcode.TextRFind, Opcode.TextPredicate, Opcode.TextPartition, Opcode.TextReplace, Opcode.TrimText, Opcode.LowerText, Opcode.UpperText, Opcode.SetIndex, Opcode.DeleteIndex, Opcode.Concat, Opcode.Split, Opcode.SplitLines, Opcode.Join, Opcode.ParseInt, Opcode.FormatInt, Opcode.ParseFloat, Opcode.FormatFloat, Opcode.RegexSearch, Opcode.RegexReplace, Opcode.RegexSplit, Opcode.RegexFind, Opcode.RegexCapture, Opcode.RegexCaptureNamed, Opcode.PathJoin, Opcode.PathGlob, Opcode.PathRGlob, Opcode.PathParent, Opcode.PathName, Opcode.PathExtension, Opcode.PathStem, Opcode.PathIsAbsolute, Opcode.PathNormalize, Opcode.PathAbsolute, Opcode.PathReal, Opcode.PathRelative, Opcode.CreateTemporary, Opcode.PathExists, Opcode.IsFile, Opcode.PathAccess, Opcode.TouchPath, Opcode.ChmodPath, Opcode.FileSize, Opcode.FileMode, Opcode.FileMTime, Opcode.FileATime, Opcode.FileCTime, Opcode.IsSymlink, Opcode.ReadLink, Opcode.SymlinkPath, Opcode.RemoveTree, Opcode.CopyTree, Opcode.ReadText, Opcode.ReadBytes, Opcode.WriteText, Opcode.WriteBytes, Opcode.AppendText, Opcode.AppendBytes, Opcode.RemovePath, Opcode.CopyPath, Opcode.MovePath, Opcode.MakeExecutable, Opcode.RunProcess, Opcode.CaptureProcessStdout, Opcode.CaptureProcessStderr, Opcode.CaptureProcessStdoutWithStdin, Opcode.CaptureProcessStderrWithStdin, Opcode.CaptureProcessResult, Opcode.CaptureProcessPipeline, Opcode.CaptureProcessResultInDirectory, Opcode.CaptureProcessResultWithEnvironment, Opcode.CaptureProcessResultInDirectoryWithEnvironment, Opcode.ProcessResultExitStatus, Opcode.ProcessResultStdout, Opcode.ProcessResultStderr, Opcode.GetEnvironment, Opcode.SetEnvironment, Opcode.UnsetEnvironment, Opcode.CreateDirectory, Opcode.CreateDirectories, Opcode.RemoveDirectory, Opcode.ChangeDirectory, Opcode.CurrentDirectory, Opcode.ListDirectory, Opcode.IsDirectory, Opcode.ExpandGlob, Opcode.ReadStdin, Opcode.ReadStdinLine, Opcode.WriteStdout, Opcode.WriteStderr, Opcode.ScriptSourcePath, Opcode.Call}:
                         return false
                     if instruction.opcode == Opcode.Constant and not bytecode_direct_scalar_type(instruction.result_type):
                         return false
@@ -3173,7 +3185,7 @@ module EsBytecode:
             return function.blocks.count
 
 
-        def execute_bytecode_direct_with_ledger(module: BytecodeModule&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, globals: mutable darray[RuntimeValue]&, step_limit: u64, steps: mutable u64&, call_depth: usize, observation_limit: usize, output_ledger: mutable usize&) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+        def execute_bytecode_direct_with_ledger(module: BytecodeModule&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, globals: mutable darray[RuntimeValue]&, step_limit: u64, steps: mutable u64&, call_depth: usize, observation_limit: usize, output_ledger: mutable usize&, invocation_context: ScriptInvocationContext) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             raise InterpretError.OutputLimit if step_limit > EsIr::ES_RUNTIME_DEFAULT_MAX_STEPS
             raise InterpretError.OutputLimit if observation_limit > EsIr::ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS
             raise InterpretError.OutputLimit if call_depth >= ES_RUNTIME_DEFAULT_MAX_EXECUTION_CALL_DEPTH
@@ -3265,7 +3277,7 @@ module EsBytecode:
                     # before and after the guarded instruction so recovery
                     # cannot discard those already-emitted bytes.
                     cursor.output_bytes <- output_ledger
-                    cursor.value <- try bytecode_direct_instruction_guarded(module, instruction, fn, ids, values, storage, globals, observations, step_limit, steps, error_guards, cursor.recovered, cursor.recovery_target, call_depth, output_ledger, observation_limit)
+                    cursor.value <- try bytecode_direct_instruction_guarded(module, instruction, fn, ids, values, storage, globals, observations, step_limit, steps, error_guards, cursor.recovered, cursor.recovery_target, call_depth, invocation_context, output_ledger, observation_limit)
                     cursor.output_bytes <- output_ledger
                     produced_output: usize = 0
                     if instruction.opcode == Opcode.CaptureProcessStdout or instruction.opcode == Opcode.CaptureProcessStderr or instruction.opcode == Opcode.CaptureProcessStdoutWithStdin or instruction.opcode == Opcode.CaptureProcessStderrWithStdin or instruction.opcode == Opcode.CaptureProcessResult or instruction.opcode == Opcode.CaptureProcessResultInDirectory or instruction.opcode == Opcode.CaptureProcessResultWithEnvironment or instruction.opcode == Opcode.CaptureProcessResultInDirectoryWithEnvironment:
@@ -3349,7 +3361,7 @@ module EsBytecode:
         # Compatibility wrapper for callers that start a fresh direct run.
         # Nested calls use the ledger-sharing helper above so partial output
         # remains charged even when an inner frame is recovered or fails.
-        def execute_bytecode_direct(module: BytecodeModule&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, step_limit: u64 = 1000000, call_depth: usize = 0, observation_limit: usize = EsIr::ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS, output_base: usize = 0) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+        def execute_bytecode_direct(module: BytecodeModule&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, step_limit: u64 = 1000000, call_depth: usize = 0, observation_limit: usize = EsIr::ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS, output_base: usize = 0, invocation_context: ScriptInvocationContext = ScriptInvocationContext{}) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             output_ledger: mutable usize = output_base
             steps: mutable u64 = 0
             raise InterpretError.OutputLimit if step_limit > EsIr::ES_RUNTIME_DEFAULT_MAX_STEPS
@@ -3358,7 +3370,7 @@ module EsBytecode:
             function_index: usize = bytecode_function_index(module, entry)
             raise InterpretError.UnknownFunction if function_index == module.functions.count
             globals: mutable darray[RuntimeValue] = try bytecode_direct_global_values(module, storage)
-            return try execute_bytecode_direct_with_ledger(module, entry, arguments, observations, storage, globals, step_limit, steps, call_depth, observation_limit, output_ledger)
+            return try execute_bytecode_direct_with_ledger(module, entry, arguments, observations, storage, globals, step_limit, steps, call_depth, observation_limit, output_ledger, invocation_context)
 
 
     public:
@@ -3407,7 +3419,7 @@ module EsBytecode:
             return Module{name: module.name, functions: functions, globals: module.globals, handlers: module.handlers, type_table: module.type_table}
 
 
-        def execute_bytecode(module: BytecodeModule&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, step_limit: u64 = ES_RUNTIME_DEFAULT_MAX_STEPS, observation_limit: usize = ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+        def execute_bytecode(module: BytecodeModule&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, step_limit: u64 = ES_RUNTIME_DEFAULT_MAX_STEPS, observation_limit: usize = ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS, invocation_context: ScriptInvocationContext = ScriptInvocationContext{}) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             raise InterpretError.OutputLimit if observation_limit > ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS
             raise InterpretError.OutputLimit if module.globals.count > ES_RUNTIME_DEFAULT_MAX_STORAGE_VALUES
             raise InterpretError.VerificationFailed if not bytecode_dispatch_table_valid(module)
@@ -3416,11 +3428,11 @@ module EsBytecode:
                 raise InterpretError.VerificationFailed if verify(ir_module).count != 0
                 capability: BytecodeCapabilityReport = bytecode_capability_report(module)
                 if capability.direct_supported:
-                    direct: mutable Execution = try execute_bytecode_direct(module, entry, arguments, observations, storage, step_limit, 0, observation_limit)
+                    direct: mutable Execution = try execute_bytecode_direct(module, entry, arguments, observations, storage, step_limit, 0, observation_limit, 0, invocation_context)
                     return annotate_bytecode_execution(direct, capability)
                 fallback_policy: RuntimeResourcePolicy = runtime_resource_policy_with_step_limit(RuntimeResourcePolicy{}, step_limit)
                 fallback_policy.retained_traces <- observation_limit
-                fallback: Execution = try interpret_with_resource_policy(ir_module, entry, arguments, observations, storage, fallback_policy)
+                fallback: Execution = try interpret_with_resource_policy(ir_module, entry, arguments, observations, storage, fallback_policy, invocation_context)
                 fallback.engine <- ExecutionEngine.BytecodeInterpreterFallback
                 return annotate_bytecode_execution(fallback, capability)
 
@@ -3429,7 +3441,7 @@ module EsBytecode:
         # receive the same step budget; the complete policy is returned on the
         # execution record so callers can carry non-step budgets across nested
         # orchestration even while host-bridge counters are still specialized.
-        def execute_bytecode_with_resource_policy(module: BytecodeModule&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, policy: RuntimeResourcePolicy) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+        def execute_bytecode_with_resource_policy(module: BytecodeModule&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, policy: RuntimeResourcePolicy, invocation_context: ScriptInvocationContext = ScriptInvocationContext{}) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             raise InterpretError.OutputLimit if not runtime_resource_policy_valid(policy)
             raise InterpretError.OutputLimit if module.globals.count > ES_RUNTIME_DEFAULT_MAX_STORAGE_VALUES
             raise InterpretError.UnsupportedInstruction if bytecode_policy_has_unsupported_dimensions(policy)
@@ -3437,11 +3449,11 @@ module EsBytecode:
             if bytecode_policy_requires_reference(policy):
                 ir_module: Module = bytecode_to_ir(module)
                 raise InterpretError.VerificationFailed if verify(ir_module).count != 0
-                fallback: mutable Execution = try interpret_with_resource_policy(ir_module, entry, arguments, observations, storage, policy)
+                fallback: mutable Execution = try interpret_with_resource_policy(ir_module, entry, arguments, observations, storage, policy, invocation_context)
                 fallback.engine <- ExecutionEngine.BytecodeInterpreterFallback
                 result <- annotate_bytecode_execution(fallback, bytecode_capability_report(module))
             else:
-                result <- try execute_bytecode(module, entry, arguments, observations, storage, policy.steps, policy.retained_traces)
+                result <- try execute_bytecode(module, entry, arguments, observations, storage, policy.steps, policy.retained_traces, invocation_context)
             raise InterpretError.OutputLimit if not runtime_resource_usage_within_policy(result.usage, policy)
             result.policy <- policy
             return result
@@ -3451,7 +3463,7 @@ module EsBytecode:
         # never silently delegates to the reference interpreter: callers asking
         # for direct bytecode must receive an explicit unsupported-instruction
         # failure when the module is outside the packed loop's proven subset.
-        def execute_bytecode_direct_only(module: BytecodeModule&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, step_limit: u64 = ES_RUNTIME_DEFAULT_MAX_STEPS, observation_limit: usize = ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+        def execute_bytecode_direct_only(module: BytecodeModule&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, step_limit: u64 = ES_RUNTIME_DEFAULT_MAX_STEPS, observation_limit: usize = ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS, invocation_context: ScriptInvocationContext = ScriptInvocationContext{}) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             raise InterpretError.OutputLimit if observation_limit > ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS
             raise InterpretError.OutputLimit if module.globals.count > ES_RUNTIME_DEFAULT_MAX_STORAGE_VALUES
             raise InterpretError.VerificationFailed if not bytecode_dispatch_table_valid(module)
@@ -3460,15 +3472,15 @@ module EsBytecode:
                 raise InterpretError.VerificationFailed if verify(ir_module).count != 0
                 capability: BytecodeCapabilityReport = bytecode_capability_report(module)
                 raise InterpretError.UnsupportedInstruction if not capability.direct_supported
-                direct: mutable Execution = try execute_bytecode_direct(module, entry, arguments, observations, storage, step_limit, 0, observation_limit)
+                direct: mutable Execution = try execute_bytecode_direct(module, entry, arguments, observations, storage, step_limit, 0, observation_limit, 0, invocation_context)
                 return annotate_bytecode_execution(direct, capability)
 
 
-        def execute_bytecode_direct_only_with_resource_policy(module: BytecodeModule&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, policy: RuntimeResourcePolicy) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+        def execute_bytecode_direct_only_with_resource_policy(module: BytecodeModule&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, policy: RuntimeResourcePolicy, invocation_context: ScriptInvocationContext = ScriptInvocationContext{}) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             raise InterpretError.OutputLimit if not runtime_resource_policy_valid(policy)
             raise InterpretError.OutputLimit if module.globals.count > ES_RUNTIME_DEFAULT_MAX_STORAGE_VALUES
             raise InterpretError.UnsupportedInstruction if bytecode_policy_requires_reference(policy) or bytecode_policy_has_unsupported_dimensions(policy)
-            result: mutable Execution = try execute_bytecode_direct_only(module, entry, arguments, observations, storage, policy.steps, policy.retained_traces)
+            result: mutable Execution = try execute_bytecode_direct_only(module, entry, arguments, observations, storage, policy.steps, policy.retained_traces, invocation_context)
             raise InterpretError.OutputLimit if not runtime_resource_usage_within_policy(result.usage, policy)
             result.policy <- policy
             return result

@@ -27,6 +27,7 @@ error InterpretError:
     Assertion
     Panic
     Raised
+    InvocationContextUnavailable
 
 
 extend EsIr:
@@ -59,6 +60,7 @@ extend EsIr:
             Assertion
             Panic
             Raised
+            InvocationContextUnavailable
 
 
         struct ContinuationFrame:
@@ -198,6 +200,8 @@ extend EsIr:
             # enforcement points until all host resources share this ledger.
             resource_policy: RuntimeResourcePolicy = RuntimeResourcePolicy{}
             resource_usage: mutable RuntimeResourceUsage = RuntimeResourceUsage{}
+            # Immutable launch metadata is shared by nested calls and replay.
+            invocation_context: ScriptInvocationContext = ScriptInvocationContext{}
             failure: mutable InterpretFailure
             # Explicit `raise Family.Tag` failures retain their static identity
             # while unwinding through nested calls. Built-in failures leave these
@@ -1737,6 +1741,7 @@ extend EsIr:
 
 
         def error_guard_recoverable(failure: InterpretFailure) -> bool:
+            return false if failure == InterpretFailure.InvocationContextUnavailable
             return failure in {InterpretFailure.DivisionByZero, InterpretFailure.IntegerOverflow, InterpretFailure.InvalidNumber, InterpretFailure.FileIo, InterpretFailure.Process, InterpretFailure.OutputLimit, InterpretFailure.Environment, InterpretFailure.Directory, InterpretFailure.Console, InterpretFailure.Time, InterpretFailure.RangeStepZero, InterpretFailure.InvalidShift, InterpretFailure.IndexOutOfBounds, InterpretFailure.Assertion, InterpretFailure.Raised}
 
 
@@ -8150,6 +8155,13 @@ extend EsIr:
                             dispatch.value <- evaluate_current_directory(machine)
                             break
 
+                        Dispatch, Opcode.ScriptSourcePath:
+                            if machine.invocation_context.available and path_shape_result_valid(machine.invocation_context.source_path) and path_is_absolute_value(machine.invocation_context.source_path):
+                                dispatch.value <- runtime_text(machine.invocation_context.source_path)
+                            else:
+                                interpret_set_failure(machine, InterpretFailure.InvocationContextUnavailable)
+                            break
+
                         Dispatch, Opcode.ListDirectory:
                             path_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
                             dispatch.value <- evaluate_list_directory(machine, storage, path_value)
@@ -8400,6 +8412,9 @@ extend EsIr:
                     break
                 Dispatch, InterpretFailure.UnsupportedInstruction:
                     raise InterpretError.UnsupportedInstruction
+                    break
+                Dispatch, InterpretFailure.InvocationContextUnavailable:
+                    raise InterpretError.InvocationContextUnavailable
                     break
                 Dispatch, InterpretFailure.StepLimitExceeded:
                     raise InterpretError.StepLimitExceeded
@@ -9190,14 +9205,14 @@ extend EsIr:
             return value
 
 
-        def interpret_with_resource_policy(module: Module&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, policy: RuntimeResourcePolicy) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+        def interpret_with_resource_policy(module: Module&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, policy: RuntimeResourcePolicy, invocation_context: ScriptInvocationContext = ScriptInvocationContext{}) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             raise InterpretError.OutputLimit if not runtime_resource_policy_valid(policy)
             raise InterpretError.UnsupportedInstruction if runtime_resource_policy_has_unaccounted_dimensions(policy)
             raise InterpretError.OutputLimit if module.globals.count > ES_RUNTIME_DEFAULT_MAX_STORAGE_VALUES
             raise InterpretError.VerificationFailed if verify(module).count != 0
             function_index: usize = find_function(module, entry)
             raise InterpretError.UnknownFunction if function_index == module.functions.count
-            machine: mutable Machine = Machine{steps: 0, step_limit: policy.steps, resource_policy: policy, resource_usage: RuntimeResourceUsage{}, process_output_limit: policy.output_bytes.u64(), failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void(), globals: []}
+            machine: mutable Machine = Machine{steps: 0, step_limit: policy.steps, resource_policy: policy, resource_usage: RuntimeResourceUsage{}, invocation_context: invocation_context, process_output_limit: policy.output_bytes.u64(), failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void(), globals: []}
             for binding in module.globals |machine, storage|:
                 machine.globals.push(global_value(binding, machine, storage))
             try raise_interpret_failure(machine.failure) if machine.failure != InterpretFailure.None

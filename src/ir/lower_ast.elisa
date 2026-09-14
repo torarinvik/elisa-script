@@ -1912,6 +1912,47 @@ extend EsIr:
             return ""
 
 
+        # Source bindings outrank compiler-provided module intrinsics. Only a
+        # top-level declaration occupies this namespace: a nested
+        # `Outer::Script` is not the global `Script` binding. Scoped declaration
+        # groups preserve their containing scope, so inspect their contents but
+        # do not descend through a module boundary.
+        def scripting_source_declares_global_name(declarations: darray[Ast::Decl], binding_name: sview) -> bool:
+            can Abort.Panic:
+                for declaration in declarations:
+                    match declaration:
+                        Decl.Func(source_name, _, _, _, _, _, _):
+                            true return if source_name == binding_name
+                        Decl.Struct(source_name, _, _, _, _, _, _):
+                            true return if source_name == binding_name
+                        Decl.Enum(source_name, _, _, _, _):
+                            true return if source_name == binding_name
+                        Decl.Const(source_name, _, _, _, _):
+                            true return if source_name == binding_name
+                        Decl.Alias(source_name, _, _):
+                            true return if source_name == binding_name
+                        Decl.Extern(source_name, _, _, _, _, _, _, _):
+                            true return if source_name == binding_name
+                        Decl.Module(source_module_name, _, line):
+                            true return if source_module_name == binding_name
+                        Decl.Scoped(body, line):
+                            true return if scripting_source_declares_global_name(body, binding_name)
+                        _:
+                            pass
+                return false
+
+
+        def scripting_script_intrinsic_available(state: LowerState&) -> bool:
+            can Abort.Panic:
+                false return if binding_index(state, "Script") < state.names.count
+                false return if any global_name in state.global_names where global_name == "Script"
+                false return if lowered_function_index(state, "Script") < state.function_names.count
+                false return if scripting_source_declares_global_name(state.source_file.top_decls, "Script")
+                for annotation in state.source_file.enum_annotations:
+                    false return if (annotation.name == "__using_alias" or annotation.name == "__using") and annotation.owner == "Script"
+                return true
+
+
         def emit_constant(state: mutable LowerState&, type: Type, integer: i64, decimal: sview, text: sview, boolean: bool, span: SourceSpan) -> LoweredValue can[Memory.Allocate, Abort.Panic]:
             result: u32 = fresh_value(state)
             state.instructions.push(Instruction{opcode: Opcode.Constant, result: result, result_type: type, integer: integer, decimal: decimal, text: text, boolean: boolean, span: span})
@@ -5097,9 +5138,23 @@ extend EsIr:
                 Expr.Call(callee, arguments, argument_names, pos):
                     callee_name: mutable sview = ""
                     qualified_builtin: mutable bool = false
+                    qualified_module_builtin: mutable bool = false
+                    qualified_module_spec: mutable EsBuiltin::BuiltinSpec = EsBuiltin::unknown_builtin_spec()
                     match callee:
                         Expr.Ident(name, callee_pos):
                             callee_name <- name
+                        Expr.Scope(scope_base, scope_member, scope_pos):
+                            match scope_base:
+                                Expr.Ident(scope_module_name, scope_module_pos):
+                                    if scope_module_name == "Script" and scope_member == "source_path" and scripting_script_intrinsic_available(state):
+                                        module_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_module_spec(scope_module_name, scope_member)
+                                        if module_spec.known:
+                                            callee_name <- scope_member
+                                            qualified_builtin <- true
+                                            qualified_module_builtin <- true
+                                            qualified_module_spec <- module_spec
+                                _:
+                                    pass
                         _:
                             pass
                     qualified_name: sview = scripting_qualified_callee_name(callee)
@@ -5288,6 +5343,16 @@ extend EsIr:
                             pass
                     callee_index: usize = state.function_names.count if qualified_builtin else lowered_function_index(state, callee_name)
                     registry_spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec(callee_name)
+                    registry_spec <- qualified_module_spec if qualified_module_builtin
+                    if callee_index == state.function_names.count and qualified_module_builtin:
+                        result_type: Type = typed_builtin_result_type(registry_spec)
+                        if not builtin_call_shape(registry_spec, arguments, argument_names):
+                            add_issue(state, LowerIssueKind.TypeMismatch, pos.line, "Script::source_path takes no arguments")
+                            return LoweredValue{valid: false, value: 0, type: result_type}
+                        record_builtin_contract(registry_spec, state)
+                        result: u32 = fresh_value(state)
+                        state.instructions.push(Instruction{opcode: Opcode.ScriptSourcePath, result: result, result_type: result_type, operand_start: state.operand_pool.count.u32(), operand_count: 0, span: ir_span(pos)})
+                        return LoweredValue{valid: true, value: result, type: result_type}
                     if callee_index == state.function_names.count and registry_spec.known and registry_spec.opcode == "Observe":
                         result_type: Type = typed_builtin_result_type(registry_spec)
                         if not builtin_call_shape(registry_spec, arguments, argument_names):

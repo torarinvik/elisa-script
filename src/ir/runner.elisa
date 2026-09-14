@@ -400,9 +400,134 @@ extend EsIr:
             ExecuteDirectOnly
 
 
-        def elisascript_execute_program_bytecode(module: BytecodeModule&, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, mode: ElisascriptProgramDiagnosticMode) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
-            return execute_bytecode_direct_only(module, "main", arguments, observations, storage) if mode == ElisascriptProgramDiagnosticMode.ExecuteDirectOnly
-            return execute_bytecode(module, "main", arguments, observations, storage)
+        const enum ScriptInvocationContextBuildState of u8:
+            Prepare
+            NormalizeAbsolute
+            ReadPhysicalDirectory
+            ResolvePhysicalDirectory
+            ReadLogicalDirectory
+            ResolveLogicalDirectory
+            JoinRelativeSource
+            ValidateResult
+            Done
+
+
+        struct ScriptInvocationContextBuildCursor:
+            state: mutable ScriptInvocationContextBuildState
+            source_name: mutable sview = ""
+            physical_directory: mutable sview = ""
+            physical_real: mutable sview = ""
+            base_directory: mutable sview = ""
+            logical_directory: mutable sview = ""
+            source_path: mutable sview = ""
+
+
+        def elisascript_absolute_normalized_directory(value: sview) -> sview can[Memory.Allocate, Abort.Panic]:
+            return "" if not path_shape_result_valid(value) or not path_is_absolute_value(value)
+            normalized: sview = path_normalize_value(value)
+            return "" if not path_shape_result_valid(normalized) or not path_is_absolute_value(normalized)
+            return normalized
+
+
+        # Resolve Bash-compatible launch spelling before script code can change
+        # cwd. Relative names use a valid logical PWD when it resolves to the
+        # physical startup directory, otherwise the physical cwd. This is the
+        # shell-style logical launch spelling, not the kernel-resolved file
+        # identity: `..` is lexically normalized before symlink traversal just
+        # as `dirname "$0"` followed by `cd -L` does. Preserve symlink path
+        # components, including a final script symlink.
+        def elisascript_script_invocation_context(filename: u8&) -> ScriptInvocationContext error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+            too_large: mutable bool = false
+            filename_length: usize = elisascript_source_filename_length_bounded(filename, too_large)
+            raise InterpretError.InvocationContextUnavailable if too_large or filename_length == 0
+            cursor: mutable ScriptInvocationContextBuildCursor = ScriptInvocationContextBuildCursor{state: ScriptInvocationContextBuildState.Prepare}
+            machine over cursor.state:
+                state Build
+                start Build
+
+                Build, ScriptInvocationContextBuildState.Prepare:
+                    cursor.source_name <- filename[0:filename_length]
+                    raise InterpretError.InvocationContextUnavailable if not path_shape_text_valid(cursor.source_name)
+                    cursor.state <- ScriptInvocationContextBuildState.NormalizeAbsolute if path_is_absolute_value(cursor.source_name)
+                    cursor.state <- ScriptInvocationContextBuildState.ReadPhysicalDirectory if not path_is_absolute_value(cursor.source_name)
+                    -> Build
+
+                Build, ScriptInvocationContextBuildState.NormalizeAbsolute:
+                    cursor.source_path <- path_normalize_value(cursor.source_name)
+                    cursor.state <- ScriptInvocationContextBuildState.ValidateResult
+                    -> Build
+
+                Build, ScriptInvocationContextBuildState.ReadPhysicalDirectory:
+                    catch current_directory_value():
+                        ok current:
+                            cursor.physical_directory <- current
+                        error failure:
+                            raise InterpretError.InvocationContextUnavailable
+                    raise InterpretError.InvocationContextUnavailable if not path_shape_result_valid(cursor.physical_directory) or not path_is_absolute_value(cursor.physical_directory)
+                    cursor.base_directory <- cursor.physical_directory
+                    cursor.state <- ScriptInvocationContextBuildState.ResolvePhysicalDirectory
+                    -> Build
+
+                Build, ScriptInvocationContextBuildState.ResolvePhysicalDirectory:
+                    catch path_real_value(cursor.physical_directory):
+                        ok resolved:
+                            cursor.physical_real <- resolved
+                        error failure:
+                            raise InterpretError.InvocationContextUnavailable
+                    cursor.state <- ScriptInvocationContextBuildState.ReadLogicalDirectory
+                    -> Build
+
+                Build, ScriptInvocationContextBuildState.ReadLogicalDirectory:
+                    catch get_environment_value("PWD"):
+                        ok logical_directory:
+                            cursor.logical_directory <- elisascript_absolute_normalized_directory(logical_directory)
+                        error failure:
+                            cursor.logical_directory <- ""
+                    cursor.state <- ScriptInvocationContextBuildState.ResolveLogicalDirectory if cursor.logical_directory != ""
+                    cursor.state <- ScriptInvocationContextBuildState.JoinRelativeSource if cursor.logical_directory == ""
+                    -> Build
+
+                Build, ScriptInvocationContextBuildState.ResolveLogicalDirectory:
+                    catch path_real_value(cursor.logical_directory):
+                        ok resolved:
+                            cursor.base_directory <- cursor.logical_directory if resolved == cursor.physical_real
+                        error failure:
+                            pass
+                    cursor.state <- ScriptInvocationContextBuildState.JoinRelativeSource
+                    -> Build
+
+                Build, ScriptInvocationContextBuildState.JoinRelativeSource:
+                    joined_source: sview = path_join_value(cursor.base_directory, cursor.source_name)
+                    raise InterpretError.InvocationContextUnavailable if not path_shape_result_valid(joined_source)
+                    cursor.source_path <- path_normalize_value(joined_source)
+                    cursor.state <- ScriptInvocationContextBuildState.ValidateResult
+                    -> Build
+
+                Build, ScriptInvocationContextBuildState.ValidateResult:
+                    raise InterpretError.InvocationContextUnavailable if not path_shape_result_valid(cursor.source_path) or not path_is_absolute_value(cursor.source_path)
+                    cursor.state <- ScriptInvocationContextBuildState.Done
+                    -> Build
+
+                Build, ScriptInvocationContextBuildState.Done:
+                    break
+
+            return ScriptInvocationContext{source_path: cursor.source_path, available: true}
+
+
+        # Invocation metadata is optional until a script reads it. A failure
+        # to capture launch spelling must not stop a file-backed program that
+        # never calls `Script::source_path()`.
+        def elisascript_optional_script_invocation_context(filename: u8&) -> ScriptInvocationContext can[Memory.Allocate, Abort.Panic]:
+            catch elisascript_script_invocation_context(filename):
+                ok context:
+                    return context
+                error failure:
+                    return ScriptInvocationContext{}
+
+
+        def elisascript_execute_program_bytecode(module: BytecodeModule&, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, mode: ElisascriptProgramDiagnosticMode, invocation_context: ScriptInvocationContext = ScriptInvocationContext{}) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+            return execute_bytecode_direct_only(module, "main", arguments, observations, storage, ES_RUNTIME_DEFAULT_MAX_STEPS, ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS, invocation_context) if mode == ElisascriptProgramDiagnosticMode.ExecuteDirectOnly
+            return execute_bytecode(module, "main", arguments, observations, storage, ES_RUNTIME_DEFAULT_MAX_STEPS, ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS, invocation_context)
 
 
         # Canonical file-backed program pipeline for launchers that need a
@@ -474,7 +599,8 @@ extend EsIr:
                 for argument in arguments |storage|:
                     storage.push(runtime_text(argument))
                 runtime_arguments: darray[RuntimeValue] = [runtime_array(argument_start, arguments.count.u32())]
-                catch elisascript_execute_program_bytecode(lowered.module, runtime_arguments, observations, storage, mode):
+                invocation_context: ScriptInvocationContext = elisascript_optional_script_invocation_context(filename)
+                catch elisascript_execute_program_bytecode(lowered.module, runtime_arguments, observations, storage, mode, invocation_context):
                     ok execution:
                         result.execution <- execution
                     error failure:
@@ -562,6 +688,7 @@ extend EsIr:
                 try validate_elisascript_entrypoint(module)
                 lowered: BytecodeLowerResult = lower_bytecode(module)
                 raise InterpretError.VerificationFailed if lowered.issues.count != 0
+                invocation_context: ScriptInvocationContext = elisascript_optional_script_invocation_context(filename)
                 raise InterpretError.ArgumentMismatch if not elisascript_runtime_arguments_fit(storage.count, arguments.count) or not elisascript_runtime_argument_bytes_fit(arguments)
                 argument_start: u32 = storage.count.u32()
                 for argument in arguments |storage|:
@@ -569,7 +696,7 @@ extend EsIr:
                 runtime_arguments: darray[RuntimeValue] = [runtime_array(argument_start, arguments.count.u32())]
                 policy: mutable RuntimeResourcePolicy = runtime_resource_policy_with_step_limit(RuntimeResourcePolicy{}, step_limit)
                 policy.output_bytes <- output_limit
-                return execute_bytecode_with_resource_policy(lowered.module, "main", runtime_arguments, observations, storage, policy)
+                return execute_bytecode_with_resource_policy(lowered.module, "main", runtime_arguments, observations, storage, policy, invocation_context)
 
 
         def execute_elisascript_program_file(filename: u8&, arguments: darray[sview]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, step_limit: u64 = 1000000) -> Execution error[ElisascriptSourceError, ElisascriptEntrypointError, InterpretError] can[Memory.Allocate, Abort.Panic, Blocking.IO, Console.Format, Console.Write, Memory.Release, Unsafe.PointerCast]:
@@ -617,9 +744,10 @@ extend EsIr:
                 module: Module = try lower_elisascript_file_with_handlers(filename, module_name, handlers)
                 lowered: BytecodeLowerResult = lower_bytecode(module)
                 raise InterpretError.VerificationFailed if lowered.issues.count != 0
+                invocation_context: ScriptInvocationContext = elisascript_optional_script_invocation_context(filename)
                 policy: mutable RuntimeResourcePolicy = runtime_resource_policy_with_step_limit(RuntimeResourcePolicy{}, step_limit)
                 policy.output_bytes <- output_limit
-                return execute_bytecode_with_resource_policy(lowered.module, entry, arguments, observations, storage, policy)
+                return execute_bytecode_with_resource_policy(lowered.module, entry, arguments, observations, storage, policy, invocation_context)
 
 
         def execute_elisascript_file(filename: u8&, module_name: sview, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, step_limit: u64 = 1000000) -> Execution error[ElisascriptSourceError, InterpretError] can[Memory.Allocate, Abort.Panic, Blocking.IO, Console.Format, Console.Write, Memory.Release, Unsafe.PointerCast]:
