@@ -77,8 +77,8 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
-            capture_process_pipeline)
-                if ! rg -q 'registry_spec\.opcode == "CaptureProcessPipeline"' "$lowerer_file"; then
+            capture_process_pipeline|capture_process_pipeline_pipefail)
+                if ! rg -q 'registry_spec\.opcode == "CaptureProcessPipeline"' "$lowerer_file" || ! rg -q 'registry_spec\.opcode == "CaptureProcessPipelinePipefail"' "$lowerer_file"; then
                     printf 'builtin registry audit: lowerer has no registry-driven process pipeline dispatch for %s\n' "$name" >&2
                     exit 1
                 fi
@@ -1362,14 +1362,16 @@ if ! rg -q 'name: "capture_process_result_with_environment", receiver: "global".
     printf 'builtin registry audit: process environment-result capture rows are incomplete\n' >&2
     exit 1
 fi
-if ! rg -q 'name: "capture_process_pipeline", receiver: "global".*argument_types: "darray\[Executable\],darray\[darray\[text\]\],sview.*return_type: "ProcessCapture".*effects: "Process.Run".*errors: "ProcessError".*opcode: "CaptureProcessPipeline"' "$registry_file"; then
-    printf 'builtin registry audit: process-pipeline row is incomplete\n' >&2
+if ! rg -q 'name: "capture_process_pipeline", receiver: "global".*argument_types: "darray\[Executable\],darray\[darray\[text\]\],sview.*return_type: "ProcessCapture".*effects: "Process.Run".*errors: "ProcessError".*opcode: "CaptureProcessPipeline"' "$registry_file" || \
+   ! rg -q 'name: "capture_process_pipeline_pipefail", receiver: "global".*argument_types: "darray\[Executable\],darray\[darray\[text\]\],sview.*return_type: "ProcessCapture".*effects: "Process.Run".*errors: "ProcessError".*opcode: "CaptureProcessPipelinePipefail"' "$registry_file"; then
+    printf 'builtin registry audit: process-pipeline status-policy rows are incomplete\n' >&2
     exit 1
 fi
 if ! rg -q 'def lower_capture_process_pipeline\(arguments: darray\[Ast::Expr\].*spec: EsBuiltin::BuiltinSpec' "$lowerer_file" || \
    ! rg -q 'spec\.opcode == "CaptureProcessPipeline"' "$lowerer_file" || \
+   ! rg -q 'spec\.opcode == "CaptureProcessPipelinePipefail"' "$lowerer_file" || \
    ! rg -q 'lower_capture_process_pipeline\(arguments, argument_names, registry_spec' "$lowerer_file"; then
-    printf 'builtin registry audit: process-pipeline lowerer does not consume registry shape/result/opcode metadata\n' >&2
+    printf 'builtin registry audit: process-pipeline lowerer does not consume both registry status policies\n' >&2
     exit 1
 fi
 for stream_name in read_stdin read_stdin_line; do

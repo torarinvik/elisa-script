@@ -26,7 +26,7 @@ The source-declaration test intentionally ignores line-zero registry seed rows;
 otherwise a seeded global such as `contains` would incorrectly suppress its
 receiver contract.
 
-The compact registry currently contains 204 global spellings, 42 Text receiver,
+The compact registry currently contains 205 global spellings, 42 Text receiver,
 12 Regex receiver, 9 Map receiver, 4 Set receiver, and 14 Array receiver spellings. The table below names the strict
 scalar/text/regex core; filesystem, directory, process, environment, stream,
 and time families use the same row format and are covered by the registry
@@ -61,6 +61,13 @@ inference, variadic shape, and f-string lowerer all consume the same
 | Numeric parsing/formatting | `parse_int`, `format_int`, `parse_float`, `format_float` | checked `i64`/`f64` conversions; parsers require `ParseError` |
 | Scalar formatting | `format_bool`, `format_char` | one scalar to `sview` |
 | Regex facades | `matches`, `replace_regex`, `split_regex`, `find_regex`, `capture_regex`, `captures_regex`, `regex_count`, `regex_capture_named` | text/`Regex` operands; `bool`, `sview`, `usize`, or `darray[sview]` result |
+
+Process-pipeline builtins share the statically typed
+`darray[Executable], darray[darray[sview]], sview -> ProcessCapture` contract.
+`capture_process_pipeline` returns the final stage's status by default;
+`capture_process_pipeline_pipefail` explicitly opts into rightmost-nonzero
+status selection. The `subprocess.capture_pipeline` namespace facade supports
+both policy spellings without exposing a dynamically typed mode argument.
 
 The global regex facades `matches`, `replace_regex`, `split_regex`,
 `find_regex`, `capture_regex`, `captures_regex`, `regex_count`, and

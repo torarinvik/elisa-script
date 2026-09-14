@@ -5674,7 +5674,7 @@ extend EsIr:
         # next stage's stdin. This deliberately reuses the checked one-shot
         # ProcessCapture path, so argv handling, output limits, child setup, and
         # bounded waits are identical to standalone process execution.
-        def evaluate_capture_process_pipeline(machine: mutable Machine&, storage: mutable darray[RuntimeValue]&, executables: RuntimeValue, arguments: RuntimeValue, input: RuntimeValue) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+        def evaluate_capture_process_pipeline(machine: mutable Machine&, storage: mutable darray[RuntimeValue]&, executables: RuntimeValue, arguments: RuntimeValue, input: RuntimeValue, status_policy: EsProcess::ProcessPipelineStatusPolicy) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
             if executables.kind != RuntimeValueKind.Array or arguments.kind != RuntimeValueKind.Array or input.kind != RuntimeValueKind.Text:
                 interpret_set_failure(machine, InterpretFailure.TypeMismatch)
                 return runtime_void()
@@ -5695,10 +5695,10 @@ extend EsIr:
                 return runtime_void()
             current_input: mutable RuntimeValue = input
             final_capture: mutable RuntimeValue = runtime_void()
-            aggregate_exit_status: mutable i64 = 0
+            pipefail_exit_status: mutable i64 = 0
             aggregate_stderr_bytes: mutable usize = 0
             aggregate_stderr_segments: mutable darray[sview] = []
-            for offset in 0..<executables.array_count.usize() |machine, storage, executables, arguments, offset, current_input, final_capture, aggregate_exit_status, aggregate_stderr_bytes, aggregate_stderr_segments|:
+            for offset in 0..<executables.array_count.usize() |machine, storage, executables, arguments, offset, current_input, final_capture, pipefail_exit_status, aggregate_stderr_bytes, aggregate_stderr_segments|:
                 executable: RuntimeValue = storage[executables.array_start.usize() + offset]
                 stage_arguments: RuntimeValue = storage[arguments.array_start.usize() + offset]
                 if executable.kind != RuntimeValueKind.Text or stage_arguments.kind != RuntimeValueKind.Array:
@@ -5706,7 +5706,7 @@ extend EsIr:
                     return runtime_void()
                 final_capture <- evaluate_capture_process_result(machine, storage, executable, stage_arguments, current_input, runtime_void(), runtime_void())
                 return runtime_void() if machine.failure != InterpretFailure.None
-                aggregate_exit_status <- final_capture.process_exit_status if final_capture.process_exit_status != 0
+                pipefail_exit_status <- final_capture.process_exit_status if final_capture.process_exit_status != 0
                 stage_stderr_length: usize = sview_len(final_capture.process_stderr)
                 if aggregate_stderr_bytes > machine.resource_policy.output_bytes:
                     interpret_set_failure(machine, InterpretFailure.OutputLimit)
@@ -5718,7 +5718,7 @@ extend EsIr:
                     aggregate_stderr_segments.push(final_capture.process_stderr)
                     aggregate_stderr_bytes <- aggregate_stderr_bytes + stage_stderr_length
                 current_input <- runtime_text(final_capture.process_stdout)
-            final_capture.process_exit_status <- aggregate_exit_status
+            final_capture.process_exit_status <- pipefail_exit_status if status_policy == EsProcess::ProcessPipelineStatusPolicy.Pipefail
             if aggregate_stderr_bytes > 0:
                 aggregate_stderr: mutable dstr = ctx_fstr_alloc(aggregate_stderr_bytes)
                 if aggregate_stderr.items == null:
@@ -8087,7 +8087,14 @@ extend EsIr:
                             executables_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
                             arguments_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1], machine)
                             input_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 2], machine)
-                            dispatch.value <- evaluate_capture_process_pipeline(machine, storage, executables_value, arguments_value, input_value)
+                            dispatch.value <- evaluate_capture_process_pipeline(machine, storage, executables_value, arguments_value, input_value, EsProcess::ProcessPipelineStatusPolicy.LastStage)
+                            break
+
+                        Dispatch, Opcode.CaptureProcessPipelinePipefail:
+                            executables_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
+                            arguments_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1], machine)
+                            input_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 2], machine)
+                            dispatch.value <- evaluate_capture_process_pipeline(machine, storage, executables_value, arguments_value, input_value, EsProcess::ProcessPipelineStatusPolicy.Pipefail)
                             break
 
                         Dispatch, Opcode.CaptureProcessResult:
@@ -8933,13 +8940,13 @@ extend EsIr:
             return value
 
 
-        def capture_process_pipeline_value(storage: mutable darray[RuntimeValue]&, executables: RuntimeValue, arguments: RuntimeValue, input: sview, output_used: mutable usize&, output_budget: usize = ES_RUNTIME_DEFAULT_MAX_OUTPUT_BYTES) -> RuntimeValue error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+        def capture_process_pipeline_value(storage: mutable darray[RuntimeValue]&, executables: RuntimeValue, arguments: RuntimeValue, input: sview, status_policy: EsProcess::ProcessPipelineStatusPolicy, output_used: mutable usize&, output_budget: usize = ES_RUNTIME_DEFAULT_MAX_OUTPUT_BYTES) -> RuntimeValue error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             # Intermediate stage output is not present in the final capture,
             # so a fresh default ledger here would let a pipeline exceed the
             # caller's aggregate output budget. Give every stage the same
             # remaining budget and charge each stage through that local policy.
             machine: mutable Machine = Machine{steps: 0, step_limit: 1, resource_policy: RuntimeResourcePolicy{output_bytes: output_budget}, process_output_limit: output_budget.u64(), failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void()}
-            value: RuntimeValue = evaluate_capture_process_pipeline(machine, storage, executables, arguments, runtime_text(input))
+            value: RuntimeValue = evaluate_capture_process_pipeline(machine, storage, executables, arguments, runtime_text(input), status_policy)
             output_used <- machine.resource_usage.output_bytes
             try raise_interpret_failure(machine.failure) if machine.failure != InterpretFailure.None
             return value

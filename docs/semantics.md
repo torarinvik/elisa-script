@@ -1906,18 +1906,21 @@ arrays must have the same non-zero length; stage `i` receives `executables[i]`
 and `arguments[i]`, and its captured stdout becomes the next stage's stdin.
 Stages run sequentially through the same bounded temporary-file transport as
 `capture_process_result`, so shell quoting, pipe backpressure, and inherited
-working-directory changes are absent. The current fixed failure policy is
-aggregate/pipefail-style: every stage runs after a non-zero exit, the returned
-status is the rightmost non-zero stage status (or zero when all stages succeed),
-stdout is from the final stage, and stderr is the raw concatenation of all stage
-stderr streams in stage order with no inserted separators. The shared aggregate
-output budget also bounds that retained stderr. This intentionally does not
-match shells' default last-stage-only pipeline status; the builtin does not yet
-let callers select a policy or inspect per-stage results. It is sequential and
-buffered rather than a concurrent OS pipe, so stderr interleaving, backpressure,
+working-directory changes are absent. Every stage runs after a non-zero exit.
+The default status is the final stage's status, matching ordinary shell pipeline
+status; `capture_process_pipeline_pipefail` uses the rightmost non-zero stage
+status (or zero when all stages succeed), matching pipefail-style status
+selection. Both return stdout from the final stage and stderr as the raw
+concatenation of all stage stderr streams in stage order with no inserted
+separators. The shared aggregate output budget also bounds that retained stderr.
+The two spellings are fixed, statically typed choices rather than a dynamically
+typed policy argument. The pipeline remains sequential and buffered rather than
+a concurrent OS pipe, so stderr interleaving, backpressure,
 early-consumer/SIGPIPE behavior, and concurrent child cleanup are not shell
 equivalent. The executable pipeline is capped at 256 stages, matching the
-validated `ProcessPipeline` model.
+validated `ProcessPipeline` model. The compatibility facade also accepts
+`subprocess.capture_pipeline(...)` and
+`subprocess.capture_pipeline_pipefail(...)`.
 
 `ProcessCapture` also supports typed field access for ports that naturally model a
 completed subprocess as a record: `result.returncode`, `result.exit_status`, and
@@ -1934,11 +1937,12 @@ The shared builtin registry owns the three global accessor spellings with their
 lowerer consumes those fields for arity, result typing, and opcode selection;
 field aliases remain receiver-directed and do not bypass the nominal boundary.
 
-The builtin registry owns `capture_process_pipeline` as a nested structural
-contract (`darray[Executable]`, `darray[darray[text]]`, `sview`). Semantic
-checking validates both collection shells and their nominal/text leaves before
-the lowerer emits the dedicated `CaptureProcessPipeline` opcode; source-level
-shadowing still takes precedence over this compiler-known spelling.
+The builtin registry owns both process-pipeline spellings as the same nested
+structural contract (`darray[Executable]`, `darray[darray[text]]`, `sview`).
+Semantic checking validates both collection shells and their nominal/text leaves
+before the lowerer emits either `CaptureProcessPipeline` or the explicit
+`CaptureProcessPipelinePipefail` opcode; source-level shadowing still takes
+precedence over these compiler-known spellings.
 
 ## Program entry point
 

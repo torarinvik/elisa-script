@@ -19,6 +19,7 @@ for declaration in \
     'PROCESS_PIPELINE_MAX_STAGES' \
     'PROCESS_PIPELINE_MAX_BUFFER_BYTES' \
     'const enum ProcessPipelineFailureMode of u8:' \
+    'const enum ProcessPipelineStatusPolicy of u8:' \
     'const enum ProcessPipelineState of u8:' \
     'const enum ProcessPipelineEvent of u8:' \
     'struct ProcessPipeline:' \
@@ -32,6 +33,8 @@ for boundary in \
     'process_pipeline_state_valid' \
     'process_pipeline_event_valid' \
     'process_pipeline_failure_mode_valid' \
+    '            LastStage' \
+    '            Pipefail' \
     'InvalidStageCommand' \
     'InvalidStageIndex' \
     'ProcessPipelineFailureMode.Aggregate' \
