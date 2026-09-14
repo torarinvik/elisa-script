@@ -91,20 +91,26 @@ process_tree_pids() {
     done
 }
 
-process_tree_rss_kb() {
-    process_tree_total=0
-    for process_tree_pid in $(process_tree_pids "$1"); do
-        process_tree_rss="$(ps -o rss= -p "$process_tree_pid" 2>/dev/null | awk '{print $1}')"
-        if [ -n "$process_tree_rss" ]; then
-            process_tree_total=$((process_tree_total + process_tree_rss))
-        fi
-    done
-    echo "$process_tree_total"
-}
-
 process_group_rss_kb() {
     process_group_id="$1"
-    ps -axo pgid=,rss= 2>/dev/null | awk -v group="$process_group_id" '$1 == group { total += $2 } END { print total + 0 }'
+    process_root_pid="$2"
+    process_tree_snapshot="$(process_tree_pids "$process_root_pid")"
+    # Count the union of the isolated process group and descendants of the
+    # compiler root. The group catches reparented children that retain their
+    # group; the tree catches descendants that start a private session. The OR
+    # predicate prevents counting ordinary same-group children twice.
+    ps -axo pid=,pgid=,rss= 2>/dev/null | awk -v group="$process_group_id" -v tree="$process_tree_snapshot" '
+        BEGIN {
+            count = split(tree, pids, "\n")
+            for (i = 1; i <= count; i++) {
+                if (pids[i] ~ /^[0-9]+$/) {
+                    tree_pid[pids[i]] = 1
+                }
+            }
+        }
+        $2 == group || tree_pid[$1] { total += $3 }
+        END { print total + 0 }
+    '
 }
 
 process_group_for_pid() {
@@ -281,7 +287,7 @@ for source_file in "$@"; do
     compiler_exit=0
 
     while kill -0 "$compiler_pid" 2>/dev/null; do
-        rss_kb="$(process_group_rss_kb "$compiler_pgid")"
+        rss_kb="$(process_group_rss_kb "$compiler_pgid" "$compiler_pid")"
         if [ "$rss_kb" -gt "$rss_limit_kb" ]; then
             rss_guard=1
             if ! latch_validation_disabled "run_bounded_lowering rss_guard pid=$compiler_pid rss_kb=$rss_kb limit_kb=$rss_limit_kb"; then
