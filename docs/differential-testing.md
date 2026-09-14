@@ -315,12 +315,23 @@ needed. `Replace` starts with no ambient entries and applies the latter layers.
 `Clear` rejects a nonempty world environment, locale, or timezone and passes no
 environment. Seeds remain explicit setup metadata; this generic process layer
 does not guess how each language seeds its random APIs. Overlays update the
-ordered vector in place; the current merge still searches that vector by name,
-so near-limit environment performance needs a future indexed implementation.
-The composed vector is capped at the existing 1,048,576-entry limit and fails
-with `EnvironmentLimitExceeded` before appending an over-limit unique key.
-Environment vectors and the final invocation are revalidated against the
-existing argument, entry, path, text, input, and output budgets.
+ordered vector by first-seen name and last-applied value. The implementation
+sorts a bounded list of borrowed source entries by name and source order,
+compacts overrides, then restores first-seen order; this is deterministic
+O(n log n) rather than a per-key linear search, and only final unique strings
+are copied into the prepared runner. The composed vector is capped at the
+existing 1,048,576-entry limit and fails with `EnvironmentLimitExceeded` when
+the unique-key count exceeds it. The complete prepared process-text aggregate
+(target, entry, cwd, runner/world argv, and final environment) is preflighted
+before deep-copying any of those fields. Environment duplicate validation uses
+the same sort-and-scan strategy, including at the direct process boundary, so a
+large valid or hostile environment does not trigger quadratic name comparisons.
+The replay sort records first/last source ordinals rather than retaining a value
+view per row; with all three source vectors at their one-million-entry caps, its
+temporary candidate array is bounded to about 96 MiB on a 64-bit target before
+the unique-output cap applies. Environment vectors and the final invocation are
+revalidated against the existing argument, entry, path, text, input, and output
+budgets.
 
 Exact process modes use the provided `PATH` for bare executable names; without
 one, use an executable path containing `/`. Empty or relative `PATH` components

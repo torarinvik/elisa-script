@@ -279,6 +279,16 @@ module EsDifferential:
             value: sview
 
 
+        # Replay merges keep every source occurrence until a key/ordinal sort
+        # lets us compact overrides without quadratic scans. `order` is the
+        # first-seen position, so the compacted set can be restored to the
+        # historical insertion order after selecting the last value.
+        struct DifferentialCaseReplayEnvironmentCandidate:
+            name: sview
+            first_order: u32
+            last_order: u32
+
+
         const enum DifferentialRunOutcome of u8:
             Completed
             NormalError
@@ -1162,7 +1172,7 @@ module EsDifferential:
             return not differential_sview_has_nul(value)
 
 
-        def differential_world_issue(world: DifferentialWorld&) -> DifferentialCaseIssueKind:
+        def differential_world_issue(world: DifferentialWorld&) -> DifferentialCaseIssueKind can[Memory.Allocate, Abort.Panic]:
             return DifferentialCaseIssueKind.InvalidLimit if not differential_world_text_field_lengths_valid(world)
             return DifferentialCaseIssueKind.EmbeddedNul if differential_sview_has_nul(world.working_directory) or differential_sview_has_nul(world.locale) or differential_sview_has_nul(world.timezone)
             return DifferentialCaseIssueKind.InvalidWorldWorkingDirectory if world.working_directory != "" and not differential_world_relative_path_safe(world.working_directory)
@@ -1171,6 +1181,7 @@ module EsDifferential:
             return DifferentialCaseIssueKind.InvalidWorldStdinPayload if world.stdin_binary and world.stdin != ""
             return DifferentialCaseIssueKind.InvalidWorldStdinPayload if not world.stdin_binary and world.stdin_bytes.count != 0
             return DifferentialCaseIssueKind.InvalidLimit if world.stdin_bytes.count > DIFFERENTIAL_DEFAULT_MAX_PROCESS_INPUT_BYTES
+            return DifferentialCaseIssueKind.InvalidLimit if not differential_environment_text_bytes_fit(world.environment, DifferentialWorldLimits::BYTES)
             return DifferentialCaseIssueKind.EmbeddedNul if not differential_environment_valid(world.environment)
             for argument in world.argv:
                 return DifferentialCaseIssueKind.EmbeddedNul if differential_sview_has_nul(argument)
@@ -1218,7 +1229,7 @@ module EsDifferential:
         # representation. Length prefixes, field tags, ordering, permissions,
         # and executable bits prevent distinct worlds from collapsing into the
         # same concatenated stream.
-        def differential_world_fingerprint(world: DifferentialWorld&) -> u64:
+        def differential_world_fingerprint(world: DifferentialWorld&) -> u64 can[Memory.Allocate, Abort.Panic]:
             return 0 if differential_world_issue(world) != DifferentialCaseIssueKind.None
             fingerprint: mutable u64 = 14695981039346656037
             fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, 1)
@@ -1339,7 +1350,7 @@ module EsDifferential:
         # Validate the complete case envelope before either runner is handed to
         # an adapter. Nested runner failures retain their original issue kind so a
         # malformed reference cannot be misreported as candidate behavior.
-        def validate_differential_case(case: DifferentialCase&) -> DifferentialCaseCheck:
+        def validate_differential_case(case: DifferentialCase&) -> DifferentialCaseCheck can[Memory.Allocate, Abort.Panic]:
             cursor: mutable DifferentialCaseCheckCursor = DifferentialCaseCheckCursor{state: DifferentialCaseCheckState.Name, result: DifferentialCaseCheck{valid: true, issue: DifferentialCaseIssueKind.None}}
             machine over cursor.state while cursor.result.valid:
                 state Validate
@@ -2410,6 +2421,21 @@ module EsDifferential:
             return true
 
 
+        def differential_environment_text_bytes_add_fits(total: mutable usize&, environment: darray[DifferentialEnvironmentEntry], limit: usize) -> bool:
+            for variable in environment |total|:
+                return false if not differential_process_text_bytes_add_fits(total, variable.name, limit)
+                # setenv materializes one separator between the separately
+                # terminated name and value fields.
+                return false if not differential_process_text_byte_add_fits(total, limit)
+                return false if not differential_process_text_bytes_add_fits(total, variable.value, limit)
+            return true
+
+
+        def differential_environment_text_bytes_fit(environment: darray[DifferentialEnvironmentEntry], limit: usize) -> bool:
+            total: mutable usize = 0
+            return differential_environment_text_bytes_add_fits(total, environment, limit)
+
+
         # Reject overlong borrowed fields before any NUL scan. Every process
         # text value becomes a terminated C string, so the strict bound leaves
         # one byte for that terminator on all host widths.
@@ -2433,13 +2459,7 @@ module EsDifferential:
                 return false if not differential_process_text_bytes_add_fits(total, working_directory, DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES)
             for argument in arguments:
                 return false if not differential_process_text_bytes_add_fits(total, argument, DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES)
-            for variable in environment:
-                return false if not differential_process_text_bytes_add_fits(total, variable.name, DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES)
-                # The host setenv boundary materializes `name=value\0`; the
-                # two terminated fields above do not include this separator.
-                return false if not differential_process_text_byte_add_fits(total, DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES)
-                return false if not differential_process_text_bytes_add_fits(total, variable.value, DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES)
-            return true
+            return differential_environment_text_bytes_add_fits(total, environment, DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES)
 
 
         def differential_sview_has_nul(value: sview) -> bool:
@@ -2463,13 +2483,29 @@ module EsDifferential:
             return kind == DifferentialRunnerKind.ElisascriptFile or kind == DifferentialRunnerKind.PythonAdapter or kind == DifferentialRunnerKind.CAbiFunction or kind == DifferentialRunnerKind.WasmModule or kind == DifferentialRunnerKind.Service
 
 
-        def differential_environment_valid(environment: darray[DifferentialEnvironmentEntry]) -> bool:
-            for index in 0..<environment.count |environment|:
-                entry: DifferentialEnvironmentEntry = environment[index]
+        def differential_environment_name_less(left: sview, right: sview) -> bool:
+            left_length: usize = sview_len(left)
+            right_length: usize = sview_len(right)
+            common: usize = left_length if left_length < right_length else right_length
+            for offset in 0..<common |left, right|:
+                return true if sview_at(left, offset) < sview_at(right, offset)
+                return false if sview_at(left, offset) > sview_at(right, offset)
+            return left_length < right_length
+
+
+        def differential_environment_valid(environment: darray[DifferentialEnvironmentEntry]) -> bool can[Memory.Allocate, Abort.Panic]:
+            for entry in environment:
                 false return if sview_len(entry.name) > DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES or sview_len(entry.value) > DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES
                 false return if entry.name == "" or differential_sview_has_nul(entry.name) or sview_contains_byte(entry.name, 61) or differential_sview_has_nul(entry.value)
-                for prior in 0..<index |environment, entry|:
-                    false return if environment[prior].name == entry.name
+            return true if environment.count < 2
+            names: mutable darray[sview] = []
+            names.reserve(environment.count)
+            for entry in environment |names|:
+                names.push(entry.name)
+            sort[sview](names, differential_environment_name_less)
+            for index in 0..<names.count |names|:
+                if index > 0:
+                    false return if names[index - 1] == names[index]
             return true
 
 
@@ -2492,7 +2528,7 @@ module EsDifferential:
         # Validate the complete runner contract before an adapter is allowed to
         # launch. The machine makes the validation order deterministic: name,
         # target, optional entry, argv, then timeout.
-        def validate_differential_runner(runner: DifferentialRunner&) -> DifferentialRunnerCheck:
+        def validate_differential_runner(runner: DifferentialRunner&) -> DifferentialRunnerCheck can[Memory.Allocate, Abort.Panic]:
             cursor: mutable DifferentialRunnerCursor = DifferentialRunnerCursor{state: DifferentialRunnerCheckState.Name, argument_index: 0, result: DifferentialRunnerCheck{valid: true, issue: DifferentialRunnerIssueKind.None}}
             machine over cursor.state while cursor.result.valid:
                 state Validate
@@ -2605,6 +2641,12 @@ module EsDifferential:
                     cursor.result.valid <- false
                     cursor.result.issue <- DifferentialRunnerIssueKind.TooManyEnvironmentEntries
                     cursor.result.reason <- "runner environment exceeds the one-million-entry process budget"
+                    -> Validate
+                Validate, DifferentialRunnerCheckState.Environment if not differential_environment_text_bytes_fit(runner.environment, DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES):
+                    cursor.result.valid <- false
+                    cursor.result.issue <- DifferentialRunnerIssueKind.TooManyProcessTextBytes
+                    cursor.result.reason <- "runner process text exceeds the 64 MiB aggregate C-string budget"
+                    cursor.state <- DifferentialRunnerCheckState.Done
                     -> Validate
                 Validate, DifferentialRunnerCheckState.Environment if not differential_environment_valid(runner.environment):
                     cursor.result.valid <- false
@@ -3089,11 +3131,7 @@ module EsDifferential:
             raise DifferentialRunnerError.Invalid if not differential_process_command_valid(invocation)
             for argument in invocation.arguments:
                 raise DifferentialRunnerError.Invalid if differential_sview_has_nul(argument)
-            for entry in invocation.environment:
-                raise DifferentialRunnerError.Invalid if entry.name == "" or differential_sview_has_nul(entry.name) or sview_contains_byte(entry.name, 61) or differential_sview_has_nul(entry.value)
-            for index in 0..<invocation.environment.count |invocation|:
-                for prior in 0..<index |invocation|:
-                    raise DifferentialRunnerError.Invalid if invocation.environment[prior].name == invocation.environment[index].name
+            raise DifferentialRunnerError.Invalid if not differential_environment_valid(invocation.environment)
 
             executable_bytes: dstr = differential_cstring(invocation.executable)
             if executable_bytes.items == null:
@@ -4383,7 +4421,7 @@ module EsDifferential:
             result: mutable DifferentialShrinkResult
 
 
-        def differential_append_shrink_candidate(result: mutable DifferentialShrinkResult&, candidate: DifferentialCase, kind: DifferentialShrinkKind, limit: usize) -> void:
+        def differential_append_shrink_candidate(result: mutable DifferentialShrinkResult&, candidate: DifferentialCase, kind: DifferentialShrinkKind, limit: usize) -> void can[Memory.Allocate, Abort.Panic]:
             return if result.candidates.count >= limit
             check: DifferentialCaseCheck = validate_differential_case(candidate)
             result.candidates.push(DifferentialShrinkCandidate{kind: kind, reduced_case: candidate}) if check.valid
@@ -4723,7 +4761,7 @@ module EsDifferential:
         # Validate an independent reference without conflating its language or
         # process adapter with the Elisascript candidate. The external adapter
         # still uses the same typed argv/cwd/environment contract as any runner.
-        def validate_differential_oracle(oracle: DifferentialOracle&) -> DifferentialOracleCheck:
+        def validate_differential_oracle(oracle: DifferentialOracle&) -> DifferentialOracleCheck can[Memory.Allocate, Abort.Panic]:
             cursor: mutable DifferentialOracleCheckCursor = DifferentialOracleCheckCursor{state: DifferentialOracleCheckState.Name, result: DifferentialOracleCheck{valid: true, issue: DifferentialOracleIssue.None}}
             machine over cursor.state:
                 state Validate
@@ -5049,7 +5087,7 @@ module EsDifferential:
         # Verify both the stored snapshot and the post-run world before a case
         # is compared or replayed. A changed fixture, environment, argv, stdin,
         # locale, timezone, or seed is a typed contamination failure.
-        def validate_differential_world_snapshot(world: DifferentialWorld&, snapshot: DifferentialWorldSnapshot&) -> DifferentialWorldSnapshotCheck:
+        def validate_differential_world_snapshot(world: DifferentialWorld&, snapshot: DifferentialWorldSnapshot&) -> DifferentialWorldSnapshotCheck can[Memory.Allocate, Abort.Panic]:
             cursor: mutable DifferentialWorldSnapshotCursor = DifferentialWorldSnapshotCursor{state: DifferentialWorldSnapshotState.World, result: DifferentialWorldSnapshotCheck{valid: true, issue: DifferentialWorldSnapshotIssue.None}}
             machine over cursor.state:
                 state Validate
@@ -5204,7 +5242,7 @@ module EsDifferential:
         # Validate the lifecycle identity before an adapter performs any host
         # operation. A changed world or cross-boundary root is rejected without
         # mutating the plan.
-        def validate_differential_world_materialization(plan: DifferentialWorldMaterializationPlan&, snapshot: DifferentialWorldSnapshot&, world: DifferentialWorld&) -> DifferentialWorldMaterializationCheck:
+        def validate_differential_world_materialization(plan: DifferentialWorldMaterializationPlan&, snapshot: DifferentialWorldSnapshot&, world: DifferentialWorld&) -> DifferentialWorldMaterializationCheck can[Memory.Allocate, Abort.Panic]:
             cursor: mutable DifferentialWorldMaterializationCheckCursor = DifferentialWorldMaterializationCheckCursor{state: DifferentialWorldMaterializationCheckState.Plan, result: DifferentialWorldMaterializationCheck{valid: true, issue: DifferentialWorldMaterializationIssue.None}}
             machine over cursor.state:
                 state Validate
@@ -5254,7 +5292,7 @@ module EsDifferential:
 
         # A host may report Restored only after proving both isolated worlds
         # match the original snapshot. Rejected restores remain in cleanup.
-        def complete_differential_world_restoration(plan: mutable DifferentialWorldMaterializationPlan&, snapshot: DifferentialWorldSnapshot&, reference_restored_world: DifferentialWorld&, candidate_restored_world: DifferentialWorld&) -> DifferentialWorldMaterializationCheck:
+        def complete_differential_world_restoration(plan: mutable DifferentialWorldMaterializationPlan&, snapshot: DifferentialWorldSnapshot&, reference_restored_world: DifferentialWorld&, candidate_restored_world: DifferentialWorld&) -> DifferentialWorldMaterializationCheck can[Memory.Allocate, Abort.Panic]:
             return differential_world_materialization_failure(DifferentialWorldMaterializationIssue.InvalidPlan, "world materialization plan is invalid") if not differential_world_materialization_plan_valid(plan)
             return differential_world_materialization_failure(DifferentialWorldMaterializationIssue.InvalidTransition, "world restoration is not pending") if plan.state != DifferentialWorldMaterializationState.Restoring
             reference_restored: DifferentialWorldMaterializationCheck = validate_differential_world_materialization(plan, snapshot, reference_restored_world)
@@ -5459,19 +5497,34 @@ module EsDifferential:
             return bytes_view(storage)
 
 
-        # Later layers replace an earlier key in-place; new keys append. Thus
-        # ambient order is retained and both sides apply the same deterministic
-        # world-then-runner overlay rule without duplicate names in the result.
-        def differential_case_replay_environment_overlay(environment: mutable darray[DifferentialEnvironmentEntry]&, name: sview, value: sview) -> void error[DifferentialCaseReplayError] can[Memory.Allocate, Abort.Panic]:
-            for index in 0..<environment.count |environment, name, value|:
-                if environment[index].name == name:
-                    copied_value: sview = differential_case_replay_copy_text(value)
-                    environment[index] <- DifferentialEnvironmentEntry{name: environment[index].name, value: copied_value}
-                    return
-            raise DifferentialCaseReplayError.EnvironmentLimitExceeded if environment.count >= DIFFERENTIAL_DEFAULT_MAX_ENVIRONMENT_ENTRIES
-            copied_name: sview = differential_case_replay_copy_text(name)
-            copied_value: sview = differential_case_replay_copy_text(value)
-            environment.push(DifferentialEnvironmentEntry{name: copied_name, value: copied_value})
+        def differential_case_replay_candidate_less_by_name(left: DifferentialCaseReplayEnvironmentCandidate, right: DifferentialCaseReplayEnvironmentCandidate) -> bool:
+            return true if differential_environment_name_less(left.name, right.name)
+            return false if differential_environment_name_less(right.name, left.name)
+            return left.first_order < right.first_order
+
+
+        def differential_case_replay_candidate_less_by_order(left: DifferentialCaseReplayEnvironmentCandidate, right: DifferentialCaseReplayEnvironmentCandidate) -> bool:
+            return left.first_order < right.first_order
+
+
+        def differential_case_replay_environment_value_at_order(order: u32, ambient_environment: darray[DifferentialEnvironmentEntry], snapshot: DifferentialWorldSnapshot&, runner: DifferentialRunner&) -> sview error[DifferentialCaseReplayError]:
+            index: mutable usize = order.usize()
+            if index < ambient_environment.count:
+                return ambient_environment[index].value
+            index <- index - ambient_environment.count
+            if index < snapshot.environment.count:
+                return differential_world_snapshot_span_text(snapshot, snapshot.environment[index].value)
+            index <- index - snapshot.environment.count
+            if snapshot.locale.length != 0:
+                if index == 0:
+                    return differential_world_snapshot_span_text(snapshot, snapshot.locale)
+                index <- index - 1
+            if snapshot.timezone.length != 0:
+                if index == 0:
+                    return differential_world_snapshot_span_text(snapshot, snapshot.timezone)
+                index <- index - 1
+            raise DifferentialCaseReplayError.InvalidSession if index >= runner.environment.count
+            return runner.environment[index].value
 
 
         def differential_case_replay_process_setup_fingerprint(runner: DifferentialRunner&, side: DifferentialCaseSide, world_fingerprint: u64, world_seed: u64, case_seed: u64) -> u64:
@@ -5779,14 +5832,15 @@ module EsDifferential:
                     raise DifferentialCaseReplayError.InvalidCase
             working_directory: sview = try differential_case_replay_join_world_directory(root, world_directory)
 
-            environment: mutable darray[DifferentialEnvironmentEntry] = []
             effective_environment_mode: mutable EsProcess::ProcessEnvironmentMode = runner.environment_mode
+            ambient_count: mutable usize = 0
             match runner.environment_mode:
                 EsProcess::ProcessEnvironmentMode.Inherit:
                     raise DifferentialCaseReplayError.AmbientEnvironmentRequired if not ambient_environment_captured
-                    raise DifferentialCaseReplayError.InvalidAmbientEnvironment if ambient_environment.count > DIFFERENTIAL_DEFAULT_MAX_ENVIRONMENT_ENTRIES or not differential_environment_valid(ambient_environment)
-                    for entry in ambient_environment |environment|:
-                        try differential_case_replay_environment_overlay(environment, entry.name, entry.value)
+                    raise DifferentialCaseReplayError.InvalidAmbientEnvironment if ambient_environment.count > DIFFERENTIAL_DEFAULT_MAX_ENVIRONMENT_ENTRIES
+                    raise DifferentialCaseReplayError.InvalidAmbientEnvironment if not differential_environment_text_bytes_fit(ambient_environment, DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES)
+                    raise DifferentialCaseReplayError.InvalidAmbientEnvironment if not differential_environment_valid(ambient_environment)
+                    ambient_count <- ambient_environment.count
                     effective_environment_mode <- EsProcess::ProcessEnvironmentMode.Replace
                 EsProcess::ProcessEnvironmentMode.Replace:
                     raise DifferentialCaseReplayError.UnexpectedAmbientEnvironment if ambient_environment_captured or ambient_environment.count != 0
@@ -5796,14 +5850,66 @@ module EsDifferential:
                 _:
                     raise DifferentialRunnerError.Invalid
 
-            for entry in snapshot.environment |environment|:
-                try differential_case_replay_environment_overlay(environment, differential_world_snapshot_span_text(snapshot, entry.name), differential_world_snapshot_span_text(snapshot, entry.value))
+            # Bound temporary storage by the already-bounded source vectors.
+            # Keep their string views borrowed while sorting, then copy only
+            # the final unique environment after its process-text budget passes.
+            candidate_capacity: usize = ambient_count + snapshot.environment.count + runner.environment.count + 2
+            raise DifferentialCaseReplayError.EnvironmentLimitExceeded if candidate_capacity > DIFFERENTIAL_U32_MAX
+            candidates: mutable darray[DifferentialCaseReplayEnvironmentCandidate] = []
+            candidates.reserve(candidate_capacity)
+            candidate_order: mutable usize = 0
+            for entry in ambient_environment |candidates, candidate_order|:
+                candidates.push(DifferentialCaseReplayEnvironmentCandidate{name: entry.name, first_order: candidate_order.u32(), last_order: candidate_order.u32()})
+                candidate_order <- candidate_order + 1
+            for entry in snapshot.environment |snapshot, candidates, candidate_order|:
+                candidates.push(DifferentialCaseReplayEnvironmentCandidate{name: differential_world_snapshot_span_text(snapshot, entry.name), first_order: candidate_order.u32(), last_order: candidate_order.u32()})
+                candidate_order <- candidate_order + 1
             if snapshot.locale.length != 0:
-                try differential_case_replay_environment_overlay(environment, "LC_ALL", differential_world_snapshot_span_text(snapshot, snapshot.locale))
+                candidates.push(DifferentialCaseReplayEnvironmentCandidate{name: "LC_ALL", first_order: candidate_order.u32(), last_order: candidate_order.u32()})
+                candidate_order <- candidate_order + 1
             if snapshot.timezone.length != 0:
-                try differential_case_replay_environment_overlay(environment, "TZ", differential_world_snapshot_span_text(snapshot, snapshot.timezone))
-            for entry in runner.environment |environment|:
-                try differential_case_replay_environment_overlay(environment, entry.name, entry.value)
+                candidates.push(DifferentialCaseReplayEnvironmentCandidate{name: "TZ", first_order: candidate_order.u32(), last_order: candidate_order.u32()})
+                candidate_order <- candidate_order + 1
+            for entry in runner.environment |candidates, candidate_order|:
+                candidates.push(DifferentialCaseReplayEnvironmentCandidate{name: entry.name, first_order: candidate_order.u32(), last_order: candidate_order.u32()})
+                candidate_order <- candidate_order + 1
+
+            sort[DifferentialCaseReplayEnvironmentCandidate](candidates, differential_case_replay_candidate_less_by_name)
+            unique_count: mutable usize = 0
+            for index in 0..<candidates.count |candidates, unique_count|:
+                candidate: DifferentialCaseReplayEnvironmentCandidate = candidates[index]
+                is_override: mutable bool = false
+                if unique_count > 0:
+                    is_override <- candidates[unique_count - 1].name == candidate.name
+                if is_override:
+                    candidates[unique_count - 1].last_order <- candidate.last_order
+                else:
+                    raise DifferentialCaseReplayError.EnvironmentLimitExceeded if unique_count >= DIFFERENTIAL_DEFAULT_MAX_ENVIRONMENT_ENTRIES
+                    candidates[unique_count] <- candidate
+                    unique_count <- unique_count + 1
+            candidates.truncate(unique_count)
+            sort[DifferentialCaseReplayEnvironmentCandidate](candidates, differential_case_replay_candidate_less_by_order)
+
+            process_text_bytes: mutable usize = 0
+            raise DifferentialRunnerError.Invalid if not differential_process_text_bytes_add_fits(process_text_bytes, runner.target, DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES)
+            if runner.entry != "":
+                raise DifferentialRunnerError.Invalid if not differential_process_text_bytes_add_fits(process_text_bytes, runner.entry, DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES)
+            if working_directory != "":
+                raise DifferentialRunnerError.Invalid if not differential_process_text_bytes_add_fits(process_text_bytes, working_directory, DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES)
+            for argument in runner.arguments |process_text_bytes|:
+                raise DifferentialRunnerError.Invalid if not differential_process_text_bytes_add_fits(process_text_bytes, argument, DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES)
+            for argument in snapshot.argv |snapshot, process_text_bytes|:
+                raise DifferentialRunnerError.Invalid if not differential_process_text_bytes_add_fits(process_text_bytes, differential_world_snapshot_span_text(snapshot, argument), DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES)
+            for candidate in candidates |process_text_bytes|:
+                raise DifferentialRunnerError.Invalid if not differential_process_text_bytes_add_fits(process_text_bytes, candidate.name, DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES)
+                raise DifferentialRunnerError.Invalid if not differential_process_text_byte_add_fits(process_text_bytes, DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES)
+                preflight_value: sview = try differential_case_replay_environment_value_at_order(candidate.last_order, ambient_environment, snapshot, runner)
+                raise DifferentialRunnerError.Invalid if not differential_process_text_bytes_add_fits(process_text_bytes, preflight_value, DIFFERENTIAL_DEFAULT_MAX_PROCESS_TEXT_BYTES)
+            environment: mutable darray[DifferentialEnvironmentEntry] = []
+            environment.reserve(candidates.count)
+            for candidate in candidates |environment|:
+                copied_value: sview = try differential_case_replay_environment_value_at_order(candidate.last_order, ambient_environment, snapshot, runner)
+                environment.push(DifferentialEnvironmentEntry{name: differential_case_replay_copy_text(candidate.name), value: differential_case_replay_copy_text(copied_value)})
 
             effective: mutable DifferentialRunner = runner
             effective.name <- differential_case_replay_copy_text(runner.name)
