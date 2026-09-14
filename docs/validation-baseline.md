@@ -8,7 +8,7 @@ Captured: 2026-09-14
 
 ## Elisascript worktree
 
-- Repository revision before this baseline refresh: `983ad1392f023dbeef41fdb852f4e752cf1e5b02`
+- Repository revision before this baseline refresh: `f4128b6a0d9b955048dabd4a87cc7a179bfc17d2`
 - Tracked dirty files: none
 - Ignored local planning file: `IMPLEMENTATION_PLAN.md`
 - Working tree policy: never commit the ignored plan or `.DS_Store` files
