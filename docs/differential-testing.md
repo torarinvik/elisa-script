@@ -433,13 +433,15 @@ together against the runner's `max_output_bytes` ceiling before either stream
 is allocated into the invocation result; exceeding the aggregate fails the
 invocation instead of allowing captured output to exhaust the host. The combined
 output size is checked during the wait loop and again after exit, so a
-long-running child is terminated when its sampled aggregate crosses the
-ceiling. Each child creates a private process group before `execvp`; timeout and output-limit
-cleanup signal that confirmed group and then reap the leader, preventing
-descendants from surviving a failed differential case. Cleanup first sends
-cooperative `TERM`, waits through a bounded no-hang grace window, and then
-escalates to group `KILL` before returning—even when the leader was already
-reaped during the grace window. If parent-side `setpgid`
+long-running child triggers cleanup when its sampled aggregate crosses the
+ceiling. Each child attempts to enter a private process group before `execvp`;
+timeout and output-limit cleanup signal that confirmed group and reap the
+leader. This is best-effort cleanup, not descendant containment: a descendant
+can leave the group, and successful group signaling does not prove that all
+descendants have stopped. Cleanup sends cooperative `TERM`, waits through a
+bounded grace window, then sends group `KILL`. If the leader is reaped during
+that grace window, the adapter returns after issuing the group `KILL` without
+waiting for group members to exit. If parent-side `setpgid`
 is interrupted it is retried through a bounded `EINTR` budget; POSIX `EACCES`
 after child-side group setup is treated as confirmed admission, while any
 other non-retryable failure causes the adapter to terminate/reap the direct
