@@ -9,8 +9,11 @@ until a maintainer reviews the record.
 
 The scanner resolves the requested root to a canonical absolute path (a
 symlink used as the root is resolved), includes hidden entries, and does not
-consult ignore files or ripgrep configuration. It does not follow or emit
-symlink entries. It prunes exactly `.git`, `node_modules`, `.venv`,
+consult ignore files or ripgrep configuration. In a quiescent tree, child
+symlinks are excluded rather than traversed or emitted. The current path-based
+check/use sequence is not race-safe against concurrent filesystem mutation, so
+this is not a security boundary for hostile or actively changing trees. It
+prunes exactly `.git`, `node_modules`, `.venv`,
 `__pycache__`, `vendor`, and `third_party`, wherever those names occur as
 directory components. Matching is case-sensitive: `*.py`, `*.pl`, `*.pm`,
 `*.awk`, `*.sh`, `*.bash`, `*.zsh`, `*.fish`, and exact `Makefile` or

@@ -12,8 +12,11 @@ Neither scanner may execute candidate contents.
 For the successful fixture both processes must exit 0, write an empty stderr,
 and produce the exact header and records in the test's independently specified
 golden manifest. The golden is globally bytewise sorted and includes
-`ignored.py`, but excludes symlink aliases and every file under the six pruned
-directories. It pins these risk/disposition rules: release/deploy/publish/install
+`ignored.py`, but in the quiescent fixture excludes symlink aliases and every
+file under the six pruned directories. The current path-based scanner is not
+race-safe against concurrent filesystem mutation; the fixture does not establish
+hostile-mutator safety. It pins these risk/disposition rules:
+release/deploy/publish/install
 path components are `release`; test/tests/fixture-prefixed parent components
 are `test`; build/target/.github/.gitlab/.circleci are `build`; build/target/
 dist/generated dispositions are `classify-generated`; other records are

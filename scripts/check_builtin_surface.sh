@@ -5,6 +5,11 @@
 # methods remain type-directed and are intentionally excluded.
 
 set -euo pipefail
+LC_ALL=C
+export LC_ALL
+
+max_source_bytes=1048576
+max_name_matches=65536
 
 if [[ $# -gt 1 ]]; then
     printf 'usage: builtin surface audit [source-root]\n' >&2
@@ -34,10 +39,24 @@ for required_file in "$semantic_file" "$registry_file" "$lowerer_file"; do
         printf 'builtin surface: missing source file: %s\n' "$required_file" >&2
         exit 2
     fi
+    if ! source_size="$(wc -c < "$required_file" | tr -d '[:space:]')"; then
+        printf 'builtin surface: unable to inspect source file: %s\n' "$required_file" >&2
+        exit 2
+    fi
+    case "$source_size" in
+        ''|*[!0-9]*)
+            printf 'builtin surface: unable to inspect source file: %s\n' "$required_file" >&2
+            exit 2
+            ;;
+    esac
+    if [[ "$source_size" -gt "$max_source_bytes" ]]; then
+        printf 'builtin surface: source file exceeds audit limit: %s\n' "$required_file" >&2
+        exit 2
+    fi
 done
 
-# The first list is the large literal seed row. The add_symbol rows immediately
-# below it are part of the same semantic authority and must be included too.
+# The first list is the large literal seed row. The add_symbol and caller-owned
+# push rows are part of the same semantic authority and must be included too.
 semantic_names() {
     awk '
         /names: darray\[sview\] = \[/ {
@@ -60,11 +79,6 @@ semantic_names() {
     # when editing the very long legacy literal would obscure the diff.
     rg -o 'names <- names\.push\("[A-Za-z_][A-Za-z0-9_]*"' "$semantic_file" |
         sed 's/.*push("//; s/"$//' || [[ $? -eq 1 ]]
-    # Registry-backed global spellings are seeded by the typed loop rather
-    # than individual add_symbol calls; include that authoritative list here.
-    sed -n '/def typed_builtin_names/,/^        def /p' "$registry_file" |
-        rg -o '"[A-Za-z_][A-Za-z0-9_]*"' |
-        tr -d '"' || [[ $? -eq 1 ]]
 }
 
 registry_names() {
@@ -81,9 +95,22 @@ lowerer_names() {
         sed 's/.*== "//; s/"$//' || [[ $? -eq 1 ]]
 }
 
-semantic_sorted="$(semantic_names | sort -u)"
-registry_sorted="$(registry_names | sort -u)"
-lowerer_sorted="$(lowerer_names | sort -u)"
+semantic_raw="$(semantic_names)"
+registry_raw="$(registry_names)"
+lowerer_raw="$(lowerer_names)"
+count_names() {
+    awk 'NF { count += 1 } END { print count + 0 }'
+}
+semantic_raw_count="$(printf '%s\n' "$semantic_raw" | count_names)"
+registry_raw_count="$(printf '%s\n' "$registry_raw" | count_names)"
+lowerer_raw_count="$(printf '%s\n' "$lowerer_raw" | count_names)"
+if [[ "$semantic_raw_count" -gt "$max_name_matches" || "$registry_raw_count" -gt "$max_name_matches" || "$lowerer_raw_count" -gt "$max_name_matches" || "$((semantic_raw_count + registry_raw_count))" -gt "$max_name_matches" ]]; then
+    printf 'builtin surface: identifier match count exceeds audit limit\n' >&2
+    exit 2
+fi
+semantic_sorted="$(printf '%s\n%s\n' "$semantic_raw" "$registry_raw" | sort -u)"
+registry_sorted="$(printf '%s\n' "$registry_raw" | sort -u)"
+lowerer_sorted="$(printf '%s\n' "$lowerer_raw" | sort -u)"
 missing="$(comm -23 <(printf '%s\n' "$lowerer_sorted") <(printf '%s\n' "$semantic_sorted"))"
 missing_registry="$(comm -23 <(printf '%s\n' "$lowerer_sorted") <(printf '%s\n' "$registry_sorted"))"
 
