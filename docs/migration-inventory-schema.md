@@ -10,10 +10,13 @@ until a maintainer reviews the record.
 The scanner resolves the requested root to a canonical absolute path (a
 symlink used as the root is resolved), includes hidden entries, and does not
 consult ignore files or ripgrep configuration. In a quiescent tree, child
-symlinks are excluded rather than traversed or emitted. The current path-based
-check/use sequence is not race-safe against concurrent filesystem mutation, so
-this is not a security boundary for hostile or actively changing trees. It
-prunes exactly `.git`, `node_modules`, `.venv`,
+symlinks are excluded rather than traversed or emitted. The Bash reference
+uses path-based `find`; the current Darwin Elisascript candidate uses
+descriptor-relative traversal with no-follow lookups and opened-directory
+identity checks. This narrows the child-symlink check/use race, but does not
+contain hostile concurrent renames: both implementations require a quiescent,
+non-hostile tree and are not security boundaries. It prunes exactly `.git`,
+`node_modules`, `.venv`,
 `__pycache__`, `vendor`, and `third_party`, wherever those names occur as
 directory components. Matching is case-sensitive: `*.py`, `*.pl`, `*.pm`,
 `*.awk`, `*.sh`, `*.bash`, `*.zsh`, `*.fish`, and exact `Makefile` or
@@ -24,17 +27,24 @@ unambiguously in the TSV stream. Any traversal or resource failure exits before
 the header is written.
 
 Limits are 200,000 regular files, 200,000 traversed non-pruned directories,
-262,144 descendant entries, 64 MiB aggregate descendant-path bytes, 40 MiB
-aggregate candidate-path bytes, and 64 MiB final manifest bytes. A larger root
-must be partitioned before inventory. `Path.iterdir()` also applies its
-per-directory adapter bound; the shared global entry limit is no larger than
-that ceiling. Both implementations enforce entry and path budgets while
-traversing rather than after collecting an unbounded census. The shell
-reference streams a NUL-delimited `find` pipeline into its bounded path list;
-the Elisascript port uses native directory traversal and owned path arrays.
-Failures from either a traversal error or the shared entry ceiling use the same
-canonical-root diagnostic; the native directory adapter does not expose whether
-its own per-directory ceiling or a filesystem error caused the failure.
+64 traversed descendant directory levels (the root is depth zero), 262,144
+descendant entries, 64 MiB aggregate descendant-path bytes, 40 MiB aggregate
+candidate-path bytes, and 64 MiB final manifest bytes. A larger root must be
+partitioned before inventory. Both implementations enforce entry, depth, and
+path budgets while traversing rather than after collecting an unbounded census.
+The shell reference streams a NUL-delimited `find` pipeline into its bounded path list;
+the current Darwin Elisascript candidate uses descriptor-relative `openat` /
+`fstatat` / `readdir` traversal and owned path arrays. It opens canonical-root
+and child components one at a time with no-follow flags and compares opened
+and named directory identity before descending. Excluded/pruned directories do
+not count toward the depth cap. Descriptor-relative traversal cannot prevent a
+hostile concurrent rename from moving an already-open directory outside its
+lexical root, while the Bash reference remains path-based; neither is a sandbox
+or a security boundary.
+
+Ordinary traversal errors and the shared entry ceiling use the canonical-root
+diagnostic. Exceeding the 64-level bound uses
+`inventory_candidates: directory depth exceeds limit (64) for <root>\n`.
 
 The process-parity fixture always supplies an explicit root. The Bash reference
 derives its omitted-root default from its own script location, while the current

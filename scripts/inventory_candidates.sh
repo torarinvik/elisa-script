@@ -45,6 +45,7 @@ esac
 
 max_scan_files=200000
 max_scan_directories=200000
+max_scan_depth=64
 max_scan_entries=262144
 max_total_path_bytes=67108864
 max_candidate_path_bytes=41943040
@@ -141,6 +142,17 @@ find "$scan_root" -mindepth 1 \
     if [ -d "$scan_path" ] && [ ! -L "$scan_path" ]; then
         directory_name="${scan_path##*/}"
         if ! is_excluded_directory_name "$directory_name"; then
+            if [ "$scan_root" = "/" ]; then
+                relative_scan_path="${scan_path#/}"
+            else
+                relative_scan_path="${scan_path#"$scan_root"/}"
+            fi
+            relative_scan_slashes="${relative_scan_path//[^/]/}"
+            scan_depth=$((${#relative_scan_slashes} + 1))
+            if [ "$scan_depth" -gt "$max_scan_depth" ]; then
+                echo "inventory_candidates: directory depth exceeds limit ($max_scan_depth) for $scan_root" >&2
+                exit 3
+            fi
             scan_directory_count=$((scan_directory_count + 1))
             if [ "$scan_directory_count" -gt "$max_scan_directories" ]; then
                 echo "inventory_candidates: directory count exceeds limit ($max_scan_directories)" >&2

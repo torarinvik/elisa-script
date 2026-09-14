@@ -15,9 +15,11 @@ For the successful fixture both processes must exit 0, write an empty stderr,
 and produce the exact header and records in the test's independently specified
 golden manifest. The golden is globally bytewise sorted and includes
 `ignored.py`, but in the quiescent fixture excludes symlink aliases and every
-file under the six pruned directories. The current path-based scanner is not
-race-safe against concurrent filesystem mutation; the fixture does not establish
-hostile-mutator safety. It pins these risk/disposition rules:
+file under the six pruned directories. The Bash reference is path-based; the
+Elisascript candidate uses descriptor-relative no-follow traversal with
+directory identity checks. Neither is qualified against hostile concurrent
+filesystem mutation, and the fixture does not establish hostile-mutator safety.
+It pins these risk/disposition rules:
 release/deploy/publish/install
 path components are `release`; test/tests/fixture-prefixed parent components
 are `test`; build/target/.github/.gitlab/.circleci are `build`; build/target/
@@ -37,9 +39,12 @@ Failure cases pin exact status and diagnostics with no stdout header:
 
 Traversal failures and entry-ceiling failures use status 3 and the shared
 canonical-root diagnostic `inventory_candidates: traversal failed or exceeded
-a traversal limit for <root>\n`; the runtime adapter does not expose which
-traversal condition failed. Resource boundaries have not been executed under
-the current validation hold.
+a traversal limit for <root>\n`. A generated tree exactly 64 traversed
+descendant directory levels deep is expected to preserve the ordinary manifest.
+Adding level 65 uses status 3, no stdout, and
+`inventory_candidates: directory depth exceeds limit (64) for <root>\n`.
+These resource boundaries have not been executed under the current validation
+hold.
 
 The test also asserts that the candidate-looking shell file did not create its
 marker. The source pins the public launcher path and digest before and after
