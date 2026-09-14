@@ -23,8 +23,9 @@ human-readable output.
 - `@link_name(...)` accepts either a quoted, possibly empty string or an ASCII
   identifier. A non-empty pending name survives blank and `#` comment lines;
   the last annotation wins. It attaches only to the next recognized export.
-  Any other nonblank, non-comment line clears it. Empty quoted names are not
-  emitted. Implicit `main` rows never inherit it.
+  Any other nonblank, non-comment line clears it. An empty quoted annotation
+  clears any earlier name and is not emitted. Implicit `main` rows never inherit
+  it.
 - Explicit declarations match the pinned Python `EXPORT_RE` whole-line grammar:
   `export fn IDENT(params) [-> type] [= IDENT [A-Za-z0-9_:]*]`. This regex is
   more permissive than a namespace parser: once the target's first ASCII
@@ -160,7 +161,7 @@ only unless they are valid Elisa programs.
 | Case group | Required cases |
 | --- | --- |
 | Record shape | zero parameters, default/no return, explicit target, line numbers, source order, exact optional-key presence, permissive target-regex behavior |
-| ABI | every scalar mapping, `cstr`, `&`, `&&`, nullable, unsupported aggregate, modifier/whitespace normalization, greedy nested-signature suffix selection, Python-compatible diagnostic quoting for Unicode C1 controls and U+00AD SOFT HYPHEN |
+| ABI | every scalar mapping, `cstr`, `&`, `&&`, nullable, unsupported aggregate, modifier/whitespace normalization, greedy nested-signature suffix selection, Python-compatible diagnostic quoting for C1 controls, U+00AD SOFT HYPHEN, and U+200B ZERO WIDTH SPACE |
 | Parameter scanner | nested delimiters including `{}`, quoted commas/equals, escapes, empty segments, missing colon, invalid name |
 | Link annotation | quoted/bare, blank/comment retention, overwrite, empty, dangling, reset by ordinary text, implicit-main exclusion |
 | `main` | implicit position and fields, repeated definitions, explicit-before/after behavior, duplicate line diagnostic |
@@ -181,7 +182,8 @@ differential adapter. Cases cover positive records, parser and ABI errors, the
 pinned target-regex edge, nested relative includes, diamond de-duplication,
 cycles, missing leaves, absolute includes, mixed quote delimiters, and
 existing/missing leaves beneath a symlink prefix including `..` after the
-symlink. Generated temporary inputs
+symlink. A generated link-name case places `@link_name("")` after a nonempty
+annotation and compares the omitted optional key with Python. Generated temporary inputs
 also cover CRLF/bare-CR normalization, all additional Python `splitlines`
 separators (vertical tab, form feed, U+001C..U+001E, NEL, U+2028, and U+2029)
 with one-based record-line comparison, no-final-newline splicing, invalid
@@ -198,8 +200,9 @@ Python differential case covers explicit `main` before implicit `main` and
 implicit `main` before a later explicit duplicate, plus repeated implicit
 definitions that must yield only one row. The ordering cases include many
 ordinary lines between exports to exercise the maintained presence flag. A generated
-unsupported-type diagnostic containing U+009F and U+00AD is also compared with
-the pinned Python adapter to check C1 and soft-hyphen `repr` escaping. Newline-dense inputs check that
+unsupported-type diagnostic containing U+009F, U+00AD, and U+200B is also
+compared with the pinned Python adapter to check C1, soft-hyphen, and zero-width
+`repr` escaping. Newline-dense inputs check that
 131,072 lines reach the ordinary no-export diagnostic while 131,073 lines hit
 the candidate-only line-view cap, without entering Python. These are static
 source contracts, not executed evidence. Positive snapshots are also checked against their

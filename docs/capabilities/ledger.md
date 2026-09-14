@@ -1105,10 +1105,11 @@ comparison, `wasm_build.py` caller migration, and adoption remain open under
 the validation hold.
 
 W09 unsupported-type diagnostics now escape valid UTF-8 C1 controls U+0080..U+009F
-and U+00AD SOFT HYPHEN as Python-style `\xNN` sequences. The generated
-Python-vs-candidate diagnostic contains U+009F and U+00AD. This remains a
-narrow `str.__repr__` parity increment; other Unicode non-printable code points
-remain unqualified, and the fixture has not run.
+and U+00AD SOFT HYPHEN as Python-style `\xNN` sequences, plus U+200B ZERO WIDTH
+SPACE as `\u200b`. The generated Python-vs-candidate diagnostic contains U+009F,
+U+00AD, and U+200B. This remains a narrow `str.__repr__` parity increment;
+other Unicode non-printable code points remain unqualified, and the fixture has
+not run.
 
 W09 duplicate-export lookup now charges the shorter identifier byte length
 before each comparison against a flattened-source aggregate limit, and
@@ -1126,3 +1127,8 @@ separators. Comparing the structured export records also pins their one-based
 line numbers; a separate U+2028-delimited include case covers include recognition
 and splice behavior. This supplements the CRLF/bare-CR file-normalization cases;
 no fixture/compiler/audit execution ran.
+
+A generated W09 link-name differential case also applies an empty quoted
+annotation after a nonempty one and checks that it clears the pending value and
+omits the optional JSON key, matching the pinned Python `group(1) or group(2)`
+behavior. It has not run.
