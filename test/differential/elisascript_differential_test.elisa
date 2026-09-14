@@ -29,6 +29,28 @@ def float_value(value: f64) -> DifferentialValue:
     return DifferentialValue{kind: DifferentialValueKind.Float, decimal: value}
 
 
+def differential_test_cstring(value: sview) -> dstr can[Memory.Allocate, Abort.Panic]:
+    length: usize = sview_len(value)
+    allocation_length: usize = length + 1
+    allocation_i64: i64 = allocation_length.i64()
+    return [] if allocation_length == 0 or allocation_i64 < 0 or allocation_i64.usize() != allocation_length
+    bytes: mutable dstr = ctx_fstr_alloc(allocation_length)
+    return [] if bytes.items == null
+    ctx_fstr_append(bytes, value.data, length)
+    ctx_fstr_append(bytes, "\0", 1)
+    bytes.count <- length
+    return bytes
+
+
+def differential_test_cleanup_root_if_owned(root: mutable DarwinDifferentialWorldRoot&, owned: bool) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic]:
+    return true if not owned
+    catch cleanup_darwin_differential_world(root):
+        ok:
+            return true
+        error failure:
+            return false
+
+
 @test
 def differential_sequence_contract_localizes_first_divergence_and_checkpoints() -> void:
     sequence: mutable DifferentialSequence = DifferentialSequence{max_steps: 4}
@@ -1655,6 +1677,153 @@ def differential_world_snapshot_rejects_corrupt_span_layouts() -> void:
         trailing: mutable DifferentialWorldSnapshot = make_differential_world_snapshot(world)
         trailing.payload.push(0)
         assert not validate_differential_world_snapshot_storage(trailing).valid
+
+
+@test
+def differential_posix_world_capture_matches_exact_golden_and_requires_quiescence() -> void:
+    can Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic:
+        world: DifferentialWorld = DifferentialWorld{files: [
+            DifferentialWorldFile{path: "nested/input.bin", kind: DifferentialWorldFileKind.Bytes, bytes: [0, 255, 7], mode: 416},
+            DifferentialWorldFile{path: "nested/source.txt", kind: DifferentialWorldFileKind.Text, contents: "stable", mode: 493, executable: true}
+        ]}
+        world_snapshot: DifferentialWorldSnapshot = make_differential_world_snapshot(world)
+        reference_root: mutable DarwinDifferentialWorldRoot = DarwinDifferentialWorldRoot{}
+        candidate_root: mutable DarwinDifferentialWorldRoot = DarwinDifferentialWorldRoot{}
+        reference_root_created: mutable bool = false
+        candidate_root_created: mutable bool = false
+        catch create_darwin_differential_world_root(world_snapshot):
+            ok created_root:
+                reference_root <- created_root
+                reference_root_created <- true
+            error failure:
+                reference_root_created <- false
+        catch create_darwin_differential_world_root(world_snapshot):
+            ok created_root:
+                candidate_root <- created_root
+                candidate_root_created <- true
+            error failure:
+                candidate_root_created <- false
+        if not reference_root_created or not candidate_root_created:
+            reference_creation_cleanup_ok: bool = differential_test_cleanup_root_if_owned(reference_root, reference_root_created)
+            candidate_creation_cleanup_ok: bool = differential_test_cleanup_root_if_owned(candidate_root, candidate_root_created)
+            assert reference_creation_cleanup_ok and candidate_creation_cleanup_ok
+            assert false
+
+        reference_materialized: mutable bool = false
+        candidate_materialized: mutable bool = false
+        catch materialize_darwin_differential_world(reference_root, world_snapshot):
+            ok:
+                reference_materialized <- true
+            error failure:
+                reference_materialized <- false
+        catch materialize_darwin_differential_world(candidate_root, world_snapshot):
+            ok:
+                candidate_materialized <- true
+            error failure:
+                candidate_materialized <- false
+        if not reference_materialized or not candidate_materialized:
+            reference_materialization_cleanup_ok: bool = differential_test_cleanup_root_if_owned(reference_root, reference_root_created)
+            candidate_materialization_cleanup_ok: bool = differential_test_cleanup_root_if_owned(candidate_root, candidate_root_created)
+            assert reference_materialization_cleanup_ok and candidate_materialization_cleanup_ok
+            assert false
+
+        target_bytes: mutable darray[u8] = [47, 114, 97, 119, 47, 116, 97, 114, 103, 101, 116, 255]
+        target_path: dstr = differential_test_cstring(bytes_view(target_bytes))
+        reference_link_path: dstr = differential_test_cstring(EsIr::path_join_value(bytes_view(reference_root.path), "raw-link"))
+        candidate_link_path: dstr = differential_test_cstring(EsIr::path_join_value(bytes_view(candidate_root.path), "raw-link"))
+        assert target_path.items != null and reference_link_path.items != null and candidate_link_path.items != null
+        target_items: u8& = target_path.items
+        reference_link_items: u8& = reference_link_path.items
+        candidate_link_items: u8& = candidate_link_path.items
+        reference_link_created: bool = elisascript_posix_symlink(target_items.cast[cstr], reference_link_items.cast[cstr]) == 0
+        candidate_link_created: bool = elisascript_posix_symlink(target_items.cast[cstr], candidate_link_items.cast[cstr]) == 0
+        if not reference_link_created or not candidate_link_created:
+            reference_link_cleanup_ok: bool = differential_test_cleanup_root_if_owned(reference_root, reference_root_created)
+            candidate_link_cleanup_ok: bool = differential_test_cleanup_root_if_owned(candidate_root, candidate_root_created)
+            assert reference_link_cleanup_ok and candidate_link_cleanup_ok
+            assert false
+
+        not_quiescent: mutable DifferentialFilesystemSnapshot = DifferentialFilesystemSnapshot{}
+        quiescence_rejected: mutable bool = false
+        catch snapshot_darwin_differential_world(reference_root, false, not_quiescent):
+            ok state:
+                assert false
+            error failure:
+                assert failure == DifferentialWorldPosixError.QuiescenceRequired
+                quiescence_rejected <- true
+        assert quiescence_rejected
+        assert not_quiescent.state == DifferentialFilesystemState.Planned
+        assert not_quiescent.entries.count == 0 and not_quiescent.path_data.count == 0 and not_quiescent.content_data.count == 0
+
+        too_small: mutable DifferentialFilesystemSnapshot = DifferentialFilesystemSnapshot{max_bytes: 2}
+        bounded_rejected: mutable bool = false
+        catch snapshot_darwin_differential_world(reference_root, true, too_small):
+            ok state:
+                assert false
+            error failure:
+                assert failure == DifferentialWorldPosixError.SnapshotLimitExceeded
+                bounded_rejected <- true
+        assert bounded_rejected
+        assert too_small.state == DifferentialFilesystemState.Failed
+
+        reference_tree: mutable DifferentialFilesystemSnapshot = DifferentialFilesystemSnapshot{}
+        candidate_tree: mutable DifferentialFilesystemSnapshot = DifferentialFilesystemSnapshot{}
+        reference_capture_ok: mutable bool = false
+        candidate_capture_ok: mutable bool = false
+        catch snapshot_darwin_differential_world(reference_root, true, reference_tree):
+            ok state:
+                reference_capture_ok <- state == DifferentialFilesystemState.Sealed
+            error failure:
+                reference_capture_ok <- false
+        catch snapshot_darwin_differential_world(candidate_root, true, candidate_tree):
+            ok state:
+                candidate_capture_ok <- state == DifferentialFilesystemState.Sealed
+            error failure:
+                candidate_capture_ok <- false
+        if not reference_capture_ok or not candidate_capture_ok:
+            reference_capture_cleanup_ok: bool = differential_test_cleanup_root_if_owned(reference_root, reference_root_created)
+            candidate_capture_cleanup_ok: bool = differential_test_cleanup_root_if_owned(candidate_root, candidate_root_created)
+            assert reference_capture_cleanup_ok and candidate_capture_cleanup_ok
+            assert false
+
+        # This independently assembled expected tree checks exact records,
+        # modes, binary payload bytes, executable metadata, and the raw
+        # non-UTF-8 symlink target rather than trusting one collector result.
+        golden: mutable DifferentialFilesystemSnapshot = DifferentialFilesystemSnapshot{}
+        _ = advance_differential_filesystem_snapshot(golden, DifferentialFilesystemEvent.Begin)
+        _ = advance_differential_filesystem_snapshot(golden, DifferentialFilesystemEvent.Entry, DifferentialFilesystemEntry{path: "nested", kind: DifferentialFilesystemEntryKind.Directory, mode: 448})
+        _ = advance_differential_filesystem_snapshot(golden, DifferentialFilesystemEvent.Entry, DifferentialFilesystemEntry{path: "nested/input.bin", kind: DifferentialFilesystemEntryKind.File, content: [0, 255, 7], mode: 416})
+        _ = advance_differential_filesystem_snapshot(golden, DifferentialFilesystemEvent.Entry, DifferentialFilesystemEntry{path: "nested/source.txt", kind: DifferentialFilesystemEntryKind.File, content: [115, 116, 97, 98, 108, 101], mode: 493, executable: true})
+        _ = advance_differential_filesystem_snapshot(golden, DifferentialFilesystemEvent.Entry, DifferentialFilesystemEntry{path: "raw-link", kind: DifferentialFilesystemEntryKind.Symlink, content: target_bytes, mode: 511})
+        _ = advance_differential_filesystem_snapshot(golden, DifferentialFilesystemEvent.Seal)
+
+        reference_matches: DifferentialFilesystemDifference = compare_differential_filesystem_snapshots(reference_tree, golden)
+        candidate_matches: DifferentialFilesystemDifference = compare_differential_filesystem_snapshots(candidate_tree, golden)
+        sides_match: DifferentialFilesystemDifference = compare_differential_filesystem_snapshots(reference_tree, candidate_tree)
+        assert reference_matches.equal and candidate_matches.equal and sides_match.equal
+        assert reference_tree.entries.count == 4 and candidate_tree.entries.count == 4
+        captured_link: darray[u8] = try copy_differential_filesystem_entry_content(reference_tree, 3)
+        assert captured_link.count == target_bytes.count
+        for index in 0..<target_bytes.count |captured_link, target_bytes|:
+            assert captured_link[index] == target_bytes[index]
+        assert reference_tree.entries[2].executable
+        assert not reference_tree.entries[1].executable
+
+        reference_cleanup_ok: mutable bool = false
+        candidate_cleanup_ok: mutable bool = false
+        catch cleanup_darwin_differential_world(reference_root):
+            ok:
+                reference_cleanup_ok <- true
+            error failure:
+                reference_cleanup_ok <- false
+        catch cleanup_darwin_differential_world(candidate_root):
+            ok:
+                candidate_cleanup_ok <- true
+            error failure:
+                candidate_cleanup_ok <- false
+        assert reference_cleanup_ok and candidate_cleanup_ok
+        assert reference_root.state == DarwinDifferentialWorldRootState.CleanupComplete
+        assert candidate_root.state == DarwinDifferentialWorldRootState.CleanupComplete
 
 
 @test

@@ -809,15 +809,16 @@ and the transition helper authorizes exactly one nonterminal edge without
 performing I/O. An adapter must enter `Materializing` before it starts host
 mutations. Only `complete_differential_world_restoration` may mark the plan
 `Restored`; it validates both isolated restored worlds against the original
-snapshot fingerprint first, leaving a rejected restore in `Restoring`. A future
-adapter must perform fixture creation, cwd/environment setup, cleanup, and
-restoration around these states. Root paths are copied into plan-owned byte
-arrays at construction, and the reference/candidate root accessors return views
-borrowed from those arrays; callers must keep the plan alive and avoid mutating
-its public storage while using a view. The plan is a public value record, so its
-validator establishes structural consistency, not tamper-proof provenance; a
-host adapter must keep ownership of the live plan and must not trust a
-caller-constructed terminal record as proof that filesystem cleanup occurred.
+snapshot fingerprint first, leaving a rejected restore in `Restoring`. The
+current Darwin adapter can create/materialize and clean up an individual
+root, but it does not orchestrate the complete plan lifecycle. Root paths are
+copied into plan-owned byte arrays at construction, and the reference/candidate
+root accessors return views borrowed from those arrays; callers must keep the
+plan alive and avoid mutating its public storage while using a view. The plan is
+a public value record, so its validator establishes structural consistency, not
+tamper-proof provenance; a host adapter must keep ownership of the live plan
+and must not trust a caller-constructed terminal record as proof that
+filesystem cleanup occurred.
 The Darwin runtime bridge exposes `open`, `openat`, `readlinkat`, `fdopendir`,
 `fstatat`, `fstat`, `fchdir`, and the no-follow stat flag. The first
 source-only host slice, `EsDifferentialWorldPosix`, consumes the descriptor-
@@ -829,13 +830,41 @@ written with bounded short-write/EINTR handling, then assigned and checked
 against the requested exact mode and byte length. The directory/stat ABI and
 this adapter are Darwin-arm64-specific.
 
+`snapshot_darwin_differential_world(root, writers_quiescent, snapshot)` is a
+separate bounded, read-only post-run collector. It accepts only a Materialized
+root and a fresh empty Planned filesystem snapshot, requires the explicit
+`writers_quiescent = true` argument before beginning I/O, and leaves a
+returned post-Begin I/O, limit, or model failure in the terminal Failed state.
+The boolean is only a caller assertion, not process-supervisor evidence: it
+does not prove descendants or other writers have stopped and does not make
+concurrent mutation safe. The collector walks descriptor-relatively with
+no-follow opens, checks directory/file/symlink identity and metadata around
+capture, and stores exact regular-file bytes, raw symlink target bytes,
+ordinary permission bits,
+and directory entries in a sealed `DifferentialFilesystemSnapshot`. It rejects
+special files, cross-device entries, hard-linked regular files/symlinks,
+unsupported special permission bits, identity changes, and detected
+truncation/growth. Capture is bounded by the snapshot entry/path/content limits,
+a 1,048,576 aggregate payload-read-attempt cap across regular-file reads, EOF
+probes, and `readlinkat` (including EINTR retries), and a 4,096-byte
+symlink-target cap. The counter does not include metadata or traversal syscalls.
+The configured payload-byte limits do not directly cap peak resident memory.
+The current exact-payload admission path copies file data before appending it
+to the snapshot arena, so appending one maximum-size 256 MiB file can
+transiently involve about 768 MiB of payload allocations, excluding allocator
+overhead. Sealing also temporarily builds compacted copies of the snapshot
+arenas. This is a source-level estimate, not a measured peak; tighter memory
+ceilings require a lower content cap or streaming directly into snapshot-owned
+storage. These bounds do not constrain host-side writers.
+
 Cleanup is now available through cleanup_darwin_differential_world. The
 replay-bound process preparer resolves argv, environment, stdin, locale,
 timezone, and root-relative cwd from the sealed world into a per-side runner,
 and a single-side executor binds the returned run to that setup. This still is
-not a complete replay-ready host adapter: it has no recursive post-run world
-snapshot/readback, automatic root materialization/cleanup orchestration,
-two-process replay coordinator, authoritative ambient-environment capture, or
+not a complete replay-ready host adapter: the post-run collector is not wired
+into replay comparison, restoration validation, or session completion; there is
+also no automatic root materialization/cleanup orchestration, two-process
+replay coordinator, authoritative ambient-environment capture, or
 descendant-quiescence receipt. Materialization preflights a
 conservative count of fixture and inferred-directory entries plus a maximum
 directory depth so an admitted initial world fits the cleaner's fixed limits
