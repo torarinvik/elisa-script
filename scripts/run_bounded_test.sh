@@ -372,12 +372,14 @@ validation_identity_field() {
 validation_log_dir="$(validation_identity_field log_dir)"
 validation_configuration_key="$(validation_identity_field configuration_key)"
 validation_compiler_revision="$(validation_identity_field compiler_revision)"
+validation_compiler_binary_revision="$(validation_identity_field compiler_binary_revision)"
+validation_compiler_binary_modified="$(validation_identity_field compiler_binary_modified)"
 validation_compiler_sha256="$(validation_identity_field compiler_sha256)"
-if [ -z "$validation_log_dir" ] || [ -z "$validation_configuration_key" ] || [ -z "$validation_compiler_revision" ] || [ -z "$validation_compiler_sha256" ]; then
+if [ -z "$validation_log_dir" ] || [ -z "$validation_configuration_key" ] || [ -z "$validation_compiler_revision" ] || [ -z "$validation_compiler_binary_revision" ] || [ "$validation_compiler_binary_revision" != "$validation_compiler_revision" ] || [ "$validation_compiler_binary_modified" != "false" ] || [ -z "$validation_compiler_sha256" ]; then
     echo "run_bounded_test: compiler/configuration identity is incomplete; refusing to launch" >&2
     exit 125
 fi
-case "$validation_configuration_key:$validation_compiler_revision:$validation_compiler_sha256" in
+case "$validation_configuration_key:$validation_compiler_revision:$validation_compiler_binary_revision:$validation_compiler_sha256" in
     *[!0-9a-f:]*)
         echo "run_bounded_test: compiler/configuration identity is malformed; refusing to launch" >&2
         exit 125
@@ -483,7 +485,7 @@ for source_file in "$@"; do
     snapshot_path_hex="$(printf '%s' "$source_snapshot" | od -An -tx1 | tr -d '[:space:]')"
     working_directory_hex="$(pwd -P | od -An -tx1 | tr -d '[:space:]')"
     if ! (set -C; {
-        printf 'compiler_path=%s\ncompiler_revision=%s\ncompiler_sha256=%s\n' "$compiler_path" "$validation_compiler_revision" "$validation_compiler_sha256"
+        printf 'compiler_path=%s\ncompiler_revision=%s\ncompiler_binary_revision=%s\ncompiler_binary_modified=%s\ncompiler_sha256=%s\n' "$compiler_path" "$validation_compiler_revision" "$validation_compiler_binary_revision" "$validation_compiler_binary_modified" "$validation_compiler_sha256"
         printf 'configuration_key=%s\noptimization=O0\ntarget=native\nmode=test\nlog_dir_hex=%s\n' "$validation_configuration_key" "$(printf '%s' "$validation_log_dir" | od -An -tx1 | tr -d '[:space:]')"
         printf 'wrapper=run_bounded_test\nsource_path_hex=%s\n' "$source_path_hex"
         printf 'snapshot_path_hex=%s\n' "$snapshot_path_hex"

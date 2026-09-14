@@ -40,13 +40,18 @@ test suites. Rebuild the local Elisa-core compiler first when its stage0 or stag
 sources change, then rerun the Elisascript suites from this checkout.
 
 Resolve the compiler identity and keyed output directory before a validation
-session with `scripts/validation_identity.sh`. It records the pinned checkout
-revision, executable SHA-256, optimization/target/mode configuration, and a
-derived output key under `.validation/`; that directory is ignored and must not
-be used as a substitute for a validation result. Set
+session with `scripts/validation_identity.sh`. It requires a clean pinned source
+checkout and reads the Go build metadata embedded in `elisac`; the embedded VCS
+revision must exactly match the checkout and report `vcs.modified=false`. This
+detects a stale binary or one built from modified sources without launching
+`elisac`. It also records the executable SHA-256, optimization/target/mode
+configuration, and a derived output key under `.validation/`; that directory is
+ignored and must not be used as a substitute for a validation result. Set
 `ELISASCRIPT_VALIDATION_OUTPUT_ROOT` to place keyed logs and artifacts in a
-reviewed external directory. The helper is compiler-free and does not build or
-launch anything.
+reviewed external directory. The helper does not build or launch the Elisa
+compiler. The historical `validation-baseline.md` is stale after compiler-source
+changes; refresh its identity only in an explicitly authorized build/validation
+session.
 
 For a reusable guard instead of an inline shell function, run
 `scripts/run_bounded_lowering.sh test/driver/argv_probe.elisascript` from

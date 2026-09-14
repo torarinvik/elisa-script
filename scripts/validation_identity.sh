@@ -37,6 +37,39 @@ case "$compiler_revision" in
         ;;
 esac
 
+if ! compiler_checkout_status="$(git -C "$compiler_root" status --porcelain --untracked-files=normal 2>/dev/null)"; then
+    echo "validation_identity: unable to inspect compiler checkout state; refusing validation" >&2
+    exit 125
+fi
+if [ -n "$compiler_checkout_status" ]; then
+    echo "validation_identity: compiler checkout is dirty; refusing to bind an executable to an ambiguous source tree" >&2
+    exit 125
+fi
+
+# `go version -m` reads the executable's embedded build metadata; it does not
+# execute elisac. Require Go's VCS stamp to tie the approved binary to the
+# exact clean checkout rather than trusting its path or modification time.
+compiler_build_info="$(go version -m "$compiler" 2>/dev/null)" || {
+    echo "validation_identity: unable to read compiler build provenance; refusing validation" >&2
+    exit 125
+}
+compiler_binary_revision="$(printf '%s\n' "$compiler_build_info" | sed -n 's/^[[:space:]]*build[[:space:]]vcs\.revision=//p' | sed -n '1p')"
+compiler_binary_modified="$(printf '%s\n' "$compiler_build_info" | sed -n 's/^[[:space:]]*build[[:space:]]vcs\.modified=//p' | sed -n '1p')"
+case "$compiler_binary_revision" in
+    ''|*[!0-9a-fA-F]*)
+        echo "validation_identity: compiler binary has no valid embedded VCS revision; refusing validation" >&2
+        exit 125
+        ;;
+esac
+if [ "$compiler_binary_revision" != "$compiler_revision" ]; then
+    echo "validation_identity: compiler binary revision does not match the pinned checkout; rebuild before validation" >&2
+    exit 125
+fi
+if [ "$compiler_binary_modified" != "false" ]; then
+    echo "validation_identity: compiler binary was built from a modified source tree; refusing validation" >&2
+    exit 125
+fi
+
 compiler_sha256="$(shasum -a 256 "$compiler" | awk '{print $1}')"
 case "$compiler_sha256" in
     ''|*[!0-9a-fA-F]*)
@@ -55,7 +88,7 @@ case "$optimization:$target:$mode" in
         ;;
 esac
 
-identity_input="compiler=$compiler_revision\nsha256=$compiler_sha256\nopt=$optimization\ntarget=$target\nmode=$mode"
+identity_input="compiler=$compiler_revision\nbinary_revision=$compiler_binary_revision\nbinary_modified=$compiler_binary_modified\nsha256=$compiler_sha256\nopt=$optimization\ntarget=$target\nmode=$mode"
 configuration_key="$(printf '%b' "$identity_input" | shasum -a 256 | awk '{print $1}')"
 output_root="${ELISASCRIPT_VALIDATION_OUTPUT_ROOT:-$repo_root/.validation}"
 output_dir="$output_root/$configuration_key"
@@ -64,6 +97,8 @@ mkdir -p "$output_dir/logs" "$output_dir/artifacts"
 printf 'compiler_root=%s\n' "$compiler_root"
 printf 'compiler=%s\n' "$compiler"
 printf 'compiler_revision=%s\n' "$compiler_revision"
+printf 'compiler_binary_revision=%s\n' "$compiler_binary_revision"
+printf 'compiler_binary_modified=%s\n' "$compiler_binary_modified"
 printf 'compiler_sha256=%s\n' "$compiler_sha256"
 printf 'optimization=%s\n' "$optimization"
 printf 'target=%s\n' "$target"
