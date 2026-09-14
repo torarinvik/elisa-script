@@ -151,12 +151,36 @@ Python/Perl/AWK/shell-family shebangs, and inline `python -c`, `perl -e`, or
 AWK command references. Signal rows are leads rather than dispositions: binary
 executables, vendored code, generated output, and comments can all produce a
 match and require maintainer review. The scanner never evaluates the matched
-file or embedded command. To keep a broad root scan bounded, it skips `.git`,
-`node_modules`, virtualenvs, Python caches, `vendor`, and `third_party`, refuses
-roots with more than 200,000 regular files, and limits content inspection to
-files no larger than 8 MiB. Traversal and content-search failures fail closed
-instead of silently dropping a signal. Split larger roots and use the candidate
-manifest when those trees themselves require review.
+file or embedded command. This shell implementation remains the reference for
+the separate signal-discovery task; the native Elisascript candidate currently
+covers `inventory_candidates.sh` only.
+
+The signal reference excludes `.git`, `node_modules`, `.venv`, `__pycache__`,
+`vendor`, and `third_party` from its `find` traversal and refuses a root reported
+to contain more than 200,000 regular files. Executable discovery uses
+`find -type f -perm -111`: this requires all three user/group/other execute
+permission bits, not merely any one execute bit. Child symlinks are not
+followed. The two content searches use ripgrep with `--hidden`,
+`--no-messages`, an 8 MiB maximum file size, and the same named-directory
+exclusions. Unlike the `find` scan, ripgrep retains its normal ignore behavior
+and binary-file policy, and it inherits ripgrep configuration and environment
+settings other than the reference's `LC_ALL=C`. A search status of 1 means no
+matches and is successful; other nonzero search statuses are errors. Rows from
+the executable, shebang, and inline-command categories are combined and sorted
+uniquely under the C locale.
+
+The shell reference's line-oriented path lists and TSV output cannot represent
+tabs or line breaks in paths unambiguously, and it has no explicit final-output
+byte ceiling. Its initial `find | wc -l | tr` count also does not preserve the
+first `find` status; a later executable traversal checks its own status, but
+does not prove the earlier count was complete if the filesystem changes between
+walks. A future Elisascript port must either match these limitations or define
+and fixture a deliberate fail-closed improvement. In particular, replacing
+ripgrep's ignore/config/binary behavior with a custom regex walk is not a
+semantics-preserving implementation. File-count, per-file-size, process-output,
+and final-manifest limits should be specified together before adoption. Split
+larger roots and use the candidate manifest when those trees themselves require
+review.
 
 Regenerate the signal report outside the repository:
 
