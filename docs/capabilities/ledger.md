@@ -1095,6 +1095,12 @@ same fixture tree. This is static implementation evidence only. Candidate
 compilation, shell execution, and fixture parity remain suspended pending
 explicit validation reauthorization.
 
+The A01 quote scanner now advances one quote at a time so raw regex-style
+matches remain discoverable after escaped quotes. The mismatched-consumer
+fixture includes an escaped-quote comment before a later `add_symbol` match
+and expects the additional semantic seed. This correction and expectation are
+source-reviewed only; neither implementation nor fixture was run.
+
 The W09 Python-to-WASM-export scanner candidate now bounds greedy explicit and
 implicit-main header suffix work with one aggregate budget across the flattened
 source. Candidate-only generated regressions cover individual and cumulative
