@@ -224,13 +224,15 @@ excluded child directories, an outside-root symlink, TSV-delimiter rejection,
 and a marker proving discoveries are not executed. A NUL-containing file and
 an over-8-MiB file both contain otherwise-matching shebangs, exercising
 ripgrep's binary and size policies. The fixture is uncompiled and unrun;
-symlinked candidate-launch-path behavior, `find`/`rg` failures, tool-spawn
-failures, and larger resource-boundary behavior remain uncovered. A private
-deterministic `sort` shim also defines the nonzero-exit stdout/stderr/status
-comparison; the candidate now forwards those streams and status after printing
-the reference's header. Root resolution and subsequent process traversals are
-separate filesystem operations, so concurrent root replacement remains a
-time-of-check/time-of-use risk; parity is intended for quiescent trees. The
+symlinked candidate-launch-path behavior, tool-spawn failures, and larger
+resource-boundary behavior remain uncovered. Private
+`find` and `rg` shims define executable-traversal and first-search failures; a
+deterministic `sort` shim defines the nonzero-exit stdout/stderr/status
+comparison. The candidate forwards sort's streams and status after printing
+the reference's header. All these process fixtures are uncompiled and unrun.
+Root resolution and subsequent process traversals are separate filesystem
+operations, so concurrent root replacement remains a time-of-check/time-of-use
+risk; parity is intended for quiescent trees. The
 draft and fixture do not establish public-launcher parity, platform/tool
 equivalence, resource behavior, or exact row equality.
 
