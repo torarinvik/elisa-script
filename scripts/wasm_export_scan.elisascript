@@ -1,0 +1,818 @@
+# First vertical slice of W09: port parse_exports for one already-flattened
+# source string and expose its rows as bounded, ordered JSON. Include-graph
+# loading and wasm_build.py caller migration remain separate acceptance work;
+# this candidate is not yet a replacement for wasm_export_scan.py.
+
+include "../src/runtime/encoding.elisa"
+
+using EsEncoding
+
+
+module EsWasmExportScan:
+    private:
+        const module Limits:
+            SOURCE_BYTES: usize = 8388608
+            EXPORTS: usize = 65536
+            PARAMETERS_PER_EXPORT: usize = 4096
+            JSON_BYTES: usize = 16777216
+
+
+        const module Syntax:
+            HEX: sview = "0123456789abcdef"
+
+
+        struct Parameter:
+            name: sview
+            type_name: sview
+            has_default: bool = false
+            default_value: sview = ""
+            binding: sview = ""
+            wasm_type: sview = ""
+
+
+        struct Export:
+            name: sview
+            target: sview
+            parameters: darray[Parameter] = []
+            return_type: sview = "void"
+            binding: sview = ""
+            wasm_type: sview = ""
+            line: usize = 0
+            has_link_name: bool = false
+            link_name: sview = ""
+            implicit: bool = false
+
+
+        struct ScanResult:
+            exports: darray[Export] = []
+            failure: sview = ""
+
+
+        struct AssignmentSplit:
+            declaration: sview
+            has_default: bool
+            default_value: sview
+
+
+        struct AbiBinding:
+            binding: sview
+            wasm_type: sview
+            failure: sview
+
+
+        struct JsonEncodeResult:
+            bytes: darray[u8] = []
+            within_limit: bool = false
+
+
+        struct IdentifierScan:
+            value: sview
+            next: usize
+            valid: bool
+
+
+        struct ExportSuffix:
+            valid: bool
+            has_return: bool
+            return_type: sview
+            has_target: bool
+            target: sview
+
+
+        struct ExportHeader:
+            found: bool
+            name: sview
+            parameters: sview
+            has_return: bool
+            return_type: sview
+            has_target: bool
+            target: sview
+
+
+        struct MainSuffix:
+            valid: bool
+            has_return: bool
+            return_type: sview
+
+
+        struct MainHeader:
+            found: bool
+            parameters: sview
+            has_return: bool
+            return_type: sview
+
+
+        enum LinePhase of u8:
+            Scan
+            Done
+
+
+        def python_space_width(text: sview, offset: usize) -> usize:
+            return 0 if offset >= len(text)
+            first: u8 = sview_at(text, offset)
+            return 1 if first >= 9u8 and first <= 13u8
+            return 1 if first >= 28u8 and first <= 32u8
+            return 2 if first == 194u8 and offset + 1 < len(text) and sview_at(text, offset + 1) == 133u8
+            return 2 if first == 194u8 and offset + 1 < len(text) and sview_at(text, offset + 1) == 160u8
+            return 3 if first == 225u8 and offset + 2 < len(text) and sview_at(text, offset + 1) == 154u8 and sview_at(text, offset + 2) == 128u8
+            return 3 if first == 226u8 and offset + 2 < len(text) and sview_at(text, offset + 1) == 128u8 and sview_at(text, offset + 2) >= 128u8 and sview_at(text, offset + 2) <= 138u8
+            return 3 if first == 226u8 and offset + 2 < len(text) and sview_at(text, offset + 1) == 128u8 and (sview_at(text, offset + 2) == 168u8 or sview_at(text, offset + 2) == 169u8 or sview_at(text, offset + 2) == 175u8)
+            return 3 if first == 226u8 and offset + 2 < len(text) and sview_at(text, offset + 1) == 129u8 and sview_at(text, offset + 2) == 159u8
+            return 3 if first == 227u8 and offset + 2 < len(text) and sview_at(text, offset + 1) == 128u8 and sview_at(text, offset + 2) == 128u8
+            return 0
+
+
+        def utf8_width(first: u8) -> usize:
+            return 1 if first <= 127u8
+            return 2 if first >= 194u8 and first <= 223u8
+            return 3 if first >= 224u8 and first <= 239u8
+            return 4 if first >= 240u8 and first <= 244u8
+            return 1
+
+
+        def trim_python_space(text: sview) -> sview:
+            cursor: mutable usize = 0
+            first_content: mutable usize = len(text)
+            last_content_end: mutable usize = 0
+            found_content: mutable bool = false
+
+            while cursor < len(text) |cursor, first_content, last_content_end, found_content|:
+                width: mutable usize = python_space_width(text, cursor)
+                if width == 0:
+                    width <- utf8_width(sview_at(text, cursor))
+                    if not found_content:
+                        first_content <- cursor
+                        found_content <- true
+                    last_content_end <- cursor + width
+                cursor <- cursor + width
+
+            return "" if not found_content
+            return text[first_content:last_content_end]
+
+
+        def skip_python_space(text: sview, start: usize) -> usize:
+            cursor: mutable usize = start
+            while cursor < len(text) |cursor, text|:
+                width: usize = python_space_width(text, cursor)
+                break if width == 0
+                cursor <- cursor + width
+            return cursor
+
+
+        def ascii_identifier_start(byte: u8) -> bool:
+            return true if byte == 95u8
+            return byte >= 65u8 and byte <= 90u8 or byte >= 97u8 and byte <= 122u8
+
+
+        def ascii_identifier_continue(byte: u8) -> bool:
+            return ascii_identifier_start(byte) or byte >= 48u8 and byte <= 57u8
+
+
+        def scan_identifier(text: sview, start: usize, allow_colons: bool) -> IdentifierScan:
+            invalid: IdentifierScan = IdentifierScan{value: "", next: start, valid: false}
+            return invalid if start >= len(text) or not ascii_identifier_start(sview_at(text, start))
+            cursor: mutable usize = start + 1
+            while cursor < len(text) |cursor, text, allow_colons|:
+                byte: u8 = sview_at(text, cursor)
+                break if not ascii_identifier_continue(byte) and not (allow_colons and byte == 58u8)
+                cursor <- cursor + 1
+            return IdentifierScan{value: text[start:cursor], next: cursor, valid: true}
+
+
+        def starts_at(text: sview, offset: usize, needle: sview) -> bool:
+            return false if offset > len(text) or len(needle) > len(text) - offset
+            return text[offset:offset + len(needle)] == needle
+
+
+        def export_suffix(line: sview, start: usize) -> ExportSuffix:
+            invalid: ExportSuffix = ExportSuffix{valid: false, has_return: false, return_type: "", has_target: false, target: ""}
+            cursor: mutable usize = skip_python_space(line, start)
+            has_return: mutable bool = false
+            return_type: mutable sview = ""
+            if starts_at(line, cursor, "->"):
+                after_arrow: usize = cursor + 2
+                return_start: usize = skip_python_space(line, after_arrow)
+                equals: mutable usize = len(line)
+                scan: mutable usize = return_start
+                while scan < len(line) |scan, equals, line|:
+                    if sview_at(line, scan) == 61u8:
+                        equals <- scan
+                        break
+                    scan <- scan + 1
+                return invalid if equals <= after_arrow
+                has_return <- true
+                return_type <- trim_python_space(line[return_start:equals])
+                cursor <- equals
+
+            cursor <- skip_python_space(line, cursor)
+            has_target: mutable bool = false
+            target: mutable sview = ""
+            if cursor < len(line) and sview_at(line, cursor) == 61u8:
+                has_target <- true
+                cursor <- skip_python_space(line, cursor + 1)
+                parsed_target: IdentifierScan = scan_identifier(line, cursor, true)
+                return invalid if not parsed_target.valid
+                target <- parsed_target.value
+                cursor <- parsed_target.next
+
+            cursor <- skip_python_space(line, cursor)
+            return invalid if cursor != len(line)
+            return ExportSuffix{valid: true, has_return: has_return, return_type: return_type, has_target: has_target, target: target}
+
+
+        def export_header(line: sview) -> ExportHeader can[Memory.Allocate, Abort.Panic]:
+            not_found: ExportHeader = ExportHeader{found: false, name: "", parameters: "", has_return: false, return_type: "", has_target: false, target: ""}
+            cursor: mutable usize = skip_python_space(line, 0)
+            return not_found if not starts_at(line, cursor, "export")
+            cursor <- cursor + 6
+            return not_found if python_space_width(line, cursor) == 0
+            cursor <- skip_python_space(line, cursor)
+            return not_found if not starts_at(line, cursor, "fn")
+            cursor <- cursor + 2
+            return not_found if python_space_width(line, cursor) == 0
+            cursor <- skip_python_space(line, cursor)
+            parsed_name: IdentifierScan = scan_identifier(line, cursor, false)
+            return not_found if not parsed_name.valid
+            cursor <- skip_python_space(line, parsed_name.next)
+            return not_found if cursor >= len(line) or sview_at(line, cursor) != 40u8
+            open_paren: usize = cursor
+
+            best: mutable ExportHeader = not_found
+            scan: mutable usize = open_paren + 1
+            while scan < len(line) |scan, best, line, open_paren, parsed_name|:
+                if sview_at(line, scan) == 41u8:
+                    suffix: ExportSuffix = export_suffix(line, scan + 1)
+                    if suffix.valid:
+                        best <- ExportHeader{found: true, name: parsed_name.value, parameters: line[open_paren + 1:scan], has_return: suffix.has_return, return_type: suffix.return_type, has_target: suffix.has_target, target: suffix.target}
+                scan <- scan + 1
+            return best
+
+
+        def main_suffix(line: sview, start: usize) -> MainSuffix:
+            invalid: MainSuffix = MainSuffix{valid: false, has_return: false, return_type: ""}
+            cursor: mutable usize = skip_python_space(line, start)
+            has_return: mutable bool = false
+            return_type: mutable sview = ""
+            if starts_at(line, cursor, "->"):
+                after_arrow: usize = cursor + 2
+                return_start: usize = skip_python_space(line, after_arrow)
+                colon: mutable usize = len(line)
+                scan: mutable usize = return_start
+                while scan < len(line) |scan, colon, line|:
+                    if sview_at(line, scan) == 58u8:
+                        colon <- scan
+                        break
+                    scan <- scan + 1
+                return invalid if colon <= after_arrow
+                has_return <- true
+                return_type <- trim_python_space(line[return_start:colon])
+                cursor <- colon
+
+            cursor <- skip_python_space(line, cursor)
+            return invalid if cursor >= len(line) or sview_at(line, cursor) != 58u8
+            cursor <- skip_python_space(line, cursor + 1)
+            return invalid if cursor != len(line)
+            return MainSuffix{valid: true, has_return: has_return, return_type: return_type}
+
+
+        def main_header(line: sview) -> MainHeader can[Memory.Allocate, Abort.Panic]:
+            not_found: MainHeader = MainHeader{found: false, parameters: "", has_return: false, return_type: ""}
+            cursor: mutable usize = skip_python_space(line, 0)
+            return not_found if not starts_at(line, cursor, "def")
+            cursor <- cursor + 3
+            return not_found if python_space_width(line, cursor) == 0
+            cursor <- skip_python_space(line, cursor)
+            return not_found if not starts_at(line, cursor, "main")
+            cursor <- cursor + 4
+            cursor <- skip_python_space(line, cursor)
+            return not_found if cursor >= len(line) or sview_at(line, cursor) != 40u8
+            open_paren: usize = cursor
+
+            best: mutable MainHeader = not_found
+            scan: mutable usize = open_paren + 1
+            while scan < len(line) |scan, best, line, open_paren|:
+                if sview_at(line, scan) == 41u8:
+                    suffix: MainSuffix = main_suffix(line, scan + 1)
+                    if suffix.valid:
+                        best <- MainHeader{found: true, parameters: line[open_paren + 1:scan], has_return: suffix.has_return, return_type: suffix.return_type}
+                scan <- scan + 1
+            return best
+
+
+        def append_byte(output: mutable darray[u8]&, value: u8, limit: usize) -> bool can[Memory.Allocate, Abort.Panic]:
+            return false if output.count >= limit
+            output.push(value)
+            return true
+
+
+        def append_text(output: mutable darray[u8]&, value: sview, limit: usize) -> bool can[Memory.Allocate, Abort.Panic]:
+            return false if len(value) > limit or output.count > limit - len(value)
+            for index in 0..<len(value) |output, value|:
+                output.push(sview_at(value, index))
+            return true
+
+
+        def split_top_level(text: sview, delimiter: u8) -> darray[sview] can[Memory.Allocate, Abort.Panic]:
+            parts: mutable darray[sview] = []
+            cursor: mutable usize = 0
+            part_start: mutable usize = 0
+            depth: mutable i64 = 0
+            quote: mutable u8 = 0u8
+            escaped: mutable bool = false
+
+            while cursor < len(text) |cursor, part_start, depth, quote, escaped, parts, text|:
+                byte: u8 = sview_at(text, cursor)
+                if quote != 0u8:
+                    if escaped:
+                        escaped <- false
+                    elif byte == 92u8:
+                        escaped <- true
+                    elif byte == quote:
+                        quote <- 0u8
+                elif byte == 39u8 or byte == 34u8:
+                    quote <- byte
+                elif byte == 40u8 or byte == 91u8 or byte == 123u8:
+                    depth <- depth + 1
+                elif byte == 41u8 or byte == 93u8 or byte == 125u8:
+                    depth <- depth - 1
+                elif byte == delimiter and depth == 0:
+                    part: sview = trim_python_space(text[part_start:cursor])
+                    if part != "":
+                        parts.push(part)
+                    part_start <- cursor + 1
+                cursor <- cursor + 1
+
+            final_part: sview = trim_python_space(text[part_start:len(text)])
+            if final_part != "":
+                parts.push(final_part)
+            return parts
+
+
+        def split_assignment(text: sview) -> AssignmentSplit can[Memory.Allocate, Abort.Panic]:
+            cursor: mutable usize = 0
+            depth: mutable i64 = 0
+            quote: mutable u8 = 0u8
+            escaped: mutable bool = false
+
+            while cursor < len(text) |cursor, depth, quote, escaped, text|:
+                byte: u8 = sview_at(text, cursor)
+                if quote != 0u8:
+                    if escaped:
+                        escaped <- false
+                    elif byte == 92u8:
+                        escaped <- true
+                    elif byte == quote:
+                        quote <- 0u8
+                elif byte == 39u8 or byte == 34u8:
+                    quote <- byte
+                elif byte == 40u8 or byte == 91u8 or byte == 123u8:
+                    depth <- depth + 1
+                elif byte == 41u8 or byte == 93u8 or byte == 125u8:
+                    depth <- depth - 1
+                elif byte == 61u8 and depth == 0:
+                    return AssignmentSplit{declaration: trim_python_space(text[0:cursor]), has_default: true, default_value: trim_python_space(text[cursor + 1:len(text)])}
+                cursor <- cursor + 1
+
+            return AssignmentSplit{declaration: trim_python_space(text), has_default: false, default_value: ""}
+
+
+        def normalize_type(text: sview) -> sview can[Memory.Allocate, Abort.Panic]:
+            trimmed: mutable sview = trim_python_space(text)
+            modifier: mutable sview = ""
+            modifier <- "mutable" if trimmed.startswith("mutable")
+            modifier <- "lmut" if modifier == "" and trimmed.startswith("lmut")
+            modifier <- "heap" if modifier == "" and trimmed.startswith("heap")
+            modifier <- "stack" if modifier == "" and trimmed.startswith("stack")
+            modifier <- "static" if modifier == "" and trimmed.startswith("static")
+            if modifier != "" and len(trimmed) > len(modifier) and python_space_width(trimmed, len(modifier)) != 0:
+                trimmed <- trimmed[len(modifier):len(trimmed)]
+
+            output: mutable darray[u8] = []
+            cursor: mutable usize = 0
+            while cursor < len(trimmed) |cursor, output, trimmed|:
+                width: mutable usize = python_space_width(trimmed, cursor)
+                if width == 0:
+                    width <- utf8_width(sview_at(trimmed, cursor))
+                    for byte_index in cursor..<(cursor + width) |output, trimmed|:
+                        output.push(sview_at(trimmed, byte_index))
+                cursor <- cursor + width
+            return bytes_view(output)
+
+
+        def python_repr(text: sview) -> sview can[Memory.Allocate, Abort.Panic]:
+            quote: mutable u8 = 39u8
+            has_single: bool = text.index("'") >= 0
+            has_double: bool = text.index("\"") >= 0
+            quote <- 34u8 if has_single and not has_double
+            output: mutable darray[u8] = []
+            output.push(quote)
+            for index in 0..<len(text) |output, text, quote|:
+                byte: u8 = sview_at(text, index)
+                if byte == 92u8 or byte == quote:
+                    output.push(92u8)
+                    output.push(byte)
+                elif byte == 10u8:
+                    output.push(92u8)
+                    output.push(110u8)
+                elif byte == 13u8:
+                    output.push(92u8)
+                    output.push(114u8)
+                elif byte == 9u8:
+                    output.push(92u8)
+                    output.push(116u8)
+                elif byte < 32u8:
+                    output.push(92u8)
+                    output.push(120u8)
+                    output.push(sview_at(Syntax::HEX, ((byte >> 4u8) & 15u8).usize()))
+                    output.push(sview_at(Syntax::HEX, (byte & 15u8).usize()))
+                else:
+                    output.push(byte)
+            output.push(quote)
+            return bytes_view(output)
+
+
+        def abi_for_type(type_name: sview, function: sview, position: sview) -> AbiBinding can[Memory.Allocate, Abort.Panic]:
+            if type_name.endswith("?"):
+                detail: sview = function + ": " + position + " type " + python_repr(type_name) + " is nullable; use an explicit scalar/pointer adapter because nullable aggregates do not have a stable JS ABI"
+                return AbiBinding{binding: "", wasm_type: "", failure: detail}
+
+            if type_name == "cstr":
+                return AbiBinding{binding: "string", wasm_type: "i32", failure: ""}
+            if type_name.endswith("&"):
+                return AbiBinding{binding: "pointer", wasm_type: "i32", failure: ""}
+
+            scalar_type: mutable sview = ""
+            scalar_type <- "i32" if type_name == "i8" or type_name == "u8" or type_name == "i16" or type_name == "u16" or type_name == "i32" or type_name == "u32" or type_name == "int" or type_name == "isize" or type_name == "usize" or type_name == "uintptr" or type_name == "bool"
+            scalar_type <- "i64" if type_name == "i64" or type_name == "u64" or type_name == "char"
+            scalar_type <- "f32" if type_name == "f32"
+            scalar_type <- "f64" if type_name == "f64"
+            scalar_type <- "void" if type_name == "void"
+            if scalar_type != "":
+                return AbiBinding{binding: "scalar", wasm_type: scalar_type, failure: ""}
+
+            unsupported: sview = function + ": " + position + " type " + python_repr(type_name) + " is not directly representable in the generated WASM bindings; export a scalar or pointer adapter"
+            return AbiBinding{binding: "", wasm_type: "", failure: unsupported}
+
+
+        def parse_parameter(raw_text: sview, function: sview) -> (parameter: Parameter, failure: sview) can[Memory.Allocate, Abort.Panic]:
+            split: AssignmentSplit = split_assignment(raw_text)
+            colon_index: i64 = split.declaration.index(":")
+            if colon_index < 0:
+                failure: sview = "exported function " + python_repr(function) + " has a parameter without a name/type: " + python_repr(raw_text)
+                return (Parameter{name: "", type_name: ""}, failure)
+
+            colon: usize = colon_index.usize()
+            name: sview = trim_python_space(split.declaration[0:colon])
+            name_scan: IdentifierScan = scan_identifier(name, 0, false)
+            if not name_scan.valid or name_scan.next != len(name):
+                failure: sview = "exported function " + python_repr(function) + " has an invalid parameter name " + python_repr(name)
+                return (Parameter{name: "", type_name: ""}, failure)
+
+            type_name: sview = normalize_type(split.declaration[colon + 1:len(split.declaration)])
+            return (Parameter{name: name, type_name: type_name, has_default: split.has_default, default_value: split.default_value}, "")
+
+
+        def python_line_width(source: sview, cursor: usize) -> usize:
+            return 0 if cursor >= len(source)
+            byte: u8 = sview_at(source, cursor)
+            if byte == 13u8:
+                return 2 if cursor + 1 < len(source) and sview_at(source, cursor + 1) == 10u8
+                return 1
+            return 1 if byte == 10u8 or byte == 11u8 or byte == 12u8 or byte == 28u8 or byte == 29u8 or byte == 30u8
+            return 2 if byte == 194u8 and cursor + 1 < len(source) and sview_at(source, cursor + 1) == 133u8
+            return 3 if byte == 226u8 and cursor + 2 < len(source) and sview_at(source, cursor + 1) == 128u8 and (sview_at(source, cursor + 2) == 168u8 or sview_at(source, cursor + 2) == 169u8)
+            return 0
+
+
+        def source_lines(source: sview) -> darray[sview] can[Memory.Allocate, Abort.Panic]:
+            lines: mutable darray[sview] = []
+            phase: mutable LinePhase = LinePhase.Scan
+            cursor: mutable usize = 0
+            line_start: mutable usize = 0
+
+            machine over phase while phase != LinePhase.Done:
+                state Scan
+                start Scan
+
+                Scan, LinePhase.Scan if cursor >= len(source):
+                    if line_start < len(source):
+                        lines.push(source[line_start:len(source)])
+                    phase <- LinePhase.Done
+                    -> Scan
+
+                Scan, LinePhase.Scan:
+                    width: usize = python_line_width(source, cursor)
+                    if width == 0:
+                        cursor <- cursor + 1
+                        -> Scan
+                    lines.push(source[line_start:cursor])
+                    cursor <- cursor + width
+                    line_start <- cursor
+                    -> Scan
+
+                Scan, LinePhase.Done:
+                    break
+
+            return lines
+
+
+        def parse_export_line(line: sview, line_number: usize, pending_link_name: sview, has_pending_link_name: bool, seen_names: darray[sview]) -> (found: bool, row: Export, failure: sview) can[Memory.Allocate, Abort.Panic]:
+            no_row: Export = Export{name: "", target: ""}
+            header: ExportHeader = export_header(line)
+            if not header.found:
+                return (false, no_row, "")
+
+            public_name: sview = header.name
+
+            for existing_name in seen_names:
+                if existing_name == public_name:
+                    duplicate: sview = "duplicate WASM export " + python_repr(public_name) + " on line " + format_int(line_number.i64())
+                    return (true, no_row, duplicate)
+
+            return_type: sview =
+                value: mutable sview = "void"
+                value <- normalize_type(header.return_type) if header.has_return
+                value
+            target: sview =
+                value: mutable sview = public_name
+                value <- header.target if header.has_target
+                value
+
+            parameters: mutable darray[Parameter] = []
+            parameter_slices: darray[sview] = split_top_level(header.parameters, 44u8)
+            if parameter_slices.count > Limits::PARAMETERS_PER_EXPORT:
+                return (true, no_row, "WASM export parameter count exceeds Elisascript scan limit")
+            for raw_parameter in parameter_slices:
+                parsed: (parameter: Parameter, failure: sview) = parse_parameter(raw_parameter, public_name)
+                if parsed.failure != "":
+                    return (true, no_row, parsed.failure)
+                parameters.push(parsed.parameter)
+
+            for index in 0..<parameters.count |parameters, public_name|:
+                parameter: mutable Parameter = parameters[index]
+                position: sview = "parameter " + parameter.name
+                abi: AbiBinding = abi_for_type(parameter.type_name, public_name, position)
+                if abi.failure != "":
+                    return (true, no_row, abi.failure)
+                parameter.binding <- abi.binding
+                parameter.wasm_type <- abi.wasm_type
+                parameters[index] <- parameter
+
+            return_abi: AbiBinding = abi_for_type(return_type, public_name, "return")
+            if return_abi.failure != "":
+                return (true, no_row, return_abi.failure)
+
+            row: mutable Export = Export{name: public_name, target: target, parameters: parameters, return_type: return_type, binding: return_abi.binding, wasm_type: return_abi.wasm_type, line: line_number}
+            if has_pending_link_name:
+                row.has_link_name <- true
+                row.link_name <- pending_link_name
+            return (true, row, "")
+
+
+        def parse_implicit_main(line: sview, line_number: usize, main_seen: bool) -> (found: bool, row: Export, failure: sview) can[Memory.Allocate, Abort.Panic]:
+            no_row: Export = Export{name: "", target: ""}
+            header: MainHeader = main_header(line)
+            if not header.found:
+                return (false, no_row, "")
+            return (false, no_row, "") if main_seen
+            return_type: sview =
+                value: mutable sview = "void"
+                value <- normalize_type(header.return_type) if header.has_return
+                value
+
+            parameters: mutable darray[Parameter] = []
+            parameter_slices: darray[sview] = split_top_level(header.parameters, 44u8)
+            if parameter_slices.count > Limits::PARAMETERS_PER_EXPORT:
+                return (true, no_row, "WASM export parameter count exceeds Elisascript scan limit")
+            for raw_parameter in parameter_slices:
+                parsed: (parameter: Parameter, failure: sview) = parse_parameter(raw_parameter, "main")
+                if parsed.failure != "":
+                    return (true, no_row, parsed.failure)
+                parameters.push(parsed.parameter)
+
+            for index in 0..<parameters.count |parameters|:
+                parameter: mutable Parameter = parameters[index]
+                position: sview = "parameter " + parameter.name
+                abi: AbiBinding = abi_for_type(parameter.type_name, "main", position)
+                if abi.failure != "":
+                    return (true, no_row, abi.failure)
+                parameter.binding <- abi.binding
+                parameter.wasm_type <- abi.wasm_type
+                parameters[index] <- parameter
+
+            return_abi: AbiBinding = abi_for_type(return_type, "main", "return")
+            if return_abi.failure != "":
+                return (true, no_row, return_abi.failure)
+            row: Export = Export{name: "main", target: "main", parameters: parameters, return_type: return_type, binding: return_abi.binding, wasm_type: return_abi.wasm_type, line: line_number, implicit: true}
+            return (true, row, "")
+
+
+        def is_python_comment_or_blank(line: sview) -> bool:
+            trimmed: sview = trim_python_space(line)
+            return true if trimmed == ""
+            leading: usize = 0
+            while leading < len(line) |leading, line|:
+                width: usize = python_space_width(line, leading)
+                break if width == 0
+                leading <- leading + width
+            return sview_at(line, leading) == 35u8
+
+
+        def parse_flat_exports(source: sview) -> ScanResult can[Memory.Allocate, Abort.Panic]:
+            result: mutable ScanResult = ScanResult{}
+            lines: darray[sview] = source_lines(source)
+            seen_names: mutable darray[sview] = []
+            pending_link_name: mutable sview = ""
+            has_pending_link_name: mutable bool = false
+
+            for line_index in 0..<lines.count |result, lines, seen_names, pending_link_name, has_pending_link_name|:
+                line: sview = lines[line_index]
+                line_number: usize = line_index + 1
+                trimmed_line: sview = trim_python_space(line)
+                link_prefix: sview = "@link_name("
+                if trimmed_line.startswith(link_prefix) and trimmed_line.endswith(")"):
+                    inner: sview = trimmed_line[len(link_prefix):len(trimmed_line) - 1]
+                    if inner.startswith("\"") and inner.endswith("\"") and len(inner) >= 2:
+                        quoted_value: sview = inner[1:len(inner) - 1]
+                        if quoted_value.index("\"") < 0:
+                            pending_link_name <- quoted_value
+                            has_pending_link_name <- quoted_value != ""
+                            continue
+                    parsed_link: IdentifierScan = scan_identifier(inner, 0, false)
+                    if parsed_link.valid and parsed_link.next == len(inner):
+                        pending_link_name <- parsed_link.value
+                        has_pending_link_name <- true
+                        continue
+
+                explicit: (found: bool, row: Export, failure: sview) = parse_export_line(line, line_number, pending_link_name, has_pending_link_name, seen_names)
+                if explicit.found:
+                    if explicit.failure != "":
+                        result.failure <- explicit.failure
+                        return result
+                    if result.exports.count >= Limits::EXPORTS:
+                        result.failure <- "WASM export count exceeds Elisascript scan limit"
+                        return result
+                    result.exports.push(explicit.row)
+                    seen_names.push(explicit.row.name)
+                    pending_link_name <- ""
+                    has_pending_link_name <- false
+                    continue
+
+                if not is_python_comment_or_blank(line):
+                    pending_link_name <- ""
+                    has_pending_link_name <- false
+
+                implicit: (found: bool, row: Export, failure: sview) = parse_implicit_main(line, line_number, seen_names.contains("main"))
+                if implicit.found:
+                    if implicit.failure != "":
+                        result.failure <- implicit.failure
+                        return result
+                    if result.exports.count >= Limits::EXPORTS:
+                        result.failure <- "WASM export count exceeds Elisascript scan limit"
+                        return result
+                    result.exports.push(implicit.row)
+                    seen_names.push("main")
+
+            if result.exports.count == 0:
+                result.failure <- "WASM source has no exported function; add `export fn name(...) -> T = target`"
+            return result
+
+
+        def append_json_string(output: mutable darray[u8]&, value: sview) -> bool can[Memory.Allocate, Abort.Panic]:
+            return false if not append_byte(output, 34u8, Limits::JSON_BYTES)
+            for index in 0..<len(value) |output, value|:
+                byte: u8 = sview_at(value, index)
+                if byte == 34u8 or byte == 92u8:
+                    return false if not append_byte(output, 92u8, Limits::JSON_BYTES)
+                    return false if not append_byte(output, byte, Limits::JSON_BYTES)
+                elif byte == 8u8:
+                    return false if not append_text(output, "\\b", Limits::JSON_BYTES)
+                elif byte == 9u8:
+                    return false if not append_text(output, "\\t", Limits::JSON_BYTES)
+                elif byte == 10u8:
+                    return false if not append_text(output, "\\n", Limits::JSON_BYTES)
+                elif byte == 12u8:
+                    return false if not append_text(output, "\\f", Limits::JSON_BYTES)
+                elif byte == 13u8:
+                    return false if not append_text(output, "\\r", Limits::JSON_BYTES)
+                elif byte < 32u8:
+                    return false if not append_text(output, "\\u00", Limits::JSON_BYTES)
+                    high: u8 = sview_at(Syntax::HEX, ((byte >> 4u8) & 15u8).usize())
+                    low: u8 = sview_at(Syntax::HEX, (byte & 15u8).usize())
+                    return false if not append_byte(output, high, Limits::JSON_BYTES)
+                    return false if not append_byte(output, low, Limits::JSON_BYTES)
+                else:
+                    return false if not append_byte(output, byte, Limits::JSON_BYTES)
+            return append_byte(output, 34u8, Limits::JSON_BYTES)
+
+
+        def append_json_integer(output: mutable darray[u8]&, value: usize) -> bool can[Memory.Allocate, Abort.Panic]:
+            return append_text(output, format_int(value.i64()), Limits::JSON_BYTES)
+
+
+        def append_json_parameter(output: mutable darray[u8]&, parameter: Parameter) -> bool can[Memory.Allocate, Abort.Panic]:
+            return false if not append_text(output, "{\"name\":", Limits::JSON_BYTES)
+            return false if not append_json_string(output, parameter.name)
+            return false if not append_text(output, ",\"type\":", Limits::JSON_BYTES)
+            return false if not append_json_string(output, parameter.type_name)
+            return false if not append_text(output, ",\"default\":", Limits::JSON_BYTES)
+            if parameter.has_default:
+                return false if not append_json_string(output, parameter.default_value)
+            else:
+                return false if not append_text(output, "null", Limits::JSON_BYTES)
+            return false if not append_text(output, ",\"binding\":", Limits::JSON_BYTES)
+            return false if not append_json_string(output, parameter.binding)
+            return false if not append_text(output, ",\"wasm_type\":", Limits::JSON_BYTES)
+            return false if not append_json_string(output, parameter.wasm_type)
+            return append_byte(output, 125u8, Limits::JSON_BYTES)
+
+
+        def append_json_export(output: mutable darray[u8]&, row: Export) -> bool can[Memory.Allocate, Abort.Panic]:
+            return false if not append_text(output, "{\"name\":", Limits::JSON_BYTES)
+            return false if not append_json_string(output, row.name)
+            return false if not append_text(output, ",\"target\":", Limits::JSON_BYTES)
+            return false if not append_json_string(output, row.target)
+            return false if not append_text(output, ",\"parameters\":[", Limits::JSON_BYTES)
+            for index in 0..<row.parameters.count |output, row|:
+                return false if index != 0 and not append_byte(output, 44u8, Limits::JSON_BYTES)
+                return false if not append_json_parameter(output, row.parameters[index])
+            return false if not append_text(output, "],\"return\":", Limits::JSON_BYTES)
+            return false if not append_json_string(output, row.return_type)
+            return false if not append_text(output, ",\"binding\":", Limits::JSON_BYTES)
+            return false if not append_json_string(output, row.binding)
+            return false if not append_text(output, ",\"wasm_type\":", Limits::JSON_BYTES)
+            return false if not append_json_string(output, row.wasm_type)
+            return false if not append_text(output, ",\"line\":", Limits::JSON_BYTES)
+            return false if not append_json_integer(output, row.line)
+            if row.has_link_name:
+                return false if not append_text(output, ",\"link_name\":", Limits::JSON_BYTES)
+                return false if not append_json_string(output, row.link_name)
+            if row.implicit:
+                return false if not append_text(output, ",\"implicit\":true", Limits::JSON_BYTES)
+            return append_byte(output, 125u8, Limits::JSON_BYTES)
+
+
+        def encode_exports(exports: darray[Export]) -> JsonEncodeResult can[Memory.Allocate, Abort.Panic]:
+            output: mutable darray[u8] = []
+            return JsonEncodeResult{within_limit: false} if not append_byte(output, 91u8, Limits::JSON_BYTES)
+            for index in 0..<exports.count |output, exports|:
+                return JsonEncodeResult{within_limit: false} if index != 0 and not append_byte(output, 44u8, Limits::JSON_BYTES)
+                return JsonEncodeResult{within_limit: false} if not append_json_export(output, exports[index])
+            return JsonEncodeResult{bytes: output, within_limit: false} if not append_byte(output, 93u8, Limits::JSON_BYTES)
+            return JsonEncodeResult{bytes: output, within_limit: true}
+
+
+        def scan(source: sview) -> ScanResult can[Memory.Allocate, Abort.Panic]:
+            if len(source) > Limits::SOURCE_BYTES:
+                return ScanResult{failure: "WASM source exceeds Elisascript scan limit"}
+            utf8: mutable Utf8Cursor = Utf8Cursor{}
+            for offset in 0..<len(source) |source, utf8|:
+                if not utf8_feed(sview_at(source, offset), utf8):
+                    return ScanResult{failure: "WASM source is not valid UTF-8"}
+            if not utf8_complete(utf8):
+                return ScanResult{failure: "WASM source is not valid UTF-8"}
+            return parse_flat_exports(source)
+
+
+        def encode(result: ScanResult) -> JsonEncodeResult can[Memory.Allocate, Abort.Panic]:
+            return JsonEncodeResult{within_limit: false} if result.failure != ""
+            return encode_exports(result.exports)
+
+
+    public:
+        def main(arguments: darray[sview]) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, File.Read]:
+            if arguments.count != 1:
+                eprint("usage: wasm export scan [flattened-source]")
+                return 2i64
+
+            source_path: Path = path(arguments[0])
+            if not is_file(source_path):
+                eprint("wasm export scan: missing source file")
+                return 1i64
+            source_size: usize = try file_size(source_path) else err:
+                eprint("wasm export scan: unable to inspect source file")
+                return 1i64
+            if source_size > Limits::SOURCE_BYTES:
+                eprint("wasm export scan: source exceeds Elisascript scan limit")
+                return 1i64
+            source: sview = try read_text(source_path) else err:
+                eprint("wasm export scan: unable to read source file")
+                return 1i64
+            if len(source) > Limits::SOURCE_BYTES:
+                eprint("wasm export scan: source exceeds Elisascript scan limit")
+                return 1i64
+
+            result: ScanResult = scan(source)
+            if result.failure != "":
+                eprint("wasm export scan: " + result.failure)
+                return 1i64
+            encoded: JsonEncodeResult = encode(result)
+            if not encoded.within_limit:
+                eprint("wasm export scan: structured output exceeds Elisascript scan limit")
+                return 1i64
+            println(bytes_view(encoded.bytes))
+            return 0i64
+
+
+def main(arguments: darray[sview]) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, File.Read]:
+    return EsWasmExportScan::main(arguments)
