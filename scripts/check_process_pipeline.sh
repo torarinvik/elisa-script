@@ -21,6 +21,7 @@ for declaration in \
     'const enum ProcessPipelineFailureMode of u8:' \
     'const enum ProcessPipelineStatusPolicy of u8:' \
     'const enum ProcessPipelineState of u8:' \
+    'const enum ProcessPipelineStageState of u8:' \
     'const enum ProcessPipelineEvent of u8:' \
     'struct ProcessPipeline:' \
     'error ProcessPipelineError:' \
@@ -33,27 +34,38 @@ for boundary in \
     'process_pipeline_state_valid' \
     'process_pipeline_event_valid' \
     'ProcessPipelineEvent.StageFailure, ProcessPipelineEvent.StageCancel, ProcessPipelineEvent.Cancel' \
+    'ProcessPipelineStageState.Pending' \
+    'pipeline.stage_states.count != pipeline.stages.count' \
     'process_pipeline_failure_mode_valid' \
     '            LastStage' \
     '            Pipefail' \
     'InvalidStageCommand' \
     'InvalidStageIndex' \
+    'InvalidStageState' \
     'ProcessPipelineFailureMode.Aggregate' \
+    'ProcessPipelineEvent.StageStart' \
     'ProcessPipelineEvent.StageFailure' \
     'ProcessPipelineEvent.StageCancel' \
     'ProcessPipelineState.Cancelling' \
-    'pipeline.cancelled_stages > pipeline.completed_stages - pipeline.failed_stages' \
+    'pipeline.completed_stages != derived_completed' \
+    'pipeline.failed_stages != derived_failed' \
+    'pipeline.cancelled_stages != derived_cancelled' \
+    'pipeline.failure_mode == ProcessPipelineFailureMode.FailFast and pipeline.failed_stages != 0' \
+    'pipeline.cancelled_stages != 0' \
+    'pipeline.state == ProcessPipelineState.Planned and event != ProcessPipelineEvent.Start and event != ProcessPipelineEvent.Cancel' \
     'pipeline.completed_stages != pipeline.stages.count' \
-    'pipeline.cancelled_stages == 0' \
+    'pipeline.cancellation_requested' \
     'ProcessPipelineEvent.CancelAck'; do
     rg -Fq "$boundary" "$model"
 done
 
 for fixture_pattern in \
-    'typed_process_pipeline_contract_is_ordered_and_cancellable' \
+    'typed_process_pipeline_contract_models_concurrent_cancellation' \
     'ProcessPipelineFailureMode.Aggregate' \
+    'ProcessPipelineEvent.StageStart' \
     'ProcessPipelineEvent.StageExit' \
     'ProcessPipelineEvent.StageFailure' \
+    'ProcessPipelineError.InvalidStageState' \
     'ProcessPipelineEvent.CancelAck' \
     'ProcessPipelineError.InvalidStageCommand'; do
     rg -Fq "$fixture_pattern" "$fixture"
@@ -63,4 +75,4 @@ rg -Fq '`ProcessPipeline`' "$docs"
 rg -Fq '`ProcessPipeline`' "$ledger"
 rg -Fq 'P10 pipeline follow-up' "$plan"
 
-printf 'process pipeline audit: typed stages, bounded buffers, failure policy, ordering, and cancellation edges are present\n'
+printf 'process pipeline audit: typed stages, bounded buffers, out-of-order lifecycle, failure policy, and cancellation edges are present\n'

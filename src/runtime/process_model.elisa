@@ -122,8 +122,17 @@ module EsProcess:
             Cancelled
 
 
+        const enum ProcessPipelineStageState of u8:
+            Pending
+            Running
+            Exited
+            Failed
+            Cancelled
+
+
         const enum ProcessPipelineEvent of u8:
             Start
+            StageStart
             StageExit
             StageFailure
             StageCancel
@@ -133,8 +142,10 @@ module EsProcess:
 
         struct ProcessPipeline:
             stages: darray[ProcessCommand] = []
+            stage_states: darray[ProcessPipelineStageState] = []
             state: ProcessPipelineState = ProcessPipelineState.Planned
             failure_mode: ProcessPipelineFailureMode = ProcessPipelineFailureMode.FailFast
+            cancellation_requested: bool = false
             completed_stages: usize = 0
             failed_stages: usize = 0
             cancelled_stages: usize = 0
@@ -181,6 +192,7 @@ module EsProcess:
             InvalidPipelineEvent
             InvalidFailureMode
             InvalidStageIndex
+            InvalidStageState
             InvalidStageCommand
             InvalidBufferLimit
             PipelineNotDrained
@@ -204,8 +216,12 @@ module EsProcess:
                 return state in {ProcessPipelineState.Planned, ProcessPipelineState.Running, ProcessPipelineState.Cancelling, ProcessPipelineState.Succeeded, ProcessPipelineState.Failed, ProcessPipelineState.Cancelled}
 
 
+            def process_pipeline_stage_state_valid(state: ProcessPipelineStageState) -> bool:
+                return state in {ProcessPipelineStageState.Pending, ProcessPipelineStageState.Running, ProcessPipelineStageState.Exited, ProcessPipelineStageState.Failed, ProcessPipelineStageState.Cancelled}
+
+
             def process_pipeline_event_valid(event: ProcessPipelineEvent) -> bool:
-                return event in {ProcessPipelineEvent.Start, ProcessPipelineEvent.StageExit, ProcessPipelineEvent.StageFailure, ProcessPipelineEvent.StageCancel, ProcessPipelineEvent.Cancel, ProcessPipelineEvent.CancelAck}
+                return event in {ProcessPipelineEvent.Start, ProcessPipelineEvent.StageStart, ProcessPipelineEvent.StageExit, ProcessPipelineEvent.StageFailure, ProcessPipelineEvent.StageCancel, ProcessPipelineEvent.Cancel, ProcessPipelineEvent.CancelAck}
 
 
             def process_pipeline_failure_mode_valid(mode: ProcessPipelineFailureMode) -> bool:
@@ -314,22 +330,35 @@ module EsProcess:
                 raise ProcessPipelineError.InvalidPipelineState if not process_pipeline_state_valid(pipeline.state)
                 raise ProcessPipelineError.InvalidFailureMode if not process_pipeline_failure_mode_valid(pipeline.failure_mode)
                 raise ProcessPipelineError.InvalidBufferLimit if pipeline.buffer_limit_bytes == 0 or pipeline.buffer_limit_bytes > PROCESS_PIPELINE_MAX_BUFFER_BYTES
-                raise ProcessPipelineError.InvalidStageIndex if pipeline.completed_stages > pipeline.stages.count
-                raise ProcessPipelineError.InvalidStageIndex if pipeline.failed_stages > pipeline.completed_stages
-                raise ProcessPipelineError.InvalidStageIndex if pipeline.cancelled_stages > pipeline.completed_stages - pipeline.failed_stages
                 if pipeline.state == ProcessPipelineState.Planned:
-                    raise ProcessPipelineError.PipelineAccountingInvalid if pipeline.completed_stages != 0 or pipeline.failed_stages != 0 or pipeline.cancelled_stages != 0
-                elif pipeline.state == ProcessPipelineState.Running:
-                    raise ProcessPipelineError.PipelineAccountingInvalid if pipeline.completed_stages >= pipeline.stages.count
-                elif pipeline.state == ProcessPipelineState.Cancelling:
-                    raise ProcessPipelineError.PipelineAccountingInvalid if pipeline.completed_stages > pipeline.stages.count
-                    raise ProcessPipelineError.PipelineAccountingInvalid if pipeline.completed_stages == pipeline.stages.count and pipeline.failed_stages != 0
-                elif pipeline.state == ProcessPipelineState.Succeeded:
-                    raise ProcessPipelineError.PipelineAccountingInvalid if pipeline.completed_stages != pipeline.stages.count or pipeline.failed_stages != 0 or pipeline.cancelled_stages != 0
-                elif pipeline.state == ProcessPipelineState.Failed:
-                    raise ProcessPipelineError.PipelineAccountingInvalid if pipeline.failed_stages == 0 or pipeline.completed_stages != pipeline.stages.count
-                elif pipeline.state == ProcessPipelineState.Cancelled:
-                    raise ProcessPipelineError.PipelineAccountingInvalid if pipeline.completed_stages != pipeline.stages.count or pipeline.failed_stages != 0 or pipeline.cancelled_stages == 0
+                    raise ProcessPipelineError.PipelineAccountingInvalid if pipeline.stage_states.count != 0 or pipeline.cancellation_requested or pipeline.completed_stages != 0 or pipeline.failed_stages != 0 or pipeline.cancelled_stages != 0
+                else:
+                    raise ProcessPipelineError.PipelineAccountingInvalid if pipeline.stage_states.count != pipeline.stages.count
+                    derived_completed: mutable usize = 0
+                    derived_failed: mutable usize = 0
+                    derived_cancelled: mutable usize = 0
+                    for stage_state in pipeline.stage_states |pipeline, derived_completed, derived_failed, derived_cancelled|:
+                        raise ProcessPipelineError.InvalidStageState if not process_pipeline_stage_state_valid(stage_state)
+                        if stage_state == ProcessPipelineStageState.Exited or stage_state == ProcessPipelineStageState.Failed or stage_state == ProcessPipelineStageState.Cancelled:
+                            derived_completed <- derived_completed + 1
+                        if stage_state == ProcessPipelineStageState.Failed:
+                            derived_failed <- derived_failed + 1
+                        if stage_state == ProcessPipelineStageState.Cancelled:
+                            derived_cancelled <- derived_cancelled + 1
+                    raise ProcessPipelineError.PipelineAccountingInvalid if pipeline.completed_stages != derived_completed or pipeline.failed_stages != derived_failed or pipeline.cancelled_stages != derived_cancelled
+                    if pipeline.state == ProcessPipelineState.Running:
+                        raise ProcessPipelineError.PipelineAccountingInvalid if pipeline.cancellation_requested or pipeline.completed_stages >= pipeline.stages.count
+                        raise ProcessPipelineError.PipelineAccountingInvalid if pipeline.failure_mode == ProcessPipelineFailureMode.FailFast and pipeline.failed_stages != 0
+                        raise ProcessPipelineError.PipelineAccountingInvalid if pipeline.cancelled_stages != 0
+                    elif pipeline.state == ProcessPipelineState.Cancelling:
+                        raise ProcessPipelineError.PipelineAccountingInvalid if not pipeline.cancellation_requested or (pipeline.completed_stages == pipeline.stages.count and pipeline.failed_stages != 0)
+                    elif pipeline.state == ProcessPipelineState.Succeeded:
+                        raise ProcessPipelineError.PipelineAccountingInvalid if pipeline.cancellation_requested or pipeline.completed_stages != pipeline.stages.count or pipeline.failed_stages != 0 or pipeline.cancelled_stages != 0
+                    elif pipeline.state == ProcessPipelineState.Failed:
+                        raise ProcessPipelineError.PipelineAccountingInvalid if pipeline.completed_stages != pipeline.stages.count or pipeline.failed_stages == 0
+                        raise ProcessPipelineError.PipelineAccountingInvalid if pipeline.cancelled_stages != 0 and not pipeline.cancellation_requested
+                    elif pipeline.state == ProcessPipelineState.Cancelled:
+                        raise ProcessPipelineError.PipelineAccountingInvalid if not pipeline.cancellation_requested or pipeline.completed_stages != pipeline.stages.count or pipeline.failed_stages != 0
                 for stage in pipeline.stages |pipeline|:
                     valid: mutable bool = false
                     catch validate_process_command(stage):
@@ -341,45 +370,81 @@ module EsProcess:
                 return true
 
 
-            def advance_process_pipeline(pipeline: mutable ProcessPipeline&, event: ProcessPipelineEvent, stage_index: usize = 0) -> ProcessPipelineState error[ProcessPipelineError]:
+            def process_pipeline_refresh_accounting(pipeline: mutable ProcessPipeline&) -> void:
+                pipeline.completed_stages <- 0
+                pipeline.failed_stages <- 0
+                pipeline.cancelled_stages <- 0
+                for stage_state in pipeline.stage_states |pipeline|:
+                    if stage_state == ProcessPipelineStageState.Exited or stage_state == ProcessPipelineStageState.Failed or stage_state == ProcessPipelineStageState.Cancelled:
+                        pipeline.completed_stages <- pipeline.completed_stages + 1
+                    if stage_state == ProcessPipelineStageState.Failed:
+                        pipeline.failed_stages <- pipeline.failed_stages + 1
+                    if stage_state == ProcessPipelineStageState.Cancelled:
+                        pipeline.cancelled_stages <- pipeline.cancelled_stages + 1
+
+
+            def advance_process_pipeline(pipeline: mutable ProcessPipeline&, event: ProcessPipelineEvent, stage_index: usize = 0) -> ProcessPipelineState error[ProcessPipelineError] can[Memory.Allocate, Abort.Panic]:
                 try validate_process_pipeline(pipeline)
                 raise ProcessPipelineError.InvalidPipelineEvent if not process_pipeline_event_valid(event)
+                # Planned pipelines have no per-stage state vector. Only Start
+                # and immediate cancellation are meaningful before allocation.
+                raise ProcessPipelineError.InvalidPipelineState if pipeline.state == ProcessPipelineState.Planned and event != ProcessPipelineEvent.Start and event != ProcessPipelineEvent.Cancel
                 if event == ProcessPipelineEvent.Start:
                     raise ProcessPipelineError.InvalidPipelineState if pipeline.state != ProcessPipelineState.Planned
+                    for stage_offset in 0..<pipeline.stages.count |pipeline|:
+                        pipeline.stage_states.push(ProcessPipelineStageState.Pending)
                     pipeline.state <- ProcessPipelineState.Running
+                elif event == ProcessPipelineEvent.StageStart:
+                    raise ProcessPipelineError.InvalidStageIndex if stage_index >= pipeline.stages.count
+                    raise ProcessPipelineError.InvalidStageState if pipeline.stage_states[stage_index] != ProcessPipelineStageState.Pending
+                    raise ProcessPipelineError.InvalidPipelineState if pipeline.state != ProcessPipelineState.Running
+                    pipeline.stage_states[stage_index] <- ProcessPipelineStageState.Running
                 elif event == ProcessPipelineEvent.StageExit:
-                    raise ProcessPipelineError.InvalidPipelineState if pipeline.state != ProcessPipelineState.Running
-                    raise ProcessPipelineError.InvalidStageIndex if stage_index >= pipeline.stages.count or stage_index != pipeline.completed_stages
-                    pipeline.completed_stages <- pipeline.completed_stages + 1
+                    raise ProcessPipelineError.InvalidStageIndex if stage_index >= pipeline.stages.count
+                    raise ProcessPipelineError.InvalidStageState if pipeline.stage_states[stage_index] != ProcessPipelineStageState.Running
+                    raise ProcessPipelineError.InvalidPipelineState if pipeline.state != ProcessPipelineState.Running and pipeline.state != ProcessPipelineState.Cancelling
+                    pipeline.stage_states[stage_index] <- ProcessPipelineStageState.Exited
+                    process_pipeline_refresh_accounting(pipeline)
                     if pipeline.completed_stages == pipeline.stages.count:
-                        pipeline.state <- ProcessPipelineState.Failed if pipeline.failed_stages != 0 else ProcessPipelineState.Succeeded
+                        if pipeline.failed_stages != 0:
+                            pipeline.state <- ProcessPipelineState.Failed
+                        elif pipeline.state == ProcessPipelineState.Running:
+                            pipeline.state <- ProcessPipelineState.Succeeded
                 elif event == ProcessPipelineEvent.StageFailure:
-                    raise ProcessPipelineError.InvalidPipelineState if pipeline.state != ProcessPipelineState.Running
-                    raise ProcessPipelineError.InvalidStageIndex if stage_index >= pipeline.stages.count or stage_index != pipeline.completed_stages
-                    pipeline.completed_stages <- pipeline.completed_stages + 1
-                    pipeline.failed_stages <- pipeline.failed_stages + 1
-                    if pipeline.failure_mode == ProcessPipelineFailureMode.FailFast and pipeline.completed_stages < pipeline.stages.count:
+                    raise ProcessPipelineError.InvalidStageIndex if stage_index >= pipeline.stages.count
+                    # Pending means the adapter failed to launch this stage;
+                    # Running means the launched process reported failure.
+                    raise ProcessPipelineError.InvalidStageState if pipeline.stage_states[stage_index] != ProcessPipelineStageState.Pending and pipeline.stage_states[stage_index] != ProcessPipelineStageState.Running
+                    raise ProcessPipelineError.InvalidPipelineState if pipeline.state != ProcessPipelineState.Running and pipeline.state != ProcessPipelineState.Cancelling
+                    pipeline.stage_states[stage_index] <- ProcessPipelineStageState.Failed
+                    if pipeline.failure_mode == ProcessPipelineFailureMode.FailFast and pipeline.state == ProcessPipelineState.Running and pipeline.completed_stages < pipeline.stages.count - 1:
+                        pipeline.cancellation_requested <- true
                         pipeline.state <- ProcessPipelineState.Cancelling
-                    elif pipeline.completed_stages == pipeline.stages.count:
+                    process_pipeline_refresh_accounting(pipeline)
+                    if pipeline.completed_stages == pipeline.stages.count:
                         pipeline.state <- ProcessPipelineState.Failed
                 elif event == ProcessPipelineEvent.StageCancel:
-                    raise ProcessPipelineError.InvalidPipelineState if pipeline.state != ProcessPipelineState.Cancelling
-                    raise ProcessPipelineError.InvalidStageIndex if stage_index >= pipeline.stages.count or stage_index != pipeline.completed_stages
-                    pipeline.completed_stages <- pipeline.completed_stages + 1
-                    pipeline.cancelled_stages <- pipeline.cancelled_stages + 1
+                    raise ProcessPipelineError.InvalidStageIndex if stage_index >= pipeline.stages.count
+                    raise ProcessPipelineError.InvalidStageState if pipeline.stage_states[stage_index] != ProcessPipelineStageState.Pending and pipeline.stage_states[stage_index] != ProcessPipelineStageState.Running
+                    raise ProcessPipelineError.InvalidPipelineState if pipeline.state != ProcessPipelineState.Cancelling or not pipeline.cancellation_requested
+                    pipeline.stage_states[stage_index] <- ProcessPipelineStageState.Cancelled
+                    process_pipeline_refresh_accounting(pipeline)
                     if pipeline.completed_stages == pipeline.stages.count and pipeline.failed_stages != 0:
                         pipeline.state <- ProcessPipelineState.Failed
                 elif event == ProcessPipelineEvent.Cancel:
                     if pipeline.state == ProcessPipelineState.Planned:
-                        pipeline.completed_stages <- pipeline.stages.count
-                        pipeline.cancelled_stages <- pipeline.stages.count
+                        pipeline.cancellation_requested <- true
+                        for stage_offset in 0..<pipeline.stages.count |pipeline|:
+                            pipeline.stage_states.push(ProcessPipelineStageState.Cancelled)
+                        process_pipeline_refresh_accounting(pipeline)
                         pipeline.state <- ProcessPipelineState.Cancelled
                     else:
                         raise ProcessPipelineError.InvalidPipelineState if pipeline.state != ProcessPipelineState.Running
+                        pipeline.cancellation_requested <- true
                         pipeline.state <- ProcessPipelineState.Cancelling
                 elif event == ProcessPipelineEvent.CancelAck:
                     raise ProcessPipelineError.InvalidPipelineState if pipeline.state != ProcessPipelineState.Cancelling
-                    raise ProcessPipelineError.PipelineAccountingInvalid if pipeline.completed_stages != pipeline.stages.count or pipeline.failed_stages != 0 or pipeline.cancelled_stages == 0
+                    raise ProcessPipelineError.PipelineAccountingInvalid if not pipeline.cancellation_requested or pipeline.completed_stages != pipeline.stages.count or pipeline.failed_stages != 0
                     pipeline.state <- ProcessPipelineState.Cancelled
                 return pipeline.state
 

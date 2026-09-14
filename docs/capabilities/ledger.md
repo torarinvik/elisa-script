@@ -467,10 +467,14 @@ validation through `error[ProcessResultError]`.
 attempts, explicit cancellation acknowledgement, consumed-attempt validation for
 cancelled jobs, and typed invalid-transition
 or retry-exhaustion errors; actual scheduling, fan-out, and platform signal
-escalation remain open. `ProcessPipeline` now validates ordered stage commands,
-bounded stage/buffer limits, fail-fast versus aggregate failure policy, and
-explicit stage/cancel transitions with complete cancellation accounting;
-concurrent pipe draining and reaping remain open.
+escalation remain open. `ProcessPipeline` validates ordered stage commands,
+bounded stage/buffer limits, fail-fast versus aggregate failure policy, and a
+per-stage lifecycle that admits arbitrary completion order, rejects duplicate
+terminal events, and derives aggregate completion/failure/cancellation counts
+from the stage ledger. Cancellation acknowledgment requires every stage to be
+terminal. The source fixture and compiler-free audit are static evidence only;
+OS-pipe transport, concurrent draining/reaping, and launch rollback remain
+open.
 The typed script pipeline facade keeps ordinary shell last-stage status as its
 default and gives pipefail-style status a distinct builtin and IR opcode; this
 status policy is separate from `ProcessPipeline` fail-fast/aggregate execution

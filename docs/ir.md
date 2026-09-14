@@ -2228,20 +2228,22 @@ retries beyond `max_attempts` raise `error[ProcessJobError]`; every running or
 terminal attempt state also requires a consumed attempt, preventing forged
 pre-launch outcomes. The scheduler, parallel-map limits, and platform signal
 escalation remain host integrations.
-`ProcessPipeline` extends the same shell-free boundary to ordered multi-stage
-commands. It validates every stage through `ProcessCommand`, caps stage count
-and aggregate buffer policy, and advances through explicit `Planned → Running →
-Succeeded/Failed` or `Cancelling → Cancelled` edges. Fail-fast stage failure
-enters cancellation draining, and explicit stage-cancel edges account every
-remaining stage before `Failed` or `Cancelled` is published; `CancelAck` cannot
-skip those per-stage cancellations. Stage exit/failure events
-must name the next stage, aggregate mode records failures without losing order,
-and invalid stage commands or transitions raise `error[ProcessPipelineError]`.
-Validation reconciles running/cancelling and terminal pipeline state with
-completed/failed counters, so forged success or cancellation cannot hide
-unfinished stages.
-Pipe draining, SIGPIPE behavior, concurrent I/O, and child reaping remain host
-responsibilities.
+`ProcessPipeline` extends the same shell-free boundary to multi-stage commands.
+It validates every stage through `ProcessCommand`, caps stage count and
+aggregate buffer policy, and records a separate lifecycle for each stage
+(`Pending`, `Running`, `Exited`, `Failed`, or `Cancelled`). `Start` creates the
+bounded pending-stage ledger; the adapter reports each successful launch with
+`StageStart`, then may report exits or failures in any stage order. Fail-fast
+failure enters cancellation draining, while aggregate failure keeps other
+stages running. `StageFailure` on a pending stage represents a launch failure;
+on a running stage it represents a process failure. Cancellation may account
+for either a live stage being reaped or a pending stage that was never launched.
+`CancelAck` is accepted only after
+every stage is terminal and no stage failed. Duplicate terminal events,
+impossible stage transitions, and forged aggregate counters raise
+`error[ProcessPipelineError]`. This is a lifecycle model, not a streaming
+transport: pipe draining, SIGPIPE behavior, concurrent I/O, launch rollback,
+and child reaping remain host responsibilities.
 
 `EsProcessOutput::ProcessOutputSession` makes shell redirection explicit. A
 route contains bounded `Inherit`, `Null`, `Capture`, `TruncateFile`, or
