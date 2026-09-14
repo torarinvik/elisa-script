@@ -179,8 +179,8 @@ tabs or line breaks in paths unambiguously, and it has no explicit final-output
 byte ceiling. Its initial `find | wc -l | tr` count also does not preserve the
 first `find` status; a later executable traversal checks its own status, but
 does not prove the earlier count was complete if the filesystem changes between
-walks. A future Elisascript port must either match these limitations or define
-and fixture a deliberate fail-closed improvement. In particular, replacing
+walks. An Elisascript port must either match these limitations or define and
+fixture deliberate fail-closed improvements. In particular, replacing
 ripgrep's ignore/config/binary behavior with a custom regex walk is not a
 semantics-preserving implementation. File-count, per-file-size, process-output,
 and final-manifest limits should be specified together before adoption. Split
