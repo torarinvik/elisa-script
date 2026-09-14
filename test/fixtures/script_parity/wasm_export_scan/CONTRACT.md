@@ -15,6 +15,11 @@ human-readable output.
   `str.splitlines()` boundaries. This is a line/regex scanner, not the Elisa
   parser. Preserve accepted lines, skipped malformed lines, row order,
   duplicate handling, and exact error text.
+- The candidate materializes line views before scanning and caps that metadata
+  at 131,072 lines. More lines fail with
+  `WASM source line count exceeds Elisascript scan limit`. This candidate-only
+  safeguard prevents newline-dense input from allocating millions of line
+  descriptors; generated boundary cases must not reach the Python oracle.
 - `@link_name(...)` accepts either a quoted, possibly empty string or an ASCII
   identifier. A non-empty pending name survives blank and `#` comment lines;
   the last annotation wins. It attaches only to the next recognized export.
@@ -48,6 +53,15 @@ human-readable output.
   individually-under-limit headers that exceed the aggregate; they do not
   invoke the pinned Python parser on hostile input, which has no corresponding
   work ceiling.
+- Duplicate-name detection also has one 1,048,576-unit aggregate comparison
+  budget across the flattened source. Before each name equality check, the
+  candidate charges the smaller byte length of the two nonempty ASCII
+  identifiers, bounding both compared bytes and the number of comparisons; an
+  exhausted budget fails with
+  `WASM export-name comparison work exceeds Elisascript scan limit`. Implicit
+  `main` presence is tracked separately as a boolean, avoiding a full name-list
+  scan for every ordinary source line. A generated unique-export exhaustion
+  case is candidate-only because the Python oracle has no matching budget.
 - A whole-line `def main(params) [-> type]:` adds an implicit `main` row at that
   source position only if `main` has not already been seen. An explicit `main`
   before it suppresses the implicit row; an explicit `main` after it is a
@@ -148,7 +162,7 @@ only unless they are valid Elisa programs.
 | `main` | implicit position and fields, repeated definitions, explicit-before/after behavior, duplicate line diagnostic |
 | Invalid source | ignored malformed export forms and exact no-export failure; colon forms admitted by the pinned target regex are preserved |
 | Include graph | nested/absolute/relative, duplicate and diamond include order, cycle chain, missing file, no-newline splice, CRLF/bare-CR normalization, empty file |
-| Bounds and failure | bounded file/aggregate bytes, include depth/count, aggregate path-component work, explicit and implicit header-suffix scan work, unreadable and invalid UTF-8 input, no partial success output |
+| Bounds and failure | bounded file/aggregate bytes, materialized source line count, include depth/count, aggregate path-component work, explicit and implicit header-suffix scan work, aggregate duplicate-name comparison work, unreadable and invalid UTF-8 input, no partial success output |
 | Integration | structured protocol consumed by the pinned `wasm_build.py` caller; no Python scanner on the accepted replacement path |
 
 The first parity slice is represented by
@@ -172,10 +186,18 @@ checks the explicit-export and implicit-main header-work failures without
 calling the unbounded Python parser, and another checks the shared aggregate
 budget across multiple individually-under-limit headers;
 `scripts/check_wasm_export_scan_bounds.sh` statically checks both guard paths
-and the rejection fixtures. A generated unsupported-type diagnostic containing
-U+009F is also compared with the pinned Python adapter to check C1 `repr`
-escaping. These are static source contracts, not executed evidence. Positive
-snapshots are also checked against their checked-in JSON. The
+and the rejection fixtures. Another candidate-only generated case asserts the
+unique-export comparison-work limit without invoking Python. A generated
+Python differential case covers explicit `main` before implicit `main` and
+implicit `main` before a later explicit duplicate, plus repeated implicit
+definitions that must yield only one row. The ordering cases include many
+ordinary lines between exports to exercise the maintained presence flag. A generated
+unsupported-type diagnostic containing U+009F is also compared with the pinned
+Python adapter to check C1 `repr` escaping. Newline-dense inputs check that
+131,072 lines reach the ordinary no-export diagnostic while 131,073 lines hit
+the candidate-only line-view cap, without entering Python. These are static
+source contracts, not executed evidence. Positive snapshots are also checked against their
+checked-in JSON. The
 Python adapter verifies the working-tree scanner blob against the pinned Git
 commit before calling it.
 Before invoking the reference's recursive loader, the adapter performs a

@@ -11,6 +11,7 @@ module EsWasmExportScan:
     private:
         const module Limits:
             SOURCE_BYTES: usize = 8388608
+            SOURCE_LINES: usize = 131072
             PATH_BYTES: usize = 4096
             EXPORTS: usize = 65536
             PARAMETERS_PER_EXPORT: usize = 4096
@@ -23,6 +24,7 @@ module EsWasmExportScan:
             HEADER_SCAN_WORK: usize = 1048576
             HEADER_SUFFIX_SCAN_FACTOR: usize = 8
             HEADER_SUFFIX_FIXED_WORK: usize = 16
+            EXPORT_NAME_COMPARE_WORK: usize = 1048576
 
 
         const module Syntax:
@@ -251,6 +253,15 @@ module EsWasmExportScan:
             return false if remaining_bytes > available / Limits::HEADER_SUFFIX_SCAN_FACTOR
             suffix_cost: usize = Limits::HEADER_SUFFIX_FIXED_WORK + remaining_bytes * Limits::HEADER_SUFFIX_SCAN_FACTOR
             return header_scan_charge(work, suffix_cost)
+
+
+        def export_name_scan_charge(work: mutable usize&, compared_bytes: usize) -> bool:
+            # Every scanned identifier is nonempty, so this also bounds the
+            # number of equality checks while conservatively charging bytes.
+            return false if work > Limits::EXPORT_NAME_COMPARE_WORK
+            return false if compared_bytes > Limits::EXPORT_NAME_COMPARE_WORK - work
+            work <- work + compared_bytes
+            return true
 
 
         def export_suffix(line: sview, start: usize) -> ExportSuffix:
@@ -900,7 +911,7 @@ module EsWasmExportScan:
             return FlattenedSource{source: bytes_view(output)}
 
 
-        def source_lines(source: sview) -> darray[sview] can[Memory.Allocate, Abort.Panic]:
+        def source_lines(source: sview) -> (lines: darray[sview], failure: sview) can[Memory.Allocate, Abort.Panic]:
             lines: mutable darray[sview] = []
             phase: mutable LinePhase = LinePhase.Scan
             cursor: mutable usize = 0
@@ -912,6 +923,8 @@ module EsWasmExportScan:
 
                 Scan, LinePhase.Scan if cursor >= len(source):
                     if line_start < len(source):
+                        if lines.count >= Limits::SOURCE_LINES:
+                            return (lines, "WASM source line count exceeds Elisascript scan limit")
                         lines.push(source[line_start:len(source)])
                     phase <- LinePhase.Done
                     -> Scan
@@ -921,6 +934,8 @@ module EsWasmExportScan:
                     if width == 0:
                         cursor <- cursor + 1
                         -> Scan
+                    if lines.count >= Limits::SOURCE_LINES:
+                        return (lines, "WASM source line count exceeds Elisascript scan limit")
                     lines.push(source[line_start:cursor])
                     cursor <- cursor + width
                     line_start <- cursor
@@ -929,10 +944,10 @@ module EsWasmExportScan:
                 Scan, LinePhase.Done:
                     break
 
-            return lines
+            return (lines, "")
 
 
-        def parse_export_line(line: sview, line_number: usize, pending_link_name: sview, has_pending_link_name: bool, seen_names: darray[sview], header_work: mutable usize&) -> (found: bool, row: Export, failure: sview) can[Memory.Allocate, Abort.Panic]:
+        def parse_export_line(line: sview, line_number: usize, pending_link_name: sview, has_pending_link_name: bool, seen_names: darray[sview], header_work: mutable usize&, name_work: mutable usize&) -> (found: bool, row: Export, failure: sview) can[Memory.Allocate, Abort.Panic]:
             no_row: Export = Export{name: "", target: ""}
             header: ExportHeader = export_header(line, header_work)
             if header.failure != "":
@@ -943,6 +958,10 @@ module EsWasmExportScan:
             public_name: sview = header.name
 
             for existing_name in seen_names:
+                compared_bytes: mutable usize = len(existing_name)
+                compared_bytes <- len(public_name) if len(public_name) < compared_bytes
+                if not export_name_scan_charge(name_work, compared_bytes):
+                    return (true, no_row, "WASM export-name comparison work exceeds Elisascript scan limit")
                 if existing_name == public_name:
                     duplicate: sview = "duplicate WASM export " + python_repr(public_name) + " on line " + format_int(line_number.i64())
                     return (true, no_row, duplicate)
@@ -1040,14 +1059,18 @@ module EsWasmExportScan:
 
         def parse_flat_exports(source: sview) -> ScanResult can[Memory.Allocate, Abort.Panic]:
             result: mutable ScanResult = ScanResult{}
-            lines: darray[sview] = source_lines(source)
+            parsed_lines: (lines: darray[sview], failure: sview) = source_lines(source)
+            return ScanResult{failure: parsed_lines.failure} if parsed_lines.failure != ""
+            lines: darray[sview] = parsed_lines.lines
             seen_names: mutable darray[sview] = []
             pending_link_name: mutable sview = ""
             has_pending_link_name: mutable bool = false
             # Shared across the flattened source, including all include files.
             header_work: mutable usize = 0
+            name_work: mutable usize = 0
+            main_seen: mutable bool = false
 
-            for line_index in 0..<lines.count |result, lines, seen_names, pending_link_name, has_pending_link_name, header_work|:
+            for line_index in 0..<lines.count |result, lines, seen_names, pending_link_name, has_pending_link_name, header_work, name_work, main_seen|:
                 line: sview = lines[line_index]
                 line_number: usize = line_index + 1
                 trimmed_line: sview = trim_python_space(line)
@@ -1066,7 +1089,7 @@ module EsWasmExportScan:
                         has_pending_link_name <- true
                         continue
 
-                explicit: (found: bool, row: Export, failure: sview) = parse_export_line(line, line_number, pending_link_name, has_pending_link_name, seen_names, header_work)
+                explicit: (found: bool, row: Export, failure: sview) = parse_export_line(line, line_number, pending_link_name, has_pending_link_name, seen_names, header_work, name_work)
                 if explicit.found:
                     if explicit.failure != "":
                         result.failure <- explicit.failure
@@ -1076,6 +1099,7 @@ module EsWasmExportScan:
                         return result
                     result.exports.push(explicit.row)
                     seen_names.push(explicit.row.name)
+                    main_seen <- true if explicit.row.name == "main"
                     pending_link_name <- ""
                     has_pending_link_name <- false
                     continue
@@ -1084,7 +1108,7 @@ module EsWasmExportScan:
                     pending_link_name <- ""
                     has_pending_link_name <- false
 
-                implicit: (found: bool, row: Export, failure: sview) = parse_implicit_main(line, line_number, seen_names.contains("main"), header_work)
+                implicit: (found: bool, row: Export, failure: sview) = parse_implicit_main(line, line_number, main_seen, header_work)
                 if implicit.found:
                     if implicit.failure != "":
                         result.failure <- implicit.failure
@@ -1094,6 +1118,7 @@ module EsWasmExportScan:
                         return result
                     result.exports.push(implicit.row)
                     seen_names.push("main")
+                    main_seen <- true
 
             if result.exports.count == 0:
                 result.failure <- "WASM source has no exported function; add `export fn name(...) -> T = target`"

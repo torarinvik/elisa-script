@@ -1108,3 +1108,13 @@ W09 unsupported-type diagnostics now escape valid UTF-8 C1 controls U+0080..U+00
 as Python-style `\xNN` sequences, with a generated U+009F Python-vs-candidate
 case. This is a narrow `str.__repr__` parity increment; other Unicode
 non-printable code points remain unqualified, and the fixture has not run.
+
+W09 duplicate-export lookup now charges the shorter identifier byte length
+before each comparison against a flattened-source aggregate limit, and
+implicit-main presence uses a boolean instead of repeated vector scans. A
+candidate-only generated unique-export fixture asserts the bounded-work
+diagnostic, while a Python differential fixture pins main-ordering behavior.
+`source_lines` also caps materialized line views at 131,072 with a candidate-only
+newline-dense boundary fixture: exactly 131,072 reaches the no-export result,
+while 131,073 is rejected. These additions are static evidence only; the new
+fixtures have not run.
