@@ -53,4 +53,17 @@ the required pinned local compiler to each child process. It has not run under
 the current validation hold. Large resource-ceiling boundaries, unreadable
 subtrees, unusual permission states, and non-UTF-8 filesystem names remain
 unqualified. Default-root parity from arbitrary working directories also
-remains open; all parity cases pass the same explicit canonical root.
+remains open; all parity cases pass the same explicit canonical root. The
+follow-up fixture must invoke each script by an absolute path from an unrelated
+working directory and omit the root argument. Include a symlinked script path
+containing `..` around a symlinked directory: Bash computes `dirname "$0"`,
+then uses logical `cd -L` for `../..` before the final physical `pwd -P`, so
+the Elisascript source-path capability must anchor to startup cwd and
+lexically normalize before resolving the final scan root. Preserve the
+invocation symlink alias until that final resolution; resolving the script
+path first changes the result. For a relative script operand, anchor to startup
+logical `$PWD` when it is absolute and resolves to the actual cwd; otherwise
+fall back to physical cwd. Include a working directory reached through a
+symlink and a relative source operand whose `..` crosses that symlink, plus an
+invalid/stale `$PWD` fallback case. Also assert that a prior script-side cwd
+change does not change the captured path context.
