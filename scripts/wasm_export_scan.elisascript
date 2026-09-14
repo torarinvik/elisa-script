@@ -17,6 +17,7 @@ module EsWasmExportScan:
             PARAMETERS_PER_EXPORT: usize = 4096
             JSON_BYTES: usize = 16777216
             PATH_COMPONENT_WORK: usize = 131072
+            PATH_SYMLINK_HOPS: usize = 128
             INCLUDE_GRAPH_BYTES: usize = 33554432
             INCLUDE_FILES: usize = 4096
             INCLUDE_DEPTH: usize = 128
@@ -701,8 +702,8 @@ module EsWasmExportScan:
 
         # Resolve components in order so a symlink is canonicalized before a
         # later `..` is applied. Missing suffix components remain lexical until
-        # an existing parent is reached again. Dangling symlinks remain
-        # unsupported until link targets are expanded before strict realpath.
+        # an existing parent is reached again. Dangling link targets are
+        # expanded ahead of the unprocessed tail, with shared work and hop caps.
         def resolve_non_strict(input_path: Path, path_component_work: mutable usize&) -> PathResolution can[Memory.Allocate, Abort.Panic, File.Read, Directory.Read]:
             input_text: sview = f"{input_path}"
             if len(input_text) >= Limits::PATH_BYTES or sview_contains_byte(input_text, 0u8):
@@ -719,7 +720,7 @@ module EsWasmExportScan:
                 return PathResolution{path: input_path, failure: "unable to resolve source/include path"} if total < current_length or total >= Limits::PATH_BYTES
                 return PathResolution{path: input_path, failure: "unable to resolve source/include path"} if len(input_text) >= Limits::PATH_BYTES - total
 
-            components: darray[sview] = path_components(input_text)
+            components: mutable darray[sview] = path_components(input_text)
             component_work: mutable usize = 0
             for component in components |component_work|:
                 component_work <- component_work + 1
@@ -729,6 +730,7 @@ module EsWasmExportScan:
             suffix: mutable darray[sview] = []
             component_cursor: mutable usize = 0
             suffix_cursor: mutable usize = 0
+            symlink_hops: mutable usize = 0
             phase: mutable PathPhase = PathPhase.ScanComponents
 
             machine over phase while phase != PathPhase.Done:
@@ -762,7 +764,34 @@ module EsWasmExportScan:
                         return PathResolution{path: input_path, failure: "unable to resolve source/include path"}
                     symbolic_link: bool = is_symlink(candidate)
                     if not exists and symbolic_link:
-                        return PathResolution{path: input_path, failure: "dangling symlink in source/include path is unsupported"}
+                        symlink_hops <- symlink_hops + 1
+                        if symlink_hops > Limits::PATH_SYMLINK_HOPS:
+                            return PathResolution{path: input_path, failure: "WASM symlink resolution exceeds Elisascript scan limit"}
+                        target_path: Path = try readlink(candidate) else err:
+                            return PathResolution{path: input_path, failure: "unable to resolve source/include path"}
+                        target_text: sview = f"{target_path}"
+                        if len(target_text) == 0 or len(target_text) >= Limits::PATH_BYTES or sview_contains_byte(target_text, 0u8):
+                            return PathResolution{path: input_path, failure: "unable to resolve source/include path"}
+
+                        target_components: darray[sview] = path_components(target_text)
+                        tail_count: usize = components.count - component_cursor
+                        tail_bytes: mutable usize = 0
+                        for tail_index in component_cursor..<components.count |tail_bytes, components|:
+                            tail_bytes <- tail_bytes + len(components[tail_index])
+                        expansion_work: usize = (len(target_text) * 2) + (target_components.count * 2) + (tail_count * 2) + (tail_bytes * 2)
+                        if path_component_work > Limits::PATH_COMPONENT_WORK or expansion_work > Limits::PATH_COMPONENT_WORK - path_component_work:
+                            return PathResolution{path: input_path, failure: "WASM path component work exceeds Elisascript scan limit"}
+                        path_component_work <- path_component_work + expansion_work
+
+                        expanded_components: mutable darray[sview] = []
+                        for target_component in target_components |expanded_components|:
+                            expanded_components.push(target_component)
+                        for tail_index in component_cursor..<components.count |expanded_components, components|:
+                            expanded_components.push(components[tail_index])
+                        components <- expanded_components
+                        component_cursor <- 0
+                        current <- path("/") if path_is_absolute(target_path)
+                        -> ScanComponents
                     if exists:
                         resolved_component: Path = try path_real(candidate) else err:
                             return PathResolution{path: input_path, failure: "unable to resolve source/include path"}

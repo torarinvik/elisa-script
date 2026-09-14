@@ -103,14 +103,23 @@ human-readable output.
   absolute spelling for a missing leaf after resolving existing symlink
   prefixes. The candidate walks components from the root or current directory,
   resolves every existing component before processing a following `..`, and
-  retains missing suffix components so a later `..` can cancel them. It caps
-  raw and resolved path spellings at fewer than 4096 bytes (maximum 4095) and
-  aggregate component-processing work, counting each nonempty component
-  including `.` and `..`. Fixtures compare missing leaves under an
-  existing directory and symlink, plus `alias/../child` where `alias` points
-  to a nested directory and must be resolved before `..`. Dangling symlinks
-  remain unsupported until the candidate expands link targets before applying
-  the runtime's strict realpath operation.
+  retains missing suffix components so a later `..` can cancel them. When a
+  component is a dangling symlink, it reads the link target and prepends that
+  target to the unprocessed component worklist; relative targets begin at the
+  link's parent, absolute targets reset to the root, and target `.`/`..`
+  components use the same iterative resolver. Raw, target, and resolved path
+  spellings are capped at fewer than 4096 bytes (maximum 4095). Aggregate path
+  work charges components, target spelling bytes, and tail rewrites; dangling
+  link expansion also has a 128-hop per-path ceiling to bound cycles. Fixtures
+  compare missing leaves under an existing directory and symlink,
+  `alias/../child` where `alias` points to a nested directory, and links
+  beneath a distinct `links/` parent so relative-target origin is observable.
+  The dangling-link cases cover relative and absolute targets, nested links,
+  original child and post-link `../child` tails, target
+  `../missing/../actual` cancellation to an existing file, and a target that
+  remains missing. The
+  cycle/hop rejection is candidate-specific; successful and missing-path cases
+  are compared with the pinned Python adapter.
 - The optional `seen` set and active `stack` list are caller-owned and mutated:
   add the resolved file to `seen`, then to `stack` before reading. Successful
   reads pop the stack; a read/decode/child error leaves those mutations in
@@ -171,8 +180,8 @@ only unless they are valid Elisa programs.
 | Link annotation | quoted/bare, blank/comment retention, overwrite, empty, dangling, reset by ordinary text, implicit-main exclusion |
 | `main` | implicit position and fields, repeated definitions, explicit-before/after behavior, duplicate line diagnostic |
 | Invalid source | ignored malformed export forms and exact no-export failure; colon forms admitted by the pinned target regex are preserved |
-| Include graph | nested/absolute/relative, duplicate and diamond include order, cycle chain, missing file, no-newline splice, CRLF/bare-CR normalization, empty file |
-| Bounds and failure | bounded file/aggregate bytes, materialized source line count, include depth/count, aggregate path-component work, explicit and implicit header-suffix scan work, aggregate duplicate-name comparison work, unreadable and invalid UTF-8 input, no partial success output |
+| Include graph | nested/absolute/relative, duplicate and diamond include order, cycle chain, missing file, relative/absolute dangling symlink targets, nested links, target and post-link `..` resolution, no-newline splice, CRLF/bare-CR normalization, empty file |
+| Bounds and failure | bounded file/aggregate bytes, materialized source line count, include depth/count, aggregate path-component and symlink-expansion work, explicit and implicit header-suffix scan work, aggregate duplicate-name comparison work, unreadable and invalid UTF-8 input, no partial success output |
 | Integration | structured protocol consumed by the pinned `wasm_build.py` caller; no Python scanner on the accepted replacement path |
 
 The first parity slice is represented by
@@ -187,7 +196,12 @@ differential adapter. Cases cover positive records, parser and ABI errors, the
 pinned target-regex edge, nested relative includes, diamond de-duplication,
 cycles, missing leaves, absolute includes, mixed quote delimiters, and
 existing/missing leaves beneath a symlink prefix including `..` after the
-symlink. A generated link-name case places `@link_name("")` after a nonempty
+symlink. Generated dangling-link cases put relative links below a directory
+distinct from the including source, retain child and parent-traversal components
+after the link, cover nested and absolute targets, cancel a missing target
+component with `..`, and compare a still-missing target's exact path diagnostic.
+A candidate-only two-link cycle checks the 128-hop bound. A generated link-name
+case places `@link_name("")` after a nonempty
 annotation and compares the omitted optional key with Python. Generated temporary inputs
 also cover CRLF/bare-CR normalization, all additional Python `splitlines`
 separators (vertical tab, form feed, U+001C..U+001E, NEL, U+2028, and U+2029)
@@ -229,8 +243,8 @@ avoids unbounded oracle reads while retaining the pinned loader as the
 accepted-input reference. It also normalizes host `OSError` read failures to
 the candidate's stable path diagnostic. This test source has not been run: it
 remains behind the disabled bounded compiler wrapper and does not cover other
-resource-bound rejection, unreadable input under a non-root user, dangling
-symlinks, or caller integration.
+resource-bound rejection, unreadable input under a non-root user, or caller
+integration.
 
 The separate `test/script_parity/wasm_export_scan_launcher_test.elisascript`
 source compares the configured launcher executable process against the pinned
