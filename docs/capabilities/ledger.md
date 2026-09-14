@@ -1094,3 +1094,12 @@ the optional source-root argument makes the reference and candidate address the
 same fixture tree. This is static implementation evidence only. Candidate
 compilation, shell execution, and fixture parity remain suspended pending
 explicit validation reauthorization.
+
+The W09 Python-to-WASM-export scanner candidate now bounds greedy explicit and
+implicit-main header suffix work with one aggregate budget across the flattened
+source. Candidate-only generated regressions cover individual and cumulative
+exhaustion without passing hostile input to the unbounded Python oracle;
+`scripts/check_wasm_export_scan_bounds.sh` records the source audit. This is
+static implementation evidence only; the pinned parity suite, AST-emitter
+comparison, `wasm_build.py` caller migration, and adoption remain open under
+the validation hold.

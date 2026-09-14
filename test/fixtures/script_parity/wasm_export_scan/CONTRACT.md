@@ -34,6 +34,20 @@ human-readable output.
   contains several `)` characters, use the rightmost closing parenthesis whose
   suffix matches the return/target grammar. The implicit-main matcher applies
   the same greedy choice.
+- To prevent adversarial malformed headers from making that compatibility scan
+  quadratic, Elisascript applies one aggregate weighted work ceiling of
+  1,048,576 units to right-to-left header rescans across the flattened source.
+  Reverse-search bytes cost one unit; each suffix candidate charges 16 fixed
+  units plus eight times the remaining suffix bytes before parsing it. This
+  meter bounds the repeated/backtracking work, not every instruction; the
+  remaining prefix and line scans are linear in the separate 8 MiB source cap.
+  Explicit exports and implicit `main` share this guard and fail with
+  `WASM header scan work exceeds Elisascript scan limit`. This is an
+  Elisascript-specific resource safeguard, not a Python behavior. Its generated
+  candidate-only regressions cover a single expensive header and multiple
+  individually-under-limit headers that exceed the aggregate; they do not
+  invoke the pinned Python parser on hostile input, which has no corresponding
+  work ceiling.
 - A whole-line `def main(params) [-> type]:` adds an implicit `main` row at that
   source position only if `main` has not already been seen. An explicit `main`
   before it suppresses the implicit row; an explicit `main` after it is a
@@ -134,7 +148,7 @@ only unless they are valid Elisa programs.
 | `main` | implicit position and fields, repeated definitions, explicit-before/after behavior, duplicate line diagnostic |
 | Invalid source | ignored malformed export forms and exact no-export failure; colon forms admitted by the pinned target regex are preserved |
 | Include graph | nested/absolute/relative, duplicate and diamond include order, cycle chain, missing file, no-newline splice, CRLF/bare-CR normalization, empty file |
-| Bounds and failure | bounded file/aggregate bytes, include depth/count, unreadable and invalid UTF-8 input, no partial success output |
+| Bounds and failure | bounded file/aggregate bytes, include depth/count, aggregate path-component work, explicit and implicit header-suffix scan work, unreadable and invalid UTF-8 input, no partial success output |
 | Integration | structured protocol consumed by the pinned `wasm_build.py` caller; no Python scanner on the accepted replacement path |
 
 The first parity slice is represented by
@@ -153,8 +167,13 @@ symlink. Generated temporary inputs
 also cover CRLF/bare-CR normalization, no-final-newline splicing, invalid
 UTF-8, an overlong source spelling rejected by the path-byte cap, and repeated
 relative includes expected to exceed the aggregate path-component-work cap
-with an exact-diagnostic assertion. Positive snapshots are also checked against
-their checked-in JSON. The
+with an exact-diagnostic assertion. A separate candidate-only generated case
+checks the explicit-export and implicit-main header-work failures without
+calling the unbounded Python parser, and another checks the shared aggregate
+budget across multiple individually-under-limit headers;
+`scripts/check_wasm_export_scan_bounds.sh` statically checks both guard paths
+and the rejection fixtures. These are static source contracts, not executed
+evidence. Positive snapshots are also checked against their checked-in JSON. The
 Python adapter verifies the working-tree scanner blob against the pinned Git
 commit before calling it.
 Before invoking the reference's recursive loader, the adapter performs a

@@ -20,6 +20,9 @@ module EsWasmExportScan:
             INCLUDE_FILES: usize = 4096
             INCLUDE_DEPTH: usize = 128
             INCLUDE_DIRECTIVES: usize = 16384
+            HEADER_SCAN_WORK: usize = 1048576
+            HEADER_SUFFIX_SCAN_FACTOR: usize = 8
+            HEADER_SUFFIX_FIXED_WORK: usize = 16
 
 
         const module Syntax:
@@ -119,6 +122,7 @@ module EsWasmExportScan:
             return_type: sview
             has_target: bool
             target: sview
+            failure: sview = ""
 
 
         struct MainSuffix:
@@ -132,6 +136,7 @@ module EsWasmExportScan:
             parameters: sview
             has_return: bool
             return_type: sview
+            failure: sview = ""
 
 
         enum LinePhase of u8:
@@ -228,6 +233,26 @@ module EsWasmExportScan:
             return text[offset:offset + len(needle)] == needle
 
 
+        # A suffix parser makes at most eight linear passes over its remaining
+        # bytes; charge that conservative cost before entering it, including a
+        # fixed allowance for its bounded delimiter/keyword checks.
+        def header_scan_charge(work: mutable usize&, amount: usize) -> bool:
+            return false if work > Limits::HEADER_SCAN_WORK
+            return false if amount > Limits::HEADER_SCAN_WORK - work
+            work <- work + amount
+            return true
+
+
+        def header_suffix_scan_charge(work: mutable usize&, remaining_bytes: usize) -> bool:
+            return false if work > Limits::HEADER_SCAN_WORK
+            available: mutable usize = Limits::HEADER_SCAN_WORK - work
+            return false if available < Limits::HEADER_SUFFIX_FIXED_WORK
+            available <- available - Limits::HEADER_SUFFIX_FIXED_WORK
+            return false if remaining_bytes > available / Limits::HEADER_SUFFIX_SCAN_FACTOR
+            suffix_cost: usize = Limits::HEADER_SUFFIX_FIXED_WORK + remaining_bytes * Limits::HEADER_SUFFIX_SCAN_FACTOR
+            return header_scan_charge(work, suffix_cost)
+
+
         def export_suffix(line: sview, start: usize) -> ExportSuffix:
             invalid: ExportSuffix = ExportSuffix{valid: false, has_return: false, return_type: "", has_target: false, target: ""}
             cursor: mutable usize = skip_python_space(line, start)
@@ -264,7 +289,7 @@ module EsWasmExportScan:
             return ExportSuffix{valid: true, has_return: has_return, return_type: return_type, has_target: has_target, target: target}
 
 
-        def export_header(line: sview) -> ExportHeader can[Memory.Allocate, Abort.Panic]:
+        def export_header(line: sview, header_work: mutable usize&) -> ExportHeader can[Memory.Allocate, Abort.Panic]:
             not_found: ExportHeader = ExportHeader{found: false, name: "", parameters: "", has_return: false, return_type: "", has_target: false, target: ""}
             cursor: mutable usize = skip_python_space(line, 0)
             return not_found if not starts_at(line, cursor, "export")
@@ -286,9 +311,14 @@ module EsWasmExportScan:
             # suffix-valid capture without rescanning every earlier suffix on
             # accepted nested signatures.
             scan: mutable usize = len(line)
-            while scan > open_paren + 1 |scan, line, open_paren, parsed_name|:
+            while scan > open_paren + 1 |scan, line, open_paren, parsed_name, header_work|:
+                if not header_scan_charge(header_work, 1):
+                    return ExportHeader{found: false, name: "", parameters: "", has_return: false, return_type: "", has_target: false, target: "", failure: "WASM header scan work exceeds Elisascript scan limit"}
                 scan <- scan - 1
                 if sview_at(line, scan) == 41u8:
+                    suffix_bytes: usize = len(line) - (scan + 1)
+                    if not header_suffix_scan_charge(header_work, suffix_bytes):
+                        return ExportHeader{found: false, name: "", parameters: "", has_return: false, return_type: "", has_target: false, target: "", failure: "WASM header scan work exceeds Elisascript scan limit"}
                     suffix: ExportSuffix = export_suffix(line, scan + 1)
                     if suffix.valid:
                         return ExportHeader{found: true, name: parsed_name.value, parameters: line[open_paren + 1:scan], has_return: suffix.has_return, return_type: suffix.return_type, has_target: suffix.has_target, target: suffix.target}
@@ -322,7 +352,7 @@ module EsWasmExportScan:
             return MainSuffix{valid: true, has_return: has_return, return_type: return_type}
 
 
-        def main_header(line: sview) -> MainHeader can[Memory.Allocate, Abort.Panic]:
+        def main_header(line: sview, header_work: mutable usize&) -> MainHeader can[Memory.Allocate, Abort.Panic]:
             not_found: MainHeader = MainHeader{found: false, parameters: "", has_return: false, return_type: ""}
             cursor: mutable usize = skip_python_space(line, 0)
             return not_found if not starts_at(line, cursor, "def")
@@ -339,9 +369,14 @@ module EsWasmExportScan:
             # export_header does, so nested type suffixes are only parsed once
             # in the ordinary accepted case.
             scan: mutable usize = len(line)
-            while scan > open_paren + 1 |scan, line, open_paren|:
+            while scan > open_paren + 1 |scan, line, open_paren, header_work|:
+                if not header_scan_charge(header_work, 1):
+                    return MainHeader{found: false, parameters: "", has_return: false, return_type: "", failure: "WASM header scan work exceeds Elisascript scan limit"}
                 scan <- scan - 1
                 if sview_at(line, scan) == 41u8:
+                    suffix_bytes: usize = len(line) - (scan + 1)
+                    if not header_suffix_scan_charge(header_work, suffix_bytes):
+                        return MainHeader{found: false, parameters: "", has_return: false, return_type: "", failure: "WASM header scan work exceeds Elisascript scan limit"}
                     suffix: MainSuffix = main_suffix(line, scan + 1)
                     if suffix.valid:
                         return MainHeader{found: true, parameters: line[open_paren + 1:scan], has_return: suffix.has_return, return_type: suffix.return_type}
@@ -884,9 +919,11 @@ module EsWasmExportScan:
             return lines
 
 
-        def parse_export_line(line: sview, line_number: usize, pending_link_name: sview, has_pending_link_name: bool, seen_names: darray[sview]) -> (found: bool, row: Export, failure: sview) can[Memory.Allocate, Abort.Panic]:
+        def parse_export_line(line: sview, line_number: usize, pending_link_name: sview, has_pending_link_name: bool, seen_names: darray[sview], header_work: mutable usize&) -> (found: bool, row: Export, failure: sview) can[Memory.Allocate, Abort.Panic]:
             no_row: Export = Export{name: "", target: ""}
-            header: ExportHeader = export_header(line)
+            header: ExportHeader = export_header(line, header_work)
+            if header.failure != "":
+                return (true, no_row, header.failure)
             if not header.found:
                 return (false, no_row, "")
 
@@ -937,9 +974,11 @@ module EsWasmExportScan:
             return (true, row, "")
 
 
-        def parse_implicit_main(line: sview, line_number: usize, main_seen: bool) -> (found: bool, row: Export, failure: sview) can[Memory.Allocate, Abort.Panic]:
+        def parse_implicit_main(line: sview, line_number: usize, main_seen: bool, header_work: mutable usize&) -> (found: bool, row: Export, failure: sview) can[Memory.Allocate, Abort.Panic]:
             no_row: Export = Export{name: "", target: ""}
-            header: MainHeader = main_header(line)
+            header: MainHeader = main_header(line, header_work)
+            if header.failure != "":
+                return (true, no_row, header.failure)
             if not header.found:
                 return (false, no_row, "")
             return (false, no_row, "") if main_seen
@@ -992,8 +1031,10 @@ module EsWasmExportScan:
             seen_names: mutable darray[sview] = []
             pending_link_name: mutable sview = ""
             has_pending_link_name: mutable bool = false
+            # Shared across the flattened source, including all include files.
+            header_work: mutable usize = 0
 
-            for line_index in 0..<lines.count |result, lines, seen_names, pending_link_name, has_pending_link_name|:
+            for line_index in 0..<lines.count |result, lines, seen_names, pending_link_name, has_pending_link_name, header_work|:
                 line: sview = lines[line_index]
                 line_number: usize = line_index + 1
                 trimmed_line: sview = trim_python_space(line)
@@ -1012,7 +1053,7 @@ module EsWasmExportScan:
                         has_pending_link_name <- true
                         continue
 
-                explicit: (found: bool, row: Export, failure: sview) = parse_export_line(line, line_number, pending_link_name, has_pending_link_name, seen_names)
+                explicit: (found: bool, row: Export, failure: sview) = parse_export_line(line, line_number, pending_link_name, has_pending_link_name, seen_names, header_work)
                 if explicit.found:
                     if explicit.failure != "":
                         result.failure <- explicit.failure
@@ -1030,7 +1071,7 @@ module EsWasmExportScan:
                     pending_link_name <- ""
                     has_pending_link_name <- false
 
-                implicit: (found: bool, row: Export, failure: sview) = parse_implicit_main(line, line_number, seen_names.contains("main"))
+                implicit: (found: bool, row: Export, failure: sview) = parse_implicit_main(line, line_number, seen_names.contains("main"), header_work)
                 if implicit.found:
                     if implicit.failure != "":
                         result.failure <- implicit.failure
