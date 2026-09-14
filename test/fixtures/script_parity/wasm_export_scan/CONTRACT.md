@@ -286,18 +286,21 @@ Unicode printability parity. A candidate-only generated input also
 exercises rejection of 4,097 parameters before creating `Parameter` records,
 without entering Python. Another candidate-only filesystem case creates a
 129-file include chain and checks the 128-frame depth rejection while cleaning
-up every generated file. Positive snapshots are also checked against their
-checked-in JSON. The Python adapter verifies the working-tree scanner blob
-against the pinned Git commit before calling it.
+up every generated file. A separate candidate-only case repeats one completed
+child include 16,385 times to pin the independent include-directive ceiling;
+it avoids invoking the Python loader on this generated bound case. Positive
+snapshots are also checked against their checked-in JSON. The Python adapter
+verifies the working-tree scanner blob against the pinned Git commit before
+calling it.
 Before invoking the reference's recursive loader, the adapter performs a
 streaming include-graph preflight with the same per-file, graph-byte,
 output-byte, path, path-component-work, directive, and depth ceilings; this
 avoids unbounded oracle reads while retaining the pinned loader as the
 accepted-input reference. It also normalizes host `OSError` read failures to
 the candidate's stable path diagnostic. This test source has not been run: it
-remains behind the disabled bounded compiler wrapper and does not cover other
-resource-bound rejection, unreadable input under a non-root user, or caller
-integration.
+remains behind the disabled bounded compiler wrapper and does not yet cover
+aggregate include-graph bytes, unique include-file count, structured-output
+overflow, unreadable input under a non-root user, or caller integration.
 
 The separate `test/script_parity/wasm_export_scan_launcher_test.elisascript`
 source compares the configured launcher executable process against the pinned
