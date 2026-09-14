@@ -225,8 +225,10 @@ symlinks, or caller integration.
 
 The separate `test/script_parity/wasm_export_scan_launcher_test.elisascript`
 source compares the configured launcher executable process against the pinned
-Python process for positive output, no-export and ABI failures, nested
-includes, and include-cycle diagnostics. It requires
+Python process across every checked-in top-level `.input` case, including
+positive output, target-regex compatibility, duplicate-export, greedy-header,
+ABI, and no-export failures, plus diamond, mixed-quote, missing, nested, and
+cyclic include graphs. It requires
 `ELISASCRIPT_PUBLIC_LAUNCHER` to name an absolute path and compares captured
 exit status, stdout, and stderr directly. The test trusts that the supplied
 path identifies the intended launcher; it does not verify the executable's
