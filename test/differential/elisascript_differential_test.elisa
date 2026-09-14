@@ -1174,30 +1174,106 @@ def differential_case_observation_schema_catches_shared_omissions() -> void:
 @test
 def differential_case_replay_uses_case_comparator_and_restores_before_artifact_access() -> void:
     can Memory.Allocate, Abort.Panic, Unsafe.PointerCast:
-        reference_runner: DifferentialRunner = DifferentialRunner{kind: DifferentialRunnerKind.NativeProcess, name: "reference", target: "/usr/bin/reference", arguments: [], timeout_steps: 10}
-        candidate_runner: DifferentialRunner = DifferentialRunner{kind: DifferentialRunnerKind.ElisascriptProgram, name: "candidate", target: "candidate.elisascript", arguments: [], timeout_steps: 10}
-        case: DifferentialCase = DifferentialCase{name: "case-replay-schema", reference: reference_runner, candidate: candidate_runner, observation_schema: DifferentialObservationSchema{sites: [DifferentialObservationSite{trace: 17u64, value_kind: DifferentialValueKind.Int}]}}
+        reference_runner: DifferentialRunner = DifferentialRunner{kind: DifferentialRunnerKind.NativeProcess, name: "reference", target: "/usr/bin/reference", arguments: ["--reference"], environment: [DifferentialEnvironmentEntry{name: "OVERRIDE", value: "reference"}, DifferentialEnvironmentEntry{name: "REFERENCE_ONLY", value: "yes"}], timeout_steps: 10}
+        candidate_runner: DifferentialRunner = DifferentialRunner{kind: DifferentialRunnerKind.NativeProcess, name: "candidate", target: "/usr/bin/candidate", arguments: ["--candidate"], environment: [DifferentialEnvironmentEntry{name: "OVERRIDE", value: "candidate"}, DifferentialEnvironmentEntry{name: "CANDIDATE_ONLY", value: "yes"}], timeout_steps: 10}
+        world: DifferentialWorld = DifferentialWorld{working_directory: "work", environment: [DifferentialEnvironmentEntry{name: "WORLD_ONLY", value: "common"}, DifferentialEnvironmentEntry{name: "OVERRIDE", value: "world"}], argv: ["subject argument", "--subject-flag"], stdin: "world input", locale: "C.UTF-8", timezone: "UTC", seed: 77u64}
+        case: DifferentialCase = DifferentialCase{name: "case-replay-schema", reference: reference_runner, candidate: candidate_runner, world: world, seed: 19u64, observation_schema: DifferentialObservationSchema{sites: [DifferentialObservationSite{trace: 17u64, value_kind: DifferentialValueKind.Int}]}}
         session: mutable DifferentialCaseReplaySession = make_differential_case_replay_session(case, EsDifferentialReplay::DifferentialReplayOrder.ReferenceThenCandidate, "/tmp/case-replay-reference", "/tmp/case-replay-candidate")
         assert validate_differential_case_replay_session(case, session)
         assert admit_differential_case_replay(case, session) == EsDifferentialReplay::DifferentialReplayState.Admitted
         assert begin_differential_case_replay_materialization(case, session) == EsDifferentialReplay::DifferentialReplayState.Materializing
-        assert mark_differential_case_worlds_ready(case, session, case.world, case.world) == EsDifferentialReplay::DifferentialReplayState.Running
+        assert mark_differential_case_worlds_ready(case, session, world, world) == EsDifferentialReplay::DifferentialReplayState.Running
+
+        ambient_environment: darray[DifferentialEnvironmentEntry] = [DifferentialEnvironmentEntry{name: "PATH", value: "/usr/bin"}, DifferentialEnvironmentEntry{name: "HOST_ONLY", value: "captured"}]
+        ambient_required: mutable bool = false
+        catch prepare_differential_case_replay_process_runner(case, session, DifferentialCaseSide.Reference):
+            ok prepared:
+                assert false
+            error failure:
+                assert failure == DifferentialCaseReplayError.AmbientEnvironmentRequired
+                ambient_required <- true
+        assert ambient_required
 
         wrong_side_rejected: mutable bool = false
-        catch prepare_differential_case_replay_runner(case, session, DifferentialCaseSide.Candidate):
-            ok runner:
+        catch prepare_differential_case_replay_process_runner(case, session, DifferentialCaseSide.Candidate, ambient_environment, true):
+            ok prepared:
                 assert false
             error failure:
                 assert failure == DifferentialCaseReplayError.RunOrderInvalid
                 wrong_side_rejected <- true
         assert wrong_side_rejected
-        prepared_reference: DifferentialRunner = prepare_differential_case_replay_runner(case, session, DifferentialCaseSide.Reference)
-        assert prepared_reference.name == "reference"
+        prepared_reference: DifferentialCaseReplayProcessSetup = prepare_differential_case_replay_process_runner(case, session, DifferentialCaseSide.Reference, ambient_environment, true)
+        assert prepared_reference.side == DifferentialCaseSide.Reference
+        assert prepared_reference.world_fingerprint == session.world_snapshot.world_fingerprint
+        assert prepared_reference.world_seed == 77u64
+        assert prepared_reference.case_seed == 19u64
+        assert prepared_reference.runner.name == "reference"
+        assert prepared_reference.runner.working_directory == "/tmp/case-replay-reference/work"
+        assert prepared_reference.runner.arguments.count == 3
+        assert prepared_reference.runner.arguments[0] == "--reference"
+        assert prepared_reference.runner.arguments[1] == "subject argument"
+        assert prepared_reference.runner.arguments[2] == "--subject-flag"
+        assert prepared_reference.runner.stdin == "world input"
+        assert prepared_reference.runner.environment_mode == ProcessEnvironmentMode.Replace
+        assert prepared_reference.runner.environment[0].name == "PATH"
+        assert prepared_reference.runner.environment[0].value == "/usr/bin"
+        assert prepared_reference.runner.environment[3].name == "OVERRIDE"
+        assert prepared_reference.runner.environment[3].value == "reference"
+        locale_present: mutable bool = false
+        timezone_present: mutable bool = false
+        for entry in prepared_reference.runner.environment |locale_present, timezone_present|:
+            locale_present <- true if entry.name == "LC_ALL" and entry.value == "C.UTF-8"
+            timezone_present <- true if entry.name == "TZ" and entry.value == "UTC"
+        assert locale_present and timezone_present
+        reference_invocation: DifferentialProcessInvocation = prepare_differential_process(prepared_reference.runner)
+        assert reference_invocation.working_directory == "/tmp/case-replay-reference/work"
+        assert reference_invocation.arguments[1] == "subject argument"
+        assert reference_invocation.environment_mode == ProcessEnvironmentMode.Replace
 
-        empty_reference: DifferentialRun = DifferentialRun{observations: []}
-        empty_candidate: DifferentialRun = DifferentialRun{observations: []}
-        assert complete_differential_case_replay_run(case, session, DifferentialCaseSide.Reference, empty_reference) == EsDifferentialReplay::DifferentialReplayState.Running
-        assert complete_differential_case_replay_run(case, session, DifferentialCaseSide.Candidate, empty_candidate) == EsDifferentialReplay::DifferentialReplayState.Comparing
+        unbound_process_run_rejected: mutable bool = false
+        catch complete_differential_case_replay_process_run(case, session, prepared_reference, DifferentialRun{observations: []}):
+            ok state:
+                assert false
+            error failure:
+                assert failure == DifferentialCaseReplayError.ProcessSetupMismatch
+                unbound_process_run_rejected <- true
+        assert unbound_process_run_rejected
+
+        tagged_unstarted_run: DifferentialRun = DifferentialRun{observations: [], process_setup_fingerprint: prepared_reference.setup_fingerprint}
+        unstarted_process_run_rejected: mutable bool = false
+        catch complete_differential_case_replay_process_run(case, session, prepared_reference, tagged_unstarted_run):
+            ok state:
+                assert false
+            error failure:
+                assert failure == DifferentialCaseReplayError.ProcessSetupMismatch
+                unstarted_process_run_rejected <- true
+        assert unstarted_process_run_rejected
+
+        # The model fixture claims the setup was attempted without launching a
+        # child, then verifies that the same root cannot be executed a second time.
+        session.has_reference_process_attempt <- true
+        repeated_process_attempt_rejected: mutable bool = false
+        catch execute_differential_case_replay_process(case, session, prepared_reference):
+            ok run:
+                assert false
+            error failure:
+                assert failure == DifferentialCaseReplayError.ProcessSetupMismatch
+                repeated_process_attempt_rejected <- true
+        assert repeated_process_attempt_rejected
+
+        # Typed records are caller-constructible, so this synthetic receipt is
+        # model consistency coverage, not proof that the executor produced it.
+        empty_reference: DifferentialRun = DifferentialRun{observations: [], process_setup_fingerprint: prepared_reference.setup_fingerprint}
+        empty_candidate: DifferentialRun = DifferentialRun{observations: [], process_setup_fingerprint: 0}
+        assert complete_differential_case_replay_process_run(case, session, prepared_reference, empty_reference) == EsDifferentialReplay::DifferentialReplayState.Running
+        prepared_candidate: DifferentialCaseReplayProcessSetup = prepare_differential_case_replay_process_runner(case, session, DifferentialCaseSide.Candidate, ambient_environment, true)
+        assert prepared_candidate.runner.working_directory == "/tmp/case-replay-candidate/work"
+        assert prepared_candidate.runner.arguments[0] == "--candidate"
+        assert prepared_candidate.runner.arguments[1] == "subject argument"
+        assert prepared_candidate.runner.environment[3].value == "candidate"
+        session.has_candidate_process_attempt <- true
+        empty_candidate.process_setup_fingerprint <- prepared_candidate.setup_fingerprint
+        assert complete_differential_case_replay_process_run(case, session, prepared_candidate, empty_candidate) == EsDifferentialReplay::DifferentialReplayState.Comparing
         assert compare_differential_case_replay(case, session) == EsDifferentialReplay::DifferentialReplayState.Restoring
 
         early_artifact_rejected: mutable bool = false

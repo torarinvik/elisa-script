@@ -71,6 +71,21 @@ it does not materialize or merge `DifferentialCase.world` into runner settings.
 The execution helpers accept a runner rather than a whole case, so passing the
 original runner directly intentionally bypasses case-level ceilings; pass the
 prepared runner to the adapter.
+For a replay-bound `NativeProcess` or `PythonAdapter`, use
+`prepare_differential_case_replay_process_runner` instead. It requires a live
+materialized replay session and the next ordered side, returns a deep-copied
+effective runner, and registers its setup fingerprint in the session. Process
+results should follow `execute_differential_case_replay_process` and be
+submitted through `complete_differential_case_replay_process_run`; the generic
+run-completion API rejects external process runners. The session permits one
+execution attempt per side/root, including failed launch attempts, so retrying
+requires a new replay session and fresh roots. Completion checks the setup
+fingerprint and the session's attempt claim. Since these are caller-constructible
+records, that check is consistency evidence, not an unforgeable proof that the
+executor or a particular child produced the run; it also does not prove
+filesystem provenance or descendant quiescence. Process replay rejects
+nonempty runner handler lists because those only apply to in-process Elisa
+execution.
 The shared numeric hard ceiling for timeout values is the runtime's default
 maximum step budget. This is a VM step limit for in-process Elisascript runners,
 but a bounded wait-poll count for native process runners; those units are not
@@ -278,17 +293,42 @@ script or module; the host adapter keeps that entry separate until it constructs
 argv vector. The validator rejects NUL bytes in executable-facing fields, including
 the working directory, while stdin remains length-delimited so binary-compatible
 fixtures are possible. Runner-level environment entries are ordered typed
-`(name, value)` settings and never mutate the parent's environment. The
-`environment_mode` field applies only to `DifferentialRunner.environment`; it
-does not materialize or merge `DifferentialWorld.environment` into either side.
-Case-world environment application remains the host adapter's open contract.
-`environment_mode` defines how these entries relate to the child environment:
-`Inherit` preserves the host environment and overlays the listed entries,
+`(name, value)` settings and never mutate the parent's environment. For
+standalone runners, `environment_mode` applies to
+`DifferentialRunner.environment`: `Inherit` overlays onto the host environment,
 `Replace` passes exactly the listed entries, and `Clear` passes an empty
-environment and rejects any entries. Exact modes use the provided `PATH` entry
-for bare executable names; without one, use an executable path containing `/`.
-Empty or relative `PATH` components retain POSIX meaning and are evaluated
-after the requested working directory is selected.
+environment and rejects any entries.
+
+Replay-bound process preparation composes runner settings with owned case-world
+inputs using explicit rules: world argv is appended after the fixed runner
+arguments; the runner working directory and stdin must be empty so the world is
+the only source for those fields; child cwd is the selected session root plus
+the world-relative cwd. Absolute or traversal world paths are rejected before
+the join.
+
+For environment composition, `Inherit` requires a caller-supplied, declared
+snapshot of the ambient environment and resolves the child mode to `Replace`.
+The ordered layers are ambient snapshot, world environment, world locale/timezone
+(`LC_ALL` and `TZ`), then selected-runner overrides. Replacing an existing name
+keeps its first slot; new names append. Thus no later host-environment lookup is
+needed. `Replace` starts with no ambient entries and applies the latter layers.
+`Clear` rejects a nonempty world environment, locale, or timezone and passes no
+environment. Seeds remain explicit setup metadata; this generic process layer
+does not guess how each language seeds its random APIs. Overlays update the
+ordered vector in place; the current merge still searches that vector by name,
+so near-limit environment performance needs a future indexed implementation.
+The composed vector is capped at the existing 1,048,576-entry limit and fails
+with `EnvironmentLimitExceeded` before appending an over-limit unique key.
+Environment vectors and the final invocation are revalidated against the
+existing argument, entry, path, text, input, and output budgets.
+
+Exact process modes use the provided `PATH` for bare executable names; without
+one, use an executable path containing `/`. Empty or relative `PATH` components
+retain POSIX meaning and are evaluated after the requested working directory is
+selected. This replay process API does not make in-process Elisascript runners
+hermetic; they still need a virtual-world/effect adapter. A captured
+ambient-environment claim is supplied by the host and is not independently
+verified by this pure preparation layer.
 The validator also caps the aggregate terminated C-string payload for the
 executable, adapter entry, arguments, working directory, and environment at
 64 MiB; each environment entry includes the `=` separator materialized by
@@ -769,10 +809,14 @@ written with bounded short-write/EINTR handling, then assigned and checked
 against the requested exact mode and byte length. The directory/stat ABI and
 this adapter are Darwin-arm64-specific.
 
-Cleanup is now available through cleanup_darwin_differential_world, but this
-is still not a replay-ready host adapter: it has no recursive post-run world
-snapshot/readback, world argv/environment/stdin/locale/timezone/seed merge,
-paired-root orchestration, or process launch. Materialization preflights a
+Cleanup is now available through cleanup_darwin_differential_world. The
+replay-bound process preparer resolves argv, environment, stdin, locale,
+timezone, and root-relative cwd from the sealed world into a per-side runner,
+and a single-side executor binds the returned run to that setup. This still is
+not a complete replay-ready host adapter: it has no recursive post-run world
+snapshot/readback, automatic root materialization/cleanup orchestration,
+two-process replay coordinator, authoritative ambient-environment capture, or
+descendant-quiescence receipt. Materialization preflights a
 conservative count of fixture and inferred-directory entries plus a maximum
 directory depth so an admitted initial world fits the cleaner's fixed limits
 (1,048,576 entries and 1,024 nested directories). A child can exceed those
@@ -942,8 +986,13 @@ Retained run evidence is re-fingerprinted on validation, so post-comparison
 mutation prevents artifact access. A rejected restore remains retryable.
 Comparison-artifact access is withheld until both restored-world declarations
 match the snapshot and the replay reaches `Completed`. These APIs coordinate
-and validate adapter claims; they do not create directories, launch processes,
-or prove host I/O provenance.
+and validate adapter claims. The replay-bound process path resolves per-side
+cwd/argv/environment/stdin, executes at most one child attempt per side, and
+checks its setup receipt and attempt claim at run completion; caller-constructible
+records mean this is not unforgeable child provenance. It still does not create
+either world, orchestrate both processes, prove the host's ambient-environment
+capture, establish descendant quiescence, or provide authoritative host I/O
+provenance.
 
 `EsDifferentialRedaction::DifferentialRedactionPolicy` is the explicit secret
 boundary for environment metadata captured into artifacts. Policies select exact

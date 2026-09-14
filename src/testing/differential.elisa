@@ -298,6 +298,10 @@ module EsDifferential:
             values: mutable darray[DifferentialValue] = []
             return_value: mutable DifferentialValue = DifferentialValue{kind: DifferentialValueKind.Void}
             outcome: mutable DifferentialRunOutcome = DifferentialRunOutcome.Completed
+            # The replay-bound process executor sets this setup-fingerprint
+            # claim; public records remain caller-constructible, so it is not
+            # independent proof of child provenance.
+            process_setup_fingerprint: mutable u64 = 0
             # External processes do not have an Elisascript engine identity.
             # In-process candidates set this flag and preserve the exact
             # interpreter/bytecode choice for artifact and parity auditing.
@@ -703,6 +707,19 @@ module EsDifferential:
         const enum DifferentialCaseSide of u8:
             Reference
             Candidate
+
+
+        # Process-only replay preparation copies every effective input into the
+        # returned runner. The seeds stay explicit metadata because
+        # different runtimes require adapter-specific seeding APIs.
+        struct DifferentialCaseReplayProcessSetup:
+            format_version: u8 = 1
+            side: DifferentialCaseSide
+            runner: DifferentialRunner
+            world_fingerprint: u64
+            world_seed: u64
+            case_seed: u64
+            setup_fingerprint: u64 = 0
 
 
         struct DifferentialArtifactManifest:
@@ -3438,6 +3455,14 @@ module EsDifferential:
             RunOrderInvalid
             ComparisonNotReady
             ArtifactNotReady
+            RunnerWorkingDirectoryConflict
+            RunnerStdinConflict
+            AmbientEnvironmentRequired
+            UnexpectedAmbientEnvironment
+            InvalidAmbientEnvironment
+            EnvironmentClearConflict
+            EnvironmentLimitExceeded
+            ProcessSetupMismatch
 
 
         # Host adapters own this case-bound lifecycle while performing actual
@@ -3445,7 +3470,7 @@ module EsDifferential:
         # materialization state machines, retains the exact typed runs, and
         # stores a comparison only after both sides have completed.
         struct DifferentialCaseReplaySession:
-            format_version: u8 = 1
+            format_version: u8 = 2
             manifest: DifferentialArtifactManifest
             world_snapshot: DifferentialWorldSnapshot
             materialization: DifferentialWorldMaterializationPlan
@@ -3454,6 +3479,12 @@ module EsDifferential:
             candidate_root_binding: darray[u8] = []
             reference_runner_fingerprint: u64 = 0
             candidate_runner_fingerprint: u64 = 0
+            reference_process_setup_fingerprint: u64 = 0
+            candidate_process_setup_fingerprint: u64 = 0
+            has_reference_process_setup: bool = false
+            has_candidate_process_setup: bool = false
+            has_reference_process_attempt: bool = false
+            has_candidate_process_attempt: bool = false
             case_timeout_steps: u64 = 0
             case_max_output_bytes: u64 = 0
             reference_run: DifferentialRun = DifferentialRun{observations: []}
@@ -5293,6 +5324,7 @@ module EsDifferential:
             fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, side.u8())
             fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, run.outcome.u8())
             fingerprint <- differential_world_hash_u64(fingerprint, run.exit_status.u64())
+            fingerprint <- differential_world_hash_u64(fingerprint, run.process_setup_fingerprint)
             fingerprint <- differential_world_hash_text(fingerprint, run.error_text)
             fingerprint <- differential_world_hash_text(fingerprint, run.stdout)
             fingerprint <- differential_world_hash_text(fingerprint, run.stderr)
@@ -5376,6 +5408,71 @@ module EsDifferential:
             return fingerprint
 
 
+        # Copy text into the current runtime arena so a prepared replay runner
+        # never retains views into caller-owned case or ambient-environment data.
+        def differential_case_replay_copy_text(value: sview) -> sview can[Memory.Allocate, Abort.Panic]:
+            return "" if sview_len(value) == 0
+            storage: mutable dstr = ctx_fstr_alloc(sview_len(value))
+            ctx_fstr_append(storage, value.data, sview_len(value))
+            return bytes_view(storage)
+
+
+        def differential_case_replay_copy_snapshot_bytes(snapshot: DifferentialWorldSnapshot&, span: DifferentialWorldSnapshotSpan) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+            raise DifferentialCaseReplayError.InvalidSession if span.start > snapshot.payload.count
+            raise DifferentialCaseReplayError.InvalidSession if span.length > snapshot.payload.count - span.start
+            copied: mutable darray[u8] = []
+            copied.reserve(span.length)
+            for index in 0..<span.length |snapshot, span, copied|:
+                copied.push(snapshot.payload[span.start + index])
+            return copied
+
+
+        def differential_case_replay_join_world_directory(root: sview, relative_directory: sview) -> sview error[DifferentialCaseReplayError, DifferentialRunnerError] can[Memory.Allocate, Abort.Panic]:
+            raise DifferentialCaseReplayError.InvalidSession if not differential_world_materialization_root_valid(root)
+            raise DifferentialCaseReplayError.InvalidCase if relative_directory != "" and not differential_world_relative_path_safe(relative_directory)
+            path_length: usize = sview_len(root) + (1 + sview_len(relative_directory) if relative_directory != "" else 0)
+            raise DifferentialRunnerError.Invalid if path_length >= DIFFERENTIAL_DEFAULT_MAX_PROCESS_PATH_BYTES
+            storage: mutable dstr = ctx_fstr_alloc(path_length)
+            ctx_fstr_append(storage, root.data, sview_len(root))
+            if relative_directory != "":
+                ctx_fstr_append(storage, "/", 1)
+                ctx_fstr_append(storage, relative_directory.data, sview_len(relative_directory))
+            return bytes_view(storage)
+
+
+        # Later layers replace an earlier key in-place; new keys append. Thus
+        # ambient order is retained and both sides apply the same deterministic
+        # world-then-runner overlay rule without duplicate names in the result.
+        def differential_case_replay_environment_overlay(environment: mutable darray[DifferentialEnvironmentEntry]&, name: sview, value: sview) -> void error[DifferentialCaseReplayError] can[Memory.Allocate, Abort.Panic]:
+            for index in 0..<environment.count |environment, name, value|:
+                if environment[index].name == name:
+                    copied_value: sview = differential_case_replay_copy_text(value)
+                    environment[index] <- DifferentialEnvironmentEntry{name: environment[index].name, value: copied_value}
+                    return
+            raise DifferentialCaseReplayError.EnvironmentLimitExceeded if environment.count >= DIFFERENTIAL_DEFAULT_MAX_ENVIRONMENT_ENTRIES
+            copied_name: sview = differential_case_replay_copy_text(name)
+            copied_value: sview = differential_case_replay_copy_text(value)
+            environment.push(DifferentialEnvironmentEntry{name: copied_name, value: copied_value})
+
+
+        def differential_case_replay_process_setup_fingerprint(runner: DifferentialRunner&, side: DifferentialCaseSide, world_fingerprint: u64, world_seed: u64, case_seed: u64) -> u64:
+            return 0 if side != DifferentialCaseSide.Reference and side != DifferentialCaseSide.Candidate
+            return 0 if world_fingerprint == 0
+            runner_fingerprint: u64 = differential_runner_configuration_fingerprint(runner)
+            return 0 if runner_fingerprint == 0
+            fingerprint: mutable u64 = 14695981039346656037
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, 69)
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, 83)
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, 80)
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, 83)
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, 1)
+            fingerprint <- EsIr::canonical_artifact_hash_byte(fingerprint, side.u8())
+            fingerprint <- differential_world_hash_u64(fingerprint, world_fingerprint)
+            fingerprint <- differential_world_hash_u64(fingerprint, world_seed)
+            fingerprint <- differential_world_hash_u64(fingerprint, case_seed)
+            return differential_world_hash_u64(fingerprint, runner_fingerprint)
+
+
         def differential_case_replay_copy_root_binding(root: sview) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
             binding: mutable darray[u8] = []
             for byte in root |binding|:
@@ -5425,7 +5522,7 @@ module EsDifferential:
 
 
         def differential_case_replay_session_valid(case: DifferentialCase&, session: DifferentialCaseReplaySession&) -> bool error[DifferentialRunnerError, EsDifferentialReplay::DifferentialReplayError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
-            return false if session.format_version != 1
+            return false if session.format_version != 2
             return false if not differential_case_replay_manifest_matches(case, session.manifest)
             return false if not validate_differential_world_snapshot(case.world, session.world_snapshot).valid
             return false if session.replay.expected_manifest_fingerprint != differential_artifact_manifest_fingerprint(session.manifest)
@@ -5433,6 +5530,17 @@ module EsDifferential:
             return false if session.case_timeout_steps != case.timeout_steps or session.case_max_output_bytes != case.max_output_bytes
             return false if session.reference_runner_fingerprint == 0 or session.candidate_runner_fingerprint == 0
             return false if session.reference_runner_fingerprint != differential_runner_configuration_fingerprint(case.reference) or session.candidate_runner_fingerprint != differential_runner_configuration_fingerprint(case.candidate)
+            return false if session.has_reference_process_setup != (session.reference_process_setup_fingerprint != 0) or session.has_candidate_process_setup != (session.candidate_process_setup_fingerprint != 0)
+            reference_is_process: bool = case.reference.kind == DifferentialRunnerKind.NativeProcess or case.reference.kind == DifferentialRunnerKind.PythonAdapter
+            candidate_is_process: bool = case.candidate.kind == DifferentialRunnerKind.NativeProcess or case.candidate.kind == DifferentialRunnerKind.PythonAdapter
+            return false if (session.has_reference_process_setup and not reference_is_process) or (session.has_candidate_process_setup and not candidate_is_process)
+            return false if (session.has_reference_process_attempt and not session.has_reference_process_setup) or (session.has_candidate_process_attempt and not session.has_candidate_process_setup)
+            return false if session.has_reference_run and reference_is_process and (not session.has_reference_process_setup or not session.has_reference_process_attempt)
+            return false if session.has_candidate_run and candidate_is_process and (not session.has_candidate_process_setup or not session.has_candidate_process_attempt)
+            if (session.has_reference_process_setup and not session.has_reference_run) or (session.has_candidate_process_setup and not session.has_candidate_run):
+                expected_setup_side: EsDifferentialReplay::DifferentialReplaySide = try differential_case_replay_expected_side(session)
+                return false if session.has_reference_process_setup and not session.has_reference_run and expected_setup_side != EsDifferentialReplay::DifferentialReplaySide.Reference
+                return false if session.has_candidate_process_setup and not session.has_candidate_run and expected_setup_side != EsDifferentialReplay::DifferentialReplaySide.Candidate
             return false if not differential_case_replay_root_binding_matches(bytes_view(session.materialization.reference_root_bytes), session.reference_root_binding) or not differential_case_replay_root_binding_matches(bytes_view(session.materialization.candidate_root_bytes), session.candidate_root_binding)
             components_synchronized: bool = try differential_case_replay_components_synchronized(session)
             return false if not components_synchronized
@@ -5443,6 +5551,37 @@ module EsDifferential:
             if session.has_comparison:
                 artifact: DifferentialComparisonArtifact = make_differential_comparison_artifact(session.manifest, session.comparison)
                 return false if differential_comparison_artifact_fingerprint(artifact) != session.replay.comparison_fingerprint
+            return true
+
+
+        def differential_case_replay_process_setup_valid(case: DifferentialCase&, session: DifferentialCaseReplaySession&, setup: DifferentialCaseReplayProcessSetup&) -> bool error[DifferentialRunnerError, DifferentialCaseReplayError, EsDifferentialReplay::DifferentialReplayError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            return false if setup.format_version != 1
+            return false if not differential_case_replay_session_valid(case, session)
+            return false if session.replay.state != EsDifferentialReplay::DifferentialReplayState.Running or session.materialization.state != DifferentialWorldMaterializationState.Running
+            side_identity: EsDifferentialReplay::DifferentialReplaySide = try differential_case_replay_side_identity(setup.side)
+            expected_side: EsDifferentialReplay::DifferentialReplaySide = try differential_case_replay_expected_side(session)
+            return false if side_identity != expected_side
+            return false if setup.runner.kind != DifferentialRunnerKind.NativeProcess and setup.runner.kind != DifferentialRunnerKind.PythonAdapter
+            runner_check: DifferentialRunnerCheck = validate_differential_runner(setup.runner)
+            return false if not runner_check.valid
+            return false if setup.world_fingerprint != session.world_snapshot.world_fingerprint or setup.world_seed != session.world_snapshot.seed or setup.case_seed != case.seed
+            world_directory: sview = differential_world_snapshot_span_text(session.world_snapshot, session.world_snapshot.working_directory)
+            root: mutable sview = ""
+            match setup.side:
+                DifferentialCaseSide.Reference:
+                    root <- try differential_case_replay_bound_reference_root(session)
+                DifferentialCaseSide.Candidate:
+                    root <- try differential_case_replay_bound_candidate_root(session)
+                _:
+                    return false
+            expected_directory: sview = try differential_case_replay_join_world_directory(root, world_directory)
+            return false if setup.runner.working_directory != expected_directory
+            fingerprint: u64 = differential_case_replay_process_setup_fingerprint(setup.runner, setup.side, setup.world_fingerprint, setup.world_seed, setup.case_seed)
+            return false if fingerprint == 0 or fingerprint != setup.setup_fingerprint
+            if setup.side == DifferentialCaseSide.Reference:
+                return false if not session.has_reference_process_setup or session.reference_process_setup_fingerprint != fingerprint
+            else:
+                return false if not session.has_candidate_process_setup or session.candidate_process_setup_fingerprint != fingerprint
             return true
 
 
@@ -5595,7 +5734,117 @@ module EsDifferential:
             return try prepare_differential_case_runner(case, side)
 
 
-        def complete_differential_case_replay_run(case: DifferentialCase&, session: mutable DifferentialCaseReplaySession&, side: DifferentialCaseSide, run: DifferentialRun&) -> EsDifferentialReplay::DifferentialReplayState error[DifferentialRunnerError, DifferentialCaseReplayError, EsDifferentialReplay::DifferentialReplayError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+        # Prepare the selected process side from the session-owned world. The
+        # host supplies a captured ambient environment for Inherit so the child
+        # receives a resolved Replace environment instead of reading the host
+        # environment again after this boundary.
+        def prepare_differential_case_replay_process_runner(case: DifferentialCase&, session: mutable DifferentialCaseReplaySession&, side: DifferentialCaseSide, ambient_environment: darray[DifferentialEnvironmentEntry] = [], ambient_environment_captured: bool = false) -> DifferentialCaseReplayProcessSetup error[DifferentialRunnerError, DifferentialCaseReplayError, EsDifferentialReplay::DifferentialReplayError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            runner: DifferentialRunner = try prepare_differential_case_replay_runner(case, session, side)
+            raise DifferentialRunnerError.UnsupportedKind if runner.kind != DifferentialRunnerKind.NativeProcess and runner.kind != DifferentialRunnerKind.PythonAdapter
+            raise DifferentialCaseReplayError.RunOrderInvalid if (side == DifferentialCaseSide.Reference and session.has_reference_process_setup) or (side == DifferentialCaseSide.Candidate and session.has_candidate_process_setup)
+            raise DifferentialRunnerError.UnsupportedConfiguration if runner.handlers.count != 0
+            raise DifferentialCaseReplayError.RunnerWorkingDirectoryConflict if runner.working_directory != ""
+            raise DifferentialCaseReplayError.RunnerStdinConflict if runner.stdin != "" or runner.stdin_bytes.count != 0 or runner.stdin_binary
+
+            snapshot: DifferentialWorldSnapshot = session.world_snapshot
+            raise DifferentialRunnerError.Invalid if snapshot.argv.count > DIFFERENTIAL_DEFAULT_MAX_ARGUMENTS
+            raise DifferentialRunnerError.Invalid if runner.arguments.count > DIFFERENTIAL_DEFAULT_MAX_ARGUMENTS - snapshot.argv.count
+            world_directory: sview = differential_world_snapshot_span_text(snapshot, snapshot.working_directory)
+            root: mutable sview = ""
+            match side:
+                DifferentialCaseSide.Reference:
+                    root <- try differential_case_replay_bound_reference_root(session)
+                DifferentialCaseSide.Candidate:
+                    root <- try differential_case_replay_bound_candidate_root(session)
+                _:
+                    raise DifferentialCaseReplayError.InvalidCase
+            working_directory: sview = try differential_case_replay_join_world_directory(root, world_directory)
+
+            environment: mutable darray[DifferentialEnvironmentEntry] = []
+            effective_environment_mode: mutable EsProcess::ProcessEnvironmentMode = runner.environment_mode
+            match runner.environment_mode:
+                EsProcess::ProcessEnvironmentMode.Inherit:
+                    raise DifferentialCaseReplayError.AmbientEnvironmentRequired if not ambient_environment_captured
+                    raise DifferentialCaseReplayError.InvalidAmbientEnvironment if ambient_environment.count > DIFFERENTIAL_DEFAULT_MAX_ENVIRONMENT_ENTRIES or not differential_environment_valid(ambient_environment)
+                    for entry in ambient_environment |environment|:
+                        try differential_case_replay_environment_overlay(environment, entry.name, entry.value)
+                    effective_environment_mode <- EsProcess::ProcessEnvironmentMode.Replace
+                EsProcess::ProcessEnvironmentMode.Replace:
+                    raise DifferentialCaseReplayError.UnexpectedAmbientEnvironment if ambient_environment_captured or ambient_environment.count != 0
+                EsProcess::ProcessEnvironmentMode.Clear:
+                    raise DifferentialCaseReplayError.UnexpectedAmbientEnvironment if ambient_environment_captured or ambient_environment.count != 0
+                    raise DifferentialCaseReplayError.EnvironmentClearConflict if snapshot.environment.count != 0 or snapshot.locale.length != 0 or snapshot.timezone.length != 0
+                _:
+                    raise DifferentialRunnerError.Invalid
+
+            for entry in snapshot.environment |environment|:
+                try differential_case_replay_environment_overlay(environment, differential_world_snapshot_span_text(snapshot, entry.name), differential_world_snapshot_span_text(snapshot, entry.value))
+            if snapshot.locale.length != 0:
+                try differential_case_replay_environment_overlay(environment, "LC_ALL", differential_world_snapshot_span_text(snapshot, snapshot.locale))
+            if snapshot.timezone.length != 0:
+                try differential_case_replay_environment_overlay(environment, "TZ", differential_world_snapshot_span_text(snapshot, snapshot.timezone))
+            for entry in runner.environment |environment|:
+                try differential_case_replay_environment_overlay(environment, entry.name, entry.value)
+
+            effective: mutable DifferentialRunner = runner
+            effective.name <- differential_case_replay_copy_text(runner.name)
+            effective.target <- differential_case_replay_copy_text(runner.target)
+            effective.entry <- differential_case_replay_copy_text(runner.entry)
+            effective.arguments <- []
+            effective.arguments.reserve(runner.arguments.count + snapshot.argv.count)
+            for argument in runner.arguments |effective|:
+                effective.arguments.push(differential_case_replay_copy_text(argument))
+            for argument in snapshot.argv |snapshot, effective|:
+                effective.arguments.push(differential_case_replay_copy_text(differential_world_snapshot_span_text(snapshot, argument)))
+            effective.working_directory <- working_directory
+            effective.environment <- environment
+            effective.environment_mode <- effective_environment_mode
+            effective.stdin <- differential_case_replay_copy_text(differential_world_snapshot_span_text(snapshot, snapshot.stdin))
+            effective.stdin_bytes <- differential_case_replay_copy_snapshot_bytes(snapshot, snapshot.stdin_bytes)
+            effective.stdin_binary <- snapshot.stdin_binary
+            effective.protocol <- differential_case_replay_copy_text(runner.protocol)
+            effective.required_effects <- []
+            effective.required_effects.reserve(runner.required_effects.count)
+            for effect in runner.required_effects |effective|:
+                effective.required_effects.push(differential_case_replay_copy_text(effect))
+            effective.required_errors <- []
+            effective.required_errors.reserve(runner.required_errors.count)
+            for error_name in runner.required_errors |effective|:
+                effective.required_errors.push(differential_case_replay_copy_text(error_name))
+
+            prepared_check: DifferentialRunnerCheck = validate_differential_runner(effective)
+            raise DifferentialRunnerError.Invalid if not prepared_check.valid
+            setup_fingerprint: u64 = differential_case_replay_process_setup_fingerprint(effective, side, snapshot.world_fingerprint, snapshot.seed, case.seed)
+            raise DifferentialCaseReplayError.InvalidSession if setup_fingerprint == 0
+            if side == DifferentialCaseSide.Reference:
+                session.reference_process_setup_fingerprint <- setup_fingerprint
+                session.has_reference_process_setup <- true
+            else:
+                session.candidate_process_setup_fingerprint <- setup_fingerprint
+                session.has_candidate_process_setup <- true
+            raise DifferentialCaseReplayError.InvalidSession if not differential_case_replay_session_valid(case, session)
+            return DifferentialCaseReplayProcessSetup{format_version: 1, side: side, runner: effective, world_fingerprint: snapshot.world_fingerprint, world_seed: snapshot.seed, case_seed: case.seed, setup_fingerprint: setup_fingerprint}
+
+
+        # Execute exactly the replay-bound setup and attach its receipt to the
+        # captured run. This is still direct-child evidence only; it does not
+        # establish descendant quiescence or filesystem snapshot stability.
+        def execute_differential_case_replay_process(case: DifferentialCase&, session: mutable DifferentialCaseReplaySession&, setup: DifferentialCaseReplayProcessSetup&) -> DifferentialRun error[DifferentialRunnerError, DifferentialCaseReplayError, EsDifferentialReplay::DifferentialReplayError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            raise DifferentialCaseReplayError.ProcessSetupMismatch if not differential_case_replay_process_setup_valid(case, session, setup)
+            invocation: DifferentialProcessInvocation = try prepare_differential_process(setup.runner)
+            if setup.side == DifferentialCaseSide.Reference:
+                raise DifferentialCaseReplayError.ProcessSetupMismatch if session.has_reference_process_attempt
+                session.has_reference_process_attempt <- true
+            else:
+                raise DifferentialCaseReplayError.ProcessSetupMismatch if session.has_candidate_process_attempt
+                session.has_candidate_process_attempt <- true
+            run: mutable DifferentialRun = try execute_differential_process(invocation)
+            run.process_setup_fingerprint <- setup.setup_fingerprint
+            return run
+
+
+    private:
+        def differential_case_replay_record_run(case: DifferentialCase&, session: mutable DifferentialCaseReplaySession&, side: DifferentialCaseSide, run: DifferentialRun&) -> EsDifferentialReplay::DifferentialReplayState error[DifferentialRunnerError, DifferentialCaseReplayError, EsDifferentialReplay::DifferentialReplayError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
             raise DifferentialCaseReplayError.InvalidSession if not differential_case_replay_session_valid(case, session)
             raise DifferentialCaseReplayError.RunnerNotReady if session.replay.state != EsDifferentialReplay::DifferentialReplayState.Running or session.materialization.state != DifferentialWorldMaterializationState.Running
             side_identity: EsDifferentialReplay::DifferentialReplaySide = try differential_case_replay_side_identity(side)
@@ -5616,6 +5865,27 @@ module EsDifferential:
                 session.candidate_run_fingerprint <- run_fingerprint
                 session.has_candidate_run <- true
             return next_state
+
+
+    public:
+        # Process runs must be completed with their registered effective setup;
+        # non-process adapters retain the generic result-completion path.
+        def complete_differential_case_replay_run(case: DifferentialCase&, session: mutable DifferentialCaseReplaySession&, side: DifferentialCaseSide, run: DifferentialRun&) -> EsDifferentialReplay::DifferentialReplayState error[DifferentialRunnerError, DifferentialCaseReplayError, EsDifferentialReplay::DifferentialReplayError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            raise DifferentialCaseReplayError.InvalidSession if not differential_case_replay_session_valid(case, session)
+            _ = try differential_case_replay_side_identity(side)
+            runner_kind: DifferentialRunnerKind = case.reference.kind if side == DifferentialCaseSide.Reference else case.candidate.kind
+            raise DifferentialCaseReplayError.ProcessSetupMismatch if runner_kind == DifferentialRunnerKind.NativeProcess or runner_kind == DifferentialRunnerKind.PythonAdapter
+            return try differential_case_replay_record_run(case, session, side, run)
+
+
+        def complete_differential_case_replay_process_run(case: DifferentialCase&, session: mutable DifferentialCaseReplaySession&, setup: DifferentialCaseReplayProcessSetup&, run: DifferentialRun&) -> EsDifferentialReplay::DifferentialReplayState error[DifferentialRunnerError, DifferentialCaseReplayError, EsDifferentialReplay::DifferentialReplayError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            raise DifferentialCaseReplayError.ProcessSetupMismatch if not differential_case_replay_process_setup_valid(case, session, setup)
+            if setup.side == DifferentialCaseSide.Reference:
+                raise DifferentialCaseReplayError.ProcessSetupMismatch if not session.has_reference_process_attempt
+            else:
+                raise DifferentialCaseReplayError.ProcessSetupMismatch if not session.has_candidate_process_attempt
+            raise DifferentialCaseReplayError.ProcessSetupMismatch if run.process_setup_fingerprint != setup.setup_fingerprint
+            return try differential_case_replay_record_run(case, session, setup.side, run)
 
 
         # Case-aware comparison is the only comparison path exposed by this

@@ -885,9 +885,15 @@ instrumentation and execution evidence remain open.
 ES-SCRIPT-019 | EsDifferentialReplay supplies a bounded replay lifecycle that
 binds manifest/world fingerprints, enforces an explicit side order, requires
 both run identities and a comparison before restoration, and rejects stale or
-wrong-world completion. The focused differential fixture, namespace inclusion,
-documentation, and check_differential_replay.sh audit are static evidence;
-reproduction launch, host materialization, and crash recovery remain open.
+wrong-world completion. Replay-bound process setup now resolves selected-side
+cwd, argv, stdin, environment, locale, and timezone; records a setup
+fingerprint; admits one attempt per side/root; and requires the attempt and
+matching fingerprint claim when completing `NativeProcess`/`PythonAdapter`
+runs. The focused fixture and documentation are static source evidence only;
+no fixture, compiler, or audit was run. Public records are forgeable, so this
+does not prove child provenance. Ambient capture provenance, actual root
+materialization, indexed large-environment merging, in-process virtualization,
+descendant quiescence, and crash recovery remain open.
 
 ES-SCRIPT-020 | EsDifferentialRedaction supplies explicit exact-name/all-value
 redaction policy, bounded environment capture, deterministic value fingerprints,
