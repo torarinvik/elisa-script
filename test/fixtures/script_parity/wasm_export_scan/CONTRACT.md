@@ -94,6 +94,33 @@ human-readable output.
   remains, fail with ``WASM source has no exported function; add `export fn
   name(...) -> T = target` ``.
 
+## Candidate CLI process protocol
+
+The launcher invocation is
+`<launcher> scripts/wasm_export_scan.elisascript <absolute-source-path>`; the
+Elisascript `main` receives exactly one source-path operand after the script
+path. Its process behavior is:
+
+- On success: exit status `0`, compact ordered JSON array on stdout followed by
+  one newline, and empty stderr. Each row and parameter uses the field order
+  and optional-field rules specified above.
+- On a source, include, parse, ABI, or bounded-resource failure: exit status
+  `1`, empty stdout, and stderr containing exactly
+  `wasm export scan: MESSAGE\n`, where `MESSAGE` is the candidate/reference
+  diagnostic for the case.
+- On any other positional-argument count: exit status `2`, empty stdout, and
+  stderr exactly `usage: wasm export scan [source]\n`.
+
+The launcher parity source compares status/stdout/stderr for the
+one-source-path shape and scanner cases, and directly checks the candidate's
+wrong-argument-count tuple with zero and two source operands. That arity check
+is not compared against the Python adapter: the adapter has its own optional
+expected-JSON argument and its usage text is not the candidate CLI contract.
+The length-delimited response frame used by `differential_path_response` is an
+in-process test transport; it is not part of the public launcher's stdout
+protocol. The launcher source and its arity checks remain unexecuted under the
+validation hold.
+
 ## `read_flat_source` observable contract
 
 - Resolve each path before cycle/dedup checks. Detect a path already on the
@@ -182,7 +209,7 @@ only unless they are valid Elisa programs.
 | Invalid source | ignored malformed export forms and exact no-export failure; colon forms admitted by the pinned target regex are preserved |
 | Include graph | nested/absolute/relative, duplicate and diamond include order, cycle chain, missing file, relative/absolute dangling symlink targets, nested links, target and post-link `..` resolution, no-newline splice, CRLF/bare-CR normalization, empty file |
 | Bounds and failure | bounded file/aggregate bytes, materialized source line count, include depth/count, aggregate path-component and symlink-expansion work, explicit and implicit header-suffix scan work, aggregate duplicate-name comparison work, unreadable and invalid UTF-8 input, no partial success output |
-| Integration (future acceptance; not covered by this launcher test) | one resolved absolute source-path argument, ordered JSON-array success output, exact process failure tuple, and consumption by the pinned `wasm_build.py` caller; no Python scanner on the accepted replacement path |
+| Integration (future acceptance; not covered by this launcher test) | one resolved absolute source-path operand after the script path; ordered JSON-array success; exact scan-failure and wrong-arity process tuples; consumption by the pinned `wasm_build.py` caller; no Python scanner on the accepted replacement path |
 
 Current caller review (source-only; not adoption evidence): `wasm_build.py`
 resolves `args.source`, then calls `read_flat_source(source)` followed by
