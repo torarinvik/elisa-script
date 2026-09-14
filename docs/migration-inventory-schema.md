@@ -152,8 +152,13 @@ AWK command references. Signal rows are leads rather than dispositions: binary
 executables, vendored code, generated output, and comments can all produce a
 match and require maintainer review. The scanner never evaluates the matched
 file or embedded command. This shell implementation remains the reference for
-the separate signal-discovery task; the native Elisascript candidate currently
-covers `inventory_candidates.sh` only.
+the separate signal-discovery task. The native Elisascript candidate currently
+covers `inventory_candidates.sh`; a source-only
+`scripts/inventory_signals.elisascript` draft now covers signal orchestration.
+It invokes `find`, `rg`, and `sort` through typed argv process capture, with no
+shell or Python intermediary. Keeping ripgrep as a declared dependency retains
+its inherited ignore/config/binary policy; the draft is not yet evidence of
+signal parity or adoption.
 
 The signal reference excludes `.git`, `node_modules`, `.venv`, `__pycache__`,
 `vendor`, and `third_party` from its `find` traversal and refuses a root reported
@@ -181,6 +186,27 @@ semantics-preserving implementation. File-count, per-file-size, process-output,
 and final-manifest limits should be specified together before adoption. Split
 larger roots and use the candidate manifest when those trees themselves require
 review.
+
+The current Elisascript draft uses NUL-delimited `find`/`rg` output internally,
+rejects tab/CR/LF paths before producing TSV, caps scanned regular-file path
+bytes at 60 MiB, accounts a conservative 64 MiB header-plus-row ceiling while
+building pre-sort/pre-dedup rows, and fails closed on a nonzero `find` or sort
+status. These are intentional safety-policy differences
+from the shell reference, which still needs a matching update and boundary
+fixtures before exact parity can be claimed. The runtime also caps each
+captured process stream at 64 MiB and applies its process deadline; those host
+guards do not establish a measured peak-RSS bound. The file-count/path/output
+checks occur after process capture and byte-wise NUL scanning, so they are
+logical admission limits rather than pre-capture memory guards. The candidate
+retains row strings, joins them for sorting, and captures sorted output, so
+peak workspace is not equal to the manifest cap. The 200,000-file ceiling also
+does not bound a tree containing arbitrarily many empty directories; the
+process deadline is the only current traversal-work bound.
+Default-root construction lexically absolutizes the source directory and
+normalizes `../..` to match the shell's logical `cd`/`pwd` intent, but that
+symlinked-launch case still needs a fixture. The draft is uncompiled and unrun,
+and its public-launcher behavior, platform/tool differences, resource behavior,
+and exact row equality remain unqualified.
 
 Regenerate the signal report outside the repository:
 
