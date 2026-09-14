@@ -12,7 +12,10 @@ review_file="$repo_root/docs/migration-review-current.tsv"
 review_audit="$repo_root/scripts/check_migration_review.sh"
 roots_audit="$repo_root/scripts/check_migration_roots.sh"
 
-for required_file in "$roots_file" "$schema_file" "$review_file" "$review_audit" "$roots_audit" "$coordinator" "$repo_root/scripts/inventory_candidates.sh" "$repo_root/scripts/inventory_signals.sh"; do
+walker_file="$repo_root/scripts/inventory_walk.elisascript"
+walker_test="$repo_root/test/script_parity/inventory_walk_test.elisascript"
+
+for required_file in "$roots_file" "$schema_file" "$review_file" "$review_audit" "$roots_audit" "$coordinator" "$walker_file" "$walker_test" "$repo_root/scripts/inventory_candidates.sh" "$repo_root/scripts/inventory_signals.sh"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'migration inventory audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -84,6 +87,35 @@ for excluded_tree in '.git' 'node_modules' '.venv' '__pycache__' 'vendor' 'third
 done
 if ! rg -q 'Makefile\|makefile\|\*/Makefile\|\*/makefile' "$script_dir/inventory_candidates.sh"; then
     printf 'migration inventory audit: candidate scanner misses root-level Makefiles\n' >&2
+    exit 1
+fi
+
+# Both Elisascript inventories share the descriptor-relative walker. Do not
+# quietly reintroduce a buffered `find` path stream into either candidate.
+for candidate in "$repo_root/scripts/inventory_candidates.elisascript" "$repo_root/scripts/inventory_signals.elisascript"; do
+    if ! rg -Fq 'include "./inventory_walk.elisascript"' "$candidate"; then
+        printf 'migration inventory audit: %s does not include the shared native walker\n' "$candidate" >&2
+        exit 1
+    fi
+    if rg -q 'exe"find"|find_base_arguments|find -print0' "$candidate"; then
+        printf 'migration inventory audit: %s reintroduces a find-backed path capture\n' "$candidate" >&2
+        exit 1
+    fi
+done
+for walker_invariant in 'openat' 'fstatat' 'DarwinStatMode::SYMLINK' 'DIRECTORY_ENTRIES' 'DIRECTORY_DEPTH' 'PATH_BYTES' 'elisascript_posix_closedir' 'Phase.Unwind'; do
+    if ! rg -Fq "$walker_invariant" "$walker_file"; then
+        printf 'migration inventory audit: shared walker is missing invariant %s\n' "$walker_invariant" >&2
+        exit 1
+    fi
+done
+for walker_case in 'RegularFileLimitExceeded' 'DirectoryLimitExceeded' 'EntryLimitExceeded' 'DepthExceeded' 'PathBytesExceeded' 'SelectedPathBytesExceeded' 'InvalidPolicy'; do
+    if ! rg -Fq "DirectoryWalkFailure::$walker_case" "$walker_test"; then
+        printf 'migration inventory audit: shared walker tests omit policy case %s\n' "$walker_case" >&2
+        exit 1
+    fi
+done
+if ! rg -q 'required_mode_bits' "$repo_root/scripts/inventory_signals.elisascript" || ! rg -q 'suffixes: \[' "$repo_root/scripts/inventory_candidates.elisascript"; then
+    printf 'migration inventory audit: scanners do not configure the shared walker's typed selectors\n' >&2
     exit 1
 fi
 

@@ -15,9 +15,10 @@ symlinks, then use the physical result. Relative roots use a valid inherited
 `PWD` spelling when it names the actual working directory; otherwise they use
 the physical working directory. In a quiescent tree, child symlinks are
 excluded rather than traversed or emitted. The Bash reference
-uses path-based `find`; the current Darwin Elisascript candidate uses
-descriptor-relative traversal with no-follow lookups and opened-directory
-identity checks. This narrows the child-symlink check/use race, but does not
+uses path-based `find`; the current Darwin Elisascript candidate uses the
+shared `scripts/inventory_walk.elisascript` module for descriptor-relative
+traversal with no-follow lookups and opened-directory identity checks. This
+narrows the child-symlink check/use race, but does not
 contain hostile concurrent renames: both implementations require a quiescent,
 non-hostile tree and are not security boundaries. It prunes exactly `.git`,
 `node_modules`, `.venv`,
@@ -35,14 +36,17 @@ Limits are 200,000 regular files, 200,000 traversed non-pruned directories,
 descendant entries, 64 MiB aggregate descendant-path bytes, 40 MiB aggregate
 candidate-path bytes, and 64 MiB final manifest bytes. A larger root must be
 partitioned before inventory. Both implementations enforce entry, depth, and
-path budgets while traversing rather than after collecting an unbounded census.
+path budgets while consuming the traversal stream rather than after collecting
+an unbounded census. The Elisascript candidate also bounds traversed directory
+count, which makes empty-directory work finite.
 These logical limits are not a measured RSS ceiling: candidate classification
 temporarily splits paths, and manifest records are rebuilt during preflight and
 emission. A strict host-memory ceiling still requires profiling or a streaming
 representation with explicit scratch accounting.
-The shell reference streams a NUL-delimited `find` pipeline into its bounded path list;
-the current Darwin Elisascript candidate uses descriptor-relative `openat` /
-`fstatat` / `readdir` traversal and owned path arrays. It opens canonical-root
+The shell reference streams a NUL-delimited `find` pipeline into its bounded
+path list; the current Darwin Elisascript candidate uses the shared walker’s
+descriptor-relative `openat` / `fstatat` / `readdir` traversal and an owned
+selected-path array. It opens canonical-root
 and child components one at a time with no-follow flags and compares opened
 and named directory identity before descending. Excluded/pruned directories do
 not count toward the depth cap. Descriptor-relative traversal cannot prevent a
@@ -154,9 +158,11 @@ match and require maintainer review. The scanner never evaluates the matched
 file or embedded command. This shell implementation remains the reference for
 the separate signal-discovery task. The native Elisascript candidate currently
 covers `inventory_candidates.sh`; a source-only
-`scripts/inventory_signals.elisascript` draft now covers signal orchestration.
-It invokes `find`, `rg`, and `sort` through typed argv process capture, with no
-shell or Python intermediary. Keeping ripgrep as a declared dependency retains
+`scripts/inventory_signals.elisascript` draft uses the shared
+`EsInventoryWalk` module for filesystem discovery and invokes only `rg` and
+`sort` through typed argv process capture. The candidate has no `find`
+dependency. The shared walker also powers the candidate scanner, with
+different file selectors. Keeping ripgrep as a declared dependency retains
 its inherited ignore/config/binary policy; the draft is not yet evidence of
 signal parity or adoption.
 
@@ -170,10 +176,11 @@ relative or a symlink to a directory. This follows an explicit root symlink,
 but does not follow descendant symlinks. Relative roots beginning with `-` are
 therefore passed to host tools only as absolute paths. A tab, CR, or LF in
 either the supplied or resolved root is rejected before traversal.
-Executable discovery uses
-`find -type f -perm -111`: this requires all three user/group/other execute
-permission bits, not merely any one execute bit. Child symlinks are not
-followed. The two content searches use ripgrep with `--hidden`,
+The shell reference's executable discovery uses `find -type f -perm -111`:
+this requires all three user/group/other execute permission bits, not merely
+any one execute bit. The Elisascript candidate applies that same bit predicate
+to regular files in the native walker. Child symlinks are not followed. The
+two content searches use ripgrep with `--hidden`,
 `--no-messages`, an 8 MiB maximum file size, and the same named-directory
 exclusions. Unlike the `find` scan, ripgrep retains its normal ignore behavior
 and binary-file policy, and it inherits ripgrep configuration and environment
@@ -182,15 +189,15 @@ matches and is successful; other nonzero search statuses are errors. Rows from
 the executable, shebang, and inline-command categories are combined and sorted
 uniquely under the C locale.
 
-After resolving and validating the selected root, both implementations preflight
-the presence of `find`, `rg`, and `sort`, except that an excluded root returns
-its header before tool lookup. A missing required tool produces status 127, no
-stdout, and the stable diagnostic
-`inventory_signals: required tool not found: NAME`. The shell uses `command -v`;
-the Elisascript draft checks PATH entries for regular executable files. This is
-an availability check, not a reservation: a tool can still disappear or be
-replaced before process creation, so tool-spawn failures remain a separate
-runtime failure case.
+After resolving and validating the selected root, the shell reference
+preflights `find`, `rg`, and `sort`; the Elisascript candidate preflights only
+`rg` and `sort`. An excluded root returns its header before tool lookup. A
+missing required tool produces status 127, no stdout, and the stable diagnostic
+`inventory_signals: required tool not found: NAME`. The shell uses
+`command -v`; the Elisascript candidate checks PATH entries for regular
+executable files. This is an availability check, not a reservation: a tool can
+still disappear or be replaced before process creation, so tool-spawn failures
+remain a separate runtime failure case.
 
 The shell reference's line-oriented path lists and TSV output cannot represent
 tabs or line breaks in paths unambiguously, and it has no explicit final-output
@@ -205,24 +212,34 @@ and final-manifest limits should be specified together before adoption. Split
 larger roots and use the candidate manifest when those trees themselves require
 review.
 
-The current Elisascript draft uses NUL-delimited `find`/`rg` output internally,
-rejects tab/CR/LF paths before producing TSV, caps scanned regular-file path
-bytes at 60 MiB, accounts a conservative 64 MiB header-plus-row ceiling while
-building pre-sort/pre-dedup rows, and now checks each row's byte budget before
-constructing the row string. It fails closed on a nonzero `find` or sort
-status. These are intentional safety-policy differences from the shell
-reference: the post-capture resource ceilings and fail-closed handling of
-descendant paths with TSV delimiters still need matching shell limits or
-explicit candidate-only contracts and boundary fixtures before exact parity can
-be claimed. The runtime also caps each
-captured process stream at 64 MiB and applies its process deadline; those host
-guards do not establish a measured peak-RSS bound. The file-count/path/output
-checks occur after process capture and byte-wise NUL scanning, so they are
-logical admission limits rather than pre-capture memory guards. The candidate
-retains row strings, joins them for sorting, and captures sorted output, so
-peak workspace is not equal to the manifest cap. The 200,000-file ceiling also
-does not bound a tree containing arbitrarily many empty directories; the
-process deadline is the only current traversal-work bound.
+The current Elisascript candidate obtains executable-file rows in one native
+walk rather than capturing `find` output. `EsInventoryWalk` uses a bounded
+iterative descriptor-relative traversal, no-follow child lookups, and
+opened-versus-named directory identity checks. It skips descendant symlinks
+and the six excluded directory names. For this caller it counts regular files
+while walking and selects files whose mode contains all `0o111` execute bits.
+The policy caps the root path at 4 KiB, regular files and directories at
+200,000 each, descendant entries at 262,144, depth at 64, aggregate descendant
+path bytes at 60 MiB, and selected executable-path bytes at 60 MiB. Candidate
+search results reject descendant tab/CR/LF paths before TSV output; the shell
+reference does not provide the same fail-closed contract. The 64 MiB
+header-plus-row ceiling is charged before constructing each row, and a
+nonzero native-walk or sort status fails closed. These are deliberate
+candidate-only safety and resource policies until the reference and boundary
+fixtures are aligned; exact parity is not claimed.
+
+The native single walk avoids the shell reference's separate `find | wc`
+count and executable `find` traversal, so its process and filesystem-race
+failure behavior differs. It also bounds empty-directory traversal with
+directory, entry, and depth limits that the shell reference does not share.
+The compiler runtime currently caps each captured process stream at 64 MiB
+and applies a process deadline, but these are not a measured or enforced
+peak-RSS ceiling. Ripgrep output is captured before NUL parsing, the candidate
+retains selected paths and row strings, joins rows for sorting, and captures
+sorted output; those simultaneous and temporary allocations are not fully
+charged to the path or manifest budgets. Resource behavior therefore remains
+unqualified even though directory work and selected-path admission now have
+explicit limits.
 Default-root construction lexically absolutizes the source directory and
 normalizes `../..` before the shared physical-root resolution, matching the
 shell's logical `cd` followed by physical `pwd -P` behavior. Explicit symlink
@@ -234,15 +251,21 @@ covers the six partial execute-bit combinations, hidden and ignored files,
 excluded child directories, an outside-root symlink, TSV-delimiter rejection,
 and a marker proving discoveries are not executed. A NUL-containing file and
 an over-8-MiB file both contain otherwise-matching shebangs, exercising
-ripgrep's binary and size policies. The fixture is uncompiled and unrun;
-symlinked candidate-launch-path behavior, post-preflight tool-spawn failures,
-and larger resource-boundary behavior remain uncovered. Private `find` and
-`rg` shims define executable-traversal and first-search failures; a deterministic
-`sort` shim defines the nonzero-exit stdout/stderr/status comparison. A private
-PATH with `find` and `rg` but no `sort` checks the status-127 preflight result,
-and verifies that the excluded-root fast path remains tool-free. The candidate
-forwards sort's streams and status after printing the reference's header. All
-these process fixtures are uncompiled and unrun.
+ripgrep's binary and size policies. A candidate-only case runs with a private
+PATH containing `rg` and `sort` but no `find`, proving the source-level
+candidate contract does not require `find` (the shell oracle does). The fixture
+is uncompiled and unrun; a direct low-limit walker test now covers file,
+directory, entry, depth, path-byte, selected-path-byte, selector, and mode-mask
+policy cases, but is also uncompiled and unrun. Symlinked candidate-launch-path
+behavior, post-preflight tool-spawn failures, close-error injection, and
+behavior near the production-scale ceilings remain uncovered. A private `rg` shim
+defines first-search failure; a deterministic `sort` shim defines the
+nonzero-exit stdout/stderr/status comparison. The current fixture retains a
+private PATH with `find` and `rg` but no `sort` to
+compare the shared missing-sort result, and verifies that the excluded-root
+fast path remains tool-free. The candidate forwards sort's streams and status
+after printing the reference's header. All these process fixtures are
+uncompiled and unrun.
 Root resolution and subsequent process traversals are separate filesystem
 operations, so concurrent root replacement remains a time-of-check/time-of-use
 risk; parity is intended for quiescent trees. The

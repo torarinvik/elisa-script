@@ -1,0 +1,459 @@
+# Bounded descriptor-relative directory traversal shared by inventory tools.
+# Paths are data only. Directory symlinks are never followed; all descent is
+# checked against the no-follow identity observed in the parent directory.
+
+module EsInventoryWalk:
+    using EsRuntime
+
+    public:
+        const module Limits:
+            REGULAR_FILES: usize = 200000
+            DIRECTORIES: usize = 200000
+            DIRECTORY_ENTRIES: usize = 262144
+            DIRECTORY_DEPTH: usize = 64
+            PATH_BYTES: usize = 67108864
+            ROOT_PATH_BYTES: usize = 4096
+            SELECTED_PATH_BYTES: usize = 67108864
+            SELECTOR_COUNT: usize = 4096
+            SELECTOR_BYTES: usize = 1048576
+            EINTR_RETRIES: usize = 8
+
+
+        const enum DirectoryWalkFailure of u8:
+            None
+            InvalidPolicy
+            InvalidRoot
+            Io
+            InvalidEntry
+            TsvUnsafePath
+            EntryLimitExceeded
+            PathBytesExceeded
+            SelectedPathBytesExceeded
+            DepthExceeded
+            DirectoryLimitExceeded
+            RegularFileLimitExceeded
+            CloseFailed
+
+
+        struct DirectoryWalkPolicy:
+            max_regular_files: usize = Limits::REGULAR_FILES
+            max_directories: usize = Limits::DIRECTORIES
+            max_directory_entries: usize = Limits::DIRECTORY_ENTRIES
+            max_depth: usize = Limits::DIRECTORY_DEPTH
+            max_path_bytes: usize = Limits::PATH_BYTES
+            max_selected_path_bytes: usize = Limits::SELECTED_PATH_BYTES
+            collect_all_regular_files: bool = false
+            select_mode_bits: bool = false
+            required_mode_bits: u16 = 0
+            exact_names: darray[sview] = []
+            suffixes: darray[sview] = []
+
+
+        struct DirectoryWalkEntry:
+            path: sview
+            mode: u16
+
+
+        struct DirectoryWalkResult:
+            regular_file_count: usize = 0
+            directory_count: usize = 0
+            entry_count: usize = 0
+            # Sum of encountered absolute descendant paths; the root spelling
+            # itself is limited separately and is not part of this total.
+            path_bytes: usize = 0
+            selected_path_bytes: usize = 0
+            selected_files: darray[DirectoryWalkEntry] = []
+            failure: DirectoryWalkFailure = DirectoryWalkFailure.None
+
+
+    private:
+        const enum Phase of u8:
+            Walk
+            Unwind
+            Done
+
+
+        struct DirectoryFrame:
+            directory: mutable heap void&? = null
+            path: sview = ""
+            depth: usize = 0
+
+
+        def cstring_copy(value: sview) -> dstr can[Memory.Allocate, Abort.Panic]:
+            value_length: usize = len(value)
+            allocation_length: usize = value_length + 1
+            allocation_i64: i64 = allocation_length.i64()
+            return [] if allocation_i64 < 0 or allocation_i64.usize() != allocation_length
+            bytes: mutable dstr = ctx_fstr_alloc(allocation_length)
+            return [] if bytes.items == null
+            ctx_fstr_append(bytes, value.data, value_length)
+            ctx_fstr_append(bytes, "\0", 1)
+            bytes.count <- value_length
+            return bytes
+
+
+        def open_directory_descriptor(path_text: cstr) -> int can[Blocking.IO]:
+            retries: mutable usize = 0
+            while true:
+                descriptor: int = elisascript_posix_open(path_text, DarwinOpenFlags::RDONLY | DarwinOpenFlags::DIRECTORY | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC, 0u32)
+                return descriptor if descriptor >= 0
+                errno: mutable int& = elisascript_posix_errno()
+                if errno[0] == DarwinErrno::EINTR and retries < Limits::EINTR_RETRIES:
+                    retries <- retries + 1
+                    continue
+                return -1
+
+
+        def open_child_directory_descriptor(parent_descriptor: int, name: cstr) -> int can[Blocking.IO]:
+            retries: mutable usize = 0
+            while true:
+                descriptor: int = elisascript_posix_openat(parent_descriptor, name, DarwinOpenFlags::RDONLY | DarwinOpenFlags::DIRECTORY | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC, 0u32)
+                return descriptor if descriptor >= 0
+                errno: mutable int& = elisascript_posix_errno()
+                if errno[0] == DarwinErrno::EINTR and retries < Limits::EINTR_RETRIES:
+                    retries <- retries + 1
+                    continue
+                return -1
+
+
+        def stat_descriptor(descriptor: int, result: mutable ElisascriptStat&) -> bool can[Blocking.IO]:
+            retries: mutable usize = 0
+            while true:
+                return true if elisascript_posix_fstat(descriptor, result) == 0
+                errno: mutable int& = elisascript_posix_errno()
+                if errno[0] == DarwinErrno::EINTR and retries < Limits::EINTR_RETRIES:
+                    retries <- retries + 1
+                    continue
+                return false
+
+
+        def stat_child_entry(parent_descriptor: int, name: cstr, result: mutable ElisascriptStat&) -> bool can[Blocking.IO]:
+            retries: mutable usize = 0
+            while true:
+                return true if elisascript_posix_fstatat(parent_descriptor, name, result, DarwinAtFlag::SYMLINK_NOFOLLOW) == 0
+                errno: mutable int& = elisascript_posix_errno()
+                if errno[0] == DarwinErrno::EINTR and retries < Limits::EINTR_RETRIES:
+                    retries <- retries + 1
+                    continue
+                return false
+
+
+        def same_entry_identity(left: ElisascriptStat&, right: ElisascriptStat&) -> bool:
+            return left.device == right.device and left.inode == right.inode and (left.mode & DarwinStatMode::MASK) == (right.mode & DarwinStatMode::MASK)
+
+
+        # The returned descriptor is owned by the caller. It is opened from one
+        # validated dirent component and checked against both no-follow stats.
+        def open_verified_child_directory(parent_descriptor: int, name: cstr, expected: ElisascriptStat&) -> int can[Blocking.IO]:
+            descriptor: int = open_child_directory_descriptor(parent_descriptor, name)
+            return -1 if descriptor < 0
+            opened: mutable ElisascriptStat = zeroed
+            if not stat_descriptor(descriptor, opened) or not same_entry_identity(opened, expected) or (opened.mode & DarwinStatMode::MASK) != DarwinStatMode::DIRECTORY:
+                opened_close_status: int = elisascript_posix_close(descriptor)
+                return -2 if opened_close_status != 0
+                return -1
+            current_name: mutable ElisascriptStat = zeroed
+            if not stat_child_entry(parent_descriptor, name, current_name) or not same_entry_identity(opened, current_name):
+                changed_name_close_status: int = elisascript_posix_close(descriptor)
+                return -2 if changed_name_close_status != 0
+                return -1
+            return descriptor
+
+
+        # O_NOFOLLOW protects only the final component. Resolve from `/` one
+        # canonical component at a time so no root parent component is followed.
+        def open_root_directory_descriptor(path_text: sview) -> int can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            return -1 if len(path_text) == 0 or sview_at(path_text, 0) != 47
+            root_name_bytes: dstr = cstring_copy("/")
+            return -1 if root_name_bytes.items == null
+            root_name_items: u8& = root_name_bytes.items
+            current_descriptor: mutable int = open_directory_descriptor(root_name_items.cast[cstr])
+            return -1 if current_descriptor < 0
+            if path_text == "/":
+                return current_descriptor
+
+            components: darray[sview] = split(path_text, "/")
+            for component in components |current_descriptor|:
+                if component == "":
+                    continue
+                if component == "." or component == ".." or component.index("\0") >= 0 or len(component) > 255:
+                    invalid_component_close_status: int = elisascript_posix_close(current_descriptor)
+                    return -2 if invalid_component_close_status != 0
+                    return -1
+                component_bytes: dstr = cstring_copy(component)
+                if component_bytes.items == null:
+                    allocation_close_status: int = elisascript_posix_close(current_descriptor)
+                    return -2 if allocation_close_status != 0
+                    return -1
+                component_items: u8& = component_bytes.items
+                component_name: cstr = component_items.cast[cstr]
+                expected: mutable ElisascriptStat = zeroed
+                if not stat_child_entry(current_descriptor, component_name, expected) or (expected.mode & DarwinStatMode::MASK) != DarwinStatMode::DIRECTORY:
+                    stat_close_status: int = elisascript_posix_close(current_descriptor)
+                    return -2 if stat_close_status != 0
+                    return -1
+                next_descriptor: int = open_verified_child_directory(current_descriptor, component_name, expected)
+                if next_descriptor < 0:
+                    child_open_close_status: int = elisascript_posix_close(current_descriptor)
+                    return -2 if child_open_close_status != 0 or next_descriptor == -2
+                    return -1
+                component_close_status: int = elisascript_posix_close(current_descriptor)
+                if component_close_status != 0:
+                    next_close_status: int = elisascript_posix_close(next_descriptor)
+                    return -2 if next_close_status != 0 or component_close_status != 0
+                    return -1
+                current_descriptor <- next_descriptor
+            return current_descriptor
+
+
+        def excluded_directory_name(name: sview) -> bool:
+            return name == ".git" or name == "node_modules" or name == ".venv" or name == "__pycache__" or name == "vendor" or name == "third_party"
+
+
+        def tsv_safe_path(path_text: sview) -> bool:
+            return path_text.index("\t") < 0 and path_text.index("\n") < 0 and path_text.index("\r") < 0
+
+
+        def canonical_root_path(root: sview) -> bool can[Memory.Allocate, Abort.Panic]:
+            return false if len(root) == 0 or len(root) > Limits::ROOT_PATH_BYTES or sview_at(root, 0) != 47
+            return false if root.index("\0") >= 0
+            return true if root == "/"
+            return false if root.endswith("/") or root.index("//") >= 0
+            components: darray[sview] = split(root, "/")
+            for component in components:
+                continue if component == ""
+                return false if component == "." or component == ".." or len(component) > 255
+            return true
+
+
+        def selector_text_valid(value: sview) -> bool:
+            return len(value) > 0 and len(value) <= Limits::SELECTOR_BYTES and value.index("\0") < 0
+
+
+        def policy_valid(policy: DirectoryWalkPolicy&) -> bool can[Memory.Allocate, Abort.Panic]:
+            return false if policy.max_regular_files > Limits::REGULAR_FILES
+            return false if policy.max_directories > Limits::DIRECTORIES
+            return false if policy.max_directory_entries > Limits::DIRECTORY_ENTRIES
+            return false if policy.max_depth > Limits::DIRECTORY_DEPTH
+            return false if policy.max_path_bytes > Limits::PATH_BYTES
+            return false if policy.max_selected_path_bytes > Limits::SELECTED_PATH_BYTES
+            return false if policy.select_mode_bits and policy.required_mode_bits == 0
+            return false if policy.select_mode_bits and (policy.required_mode_bits & DarwinStatMode::MASK) != 0
+            return false if not policy.select_mode_bits and policy.required_mode_bits != 0
+            return false if policy.exact_names.count > Limits::SELECTOR_COUNT or policy.suffixes.count > Limits::SELECTOR_COUNT
+            selector_bytes: mutable usize = 0
+            for name in policy.exact_names |selector_bytes|:
+                return false if not selector_text_valid(name) or name.index("/") >= 0 or name == "." or name == ".."
+                return false if selector_bytes > Limits::SELECTOR_BYTES or len(name) > Limits::SELECTOR_BYTES - selector_bytes
+                selector_bytes <- selector_bytes + len(name)
+            for suffix in policy.suffixes |selector_bytes|:
+                return false if not selector_text_valid(suffix)
+                return false if selector_bytes > Limits::SELECTOR_BYTES or len(suffix) > Limits::SELECTOR_BYTES - selector_bytes
+                selector_bytes <- selector_bytes + len(suffix)
+            return true
+
+
+        def file_selected(policy: DirectoryWalkPolicy&, name: sview, mode: u16) -> bool:
+            return true if policy.collect_all_regular_files
+            return true if policy.select_mode_bits and (mode & policy.required_mode_bits) == policy.required_mode_bits
+            for exact_name in policy.exact_names:
+                return true if name == exact_name
+            for suffix in policy.suffixes:
+                return true if name.endswith(suffix)
+            return false
+
+
+    public:
+        def walk(root: sview, policy: DirectoryWalkPolicy&) -> DirectoryWalkResult can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+            result: mutable DirectoryWalkResult = DirectoryWalkResult{}
+            if not policy_valid(policy):
+                result.failure <- DirectoryWalkFailure.InvalidPolicy
+                return result
+            if not canonical_root_path(root):
+                result.failure <- DirectoryWalkFailure.InvalidRoot
+                return result
+            if not tsv_safe_path(root):
+                result.failure <- DirectoryWalkFailure.TsvUnsafePath
+                return result
+
+            frames: mutable DirectoryFrame[65] = zeroed
+            stack_count: mutable usize = 0
+            root_descriptor: int = open_root_directory_descriptor(root)
+            if root_descriptor < 0:
+                result.failure <- DirectoryWalkFailure.CloseFailed if root_descriptor == -2 else DirectoryWalkFailure.Io
+                return result
+            root_info: mutable ElisascriptStat = zeroed
+            if not stat_descriptor(root_descriptor, root_info) or (root_info.mode & DarwinStatMode::MASK) != DarwinStatMode.DIRECTORY:
+                close_status: int = elisascript_posix_close(root_descriptor)
+                result.failure <- DirectoryWalkFailure.CloseFailed if close_status != 0 else DirectoryWalkFailure.InvalidRoot
+                return result
+            root_stream: mutable heap void&? = elisascript_posix_fdopendir(root_descriptor)
+            if root_stream == null:
+                close_status: int = elisascript_posix_close(root_descriptor)
+                result.failure <- DirectoryWalkFailure.CloseFailed if close_status != 0 else DirectoryWalkFailure.Io
+                return result
+            frames[0].directory <- root_stream
+            frames[0].path <- root
+            frames[0].depth <- 0
+            stack_count <- 1
+
+            readdir_eintr_retries: mutable usize = 0
+            phase: mutable Phase = Phase.Walk
+
+            machine over phase while phase != Phase.Done:
+                state Scan
+                start Scan
+
+                Scan, Phase.Walk if stack_count == 0:
+                    phase <- Phase.Done
+                    -> Scan
+
+                Scan, Phase.Walk:
+                    frame_index: usize = stack_count - 1
+                    if frames[frame_index].directory == null:
+                        result.failure <- DirectoryWalkFailure.Io
+                        phase <- Phase.Unwind
+                        -> Scan
+
+                    directory: mutable heap void& = frames[frame_index].directory
+                    errno: mutable int& = elisascript_posix_errno()
+                    errno[0] <- 0
+                    entry_pointer: mutable ElisascriptDirectoryEntry&? = elisascript_posix_readdir(directory)
+                    if entry_pointer == null:
+                        if errno[0] == DarwinErrno::EINTR and readdir_eintr_retries < Limits::EINTR_RETRIES:
+                            readdir_eintr_retries <- readdir_eintr_retries + 1
+                            -> Scan
+                        readdir_eintr_retries <- 0
+                        if errno[0] != 0:
+                            result.failure <- DirectoryWalkFailure.Io
+                            phase <- Phase.Unwind
+                            -> Scan
+                        stream_to_close: mutable heap void& = directory
+                        frames[frame_index].directory <- null
+                        stack_count <- stack_count - 1
+                        close_status: int = elisascript_posix_closedir(stream_to_close)
+                        if close_status != 0:
+                            result.failure <- DirectoryWalkFailure.CloseFailed
+                            phase <- Phase.Unwind
+                        -> Scan
+
+                    readdir_eintr_retries <- 0
+                    entry: mutable ElisascriptDirectoryEntry& = entry_pointer
+                    name_length: usize = entry.name_length.usize()
+                    if name_length == 0 or name_length > 255 or entry.name[name_length] != 0:
+                        result.failure <- DirectoryWalkFailure.InvalidEntry
+                        phase <- Phase.Unwind
+                        -> Scan
+                    invalid_name: mutable bool = false
+                    for name_offset in 0..<name_length |entry, invalid_name|:
+                        invalid_name <- true if entry.name[name_offset] == 0 or entry.name[name_offset] == 47
+                    if invalid_name:
+                        result.failure <- DirectoryWalkFailure.InvalidEntry
+                        phase <- Phase.Unwind
+                        -> Scan
+                    if name_length == 1 and entry.name[0] == 46:
+                        -> Scan
+                    if name_length == 2 and entry.name[0] == 46 and entry.name[1] == 46:
+                        -> Scan
+
+                    result.entry_count <- result.entry_count + 1
+                    if result.entry_count > policy.max_directory_entries:
+                        result.failure <- DirectoryWalkFailure.EntryLimitExceeded
+                        phase <- Phase.Unwind
+                        -> Scan
+
+                    child_name: sview = sview(&entry.name[0], 0, name_length.i64())
+                    child_path: sview = frames[frame_index].path + "/" + child_name if frames[frame_index].path != "/" else "/" + child_name
+                    if not tsv_safe_path(child_path):
+                        result.failure <- DirectoryWalkFailure.TsvUnsafePath
+                        phase <- Phase.Unwind
+                        -> Scan
+                    child_path_bytes: usize = len(child_path)
+                    if result.path_bytes > policy.max_path_bytes or child_path_bytes > policy.max_path_bytes - result.path_bytes:
+                        result.failure <- DirectoryWalkFailure.PathBytesExceeded
+                        phase <- Phase.Unwind
+                        -> Scan
+                    result.path_bytes <- result.path_bytes + child_path_bytes
+
+                    parent_descriptor: int = elisascript_posix_dirfd(directory)
+                    if parent_descriptor < 0:
+                        result.failure <- DirectoryWalkFailure.Io
+                        phase <- Phase.Unwind
+                        -> Scan
+                    entry_name: u8& = &entry.name[0]
+                    named_info: mutable ElisascriptStat = zeroed
+                    if not stat_child_entry(parent_descriptor, entry_name.cast[cstr], named_info):
+                        result.failure <- DirectoryWalkFailure.Io
+                        phase <- Phase.Unwind
+                        -> Scan
+                    entry_kind: u16 = named_info.mode & DarwinStatMode::MASK
+                    if entry_kind == DarwinStatMode::SYMLINK:
+                        -> Scan
+
+                    if entry_kind == DarwinStatMode::DIRECTORY:
+                        if excluded_directory_name(child_name):
+                            -> Scan
+                        result.directory_count <- result.directory_count + 1
+                        if result.directory_count > policy.max_directories:
+                            result.failure <- DirectoryWalkFailure.DirectoryLimitExceeded
+                            phase <- Phase.Unwind
+                            -> Scan
+                        if frames[frame_index].depth >= policy.max_depth:
+                            result.failure <- DirectoryWalkFailure.DepthExceeded
+                            phase <- Phase.Unwind
+                            -> Scan
+                        child_descriptor: int = open_verified_child_directory(parent_descriptor, entry_name.cast[cstr], named_info)
+                        if child_descriptor < 0:
+                            result.failure <- DirectoryWalkFailure.CloseFailed if child_descriptor == -2 else DirectoryWalkFailure.Io
+                            phase <- Phase.Unwind
+                            -> Scan
+                        child_stream: mutable heap void&? = elisascript_posix_fdopendir(child_descriptor)
+                        if child_stream == null:
+                            close_status: int = elisascript_posix_close(child_descriptor)
+                            result.failure <- DirectoryWalkFailure.CloseFailed if close_status != 0 else DirectoryWalkFailure.Io
+                            phase <- Phase.Unwind
+                            -> Scan
+                        child_frame_index: usize = stack_count
+                        frames[child_frame_index].directory <- child_stream
+                        frames[child_frame_index].path <- child_path
+                        frames[child_frame_index].depth <- frames[frame_index].depth + 1
+                        stack_count <- stack_count + 1
+                        -> Scan
+
+                    if entry_kind != DarwinStatMode::REGULAR:
+                        -> Scan
+
+                    result.regular_file_count <- result.regular_file_count + 1
+                    if result.regular_file_count > policy.max_regular_files:
+                        result.failure <- DirectoryWalkFailure.RegularFileLimitExceeded
+                        phase <- Phase.Unwind
+                        -> Scan
+                    if file_selected(policy, child_name, named_info.mode):
+                        if result.selected_path_bytes > policy.max_selected_path_bytes or child_path_bytes > policy.max_selected_path_bytes - result.selected_path_bytes:
+                            result.failure <- DirectoryWalkFailure.SelectedPathBytesExceeded
+                            phase <- Phase.Unwind
+                            -> Scan
+                        result.selected_path_bytes <- result.selected_path_bytes + child_path_bytes
+                        result.selected_files.push(DirectoryWalkEntry{path: child_path, mode: named_info.mode})
+                    -> Scan
+
+                Scan, Phase.Unwind if stack_count == 0:
+                    phase <- Phase.Done
+                    -> Scan
+
+                Scan, Phase.Unwind:
+                    frame_index: usize = stack_count - 1
+                    directory_to_close: mutable heap void&? = frames[frame_index].directory
+                    frames[frame_index].directory <- null
+                    stack_count <- stack_count - 1
+                    if directory_to_close != null:
+                        owned_stream: mutable heap void& = directory_to_close
+                        close_status: int = elisascript_posix_closedir(owned_stream)
+                        if close_status != 0:
+                            result.failure <- DirectoryWalkFailure.CloseFailed
+                    -> Scan
+
+                Scan, Phase.Done:
+                    break
+
+            return result

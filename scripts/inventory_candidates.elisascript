@@ -2,17 +2,16 @@
 # parsed, imported, or executed. Its default root is derived from the launched
 # script path; an explicit root may override it.
 
+include "./inventory_walk.elisascript"
+
 module EsInventoryCandidates:
+    using EsInventoryWalk
+
     using EsRuntime
 
     private:
         const module Limits:
             REGULAR_FILES: usize = 200000
-            DIRECTORIES: usize = 200000
-            DIRECTORY_ENTRIES: usize = 262144
-            MAX_DIRECTORY_DEPTH: usize = 64
-            MAX_EINTR_RETRIES: usize = 8
-            TOTAL_PATH_BYTES: usize = 67108864
             CANDIDATE_PATH_BYTES: usize = 41943040
             OUTPUT_BYTES: usize = 67108864
 
@@ -25,139 +24,9 @@ module EsInventoryCandidates:
 
 
         const enum Phase of u8:
-            Walk
-            Unwind
             Preflight
             Emit
             Done
-
-
-        struct DirectoryFrame:
-            directory: mutable heap void&? = null
-            path: sview = ""
-            depth: usize = 0
-
-
-        def cstring_copy(value: sview) -> dstr can[Memory.Allocate, Abort.Panic]:
-            value_length: usize = len(value)
-            allocation_length: usize = value_length + 1
-            allocation_i64: i64 = allocation_length.i64()
-            return [] if allocation_i64 < 0 or allocation_i64.usize() != allocation_length
-            bytes: mutable dstr = ctx_fstr_alloc(allocation_length)
-            return [] if bytes.items == null
-            ctx_fstr_append(bytes, value.data, value_length)
-            ctx_fstr_append(bytes, "\0", 1)
-            bytes.count <- value_length
-            return bytes
-
-
-        def open_directory_descriptor(path_text: cstr) -> int can[Blocking.IO]:
-            retries: mutable usize = 0
-            while true:
-                descriptor: int = elisascript_posix_open(path_text, DarwinOpenFlags::RDONLY | DarwinOpenFlags::DIRECTORY | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC, 0u32)
-                return descriptor if descriptor >= 0
-                errno: mutable int& = elisascript_posix_errno()
-                if errno[0] == DarwinErrno::EINTR and retries < Limits::MAX_EINTR_RETRIES:
-                    retries <- retries + 1
-                    continue
-                return -1
-
-
-        def open_child_directory_descriptor(parent_descriptor: int, name: cstr) -> int can[Blocking.IO]:
-            retries: mutable usize = 0
-            while true:
-                descriptor: int = elisascript_posix_openat(parent_descriptor, name, DarwinOpenFlags::RDONLY | DarwinOpenFlags::DIRECTORY | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC, 0u32)
-                return descriptor if descriptor >= 0
-                errno: mutable int& = elisascript_posix_errno()
-                if errno[0] == DarwinErrno::EINTR and retries < Limits::MAX_EINTR_RETRIES:
-                    retries <- retries + 1
-                    continue
-                return -1
-
-
-        def stat_descriptor(descriptor: int, result: mutable ElisascriptStat&) -> bool can[Blocking.IO]:
-            retries: mutable usize = 0
-            while true:
-                return true if elisascript_posix_fstat(descriptor, result) == 0
-                errno: mutable int& = elisascript_posix_errno()
-                if errno[0] == DarwinErrno::EINTR and retries < Limits::MAX_EINTR_RETRIES:
-                    retries <- retries + 1
-                    continue
-                return false
-
-
-        def stat_child_entry(parent_descriptor: int, name: cstr, result: mutable ElisascriptStat&) -> bool can[Blocking.IO]:
-            retries: mutable usize = 0
-            while true:
-                return true if elisascript_posix_fstatat(parent_descriptor, name, result, DarwinAtFlag::SYMLINK_NOFOLLOW) == 0
-                errno: mutable int& = elisascript_posix_errno()
-                if errno[0] == DarwinErrno::EINTR and retries < Limits::MAX_EINTR_RETRIES:
-                    retries <- retries + 1
-                    continue
-                return false
-
-
-        def same_entry_identity(left: ElisascriptStat&, right: ElisascriptStat&) -> bool:
-            return left.device == right.device and left.inode == right.inode and (left.mode & DarwinStatMode::MASK) == (right.mode & DarwinStatMode::MASK)
-
-
-        # The returned descriptor is owned by the caller. It is opened from a
-        # single validated dirent component, then checked against both the
-        # no-follow name stat and a second no-follow lookup of that name.
-        def open_verified_child_directory(parent_descriptor: int, name: cstr, expected: ElisascriptStat&) -> int can[Blocking.IO]:
-            descriptor: int = open_child_directory_descriptor(parent_descriptor, name)
-            return -1 if descriptor < 0
-            opened: mutable ElisascriptStat = zeroed
-            if not stat_descriptor(descriptor, opened) or not same_entry_identity(opened, expected) or (opened.mode & DarwinStatMode::MASK) != DarwinStatMode::DIRECTORY:
-                _ = elisascript_posix_close(descriptor)
-                return -1
-            current_name: mutable ElisascriptStat = zeroed
-            if not stat_child_entry(parent_descriptor, name, current_name) or not same_entry_identity(opened, current_name):
-                _ = elisascript_posix_close(descriptor)
-                return -1
-            return descriptor
-
-
-        # `O_NOFOLLOW` protects only the final component. Start from `/` and
-        # resolve the canonical root one validated component at a time so no
-        # parent pathname component is implicitly followed by `open`.
-        def open_root_directory_descriptor(path_text: sview) -> int can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
-            return -1 if len(path_text) == 0 or sview_at(path_text, 0) != 47
-            root_name_bytes: dstr = cstring_copy("/")
-            return -1 if root_name_bytes.items == null
-            root_name_items: u8& = root_name_bytes.items
-            current_descriptor: mutable int = open_directory_descriptor(root_name_items.cast[cstr])
-            return -1 if current_descriptor < 0
-            if path_text == "/":
-                return current_descriptor
-
-            components: darray[sview] = split(path_text, "/")
-            for component in components |current_descriptor|:
-                if component == "":
-                    continue
-                if component == "." or component == ".." or component.index("\0") >= 0 or len(component) > 255:
-                    _ = elisascript_posix_close(current_descriptor)
-                    return -1
-                component_bytes: dstr = cstring_copy(component)
-                if component_bytes.items == null:
-                    _ = elisascript_posix_close(current_descriptor)
-                    return -1
-                component_items: u8& = component_bytes.items
-                component_name: cstr = component_items.cast[cstr]
-                expected: mutable ElisascriptStat = zeroed
-                if not stat_child_entry(current_descriptor, component_name, expected) or (expected.mode & DarwinStatMode::MASK) != DarwinStatMode::DIRECTORY:
-                    _ = elisascript_posix_close(current_descriptor)
-                    return -1
-                next_descriptor: int = open_verified_child_directory(current_descriptor, component_name, expected)
-                if next_descriptor < 0:
-                    _ = elisascript_posix_close(current_descriptor)
-                    return -1
-                close_status: int = elisascript_posix_close(current_descriptor)
-                if close_status != 0:
-                    _ = elisascript_posix_close(next_descriptor)
-                    return -1
-                current_descriptor <- next_descriptor
-            return current_descriptor
 
 
         def path_is_tsv_safe(path_text: sview) -> bool:
@@ -265,229 +134,50 @@ module EsInventoryCandidates:
                 eprint("inventory_candidates: unsupported scan root contains a TSV delimiter or line break")
                 return 2i64
 
-            frames: mutable DirectoryFrame[65] = zeroed
-            stack_count: mutable usize = 0
-            walk_failed: mutable bool = false
-            walk_diagnostic_written: mutable bool = false
-            readdir_eintr_retries: mutable usize = 0
-            if not excluded_directory_name(path(canonical_root).name()):
-                root_descriptor: mutable int = open_root_directory_descriptor(canonical_root)
-                if root_descriptor < 0:
-                    eprint("inventory_candidates: traversal failed or exceeded a traversal limit for " + canonical_root)
-                    return 3i64
-                root_info: mutable ElisascriptStat = zeroed
-                if not stat_descriptor(root_descriptor, root_info) or (root_info.mode & DarwinStatMode::MASK) != DarwinStatMode::DIRECTORY:
-                    _ = elisascript_posix_close(root_descriptor)
-                    eprint("inventory_candidates: traversal failed or exceeded a traversal limit for " + canonical_root)
-                    return 3i64
-                root_stream: mutable heap void&? = elisascript_posix_fdopendir(root_descriptor)
-                if root_stream == null:
-                    _ = elisascript_posix_close(root_descriptor)
-                    eprint("inventory_candidates: traversal failed or exceeded a traversal limit for " + canonical_root)
-                    return 3i64
-                frames[0].directory <- root_stream
-                frames[0].path <- canonical_root
-                frames[0].depth <- 0
-                stack_count <- 1
-
             candidate_paths: mutable darray[sview] = []
             ordered_paths: mutable darray[sview] = []
-            directory_count: mutable usize = 0
-            visited_entries: mutable usize = 0
-            regular_files: mutable usize = 0
-            total_path_bytes: mutable usize = 0
-            candidate_path_bytes: mutable usize = 0
-            phase: mutable Phase = Phase.Walk
+            walk_policy: EsInventoryWalk::DirectoryWalkPolicy = EsInventoryWalk::DirectoryWalkPolicy{
+                max_regular_files: Limits::REGULAR_FILES,
+                max_directories: EsInventoryWalk::Limits::DIRECTORIES,
+                max_directory_entries: EsInventoryWalk::Limits::DIRECTORY_ENTRIES,
+                max_depth: EsInventoryWalk::Limits::DIRECTORY_DEPTH,
+                max_path_bytes: EsInventoryWalk::Limits::PATH_BYTES,
+                max_selected_path_bytes: Limits::CANDIDATE_PATH_BYTES,
+                exact_names: ["Makefile", "makefile"],
+                suffixes: [".py", ".pl", ".pm", ".awk", ".sh", ".bash", ".zsh", ".fish"]
+            }
+            walk_result: mutable EsInventoryWalk::DirectoryWalkResult = EsInventoryWalk::DirectoryWalkResult{}
+            if not excluded_directory_name(path(canonical_root).name()):
+                walk_result <- EsInventoryWalk::walk(canonical_root, walk_policy)
+            if walk_result.failure == EsInventoryWalk::DirectoryWalkFailure::RegularFileLimitExceeded:
+                eprint("inventory_candidates: root contains more than 200000 regular files; split the root (limit 200000)")
+                return 3i64
+            if walk_result.failure == EsInventoryWalk::DirectoryWalkFailure::PathBytesExceeded:
+                eprint("inventory_candidates: aggregate path bytes exceed limit (67108864)")
+                return 3i64
+            if walk_result.failure == EsInventoryWalk::DirectoryWalkFailure::SelectedPathBytesExceeded:
+                eprint("inventory_candidates: candidate path bytes exceed limit (41943040)")
+                return 3i64
+            if walk_result.failure == EsInventoryWalk::DirectoryWalkFailure::TsvUnsafePath:
+                eprint("inventory_candidates: unsupported path contains a TSV delimiter or line break")
+                return 3i64
+            if walk_result.failure == EsInventoryWalk::DirectoryWalkFailure::DepthExceeded:
+                eprint("inventory_candidates: directory depth exceeds limit (64) for " + canonical_root)
+                return 3i64
+            if walk_result.failure == EsInventoryWalk::DirectoryWalkFailure::DirectoryLimitExceeded:
+                eprint("inventory_candidates: directory count exceeds limit (200000)")
+                return 3i64
+            if walk_result.failure != EsInventoryWalk::DirectoryWalkFailure::None:
+                eprint("inventory_candidates: traversal failed or exceeded a traversal limit for " + canonical_root)
+                return 3i64
 
+            for entry in walk_result.selected_files:
+                candidate_paths.push(entry.path)
+
+            phase: mutable Phase = Phase.Preflight
             machine over phase while phase != Phase.Done:
                 state Scan
                 start Scan
-
-                Scan, Phase.Walk if stack_count == 0:
-                    phase <- Phase.Preflight
-                    -> Scan
-
-                Scan, Phase.Walk:
-                    frame_index: usize = stack_count - 1
-                    if frames[frame_index].directory == null:
-                        eprint("inventory_candidates: traversal failed or exceeded a traversal limit for " + canonical_root)
-                        walk_failed <- true
-                        walk_diagnostic_written <- true
-                        phase <- Phase.Unwind
-                        -> Scan
-
-                    directory: mutable heap void& = frames[frame_index].directory
-                    errno: mutable int& = elisascript_posix_errno()
-                    errno[0] <- 0
-                    entry_pointer: mutable ElisascriptDirectoryEntry&? = elisascript_posix_readdir(directory)
-                    if entry_pointer == null:
-                        if errno[0] == DarwinErrno::EINTR and readdir_eintr_retries < Limits::MAX_EINTR_RETRIES:
-                            readdir_eintr_retries <- readdir_eintr_retries + 1
-                            -> Scan
-                        readdir_eintr_retries <- 0
-                        if errno[0] != 0:
-                            eprint("inventory_candidates: traversal failed or exceeded a traversal limit for " + canonical_root)
-                            walk_failed <- true
-                            walk_diagnostic_written <- true
-                            phase <- Phase.Unwind
-                            -> Scan
-                        stream_to_close: mutable heap void& = directory
-                        frames[frame_index].directory <- null
-                        stack_count <- stack_count - 1
-                        close_status: int = elisascript_posix_closedir(stream_to_close)
-                        if close_status != 0:
-                            eprint("inventory_candidates: traversal failed or exceeded a traversal limit for " + canonical_root)
-                            walk_failed <- true
-                            walk_diagnostic_written <- true
-                            phase <- Phase.Unwind
-                        -> Scan
-
-                    readdir_eintr_retries <- 0
-                    entry: mutable ElisascriptDirectoryEntry& = entry_pointer
-                    name_length: usize = entry.name_length.usize()
-                    if name_length == 0 or name_length > 255 or entry.name[name_length] != 0:
-                        eprint("inventory_candidates: traversal failed or exceeded a traversal limit for " + canonical_root)
-                        walk_failed <- true
-                        walk_diagnostic_written <- true
-                        phase <- Phase.Unwind
-                        -> Scan
-                    invalid_name: mutable bool = false
-                    for name_offset in 0..<name_length |entry, invalid_name|:
-                        invalid_name <- true if entry.name[name_offset] == 0 or entry.name[name_offset] == 47
-                    if invalid_name:
-                        eprint("inventory_candidates: traversal failed or exceeded a traversal limit for " + canonical_root)
-                        walk_failed <- true
-                        walk_diagnostic_written <- true
-                        phase <- Phase.Unwind
-                        -> Scan
-                    if name_length == 1 and entry.name[0] == 46:
-                        -> Scan
-                    if name_length == 2 and entry.name[0] == 46 and entry.name[1] == 46:
-                        -> Scan
-
-                    visited_entries <- visited_entries + 1
-                    if visited_entries > Limits::DIRECTORY_ENTRIES:
-                        eprint("inventory_candidates: traversal failed or exceeded a traversal limit for " + canonical_root)
-                        walk_failed <- true
-                        walk_diagnostic_written <- true
-                        phase <- Phase.Unwind
-                        -> Scan
-
-                    child_name: sview = sview(&entry.name[0], 0, name_length.i64())
-                    child_path: sview = frames[frame_index].path + "/" + child_name if frames[frame_index].path != "/" else "/" + child_name
-                    if not path_is_tsv_safe(child_path):
-                        eprint("inventory_candidates: unsupported path contains a TSV delimiter or line break")
-                        walk_failed <- true
-                        walk_diagnostic_written <- true
-                        phase <- Phase.Unwind
-                        -> Scan
-                    child_path_bytes: usize = len(child_path)
-                    if total_path_bytes > Limits::TOTAL_PATH_BYTES or child_path_bytes > Limits::TOTAL_PATH_BYTES - total_path_bytes:
-                        eprint("inventory_candidates: aggregate path bytes exceed limit (67108864)")
-                        walk_failed <- true
-                        walk_diagnostic_written <- true
-                        phase <- Phase.Unwind
-                        -> Scan
-                    total_path_bytes <- total_path_bytes + child_path_bytes
-
-                    parent_descriptor: int = elisascript_posix_dirfd(directory)
-                    if parent_descriptor < 0:
-                        eprint("inventory_candidates: traversal failed or exceeded a traversal limit for " + canonical_root)
-                        walk_failed <- true
-                        walk_diagnostic_written <- true
-                        phase <- Phase.Unwind
-                        -> Scan
-                    entry_name: u8& = &entry.name[0]
-                    named_info: mutable ElisascriptStat = zeroed
-                    if not stat_child_entry(parent_descriptor, entry_name.cast[cstr], named_info):
-                        eprint("inventory_candidates: traversal failed or exceeded a traversal limit for " + canonical_root)
-                        walk_failed <- true
-                        walk_diagnostic_written <- true
-                        phase <- Phase.Unwind
-                        -> Scan
-                    entry_kind: u16 = named_info.mode & DarwinStatMode::MASK
-                    if entry_kind == DarwinStatMode::SYMLINK:
-                        -> Scan
-
-                    if entry_kind == DarwinStatMode::DIRECTORY:
-                        if excluded_directory_name(child_name):
-                            -> Scan
-                        if frames[frame_index].depth >= Limits::MAX_DIRECTORY_DEPTH:
-                            eprint("inventory_candidates: directory depth exceeds limit (64) for " + canonical_root)
-                            walk_failed <- true
-                            walk_diagnostic_written <- true
-                            phase <- Phase.Unwind
-                            -> Scan
-                        if directory_count >= Limits::DIRECTORIES:
-                            eprint("inventory_candidates: directory count exceeds limit (200000)")
-                            walk_failed <- true
-                            walk_diagnostic_written <- true
-                            phase <- Phase.Unwind
-                            -> Scan
-                        child_descriptor: int = open_verified_child_directory(parent_descriptor, entry_name.cast[cstr], named_info)
-                        if child_descriptor < 0:
-                            eprint("inventory_candidates: traversal failed or exceeded a traversal limit for " + canonical_root)
-                            walk_failed <- true
-                            walk_diagnostic_written <- true
-                            phase <- Phase.Unwind
-                            -> Scan
-                        child_stream: mutable heap void&? = elisascript_posix_fdopendir(child_descriptor)
-                        if child_stream == null:
-                            _ = elisascript_posix_close(child_descriptor)
-                            eprint("inventory_candidates: traversal failed or exceeded a traversal limit for " + canonical_root)
-                            walk_failed <- true
-                            walk_diagnostic_written <- true
-                            phase <- Phase.Unwind
-                            -> Scan
-                        child_frame_index: usize = stack_count
-                        frames[child_frame_index].directory <- child_stream
-                        frames[child_frame_index].path <- child_path
-                        frames[child_frame_index].depth <- frames[frame_index].depth + 1
-                        stack_count <- stack_count + 1
-                        directory_count <- directory_count + 1
-                        -> Scan
-
-                    if entry_kind != DarwinStatMode::REGULAR:
-                        -> Scan
-
-                    regular_files <- regular_files + 1
-                    if regular_files > Limits::REGULAR_FILES:
-                        eprint("inventory_candidates: root contains more than 200000 regular files; split the root (limit 200000)")
-                        walk_failed <- true
-                        walk_diagnostic_written <- true
-                        phase <- Phase.Unwind
-                        -> Scan
-
-                    if candidate_kind(child_name) == "unknown":
-                        -> Scan
-                    if candidate_path_bytes > Limits::CANDIDATE_PATH_BYTES or child_path_bytes > Limits::CANDIDATE_PATH_BYTES - candidate_path_bytes:
-                        eprint("inventory_candidates: candidate path bytes exceed limit (41943040)")
-                        walk_failed <- true
-                        walk_diagnostic_written <- true
-                        phase <- Phase.Unwind
-                        -> Scan
-                    candidate_path_bytes <- candidate_path_bytes + child_path_bytes
-                    candidate_paths.push(child_path)
-
-                Scan, Phase.Unwind if stack_count == 0:
-                    phase <- Phase.Done if walk_failed
-                    phase <- Phase.Preflight if not walk_failed
-                    -> Scan
-
-                Scan, Phase.Unwind:
-                    frame_index: usize = stack_count - 1
-                    directory_to_close: mutable heap void&? = frames[frame_index].directory
-                    frames[frame_index].directory <- null
-                    stack_count <- stack_count - 1
-                    if directory_to_close != null:
-                        owned_stream: mutable heap void& = directory_to_close
-                        close_status: int = elisascript_posix_closedir(owned_stream)
-                        if close_status != 0:
-                            walk_failed <- true
-                            if not walk_diagnostic_written:
-                                eprint("inventory_candidates: traversal failed or exceeded a traversal limit for " + canonical_root)
-                                walk_diagnostic_written <- true
-                    -> Scan
 
                 Scan, Phase.Preflight:
                     ordered_paths <- sorted(candidate_paths)
@@ -512,7 +202,6 @@ module EsInventoryCandidates:
                 Scan, Phase.Done:
                     break
 
-            return 3i64 if walk_failed
             return 0i64
 
 def main(arguments: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, Environment.Read, File.Read, Directory.Read, Unsafe.PointerCast]:

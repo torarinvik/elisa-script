@@ -1,13 +1,20 @@
 # Read-only signal inventory. Paths are discovered as data and are never
-# opened, parsed, imported, or executed. `rg`, `find`, and `sort` remain explicit
-# host-tool dependencies; all orchestration uses typed, shell-free argv calls.
+# opened, parsed, imported, or executed. `rg` and `sort` remain explicit
+# host-tool dependencies; traversal and orchestration use typed Elisascript.
+
+include "./inventory_walk.elisascript"
 
 module EsInventorySignals:
+    using EsInventoryWalk
+
     private:
         const module Limits:
             REGULAR_FILES: usize = 200000
-            # Post-capture acceptance ceilings, not pre-allocation RSS guards.
-            # Leave room for NUL separators below ProcessCapture's 64 MiB limit.
+            DIRECTORIES: usize = 200000
+            DIRECTORY_ENTRIES: usize = 262144
+            MAX_DIRECTORY_DEPTH: usize = 64
+            EXECUTE_BITS: u16 = 73
+            # Aggregate path/output ceilings are logical budgets, not RSS limits.
             TOTAL_PATH_BYTES: usize = 62914560
             OUTPUT_BYTES: usize = 67108864
             MAX_FILE_BYTES: sview = "8M"
@@ -26,11 +33,6 @@ module EsInventorySignals:
         const module Patterns:
             SHEBANG: sview = "^[[:space:]]*#![[:space:]]*(/[^[:space:]]*/)?(env[[:space:]]+)?(python3?|pypy3?|perl|awk|gawk|mawk|sh|bash|zsh|fish)([[:space:]]|$)"
             INLINE: sview = "(^|[^[:alnum:]_])(python3?|pypy3?)[[:space:]]+-c([[:space:]]|$)|(^|[^[:alnum:]_])perl[[:space:]]+-e([[:space:]]|$)|(^|[^[:alnum:]_])(g?awk|mawk)([[:space:]]|$)"
-
-
-        struct CountResult:
-            count: usize = 0
-            failure: sview = ""
 
 
         def path_is_tsv_safe(value: sview) -> bool:
@@ -54,7 +56,7 @@ module EsInventorySignals:
 
 
         def first_missing_required_tool() -> sview can[Memory.Allocate, Abort.Panic, Environment.Read, File.Read]:
-            required_tools: darray[sview] = ["find", "rg", "sort"]
+            required_tools: darray[sview] = ["rg", "sort"]
             for name in required_tools:
                 if not executable_found_on_path(name):
                     return name
@@ -109,28 +111,6 @@ module EsInventorySignals:
             return path_text + "\t" + signal + "\t" + detail
 
 
-        def validate_count_output(output: sview, root: sview) -> CountResult can[Memory.Allocate, Abort.Panic]:
-            count: mutable usize = 0
-            total_path_bytes: mutable usize = 0
-            record_start: mutable usize = 0
-            for cursor in 0..<len(output) |count, total_path_bytes, record_start|:
-                if sview_at(output, cursor) == 0u8:
-                    path_text: sview = output[record_start:cursor]
-                    if path_text == "":
-                        return CountResult{failure: "inventory_signals: malformed NUL-delimited file list under " + root}
-                    if not path_is_tsv_safe(path_text):
-                        return CountResult{failure: "inventory_signals: path contains a TSV delimiter or line break under " + root}
-                    path_bytes: usize = cursor - record_start
-                    if total_path_bytes > Limits::TOTAL_PATH_BYTES or path_bytes > Limits::TOTAL_PATH_BYTES - total_path_bytes:
-                        return CountResult{failure: "inventory_signals: aggregate path bytes exceed limit (62914560) under " + root}
-                    total_path_bytes <- total_path_bytes + path_bytes
-                    count <- count + 1
-                    record_start <- cursor + 1
-            if record_start != len(output):
-                return CountResult{failure: "inventory_signals: malformed NUL-delimited file list under " + root}
-            return CountResult{count: count}
-
-
         def append_nul_rows(output: sview, root: sview, signal: sview, detail: sview, rows: mutable darray[sview]&, output_bytes: mutable usize&) -> sview can[Memory.Allocate, Abort.Panic]:
             record_start: mutable usize = 0
             for cursor in 0..<len(output) |record_start, rows, output_bytes|:
@@ -146,41 +126,11 @@ module EsInventorySignals:
             return ""
 
 
-        def find_base_arguments(root: sview) -> darray[sview] can[Memory.Allocate, Abort.Panic]:
-            arguments: mutable darray[sview] = [
-                "-P", root,
-                "(",
-                "-path", "*/.git",
-                "-o", "-path", "*/node_modules",
-                "-o", "-path", "*/.venv",
-                "-o", "-path", "*/__pycache__",
-                "-o", "-path", "*/vendor",
-                "-o", "-path", "*/third_party",
-                ")", "-prune", "-o", "-type", "f"
-            ]
-            return arguments
-
-
-        def count_regular_files(root: sview) -> CountResult can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Process.Run]:
-            arguments: mutable darray[sview] = find_base_arguments(root)
-            arguments.push("-print0")
-            capture: ProcessCapture = try capture_process_result_with_environment(exe"find", arguments, "", {"LC_ALL": "C"}) else err:
-                return CountResult{failure: "inventory_signals: unable to count regular files under " + root}
-            if capture.status != 0:
-                return CountResult{failure: "inventory_signals: unable to count regular files under " + root}
-            return validate_count_output(capture.stdout, root)
-
-
-        def append_executable_rows(root: sview, rows: mutable darray[sview]&, output_bytes: mutable usize&) -> sview can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Process.Run]:
-            arguments: mutable darray[sview] = find_base_arguments(root)
-            arguments.push("-perm")
-            arguments.push("-111")
-            arguments.push("-print0")
-            capture: ProcessCapture = try capture_process_result_with_environment(exe"find", arguments, "", {"LC_ALL": "C"}) else err:
-                return "inventory_signals: executable-file traversal failed for " + root
-            if capture.status != 0:
-                return "inventory_signals: executable-file traversal failed for " + root
-            return append_nul_rows(capture.stdout, root, Output::EXECUTABLE_SIGNAL, Output::EXECUTABLE_DETAIL, rows, output_bytes)
+        def append_executable_rows(walk: EsInventoryWalk::DirectoryWalkResult&, rows: mutable darray[sview]&, output_bytes: mutable usize&) -> sview can[Memory.Allocate, Abort.Panic]:
+            for entry in walk.selected_files |rows, output_bytes|:
+                if not append_row(rows, output_bytes, entry.path, Output::EXECUTABLE_SIGNAL, Output::EXECUTABLE_DETAIL):
+                    return "inventory_signals: manifest output exceeds limit (67108864)"
+            return ""
 
 
         def ripgrep_arguments(root: sview, pattern: sview) -> darray[sview] can[Memory.Allocate, Abort.Panic]:
@@ -242,17 +192,36 @@ module EsInventorySignals:
                 eprint("inventory_signals: required tool not found: " + missing_tool)
                 return 127i64
 
-            count: CountResult = count_regular_files(scan_root)
-            if count.failure != "":
-                eprint(count.failure)
+            walk_policy: EsInventoryWalk::DirectoryWalkPolicy = EsInventoryWalk::DirectoryWalkPolicy{
+                max_regular_files: Limits::REGULAR_FILES,
+                max_directories: Limits::DIRECTORIES,
+                max_directory_entries: Limits::DIRECTORY_ENTRIES,
+                max_depth: Limits::MAX_DIRECTORY_DEPTH,
+                max_path_bytes: Limits::TOTAL_PATH_BYTES,
+                max_selected_path_bytes: Limits::TOTAL_PATH_BYTES,
+                select_mode_bits: true,
+                required_mode_bits: Limits::EXECUTE_BITS
+            }
+            walk: EsInventoryWalk::DirectoryWalkResult = EsInventoryWalk::walk(scan_root, walk_policy)
+            if walk.failure == EsInventoryWalk::DirectoryWalkFailure::RegularFileLimitExceeded:
+                eprint("inventory_signals: root contains " + f"{walk.regular_file_count}" + " regular files; split the root (limit 200000)")
                 return 3i64
-            if count.count > Limits::REGULAR_FILES:
-                eprint("inventory_signals: root contains " + f"{count.count}" + " regular files; split the root (limit 200000)")
+            if walk.failure == EsInventoryWalk::DirectoryWalkFailure::PathBytesExceeded:
+                eprint("inventory_signals: aggregate path bytes exceed limit (62914560) under " + scan_root)
+                return 3i64
+            if walk.failure == EsInventoryWalk::DirectoryWalkFailure::SelectedPathBytesExceeded:
+                eprint("inventory_signals: aggregate path bytes exceed limit (62914560) under " + scan_root)
+                return 3i64
+            if walk.failure == EsInventoryWalk::DirectoryWalkFailure::TsvUnsafePath:
+                eprint("inventory_signals: path contains a TSV delimiter or line break under " + scan_root)
+                return 3i64
+            if walk.failure != EsInventoryWalk::DirectoryWalkFailure::None:
+                eprint("inventory_signals: unable to count regular files under " + scan_root)
                 return 3i64
 
             rows: mutable darray[sview] = []
             output_bytes: mutable usize = len(Output::HEADER) + 1
-            failure: sview = append_executable_rows(scan_root, rows, output_bytes)
+            failure: sview = append_executable_rows(walk, rows, output_bytes)
             if failure != "":
                 eprint(failure)
                 return 3i64
