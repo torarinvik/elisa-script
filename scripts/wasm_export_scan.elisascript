@@ -1,7 +1,6 @@
-# First vertical slice of W09: port parse_exports for one already-flattened
-# source string and expose its rows as bounded, ordered JSON. Include-graph
-# loading and wasm_build.py caller migration remain separate acceptance work;
-# this candidate is not yet a replacement for wasm_export_scan.py.
+# W09 candidate: bounded include expansion, parse_exports-compatible scanning,
+# and ordered JSON output. The CLI and parity adapter share the path loader;
+# wasm_build.py caller migration and full acceptance remain separate work.
 
 include "../src/runtime/encoding.elisa"
 
@@ -15,6 +14,10 @@ module EsWasmExportScan:
             EXPORTS: usize = 65536
             PARAMETERS_PER_EXPORT: usize = 4096
             JSON_BYTES: usize = 16777216
+            INCLUDE_GRAPH_BYTES: usize = 33554432
+            INCLUDE_FILES: usize = 4096
+            INCLUDE_DEPTH: usize = 128
+            INCLUDE_DIRECTIVES: usize = 16384
 
 
         const module Syntax:
@@ -71,6 +74,27 @@ module EsWasmExportScan:
             failure: sview = ""
 
 
+        struct FlattenedSource:
+            source: sview = ""
+            failure: sview = ""
+
+
+        struct IncludeDirective:
+            found: bool = false
+            path: sview = ""
+
+
+        struct PathResolution:
+            path: Path
+            failure: sview = ""
+
+
+        struct SourceFrame:
+            path: Path
+            source: sview
+            cursor: usize = 0
+
+
         struct IdentifierScan:
             value: sview
             next: usize
@@ -110,6 +134,18 @@ module EsWasmExportScan:
 
         enum LinePhase of u8:
             Scan
+            Done
+
+
+        enum PathPhase of u8:
+            FindExistingPrefix
+            AppendMissingSuffix
+            Done
+
+
+        enum FlattenPhase of u8:
+            ResolvePending
+            ConsumeStack
             Done
 
 
@@ -495,6 +531,249 @@ module EsWasmExportScan:
             return 0
 
 
+        def valid_utf8(source: sview) -> bool:
+            utf8: mutable Utf8Cursor = Utf8Cursor{}
+            for offset in 0..<len(source) |source, utf8|:
+                return false if not utf8_feed(sview_at(source, offset), utf8)
+            return utf8_complete(utf8)
+
+
+        # pathlib.read_text(..., encoding="utf-8") uses universal newlines:
+        # CRLF and bare CR both become LF before splitlines(keepends=True).
+        def normalize_newlines(source: sview) -> sview can[Memory.Allocate, Abort.Panic]:
+            output: mutable darray[u8] = []
+            cursor: mutable usize = 0
+            while cursor < len(source) |cursor, output, source|:
+                byte: u8 = sview_at(source, cursor)
+                if byte == 13u8:
+                    output.push(10u8)
+                    cursor <- cursor + 1
+                    cursor <- cursor + 1 if cursor < len(source) and sview_at(source, cursor) == 10u8
+                else:
+                    output.push(byte)
+                    cursor <- cursor + 1
+            return bytes_view(output)
+
+
+        def parse_include_directive(line: sview) -> IncludeDirective:
+            not_found: IncludeDirective = IncludeDirective{}
+            cursor: mutable usize = skip_python_space(line, 0)
+            if cursor < len(line) and sview_at(line, cursor) == 35u8:
+                cursor <- skip_python_space(line, cursor + 1)
+            return not_found if not starts_at(line, cursor, "include")
+            cursor <- cursor + 7
+            return not_found if python_space_width(line, cursor) == 0
+            cursor <- skip_python_space(line, cursor)
+            return not_found if cursor >= len(line)
+            quote: u8 = sview_at(line, cursor)
+            return not_found if quote != 39u8 and quote != 34u8
+            cursor <- cursor + 1
+            path_start: usize = cursor
+            while cursor < len(line) |cursor, line, quote, path_start|:
+                byte: u8 = sview_at(line, cursor)
+                break if byte == 39u8 or byte == 34u8
+                cursor <- cursor + 1
+            return not_found if cursor == path_start or cursor >= len(line)
+            closing_quote: u8 = sview_at(line, cursor)
+            return not_found if closing_quote != 39u8 and closing_quote != 34u8
+            include_path: sview = line[path_start:cursor]
+            cursor <- skip_python_space(line, cursor + 1)
+            return not_found if cursor != len(line)
+            return IncludeDirective{found: true, path: include_path}
+
+
+        # Path.resolve() on the current runtime requires the final leaf to exist.
+        # Resolve the deepest existing prefix instead, then append missing leaves
+        # in reverse collection order. A dangling symlink cannot be reconstructed
+        # with the current strict realpath primitive and is reported explicitly.
+        def resolve_non_strict(input_path: Path) -> PathResolution can[Memory.Allocate, Abort.Panic, File.Read, Directory.Read]:
+            absolute_path: Path = try input_path.absolute() else err:
+                return PathResolution{path: input_path, failure: "unable to resolve source/include path"}
+            current: mutable Path = absolute_path
+            suffix: mutable darray[sview] = []
+            resolved_prefix: mutable Path = absolute_path
+            phase: mutable PathPhase = PathPhase.FindExistingPrefix
+
+            machine over phase while phase != PathPhase.Done:
+                state FindExistingPrefix
+                state AppendMissingSuffix
+                start FindExistingPrefix
+
+                FindExistingPrefix, PathPhase.FindExistingPrefix:
+                    exists: bool = try path_exists(current) else err:
+                        return PathResolution{path: absolute_path, failure: "unable to resolve source/include path"}
+                    symbolic_link: bool = is_symlink(current)
+                    if not exists and symbolic_link:
+                        return PathResolution{path: absolute_path, failure: "dangling symlink in source/include path is unsupported"}
+                    if exists:
+                        resolved_prefix <- try path_real(current) else err:
+                            return PathResolution{path: absolute_path, failure: "unable to resolve source/include path"}
+                        phase <- PathPhase.AppendMissingSuffix
+                        -> AppendMissingSuffix
+                    parent: Path = current.parent()
+                    parent <- path("/") if parent == path("") and path_is_absolute(current)
+                    if parent == current:
+                        return PathResolution{path: absolute_path, failure: "unable to resolve source/include path"}
+                    suffix.push(current.name())
+                    current <- parent
+                    -> FindExistingPrefix
+
+                AppendMissingSuffix, PathPhase.AppendMissingSuffix:
+                    for offset in 0..<suffix.count |resolved_prefix, suffix|:
+                        suffix_index: usize = suffix.count - offset - 1
+                        resolved_prefix <- resolved_prefix.joinpath(suffix[suffix_index])
+                    phase <- PathPhase.Done
+                    -> AppendMissingSuffix
+
+                FindExistingPrefix, PathPhase.Done:
+                    break
+
+                AppendMissingSuffix, PathPhase.Done:
+                    break
+
+            return PathResolution{path: resolved_prefix}
+
+
+        def include_cycle_failure(active: darray[Path], next_path: Path) -> sview can[Memory.Allocate, Abort.Panic]:
+            chain: mutable sview = ""
+            for active_path in active |chain|:
+                chain <- chain + " -> " if chain != ""
+                chain <- chain + f"{active_path}"
+            chain <- chain + " -> " if chain != ""
+            chain <- chain + f"{next_path}"
+            return "cyclic include while building WASM: " + chain
+
+
+        # Expand a complete include graph with an explicit DFS frame stack so
+        # include depth and total work are bounded independently of host stack.
+        def flatten_source_file(input_path: Path) -> FlattenedSource can[Memory.Allocate, Abort.Panic, File.Read, Directory.Read]:
+            output: mutable darray[u8] = []
+            frames: mutable darray[SourceFrame] = []
+            active: mutable darray[Path] = []
+            seen: mutable darray[Path] = []
+            pending_path: mutable Path = input_path
+            has_pending: mutable bool = true
+            loaded_files: mutable usize = 0
+            loaded_bytes: mutable usize = 0
+            include_directives: mutable usize = 0
+            phase: mutable FlattenPhase = FlattenPhase.ResolvePending
+
+            machine over phase while phase != FlattenPhase.Done:
+                state ResolvePending
+                state ConsumeStack
+                start ResolvePending
+
+                ResolvePending, FlattenPhase.ResolvePending:
+                    if not has_pending:
+                        phase <- FlattenPhase.ConsumeStack
+                        -> ConsumeStack
+
+                    resolution: PathResolution = resolve_non_strict(pending_path)
+                    if resolution.failure != "":
+                        return FlattenedSource{failure: resolution.failure}
+                    current_path: Path = resolution.path
+
+                    # The Python reference checks the active stack before its
+                    # global set, so a back-edge is never hidden as a duplicate.
+                    if active.contains(current_path):
+                        return FlattenedSource{failure: include_cycle_failure(active, current_path)}
+                    if seen.contains(current_path):
+                        has_pending <- false
+                        phase <- FlattenPhase.ConsumeStack
+                        -> ConsumeStack
+
+                    if frames.count >= Limits::INCLUDE_DEPTH:
+                        return FlattenedSource{failure: "WASM include depth exceeds Elisascript scan limit"}
+                    if loaded_files >= Limits::INCLUDE_FILES:
+                        return FlattenedSource{failure: "WASM include file count exceeds Elisascript scan limit"}
+                    if not is_file(current_path):
+                        return FlattenedSource{failure: "missing source/include: " + f"{current_path}"}
+
+                    # Match the reference's mutation order: the resolved path is
+                    # recorded in seen and active before attempting the read.
+                    seen.push(current_path)
+                    active.push(current_path)
+                    loaded_files <- loaded_files + 1
+
+                    source_size: usize = try file_size(current_path) else err:
+                        return FlattenedSource{failure: "unable to inspect source/include: " + f"{current_path}"}
+                    if source_size > Limits::SOURCE_BYTES:
+                        return FlattenedSource{failure: "WASM source exceeds Elisascript scan limit"}
+                    if source_size > Limits::INCLUDE_GRAPH_BYTES - loaded_bytes:
+                        return FlattenedSource{failure: "WASM include graph exceeds Elisascript scan limit"}
+                    loaded_bytes <- loaded_bytes + source_size
+                    raw_source: sview = try read_text(current_path) else err:
+                        return FlattenedSource{failure: "unable to read source/include: " + f"{current_path}"}
+                    if len(raw_source) > Limits::SOURCE_BYTES:
+                        return FlattenedSource{failure: "WASM source exceeds Elisascript scan limit"}
+                    accounted_before_read: usize = loaded_bytes - source_size
+                    if len(raw_source) > Limits::INCLUDE_GRAPH_BYTES - accounted_before_read:
+                        return FlattenedSource{failure: "WASM include graph exceeds Elisascript scan limit"}
+                    loaded_bytes <- accounted_before_read + len(raw_source)
+                    if not valid_utf8(raw_source):
+                        return FlattenedSource{failure: "WASM source is not valid UTF-8"}
+
+                    normalized: sview = normalize_newlines(raw_source)
+                    frames.push(SourceFrame{path: current_path, source: normalized})
+                    has_pending <- false
+                    phase <- FlattenPhase.ConsumeStack
+                    -> ConsumeStack
+
+                ConsumeStack, FlattenPhase.ConsumeStack:
+                    if frames.count == 0:
+                        phase <- FlattenPhase.Done
+                        -> ConsumeStack
+
+                    frame_index: usize = frames.count - 1
+                    frame: mutable SourceFrame = frames[frame_index]
+                    if frame.cursor >= len(frame.source):
+                        _ = frames.pop()
+                        _ = active.pop()
+                        phase <- FlattenPhase.ConsumeStack
+                        -> ConsumeStack
+
+                    line_start: usize = frame.cursor
+                    line_end: mutable usize = line_start
+                    while line_end < len(frame.source) |line_end, frame|:
+                        boundary_width: usize = python_line_width(frame.source, line_end)
+                        if boundary_width != 0:
+                            line_end <- line_end + boundary_width
+                            break
+                        line_end <- line_end + 1
+
+                    # Keep the line terminator in the regex-equivalent view:
+                    # Python strips only CR/LF here, while its trailing \s*
+                    # also accepts the other splitlines separators.
+                    directive: IncludeDirective = parse_include_directive(frame.source[line_start:line_end])
+
+                    frame.cursor <- line_end
+                    frames[frame_index] <- frame
+                    if directive.found:
+                        if include_directives >= Limits::INCLUDE_DIRECTIVES:
+                            return FlattenedSource{failure: "WASM include directive count exceeds Elisascript scan limit"}
+                        include_directives <- include_directives + 1
+                        requested_path: Path = path(directive.path)
+                        if not path_is_absolute(requested_path):
+                            requested_path <- frame.path.parent().joinpath(directive.path)
+                        pending_path <- requested_path
+                        has_pending <- true
+                        phase <- FlattenPhase.ResolvePending
+                        -> ResolvePending
+
+                    if not append_text(output, frame.source[line_start:line_end], Limits::SOURCE_BYTES):
+                        return FlattenedSource{failure: "WASM source exceeds Elisascript scan limit"}
+                    phase <- FlattenPhase.ConsumeStack
+                    -> ConsumeStack
+
+                ResolvePending, FlattenPhase.Done:
+                    break
+
+                ConsumeStack, FlattenPhase.Done:
+                    break
+
+            return FlattenedSource{source: bytes_view(output)}
+
+
         def source_lines(source: sview) -> darray[sview] can[Memory.Allocate, Abort.Panic]:
             lines: mutable darray[sview] = []
             phase: mutable LinePhase = LinePhase.Scan
@@ -809,6 +1088,19 @@ module EsWasmExportScan:
             return cli_response_frame(response.status, "", "wasm export scan: " + response.failure + "\n")
 
 
+        def source_path_response(input_path: Path) -> SourceResponse can[Memory.Allocate, Abort.Panic, File.Read, Directory.Read]:
+            flattened: FlattenedSource = flatten_source_file(input_path)
+            return SourceResponse{failure: flattened.failure} if flattened.failure != ""
+            return source_response(flattened.source)
+
+
+        def source_path_response_frame(input_path: Path) -> sview can[Memory.Allocate, Abort.Panic, File.Read, Directory.Read]:
+            response: SourceResponse = source_path_response(input_path)
+            if response.status == 0:
+                return cli_response_frame(0, bytes_view(response.encoded.bytes) + "\n", "")
+            return cli_response_frame(response.status, "", "wasm export scan: " + response.failure + "\n")
+
+
     public:
         # Test-only transport view for comparing this source scanner with an
         # external CLI oracle. CLI main uses the same scan/encode decision, but
@@ -817,29 +1109,17 @@ module EsWasmExportScan:
             return source_response_frame(source)
 
 
-        def main(arguments: darray[sview]) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, File.Read]:
+        def differential_path_response(input_path: Path) -> sview can[Memory.Allocate, Abort.Panic, File.Read, Directory.Read]:
+            return source_path_response_frame(input_path)
+
+
+        def main(arguments: darray[sview]) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, File.Read, Directory.Read]:
             if arguments.count != 1:
-                eprint("usage: wasm export scan [flattened-source]")
+                eprint("usage: wasm export scan [source]")
                 return 2i64
 
             source_path: Path = path(arguments[0])
-            if not is_file(source_path):
-                eprint("wasm export scan: missing source file")
-                return 1i64
-            source_size: usize = try file_size(source_path) else err:
-                eprint("wasm export scan: unable to inspect source file")
-                return 1i64
-            if source_size > Limits::SOURCE_BYTES:
-                eprint("wasm export scan: source exceeds Elisascript scan limit")
-                return 1i64
-            source: sview = try read_text(source_path) else err:
-                eprint("wasm export scan: unable to read source file")
-                return 1i64
-            if len(source) > Limits::SOURCE_BYTES:
-                eprint("wasm export scan: source exceeds Elisascript scan limit")
-                return 1i64
-
-            response: SourceResponse = source_response(source)
+            response: SourceResponse = source_path_response(source_path)
             if response.status != 0:
                 eprint("wasm export scan: " + response.failure)
                 return 1i64
@@ -847,5 +1127,5 @@ module EsWasmExportScan:
             return response.status
 
 
-def main(arguments: darray[sview]) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, File.Read]:
+def main(arguments: darray[sview]) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, File.Read, Directory.Read]:
     return EsWasmExportScan::main(arguments)

@@ -72,33 +72,40 @@ human-readable output.
   resolved chain; a repeated completed include contributes the empty string.
 - Python `Path.resolve()` is non-strict by default: it returns a canonicalized
   absolute spelling for a missing leaf after resolving existing symlink
-  prefixes. Elisascript's current `Path.resolve()`/`path_real` adapter requires
-  the full target to exist. The port must add or compose a non-strict resolver;
-  mapping that failure directly to a file error is not parity, because it loses
-  the required resolved path in `missing source/include: RESOLVED`. Include
-  fixtures must cover a missing leaf under an existing directory and a path
-  beneath an existing symlink. Dangling-symlink behavior must also be pinned or
-  explicitly reported as unsupported before claiming full `Path.resolve()`
-  parity.
+  prefixes. The candidate composes this behavior from `Path.absolute()` plus
+  `Path.resolve()` on the deepest existing prefix, then appends missing
+  components. Fixtures compare missing leaves under an existing directory and
+  beneath an existing symlink. Because `Path.absolute()` lexically normalizes
+  before the prefix walk, a path containing `..` after a symlink may differ
+  from Python's component-by-component resolution; that case is still open.
+  Dangling symlinks are explicitly reported as unsupported because the current
+  strict realpath primitive cannot reconstruct them.
 - The optional `seen` set and active `stack` list are caller-owned and mutated:
   add the resolved file to `seen`, then to `stack` before reading. Successful
   reads pop the stack; a read/decode/child error leaves those mutations in
-  place because the Python implementation has no `finally` cleanup.
+  place because the Python implementation has no `finally` cleanup. The
+  Elisascript CLI owns these collections, checks cycles before de-duplication,
+  and uses an explicit depth-first frame stack; caller-visible mutation of
+  Python's optional collections is outside its CLI protocol.
 - Require a regular file and strict UTF-8. Relative includes resolve against
   the including file's resolved parent; absolute includes are used directly.
   Expand includes depth-first in source order, without adding a newline at the
   include site. Preserve each non-include line and ending yielded by Python's
-  `splitlines(keepends=True)`.
+  `splitlines(keepends=True)`. The Elisascript loader applies per-file and
+  aggregate byte ceilings plus include-file, directive, and depth ceilings;
+  those bounded rejection cases are Elisascript-specific safeguards.
 - Python `Path.read_text` universal-newline translation converts CRLF and bare
-  CR to LF before `splitlines(keepends=True)`. The Elisascript port must make
-  that normalization explicit. Include directives are whole lines matching
-  optional indentation and optional `#` before `include`, with a single- or
-  double-quoted nonempty path and no trailing text.
-- Elisascript `read_text` currently returns the file's raw bytes as text and
-  does not perform Python's strict UTF-8 decoding or universal-newline
-  translation. The port must validate UTF-8 and normalize CRLF/bare CR to LF
-  before applying the include-line and `splitlines(keepends=True)` rules; a
-  successful raw read alone is insufficient.
+  CR to LF before `splitlines(keepends=True)`. The candidate makes that
+  normalization explicit. Include directives are whole lines matching
+  optional indentation and optional `#` before `include`, with a nonempty
+  path between quote characters and no trailing text. The pinned regex does
+  not backreference the opening quote, so mixed delimiters are accepted; the
+  candidate preserves this permissive behavior.
+- Elisascript `read_text` returns the file's raw bytes as text and does not
+  perform Python's strict UTF-8 decoding or universal-newline translation.
+  The candidate validates UTF-8 and normalizes CRLF/bare CR to LF before
+  applying the include-line and `splitlines(keepends=True)` rules; a successful
+  raw read alone is insufficient.
 - Beyond LF, Python `splitlines` also recognizes vertical tab, form feed, NEL,
   and Unicode line/paragraph separators. Their line-number and splice behavior
   must be pinned by fixtures or explicitly excluded from the supported source
@@ -130,17 +137,27 @@ only unless they are valid Elisa programs.
 The first parity slice is represented by
 `test/script_parity/wasm_export_scan_test.elisascript` and its pinned-process
 adapter `scripts/wasm_export_scan_reference.py`. The Elisascript test includes
-the candidate module and calls its shared source-response function directly;
-the Python side runs as a process. The Python status/stdout/stderr are encoded
+the candidate module and calls its shared path-response function; the Python
+side runs the pinned scanner's `read_flat_source` and `parse_exports` as a
+process. The Python status/stdout/stderr are encoded
 as one length-delimited `DifferentialValue.Text` before typed comparison,
 because in-process console output is intentionally not captured by the current
-differential adapter. Cases cover the positive record fixture, no-export,
-duplicate, nullable/unsupported ABI errors, and the pinned target-regex edge;
-positive snapshots are also checked against their checked-in JSON. The Python
-adapter verifies the working-tree scanner blob against the pinned Git commit
-before calling it. This test source has not been run: it remains behind the
-disabled bounded compiler wrapper and does not cover CLI launch integration,
-the include graph, or caller integration.
+differential adapter. Cases cover positive records, parser and ABI errors, the
+pinned target-regex edge, nested relative includes, diamond de-duplication,
+cycles, missing leaves, absolute includes, mixed quote delimiters, and
+existing/missing leaves beneath a symlink prefix. Positive snapshots are also
+checked against their checked-in JSON. The Python adapter verifies the
+working-tree scanner blob against the pinned Git commit before calling it.
+Before invoking the reference's recursive loader, the adapter performs a
+streaming include-graph preflight with the same per-file, graph-byte,
+output-byte, directive, and depth ceilings; this avoids unbounded oracle reads
+while retaining the pinned loader as the accepted-input reference. It also
+normalizes host `OSError` read failures to the candidate's stable path
+diagnostic. This test source has not been run: it
+remains behind the disabled bounded compiler wrapper and does not cover
+CRLF/bare-CR fixtures, no-newline splicing, invalid UTF-8, bound rejection,
+dangling symlinks, symlink-plus-`..` resolution, CLI launch integration, or
+caller integration.
 Once validation is explicitly reauthorized, run this test from the repository
 root only through scripts/run_bounded_test.sh
 test/script_parity/wasm_export_scan_test.elisascript; do not bypass the pinned
