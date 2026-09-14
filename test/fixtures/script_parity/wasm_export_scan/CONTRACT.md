@@ -164,7 +164,7 @@ only unless they are valid Elisa programs.
 | Case group | Required cases |
 | --- | --- |
 | Record shape | zero parameters, default/no return, explicit target, line numbers, source order, exact optional-key presence, permissive target-regex behavior |
-| ABI | every scalar mapping, `cstr`, `&`, `&&`, nullable, unsupported aggregate, modifier/whitespace normalization, greedy nested-signature suffix selection, Python-compatible diagnostic quoting for C1 controls, U+00AD SOFT HYPHEN, and U+200B ZERO WIDTH SPACE |
+| ABI | every scalar mapping, `cstr`, `&`, `&&`, nullable, unsupported aggregate, modifier/whitespace normalization, greedy nested-signature suffix selection, Python-compatible diagnostic quoting for C1 controls, U+00AD SOFT HYPHEN, U+200B ZERO WIDTH SPACE, and U+FEFF ZERO WIDTH NO-BREAK SPACE |
 | Parameter scanner | nested delimiters including `{}`, quoted commas/equals, escapes, empty segments, missing colon, invalid name |
 | Link annotation | quoted/bare, blank/comment retention, overwrite, empty, dangling, reset by ordinary text, implicit-main exclusion |
 | `main` | implicit position and fields, repeated definitions, explicit-before/after behavior, duplicate line diagnostic |
@@ -202,16 +202,17 @@ unique-export comparison-work limit without invoking Python. A generated
 Python differential case covers explicit `main` before implicit `main` and
 implicit `main` before a later explicit duplicate, plus repeated implicit
 definitions that must yield only one row. The ordering cases include many
-ordinary lines between exports to exercise the maintained presence flag. A generated
-unsupported-type diagnostic containing U+009F, U+00AD, and U+200B is also
-compared with the pinned Python adapter to check C1, soft-hyphen, and zero-width
-`repr` escaping. Newline-dense inputs check that
-131,072 lines reach the ordinary no-export diagnostic while 131,073 lines hit
-the candidate-only line-view cap, without entering Python. These are static
-source contracts, not executed evidence. Positive snapshots are also checked against their
-checked-in JSON. The
-Python adapter verifies the working-tree scanner blob against the pinned Git
-commit before calling it.
+ordinary lines between exports to exercise the maintained presence flag. A
+generated unsupported-type diagnostic containing U+009F, U+00AD, U+200B,
+and U+FEFF is compared with the pinned Python adapter to check C1,
+soft-hyphen, zero-width-space, and zero-width-no-break-space `repr` escaping.
+The checked-in `unsupported_type.input` fixture also carries U+FEFF in the
+type span for public-launcher coverage. Newline-dense inputs check that 131,072
+lines reach the ordinary no-export diagnostic while 131,073 lines hit the
+candidate-only line-view cap, without entering Python. These are static source
+contracts, not executed evidence. Positive snapshots are also checked against
+their checked-in JSON. The Python adapter verifies the working-tree scanner
+blob against the pinned Git commit before calling it.
 Before invoking the reference's recursive loader, the adapter performs a
 streaming include-graph preflight with the same per-file, graph-byte,
 output-byte, path, path-component-work, directive, and depth ceilings; this
@@ -220,15 +221,31 @@ accepted-input reference. It also normalizes host `OSError` read failures to
 the candidate's stable path diagnostic. This test source has not been run: it
 remains behind the disabled bounded compiler wrapper and does not cover other
 resource-bound rejection, unreadable input under a non-root user, dangling
-symlinks, CLI launch integration, or caller integration.
-Once validation is explicitly reauthorized, run this test from the repository
-root only through scripts/run_bounded_test.sh
-test/script_parity/wasm_export_scan_test.elisascript; do not bypass the pinned
-compiler and resource gate with a direct compiler invocation.
+symlinks, or caller integration.
+
+The separate `test/script_parity/wasm_export_scan_launcher_test.elisascript`
+source compares the configured launcher executable process against the pinned
+Python process for positive output, no-export and ABI failures, nested
+includes, and include-cycle diagnostics. It requires
+`ELISASCRIPT_PUBLIC_LAUNCHER` to name an absolute path and compares captured
+exit status, stdout, and stderr directly. The test trusts that the supplied
+path identifies the intended launcher; it does not verify the executable's
+build identity, so a qualified run must record and verify that identity
+separately. This does not claim caller adoption or substitute for the direct
+structured parity suite. The test fails closed unless
+`ELISASCRIPT_VALIDATION_REAUTHORIZED` is `1` and `ELISA_LOCAL_COMPILER` names
+the pinned StructPy compiler. Even then, run it only through the bounded
+wrapper so the RSS monitor covers the launcher child.
+
+Neither test has run. Once validation is explicitly reauthorized, run each
+test from the repository root only through `scripts/run_bounded_test.sh`, with
+`ELISASCRIPT_PUBLIC_LAUNCHER` set to the absolute public launcher path for the
+second test. Pin the local compiler and use the wrapper's RSS monitoring as
+specified in `docs/development.md`; do not invoke the compiler directly.
 
 Existing pinned Python tests cover only a subset: selected `int`/`i64` and
 `cstr` behavior, one unsupported aggregate, duplicate exports, quoted link
 names, and three positive build-artifact parity examples. They do not establish
 the matrix above. This document is an acceptance contract, not evidence that
-the Elisascript port or parity has been implemented or run. Compiler/script
+the port is complete or that any parity has been run. Compiler/script
 validation remains disabled until explicitly reauthorized.
