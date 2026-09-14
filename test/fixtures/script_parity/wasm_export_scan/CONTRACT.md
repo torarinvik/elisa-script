@@ -72,14 +72,16 @@ human-readable output.
   resolved chain; a repeated completed include contributes the empty string.
 - Python `Path.resolve()` is non-strict by default: it returns a canonicalized
   absolute spelling for a missing leaf after resolving existing symlink
-  prefixes. The candidate composes this behavior from `Path.absolute()` plus
-  `Path.resolve()` on the deepest existing prefix, then appends missing
-  components. Fixtures compare missing leaves under an existing directory and
-  beneath an existing symlink. Because `Path.absolute()` lexically normalizes
-  before the prefix walk, a path containing `..` after a symlink may differ
-  from Python's component-by-component resolution; that case is still open.
-  Dangling symlinks are explicitly reported as unsupported because the current
-  strict realpath primitive cannot reconstruct them.
+  prefixes. The candidate walks components from the root or current directory,
+  resolves every existing component before processing a following `..`, and
+  retains missing suffix components so a later `..` can cancel them. It caps
+  raw and resolved path spellings at fewer than 4096 bytes (maximum 4095) and
+  aggregate component-processing work, counting each nonempty component
+  including `.` and `..`. Fixtures compare missing leaves under an
+  existing directory and symlink, plus `alias/../child` where `alias` points
+  to a nested directory and must be resolved before `..`. Dangling symlinks
+  remain unsupported until the candidate expands link targets before applying
+  the runtime's strict realpath operation.
 - The optional `seen` set and active `stack` list are caller-owned and mutated:
   add the resolved file to `seen`, then to `stack` before reading. Successful
   reads pop the stack; a read/decode/child error leaves those mutations in
@@ -92,8 +94,9 @@ human-readable output.
   Expand includes depth-first in source order, without adding a newline at the
   include site. Preserve each non-include line and ending yielded by Python's
   `splitlines(keepends=True)`. The Elisascript loader applies per-file and
-  aggregate byte ceilings plus include-file, directive, and depth ceilings;
-  those bounded rejection cases are Elisascript-specific safeguards.
+  aggregate byte ceilings plus path-spelling, aggregate path-component work,
+  include-file, directive, and depth ceilings; those bounded rejection cases
+  are Elisascript-specific safeguards.
 - Python `Path.read_text` universal-newline translation converts CRLF and bare
   CR to LF before `splitlines(keepends=True)`. The candidate makes that
   normalization explicit. Include directives are whole lines matching
@@ -145,20 +148,21 @@ because in-process console output is intentionally not captured by the current
 differential adapter. Cases cover positive records, parser and ABI errors, the
 pinned target-regex edge, nested relative includes, diamond de-duplication,
 cycles, missing leaves, absolute includes, mixed quote delimiters, and
-existing/missing leaves beneath a symlink prefix. Generated temporary inputs
+existing/missing leaves beneath a symlink prefix including `..` after the
+symlink. Generated temporary inputs
 also cover CRLF/bare-CR normalization, no-final-newline splicing, and invalid
 UTF-8. Positive snapshots are also checked against their checked-in JSON. The
 Python adapter verifies the working-tree scanner blob against the pinned Git
 commit before calling it.
 Before invoking the reference's recursive loader, the adapter performs a
 streaming include-graph preflight with the same per-file, graph-byte,
-output-byte, directive, and depth ceilings; this avoids unbounded oracle reads
-while retaining the pinned loader as the accepted-input reference. It also
-normalizes host `OSError` read failures to the candidate's stable path
-diagnostic. This test source has not been run: it
+output-byte, path, path-component-work, directive, and depth ceilings; this
+avoids unbounded oracle reads while retaining the pinned loader as the
+accepted-input reference. It also normalizes host `OSError` read failures to
+the candidate's stable path diagnostic. This test source has not been run: it
 remains behind the disabled bounded compiler wrapper and does not cover
 bound rejection, unreadable input under a non-root user, dangling symlinks,
-symlink-plus-`..` resolution, CLI launch integration, or caller integration.
+CLI launch integration, or caller integration.
 Once validation is explicitly reauthorized, run this test from the repository
 root only through scripts/run_bounded_test.sh
 test/script_parity/wasm_export_scan_test.elisascript; do not bypass the pinned

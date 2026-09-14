@@ -6,6 +6,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -15,6 +16,8 @@ from types import ModuleType
 PINNED_COMMIT = "0019dfcfff405b98369dd1b51562619668e29707"
 MAX_SOURCE_BYTES = 8 * 1024 * 1024
 MAX_JSON_BYTES = 16 * 1024 * 1024
+MAX_PATH_BYTES = 4096
+MAX_PATH_COMPONENT_WORK = 131072
 MAX_INCLUDE_GRAPH_BYTES = 32 * 1024 * 1024
 MAX_INCLUDE_FILES = 4096
 MAX_INCLUDE_DEPTH = 128
@@ -84,7 +87,9 @@ def split_keepends(text: str) -> Iterator[str]:
         yield text[start:]
 
 
-def preflight_reference_input(scanner: ModuleType, source_path: Path) -> str | None:
+def preflight_reference_input(
+    scanner: ModuleType, source_path: Path, source_spelling: str | None = None
+) -> str | None:
     """Bound and validate an include graph before calling the pinned unbounded loader.
 
     The reference's recursive read_flat_source is the oracle on accepted input.
@@ -98,12 +103,45 @@ def preflight_reference_input(scanner: ModuleType, source_path: Path) -> str | N
     loaded_bytes = 0
     include_directives = 0
     flattened_bytes = 0
+    path_component_work = 0
 
-    def visit(requested_path: Path) -> str | None:
+    def visit(requested_path: Path, raw_spelling: str | None = None) -> str | None:
         nonlocal loaded_files, loaded_bytes, include_directives, flattened_bytes
+        nonlocal path_component_work
+        try:
+            path_spelling = (
+                raw_spelling if raw_spelling is not None else os.fspath(requested_path)
+            )
+            raw_path = os.fsencode(path_spelling)
+        except (OSError, TypeError, ValueError):
+            return "unable to resolve source/include path"
+        if len(raw_path) >= MAX_PATH_BYTES:
+            return "unable to resolve source/include path"
+        if b"\0" in raw_path:
+            return "unable to resolve source/include path"
+        if not requested_path.is_absolute():
+            try:
+                current_directory = os.fsencode(os.getcwd())
+            except OSError:
+                return "unable to resolve source/include path"
+            separator_bytes = 0 if current_directory.endswith(b"/") else 1
+            joined_length = len(current_directory) + separator_bytes + len(raw_path)
+            if joined_length >= MAX_PATH_BYTES:
+                return "unable to resolve source/include path"
+        component_count = sum(
+            component != b"" for component in raw_path.split(b"/")
+        )
+        if component_count > MAX_PATH_COMPONENT_WORK - path_component_work:
+            return "WASM path component work exceeds Elisascript scan limit"
+        path_component_work += component_count
         try:
             resolved_path = requested_path.resolve()
-        except (OSError, RuntimeError):
+        except (OSError, RuntimeError, ValueError):
+            return "unable to resolve source/include path"
+        try:
+            if len(os.fsencode(os.fspath(resolved_path))) >= MAX_PATH_BYTES:
+                return "unable to resolve source/include path"
+        except (OSError, TypeError, ValueError):
             return "unable to resolve source/include path"
 
         if resolved_path in active:
@@ -156,8 +194,14 @@ def preflight_reference_input(scanner: ModuleType, source_path: Path) -> str | N
                 include_directives += 1
                 include_path = Path(match.group(1))
                 if not include_path.is_absolute():
-                    include_path = resolved_path.parent / include_path
-                failure = visit(include_path)
+                    include_parent = resolved_path.parent
+                    parent_spelling = os.fspath(include_parent)
+                    separator = "" if parent_spelling.endswith(os.sep) else os.sep
+                    include_spelling = parent_spelling + separator + match.group(1)
+                    include_path = include_parent / include_path
+                else:
+                    include_spelling = match.group(1)
+                failure = visit(include_path, include_spelling)
                 if failure is not None:
                     return failure
             else:
@@ -168,7 +212,7 @@ def preflight_reference_input(scanner: ModuleType, source_path: Path) -> str | N
         active.pop()
         return None
 
-    return visit(source_path)
+    return visit(source_path, source_spelling if source_spelling is not None else os.fspath(source_path))
 
 
 def main(arguments: list[str]) -> int:
@@ -181,7 +225,7 @@ def main(arguments: list[str]) -> int:
         scanner = load_pinned_reference()
     except Exception as error:  # Keep oracle failures visible rather than masking them as parity.
         return fail(f"pinned reference unavailable: {error}", 2)
-    preflight_failure = preflight_reference_input(scanner, source_path)
+    preflight_failure = preflight_reference_input(scanner, source_path, arguments[0])
     if preflight_failure is not None:
         return fail(preflight_failure)
     try:

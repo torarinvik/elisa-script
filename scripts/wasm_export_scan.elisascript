@@ -11,9 +11,11 @@ module EsWasmExportScan:
     private:
         const module Limits:
             SOURCE_BYTES: usize = 8388608
+            PATH_BYTES: usize = 4096
             EXPORTS: usize = 65536
             PARAMETERS_PER_EXPORT: usize = 4096
             JSON_BYTES: usize = 16777216
+            PATH_COMPONENT_WORK: usize = 131072
             INCLUDE_GRAPH_BYTES: usize = 33554432
             INCLUDE_FILES: usize = 4096
             INCLUDE_DEPTH: usize = 128
@@ -138,7 +140,7 @@ module EsWasmExportScan:
 
 
         enum PathPhase of u8:
-            FindExistingPrefix
+            ScanComponents
             AppendMissingSuffix
             Done
 
@@ -582,56 +584,126 @@ module EsWasmExportScan:
             return IncludeDirective{found: true, path: include_path}
 
 
-        # Path.resolve() on the current runtime requires the final leaf to exist.
-        # Resolve the deepest existing prefix instead, then append missing leaves
-        # in reverse collection order. A dangling symlink cannot be reconstructed
-        # with the current strict realpath primitive and is reported explicitly.
-        def resolve_non_strict(input_path: Path) -> PathResolution can[Memory.Allocate, Abort.Panic, File.Read, Directory.Read]:
-            absolute_path: Path = try input_path.absolute() else err:
+        def path_components(path_text: sview) -> darray[sview] can[Memory.Allocate, Abort.Panic]:
+            components: mutable darray[sview] = []
+            cursor: mutable usize = 0
+            while cursor < len(path_text) |components|:
+                if sview_at(path_text, cursor) == 47u8:
+                    cursor <- cursor + 1
+                    continue
+                component_start: usize = cursor
+                while cursor < len(path_text) and sview_at(path_text, cursor) != 47u8 |cursor|:
+                    cursor <- cursor + 1
+                components.push(path_text[component_start:cursor])
+            return components
+
+
+        def path_join_spelling_fits(base: Path, suffix: sview) -> bool can[Memory.Allocate, Abort.Panic]:
+            base_text: sview = f"{base}"
+            base_length: usize = len(base_text)
+            suffix_length: usize = len(suffix)
+            return false if base_length == 0 or suffix_length == 0
+            separator_length: usize = 1 if sview_at(base_text, base_length - 1) != 47u8 else 0
+            total: usize = base_length + separator_length
+            return false if total < base_length or total >= Limits::PATH_BYTES
+            return false if suffix_length >= Limits::PATH_BYTES - total
+            return true
+
+
+        # Resolve components in order so a symlink is canonicalized before a
+        # later `..` is applied. Missing suffix components remain lexical until
+        # an existing parent is reached again. Dangling symlinks remain
+        # unsupported until link targets are expanded before strict realpath.
+        def resolve_non_strict(input_path: Path, path_component_work: mutable usize&) -> PathResolution can[Memory.Allocate, Abort.Panic, File.Read, Directory.Read]:
+            input_text: sview = f"{input_path}"
+            if len(input_text) >= Limits::PATH_BYTES or sview_contains_byte(input_text, 0u8):
                 return PathResolution{path: input_path, failure: "unable to resolve source/include path"}
-            current: mutable Path = absolute_path
+            absolute_input: bool = path_is_absolute(input_path)
+            current: mutable Path = path("/")
+            if not absolute_input:
+                current <- try current_directory() else err:
+                    return PathResolution{path: input_path, failure: "unable to resolve source/include path"}
+                current_text: sview = f"{current}"
+                current_length: usize = len(current_text)
+                separator_length: usize = 1 if current_length != 0 and sview_at(current_text, current_length - 1) != 47u8 else 0
+                total: usize = current_length + separator_length
+                return PathResolution{path: input_path, failure: "unable to resolve source/include path"} if total < current_length or total >= Limits::PATH_BYTES
+                return PathResolution{path: input_path, failure: "unable to resolve source/include path"} if len(input_text) >= Limits::PATH_BYTES - total
+
+            components: darray[sview] = path_components(input_text)
+            component_work: mutable usize = 0
+            for component in components |component_work|:
+                component_work <- component_work + 1
+            if path_component_work > Limits::PATH_COMPONENT_WORK or component_work > Limits::PATH_COMPONENT_WORK - path_component_work:
+                return PathResolution{path: input_path, failure: "WASM path component work exceeds Elisascript scan limit"}
+            path_component_work <- path_component_work + component_work
             suffix: mutable darray[sview] = []
-            resolved_prefix: mutable Path = absolute_path
-            phase: mutable PathPhase = PathPhase.FindExistingPrefix
+            component_cursor: mutable usize = 0
+            suffix_cursor: mutable usize = 0
+            phase: mutable PathPhase = PathPhase.ScanComponents
 
             machine over phase while phase != PathPhase.Done:
-                state FindExistingPrefix
+                state ScanComponents
                 state AppendMissingSuffix
-                start FindExistingPrefix
+                start ScanComponents
 
-                FindExistingPrefix, PathPhase.FindExistingPrefix:
-                    exists: bool = try path_exists(current) else err:
-                        return PathResolution{path: absolute_path, failure: "unable to resolve source/include path"}
-                    symbolic_link: bool = is_symlink(current)
-                    if not exists and symbolic_link:
-                        return PathResolution{path: absolute_path, failure: "dangling symlink in source/include path is unsupported"}
-                    if exists:
-                        resolved_prefix <- try path_real(current) else err:
-                            return PathResolution{path: absolute_path, failure: "unable to resolve source/include path"}
+                ScanComponents, PathPhase.ScanComponents:
+                    if component_cursor >= components.count:
                         phase <- PathPhase.AppendMissingSuffix
                         -> AppendMissingSuffix
-                    parent: Path = current.parent()
-                    parent <- path("/") if parent == path("") and path_is_absolute(current)
-                    if parent == current:
-                        return PathResolution{path: absolute_path, failure: "unable to resolve source/include path"}
-                    suffix.push(current.name())
-                    current <- parent
-                    -> FindExistingPrefix
+                    component: sview = components[component_cursor]
+                    component_cursor <- component_cursor + 1
+                    if component == ".":
+                        -> ScanComponents
+                    if component == "..":
+                        if suffix.count != 0:
+                            _ = suffix.pop()
+                            -> ScanComponents
+                        parent: Path = current.parent()
+                        parent <- path("/") if parent == path("") and path_is_absolute(current)
+                        current <- parent if parent != current
+                        -> ScanComponents
+                    if suffix.count != 0:
+                        suffix.push(component)
+                        -> ScanComponents
+                    if not path_join_spelling_fits(current, component):
+                        return PathResolution{path: input_path, failure: "unable to resolve source/include path"}
+                    candidate: Path = current.joinpath(component)
+                    exists: bool = try path_exists(candidate) else err:
+                        return PathResolution{path: input_path, failure: "unable to resolve source/include path"}
+                    symbolic_link: bool = is_symlink(candidate)
+                    if not exists and symbolic_link:
+                        return PathResolution{path: input_path, failure: "dangling symlink in source/include path is unsupported"}
+                    if exists:
+                        resolved_component: Path = try path_real(candidate) else err:
+                            return PathResolution{path: input_path, failure: "unable to resolve source/include path"}
+                        if len(f"{resolved_component}") >= Limits::PATH_BYTES:
+                            return PathResolution{path: input_path, failure: "unable to resolve source/include path"}
+                        current <- resolved_component
+                    else:
+                        suffix.push(component)
+                    -> ScanComponents
 
                 AppendMissingSuffix, PathPhase.AppendMissingSuffix:
-                    for offset in 0..<suffix.count |resolved_prefix, suffix|:
-                        suffix_index: usize = suffix.count - offset - 1
-                        resolved_prefix <- resolved_prefix.joinpath(suffix[suffix_index])
-                    phase <- PathPhase.Done
+                    if suffix_cursor >= suffix.count:
+                        phase <- PathPhase.Done
+                        -> AppendMissingSuffix
+                    component: sview = suffix[suffix_cursor]
+                    if not path_join_spelling_fits(current, component):
+                        return PathResolution{path: input_path, failure: "unable to resolve source/include path"}
+                    current <- current.joinpath(component)
+                    suffix_cursor <- suffix_cursor + 1
                     -> AppendMissingSuffix
-
-                FindExistingPrefix, PathPhase.Done:
-                    break
 
                 AppendMissingSuffix, PathPhase.Done:
                     break
 
-            return PathResolution{path: resolved_prefix}
+                ScanComponents, PathPhase.Done:
+                    break
+
+            if len(f"{current}") >= Limits::PATH_BYTES:
+                return PathResolution{path: input_path, failure: "unable to resolve source/include path"}
+            return PathResolution{path: current}
 
 
         def include_cycle_failure(active: darray[Path], next_path: Path) -> sview can[Memory.Allocate, Abort.Panic]:
@@ -656,6 +728,7 @@ module EsWasmExportScan:
             loaded_files: mutable usize = 0
             loaded_bytes: mutable usize = 0
             include_directives: mutable usize = 0
+            path_component_work: mutable usize = 0
             phase: mutable FlattenPhase = FlattenPhase.ResolvePending
 
             machine over phase while phase != FlattenPhase.Done:
@@ -668,7 +741,7 @@ module EsWasmExportScan:
                         phase <- FlattenPhase.ConsumeStack
                         -> ConsumeStack
 
-                    resolution: PathResolution = resolve_non_strict(pending_path)
+                    resolution: PathResolution = resolve_non_strict(pending_path, path_component_work)
                     if resolution.failure != "":
                         return FlattenedSource{failure: resolution.failure}
                     current_path: Path = resolution.path
@@ -752,9 +825,14 @@ module EsWasmExportScan:
                         if include_directives >= Limits::INCLUDE_DIRECTIVES:
                             return FlattenedSource{failure: "WASM include directive count exceeds Elisascript scan limit"}
                         include_directives <- include_directives + 1
+                        if len(directive.path) >= Limits::PATH_BYTES or sview_contains_byte(directive.path, 0u8):
+                            return FlattenedSource{failure: "unable to resolve source/include path"}
                         requested_path: Path = path(directive.path)
                         if not path_is_absolute(requested_path):
-                            requested_path <- frame.path.parent().joinpath(directive.path)
+                            include_parent: Path = frame.path.parent()
+                            if not path_join_spelling_fits(include_parent, directive.path):
+                                return FlattenedSource{failure: "unable to resolve source/include path"}
+                            requested_path <- include_parent.joinpath(directive.path)
                         pending_path <- requested_path
                         has_pending <- true
                         phase <- FlattenPhase.ResolvePending
