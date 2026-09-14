@@ -182,7 +182,16 @@ only unless they are valid Elisa programs.
 | Invalid source | ignored malformed export forms and exact no-export failure; colon forms admitted by the pinned target regex are preserved |
 | Include graph | nested/absolute/relative, duplicate and diamond include order, cycle chain, missing file, relative/absolute dangling symlink targets, nested links, target and post-link `..` resolution, no-newline splice, CRLF/bare-CR normalization, empty file |
 | Bounds and failure | bounded file/aggregate bytes, materialized source line count, include depth/count, aggregate path-component and symlink-expansion work, explicit and implicit header-suffix scan work, aggregate duplicate-name comparison work, unreadable and invalid UTF-8 input, no partial success output |
-| Integration | structured protocol consumed by the pinned `wasm_build.py` caller; no Python scanner on the accepted replacement path |
+| Integration (future acceptance; not covered by this launcher test) | one resolved absolute source-path argument, ordered JSON-array success output, exact process failure tuple, and consumption by the pinned `wasm_build.py` caller; no Python scanner on the accepted replacement path |
+
+Current caller review (source-only; not adoption evidence): `wasm_build.py`
+resolves `args.source`, then calls `read_flat_source(source)` followed by
+`parse_exports(flat_source)` and places the resulting rows in the manifest.
+The flattened source is also used for runtime-cache hashing and `arena_alloc`
+detection, while `wasm_facade.py` imports the scanner's `normalize_type`.
+Replacing the export scan alone therefore does not remove the Python scanner;
+those remaining helpers and the existing import/re-export surface need explicit
+ports or compatibility decisions before adoption.
 
 The first parity slice is represented by
 `test/script_parity/wasm_export_scan_test.elisascript` and its pinned-process
@@ -254,7 +263,10 @@ Python process across every checked-in top-level `.input` case, including
 positive output, target-regex compatibility, duplicate-export, greedy-header,
 ABI, and no-export failures, plus diamond, mixed-quote, missing, nested, and
 cyclic include graphs and the checked-in U+2028 line-separator fixture; the
-test requires
+test first resolves each input to an absolute path and passes that single
+argument to both processes, matching the real caller's path shape. This checks
+the CLI invocation contract only; it does not modify or prove caller adoption.
+The test requires
 `ELISASCRIPT_PUBLIC_LAUNCHER` to name an absolute path and
 `ELISASCRIPT_PUBLIC_LAUNCHER_SHA256` to provide its lowercase SHA-256 from a
 recorded build identity. It invokes `/usr/bin/shasum -a 256` through the
