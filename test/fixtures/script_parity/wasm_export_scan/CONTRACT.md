@@ -145,9 +145,11 @@ because in-process console output is intentionally not captured by the current
 differential adapter. Cases cover positive records, parser and ABI errors, the
 pinned target-regex edge, nested relative includes, diamond de-duplication,
 cycles, missing leaves, absolute includes, mixed quote delimiters, and
-existing/missing leaves beneath a symlink prefix. Positive snapshots are also
-checked against their checked-in JSON. The Python adapter verifies the
-working-tree scanner blob against the pinned Git commit before calling it.
+existing/missing leaves beneath a symlink prefix. Generated temporary inputs
+also cover CRLF/bare-CR normalization, no-final-newline splicing, and invalid
+UTF-8. Positive snapshots are also checked against their checked-in JSON. The
+Python adapter verifies the working-tree scanner blob against the pinned Git
+commit before calling it.
 Before invoking the reference's recursive loader, the adapter performs a
 streaming include-graph preflight with the same per-file, graph-byte,
 output-byte, directive, and depth ceilings; this avoids unbounded oracle reads
@@ -155,9 +157,8 @@ while retaining the pinned loader as the accepted-input reference. It also
 normalizes host `OSError` read failures to the candidate's stable path
 diagnostic. This test source has not been run: it
 remains behind the disabled bounded compiler wrapper and does not cover
-CRLF/bare-CR fixtures, no-newline splicing, invalid UTF-8, bound rejection,
-dangling symlinks, symlink-plus-`..` resolution, CLI launch integration, or
-caller integration.
+bound rejection, unreadable input under a non-root user, dangling symlinks,
+symlink-plus-`..` resolution, CLI launch integration, or caller integration.
 Once validation is explicitly reauthorized, run this test from the repository
 root only through scripts/run_bounded_test.sh
 test/script_parity/wasm_export_scan_test.elisascript; do not bypass the pinned
