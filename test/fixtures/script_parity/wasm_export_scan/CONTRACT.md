@@ -30,6 +30,10 @@ human-readable output.
   the public name and the return type defaults to `void`. Unmatched
   export-looking text is ignored. Duplicate public names fail with
   `duplicate WASM export 'NAME' on line N` before parsing that row.
+- Parameter capture follows Python's greedy `(.*)`: when nested type syntax
+  contains several `)` characters, use the rightmost closing parenthesis whose
+  suffix matches the return/target grammar. The implicit-main matcher applies
+  the same greedy choice.
 - A whole-line `def main(params) [-> type]:` adds an implicit `main` row at that
   source position only if `main` has not already been seen. An explicit `main`
   before it suppresses the implicit row; an explicit `main` after it is a
@@ -114,7 +118,7 @@ only unless they are valid Elisa programs.
 | Case group | Required cases |
 | --- | --- |
 | Record shape | zero parameters, default/no return, explicit target, line numbers, source order, exact optional-key presence, permissive target-regex behavior |
-| ABI | every scalar mapping, `cstr`, `&`, `&&`, nullable, unsupported aggregate, modifier/whitespace normalization |
+| ABI | every scalar mapping, `cstr`, `&`, `&&`, nullable, unsupported aggregate, modifier/whitespace normalization, greedy nested-signature suffix selection |
 | Parameter scanner | nested delimiters including `{}`, quoted commas/equals, escapes, empty segments, missing colon, invalid name |
 | Link annotation | quoted/bare, blank/comment retention, overwrite, empty, dangling, reset by ordinary text, implicit-main exclusion |
 | `main` | implicit position and fields, repeated definitions, explicit-before/after behavior, duplicate line diagnostic |
