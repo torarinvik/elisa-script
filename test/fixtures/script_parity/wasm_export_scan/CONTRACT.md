@@ -20,9 +20,14 @@ human-readable output.
   the last annotation wins. It attaches only to the next recognized export.
   Any other nonblank, non-comment line clears it. Empty quoted names are not
   emitted. Implicit `main` rows never inherit it.
-- Explicit declarations match the Python `EXPORT_RE` whole-line grammar:
-  `export fn IDENT(params) [-> type] [= IDENT(::IDENT)*]`. The target defaults
-  to the public name and the return type defaults to `void`. Unmatched
+- Explicit declarations match the pinned Python `EXPORT_RE` whole-line grammar:
+  `export fn IDENT(params) [-> type] [= IDENT [A-Za-z0-9_:]*]`. This regex is
+  more permissive than a namespace parser: once the target's first ASCII
+  identifier character is present, any following ASCII letters, digits,
+  underscores, and colons are accepted, including `a:`, `a:::b`, and `a::::b`.
+  Preserve this observed behavior; target resolution or a future grammar
+  tightening belongs to a separately versioned change. The target defaults to
+  the public name and the return type defaults to `void`. Unmatched
   export-looking text is ignored. Duplicate public names fail with
   `duplicate WASM export 'NAME' on line N` before parsing that row.
 - A whole-line `def main(params) [-> type]:` adds an implicit `main` row at that
@@ -108,15 +113,34 @@ only unless they are valid Elisa programs.
 
 | Case group | Required cases |
 | --- | --- |
-| Record shape | zero parameters, default/no return, explicit target, line numbers, source order, exact optional-key presence |
+| Record shape | zero parameters, default/no return, explicit target, line numbers, source order, exact optional-key presence, permissive target-regex behavior |
 | ABI | every scalar mapping, `cstr`, `&`, `&&`, nullable, unsupported aggregate, modifier/whitespace normalization |
 | Parameter scanner | nested delimiters including `{}`, quoted commas/equals, escapes, empty segments, missing colon, invalid name |
 | Link annotation | quoted/bare, blank/comment retention, overwrite, empty, dangling, reset by ordinary text, implicit-main exclusion |
 | `main` | implicit position and fields, repeated definitions, explicit-before/after behavior, duplicate line diagnostic |
-| Invalid source | ignored malformed export forms and exact no-export failure |
+| Invalid source | ignored malformed export forms and exact no-export failure; colon forms admitted by the pinned target regex are preserved |
 | Include graph | nested/absolute/relative, duplicate and diamond include order, cycle chain, missing file, no-newline splice, CRLF/bare-CR normalization, empty file |
 | Bounds and failure | bounded file/aggregate bytes, include depth/count, unreadable and invalid UTF-8 input, no partial success output |
 | Integration | structured protocol consumed by the pinned `wasm_build.py` caller; no Python scanner on the accepted replacement path |
+
+The first parity slice is represented by
+`test/script_parity/wasm_export_scan_test.elisascript` and its pinned-process
+adapter `scripts/wasm_export_scan_reference.py`. The Elisascript test includes
+the candidate module and calls its shared source-response function directly;
+the Python side runs as a process. The Python status/stdout/stderr are encoded
+as one length-delimited `DifferentialValue.Text` before typed comparison,
+because in-process console output is intentionally not captured by the current
+differential adapter. Cases cover the positive record fixture, no-export,
+duplicate, nullable/unsupported ABI errors, and the pinned target-regex edge;
+positive snapshots are also checked against their checked-in JSON. The Python
+adapter verifies the working-tree scanner blob against the pinned Git commit
+before calling it. This test source has not been run: it remains behind the
+disabled bounded compiler wrapper and does not cover CLI launch integration,
+the include graph, or caller integration.
+Once validation is explicitly reauthorized, run this test from the repository
+root only through scripts/run_bounded_test.sh
+test/script_parity/wasm_export_scan_test.elisascript; do not bypass the pinned
+compiler and resource gate with a direct compiler invocation.
 
 Existing pinned Python tests cover only a subset: selected `int`/`i64` and
 `cstr` behavior, one unsupported aggregate, duplicate exports, quoted link
