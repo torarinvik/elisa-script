@@ -24,6 +24,9 @@ rg -Fq 'WASM source line count exceeds Elisascript scan limit' "$candidate"
 rg -Fq 'PARAMETERS_PER_EXPORT: usize = 4096' "$candidate"
 rg -Fq 'parameter_slices.count > Limits::PARAMETERS_PER_EXPORT' "$candidate"
 rg -Fq 'WASM export parameter count exceeds Elisascript scan limit' "$candidate"
+rg -Fq 'INCLUDE_DEPTH: usize = 128' "$candidate"
+rg -Fq 'frames.count >= Limits::INCLUDE_DEPTH' "$candidate"
+rg -Fq 'WASM include depth exceeds Elisascript scan limit' "$candidate"
 line_guard_count="$(rg -F -c 'if lines.count >= Limits::SOURCE_LINES:' "$candidate" || true)"
 if [ "$line_guard_count" != 2 ]; then
     printf 'W09 bounds audit: both source-line append sites must enforce the metadata cap\n' >&2
@@ -86,6 +89,10 @@ rg -Fq 'def parameter_count_is_bounded()' "$fixture"
 rg -Fq 'def wasm_export_scan_bounds_parameter_count()' "$fixture"
 rg -Fq 'for index in 0..<4097 |source_bytes, index|' "$fixture"
 rg -Fq 'WASM export parameter count exceeds Elisascript scan limit' "$fixture"
+rg -Fq 'def include_depth_is_bounded()' "$fixture"
+rg -Fq 'def wasm_export_scan_bounds_include_depth()' "$fixture"
+rg -Fq 'for index in 0..<129 |temporary_root, attempted_files, all_written, index|' "$fixture"
+rg -Fq 'WASM include depth exceeds Elisascript scan limit' "$fixture"
 rg -Fq 'def append_source_text(output: mutable darray[u8]&, value: sview)' "$fixture"
 rg -Fq 'def append_repeated_source_text(output: mutable darray[u8]&, value: sview, repetitions: usize)' "$fixture"
 rg -Fq 'for _ in 0..<512 |export_header_bytes|' "$fixture"
@@ -105,4 +112,4 @@ rg -Fq '1,048,576' "$contract"
 rg -Fq 'aggregate weighted work ceiling' "$contract"
 rg -Fq 'multiple' "$contract"
 
-printf 'W09 bounds audit: parameter counts, source lines, header scans, and export-name scans have bounded-resource coverage\n'
+printf 'W09 bounds audit: include depth, parameter counts, source lines, header scans, and export-name scans have bounded-resource coverage\n'

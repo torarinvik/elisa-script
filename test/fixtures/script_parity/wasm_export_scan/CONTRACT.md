@@ -215,7 +215,9 @@ lines reach the ordinary no-export diagnostic while 131,073 lines hit the
 candidate-only line-view cap, without entering Python. These are static source
 contracts, not executed evidence. A candidate-only generated input also
 exercises rejection of 4,097 parameters before creating `Parameter` records,
-without entering Python. Positive snapshots are also checked against their
+without entering Python. Another candidate-only filesystem case creates a
+129-file include chain and checks the 128-frame depth rejection while cleaning
+up every generated file. Positive snapshots are also checked against their
 checked-in JSON. The Python adapter verifies the working-tree scanner blob
 against the pinned Git commit before calling it.
 Before invoking the reference's recursive loader, the adapter performs a
