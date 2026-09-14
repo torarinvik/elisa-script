@@ -142,7 +142,7 @@ only unless they are valid Elisa programs.
 | Case group | Required cases |
 | --- | --- |
 | Record shape | zero parameters, default/no return, explicit target, line numbers, source order, exact optional-key presence, permissive target-regex behavior |
-| ABI | every scalar mapping, `cstr`, `&`, `&&`, nullable, unsupported aggregate, modifier/whitespace normalization, greedy nested-signature suffix selection |
+| ABI | every scalar mapping, `cstr`, `&`, `&&`, nullable, unsupported aggregate, modifier/whitespace normalization, greedy nested-signature suffix selection, Python-compatible diagnostic quoting for Unicode C1 controls |
 | Parameter scanner | nested delimiters including `{}`, quoted commas/equals, escapes, empty segments, missing colon, invalid name |
 | Link annotation | quoted/bare, blank/comment retention, overwrite, empty, dangling, reset by ordinary text, implicit-main exclusion |
 | `main` | implicit position and fields, repeated definitions, explicit-before/after behavior, duplicate line diagnostic |
@@ -172,8 +172,10 @@ checks the explicit-export and implicit-main header-work failures without
 calling the unbounded Python parser, and another checks the shared aggregate
 budget across multiple individually-under-limit headers;
 `scripts/check_wasm_export_scan_bounds.sh` statically checks both guard paths
-and the rejection fixtures. These are static source contracts, not executed
-evidence. Positive snapshots are also checked against their checked-in JSON. The
+and the rejection fixtures. A generated unsupported-type diagnostic containing
+U+009F is also compared with the pinned Python adapter to check C1 `repr`
+escaping. These are static source contracts, not executed evidence. Positive
+snapshots are also checked against their checked-in JSON. The
 Python adapter verifies the working-tree scanner blob against the pinned Git
 commit before calling it.
 Before invoking the reference's recursive loader, the adapter performs a

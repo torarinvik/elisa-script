@@ -1103,3 +1103,8 @@ exhaustion without passing hostile input to the unbounded Python oracle;
 static implementation evidence only; the pinned parity suite, AST-emitter
 comparison, `wasm_build.py` caller migration, and adoption remain open under
 the validation hold.
+
+W09 unsupported-type diagnostics now escape valid UTF-8 C1 controls U+0080..U+009F
+as Python-style `\xNN` sequences, with a generated U+009F Python-vs-candidate
+case. This is a narrow `str.__repr__` parity increment; other Unicode
+non-printable code points remain unqualified, and the fixture has not run.
