@@ -889,11 +889,14 @@ wrong-world completion. Replay-bound process setup now resolves selected-side
 cwd, argv, stdin, environment, locale, and timezone; records a setup
 fingerprint; admits one attempt per side/root; and requires the attempt and
 matching fingerprint claim when completing `NativeProcess`/`PythonAdapter`
-runs. The focused fixture and documentation are static source evidence only;
-no fixture, compiler, or audit was run. Public records are forgeable, so this
-does not prove child provenance. Ambient capture provenance, actual root
-materialization, indexed large-environment merging, in-process virtualization,
-descendant quiescence, and crash recovery remain open.
+runs. Version-2 ESPS/ESVP sidecars now preserve that setup receipt, and complete
+bundle admission rejects absent or mismatched per-side receipt pairs while
+allowing explicit zero/zero generic runs. The focused fixture and documentation
+are static source evidence only; no fixture, compiler, or audit was run. Public
+records are forgeable, so this does not prove child provenance. Ambient capture
+provenance, actual root materialization, indexed large-environment merging,
+in-process virtualization, descendant quiescence, and crash recovery remain
+open.
 
 ES-SCRIPT-020 | EsDifferentialRedaction supplies explicit exact-name/all-value
 redaction policy, bounded environment capture, deterministic value fingerprints,

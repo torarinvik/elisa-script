@@ -731,13 +731,18 @@ stdout or exit codes.
 
 Each side's complete bounded process-facing payload can be persisted separately
 as an `ESPS` process-stream artifact with `make_differential_process_stream_artifact`.
-It binds the reference/candidate side, terminal outcome, signed exit status, and
-length-delimited error/stdout/stderr channels to the manifest fingerprint. The
+Version 2 binds the reference/candidate side, terminal outcome, signed exit
+status, process-setup fingerprint, and length-delimited error/stdout/stderr
+channels to the manifest fingerprint. A zero setup fingerprint explicitly means
+the run was not bound to replay process setup; replay-bound artifacts preserve
+the nonzero setup receipt. Version-1 sidecars are rejected because they cannot
+distinguish an unbound run from a replay-bound run whose receipt was omitted. The
 versioned encoder and borrowed decoder reject unknown side/outcome ordinals
-through explicit raw-byte membership checks,
-oversized channels, truncation, and trailing bytes; the compact fingerprint is a
-correlation key and not a cryptographic digest. Aggregate typed value pools remain
-a separate payload contract so large arrays/maps do not inflate either sidecar.
+through explicit raw-byte membership checks, oversized channels, truncation,
+and trailing bytes. The compact fingerprints are consistency/correlation keys,
+not cryptographic digests or proof of which child produced the run. Aggregate
+typed value pools remain a separate payload contract so large arrays/maps do
+not inflate either sidecar.
 
 The reproduction entry point is a separate `ESRP` sidecar. Its typed target and
 entry fields are length-delimited and bound to the same manifest fingerprint;
@@ -745,15 +750,17 @@ they identify an Elisascript launcher target without storing an opaque shell
 command. Empty, NUL-containing, oversized, unknown-version, truncated, or
 trailing-byte payloads are rejected before a replay adapter can use them.
 
-Typed aggregate results are persisted in a bounded `ESVP` value-pool sidecar.
-It records the run side, outcome/status, root value, flat array/map storage, and
-observation traces. Every value record carries its kind, checked u32 spans,
-length-delimited text/process fields, and the exact IEEE-754 bit pattern for
-floating-point values. The decoder allocates only after bounded count admission,
-then rejects malformed kinds/spans, truncated records, and trailing bytes. Raw
-kind bytes use explicit membership admission rather than only a maximum ordinal,
-so reserved or non-contiguous future kinds fail closed instead of becoming
-`Void`.
+Typed aggregate results are persisted in a bounded version-2 `ESVP` value-pool
+sidecar. It records the run side, outcome/status, process-setup fingerprint,
+root value, flat array/map storage, and observation traces. Every value record
+carries its kind, checked u32 spans, length-delimited text/process fields, and
+the exact IEEE-754 bit pattern for floating-point values. The decoder allocates
+only after bounded count admission, then rejects malformed kinds/spans,
+truncated records, and trailing bytes. Raw kind bytes use explicit membership
+admission rather than only a maximum ordinal, so reserved or non-contiguous
+future kinds fail closed instead of becoming `Void`. As with ESPS, zero is an
+explicit unbound receipt; version-1 payloads are rejected rather than silently
+treated as having one.
 
 An `ESIX` artifact index binds the manifest, comparison report, both process
 streams, reproduction entry, and both value pools by fingerprint. Its explicit
@@ -766,8 +773,10 @@ Before a replay adapter opens or launches anything, `validate_differential_artif
 runs a state-machine admission check over the complete in-memory bundle. It
 requires a valid `Complete` index, recomputes the manifest fingerprint, checks
 each sidecar's validity and manifest binding, enforces reference/candidate side
-identity for process streams and value pools, and compares all six recorded
-sidecar fingerprints. Prepared, stale, mixed-side, malformed, or cross-manifest
+identity for process streams and value pools, requires each ESPS setup receipt
+to match its corresponding ESVP receipt (including zero/zero for generic
+unbound runs), and compares all six recorded sidecar fingerprints. Prepared,
+stale, mixed-side, missing/mismatched-receipt, malformed, or cross-manifest
 bundles return a typed `DifferentialArtifactReplayCheck` failure and are not
 eligible for replay; the validator itself never executes the reproduction entry.
 

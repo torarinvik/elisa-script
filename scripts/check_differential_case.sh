@@ -166,7 +166,7 @@ for boundary in 'unknown_version: mutable darray[u8] = encoded' 'decode_differen
     fi
 done
 
-for boundary in 'malformed_outcome[14] <- 255' 'malformed_side[13] <- 255' 'malformed_publication[13] <- 255'; do
+for boundary in 'malformed_outcome[22] <- 255' 'malformed_side[21] <- 255' 'malformed_side[21] <- 2' 'malformed_publication[13] <- 255'; do
     if ! rg -Fq "$boundary" "$fixture_file"; then
         printf 'differential case audit: missing serialized enum corruption coverage %s\n' "$boundary" >&2
         exit 1
