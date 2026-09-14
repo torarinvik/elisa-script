@@ -1906,9 +1906,18 @@ arrays must have the same non-zero length; stage `i` receives `executables[i]`
 and `arguments[i]`, and its captured stdout becomes the next stage's stdin.
 Stages run sequentially through the same bounded temporary-file transport as
 `capture_process_result`, so shell quoting, pipe backpressure, and inherited
-working-directory changes are absent. The returned snapshot is the final stage's
-status/stdout/stderr; a stage's non-zero exit status does not suppress later
-stages, keeping status observation explicit through `process_exit_status`.
+working-directory changes are absent. The current fixed failure policy is
+aggregate/pipefail-style: every stage runs after a non-zero exit, the returned
+status is the rightmost non-zero stage status (or zero when all stages succeed),
+stdout is from the final stage, and stderr is the raw concatenation of all stage
+stderr streams in stage order with no inserted separators. The shared aggregate
+output budget also bounds that retained stderr. This intentionally does not
+match shells' default last-stage-only pipeline status; the builtin does not yet
+let callers select a policy or inspect per-stage results. It is sequential and
+buffered rather than a concurrent OS pipe, so stderr interleaving, backpressure,
+early-consumer/SIGPIPE behavior, and concurrent child cleanup are not shell
+equivalent. The executable pipeline is capped at 256 stages, matching the
+validated `ProcessPipeline` model.
 
 `ProcessCapture` also supports typed field access for ports that naturally model a
 completed subprocess as a record: `result.returncode`, `result.exit_status`, and

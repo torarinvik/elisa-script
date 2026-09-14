@@ -2462,10 +2462,18 @@ the forked child, preserving the parent process state for deterministic
 differential-testing runs.
 `CaptureProcessPipeline` consumes `Array[Named(Executable)]`,
 `Array[Array[Text]]`, and `Text`, producing the final `ProcessCapture`. The arrays
-must be equal and non-empty at runtime; each stage's captured stdout is staged as
-the next stage's stdin through the same bounded temporary-file transport as
-`CaptureProcessResult`. It is deliberately sequential and shell-free, so argv
-boundaries remain typed and pipe backpressure cannot deadlock the interpreter.
+must be equal, non-empty, and contain at most 256 stages at runtime; each stage's
+captured stdout is staged as the next stage's stdin through the same bounded
+temporary-file transport as `CaptureProcessResult`. A non-zero stage does not
+skip later stages. The result status is the rightmost non-zero stage status (or
+zero if all stages succeed), stdout is the final stage's stdout, and stderr is
+the raw concatenation of all stage stderr in stage order, with no inserted
+separators. This fixed aggregate policy is pipefail-like rather than the
+last-stage-only default of many shells; per-stage captures and caller-selected
+failure policies are not exposed by this opcode yet. Execution is sequential
+and shell-free, not a concurrent pipe, so it does not implement OS-pipe
+backpressure, stderr interleaving, early-consumer/SIGPIPE behavior, or complete
+concurrent child cleanup.
 `Sleep` takes one signed/unsigned 64-bit integer or `f64` duration operand and
 returns `Void`. Its instruction integer is `0` for seconds and `1` for
 milliseconds. Verification requires `Time.Sleep` and `TimeError`; the reference
