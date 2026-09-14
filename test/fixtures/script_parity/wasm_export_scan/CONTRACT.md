@@ -61,6 +61,16 @@ human-readable output.
 - Resolve each path before cycle/dedup checks. Detect a path already on the
   active stack before checking the global seen set. A cycle reports the full
   resolved chain; a repeated completed include contributes the empty string.
+- Python `Path.resolve()` is non-strict by default: it returns a canonicalized
+  absolute spelling for a missing leaf after resolving existing symlink
+  prefixes. Elisascript's current `Path.resolve()`/`path_real` adapter requires
+  the full target to exist. The port must add or compose a non-strict resolver;
+  mapping that failure directly to a file error is not parity, because it loses
+  the required resolved path in `missing source/include: RESOLVED`. Include
+  fixtures must cover a missing leaf under an existing directory and a path
+  beneath an existing symlink. Dangling-symlink behavior must also be pinned or
+  explicitly reported as unsupported before claiming full `Path.resolve()`
+  parity.
 - The optional `seen` set and active `stack` list are caller-owned and mutated:
   add the resolved file to `seen`, then to `stack` before reading. Successful
   reads pop the stack; a read/decode/child error leaves those mutations in
@@ -75,6 +85,11 @@ human-readable output.
   that normalization explicit. Include directives are whole lines matching
   optional indentation and optional `#` before `include`, with a single- or
   double-quoted nonempty path and no trailing text.
+- Elisascript `read_text` currently returns the file's raw bytes as text and
+  does not perform Python's strict UTF-8 decoding or universal-newline
+  translation. The port must validate UTF-8 and normalize CRLF/bare CR to LF
+  before applying the include-line and `splitlines(keepends=True)` rules; a
+  successful raw read alone is insufficient.
 - Beyond LF, Python `splitlines` also recognizes vertical tab, form feed, NEL,
   and Unicode line/paragraph separators. Their line-number and splice behavior
   must be pinned by fixtures or explicitly excluded from the supported source
