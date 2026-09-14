@@ -112,6 +112,7 @@ if decimal_has_too_many_digits "$rss_limit_kb" || decimal_has_too_many_digits "$
 fi
 retained_log_budget_bytes=1073741824
 metadata_reserve_bytes=16384
+source_limit_bytes=65536
 if [ "$log_limit_bytes" -gt "$retained_log_budget_bytes" ]; then
     echo "run_bounded_test: ELISASCRIPT_LOG_LIMIT_BYTES must not exceed the 1 GiB evidence budget" >&2
     exit 2
@@ -411,6 +412,25 @@ for source_file in "$@"; do
         echo "run_bounded_test: source file does not exist: $source_file" >&2
         exit 2
     fi
+    if [ -L "$source_file" ]; then
+        echo "run_bounded_test: refusing symlinked source file: $source_file" >&2
+        exit 2
+    fi
+    if ! source_bytes_raw="$(wc -c <"$source_file" 2>/dev/null)"; then
+        echo "run_bounded_test: unable to measure source size; refusing to launch" >&2
+        exit 125
+    fi
+    source_bytes="$(printf '%s\n' "$source_bytes_raw" | tr -d '[:space:]')"
+    case "$source_bytes" in
+        ''|*[!0-9]*)
+            echo "run_bounded_test: source-size measurement was invalid; refusing to launch" >&2
+            exit 125
+            ;;
+    esac
+    if [ "$source_bytes" -gt "$source_limit_bytes" ]; then
+        echo "run_bounded_test: source is $source_bytes bytes, above the $source_limit_bytes-byte fixture limit: $source_file" >&2
+        exit 2
+    fi
     retained_log_bytes="$(validation_log_bytes_used)" || {
         echo "run_bounded_test: unable to measure retained validation evidence; refusing to launch" >&2
         exit 125
@@ -442,7 +462,7 @@ for source_file in "$@"; do
         printf 'configuration_key=%s\noptimization=O0\ntarget=native\nmode=test\nlog_dir_hex=%s\n' "$validation_configuration_key" "$(printf '%s' "$validation_log_dir" | od -An -tx1 | tr -d '[:space:]')"
         printf 'wrapper=run_bounded_test\nsource_path_hex=%s\n' "$source_path_hex"
         printf 'working_directory_hex=%s\nstarted_epoch=%s\n' "$working_directory_hex" "$started_at"
-        printf 'rss_limit_kb=%s\ntime_limit_seconds=%s\nconfigured_log_limit_bytes=%s\neffective_log_limit_bytes=%s\nretained_log_budget_bytes=%s\n' "$rss_limit_kb" "$time_limit_seconds" "$log_limit_bytes" "$effective_log_limit_bytes" "$retained_log_budget_bytes"
+        printf 'source_bytes=%s\nsource_limit_bytes=%s\nrss_limit_kb=%s\ntime_limit_seconds=%s\nconfigured_log_limit_bytes=%s\neffective_log_limit_bytes=%s\nretained_log_budget_bytes=%s\n' "$source_bytes" "$source_limit_bytes" "$rss_limit_kb" "$time_limit_seconds" "$log_limit_bytes" "$effective_log_limit_bytes" "$retained_log_budget_bytes"
         printf 'argv0=%s\nargv1=-O0\nargv2=-emit\nargv3=test\nargv4_hex=%s\n' "$compiler_path" "$source_path_hex"
     } >"$metadata_file") 2>/dev/null; then
         echo "run_bounded_test: unable to create run metadata; refusing to launch" >&2

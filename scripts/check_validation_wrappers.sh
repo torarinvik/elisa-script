@@ -28,6 +28,10 @@ for wrapper in "$lowering" "$test_wrapper"; do
     rg -Fq 'if [ "$compiler_path" != "$expected_compiler_path" ] || [ ! -f "$compiler_path" ] || [ ! -x "$compiler_path" ]; then' "$wrapper"
     rg -q 'refusing symlinked compiler path' "$wrapper"
     rg -q 'process_group_rss_kb' "$wrapper"
+    rg -Fq 'source_limit_bytes=65536' "$wrapper"
+    rg -Fq 'wc -c <"$source_file" 2>/dev/null' "$wrapper"
+    rg -Fq 'if [ -L "$source_file" ]; then' "$wrapper"
+    rg -Fq 'source_bytes=%s\nsource_limit_bytes=%s\n' "$wrapper"
     rg -q 'process_tree_pids "\$process_root_pid"' "$wrapper"
     rg -q 'tree_pid\[\$1\]' "$wrapper"
     rg -q 'setsid_path' "$wrapper"
@@ -79,4 +83,4 @@ rg -q 'process_tree_snapshot' "$stopper"
 rg -q 'process_group_for_pid' "$stopper"
 rg -q 'kill -TERM -- "-\$process_group_id"' "$stopper"
 rg -q 'kill -KILL -- "-\$process_group_id"' "$stopper"
-printf 'validation wrapper audit: disabled gate, StructPy pin, sampled guards, evidence retention, lease, and owned stop path present\n'
+printf 'validation wrapper audit: disabled gate, StructPy pin, source-size admission, sampled guards, evidence retention, lease, and owned stop path present\n'
