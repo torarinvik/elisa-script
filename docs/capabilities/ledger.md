@@ -1118,3 +1118,10 @@ diagnostic, while a Python differential fixture pins main-ordering behavior.
 newline-dense boundary fixture: exactly 131,072 reaches the no-export result,
 while 131,073 is rejected. These additions are static evidence only; the new
 fixtures have not run.
+
+The generated Python differential fixture now places distinct W09 export
+records across vertical tab, form feed, U+001C..U+001E, NEL, U+2028, and U+2029
+separators. Comparing the structured export records also pins their one-based
+line numbers; a separate U+2028-delimited include case covers include recognition
+and splice behavior. This supplements the CRLF/bare-CR file-normalization cases;
+no fixture/compiler/audit execution ran.

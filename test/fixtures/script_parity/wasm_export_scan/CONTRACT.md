@@ -137,10 +137,14 @@ human-readable output.
   The candidate validates UTF-8 and normalizes CRLF/bare CR to LF before
   applying the include-line and `splitlines(keepends=True)` rules; a successful
   raw read alone is insufficient.
-- Beyond LF, Python `splitlines` also recognizes vertical tab, form feed, NEL,
-  and Unicode line/paragraph separators. Their line-number and splice behavior
-  must be pinned by fixtures or explicitly excluded from the supported source
-  encoding contract; do not silently assume LF-only splitting is equivalent.
+- Beyond LF, Python `splitlines` also recognizes vertical tab, form feed,
+  U+001C..U+001E, NEL, and Unicode line/paragraph separators. A generated Python
+  differential fixture now places distinct exports across each of those
+  separators and compares structured output, including one-based line numbers.
+  A second generated case puts an include before U+2028 and an export after it,
+  pinning include recognition and splice behavior at that boundary. CRLF and
+  bare-CR normalization are covered separately. These fixtures remain
+  unexecuted under the validation hold.
 - Explicit failures include `missing source/include: RESOLVED` and
   `cyclic include while building WASM: CHAIN`. For any CLI/IPC adapter, map
   those failures deterministically and preserve the resolved paths.
@@ -178,7 +182,9 @@ pinned target-regex edge, nested relative includes, diamond de-duplication,
 cycles, missing leaves, absolute includes, mixed quote delimiters, and
 existing/missing leaves beneath a symlink prefix including `..` after the
 symlink. Generated temporary inputs
-also cover CRLF/bare-CR normalization, no-final-newline splicing, invalid
+also cover CRLF/bare-CR normalization, all additional Python `splitlines`
+separators (vertical tab, form feed, U+001C..U+001E, NEL, U+2028, and U+2029)
+with one-based record-line comparison, no-final-newline splicing, invalid
 UTF-8, an overlong source spelling rejected by the path-byte cap, and repeated
 relative includes expected to exceed the aggregate path-component-work cap
 with an exact-diagnostic assertion. A separate candidate-only generated case
