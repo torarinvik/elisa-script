@@ -142,6 +142,8 @@ human-readable output.
   U+001C..U+001E, NEL, and Unicode line/paragraph separators. A generated Python
   differential fixture now places distinct exports across each of those
   separators and compares structured output, including one-based line numbers.
+  A checked-in `unicode_line_separator.input` also pins U+2028 at the public
+  launcher process boundary, including the second export's one-based line number.
   A second generated case puts an include before U+2028 and an export after it,
   pinning include recognition and splice behavior at that boundary. CRLF and
   bare-CR normalization are covered separately. These fixtures remain
@@ -228,7 +230,8 @@ source compares the configured launcher executable process against the pinned
 Python process across every checked-in top-level `.input` case, including
 positive output, target-regex compatibility, duplicate-export, greedy-header,
 ABI, and no-export failures, plus diamond, mixed-quote, missing, nested, and
-cyclic include graphs. It requires
+cyclic include graphs and the checked-in U+2028 line-separator fixture; the
+test requires
 `ELISASCRIPT_PUBLIC_LAUNCHER` to name an absolute path and
 `ELISASCRIPT_PUBLIC_LAUNCHER_SHA256` to provide its lowercase SHA-256 from a
 recorded build identity. It invokes `/usr/bin/shasum -a 256` through the
