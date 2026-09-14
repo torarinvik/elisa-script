@@ -1101,6 +1101,11 @@ fixture includes an escaped-quote comment before a later `add_symbol` match
 and expects the additional semantic seed. This correction and expectation are
 source-reviewed only; neither implementation nor fixture was run.
 
+Registry scanning also includes the first following def boundary line,
+matching the shell reference's inclusive sed range; the positive fixture pins
+a quoted comment there. Both corrections and their expectations are
+source-reviewed only; neither implementation nor fixture was run.
+
 The W09 Python-to-WASM-export scanner candidate now bounds greedy explicit and
 implicit-main header suffix work with one aggregate budget across the flattened
 source. Candidate-only generated regressions cover individual and cumulative
