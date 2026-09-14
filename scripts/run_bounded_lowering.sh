@@ -4,6 +4,7 @@
 # This wrapper intentionally refuses installed or Elisa-core main-worktree
 # binaries and enforces an RSS guard because a virtual-memory limit is not enough
 # to protect the host from a runaway compiler.
+# The RSS guard is sampled and reactive, not an OS-enforced hard memory cap.
 
 set -u
 umask 077
@@ -23,17 +24,26 @@ if [ "${ELISASCRIPT_VALIDATION_REAUTHORIZED:-0}" != "1" ]; then
     exit 125
 fi
 
-default_compiler="$(CDPATH= cd -- "$(dirname -- "$0")/../../../Go projects/structpy-tree/compiler/bin" && pwd)/elisac"
-compiler="${ELISA_LOCAL_COMPILER:-${ELISACORE_BIN:-$default_compiler}}"
-case "$compiler" in
-    *"/Go projects/structpy-tree/compiler/bin/elisac") ;;
-    *)
-        echo "run_bounded_lowering: refusing compiler outside Go projects/structpy-tree/compiler/bin/elisac" >&2
-        exit 2
-        ;;
-esac
+expected_compiler_path="/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac"
+expected_compiler_dir="$(CDPATH= cd -P -- "${expected_compiler_path%/*}" 2>/dev/null && pwd -P)"
+if [ -z "$expected_compiler_dir" ]; then
+    echo "run_bounded_lowering: unable to resolve the pinned StructPy compiler directory" >&2
+    exit 2
+fi
+expected_compiler_path="$expected_compiler_dir/${expected_compiler_path##*/}"
+compiler="${ELISA_LOCAL_COMPILER:-${ELISACORE_BIN:-$expected_compiler_path}}"
 if [ -L "$compiler" ]; then
     echo "run_bounded_lowering: refusing symlinked compiler path" >&2
+    exit 2
+fi
+case "$compiler" in
+    */*) compiler_dir="${compiler%/*}"; compiler_name="${compiler##*/}" ;;
+    *) compiler_dir=.; compiler_name="$compiler" ;;
+esac
+canonical_compiler_dir="$(CDPATH= cd -P -- "$compiler_dir" 2>/dev/null && pwd -P)"
+compiler_path="$canonical_compiler_dir/$compiler_name"
+if [ "$compiler_path" != "$expected_compiler_path" ] || [ ! -f "$compiler_path" ] || [ ! -x "$compiler_path" ]; then
+    echo "run_bounded_lowering: refusing compiler other than the canonical local StructPy compiler: $expected_compiler_path" >&2
     exit 2
 fi
 
@@ -94,12 +104,16 @@ process_tree_pids() {
 process_group_rss_kb() {
     process_group_id="$1"
     process_root_pid="$2"
-    process_tree_snapshot="$(process_tree_pids "$process_root_pid")"
+    process_tree_snapshot=""
+    if [ -n "$process_root_pid" ]; then
+        process_tree_snapshot="$(process_tree_pids "$process_root_pid")"
+    fi
     # Count the union of the isolated process group and descendants of the
     # compiler root. The group catches reparented children that retain their
     # group; the tree catches descendants that start a private session. The OR
     # predicate prevents counting ordinary same-group children twice.
-    ps -axo pid=,pgid=,rss= 2>/dev/null | awk -v group="$process_group_id" -v tree="$process_tree_snapshot" '
+    process_table="$(ps -axo pid=,pgid=,rss= 2>/dev/null)" || return 1
+    printf '%s\n' "$process_table" | awk -v group="$process_group_id" -v root="$process_root_pid" -v tree="$process_tree_snapshot" '
         BEGIN {
             count = split(tree, pids, "\n")
             for (i = 1; i <= count; i++) {
@@ -108,8 +122,12 @@ process_group_rss_kb() {
                 }
             }
         }
+        $1 == root || $2 == group { scope_seen = 1 }
         $2 == group || tree_pid[$1] { total += $3 }
-        END { print total + 0 }
+        END {
+            if (!scope_seen) exit 1
+            print total + 0
+        }
     '
 }
 
@@ -117,17 +135,59 @@ process_group_for_pid() {
     ps -o pgid= -p "$1" 2>/dev/null | tr -d '[:space:]'
 }
 
+process_group_has_processes() {
+    process_group_id="$1"
+    process_table="$(ps -axo pgid=,stat= 2>/dev/null)" || return 0
+    [ -n "$process_table" ] || return 0
+    printf '%s\n' "$process_table" | awk -v group="$process_group_id" '$1 == group && $2 !~ /^Z/ { found = 1 } END { exit !found }'
+}
+
+compiler_process_state() {
+    process_id="$1"
+    process_table="$(ps -axo pid=,stat= 2>/dev/null)" || return 2
+    [ -n "$process_table" ] || return 2
+    if process_state="$(printf '%s\n' "$process_table" | awk -v pid="$process_id" '$1 == pid { print $2; found = 1; exit } END { if (!found) exit 1 }')"; then
+        case "$process_state" in
+            *Z*) printf 'zombie\n' ;;
+            *) printf 'live\n' ;;
+        esac
+    else
+        printf 'absent\n'
+    fi
+}
+
+reap_compiler_if_exited() {
+    if [ -n "$compiler_pid" ]; then
+        compiler_state="$(compiler_process_state "$compiler_pid" 2>/dev/null || printf 'unknown\n')"
+        case "$compiler_state" in
+            absent|zombie)
+                wait "$compiler_pid" 2>/dev/null || compiler_exit=$?
+                # Reap the direct child before waiting on longer-lived helpers
+                # left in its process group.
+                compiler_pid=""
+                ;;
+        esac
+    fi
+}
+
 kill_process_tree() {
-    process_group_id="$(process_group_for_pid "$1")"
+    process_root_pid="$1"
+    process_group_id="$2"
+    process_tree_snapshot=""
+    if [ -n "$process_root_pid" ]; then
+        process_tree_snapshot="$(process_tree_pids "$process_root_pid")"
+    fi
     case "$process_group_id" in
-        ''|*[!0-9]*) ;;
+        ''|0|*[!0-9]*) process_group_id="$(process_group_for_pid "$process_root_pid")" ;;
+    esac
+    case "$process_group_id" in
+        ''|0|*[!0-9]*) ;;
         *)
             if [ "$process_group_id" != "$validation_wrapper_pgid" ]; then
                 kill -TERM -- "-$process_group_id" 2>/dev/null || true
             fi
             ;;
     esac
-    process_tree_snapshot="$(process_tree_pids "$1")"
     for process_tree_pid in $process_tree_snapshot; do
         kill -TERM "$process_tree_pid" 2>/dev/null || true
     done
@@ -135,6 +195,14 @@ kill_process_tree() {
     for process_tree_pid in $process_tree_snapshot; do
         kill -KILL "$process_tree_pid" 2>/dev/null || true
     done
+    case "$process_group_id" in
+        ''|0|*[!0-9]*) ;;
+        *)
+            if [ "$process_group_id" != "$validation_wrapper_pgid" ]; then
+                kill -KILL -- "-$process_group_id" 2>/dev/null || true
+            fi
+            ;;
+    esac
 }
 
 rss_limit_kb="${ELISASCRIPT_RSS_LIMIT_KB:-524288}"
@@ -243,8 +311,10 @@ release_validation_lease() {
 }
 
 cleanup_bounded_lowering() {
-    if [ -n "$compiler_pid" ] && kill -0 "$compiler_pid" 2>/dev/null; then
-        kill_process_tree "$compiler_pid"
+    if [ -n "$compiler_pid" ] || [ -n "$compiler_pgid" ]; then
+        if { [ -n "$compiler_pid" ] && kill -0 "$compiler_pid" 2>/dev/null; } || { [ -n "$compiler_pgid" ] && process_group_has_processes "$compiler_pgid"; }; then
+            kill_process_tree "$compiler_pid" "$compiler_pgid"
+        fi
     fi
     if [ -n "$log_file" ]; then
         rm -f -- "$log_file"
@@ -274,9 +344,9 @@ for source_file in "$@"; do
     compiler_pid=$!
     compiler_pgid="$(process_group_for_pid "$compiler_pid")"
     case "$compiler_pgid" in
-        ''|*[!0-9]*|"$validation_wrapper_pgid")
+        ''|0|*[!0-9]*|"$validation_wrapper_pgid")
             echo "run_bounded_lowering: compiler was not isolated in a private process group" >&2
-            kill_process_tree "$compiler_pid"
+            kill_process_tree "$compiler_pid" "$compiler_pgid"
             exit 125
             ;;
     esac
@@ -286,15 +356,34 @@ for source_file in "$@"; do
     output_guard=0
     compiler_exit=0
 
-    while kill -0 "$compiler_pid" 2>/dev/null; do
-        rss_kb="$(process_group_rss_kb "$compiler_pgid" "$compiler_pid")"
+    while :; do
+        reap_compiler_if_exited
+        if [ -z "$compiler_pid" ] && ! process_group_has_processes "$compiler_pgid"; then
+            break
+        fi
+        if ! rss_kb="$(process_group_rss_kb "$compiler_pgid" "$compiler_pid")"; then
+            # The process can exit between the state check and RSS snapshot.
+            # Recheck before treating a vanished, empty group as a measurement
+            # failure; a failed ps while work remains still fails closed below.
+            reap_compiler_if_exited
+            if [ -z "$compiler_pid" ] && ! process_group_has_processes "$compiler_pgid"; then
+                break
+            fi
+            rss_guard=1
+            if ! latch_validation_disabled "run_bounded_lowering rss_measurement_failed pid=$compiler_pid pgid=$compiler_pgid"; then
+                kill_process_tree "$compiler_pid" "$compiler_pgid"
+                exit 125
+            fi
+            kill_process_tree "$compiler_pid" "$compiler_pgid"
+            break
+        fi
         if [ "$rss_kb" -gt "$rss_limit_kb" ]; then
             rss_guard=1
             if ! latch_validation_disabled "run_bounded_lowering rss_guard pid=$compiler_pid rss_kb=$rss_kb limit_kb=$rss_limit_kb"; then
-                kill_process_tree "$compiler_pid"
+                kill_process_tree "$compiler_pid" "$compiler_pgid"
                 exit 125
             fi
-            kill_process_tree "$compiler_pid"
+            kill_process_tree "$compiler_pid" "$compiler_pgid"
             break
         fi
 
@@ -302,10 +391,10 @@ for source_file in "$@"; do
         if [ "$log_bytes" -gt "$log_limit_bytes" ]; then
             output_guard=1
             if ! latch_validation_disabled "run_bounded_lowering output_guard pid=$compiler_pid log_bytes=$log_bytes limit_bytes=$log_limit_bytes"; then
-                kill_process_tree "$compiler_pid"
+                kill_process_tree "$compiler_pid" "$compiler_pgid"
                 exit 125
             fi
-            kill_process_tree "$compiler_pid"
+            kill_process_tree "$compiler_pid" "$compiler_pgid"
             break
         fi
 
@@ -313,16 +402,18 @@ for source_file in "$@"; do
         if [ "$((now - started_at))" -gt "$time_limit_seconds" ]; then
             timeout_guard=1
             if ! latch_validation_disabled "run_bounded_lowering timeout_guard pid=$compiler_pid limit_seconds=$time_limit_seconds"; then
-                kill_process_tree "$compiler_pid"
+                kill_process_tree "$compiler_pid" "$compiler_pgid"
                 exit 125
             fi
-            kill_process_tree "$compiler_pid"
+            kill_process_tree "$compiler_pid" "$compiler_pgid"
             break
         fi
         sleep 1
     done
 
-    wait "$compiler_pid" 2>/dev/null || compiler_exit=$?
+    if [ -n "$compiler_pid" ]; then
+        wait "$compiler_pid" 2>/dev/null || compiler_exit=$?
+    fi
     # The PID is no longer owned after wait; clear it before any diagnostic or
     # exit path so the EXIT trap cannot mistake a reused PID for our compiler.
     compiler_pid=""
