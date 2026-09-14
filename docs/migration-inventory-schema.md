@@ -221,11 +221,15 @@ source-only fixture defining process-parity cases at
 `test/script_parity/inventory_signals_launcher_test.elisascript`. It also
 covers the six partial execute-bit combinations, hidden and ignored files,
 excluded child directories, an outside-root symlink, TSV-delimiter rejection,
-and a marker proving discoveries are not executed. The fixture is uncompiled
-and unrun; symlinked candidate-launch-path behavior, binary and oversized
-content files, synthetic tool errors, and resource-boundary behavior remain
-uncovered. Root resolution and subsequent process traversals are separate
-filesystem operations, so concurrent root replacement remains a
+and a marker proving discoveries are not executed. A NUL-containing file and
+an over-8-MiB file both contain otherwise-matching shebangs, exercising
+ripgrep's binary and size policies. The fixture is uncompiled and unrun;
+symlinked candidate-launch-path behavior, `find`/`rg` failures, tool-spawn
+failures, and larger resource-boundary behavior remain uncovered. A private
+deterministic `sort` shim also defines the nonzero-exit stdout/stderr/status
+comparison; the candidate now forwards those streams and status after printing
+the reference's header. Root resolution and subsequent process traversals are
+separate filesystem operations, so concurrent root replacement remains a
 time-of-check/time-of-use risk; parity is intended for quiescent trees. The
 draft and fixture do not establish public-launcher parity, platform/tool
 equivalence, resource behavior, or exact row equality.

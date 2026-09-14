@@ -1,5 +1,6 @@
 # Process-level differential coverage for the read-only signal inventory.
-# This test creates only private temporary fixtures and never executes them.
+# This test creates only private temporary fixtures and never executes scanned
+# files. One private `sort` shim is intentionally run for the error-path case.
 # Run through the bounded launcher wrapper after explicit reauthorization.
 include "../../src/testing/differential.elisa"
 
@@ -20,6 +21,7 @@ module EsInventorySignalsLauncherParity:
             MAX_HASH_OUTPUT_BYTES: u64 = 8192
             MAX_OUTPUT_BYTES: u64 = 1048576
             TIMEOUT_STEPS: u64 = 10000
+            RG_MAX_FILE_BYTES: usize = 8388608
 
 
         const module Output:
@@ -61,6 +63,17 @@ module EsInventorySignalsLauncherParity:
             written: usize = try write_text(target, contents) else 0u64
             return false if written != len(contents)
             return try chmod(target, mode) else false
+
+
+        def write_fixture_bytes(target: Path, contents: darray[u8], mode: u64) -> bool can[Memory.Allocate, Abort.Panic, File.Write]:
+            written: usize = try write_bytes(target, contents) else 0u64
+            return false if written != contents.count
+            return try chmod(target, mode) else false
+
+
+        def append_fixture_text_bytes(output: mutable darray[u8]&, value: sview) -> void can[Memory.Allocate, Abort.Panic]:
+            for byte in value |output|:
+                output.push(byte)
 
 
         def create_fixture_symlink(target: Path, link: Path) -> bool can[Memory.Allocate, Abort.Panic, File.Write]:
@@ -106,9 +119,9 @@ module EsInventorySignalsLauncherParity:
             return true
 
 
-        def controlled_environment(temp_root: sview, working_directory: sview) -> darray[DifferentialEnvironmentEntry] can[Memory.Allocate, Abort.Panic]:
+        def controlled_environment(temp_root: sview, working_directory: sview, path_value: sview = Commands::CONTROLLED_PATH) -> darray[DifferentialEnvironmentEntry] can[Memory.Allocate, Abort.Panic]:
             environment: mutable darray[DifferentialEnvironmentEntry] = [
-                DifferentialEnvironmentEntry{name: "PATH", value: Commands::CONTROLLED_PATH},
+                DifferentialEnvironmentEntry{name: "PATH", value: path_value},
                 DifferentialEnvironmentEntry{name: "LC_ALL", value: "C"},
                 DifferentialEnvironmentEntry{name: "TMPDIR", value: temp_root},
                 DifferentialEnvironmentEntry{name: "ELISA_LOCAL_COMPILER", value: Commands::PINNED_COMPILER},
@@ -119,7 +132,7 @@ module EsInventorySignalsLauncherParity:
             return environment
 
 
-        def inventory_process_pair_matches(launcher: sview, logical_arguments: darray[sview], expected_status: i64, expected_stdout: sview, expected_stderr: sview, temp_root: sview, working_directory: sview, reference_script_override: sview = "", candidate_script_override: sview = "") -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, File.Read, Directory.Read, Unsafe.PointerCast]:
+        def inventory_process_pair_matches(launcher: sview, logical_arguments: darray[sview], expected_status: i64, expected_stdout: sview, expected_stderr: sview, temp_root: sview, working_directory: sview, reference_script_override: sview = "", candidate_script_override: sview = "", path_override: sview = "") -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, File.Read, Directory.Read, Unsafe.PointerCast]:
             reference_script_argument: mutable sview = reference_script_override
             candidate_script_argument: mutable sview = candidate_script_override
             if reference_script_argument == "":
@@ -137,7 +150,10 @@ module EsInventorySignalsLauncherParity:
                 reference_arguments.push(argument)
                 candidate_arguments.push(argument)
 
-            environment: darray[DifferentialEnvironmentEntry] = controlled_environment(temp_root, working_directory)
+            path_value: sview = Commands::CONTROLLED_PATH
+            if path_override != "":
+                path_value <- path_override
+            environment: darray[DifferentialEnvironmentEntry] = controlled_environment(temp_root, working_directory, path_value)
             reference_runner: DifferentialRunner = DifferentialRunner{
                 kind: DifferentialRunnerKind.NativeProcess,
                 name: "shell-inventory-signals-reference",
@@ -251,6 +267,8 @@ module EsInventorySignalsLauncherParity:
             tab_root_alias_path: Path = workspace_path.joinpath("safe-tab-root-alias")
             logical_link_path: Path = root_path.joinpath("logical-hop")
             tmp_nested_path: Path = tmp_path.joinpath("nested")
+            sort_shim_directory: Path = tmp_path.joinpath("tool-shims")
+            sort_shim_path: Path = sort_shim_directory.joinpath("sort")
             setup_ok: mutable bool = workspace_path.is_absolute() and tmp_path.is_absolute()
             setup_ok <- false if not create_fixture_directory(root_path)
             setup_ok <- false if not create_fixture_directory(no_match_path)
@@ -260,6 +278,7 @@ module EsInventorySignalsLauncherParity:
             setup_ok <- false if not create_fixture_directory(default_scripts_path)
             setup_ok <- false if not create_fixture_directory(tab_root_path)
             setup_ok <- false if not create_fixture_directory(tmp_nested_path)
+            setup_ok <- false if not create_fixture_directory(sort_shim_directory)
 
             # Keep shell mktemp output outside every scanned fixture root.
             root_resolved: Path = try path_real(root_path) else err:
@@ -280,9 +299,11 @@ module EsInventorySignalsLauncherParity:
             default_root_text: sview = f"{default_root_resolved}"
             workspace_text: sview = f"{workspace_resolved}"
             tmp_text: sview = f"{tmp_resolved}"
+            sort_shim_directory_text: sview = f"{sort_shim_directory}"
             setup_ok <- false if tmp_text == root_text or tmp_text.startswith(root_text + "/")
             setup_ok <- false if tmp_text == workspace_text or tmp_text.startswith(workspace_text + "/")
             setup_ok <- false if workspace_text.startswith(tmp_text + "/")
+            setup_ok <- false if sort_shim_directory_text.index(":") >= 0
 
             excluded_directory_names: darray[sview] = [".git", "node_modules", ".venv", "__pycache__", "vendor", "third_party"]
             for name in excluded_directory_names |root_path, setup_ok|:
@@ -319,6 +340,23 @@ module EsInventorySignalsLauncherParity:
                 setup_ok <- write_fixture_file(target, contents, fixture.mode) and setup_ok
             setup_ok <- write_fixture_file(no_match_path.joinpath("plain.txt"), "ordinary data only\n", 0x1a4u64) and setup_ok
             setup_ok <- write_fixture_file(dash_root_path.joinpath(".dash.py"), "#!/usr/bin/env python3\n", 0x1a4u64) and setup_ok
+            sort_shim_source: sview = "#!/bin/sh\nprintf 'partial sort output\\n'\nprintf 'injected sort error\\n' >&2\nexit 23\n"
+            setup_ok <- write_fixture_file(sort_shim_path, sort_shim_source, 0x1edu64) and setup_ok
+
+            binary_path: Path = root_path.joinpath("binary.txt")
+            # Put a matching shebang after NUL so the oracle exercises rg's
+            # default binary-file policy rather than a no-match string.
+            binary_bytes: darray[u8] = [0u8, 35u8, 33u8, 47u8, 117u8, 115u8, 114u8, 47u8, 98u8, 105u8, 110u8, 47u8, 101u8, 110u8, 118u8, 32u8, 112u8, 101u8, 114u8, 108u8, 10u8]
+            setup_ok <- write_fixture_bytes(binary_path, binary_bytes, 0x1a4u64) and setup_ok
+
+            oversized_path: Path = root_path.joinpath("oversized.py")
+            oversized_bytes: mutable darray[u8] = []
+            # Keep a matching shebang at byte zero, then exceed rg's 8 MiB
+            # filter. Neither content-search pass should report this file.
+            append_fixture_text_bytes(oversized_bytes, "#!/usr/bin/env python3\n")
+            for _ in 0..<Commands::RG_MAX_FILE_BYTES |oversized_bytes|:
+                oversized_bytes.push(120u8)
+            setup_ok <- write_fixture_bytes(oversized_path, oversized_bytes, 0x1a4u64) and setup_ok
 
             external_script: Path = tmp_path.joinpath("outside.sh")
             setup_ok <- write_fixture_file(external_script, "#!/bin/sh\n", 0x1edu64) and setup_ok
@@ -387,6 +425,15 @@ module EsInventorySignalsLauncherParity:
 
                 no_match_arguments: darray[sview] = [no_match_text]
                 setup_ok <- setup_ok and inventory_process_pair_matches(launcher, no_match_arguments, 0i64, empty_stdout, "", tmp_text, workspace_text)
+
+                # The reference writes its header before invoking sort. This
+                # shim makes the error tuple deterministic without touching
+                # the scanner root or executing a discovered fixture file.
+                sort_failure_arguments: darray[sview] = [root_text]
+                sort_failure_path: sview = sort_shim_directory_text + ":" + Commands::CONTROLLED_PATH
+                sort_failure_stdout: sview = Output::HEADER + "\npartial sort output\n"
+                sort_failure_stderr: sview = "injected sort error\n"
+                setup_ok <- setup_ok and inventory_process_pair_matches(launcher, sort_failure_arguments, 23i64, sort_failure_stdout, sort_failure_stderr, tmp_text, workspace_text, "", "", sort_failure_path)
 
                 # Every excluded basename is excluded both as a child and as
                 # the requested root itself.
