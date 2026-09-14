@@ -4,11 +4,11 @@ This is a read-only identity record for the development/validation boundary.
 It is intentionally separate from execution evidence: compiler and test
 execution remain disabled until the explicit reauthorization gate is opened.
 
-Captured: 2026-09-05
+Captured: 2026-09-14
 
 ## Elisascript worktree
 
-- Repository revision: `19aad0aa48b0504054c3a2a72b6a12bb0de6601a`
+- Repository revision before this baseline refresh: `983ad1392f023dbeef41fdb852f4e752cf1e5b02`
 - Tracked dirty files: none
 - Ignored local planning file: `IMPLEMENTATION_PLAN.md`
 - Working tree policy: never commit the ignored plan or `.DS_Store` files
@@ -16,10 +16,15 @@ Captured: 2026-09-05
 ## Pinned compiler identity
 
 - Compiler source checkout: `/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree`
-- Compiler source revision: `418de24bf339a9c0b745142cfeb14023f119bf30`
+- Compiler source revision: `601f7bcd3de62877723ab7f5c5f9a502fb6ef9ae`
 - Compiler source dirty files: none
+- Compiler source branch: `codex/structpy-tree` (8 commits ahead of the checked remote `origin/main`, with no behind commits)
+- Relevant optimizer commit: `f2e9e1b0` (`Lower identity-yielding state blocks without aggregate copies`)
 - Compiler executable: `/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac`
-- Compiler executable SHA-256: `25eb7d1c3d316ca943fcc11bcea8cdb577ce8b9beae0cc27bfe93f6c108fc23d`
+- Compiler executable SHA-256: `51f5f5f1f33c65f71bb6a17acae8fcc45c74009ff27f6209a93a06ecd3d39b62`
+- Compiler binary VCS revision: `601f7bcd3de62877723ab7f5c5f9a502fb6ef9ae`
+- Compiler binary `vcs.modified`: `false`
+- Compiler build toolchain: `go1.27.1`
 - Executable format: Mach-O 64-bit arm64
 
 The installed `~/.elisac` compiler and the Elisa-core main-worktree binary are
@@ -42,7 +47,9 @@ other than the exact canonical pinned StructPy `compiler/bin/elisac` and fail cl
 
 - Operating system: macOS `26.6.2` (Darwin `25.6.0`)
 - Architecture: `arm64`
-- Validation state: suspended; no compiler/test command was run for this record
+- Validation state: suspended; the local compiler was rebuilt from the clean
+  source checkout and its embedded metadata was inspected, but the Elisa
+  compiler itself and all tests/validation scripts remain unrun
 
 The checked-in wrappers require an absolute `setsid` helper, launch each future
 compiler in a private process group, sample aggregate RSS across the process group
