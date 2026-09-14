@@ -21,6 +21,7 @@ for wrapper in "$lowering" "$test_wrapper"; do
     rg -q 'ELISASCRIPT_VALIDATION_REAUTHORIZED:-0' "$wrapper"
     rg -q 'elisascript-validation\.disabled' "$wrapper"
     rg -q 'sampled and reactive, not an OS-enforced hard memory cap' "$wrapper"
+    rg -q 'double-forked process' "$wrapper"
     rg -q 'Go projects/structpy-tree/compiler/bin/elisac' "$wrapper"
     rg -Fq 'expected_compiler_path="/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac"' "$wrapper"
     rg -Fq 'compiler_path="$canonical_compiler_dir/$compiler_name"' "$wrapper"
@@ -31,7 +32,7 @@ for wrapper in "$lowering" "$test_wrapper"; do
     rg -q 'tree_pid\[\$1\]' "$wrapper"
     rg -q 'setsid_path' "$wrapper"
     rg -q 'case "\$setsid_path" in' "$wrapper"
-    rg -q '"\$setsid_path" "\$compiler"' "$wrapper"
+    rg -Fq '"$setsid_path" "$compiler_path"' "$wrapper"
     rg -q 'compiler_pgid' "$wrapper"
     rg -q 'validation_wrapper_pgid=' "$wrapper"
     rg -Fq '0|*[!0-9]*|"$validation_wrapper_pgid"' "$wrapper"
@@ -51,6 +52,21 @@ for wrapper in "$lowering" "$test_wrapper"; do
     rg -q 'kill -TERM -- "-\$process_group_id"' "$wrapper"
     rg -q 'kill_process_tree' "$wrapper"
     rg -q 'validation_lease' "$wrapper"
+    rg -Fq 'sh "$script_dir/validation_identity.sh"' "$wrapper"
+    rg -Fq 'retained_log_budget_bytes=1073741824' "$wrapper"
+    rg -q 'validation_log_bytes_used' "$wrapper"
+    rg -q 'effective_log_limit_bytes' "$wrapper"
+    rg -q 'mktemp "\$validation_log_dir/' "$wrapper"
+    rg -q 'preserving bounded-run evidence' "$wrapper"
+    rg -q 'numeric limits must not exceed 10 decimal digits' "$wrapper"
+    if rg -Fq 'rm -f -- "$log_file"' "$wrapper"; then
+        printf 'validation wrapper audit: evidence log must be retained in %s\n' "$wrapper" >&2
+        exit 1
+    fi
+    if rg -Fq 'source_path=%s' "$wrapper"; then
+        printf 'validation wrapper audit: source paths must be encoded in %s metadata\n' "$wrapper" >&2
+        exit 1
+    fi
     if rg -q 'Elisa-compiler|elisa-compiler/bin/elisac' "$wrapper"; then
         printf 'validation wrapper audit: forbidden main-worktree compiler reference in %s\n' "$wrapper" >&2
         exit 1
@@ -63,4 +79,4 @@ rg -q 'process_tree_snapshot' "$stopper"
 rg -q 'process_group_for_pid' "$stopper"
 rg -q 'kill -TERM -- "-\$process_group_id"' "$stopper"
 rg -q 'kill -KILL -- "-\$process_group_id"' "$stopper"
-printf 'validation wrapper audit: disabled gate, StructPy pin, RSS guard, lease, and owned stop path present\n'
+printf 'validation wrapper audit: disabled gate, StructPy pin, sampled guards, evidence retention, lease, and owned stop path present\n'

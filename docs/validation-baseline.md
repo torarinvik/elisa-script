@@ -23,8 +23,8 @@ Captured: 2026-09-05
 - Executable format: Mach-O 64-bit arm64
 
 The installed `~/.elisac` compiler and the Elisa-core main-worktree binary are
-not permitted validation targets. The bounded wrappers refuse compiler paths
-outside the pinned StructPy `compiler/bin/elisac` suffix and fail closed unless
+not permitted validation targets. The bounded wrappers refuse any executable
+other than the exact canonical pinned StructPy `compiler/bin/elisac` and fail closed unless
 `ELISASCRIPT_VALIDATION_REAUTHORIZED=1` is explicitly supplied.
 
 ## Vendored dependency and bootstrap chain
@@ -44,12 +44,16 @@ outside the pinned StructPy `compiler/bin/elisac` suffix and fail closed unless
 - Architecture: `arm64`
 - Validation state: suspended; no compiler/test command was run for this record
 
-The checked-in wrappers now require an absolute `setsid` helper, launch each
-future compiler in a private process group, aggregate RSS by process group, and
-retain descendant snapshot cleanup as a fallback. The scoped emergency stopper
-also signals only private child groups found in its verified snapshot. This is a static contract
-change only; no wrapper or compiler process was launched for this record, and
-synthetic watchdog coverage remains outstanding.
+The checked-in wrappers require an absolute `setsid` helper, launch each future
+compiler in a private process group, sample aggregate RSS across the process group
+and currently discoverable descendants, and retain descendant snapshot cleanup
+as a fallback. This is best-effort observation, not containment: a double-forked
+process that leaves the group and reparents may evade both snapshots. The scoped
+emergency stopper signals only private child groups found in its verified
+snapshot. Per-identity compiler logs and sidecar run manifests are retained under
+the ignored `.validation/` root with a 1 GiB sampled per-identity log budget.
+This is a static contract change only; no wrapper or compiler process was
+launched for this record, and synthetic watchdog coverage remains outstanding.
 
 This record must be refreshed after any compiler-source, executable, vendored
 snapshot, host-platform, or Elisascript revision change. It is metadata, not a

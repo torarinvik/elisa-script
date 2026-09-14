@@ -12,6 +12,11 @@ sets `ELISASCRIPT_VALIDATION_REAUTHORIZED=1`. Do not set that override without a
 small, bounded repro and an explicit decision to resume validation. When validation
 is authorized, use the local compiler path and watchdog:
 
+The current validation state remains suspended. The examples below are reference
+commands, not authorization to run them; the environment variable is a manual gate,
+not standing approval. Do not launch a compiler or test wrapper unless the user
+explicitly reauthorizes validation in the active task.
+
 ```sh
 ELISASCRIPT_VALIDATION_REAUTHORIZED=1 \
 ELISA_LOCAL_COMPILER="/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac" \
@@ -20,10 +25,13 @@ scripts/run_bounded_lowering.sh test/ir/elisascript_lowering_test.elisa
 
 The local StructPy checkout keeps compiler changes isolated from the installed
 release at `~/.elisac/elisac` and the Elisa-core main-worktree binary; do not use
-either installed or main-worktree binaries for stage0/stage1 validation. Keep
-validation bounded with the process-group RSS-and-time watchdog that terminates
-the compiler before its aggregate resident set exceeds the host-safe ceiling; a
-virtual-memory limit alone is not sufficient. The wrapper deliberately uses `-emit lowered`
+either installed or main-worktree binaries for stage0/stage1 validation. The
+process-group RSS-and-time watchdog is sampled and reactive, not a hard resource
+containment boundary: fast allocations may overshoot between samples, and a
+double-forked process that leaves the group and reparents can evade both the group
+and descendant snapshots. It can detect and terminate observed breaches but
+cannot guarantee the host-safe ceiling. A virtual-memory limit alone is not
+sufficient. The wrapper deliberately uses `-emit lowered`
 first; do not relaunch a large executable fixture after an RSS incident until a
 smaller bounded repro has stayed under the guard. The same `ELISA_LOCAL_COMPILER`
 setting should be used for the lowering,
@@ -48,19 +56,25 @@ uses a 524,288 KB RSS ceiling with a 120-second timeout by default. The limits
 can only be changed explicitly with
 `ELISASCRIPT_RSS_LIMIT_KB`, `ELISASCRIPT_TIME_LIMIT_SECONDS`, and
 `ELISASCRIPT_LOG_LIMIT_BYTES`. All three values must be positive decimal
-integers; malformed or zero values are rejected before any compiler process is
-created. The log ceiling defaults to 64 MiB and bounds the temporary compiler
-diagnostic file using the same polling model as the RSS/time watchdog. Each
-fixture argument must be an existing `.elisascript` regular file. The wrapper installs signal/exit
-cleanup for its temporary log and owned compiler tree, and clears the child PID
-after `wait` so cleanup cannot act on a reused PID. Each compiler is launched by
-an absolute `setsid` helper in a private process group. The watchdog samples RSS
-for every process in that group (covering descendants even after reparenting),
-refuses to continue if the compiler inherits the wrapper's group, and sends group
-`TERM` followed by the snapshotted descendant `TERM`/`KILL` fallback. This is
-still a polling containment aid rather than an instantaneous OS quota, so group
-measurement and inter-sample overshoot must be recorded by the future synthetic
-harness. The lowering and executable
+integers with at most 10 digits; malformed, zero, and overlong values are
+rejected before any compiler process is created. The log ceiling defaults to 64
+MiB and cannot exceed the 1 GiB retained evidence budget per
+compiler/configuration identity. Both are monitored by
+polling, not a hard file-size quota: a fast writer can overshoot before it is
+stopped. Successful, failed, and interrupted runs retain a combined stdout/stderr
+log and sidecar manifest under `.validation/<configuration-key>/logs/` (or the
+configured output root). The manifest records compiler identity, limits, source
+path as hex, process ownership, observed RSS samples, exit status, and guard
+results. Old evidence is never pruned automatically; review it before removing it
+to make room. Each fixture argument must be an existing `.elisascript` regular
+file. The wrapper installs signal/exit cleanup for its owned compiler tree and
+clears the child PID after `wait` so cleanup cannot act on a reused PID. Each
+compiler is launched by an absolute `setsid` helper in a private process group.
+The watchdog samples RSS for processes in that group and the currently
+discoverable descendants, refuses to continue if the compiler inherits the
+wrapper's group, and sends group `TERM` then `KILL` plus a snapshotted descendant
+fallback. A detached, reparented process can escape both observations and cleanup;
+record this limitation in any future synthetic watchdog evidence. The lowering and executable
 wrappers also serialize validation through an atomic lease directory under
 `${TMPDIR:-/tmp}`. The lease records the owner PID and `ps` start identity; a
 live owner with an untrusted or reused identity fails closed, while a dead owner
@@ -84,9 +98,10 @@ Run the compiler-free wrapper audit before reviewing a validation change:
 scripts/check_validation_wrappers.sh
 ```
 
-This checks the disabled-by-default gate, StructPy compiler pin, process-group
-RSS guard, private-session launch requirement, identity-bound lease, and
-emergency-stop ownership without launching a compiler.
+This checks the disabled-by-default gate, exact StructPy compiler pin,
+best-effort process-group RSS guard, private-session launch requirement,
+identity-keyed evidence retention, identity-bound lease, and emergency-stop
+ownership without launching a compiler.
 
 Run `scripts/check_resource_policy.sh` alongside the wrapper audit when changing
 runtime limits. It is also compiler-free: it checks that the shared policy and

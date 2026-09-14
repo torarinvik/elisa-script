@@ -8,6 +8,7 @@
 
 set -u
 umask 077
+script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
 validation_disabled_file="${TMPDIR:-/tmp}/elisascript-validation.disabled"
 
@@ -88,8 +89,31 @@ case "${ELISASCRIPT_LOG_LIMIT_BYTES:-67108864}" in
         exit 2
         ;;
 esac
-if [ "${ELISASCRIPT_RSS_LIMIT_KB:-524288}" -eq 0 ] || [ "${ELISASCRIPT_TIME_LIMIT_SECONDS:-120}" -eq 0 ] || [ "${ELISASCRIPT_LOG_LIMIT_BYTES:-67108864}" -eq 0 ]; then
+normalize_decimal() {
+    normalized_decimal="$(printf '%s\n' "$1" | sed 's/^0*//')"
+    printf '%s\n' "${normalized_decimal:-0}"
+}
+decimal_has_too_many_digits() {
+    case "$1" in
+        ???????????*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+rss_limit_kb="$(normalize_decimal "${ELISASCRIPT_RSS_LIMIT_KB:-524288}")"
+time_limit_seconds="$(normalize_decimal "${ELISASCRIPT_TIME_LIMIT_SECONDS:-120}")"
+log_limit_bytes="$(normalize_decimal "${ELISASCRIPT_LOG_LIMIT_BYTES:-67108864}")"
+if [ "$rss_limit_kb" = "0" ] || [ "$time_limit_seconds" = "0" ] || [ "$log_limit_bytes" = "0" ]; then
     echo "run_bounded_lowering: RSS, time, and log limits must be positive" >&2
+    exit 2
+fi
+if decimal_has_too_many_digits "$rss_limit_kb" || decimal_has_too_many_digits "$time_limit_seconds" || decimal_has_too_many_digits "$log_limit_bytes"; then
+    echo "run_bounded_lowering: numeric limits must not exceed 10 decimal digits" >&2
+    exit 2
+fi
+retained_log_budget_bytes=1073741824
+metadata_reserve_bytes=16384
+if [ "$log_limit_bytes" -gt "$retained_log_budget_bytes" ]; then
+    echo "run_bounded_lowering: ELISASCRIPT_LOG_LIMIT_BYTES must not exceed the 1 GiB evidence budget" >&2
     exit 2
 fi
 
@@ -111,7 +135,9 @@ process_group_rss_kb() {
     # Count the union of the isolated process group and descendants of the
     # compiler root. The group catches reparented children that retain their
     # group; the tree catches descendants that start a private session. The OR
-    # predicate prevents counting ordinary same-group children twice.
+    # predicate prevents counting ordinary same-group children twice. This is
+    # still best-effort observation, not containment: a double-forked process
+    # reparented after leaving this group can evade both snapshots.
     process_table="$(ps -axo pid=,pgid=,rss= 2>/dev/null)" || return 1
     printf '%s\n' "$process_table" | awk -v group="$process_group_id" -v root="$process_root_pid" -v tree="$process_tree_snapshot" '
         BEGIN {
@@ -205,9 +231,6 @@ kill_process_tree() {
     esac
 }
 
-rss_limit_kb="${ELISASCRIPT_RSS_LIMIT_KB:-524288}"
-time_limit_seconds="${ELISASCRIPT_TIME_LIMIT_SECONDS:-120}"
-log_limit_bytes="${ELISASCRIPT_LOG_LIMIT_BYTES:-67108864}"
 compiler_pid=""
 compiler_pgid=""
 validation_wrapper_pgid="$(process_group_for_pid "$$")"
@@ -218,6 +241,8 @@ case "$validation_wrapper_pgid" in
         ;;
 esac
 log_file=""
+metadata_file=""
+metadata_finalized=0
 validation_lease_dir="${TMPDIR:-/tmp}/elisascript-validation.lease"
 validation_lease_pid="$$"
 validation_lease_start=""
@@ -316,8 +341,11 @@ cleanup_bounded_lowering() {
             kill_process_tree "$compiler_pid" "$compiler_pgid"
         fi
     fi
-    if [ -n "$log_file" ]; then
-        rm -f -- "$log_file"
+    if [ -n "$log_file" ] && [ "$metadata_finalized" -eq 0 ]; then
+        if [ -n "$metadata_file" ]; then
+            printf '%s\n' 'run_status=incomplete_or_interrupted' >>"$metadata_file" 2>/dev/null || true
+        fi
+        echo "run_bounded_lowering: preserving bounded-run evidence log=$log_file metadata=${metadata_file:-unavailable}" >&2
     fi
     release_validation_lease
 }
@@ -326,6 +354,50 @@ trap 'cleanup_bounded_lowering' 0
 trap 'exit 130' INT TERM
 
 acquire_validation_lease
+
+validation_mode="lowered"
+if ! validation_identity_output="$(ELISA_LOCAL_COMPILER="$compiler_path" ELISASCRIPT_VALIDATION_OPT_LEVEL=O0 ELISASCRIPT_VALIDATION_TARGET=native ELISASCRIPT_VALIDATION_MODE="$validation_mode" sh "$script_dir/validation_identity.sh")"; then
+    echo "run_bounded_lowering: unable to establish compiler/configuration identity; refusing to launch" >&2
+    exit 125
+fi
+validation_identity_field() {
+    printf '%s\n' "$validation_identity_output" | sed -n "s/^$1=//p"
+}
+validation_log_dir="$(validation_identity_field log_dir)"
+validation_configuration_key="$(validation_identity_field configuration_key)"
+validation_compiler_revision="$(validation_identity_field compiler_revision)"
+validation_compiler_sha256="$(validation_identity_field compiler_sha256)"
+if [ -z "$validation_log_dir" ] || [ -z "$validation_configuration_key" ] || [ -z "$validation_compiler_revision" ] || [ -z "$validation_compiler_sha256" ]; then
+    echo "run_bounded_lowering: compiler/configuration identity is incomplete; refusing to launch" >&2
+    exit 125
+fi
+case "$validation_configuration_key:$validation_compiler_revision:$validation_compiler_sha256" in
+    *[!0-9a-f:]*)
+        echo "run_bounded_lowering: compiler/configuration identity is malformed; refusing to launch" >&2
+        exit 125
+        ;;
+esac
+case "$validation_log_dir" in
+    /*) ;;
+    *) validation_log_dir="$PWD/$validation_log_dir" ;;
+esac
+if [ -L "$validation_log_dir" ] || [ ! -d "$validation_log_dir" ]; then
+    echo "run_bounded_lowering: identity log directory is missing or symlinked; refusing to launch" >&2
+    exit 125
+fi
+if ! validation_log_dir="$(CDPATH= cd -P -- "$validation_log_dir" 2>/dev/null && pwd -P)"; then
+    echo "run_bounded_lowering: unable to resolve identity log directory; refusing to launch" >&2
+    exit 125
+fi
+
+validation_log_bytes_used() {
+    validation_log_usage="$(du -sk "$validation_log_dir" 2>/dev/null)" || return 1
+    validation_log_kb="$(printf '%s\n' "$validation_log_usage" | awk 'NR == 1 { print $1 }')"
+    case "$validation_log_kb" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    printf '%s\n' "$((validation_log_kb * 1024))"
+}
 
 for source_file in "$@"; do
     case "$source_file" in
@@ -339,10 +411,57 @@ for source_file in "$@"; do
         echo "run_bounded_lowering: source file does not exist: $source_file" >&2
         exit 2
     fi
-    log_file="$(mktemp "${TMPDIR:-/tmp}/elisascript-lowering.XXXXXX")"
-    "$setsid_path" "$compiler" -O0 -emit lowered "$source_file" >"$log_file" 2>&1 &
+    retained_log_bytes="$(validation_log_bytes_used)" || {
+        echo "run_bounded_lowering: unable to measure retained validation evidence; refusing to launch" >&2
+        exit 125
+    }
+    if [ "$retained_log_bytes" -ge "$retained_log_budget_bytes" ]; then
+        echo "run_bounded_lowering: identity log budget is exhausted; remove reviewed old evidence before retrying" >&2
+        exit 125
+    fi
+    available_log_bytes="$((retained_log_budget_bytes - retained_log_bytes - metadata_reserve_bytes))"
+    if [ "$available_log_bytes" -le 0 ]; then
+        echo "run_bounded_lowering: identity log budget has no room for a bounded run manifest; refusing to launch" >&2
+        exit 125
+    fi
+    effective_log_limit_bytes="$log_limit_bytes"
+    if [ "$effective_log_limit_bytes" -gt "$available_log_bytes" ]; then
+        effective_log_limit_bytes="$available_log_bytes"
+    fi
+    started_at="$(date +%s)"
+    metadata_finalized=0
+    log_file="$(mktemp "$validation_log_dir/lowering.XXXXXX")" || {
+        echo "run_bounded_lowering: unable to create identity-keyed compiler log; refusing to launch" >&2
+        exit 125
+    }
+    metadata_file="$log_file.meta"
+    source_path_hex="$(printf '%s' "$source_file" | od -An -tx1 | tr -d '[:space:]')"
+    working_directory_hex="$(pwd -P | od -An -tx1 | tr -d '[:space:]')"
+    if ! (set -C; {
+        printf 'compiler_path=%s\ncompiler_revision=%s\ncompiler_sha256=%s\n' "$compiler_path" "$validation_compiler_revision" "$validation_compiler_sha256"
+        printf 'configuration_key=%s\noptimization=O0\ntarget=native\nmode=lowered\nlog_dir_hex=%s\n' "$validation_configuration_key" "$(printf '%s' "$validation_log_dir" | od -An -tx1 | tr -d '[:space:]')"
+        printf 'wrapper=run_bounded_lowering\nsource_path_hex=%s\n' "$source_path_hex"
+        printf 'working_directory_hex=%s\nstarted_epoch=%s\n' "$working_directory_hex" "$started_at"
+        printf 'rss_limit_kb=%s\ntime_limit_seconds=%s\nconfigured_log_limit_bytes=%s\neffective_log_limit_bytes=%s\nretained_log_budget_bytes=%s\n' "$rss_limit_kb" "$time_limit_seconds" "$log_limit_bytes" "$effective_log_limit_bytes" "$retained_log_budget_bytes"
+        printf 'argv0=%s\nargv1=-O0\nargv2=-emit\nargv3=lowered\nargv4_hex=%s\n' "$compiler_path" "$source_path_hex"
+    } >"$metadata_file") 2>/dev/null; then
+        echo "run_bounded_lowering: unable to create run metadata; refusing to launch" >&2
+        exit 125
+    fi
+    metadata_finalized=0
+    "$setsid_path" "$compiler_path" -O0 -emit lowered "$source_file" >"$log_file" 2>&1 &
     compiler_pid=$!
     compiler_pgid="$(process_group_for_pid "$compiler_pid")"
+    if ! {
+        printf 'compiler_pid=%s\ncompiler_pgid=%s\n' "$compiler_pid" "$compiler_pgid"
+    } >>"$metadata_file"; then
+        echo "run_bounded_lowering: unable to record compiler ownership; stopping it" >&2
+        kill_process_tree "$compiler_pid" "$compiler_pgid"
+        wait "$compiler_pid" 2>/dev/null || true
+        compiler_pid=""
+        compiler_pgid=""
+        exit 125
+    fi
     case "$compiler_pgid" in
         ''|0|*[!0-9]*|"$validation_wrapper_pgid")
             echo "run_bounded_lowering: compiler was not isolated in a private process group" >&2
@@ -350,10 +469,11 @@ for source_file in "$@"; do
             exit 125
             ;;
     esac
-    started_at="$(date +%s)"
     rss_guard=0
     timeout_guard=0
     output_guard=0
+    peak_rss_kb=0
+    rss_sample_count=0
     compiler_exit=0
 
     while :; do
@@ -377,6 +497,10 @@ for source_file in "$@"; do
             kill_process_tree "$compiler_pid" "$compiler_pgid"
             break
         fi
+        rss_sample_count=$((rss_sample_count + 1))
+        if [ "$rss_kb" -gt "$peak_rss_kb" ]; then
+            peak_rss_kb="$rss_kb"
+        fi
         if [ "$rss_kb" -gt "$rss_limit_kb" ]; then
             rss_guard=1
             if ! latch_validation_disabled "run_bounded_lowering rss_guard pid=$compiler_pid rss_kb=$rss_kb limit_kb=$rss_limit_kb"; then
@@ -387,10 +511,23 @@ for source_file in "$@"; do
             break
         fi
 
+        # Output size is sampled like RSS: this detects and stops observed
+        # excess, but a fast writer can overshoot between samples.
         log_bytes="$(wc -c <"$log_file" | tr -d '[:space:]')"
-        if [ "$log_bytes" -gt "$log_limit_bytes" ]; then
+        case "$log_bytes" in
+            ''|*[!0-9]*)
+                output_guard=1
+                if ! latch_validation_disabled "run_bounded_lowering log_measurement_failed pid=$compiler_pid"; then
+                    kill_process_tree "$compiler_pid" "$compiler_pgid"
+                    exit 125
+                fi
+                kill_process_tree "$compiler_pid" "$compiler_pgid"
+                break
+                ;;
+        esac
+        if [ "$log_bytes" -gt "$effective_log_limit_bytes" ]; then
             output_guard=1
-            if ! latch_validation_disabled "run_bounded_lowering output_guard pid=$compiler_pid log_bytes=$log_bytes limit_bytes=$log_limit_bytes"; then
+            if ! latch_validation_disabled "run_bounded_lowering output_guard pid=$compiler_pid log_bytes=$log_bytes limit_bytes=$effective_log_limit_bytes"; then
                 kill_process_tree "$compiler_pid" "$compiler_pgid"
                 exit 125
             fi
@@ -414,18 +551,45 @@ for source_file in "$@"; do
     if [ -n "$compiler_pid" ]; then
         wait "$compiler_pid" 2>/dev/null || compiler_exit=$?
     fi
+    final_log_bytes="$(wc -c <"$log_file" | tr -d '[:space:]')"
+    case "$final_log_bytes" in
+        ''|*[!0-9]*)
+            output_guard=1
+            final_log_bytes=unavailable
+            if ! latch_validation_disabled "run_bounded_lowering final_log_measurement_failed"; then
+                echo "run_bounded_lowering: unable to latch after final log-measurement failure" >&2
+            fi
+            ;;
+        *)
+            if [ "$final_log_bytes" -gt "$effective_log_limit_bytes" ]; then
+                output_guard=1
+                if ! latch_validation_disabled "run_bounded_lowering post_exit_output_guard log_bytes=$final_log_bytes limit_bytes=$effective_log_limit_bytes"; then
+                    echo "run_bounded_lowering: unable to latch after post-exit output-limit breach" >&2
+                fi
+            fi
+            ;;
+    esac
+    finished_at="$(date +%s)"
+    if ! {
+        printf 'run_status=completed\nfinished_epoch=%s\ncompiler_exit_status=%s\nmax_observed_rss_kb=%s\nrss_samples=%s\n' "$finished_at" "$compiler_exit" "$peak_rss_kb" "$rss_sample_count"
+        printf 'rss_guard=%s\ntimeout_guard=%s\noutput_guard=%s\nfinal_log_bytes=%s\n' "$rss_guard" "$timeout_guard" "$output_guard" "$final_log_bytes"
+    } >>"$metadata_file"; then
+        echo "run_bounded_lowering: unable to finalize run metadata; preserving partial evidence" >&2
+        exit 125
+    fi
+    metadata_finalized=1
     # The PID is no longer owned after wait; clear it before any diagnostic or
     # exit path so the EXIT trap cannot mistake a reused PID for our compiler.
     compiler_pid=""
     compiler_pgid=""
-    echo "$source_file exit=$compiler_exit rss_guard=$rss_guard timeout_guard=$timeout_guard output_guard=$output_guard"
+    echo "$source_file exit=$compiler_exit max_observed_rss_kb=$peak_rss_kb rss_samples=$rss_sample_count rss_guard=$rss_guard timeout_guard=$timeout_guard output_guard=$output_guard log=$log_file metadata=$metadata_file"
     if [ "$compiler_exit" -ne 0 ] || [ "$rss_guard" -ne 0 ] || [ "$timeout_guard" -ne 0 ] || [ "$output_guard" -ne 0 ]; then
         tail -80 "$log_file"
-        rm -f -- "$log_file"
         exit 1
     fi
-    rm -f -- "$log_file"
     log_file=""
+    metadata_file=""
+    metadata_finalized=0
     compiler_pid=""
     compiler_pgid=""
 done
