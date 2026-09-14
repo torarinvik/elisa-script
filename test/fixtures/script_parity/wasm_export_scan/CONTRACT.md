@@ -96,30 +96,40 @@ human-readable output.
 
 ## Candidate CLI process protocol
 
-The launcher invocation is
-`<launcher> scripts/wasm_export_scan.elisascript <absolute-source-path>`; the
-Elisascript `main` receives exactly one source-path operand after the script
-path. Its process behavior is:
+The launcher accepts either
+`<launcher> scripts/wasm_export_scan.elisascript <absolute-source-path>` or
+`<launcher> scripts/wasm_export_scan.elisascript --build-payload <absolute-source-path>`.
+The `--build-payload` option is reserved in the first operand position.
+The second form is a caller-migration seam: its compact JSON object has ordered
+fields `version`, `flattened_source`, and `exports`; `version` is integer `1`,
+`flattened_source` is the exact UTF-8 include-expanded source consumed by the
+scanner, and `exports` has the row schema above. Its JSON bytes are capped at
+64 MiB minus one byte so the final newline keeps total stdout at or below the
+differential runner's 64 MiB hard capture limit. Both forms use the same path
+loader and scan.
 
-- On success: exit status `0`, compact ordered JSON array on stdout followed by
-  one newline, and empty stderr. Each row and parameter uses the field order
-  and optional-field rules specified above.
+The default form emits only the compact ordered JSON export array. On success,
+either form exits with status `0`, appends one newline to stdout, and leaves
+stderr empty. Process failures are:
+
 - On a source, include, parse, ABI, or bounded-resource failure: exit status
   `1`, empty stdout, and stderr containing exactly
   `wasm export scan: MESSAGE\n`, where `MESSAGE` is the candidate/reference
   diagnostic for the case.
-- On any other positional-argument count: exit status `2`, empty stdout, and
-  stderr exactly `usage: wasm export scan [source]\n`.
+- On an invalid mode/operand count: exit status `2`, empty stdout, and stderr
+  exactly `usage: wasm export scan <source> | --build-payload <source>\n`.
 
-The launcher parity source compares status/stdout/stderr for the
-one-source-path shape and scanner cases, and directly checks the candidate's
-wrong-argument-count tuple with zero and two source operands. That arity check
-is not compared against the Python adapter: the adapter has its own optional
-expected-JSON argument and its usage text is not the candidate CLI contract.
+The launcher parity source compares status/stdout/stderr for the default
+single-source invocation and scanner cases. It also compares the build payload
+against the Python adapter for ordinary, nested, diamond, missing, and
+Unicode-line-separator inputs, and checks the candidate's invalid-arity tuple
+for default and payload modes. The arity check is not compared against the
+Python adapter: the adapter has its own optional expected-JSON argument and
+its usage text is not the candidate CLI contract.
 The length-delimited response frame used by `differential_path_response` is an
 in-process test transport; it is not part of the public launcher's stdout
-protocol. The launcher source and its arity checks remain unexecuted under the
-validation hold.
+protocol. The launcher source, payload comparisons, and arity checks remain
+unexecuted under the validation hold.
 
 ## `read_flat_source` observable contract
 
@@ -209,16 +219,18 @@ only unless they are valid Elisa programs.
 | Invalid source | ignored malformed export forms and exact no-export failure; colon forms admitted by the pinned target regex are preserved |
 | Include graph | nested/absolute/relative, duplicate and diamond include order, cycle chain, missing file, relative/absolute dangling symlink targets, nested links, target and post-link `..` resolution, no-newline splice, CRLF/bare-CR normalization, empty file |
 | Bounds and failure | bounded file/aggregate bytes, materialized source line count, include depth/count, aggregate path-component and symlink-expansion work, explicit and implicit header-suffix scan work, aggregate duplicate-name comparison work, unreadable and invalid UTF-8 input, no partial success output |
-| Integration (future acceptance; not covered by this launcher test) | one resolved absolute source-path operand after the script path; ordered JSON-array success; exact scan-failure and wrong-arity process tuples; consumption by the pinned `wasm_build.py` caller; no Python scanner on the accepted replacement path |
+| Integration (future acceptance; not covered by this launcher test) | resolved absolute source path; ordered JSON-array mode and versioned `{version, flattened_source, exports}` payload; exact scan-failure and wrong-arity process tuples; consumption by the pinned `wasm_build.py` caller; no Python scanner on the accepted replacement path |
 
 Current caller review (source-only; not adoption evidence): `wasm_build.py`
 resolves `args.source`, then calls `read_flat_source(source)` followed by
 `parse_exports(flat_source)` and places the resulting rows in the manifest.
+The candidate's `--build-payload` mode now returns both `flattened_source` and
+the ordered export records in one bounded version-1 envelope; this creates an
+adapter seam but is not caller migration evidence.
 The flattened source is also used for runtime-cache hashing and `arena_alloc`
 detection, while `wasm_facade.py` imports the scanner's `normalize_type`.
-Replacing the export scan alone therefore does not remove the Python scanner;
-those remaining helpers and the existing import/re-export surface need explicit
-ports or compatibility decisions before adoption.
+The façade normalization helper and existing `WasmBuildError` import/re-export
+surface still need explicit ports or compatibility decisions before adoption.
 
 The first parity slice is represented by
 `test/script_parity/wasm_export_scan_test.elisascript` and its pinned-process

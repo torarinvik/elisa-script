@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pinned process adapter for the W09 scanner differential tests."""
+"""Pinned process adapter for W09 scanner and build-payload parity."""
 
 from __future__ import annotations
 
@@ -16,6 +16,8 @@ from types import ModuleType
 PINNED_COMMIT = "0019dfcfff405b98369dd1b51562619668e29707"
 MAX_SOURCE_BYTES = 8 * 1024 * 1024
 MAX_JSON_BYTES = 16 * 1024 * 1024
+# Keep one byte for the final LF under the differential runner's 64 MiB cap.
+MAX_CALLER_PAYLOAD_BYTES = 64 * 1024 * 1024 - 1
 MAX_PATH_BYTES = 4096
 MAX_PATH_COMPONENT_WORK = 131072
 MAX_INCLUDE_GRAPH_BYTES = 32 * 1024 * 1024
@@ -25,6 +27,7 @@ MAX_INCLUDE_DIRECTIVES = 16384
 ROOT = Path(__file__).resolve().parents[1]
 REFERENCE_ROOT = ROOT.parent / "Elisa-compiler"
 REFERENCE_RELATIVE = Path("scripts/wasm_export_scan.py")
+BUILD_PAYLOAD_OPTION = "--build-payload"
 
 
 def load_pinned_reference() -> ModuleType:
@@ -216,16 +219,32 @@ def preflight_reference_input(
 
 
 def main(arguments: list[str]) -> int:
-    if len(arguments) not in (1, 2):
-        sys.stderr.write("usage: wasm export scan [source [expected-json]]\n")
-        return 2
+    build_payload = bool(arguments) and arguments[0] == BUILD_PAYLOAD_OPTION
+    if build_payload:
+        if len(arguments) != 2:
+            sys.stderr.write(
+                "usage: wasm export scan <source> [expected-json] "
+                "| --build-payload <source>\n"
+            )
+            return 2
+        source_argument = arguments[1]
+    else:
+        if len(arguments) not in (1, 2):
+            sys.stderr.write(
+                "usage: wasm export scan <source> [expected-json] "
+                "| --build-payload <source>\n"
+            )
+            return 2
+        source_argument = arguments[0]
 
-    source_path = Path(arguments[0])
+    source_path = Path(source_argument)
     try:
         scanner = load_pinned_reference()
     except Exception as error:  # Keep oracle failures visible rather than masking them as parity.
         return fail(f"pinned reference unavailable: {error}", 2)
-    preflight_failure = preflight_reference_input(scanner, source_path, arguments[0])
+    preflight_failure = preflight_reference_input(
+        scanner, source_path, source_argument
+    )
     if preflight_failure is not None:
         return fail(preflight_failure)
     try:
@@ -249,7 +268,7 @@ def main(arguments: list[str]) -> int:
     except Exception as error:
         return fail(f"pinned scanner raised an unexpected error: {error}", 2)
 
-    if len(arguments) == 2:
+    if not build_payload and len(arguments) == 2:
         try:
             expected = json.loads(Path(arguments[1]).read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -257,10 +276,16 @@ def main(arguments: list[str]) -> int:
         if exports != expected:
             return fail("pinned Python output differs from the checked-in expected JSON", 2)
 
-    output = json.dumps(exports, ensure_ascii=False, separators=(",", ":"))
-    if len(output.encode("utf-8")) > MAX_JSON_BYTES:
+    output_value = (
+        {"version": 1, "flattened_source": source, "exports": exports}
+        if build_payload
+        else exports
+    )
+    output = json.dumps(output_value, ensure_ascii=False, separators=(",", ":"))
+    output_limit = MAX_CALLER_PAYLOAD_BYTES if build_payload else MAX_JSON_BYTES
+    if len(output.encode("utf-8")) > output_limit:
         return fail("structured output exceeds Elisascript scan limit")
-    sys.stdout.write(output + "\n")
+    sys.stdout.buffer.write(output.encode("utf-8") + b"\n")
     return 0
 
 
