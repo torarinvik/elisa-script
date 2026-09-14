@@ -221,16 +221,19 @@ only unless they are valid Elisa programs.
 | Bounds and failure | bounded file/aggregate bytes, materialized source line count, include depth/count, aggregate path-component and symlink-expansion work, explicit and implicit header-suffix scan work, aggregate duplicate-name comparison work, unreadable and invalid UTF-8 input, no partial success output |
 | Integration (future acceptance; not covered by this launcher test) | resolved absolute source path; ordered JSON-array mode and versioned `{version, flattened_source, exports}` payload; exact scan-failure and wrong-arity process tuples; consumption by the pinned `wasm_build.py` caller; no Python scanner on the accepted replacement path |
 
-Current caller review (source-only; not adoption evidence): `wasm_build.py`
-resolves `args.source`, then calls `read_flat_source(source)` followed by
-`parse_exports(flat_source)` and places the resulting rows in the manifest.
-The candidate's `--build-payload` mode now returns both `flattened_source` and
-the ordered export records in one bounded version-1 envelope; this creates an
-adapter seam but is not caller migration evidence.
-The flattened source is also used for runtime-cache hashing and `arena_alloc`
-detection, while `wasm_facade.py` imports the scanner's `normalize_type`.
-The façade normalization helper and existing `WasmBuildError` import/re-export
-surface still need explicit ports or compatibility decisions before adoption.
+Current caller review (source-only; not adoption evidence): the pinned
+`wasm_build.py` now has an opt-in `--export-scan-launcher` plus
+`--export-scan-script` path. It invokes the candidate with the resolved source
+path, bounds captured process output to 64 MiB and runtime to 120 seconds,
+validates the versioned payload and ordered record shapes, and passes the
+returned flattened source and exports through the existing build flow. The
+default still calls Python `read_flat_source` and `parse_exports`, preserving
+the packager's role as the parity oracle; Python imports/re-exports remain
+available. The source contains unit cases for payload validation and default
+selection, but neither the unit cases nor an actual caller invocation have
+run. Runtime-cache source flattening and `wasm_facade.py`'s `normalize_type`
+still use Python, so this opt-in is an integration seam, not an accepted
+replacement or adoption evidence.
 
 The first parity slice is represented by
 `test/script_parity/wasm_export_scan_test.elisascript` and its pinned-process
