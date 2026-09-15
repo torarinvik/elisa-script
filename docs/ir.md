@@ -112,6 +112,14 @@ source-free help/version modes, and rejects repeated colors through
 `parse_cli_arguments` rejects unknown options, duplicate modes/options, and
 missing option values before source loading.
 
+The native `EsDriver` collector preserves that distinction while it turns
+borrowed host `argv` slots into `sview` values. A script argument whose bounded
+scan is clamped by the remaining aggregate byte budget is reported as an
+aggregate argument overflow; only an unclamped scan that reaches the ordinary
+C-string ceiling is reported as a host C-string overflow. This prevents a
+known aggregate-budget violation from being mislabeled when the complete host
+string has not been scanned.
+
 For `--run`, `--strict-engine` selects the direct bytecode engine and fails with
 `UnsupportedInstruction` if the verified program requires interpreter
 fallback; it never silently changes engines. Without the option, ordinary runs
