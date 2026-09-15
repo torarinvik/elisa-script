@@ -56,16 +56,14 @@ Building or launching a compiler remains disabled until explicit
 reauthorization and a bounded, reviewed build plan.
 
 The latest committed source observed in the adjacent compiler repository is
-`0d92a608c789a697b2321c985bd74483e03e196a` on
-`codex/elisascript-native-integration`. Its ancestry includes the newer EDIR
-function-call lowering, nested-module constant folding, and extern pointer-bound
-optimizations after `8d7db0561d0f72c1f548fa6a73d071c86b2fe57`. The checkout
-currently has tracked and untracked changes and no built `compiler/bin/elisac`.
-The immutable commit is therefore the latest source reference, while the dirty
-checkout is not itself a reproducible build input. Until an explicitly
-authorized isolated clean checkout is reviewed and built, the older 601f7bcd
-executable remains the only wrapper-accepted binary and is not claimed to
-represent the latest source.
+`7900a37a2cdec0d8f32f90cb2d064c2ec5d41b9a` on `codex/structpy-tree`. It includes
+the current FFI/extern pointer-bound and owned-resource work on top of the
+earlier lowering and region optimizations. The checkout currently has tracked
+and untracked changes and no built `compiler/bin/elisac`. The immutable commit
+is therefore the latest source reference, while the dirty checkout is not itself
+a reproducible build input. Until an explicitly authorized isolated clean
+checkout is reviewed and built, the older 601f7bcd executable remains the only
+wrapper-accepted binary and is not claimed to represent the latest source.
 
 ## Vendored dependency and bootstrap chain
 

@@ -23,15 +23,14 @@ not standing approval. Do not launch a compiler or test wrapper unless the user
 explicitly reauthorizes validation in the active task.
 
 The latest committed Elisa compiler source currently visible is
-`0d92a608c789a697b2321c985bd74483e03e196a` on the adjacent
-`codex/elisascript-native-integration` checkout. It includes the newer EDIR
-function-call lowering, nested-module constant folding, and extern pointer-bound
-optimizations beyond `8d7db0561d0f72c1f548fa6a73d071c86b2fe57`. The checkout has
-uncommitted changes and no built executable. Do not substitute it into a
-wrapper or build it while the validation hold is active. After explicit
-reauthorization, create an isolated clean checkout of this exact revision,
-build an executable there, record its digest in `docs/validation-baseline.md`,
-and update the wrapper pin before any fixture run.
+`7900a37a2cdec0d8f32f90cb2d064c2ec5d41b9a` on the adjacent
+`codex/structpy-tree` checkout. It includes the current FFI/extern pointer-bound
+and owned-resource work on top of the earlier lowering and region optimizations.
+The checkout has uncommitted changes and no built executable. Do not substitute
+it into a wrapper or build it while the validation hold is active. After explicit
+reauthorization, create an isolated clean checkout of this exact revision, build
+an executable there, record its digest in `docs/validation-baseline.md`, and
+update the wrapper pin before any fixture run.
 
 ```sh
 ELISASCRIPT_VALIDATION_REAUTHORIZED=1 \

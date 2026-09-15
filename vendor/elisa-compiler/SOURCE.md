@@ -39,14 +39,13 @@ typed-literal validation. Their rationale and tests are documented under `docs/`
 ## Latest upstream source observation
 
 On 2026-09-15 the latest committed compiler source visible for a future isolated
-refresh was `0d92a608c789a697b2321c985bd74483e03e196a` on
-`codex/elisascript-native-integration`. It includes newer EDIR function-call
-lowering, nested-module constant folding, and extern pointer-bound optimizations
-after `8d7db0561d0f72c1f548fa6a73d071c86b2fe57`. The adjacent checkout is dirty
-and has no `compiler/bin/elisac`, so no executable is claimed or launched from
-it. This immutable commit is the source reference for the next explicitly
-authorized refresh; create a clean isolated checkout, review it, and atomically
-update the validation pin before building.
+refresh was `7900a37a2cdec0d8f32f90cb2d064c2ec5d41b9a` on
+`codex/structpy-tree`. It includes the current FFI/extern pointer-bound and
+owned-resource work on top of the earlier lowering and region optimizations. The
+adjacent checkout is dirty and has no `compiler/bin/elisac`, so no executable is
+claimed or launched from it. This immutable commit is the source reference for
+the next explicitly authorized refresh; create a clean isolated checkout, review
+it, and atomically update the validation pin before building.
 
 That source is substantially different from this vendored `e56d6f2d` snapshot.
 The vendored tree contains Elisascript-specific adaptations (including
