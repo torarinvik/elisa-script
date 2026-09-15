@@ -54,6 +54,9 @@ module EsJsonStream:
             container_stack: darray[u8] = []
             in_string: bool = false
             escaped: bool = false
+            # Hold a top-level CR until the following byte identifies whether
+            # it is the CR half of a terminator or ordinary JSON whitespace.
+            pending_cr: bool = false
 
 
         error JsonStreamError:
@@ -96,6 +99,15 @@ module EsJsonStream:
             raise JsonStreamError.RecordLimitExceeded if session.records >= session.policy.max_records
             session.records <- session.records + 1
             session.record_bytes <- 0
+            session.pending_cr <- false
+            return true
+
+
+        def json_stream_flush_pending_cr(session: mutable JsonStreamSession&) -> bool error[JsonStreamError]:
+            return true if not session.pending_cr
+            raise JsonStreamError.RecordBytesLimitExceeded if not json_stream_increment(session.record_bytes, session.policy.max_record_bytes)
+            session.record_bytes <- session.record_bytes + 1
+            session.pending_cr <- false
             return true
 
 
@@ -106,6 +118,7 @@ module EsJsonStream:
         # retains the historical top-level-only boundary rule.
         def json_stream_byte_is_boundary_candidate(session: JsonStreamSession&, byte: u8) -> bool:
             return false if byte != 10u8
+            return true if session.pending_cr
             return true if session.policy.record_boundary == JsonLineBoundaryMode.PhysicalLines
             return not session.in_string and session.depth == 0
 
@@ -120,8 +133,9 @@ module EsJsonStream:
             raise JsonStreamError.DepthLimitExceeded if session.depth > session.policy.max_depth
             raise JsonStreamError.ContainerStackInvalid if session.container_stack.count != session.depth
             raise JsonStreamError.UnterminatedString if session.escaped and not session.in_string
-            raise JsonStreamError.AccountingInvalid if session.state == JsonStreamState.Ready and (session.input_bytes != 0 or session.record_bytes != 0 or session.records != 0 or session.depth != 0 or session.in_string or session.escaped)
-            raise JsonStreamError.InvalidState if session.state == JsonStreamState.Complete and (session.record_bytes != 0 or session.depth != 0 or session.in_string or session.escaped)
+            raise JsonStreamError.AccountingInvalid if session.pending_cr and (session.in_string or session.escaped or session.depth != 0)
+            raise JsonStreamError.AccountingInvalid if session.state == JsonStreamState.Ready and (session.input_bytes != 0 or session.record_bytes != 0 or session.records != 0 or session.depth != 0 or session.in_string or session.escaped or session.pending_cr)
+            raise JsonStreamError.InvalidState if session.state == JsonStreamState.Complete and (session.record_bytes != 0 or session.depth != 0 or session.in_string or session.escaped or session.pending_cr)
             raise JsonStreamError.AccountingInvalid if session.state == JsonStreamState.Complete and session.records == 0 and session.input_bytes != 0
             for opener in session.container_stack:
                 raise JsonStreamError.ContainerStackInvalid if opener != 123u8 and opener != 91u8
@@ -137,7 +151,7 @@ module EsJsonStream:
             elif event == JsonStreamEvent.Byte:
                 raise JsonStreamError.InvalidState if session.state != JsonStreamState.Reading
                 raise JsonStreamError.InputLimitExceeded if not json_stream_increment(session.input_bytes, session.policy.max_input_bytes)
-                if json_stream_byte_is_boundary_candidate(session, byte):
+                if session.pending_cr and byte == 10u8:
                     raise JsonStreamError.UnterminatedString if session.in_string or session.escaped
                     raise JsonStreamError.UnterminatedValue if session.policy.record_boundary == JsonLineBoundaryMode.PhysicalLines and session.depth != 0
                     raise JsonStreamError.EmptyRecord if session.record_bytes == 0 and not session.policy.allow_empty_records
@@ -145,37 +159,51 @@ module EsJsonStream:
                     session.input_bytes <- session.input_bytes + 1
                     try json_stream_finish_record(session)
                 else:
-                    raise JsonStreamError.RecordBytesLimitExceeded if not json_stream_increment(session.record_bytes, session.policy.max_record_bytes)
-                    raise JsonStreamError.DepthLimitExceeded if not session.in_string and (byte == 123u8 or byte == 91u8) and session.depth >= session.policy.max_depth
-                    raise JsonStreamError.DepthUnderflow if not session.in_string and (byte == 125u8 or byte == 93u8) and session.depth == 0
-                    expected: u8 = 123u8 if byte == 125u8 else 91u8
-                    raise JsonStreamError.MismatchedDelimiter if not session.in_string and (byte == 125u8 or byte == 93u8) and session.container_stack[session.container_stack.count - 1] != expected
-                    session.input_bytes <- session.input_bytes + 1
-                    session.record_bytes <- session.record_bytes + 1
-                    if session.in_string:
-                        if session.escaped:
-                            session.escaped <- false
-                        elif byte == 92:
-                            session.escaped <- true
+                    try json_stream_flush_pending_cr(session)
+                    if byte == 13u8 and not session.in_string and session.depth == 0:
+                        session.input_bytes <- session.input_bytes + 1
+                        session.pending_cr <- true
+                    elif json_stream_byte_is_boundary_candidate(session, byte):
+                        raise JsonStreamError.UnterminatedString if session.in_string or session.escaped
+                        raise JsonStreamError.UnterminatedValue if session.policy.record_boundary == JsonLineBoundaryMode.PhysicalLines and session.depth != 0
+                        raise JsonStreamError.EmptyRecord if session.record_bytes == 0 and not session.policy.allow_empty_records
+                        raise JsonStreamError.RecordLimitExceeded if session.records >= session.policy.max_records
+                        session.input_bytes <- session.input_bytes + 1
+                        try json_stream_finish_record(session)
+                    else:
+                        raise JsonStreamError.RecordBytesLimitExceeded if not json_stream_increment(session.record_bytes, session.policy.max_record_bytes)
+                        raise JsonStreamError.DepthLimitExceeded if not session.in_string and (byte == 123u8 or byte == 91u8) and session.depth >= session.policy.max_depth
+                        raise JsonStreamError.DepthUnderflow if not session.in_string and (byte == 125u8 or byte == 93u8) and session.depth == 0
+                        expected: u8 = 123u8 if byte == 125u8 else 91u8
+                        raise JsonStreamError.MismatchedDelimiter if not session.in_string and (byte == 125u8 or byte == 93u8) and session.container_stack[session.container_stack.count - 1] != expected
+                        session.input_bytes <- session.input_bytes + 1
+                        session.record_bytes <- session.record_bytes + 1
+                        if session.in_string:
+                            if session.escaped:
+                                session.escaped <- false
+                            elif byte == 92:
+                                session.escaped <- true
+                            elif byte == 34:
+                                session.in_string <- false
                         elif byte == 34:
-                            session.in_string <- false
-                    elif byte == 34:
-                        session.in_string <- true
-                    elif byte == 123 or byte == 91:
-                        session.container_stack.push(byte)
-                        session.depth <- session.depth + 1
-                    elif byte == 125 or byte == 93:
-                        session.container_stack.pop()
-                        session.depth <- session.depth - 1
+                            session.in_string <- true
+                        elif byte == 123u8 or byte == 91u8:
+                            session.container_stack.push(byte)
+                            session.depth <- session.depth + 1
+                        elif byte == 125u8 or byte == 93u8:
+                            session.container_stack.pop()
+                            session.depth <- session.depth - 1
             elif event == JsonStreamEvent.RecordEnd:
                 raise JsonStreamError.InvalidState if session.state != JsonStreamState.Reading
                 raise JsonStreamError.UnterminatedString if session.in_string or session.escaped
                 raise JsonStreamError.UnterminatedValue if session.depth != 0
+                try json_stream_flush_pending_cr(session)
                 try json_stream_finish_record(session)
             elif event == JsonStreamEvent.End:
                 raise JsonStreamError.InvalidState if session.state != JsonStreamState.Reading
                 raise JsonStreamError.UnterminatedString if session.in_string or session.escaped
                 raise JsonStreamError.UnterminatedValue if session.depth != 0
+                try json_stream_flush_pending_cr(session)
                 try json_stream_finish_record(session) if session.record_bytes != 0
                 session.state <- JsonStreamState.Complete
             elif event == JsonStreamEvent.Fail:

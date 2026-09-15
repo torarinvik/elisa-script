@@ -1340,3 +1340,16 @@ validation, including on failure, so stale source arguments, mode, color,
 strict-engine, and option-boundary state cannot leak across launcher requests.
 The runner fixture, CLI audit token, and documentation are source evidence
 only; no compiler, test, script, or audit process was run.
+
+The typed CLI invocation parser now rejects source-requiring modes whose source
+does not end in `.elisascript`, before the driver can attempt file loading. This
+keeps the public option parser aligned with the runner's source-extension
+contract; the focused fixture, checker, and documentation are static evidence
+only.
+
+The JSON stream framer now defers a top-level CR until the next byte is known,
+so CRLF terminators contribute to total input but not the per-record byte
+budget. The whole-view, chunk, and POSIX-file reader paths preserve that
+lookahead across buffers and flush a lone EOF CR as record data; tight-budget
+fixtures cover both direct and split CRLF framing. No compiler, test, build,
+audit, parity, or SSH process was run.

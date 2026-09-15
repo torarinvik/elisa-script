@@ -1968,8 +1968,9 @@ instead of wrapping into a different slice.
 
 The bundled driver (`src/driver/elisascript.elisa`) converts host `argv` into a
 typed `darray[sview]` request. It performs no shell quoting, splitting, globbing,
-or environment interpolation. `parse_elisascript_cli` requires the first value
-to name a `.elisascript` file, rejects embedded NUL bytes, and preserves all
+or environment interpolation. Both the typed invocation parser and
+`parse_elisascript_cli` require the first value to name a `.elisascript` file,
+reject embedded NUL bytes, and preserve all
 following values exactly. The parser itself enforces the public launcher
 budgets before allocating its result: at most `EsIr::LauncherLimits::ARGUMENTS`
 script arguments and at most `EsIr::LauncherLimits::ARGUMENT_BYTES` aggregate

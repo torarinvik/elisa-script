@@ -163,6 +163,9 @@ module EsJsonLinesParse:
                 if is_record_separator:
                     start: usize = reader.record_start
                     end: usize = current_offset
+                    if reader.stream.pending_cr:
+                        raise JsonLinesParseError.AccountingInvalid if current_offset == start
+                        end <- current_offset - 1
                     _ = try advance_json_stream(reader.stream, JsonStreamEvent.Byte, byte)
                     reader.offset <- reader.offset + 1
                     framed_bytes: usize = reader.offset - start
@@ -177,7 +180,7 @@ module EsJsonLinesParse:
                 else:
                     _ = try advance_json_stream(reader.stream, JsonStreamEvent.Byte, byte)
                     reader.offset <- reader.offset + 1
-            if reader.stream.record_bytes != 0:
+            if reader.stream.record_bytes != 0 or reader.stream.pending_cr:
                 start: usize = reader.record_start
                 end: usize = reader.source_bytes
                 framed_bytes: usize = end - start
@@ -218,9 +221,17 @@ module EsJsonLinesParse:
                 raise JsonLinesParseError.InvalidState if reader.decoder.state != DataDecoderState.Decoding
                 raise JsonLinesParseError.AccountingInvalid if reader.record_buffer.count != reader.stream.record_bytes
                 raise JsonLinesParseError.AccountingInvalid if reader.decoder.input_bytes > reader.stream.input_bytes
-                raise JsonLinesParseError.AccountingInvalid if reader.stream.input_bytes - reader.decoder.input_bytes != reader.stream.record_bytes
+                if reader.stream.pending_cr:
+                    raise JsonLinesParseError.AccountingInvalid if reader.stream.input_bytes - reader.decoder.input_bytes == 0
+                    raise JsonLinesParseError.AccountingInvalid if reader.stream.input_bytes - reader.decoder.input_bytes - 1 != reader.stream.record_bytes
+                else:
+                    raise JsonLinesParseError.AccountingInvalid if reader.stream.input_bytes - reader.decoder.input_bytes != reader.stream.record_bytes
                 raise JsonLinesParseError.AccountingInvalid if reader.decoder.records != reader.stream.records
-                raise JsonLinesParseError.AccountingInvalid if reader.offset - reader.record_start != reader.stream.record_bytes
+                if reader.stream.pending_cr:
+                    raise JsonLinesParseError.AccountingInvalid if reader.offset == reader.record_start
+                    raise JsonLinesParseError.AccountingInvalid if reader.offset - reader.record_start - 1 != reader.stream.record_bytes
+                else:
+                    raise JsonLinesParseError.AccountingInvalid if reader.offset - reader.record_start != reader.stream.record_bytes
                 raise JsonLinesParseError.InvalidState if reader.final_input_pending and reader.final_bytes_remaining == 0
                 raise JsonLinesParseError.AccountingInvalid if not reader.final_input_pending and reader.final_bytes_remaining != 0
                 raise JsonLinesParseError.AccountingInvalid if reader.failure_record_number != 0 or reader.failure_record_start != 0
@@ -253,7 +264,9 @@ module EsJsonLinesParse:
         def json_lines_finish_chunk_input(reader: mutable JsonLinesChunkReader&) -> JsonLinesFeedResult error[JsonLinesParseError, JsonStreamError, DataContractError, JsonLexError, JsonParseError, JsonContractError] can[Memory.Allocate, Abort.Panic]:
             reader.final_input_pending <- false
             reader.final_bytes_remaining <- 0
-            if reader.stream.record_bytes != 0:
+            if reader.stream.record_bytes != 0 or reader.stream.pending_cr:
+                if reader.stream.pending_cr:
+                    reader.record_buffer.push(13u8)
                 framed_bytes: usize = reader.offset - reader.record_start
                 source_offset: usize = reader.record_start
                 if reader.stream.policy.allow_empty_records and json_lines_record_is_whitespace(json_lines_chunk_record_view(reader), 0, reader.record_buffer.count):
@@ -310,8 +323,13 @@ module EsJsonLinesParse:
                                 reader.final_bytes_remaining <- chunk_bytes - cursor
                         return JsonLinesFeedResult{outcome: JsonLinesFeedOutcome.Document, consumed_bytes: cursor, record_number: record_number, source_offset: source_offset, document: document}
                 else:
+                    pending_cr_before: bool = reader.stream.pending_cr
                     _ = try advance_json_stream(reader.stream, JsonStreamEvent.Byte, byte)
-                    reader.record_buffer.push(byte)
+                    deferred_current_cr: bool = byte == 13u8 and reader.stream.pending_cr
+                    if pending_cr_before:
+                        reader.record_buffer.push(13u8)
+                    if not deferred_current_cr:
+                        reader.record_buffer.push(byte)
                     reader.offset <- reader.offset + 1
                     cursor <- cursor + 1
             if final_chunk:

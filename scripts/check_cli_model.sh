@@ -39,6 +39,7 @@ for boundary in \
     'DuplicateMode' \
     'DuplicateOption' \
     'UnexpectedArgument' \
+    'InvalidSourceExtension' \
     'MissingOptionValue' \
     'ArgumentLimitExceeded' \
     'SourcePathLimitExceeded' \
@@ -53,6 +54,7 @@ for fixture_pattern in \
     'CliColorMode.Never' \
     'CliContractError.DuplicateMode' \
     'CliContractError.UnknownOption' \
+    'CliContractError.InvalidSourceExtension' \
     'CliContractError.UnexpectedArgument' \
     'CliContractError.DuplicateOption'; do
     rg -Fq "$fixture_pattern" "$fixture"

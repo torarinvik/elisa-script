@@ -41,6 +41,9 @@ for contract in \
     'def next_json_lines_document(' \
     'def feed_json_lines_chunk(' \
     'reader.stream.input_bytes - reader.decoder.input_bytes != reader.stream.record_bytes' \
+    'reader.stream.pending_cr' \
+    'pending_cr_before: bool = reader.stream.pending_cr' \
+    'deferred_current_cr: bool = byte == 13u8 and reader.stream.pending_cr' \
     'JsonLinesFeedOutcome.NeedInput' \
     'advance_json_stream(reader.stream, JsonStreamEvent.Byte, byte)' \
     'advance_json_stream(reader.stream, JsonStreamEvent.RecordEnd)' \
@@ -66,9 +69,12 @@ for fixture_pattern in \
     'final_delimiter_reader.stream.state == JsonStreamState.Complete' \
     'final_delimiter_wrong_suffix_rejected' \
     'split_crlf.outcome == JsonLinesFeedOutcome.NeedInput and split_crlf.consumed_bytes == 1' \
+    'tight_crlf_prefix.outcome == JsonLinesFeedOutcome.NeedInput and tight_crlf_prefix.consumed_bytes == 5' \
     'empty_chunk_result.record_number == 2 and empty_chunk_result.source_offset == 2 and empty_chunk_result.consumed_bytes == 6' \
     'chunk_limited_reader.failure_record_number == 2 and chunk_limited_reader.failure_record_start == 5' \
     'begin_json_lines_reader("null\r\ntrue\n[1]", limits)' \
+    'tight_crlf_document' \
+    'tight_crlf_chunk_reader.record_buffer.count == 4' \
     'reader.decoder.records == 3 and reader.decoder.tokens == 5' \
     'empty_reader' \
     'begin_json_lines_reader("\r\nnull\n", limits, JsonPolicy{}, empty_policy)' \

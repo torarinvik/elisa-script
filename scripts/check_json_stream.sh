@@ -34,8 +34,11 @@ for boundary in \
     'JSON_STREAM_MAX_RECORD_BYTES' \
     'JSON_STREAM_MAX_RECORDS' \
     'JSON_STREAM_MAX_DEPTH' \
+    'pending_cr: bool = false' \
+    'def json_stream_flush_pending_cr(' \
     'json_stream_finish_record' \
-    'if byte == 10 and not session.in_string and session.depth == 0' \
+    'session.pending_cr and byte == 10u8' \
+    'return not session.in_string and session.depth == 0' \
     'not json_stream_increment\(session.record_bytes, session.policy.max_record_bytes\)' \
     'in_string' \
     'escaped' \
@@ -45,6 +48,7 @@ for boundary in \
     'session.records > session.input_bytes' \
     'session.records > session.input_bytes and not session.policy.allow_empty_records' \
     'container_stack' \
+    'session.pending_cr and (session.in_string or session.escaped or session.depth != 0)' \
     'session.state == JsonStreamState.Ready' \
     'session.state == JsonStreamState.Complete' \
     'JsonStreamError.UnterminatedString' \
@@ -67,6 +71,7 @@ for fixture_pattern in \
     'JsonStreamError.RecordBytesLimitExceeded' \
     'assert oversized.input_bytes == 2' \
     'allow_empty_records' \
+    'crlf_exact.pending_cr' \
     'forged_complete'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done

@@ -101,7 +101,8 @@ program-wide namespace.
 
 `EsCli::CliInvocation` is the launcher argument contract: run/check/test/fmt/doc
 and help/version modes are explicit, `--color` and `--strict-engine` are typed
-options, and the first source path ends launcher-option parsing. A literal `--`
+options, source-requiring modes accept only the `.elisascript` suffix, and the
+first source path ends launcher-option parsing. A literal `--`
 marks the script-argument boundary; subsequent values are preserved byte-for-
 byte and are never shell-expanded. `validate_cli_invocation` enforces source,
 argument, NUL, and text ceilings, rejects source/script arguments for
@@ -271,9 +272,12 @@ containers remain JSON whitespace in one record. The opt-in
 boundary: an LF while a container is open fails with `UnterminatedValue`, and
 an LF inside a string fails with `UnterminatedString`. Such a rejected LF is
 not charged to input or record counters. In both modes, LF contributes to the
-total input budget but not the record-byte budget, CRLF works as JSON trailing
-whitespace, and a final record without LF is accepted at EOF. The same policy
-is preserved by the whole-view, chunk, and POSIX file readers. Algorithmic
+total input budget but not the record-byte budget, and a top-level CR is held
+until lookahead distinguishes CRLF from ordinary JSON whitespace. Consequently,
+CRLF works as JSON trailing whitespace without charging its CR half to the
+record-byte budget, while a lone CR is retained as record data and a final
+record without LF is accepted at EOF. The same policy is preserved by the
+whole-view, chunk, and POSIX file readers. Algorithmic
 scaling is improved, but runtime/performance qualification remains open.
 For caller-driven chunk input, `begin_json_lines_chunk_reader` and
 `feed_json_lines_chunk` retain only the current bounded record buffer. A feed
