@@ -41,6 +41,7 @@ for boundary in \
     'RecordPatternError.ObservationShapeInvalid' \
     'RecordPatternError.AccountingInvalid' \
     'RecordPatternError.EndNotReady' \
+    'record_pattern_predicate_valid(clause.end, policy)' \
     'session.decisions.count != session.processed_records' \
     'RecordPatternClauseState.Active'; do
     rg -q "$boundary" "$model"
@@ -57,6 +58,8 @@ for fixture_pattern in \
     'preserved_observation' \
     'rejected_separator_session' \
     'forged_accounting' \
+    'hidden_end_payload' \
+    'RecordPatternError.InvalidClause' \
     'record_pattern_selected'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
