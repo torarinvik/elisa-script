@@ -455,6 +455,9 @@ policy and execution tests are reauthorized.
 `EsProcess::ProcessCommand` now supplies a typed shell-free command record with
 ordered argv/environment vectors, child cwd, explicit stdio modes, timeout and
 failure policy fields, and a bounded `error[ProcessCommandError]` validator.
+`resolve_process_environment` now turns a captured ambient vector plus the
+declared `Inherit`/`Replace`/`Clear` policy into one deterministic child vector,
+so adapters need not consult or mutate process-global environment state.
 The differential process adapter materializes every invocation through this
 validator before fork/exec, while retaining binary stdin as a length-delimited
 side channel. It is still static adapter-boundary evidence only; platform process

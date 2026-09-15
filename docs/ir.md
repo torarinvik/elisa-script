@@ -2228,7 +2228,10 @@ odd environment pairs (reported as `EnvironmentVectorMalformed`), empty or
 unknown policy ordinals, and unsupported stdio modes with
 `error[ProcessCommandError]`. The environment vector is intentionally flat so
 insertion order is explicit and host adapters cannot inherit map-order or shell
-assignment semantics. This model is a validated adapter boundary; fork/exec,
+assignment semantics. `resolve_process_environment` materializes an exact
+child vector from a captured ambient vector: `Inherit` overlays in place order,
+`Replace` discards ambient entries, and `Clear` emits none, without touching
+process-global state. This model is a validated adapter boundary; fork/exec,
 Windows process creation, background scheduling, and streaming callbacks remain
 host integrations rather than hidden behavior in the value itself.
 `EsProcess::ProcessResult` is the matching outcome boundary. Its closed

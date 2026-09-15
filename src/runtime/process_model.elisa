@@ -273,6 +273,27 @@ module EsProcess:
                 return path != "" if mode == ProcessStdioMode.File else path == ""
 
 
+            def process_environment_entry_index(entries: darray[sview], name: sview) -> usize:
+                index: mutable usize = 0
+                while index < entries.count |index, entries, name|:
+                    return index if entries[index] == name
+                    index <- index + 2
+                return entries.count
+
+
+            def validate_process_environment_vector(entries: darray[sview]) -> bool error[ProcessCommandError]:
+                raise ProcessCommandError.EnvironmentVectorMalformed if entries.count % 2 != 0
+                for offset in 0..<entries.count |entries|:
+                    entry: sview = entries[offset]
+                    raise ProcessCommandError.TextLimitExceeded if not process_command_text_length_valid(entry)
+                    raise ProcessCommandError.EmbeddedNul if process_command_text_has_nul(entry)
+                    if offset % 2 == 0:
+                        raise ProcessCommandError.EnvironmentNameInvalid if not process_command_environment_name_valid(entry)
+                        for earlier in 0..<offset |entries, entry|:
+                            raise ProcessCommandError.DuplicateEnvironmentName if earlier % 2 == 0 and entries[earlier] == entry
+                return true
+
+
         public:
             # Validate all data that a host process adapter would copy or use
             # as policy. This is intentionally an error[...] boundary rather
@@ -297,6 +318,7 @@ module EsProcess:
                 raise ProcessCommandError.StdioPathEmbeddedNul if command.stdout_path != "" and process_command_text_has_nul(command.stdout_path)
                 raise ProcessCommandError.StdioPathEmbeddedNul if command.stderr_path != "" and process_command_text_has_nul(command.stderr_path)
                 raise ProcessCommandError.InvalidFailureMode if not process_command_failure_mode_valid(command.failure_mode)
+                try validate_process_environment_vector(command.environment)
 
                 total: mutable usize = 0
                 raise ProcessCommandError.ArgumentVectorMalformed if not process_command_text_add_fits(total, command.executable)
@@ -309,12 +331,6 @@ module EsProcess:
 
                 for offset in 0..<command.environment.count |command, total|:
                     entry: sview = command.environment[offset]
-                    raise ProcessCommandError.TextLimitExceeded if not process_command_text_length_valid(entry)
-                    raise ProcessCommandError.EmbeddedNul if process_command_text_has_nul(entry)
-                    if offset % 2 == 0:
-                        raise ProcessCommandError.EnvironmentNameInvalid if not process_command_environment_name_valid(entry)
-                        for earlier in 0..<offset |command, entry|:
-                            raise ProcessCommandError.DuplicateEnvironmentName if earlier % 2 == 0 and command.environment[earlier] == entry
                     raise ProcessCommandError.EnvironmentVectorMalformed if not process_command_text_add_fits(total, entry)
                     total <- total + sview_len(entry) + 1
                 for path in [command.stdin_path, command.stdout_path, command.stderr_path] |command, total|:
@@ -322,6 +338,36 @@ module EsProcess:
                         raise ProcessCommandError.ArgumentVectorMalformed if not process_command_text_add_fits(total, path)
                         total <- total + sview_len(path) + 1
                 return true
+
+
+            # Resolve the exact child environment without consulting or
+            # mutating process-global state. `inherited` is a captured,
+            # alternating name/value vector supplied by the host adapter;
+            # `Inherit` overlays command entries in place order, `Replace`
+            # discards the captured vector, and `Clear` emits no entries.
+            def resolve_process_environment(command: ProcessCommand&, inherited: darray[sview] = []) -> darray[sview] error[ProcessCommandError] can[Memory.Allocate, Abort.Panic]:
+                try validate_process_command(command)
+                try validate_process_environment_vector(inherited)
+                result: mutable darray[sview] = []
+                if command.environment_mode == ProcessEnvironmentMode.Clear:
+                    return result
+                source: mutable darray[sview] = inherited
+                source <- command.environment if command.environment_mode == ProcessEnvironmentMode.Replace
+                for entry in source |result|:
+                    result.push(entry)
+                return result if command.environment_mode == ProcessEnvironmentMode.Replace
+                offset: mutable usize = 0
+                while offset < command.environment.count |offset, command, result|:
+                    name: sview = command.environment[offset]
+                    value: sview = command.environment[offset + 1]
+                    existing: usize = process_environment_entry_index(result, name)
+                    if existing == result.count:
+                        result.push(name)
+                        result.push(value)
+                    else:
+                        result[existing + 1] <- value
+                    offset <- offset + 2
+                return result
 
 
             def validate_process_pipeline(pipeline: ProcessPipeline&) -> bool error[ProcessPipelineError]:
