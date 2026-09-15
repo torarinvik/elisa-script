@@ -1,0 +1,315 @@
+# Bounded atomic file-publication contract for generated scripts and builds.
+#
+# A host adapter owns the lock, staging-file I/O, digest computation, rename,
+# directory synchronization, and cleanup.  This module keeps the safety
+# boundary explicit: empty output is valid, unchanged content is a terminal
+# no-op, a destination identity is captured before commit, and an uncertain
+# post-rename outcome cannot be reported as an ordinary failure or success.
+
+module EsFileAtomic:
+    using EsHash
+
+    public:
+        const module Limits:
+            PATH_BYTES: usize = 4096
+            CONTENT_BYTES: usize = 268435456
+            OBSERVED_BYTES: usize = 1099511627776
+            APPENDS: usize = 1048576
+
+
+        const enum AtomicFileState of u8:
+            Planned
+            Staging
+            Ready
+            UnchangedPendingCleanup
+            Unchanged
+            Committing
+            Committed
+            PublishedUncertain
+            Restoring
+            RolledBackPendingCleanup
+            RolledBack
+            FailedPendingCleanup
+            Failed
+            CancelledPendingCleanup
+            Cancelled
+
+
+        const enum AtomicFileEvent of u8:
+            Begin
+            Append
+            StageReady
+            Compare
+            DirectorySync
+            Commit
+            CommitAck
+            PublishUncertain
+            BeginRestore
+            RestoreAck
+            CleanupAck
+            Fail
+            Cancel
+
+
+        struct AtomicFileIdentity:
+            observed: bool = false
+            present: bool = false
+            size: usize = 0
+            volume_id: u64 = 0
+            object_id: u64 = 0
+            digest: HashDigest = HashDigest{algorithm: HashAlgorithm.Sha256, word_count: 0}
+
+
+        struct AtomicFilePlan:
+            destination_path: sview
+            staging_path: sview
+            owner_token: u64
+            parent_identity: u64
+            expected_destination: AtomicFileIdentity
+            backup_path: sview = ""
+            require_directory_sync: bool = true
+            max_content_bytes: usize = Limits::CONTENT_BYTES
+
+
+        struct AtomicFileSession:
+            plan: AtomicFilePlan
+            state: AtomicFileState = AtomicFileState.Planned
+            staged_bytes: usize = 0
+            append_count: usize = 0
+            staged_identity: AtomicFileIdentity = AtomicFileIdentity{}
+            destination_snapshot: AtomicFileIdentity = AtomicFileIdentity{}
+            published_identity: AtomicFileIdentity = AtomicFileIdentity{}
+            stage_sync_acknowledged: bool = false
+            stage_close_acknowledged: bool = false
+            comparison_acknowledged: bool = false
+            contents_equal: bool = false
+            directory_sync_acknowledged: bool = false
+            commit_acknowledged: bool = false
+            restore_acknowledged: bool = false
+            staging_cleanup_acknowledged: bool = false
+
+
+        error AtomicFileError:
+            InvalidState
+            InvalidEvent
+            PlanInvalid
+            PathInvalid
+            EmbeddedNul
+            PathCollision
+            OwnerInvalid
+            ParentInvalid
+            ReceiptInvalid
+            OutputLimitExceeded
+            AppendLimitExceeded
+            StageNotReady
+            CompareNotReady
+            DestinationChanged
+            DirectorySyncNotReady
+            DuplicateReceipt
+            CommitNotReady
+            CommitAckNotReady
+            PublishOutcomeUnknown
+            RestoreNotReady
+            RestoreNotProven
+            CleanupNotReady
+            CancelNotReady
+            InvalidTransition
+
+
+    private:
+        def atomic_file_state_valid(state: AtomicFileState) -> bool:
+            return state in {AtomicFileState.Planned, AtomicFileState.Staging, AtomicFileState.Ready, AtomicFileState.UnchangedPendingCleanup, AtomicFileState.Unchanged, AtomicFileState.Committing, AtomicFileState.Committed, AtomicFileState.PublishedUncertain, AtomicFileState.Restoring, AtomicFileState.RolledBackPendingCleanup, AtomicFileState.RolledBack, AtomicFileState.FailedPendingCleanup, AtomicFileState.Failed, AtomicFileState.CancelledPendingCleanup, AtomicFileState.Cancelled}
+
+
+        def atomic_file_event_valid(event: AtomicFileEvent) -> bool:
+            return event in {AtomicFileEvent.Begin, AtomicFileEvent.Append, AtomicFileEvent.StageReady, AtomicFileEvent.Compare, AtomicFileEvent.DirectorySync, AtomicFileEvent.Commit, AtomicFileEvent.CommitAck, AtomicFileEvent.PublishUncertain, AtomicFileEvent.BeginRestore, AtomicFileEvent.RestoreAck, AtomicFileEvent.CleanupAck, AtomicFileEvent.Fail, AtomicFileEvent.Cancel}
+
+
+        def atomic_file_trim_trailing_separators(path: sview) -> usize:
+            finish: mutable usize = sview_len(path)
+            while finish > 1 and sview_at(path, finish - 1) == 47:
+                finish <- finish - 1
+            return finish
+
+
+        def atomic_file_path_equal(left: sview, right: sview) -> bool:
+            left_end: usize = atomic_file_trim_trailing_separators(left)
+            right_end: usize = atomic_file_trim_trailing_separators(right)
+            return left_end == right_end and left[0:left_end] == right[0:right_end]
+
+
+        def atomic_file_path_valid(path: sview) -> bool:
+            return sview_len(path) != 0 and sview_len(path) < Limits::PATH_BYTES and not sview_contains_byte(path, 0) and path != "." and path != ".."
+
+
+        def atomic_file_hash_algorithm_valid(algorithm: HashAlgorithm) -> bool:
+            return algorithm in {HashAlgorithm.Sha256, HashAlgorithm.Sha512, HashAlgorithm.Fnv1a64}
+
+
+        def atomic_file_hash_word_count(algorithm: HashAlgorithm) -> usize:
+            return 1 if algorithm == HashAlgorithm.Fnv1a64 else 4 if algorithm == HashAlgorithm.Sha256 else 8
+
+
+        def atomic_file_digest_unpublished(digest: HashDigest) -> bool:
+            return digest.word_count == 0 and digest.word0 == 0 and digest.word1 == 0 and digest.word2 == 0 and digest.word3 == 0 and digest.word4 == 0 and digest.word5 == 0 and digest.word6 == 0 and digest.word7 == 0
+
+
+        def atomic_file_digest_valid(digest: HashDigest) -> bool:
+            return atomic_file_hash_algorithm_valid(digest.algorithm) and digest.word_count == atomic_file_hash_word_count(digest.algorithm) and (digest.algorithm == HashAlgorithm.Fnv1a64 and digest.word1 == 0 and digest.word2 == 0 and digest.word3 == 0 and digest.word4 == 0 and digest.word5 == 0 and digest.word6 == 0 and digest.word7 == 0 or digest.algorithm == HashAlgorithm.Sha256 and digest.word4 == 0 and digest.word5 == 0 and digest.word6 == 0 and digest.word7 == 0 or digest.algorithm == HashAlgorithm.Sha512)
+
+
+        def atomic_file_digest_equal(left: HashDigest, right: HashDigest) -> bool:
+            return left.algorithm == right.algorithm and left.word_count == right.word_count and left.word0 == right.word0 and left.word1 == right.word1 and left.word2 == right.word2 and left.word3 == right.word3 and left.word4 == right.word4 and left.word5 == right.word5 and left.word6 == right.word6 and left.word7 == right.word7
+
+
+        def atomic_file_identity_valid(identity: AtomicFileIdentity, max_content_bytes: usize) -> bool:
+            return false if not identity.observed and (identity.present or identity.size != 0 or identity.volume_id != 0 or identity.object_id != 0 or not atomic_file_digest_unpublished(identity.digest))
+            return false if identity.size > max_content_bytes
+            return true if not identity.observed
+            if identity.present:
+                return identity.volume_id != 0 and identity.object_id != 0 and atomic_file_digest_valid(identity.digest)
+            return identity.size == 0 and identity.volume_id == 0 and identity.object_id == 0 and atomic_file_digest_unpublished(identity.digest)
+
+
+        def atomic_file_identity_equal(left: AtomicFileIdentity, right: AtomicFileIdentity) -> bool:
+            return false if not left.observed or not right.observed
+            return false if left.present != right.present or left.size != right.size or left.volume_id != right.volume_id or left.object_id != right.object_id
+            return true if not left.present
+            return atomic_file_digest_equal(left.digest, right.digest)
+
+
+        def atomic_file_contents_equal(left: AtomicFileIdentity, right: AtomicFileIdentity) -> bool:
+            return left.observed and right.observed and left.present and right.present and left.size == right.size and atomic_file_digest_equal(left.digest, right.digest)
+
+
+        def atomic_file_plan_valid(plan: AtomicFilePlan) -> bool:
+            return false if plan.owner_token == 0
+            return false if plan.parent_identity == 0
+            return false if not atomic_file_path_valid(plan.destination_path) or not atomic_file_path_valid(plan.staging_path)
+            return false if atomic_file_path_equal(plan.destination_path, plan.staging_path)
+            return false if plan.backup_path != "" and (not atomic_file_path_valid(plan.backup_path) or atomic_file_path_equal(plan.backup_path, plan.destination_path) or atomic_file_path_equal(plan.backup_path, plan.staging_path))
+            return false if plan.max_content_bytes == 0 or plan.max_content_bytes > Limits::CONTENT_BYTES
+            return plan.expected_destination.observed and atomic_file_identity_valid(plan.expected_destination, Limits::OBSERVED_BYTES)
+
+
+    public:
+        def validate_atomic_file_session(session: AtomicFileSession&) -> bool error[AtomicFileError]:
+            raise AtomicFileError.InvalidState if not atomic_file_state_valid(session.state)
+            raise AtomicFileError.OwnerInvalid if session.plan.owner_token == 0
+            raise AtomicFileError.ParentInvalid if session.plan.parent_identity == 0
+            raise AtomicFileError.EmbeddedNul if sview_contains_byte(session.plan.destination_path, 0) or sview_contains_byte(session.plan.staging_path, 0) or sview_contains_byte(session.plan.backup_path, 0)
+            raise AtomicFileError.PathInvalid if not atomic_file_path_valid(session.plan.destination_path) or not atomic_file_path_valid(session.plan.staging_path) or (session.plan.backup_path != "" and not atomic_file_path_valid(session.plan.backup_path))
+            raise AtomicFileError.PathCollision if atomic_file_path_equal(session.plan.destination_path, session.plan.staging_path) or (session.plan.backup_path != "" and (atomic_file_path_equal(session.plan.backup_path, session.plan.destination_path) or atomic_file_path_equal(session.plan.backup_path, session.plan.staging_path)))
+            raise AtomicFileError.PlanInvalid if not atomic_file_plan_valid(session.plan)
+            raise AtomicFileError.OutputLimitExceeded if session.staged_bytes > session.plan.max_content_bytes
+            raise AtomicFileError.AppendLimitExceeded if session.append_count > Limits::APPENDS
+            raise AtomicFileError.ReceiptInvalid if not atomic_file_identity_valid(session.staged_identity, session.plan.max_content_bytes)
+            raise AtomicFileError.ReceiptInvalid if not atomic_file_identity_valid(session.destination_snapshot, Limits::OBSERVED_BYTES)
+            raise AtomicFileError.ReceiptInvalid if not atomic_file_identity_valid(session.published_identity, session.plan.max_content_bytes)
+            raise AtomicFileError.InvalidState if session.stage_sync_acknowledged and not session.staged_identity.observed
+            raise AtomicFileError.InvalidState if session.stage_close_acknowledged and not session.stage_sync_acknowledged
+            raise AtomicFileError.InvalidState if session.stage_sync_acknowledged and not session.stage_close_acknowledged
+            raise AtomicFileError.InvalidState if session.comparison_acknowledged and not session.destination_snapshot.observed
+            raise AtomicFileError.InvalidState if session.commit_acknowledged and not session.published_identity.observed
+            raise AtomicFileError.InvalidState if session.contents_equal and not session.comparison_acknowledged
+            raise AtomicFileError.InvalidState if session.directory_sync_acknowledged and not session.stage_sync_acknowledged
+            raise AtomicFileError.InvalidState if session.restore_acknowledged and session.state != AtomicFileState.RolledBackPendingCleanup and session.state != AtomicFileState.RolledBack
+            raise AtomicFileError.InvalidState if session.state == AtomicFileState.Planned and (session.staged_bytes != 0 or session.append_count != 0 or session.staged_identity.observed or session.destination_snapshot.observed or session.published_identity.observed or session.stage_sync_acknowledged or session.stage_close_acknowledged or session.comparison_acknowledged or session.contents_equal or session.directory_sync_acknowledged or session.commit_acknowledged or session.restore_acknowledged or session.staging_cleanup_acknowledged)
+            raise AtomicFileError.InvalidState if session.state == AtomicFileState.Staging and (session.stage_sync_acknowledged or session.stage_close_acknowledged or session.staged_identity.observed or session.comparison_acknowledged or session.destination_snapshot.observed or session.published_identity.observed or session.commit_acknowledged or session.restore_acknowledged or session.staging_cleanup_acknowledged)
+            if session.state == AtomicFileState.Ready:
+                raise AtomicFileError.InvalidState if not session.stage_sync_acknowledged or not session.stage_close_acknowledged or not session.staged_identity.observed
+                raise AtomicFileError.InvalidState if session.comparison_acknowledged and session.contents_equal
+                raise AtomicFileError.InvalidState if session.commit_acknowledged or session.restore_acknowledged or session.staging_cleanup_acknowledged
+            elif session.state == AtomicFileState.UnchangedPendingCleanup:
+                raise AtomicFileError.InvalidState if not session.stage_sync_acknowledged or not session.stage_close_acknowledged or not session.comparison_acknowledged or not session.contents_equal or not session.destination_snapshot.observed
+                raise AtomicFileError.InvalidState if session.commit_acknowledged or session.restore_acknowledged or session.staging_cleanup_acknowledged
+            elif session.state == AtomicFileState.Unchanged:
+                raise AtomicFileError.InvalidState if not session.stage_sync_acknowledged or not session.stage_close_acknowledged or not session.comparison_acknowledged or not session.contents_equal or not session.destination_snapshot.observed
+                raise AtomicFileError.InvalidState if session.commit_acknowledged or session.restore_acknowledged or not session.staging_cleanup_acknowledged
+            elif session.state == AtomicFileState.Committing:
+                raise AtomicFileError.InvalidState if not session.stage_sync_acknowledged or not session.stage_close_acknowledged or not session.comparison_acknowledged or session.contents_equal or session.commit_acknowledged or session.restore_acknowledged or session.staging_cleanup_acknowledged
+            elif session.state == AtomicFileState.Committed:
+                raise AtomicFileError.InvalidState if not session.stage_sync_acknowledged or not session.stage_close_acknowledged or not session.comparison_acknowledged or session.contents_equal or not session.commit_acknowledged or not session.published_identity.observed or session.restore_acknowledged or not session.staging_cleanup_acknowledged
+                raise AtomicFileError.InvalidState if session.plan.require_directory_sync and not session.directory_sync_acknowledged
+            elif session.state == AtomicFileState.PublishedUncertain:
+                raise AtomicFileError.InvalidState if not session.stage_sync_acknowledged or not session.stage_close_acknowledged or not session.comparison_acknowledged or session.contents_equal or session.restore_acknowledged
+            elif session.state == AtomicFileState.Restoring:
+                raise AtomicFileError.InvalidState if not session.stage_sync_acknowledged or not session.stage_close_acknowledged or not session.comparison_acknowledged or session.contents_equal or session.restore_acknowledged
+            elif session.state == AtomicFileState.RolledBackPendingCleanup:
+                raise AtomicFileError.InvalidState if not session.stage_sync_acknowledged or not session.stage_close_acknowledged or not session.comparison_acknowledged or session.contents_equal or not session.restore_acknowledged or session.staging_cleanup_acknowledged
+            elif session.state == AtomicFileState.RolledBack:
+                raise AtomicFileError.InvalidState if not session.stage_sync_acknowledged or not session.stage_close_acknowledged or not session.comparison_acknowledged or session.contents_equal or not session.restore_acknowledged or not session.staging_cleanup_acknowledged
+            elif session.state == AtomicFileState.FailedPendingCleanup or session.state == AtomicFileState.CancelledPendingCleanup:
+                raise AtomicFileError.InvalidState if session.commit_acknowledged or session.restore_acknowledged or session.staging_cleanup_acknowledged
+            elif session.state == AtomicFileState.Failed or session.state == AtomicFileState.Cancelled:
+                raise AtomicFileError.InvalidState if session.commit_acknowledged or session.restore_acknowledged or not session.staging_cleanup_acknowledged
+            return true
+
+
+        def advance_atomic_file(session: mutable AtomicFileSession&, event: AtomicFileEvent, identity: AtomicFileIdentity = AtomicFileIdentity{}, exact_contents_equal: bool = false, appended_bytes: usize = 0) -> AtomicFileState error[AtomicFileError]:
+            try validate_atomic_file_session(session)
+            raise AtomicFileError.InvalidEvent if not atomic_file_event_valid(event)
+            if event == AtomicFileEvent.Begin:
+                raise AtomicFileError.InvalidTransition if session.state != AtomicFileState.Planned
+                session.state <- AtomicFileState.Staging
+            elif event == AtomicFileEvent.Append:
+                raise AtomicFileError.InvalidTransition if session.state != AtomicFileState.Staging
+                raise AtomicFileError.AppendLimitExceeded if appended_bytes == 0 or session.append_count >= Limits::APPENDS
+                raise AtomicFileError.OutputLimitExceeded if appended_bytes > session.plan.max_content_bytes - session.staged_bytes
+                session.staged_bytes <- session.staged_bytes + appended_bytes
+                session.append_count <- session.append_count + 1
+            elif event == AtomicFileEvent.StageReady:
+                raise AtomicFileError.StageNotReady if session.state != AtomicFileState.Staging
+                raise AtomicFileError.ReceiptInvalid if not atomic_file_identity_valid(identity, session.plan.max_content_bytes) or not identity.observed or not identity.present or identity.size != session.staged_bytes
+                session.staged_identity <- identity
+                session.stage_sync_acknowledged <- true
+                session.stage_close_acknowledged <- true
+                session.state <- AtomicFileState.Ready
+            elif event == AtomicFileEvent.Compare:
+                raise AtomicFileError.CompareNotReady if session.state != AtomicFileState.Ready or not session.stage_sync_acknowledged or not session.staged_identity.observed
+                raise AtomicFileError.ReceiptInvalid if not atomic_file_identity_valid(identity, Limits::OBSERVED_BYTES) or not identity.observed
+                raise AtomicFileError.DestinationChanged if not atomic_file_identity_equal(session.plan.expected_destination, identity)
+                raise AtomicFileError.ReceiptInvalid if exact_contents_equal and not atomic_file_contents_equal(session.staged_identity, identity)
+                session.destination_snapshot <- identity
+                session.comparison_acknowledged <- true
+                session.contents_equal <- exact_contents_equal
+                session.state <- AtomicFileState.UnchangedPendingCleanup if session.contents_equal
+            elif event == AtomicFileEvent.DirectorySync:
+                raise AtomicFileError.DirectorySyncNotReady if session.state != AtomicFileState.Committing or not session.stage_sync_acknowledged
+                raise AtomicFileError.DuplicateReceipt if session.directory_sync_acknowledged
+                session.directory_sync_acknowledged <- true
+            elif event == AtomicFileEvent.Commit:
+                raise AtomicFileError.CommitNotReady if session.state != AtomicFileState.Ready or not session.comparison_acknowledged or session.contents_equal
+                session.state <- AtomicFileState.Committing
+            elif event == AtomicFileEvent.CommitAck:
+                raise AtomicFileError.CommitAckNotReady if session.state != AtomicFileState.Committing
+                raise AtomicFileError.DirectorySyncNotReady if session.plan.require_directory_sync and not session.directory_sync_acknowledged
+                raise AtomicFileError.ReceiptInvalid if not atomic_file_identity_valid(identity, session.plan.max_content_bytes) or not identity.observed or not identity.present or not atomic_file_contents_equal(session.staged_identity, identity)
+                session.published_identity <- identity
+                session.commit_acknowledged <- true
+                session.staging_cleanup_acknowledged <- true
+                session.state <- AtomicFileState.Committed
+            elif event == AtomicFileEvent.PublishUncertain:
+                raise AtomicFileError.PublishOutcomeUnknown if session.state != AtomicFileState.Committing and session.state != AtomicFileState.Committed
+                session.state <- AtomicFileState.PublishedUncertain
+            elif event == AtomicFileEvent.BeginRestore:
+                raise AtomicFileError.RestoreNotReady if session.state != AtomicFileState.PublishedUncertain and session.state != AtomicFileState.Committed
+                raise AtomicFileError.RestoreNotReady if not session.comparison_acknowledged or not session.destination_snapshot.observed
+                session.state <- AtomicFileState.Restoring
+            elif event == AtomicFileEvent.RestoreAck:
+                raise AtomicFileError.RestoreNotReady if session.state != AtomicFileState.Restoring
+                raise AtomicFileError.RestoreNotProven if not atomic_file_identity_valid(identity, Limits::OBSERVED_BYTES) or not identity.observed or not atomic_file_identity_equal(identity, session.destination_snapshot)
+                session.restore_acknowledged <- true
+                session.state <- AtomicFileState.RolledBack if session.staging_cleanup_acknowledged else AtomicFileState.RolledBackPendingCleanup
+            elif event == AtomicFileEvent.CleanupAck:
+                raise AtomicFileError.CleanupNotReady if session.staging_cleanup_acknowledged
+                raise AtomicFileError.CleanupNotReady if session.state != AtomicFileState.UnchangedPendingCleanup and session.state != AtomicFileState.FailedPendingCleanup and session.state != AtomicFileState.CancelledPendingCleanup and session.state != AtomicFileState.RolledBackPendingCleanup and session.state != AtomicFileState.PublishedUncertain
+                session.staging_cleanup_acknowledged <- true
+                session.state <- AtomicFileState.Unchanged if session.state == AtomicFileState.UnchangedPendingCleanup else AtomicFileState.Failed if session.state == AtomicFileState.FailedPendingCleanup else AtomicFileState.Cancelled if session.state == AtomicFileState.CancelledPendingCleanup else AtomicFileState.RolledBack if session.state == AtomicFileState.RolledBackPendingCleanup else session.state
+            elif event == AtomicFileEvent.Fail:
+                raise AtomicFileError.InvalidTransition if session.state != AtomicFileState.Staging and session.state != AtomicFileState.Ready
+                session.state <- AtomicFileState.FailedPendingCleanup
+            elif event == AtomicFileEvent.Cancel:
+                raise AtomicFileError.CancelNotReady if session.state != AtomicFileState.Planned and session.state != AtomicFileState.Staging and session.state != AtomicFileState.Ready
+                session.state <- AtomicFileState.CancelledPendingCleanup
+            return session.state

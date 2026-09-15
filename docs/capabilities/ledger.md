@@ -1183,6 +1183,26 @@ documentation, and check_working_directory.sh audit are static evidence;
 descriptor-based adapters, platform cwd races, and executed failure/recovery
 fixtures remain host work.
 
+ES-FS-007 | EsFileAtomic supplies a bounded atomic file-publication contract.
+Plans bind a nonzero owner token and parent identity to distinct
+destination/staging/backup paths, require an observed expected destination
+identity, and cap staged bytes and append count. `StageReady` requires an
+observed digest/size/object-identity receipt after staging sync and close,
+including empty output; `Compare` captures the pre-commit destination
+and enters `UnchangedPendingCleanup → Unchanged` only with an explicit exact
+byte-comparison receipt. `Commit → DirectorySync → CommitAck` makes the
+post-rename directory durability edge explicit, and `CommitAck` requires a
+post-publication identity whose content matches the staged result.
+`PublishedUncertain` represents an ambiguous post-rename outcome, while
+`BeginRestore`/`RestoreAck` reaches cleanup-pending rollback only with an exact
+pre-commit identity receipt. Destination races, duplicate synchronization,
+invalid receipts, missing cleanup, and every pre/post-commit transition are
+typed through `error[AtomicFileError]`; embedded NULs are classified before
+ordinary path-shape errors. The focused IR fixture, namespace
+inclusion, documentation, and check_file_atomic.sh audit are static evidence;
+locking, digest computation, staging I/O, fsync/rename, crash recovery, and
+platform race fixtures remain host work.
+
 ES-SCRIPT-029 | EsRecordControl supplies explicit bounded `next`/`nextfile`/
 exit transitions for pattern-action adapters. It closes record/file ownership
 on skips, resumes a same-file record after `next`, rejects record events outside files and premature file closure, caps

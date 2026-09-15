@@ -55,6 +55,7 @@ using EsDeadline
 using EsDebugger
 using EsArchive
 using EsHash
+using EsFileAtomic
 using EsBinary
 using EsHandle
 using EsRecord
@@ -7141,6 +7142,94 @@ def typed_hash_contract_bounds_chunks_and_publishes_one_digest() -> void:
             assert failure == HashError.DigestShapeInvalid
             malformed_error <- true
     assert malformed_error
+
+
+@test
+def typed_file_atomic_contract_preserves_noop_and_uncertain_recovery() -> void:
+    old_digest: HashDigest = HashDigest{algorithm: HashAlgorithm.Sha256, word_count: 4, word0: 11, word1: 12, word2: 13, word3: 14}
+    new_digest: HashDigest = HashDigest{algorithm: HashAlgorithm.Sha256, word_count: 4, word0: 21, word1: 22, word2: 23, word3: 24}
+    empty_digest: HashDigest = HashDigest{algorithm: HashAlgorithm.Sha256, word_count: 4}
+    old_destination: AtomicFileIdentity = AtomicFileIdentity{observed: true, present: true, size: 3, volume_id: 1, object_id: 100, digest: old_digest}
+    new_staging: AtomicFileIdentity = AtomicFileIdentity{observed: true, present: true, size: 3, volume_id: 1, object_id: 101, digest: new_digest}
+    plan: AtomicFilePlan = AtomicFilePlan{destination_path: "output.txt", staging_path: "output.txt.elisa.tmp", owner_token: 17, parent_identity: 1, backup_path: "output.txt.bak", expected_destination: old_destination, max_content_bytes: 16}
+    session: mutable AtomicFileSession = AtomicFileSession{plan: plan}
+    assert validate_atomic_file_session(session)
+    assert advance_atomic_file(session, AtomicFileEvent.Begin) == AtomicFileState.Staging
+    assert advance_atomic_file(session, AtomicFileEvent.Append, appended_bytes: 3) == AtomicFileState.Staging
+    assert advance_atomic_file(session, AtomicFileEvent.StageReady, identity: new_staging) == AtomicFileState.Ready
+    changed_destination: AtomicFileIdentity = AtomicFileIdentity{observed: true, present: true, size: 4, volume_id: 1, object_id: 100, digest: old_digest}
+    destination_race_rejected: mutable bool = false
+    catch advance_atomic_file(session, AtomicFileEvent.Compare, identity: changed_destination):
+        ok value:
+            assert false
+        error failure:
+            assert failure == AtomicFileError.DestinationChanged
+            destination_race_rejected <- true
+    assert destination_race_rejected
+    assert session.state == AtomicFileState.Ready
+    assert not session.comparison_acknowledged
+    assert advance_atomic_file(session, AtomicFileEvent.Compare, identity: old_destination) == AtomicFileState.Ready
+    assert advance_atomic_file(session, AtomicFileEvent.Commit) == AtomicFileState.Committing
+    assert advance_atomic_file(session, AtomicFileEvent.DirectorySync) == AtomicFileState.Committing
+    assert advance_atomic_file(session, AtomicFileEvent.PublishUncertain) == AtomicFileState.PublishedUncertain
+    assert advance_atomic_file(session, AtomicFileEvent.BeginRestore) == AtomicFileState.Restoring
+    bad_restore: AtomicFileIdentity = AtomicFileIdentity{observed: true, present: true, size: 3, volume_id: 1, object_id: 101, digest: new_digest}
+    restore_proof_rejected: mutable bool = false
+    catch advance_atomic_file(session, AtomicFileEvent.RestoreAck, identity: bad_restore):
+        ok value:
+            assert false
+        error failure:
+            assert failure == AtomicFileError.RestoreNotProven
+            restore_proof_rejected <- true
+    assert restore_proof_rejected
+    assert advance_atomic_file(session, AtomicFileEvent.RestoreAck, identity: old_destination) == AtomicFileState.RolledBackPendingCleanup
+    assert advance_atomic_file(session, AtomicFileEvent.CleanupAck) == AtomicFileState.RolledBack
+    assert validate_atomic_file_session(session)
+    unchanged_session: mutable AtomicFileSession = AtomicFileSession{plan: plan}
+    _ = advance_atomic_file(unchanged_session, AtomicFileEvent.Begin)
+    _ = advance_atomic_file(unchanged_session, AtomicFileEvent.Append, appended_bytes: 3)
+    _ = advance_atomic_file(unchanged_session, AtomicFileEvent.StageReady, identity: AtomicFileIdentity{observed: true, present: true, size: 3, volume_id: 1, object_id: 102, digest: old_digest})
+    assert advance_atomic_file(unchanged_session, AtomicFileEvent.Compare, identity: old_destination, exact_contents_equal: true) == AtomicFileState.UnchangedPendingCleanup
+    assert advance_atomic_file(unchanged_session, AtomicFileEvent.CleanupAck) == AtomicFileState.Unchanged
+    unchanged_commit_rejected: mutable bool = false
+    catch advance_atomic_file(unchanged_session, AtomicFileEvent.Commit):
+        ok value:
+            assert false
+        error failure:
+            assert failure == AtomicFileError.CommitNotReady
+            unchanged_commit_rejected <- true
+    assert unchanged_commit_rejected
+    empty_plan: AtomicFilePlan = AtomicFilePlan{destination_path: "empty.txt", staging_path: "empty.txt.elisa.tmp", owner_token: 18, parent_identity: 1, expected_destination: AtomicFileIdentity{observed: true, present: false}, require_directory_sync: false, max_content_bytes: 16}
+    empty_session: mutable AtomicFileSession = AtomicFileSession{plan: empty_plan}
+    _ = advance_atomic_file(empty_session, AtomicFileEvent.Begin)
+    assert advance_atomic_file(empty_session, AtomicFileEvent.StageReady, identity: AtomicFileIdentity{observed: true, present: true, size: 0, volume_id: 1, object_id: 103, digest: empty_digest}) == AtomicFileState.Ready
+    assert advance_atomic_file(empty_session, AtomicFileEvent.Compare, identity: AtomicFileIdentity{observed: true, present: false}) == AtomicFileState.Ready
+    assert advance_atomic_file(empty_session, AtomicFileEvent.Commit) == AtomicFileState.Committing
+    assert advance_atomic_file(empty_session, AtomicFileEvent.CommitAck, identity: AtomicFileIdentity{observed: true, present: true, size: 0, volume_id: 1, object_id: 104, digest: empty_digest}) == AtomicFileState.Committed
+    forged_ready: mutable bool = false
+    catch validate_atomic_file_session(AtomicFileSession{plan: plan, state: AtomicFileState.Ready, stage_sync_acknowledged: true}):
+        ok value:
+            assert false
+        error failure:
+            assert failure == AtomicFileError.InvalidState
+            forged_ready <- true
+    assert forged_ready
+    embedded_nul: mutable bool = false
+    catch validate_atomic_file_session(AtomicFileSession{plan: AtomicFilePlan{destination_path: "output\0.txt", staging_path: "output.tmp", owner_token: 19, parent_identity: 1, expected_destination: old_destination}}):
+        ok value:
+            assert false
+        error failure:
+            assert failure == AtomicFileError.EmbeddedNul
+            embedded_nul <- true
+    assert embedded_nul
+    collision: mutable bool = false
+    catch validate_atomic_file_session(AtomicFileSession{plan: AtomicFilePlan{destination_path: "output.txt", staging_path: "output.txt/", owner_token: 20, parent_identity: 1, expected_destination: old_destination}}):
+        ok value:
+            assert false
+        error failure:
+            assert failure == AtomicFileError.PathCollision
+            collision <- true
+    assert collision
 
 
 @test

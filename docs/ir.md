@@ -1662,6 +1662,32 @@ advisory-only: lease identities are monotonic and cannot collide with the next
 allocation; platform lock calls, mandatory-locking behavior, fairness, and race
 handling remain host-adapter responsibilities.
 
+`EsFileAtomic::AtomicFileSession` is the stronger publication boundary for
+generated files, cache entries, and build outputs. A plan binds a nonzero
+owner token and parent identity to distinct destination, sibling staging, and
+optional backup paths, and requires an observed expected destination identity.
+`Begin` and bounded
+`Append` edges build the staging result; `StageReady` requires a host-supplied
+size/digest/object-identity receipt after staging sync and close, including a
+valid digest for empty output.
+`Compare` captures the destination identity before mutation and requires an
+explicit host byte-for-byte equality receipt before entering
+`UnchangedPendingCleanup → Unchanged` (no rename, preserving destination
+metadata); otherwise it acknowledges that a commit is needed. A changed
+destination against the expected identity fails closed before the receipt is
+stored. The remaining `Commit → DirectorySync → CommitAck` edges are explicit,
+and `CommitAck` requires a post-publication identity whose content matches the
+staged result. A
+`PublishedUncertain` state represents any post-rename result that the host
+cannot prove, and `BeginRestore → RestoreAck` reaches `RolledBack` only when
+the restored destination object/content identity exactly matches the pre-commit
+snapshot and cleanup has been acknowledged. `Fail` and `Cancel` first enter
+cleanup-pending states, and an ambiguous publication cannot be mistaken for
+an ordinary failure. `error[AtomicFileError]` covers path/NUL/owner/receipt limits,
+duplicate synchronization, destination races, unproven restoration, missing
+cleanup, and every invalid transition. The model does not perform I/O,
+locking, hashing, rename, or cleanup; those remain host-adapter duties.
+
 `EsRecordSpill::RecordSpillSession` is the external-sort staging boundary.
 Runs receive stable ordinals and distinct sibling paths, append only within
 per-run and aggregate record/byte ceilings, and must cross `SealRun` into
