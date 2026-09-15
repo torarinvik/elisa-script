@@ -13,7 +13,8 @@ Neither scanner may execute candidate contents.
 
 For the successful fixture both processes must exit 0, write an empty stderr,
 and produce the exact header and records in the test's independently specified
-golden manifest. The golden is globally bytewise sorted and includes
+golden manifest. The golden is globally bytewise sorted and unique (matching
+the reference's `sort -u`) and includes
 `ignored.py`, but in the quiescent fixture excludes symlink aliases and every
 file under the six pruned directories. The Bash reference is path-based; the
 Elisascript candidate uses descriptor-relative no-follow traversal with

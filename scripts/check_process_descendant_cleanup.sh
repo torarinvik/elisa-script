@@ -52,6 +52,10 @@ assert_group_cleanup_after_reap "$differential" differential_terminate_process
 rg -q 'EACCES: int = 13' "$runtime"
 rg -q 'return true if errno\[0\] == DarwinErrno::EACCES' "$interpreter"
 rg -q 'return true if errno\[0\] == DarwinErrno::EACCES' "$differential"
+rg -q 'differential_process_group_quiescent' "$differential"
+rg -q 'differential_process_group_has_members' "$differential"
+rg -q 'leader.*intermediate|leader.*only an intermediate|surviving group member' "$differential"
+rg -q 'differential_process_rejects_leader_exit_with_live_group_member' "$tests"
 
 rg -q 'surviving descendants|leader exit.*group|leader.*group.*KILL' "$docs" "$ledger" "$plan"
 rg -q 'differential_process_execution_reports_bounded_timeout' "$tests"

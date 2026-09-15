@@ -843,11 +843,14 @@ Materialization plans copy root bytes rather than retaining the caller's input
 views.
 The focused differential fixture, namespace inclusion, documentation, and
 check_differential_filesystem.sh audit are static evidence; post-run host
-enumeration, replay integration, and crash-safe restore remain open. Do not
-connect filesystem equality to completed process runs yet: the current runner
-reaps only the direct child and uses temporary regular files for output, so it
-has neither true stdout/stderr EOF evidence nor authoritative descendant-tree
-quiescence. A private process group is not a containment proof. A separate
+enumeration, replay integration, and crash-safe restore remain open. The
+runner now treats leader wait as intermediate, requires the private process
+group to disappear before reading temporary output files, and rejects a run
+when a member remains. This is necessary stream quiescence evidence, not
+authoritative descendant-tree containment: a double-forked process can escape
+and reparent itself. Do not connect filesystem equality to completed process
+runs until a host supervisor supplies an authoritative descendant receipt. A
+private process group is not a containment proof. A separate
 Darwin source slice materializes an admitted initial world and provides bounded
 cleanup, but it has not been executed or integrated with replay.
 

@@ -3109,6 +3109,36 @@ module EsDifferential:
             return false
 
 
+        # A direct waitpid only covers the leader. Probe the private process
+        # group with signal 0 before reading regular output files so a child
+        # that inherited stdout/stderr cannot append after capture. Unknown
+        # host errors fail closed as "still present". This is necessary
+        # quiescence evidence, not containment proof: a double-forked child
+        # can leave the group and reparent itself, which requires a supervisor
+        # with an authoritative descendant receipt.
+        def differential_process_group_has_members(pid: int) -> bool can[Blocking.IO]:
+            retries: mutable usize = 0
+            while retries <= DIFFERENTIAL_MAX_EINTR_RETRIES:
+                return true if elisascript_posix_kill(-pid, 0) == 0
+                errno: mutable int& = elisascript_posix_errno()
+                return false if errno[0] == DarwinErrno::ESRCH
+                return true if errno[0] == DarwinErrno::EACCES
+                if errno[0] == DarwinErrno::EINTR:
+                    retries <- retries + 1
+                    continue
+                return true
+            return true
+
+
+        def differential_process_group_quiescent(pid: int) -> bool can[Blocking.IO]:
+            polls: mutable u64 = 0
+            while polls < DIFFERENTIAL_TERM_GRACE_POLLS:
+                return true if not differential_process_group_has_members(pid)
+                return false if not differential_wait_sleep()
+                polls <- polls + 1
+            return not differential_process_group_has_members(pid)
+
+
     public:
         # Execute a validated process invocation without a shell.  The optional
         # entry is the first argv element for adapter-style invocations (for
@@ -3359,6 +3389,17 @@ module EsDifferential:
                             _ = fclose(stdout_stream)
                             _ = fclose(stderr_stream)
                             raise DifferentialRunnerError.Process
+                # The leader's wait status is only an intermediate event. A
+                # surviving group member may still own either output file and
+                # may still mutate the world. Require the group to disappear
+                # before capture; if it does not, terminate the private group
+                # and reject the run instead of publishing unstable evidence.
+                if not differential_process_group_quiescent(pid):
+                    differential_signal_process(-pid, DIFFERENTIAL_SIGNAL_KILL) if group_ready
+                    _ = fclose(input_stream)
+                    _ = fclose(stdout_stream)
+                    _ = fclose(stderr_stream)
+                    raise DifferentialRunnerError.Process
                 if fclose(input_stream) != 0:
                     _ = fclose(stdout_stream)
                     _ = fclose(stderr_stream)
