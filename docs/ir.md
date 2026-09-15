@@ -3527,4 +3527,6 @@ and bounded-timeout policy. The effectful process/clock adapter, atomic
 publication, and acceptance evidence remain open; `EsLuaBundlePublication` now
 provides the pure admission state machine for exclusive sibling staging,
 descriptor closure, rename acknowledgement, directory sync, and failure
-preservation.
+preservation. If the rename outcome is lost after the publish edge, the machine
+enters `PublishedUncertain` through `OutcomeUnknown` and refuses to relabel the
+publication as an ordinary failure.

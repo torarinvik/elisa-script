@@ -34,6 +34,9 @@ for boundary in \
     'WriteLimitExceeded' \
     'DirectorySyncMissing' \
     'DestinationNotPreserved' \
+    'PublishedUncertain' \
+    'PublicationEvent.OutcomeUnknown' \
+    'PublicationUncertain' \
     'PublicationEvent.StageCreated' \
     'PublicationEvent.PublishAck'; do
     rg -q "$boundary" "$model" "$fixture"
