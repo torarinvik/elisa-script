@@ -1563,8 +1563,9 @@ are checked before publication, and `file_metadata_lookup` is sealed-only.
 Planned snapshots must remain empty and zero-accounted until `Begin`.
 `error[FileMetadataError]` covers malformed paths, NULs, identity/mode/size
 violations, missing/symlink policy, duplicate entries, accounting drift, and
-terminal misuse; native stat/lstat, chmod, hardlink, and race-safe traversal
-remain host responsibilities.
+terminal misuse. Embedded NULs in entry paths and symlink targets are reported
+distinctly before ordinary path/target-shape errors; native stat/lstat, chmod,
+hardlink, and race-safe traversal remain host responsibilities.
 
 `EsFileLock::FileLockTable` is the portable advisory-lock ownership boundary.
 Requests name a bounded path, nonzero owner token, and explicit `Shared` or

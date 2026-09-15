@@ -41,6 +41,8 @@ for boundary in \
     'file_metadata_index' \
     'allow_missing' \
     'preserve_symlink' \
+    'raise FileMetadataError.EmbeddedNul if sview_contains_byte(entry.path, 0) or sview_contains_byte(entry.target, 0)' \
+    'raise FileMetadataError.EmbeddedNul if sview_contains_byte(path, 0)' \
     'FileMetadataKind.Symlink' \
     'FileMetadataKind.Missing' \
     'raise FileMetadataError.InvalidIdentity if entry.kind == FileMetadataKind.Missing and (entry.inode != 0 or entry.device != 0 or entry.link_count != 0)' \
@@ -64,6 +66,7 @@ for fixture_pattern in \
     'file_metadata_lookup' \
     'FileMetadataError.DuplicatePath' \
     'FileMetadataError.SymlinkTargetInvalid' \
+    'FileMetadataError.EmbeddedNul' \
     'FileMetadataError.AccountingInvalid' \
     'forged_missing_metadata'; do
     rg -q "$fixture_pattern" "$fixture_file"
