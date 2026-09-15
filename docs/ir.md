@@ -1724,9 +1724,9 @@ callback cannot be re-entered while a replacement is pending. Match/capture/
 output limits, spans that rewind before the consumed cursor, malformed spans,
 cancellation, and premature end use
 `error[RegexCallbackError]`; validation also rejects forged planned counters and
-pending callbacks outside matching, and a complete session must have consumed
-the entire input cursor. Callback invocation and capture materialization
-remain host/interpreter work.
+impossible pre-match cursor/ledger state, pending callbacks outside matching,
+and a complete session must have consumed the entire input cursor. Callback
+invocation and capture materialization remain host/interpreter work.
 
 `EsJsonStream::JsonStreamSession` is the JSON/JSONL framing layer before value
 materialization. It bounds total input, per-record bytes, record count, and

@@ -44,6 +44,7 @@ for boundary in \
     'not session.has_last_zero and session.last_zero_start != 0' \
     'session.has_last_zero and session.last_zero_start > session.input_bytes' \
     'session.state == RegexCallbackState.Complete and session.cursor != session.input_bytes' \
+    'session.state == RegexCallbackState.Matching and session.matches == 0' \
     'session.cursor <- session.input_bytes' \
     'policy.max_captures != 0' \
     'session.pending and session.state != RegexCallbackState.Matching' \
@@ -65,6 +66,7 @@ for fixture_pattern in \
     'RegexCallbackError.MatchLimitExceeded' \
     'RegexCallbackError.AccountingInvalid' \
     'forged_pending' \
+    'forged_matching_prefix' \
     'forged_pending_order' \
     'forged_zero_marker' \
     'forged_zero_offset' \
