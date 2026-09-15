@@ -32,16 +32,19 @@ the focused Elisascript adaptation in `vendor/elisa-compiler/src/lexer`.
 The remaining vendor tree is an adapted `e56d6f2d` snapshot, so refresh it
 deliberately rather than copying this checkout wholesale.
 
-The separate Go Elisa-core checkout used for the guarded validation path is
-clean at revision `3a5520d8fd56b86c430f39518a261e9030fa72ec` on
-`codex/structpy-tree`. It includes the latest stage0 alignment for
-value-returning and unannotated-void function tails. Its ignored executable was
-built from `7900a37…` with `vcs.modified=true`, so it is neither a reproducible
-build of this revision nor an authorized validation target. Do not substitute
-it into a wrapper or build anything while the validation hold is active. After
-explicit reauthorization, create an isolated clean checkout of the exact Go
-compiler revision, build an executable there, record its digest in
-`docs/validation-baseline.md`, and update the wrapper pin before any fixture run.
+The separate Go Elisa-core source checkout currently visible is clean at
+revision `3a5520d8fd56b86c430f39518a261e9030fa72ec` on its `main` branch at
+`/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/Elisa-core`. It
+includes the latest stage0 alignment for value-returning and unannotated-void
+function tails. The explicitly safety-pinned `structpy-tree/compiler/bin/elisac`
+path is absent in this workspace; the ignored executable in the Elisa-core
+main-worktree was built from an older revision with `vcs.modified=true`, so it
+is neither a reproducible build of this revision nor an authorized validation
+target. Do not substitute it into a wrapper or build anything while the
+validation hold is active. After explicit reauthorization, create an isolated
+clean checkout of the exact Go compiler revision, build an executable there,
+record its digest in `docs/validation-baseline.md`, and update the wrapper pin
+before any fixture run.
 
 ```sh
 ELISASCRIPT_VALIDATION_REAUTHORIZED=1 \

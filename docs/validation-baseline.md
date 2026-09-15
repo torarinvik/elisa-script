@@ -86,13 +86,14 @@ IR artifacts on top of the earlier FFI, lowering, and region optimizations. The
 immutable Go commit was the source reference for the guarded validation path;
 the historical 601f7bcd executable identity is not claimed to represent it.
 
-Latest Go source recheck (2026-09-15; read-only): the clean
-`codex/structpy-tree` checkout now resolves to
-`3a5520d8fd56b86c430f39518a261e9030fa72ec`, including stage0 alignment for
-value-returning and unannotated-void function tails. The ignored executable at
-the canonical path is still stamped `7900a37…` with `vcs.modified=true`, so it
-is stale and remains unlaunched; a clean build from this revision still needs
-explicit reauthorization.
+Latest Go source recheck (2026-09-15; read-only): the clean `main` checkout at
+`/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/Elisa-core`
+resolves to `3a5520d8fd56b86c430f39518a261e9030fa72ec`, including stage0
+alignment for value-returning and unannotated-void function tails. The
+explicitly safety-pinned `structpy-tree/compiler/bin/elisac` path is absent;
+the old executable in the Elisa-core main-worktree is stamped from a different
+revision with `vcs.modified=true`, so it is stale and remains unlaunched. A
+clean build from this revision still needs explicit reauthorization.
 
 ## Vendored dependency and bootstrap chain
 
