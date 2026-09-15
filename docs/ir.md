@@ -2220,7 +2220,7 @@ modes, explicit stdin/stdout/stderr file destinations, timeout budget, and
 failure policy in one typed record. A `File` mode must carry its corresponding
 path, while `Inherit`, `Capture`, and `Null` modes reject stray paths; path
 payloads receive the same bounded length/NUL admission before aggregate
-terminated-byte accounting. Its
+terminated-byte accounting, including the child working directory. Its
 `validate_process_command` boundary rejects empty/NUL/oversized text, vectors
 that exceed the `PROCESS_COMMAND_MAX_ARGUMENTS` one-million-argument or
 64 MiB terminated-byte ceilings,
