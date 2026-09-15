@@ -38,7 +38,7 @@ not permitted validation targets. The bounded wrappers refuse any executable
 other than the exact canonical pinned StructPy `compiler/bin/elisac` and fail closed unless
 `ELISASCRIPT_VALIDATION_REAUTHORIZED=1` is explicitly supplied.
 
-## Newest source snapshot observed
+## Earlier clean detached source snapshot
 
 On 2026-09-15 a read-only audit found a clean detached compiler source snapshot
 at `/private/tmp/elisa-compiler-debugger-c605b3fa`, revision
