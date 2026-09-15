@@ -1444,7 +1444,7 @@ admission for extracted fields. Signed and unsigned integers use a checked
 wrapping; decimal fields retain coefficient/fraction digit counts and a
 bounded signed exponent for a later exact-decimal or floating adapter. Signs,
 underscores, decimal points, exponent markers, and finish conditions are
-state-machine validated, including rejection of underscores immediately before
+state-machine validated with up to 20 exponent digits, including rejection of underscores immediately before
 decimal points, with explicit empty/trailing-separator, overflow,
 digit, exponent, cancellation, and invalid-character errors. Validation also
 reconciles digit/byte counters, decimal flags, phase/flag coherence, and

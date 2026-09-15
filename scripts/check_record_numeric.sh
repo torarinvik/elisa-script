@@ -36,12 +36,14 @@ for boundary in \
     'RECORD_NUMERIC_MAX_BYTES' \
     'RECORD_NUMERIC_MAX_DIGITS' \
     'RECORD_NUMERIC_MAX_EXPONENT_DIGITS' \
+    'const RECORD_NUMERIC_MAX_EXPONENT_DIGITS: usize = 20' \
     'record_numeric_integer_limit' \
     'record_numeric_exponent_limit' \
     'RecordNumericError.IntegerOverflow' \
     'RecordNumericError.UnderscorePlacement' \
     'RecordNumericError.ExponentLimitExceeded' \
     'RecordNumericError.AccountingInvalid' \
+    'wide_exponent' \
     'session.digits > session.chars' \
     'session.saw_exponent and session.phase' \
     'RecordNumericState.Planned' \

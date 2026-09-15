@@ -1081,7 +1081,7 @@ remain open.
 ES-SCRIPT-038 | EsRecordNumeric supplies a bounded lexical numeric-field
 contract for Perl/AWK-style extraction. Signed/unsigned integer magnitudes use
 subtraction-safe overflow checks, decimal fields retain bounded coefficient/
-fraction/exponent descriptors without an implicit float conversion, reject an
+fraction/exponent descriptors (up to 20 exponent digits) without an implicit float conversion, reject an
 underscore immediately before a decimal point, and sign,
 underscore, decimal, exponent, finish, failure, and cancellation edges are
 explicit under `error[RecordNumericError]`. The focused IR fixture, namespace
