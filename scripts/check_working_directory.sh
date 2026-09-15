@@ -44,6 +44,10 @@ for boundary in \
     'table.next_lease_id == 18446744073709551615u64' \
     'WorkingDirectoryError.CancelNotReady' \
     'WorkingDirectoryLeaseState.Failed' \
+    'raise WorkingDirectoryError.EmbeddedNul if sview_contains_byte\(lease.initial_path, 0\) or sview_contains_byte\(lease.current_path, 0\)' \
+    'raise WorkingDirectoryError.EmbeddedNul if sview_contains_byte\(lease.pending_path, 0\)' \
+    'raise WorkingDirectoryError.EmbeddedNul if sview_contains_byte\(session.request.initial_path, 0\)' \
+    'raise WorkingDirectoryError.EmbeddedNul if sview_contains_byte\(path, 0\)' \
     'lease.state == WorkingDirectoryLeaseState.Held and lease.pending_path != ""' \
     'lease.state == WorkingDirectoryLeaseState.Changing or lease.state == WorkingDirectoryLeaseState.Restoring' \
     'lease.state == WorkingDirectoryLeaseState.Restored and' \
@@ -60,7 +64,12 @@ for fixture_pattern in \
     'WorkingDirectoryError.ConcurrentOwner' \
     'WorkingDirectoryEvent.CancelAck' \
     'forged_identity' \
-    'exhausted_rejected'; do
+    'exhausted_rejected' \
+    'nul_request_precedes_invalid_path' \
+    'nul_change_precedes_invalid_path' \
+    'nul_initial_precedes_invalid_path' \
+    'nul_current_precedes_invalid_path' \
+    'nul_pending_precedes_invalid_path'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 

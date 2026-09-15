@@ -53,6 +53,10 @@ for boundary in \
     'accounted_bytes > session.policy.max_bytes' \
     'entry.bytes > session.policy.max_bytes - accounted_bytes' \
     'directory_mutation_destination_nested' \
+    'raise DirectoryMutationError.EmbeddedNul if sview_contains_byte\(session.source_path, 0\)' \
+    'raise DirectoryMutationError.EmbeddedNul if sview_contains_byte\(session.destination_path, 0\)' \
+    'raise DirectoryMutationError.EmbeddedNul if sview_contains_byte\(entry.source, 0\)' \
+    'raise DirectoryMutationError.EmbeddedNul if sview_contains_byte\(entry.destination, 0\)' \
     'DirectoryMutationState.Planned and' \
     'DirectoryMutationState.Completed' \
     'DirectoryMutationState.Cancelled' \
@@ -73,7 +77,11 @@ for fixture_pattern in \
     'DirectoryMutationError.DestinationCollision' \
     'DirectoryMutationError.ActiveScope' \
     'repeated_enter_rejected' \
-    'stale_regular_enter_rejected'; do
+    'stale_regular_enter_rejected' \
+    'nul_source_precedes_invalid_path' \
+    'nul_destination_precedes_invalid_path' \
+    'nul_plan_source_precedes_invalid_path' \
+    'nul_plan_destination_precedes_invalid_path'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 rg -Fq 'nested_destination' "$fixture_file"

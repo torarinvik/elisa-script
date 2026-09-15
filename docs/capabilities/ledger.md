@@ -1079,7 +1079,9 @@ symlink preserve/follow/skip/reject policy, fail-fast versus collected partial
 failures, fail-fast scope unwinding before terminal `Failed`, balanced directory
 scopes, source-equal/descendant and duplicate copy-destination rejection,
 clean planned state, cycle/alias rejection, resource limits, and cancellation
-through `error[DirectoryMutationError]`. The focused IR
+through `error[DirectoryMutationError]`; session and entry source/destination
+NULs are classified as `EmbeddedNul` before ordinary path or destination
+errors, including during `Plan` admission. The focused IR
 fixture, namespace inclusion, documentation, and check_directory_mutation.sh
 audit are static evidence; mkdir/copy/unlink/rmdir adapters, canonical path
 containment, permissions, rollback, and race fixtures remain host work.
@@ -1091,6 +1093,8 @@ and explicit `Begin → Change → ChangeAck → Restore → RestoreAck` lifecyc
 concurrent owners, unacknowledged changes, and failed restore ownership are
 rejected or retained as typed `error[WorkingDirectoryError]`; terminal lease-id
 exhaustion is rejected before context publication so IDs cannot wrap to zero.
+Request, lease initial/current/pending, and change-path NULs are classified as
+`EmbeddedNul` before ordinary path errors.
 The focused IR fixture, namespace inclusion,
 documentation, and check_working_directory.sh audit are static evidence;
 descriptor-based adapters, platform cwd races, and executed failure/recovery

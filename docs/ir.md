@@ -1637,7 +1637,10 @@ externally assembled plans cannot forge ownership accounting.
 `Complete` and `Cancelled` states retain no active scope or pending entry; a
 collected failure is retained in the completed report rather than silently
 converted into success. The host owns mkdir/copy/unlink/rmdir calls, canonical
-source/destination checks, permissions, race handling, and rollback.
+source/destination checks, permissions, race handling, and rollback. Embedded
+NULs in session and entry source/destination paths are classified as
+`DirectoryMutationError.EmbeddedNul` before ordinary path or destination
+errors, including during `Plan` admission.
 
 `EsWorkingDirectory::WorkingDirectoryTable` serializes process-global cwd
 ownership for adapters that cannot use a descriptor or child-specific cwd.
@@ -1652,6 +1655,8 @@ without a zero-wrap or partial table mutation. Hosts should prefer descriptor
 or child-cwd APIs where available; this contract is the conservative fallback
 for unavoidable process-global changes. Lease validation also ties pending-path
 presence and restored-path equality to the corresponding lease state.
+Embedded NULs in request, lease initial/current/pending, and change paths are
+classified as `WorkingDirectoryError.EmbeddedNul` before ordinary path errors.
 
 `EsRegexCallback::RegexCallbackSession` is the callback-aware replacement
 boundary. The matcher submits non-overlapping spans and capture counts; the
