@@ -39,20 +39,22 @@ typed-literal validation. Their rationale and tests are documented under `docs/`
 ## Latest upstream source observation
 
 On 2026-09-15 the latest self-hosted Elisa compiler source visible for a future
-adapted refresh was `565ccb2fd585d03f94457185376f526e1930b1cb` on the clean
-`main` checkout at `../Elisa-compiler`. Its recent history includes catch-binder
-and value-returning-tail fixes, nested-module constant lowering, static-if
-module handling, and self-hosted extern-resource ABI support. This source is
+adapted refresh was `d6a693c0f724c05f7b71418658dd8bda95ba73b3` on the clean
+`main` checkout at `../Elisa-compiler`. It merges the recent catch-binder,
+value-returning-tail, module-callee, private-extern, and stage compatibility
+fixes on top of the extern-resource ABI and lowering work. This source is
 materially newer than the vendored `e56d6f2d` snapshot, but the differences are
 too broad for an unreviewed wholesale replacement.
 
 The separate Go Elisa-core source checkout used by the guarded validation path
-is clean at `e85e8282c7b8dc588ba2ba53f0912d98769b1f1a` on
-`codex/structpy-tree`. Its ignored `compiler/bin/elisac` was built from
-`7900a37…` with `vcs.modified=true`; no executable is claimed or launched from
-it. This immutable Go commit is the source reference for the next explicitly
-authorized validation build; create a clean isolated checkout, review it, and
-atomically update the validation pin before building.
+is clean at `3a5520d8fd56b86c430f39518a261e9030fa72ec` on
+`codex/structpy-tree`. Its latest source commits align stage0 with
+value-returning and unannotated-void function tails. Its ignored
+`compiler/bin/elisac` remains built from `7900a37…` with `vcs.modified=true`; no
+executable is claimed or launched from it. This immutable Go commit is the
+source reference for the next explicitly authorized validation build; create a
+clean isolated checkout, review it, and atomically update the validation pin
+before building.
 
 That source is substantially different from this vendored `e56d6f2d` snapshot.
 The vendored tree contains Elisascript-specific adaptations (including

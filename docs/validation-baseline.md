@@ -73,6 +73,13 @@ extern-resource ABI support. The vendored `e56d6f2d` tree is adapted, so this
 source requires a deliberate compatibility refresh rather than a wholesale
 copy.
 
+Latest self-hosted source recheck (2026-09-15; read-only): the clean `main`
+checkout now resolves to merge commit
+`d6a693c0f724c05f7b71418658dd8bda95ba73b3`, which adds module-callee, private
+extern, catch-binder, value-tail, and stage compatibility fixes on top of the
+previous ABI/lowering work. The vendored `e56d6f2d` tree remains the known-
+compatible adapted snapshot; no compiler was rebuilt or launched.
+
 The latest Go Elisa-core source observed in the validation checkout is
 `e85e8282c7b8dc588ba2ba53f0912d98769b1f1a` on `codex/structpy-tree`. Its latest
 work hardens extern boundary checks, owned native-resource contracts, and
@@ -81,6 +88,14 @@ optimizations. The immutable Go commit is the source reference for the guarded
 validation path. Until an explicitly authorized isolated clean checkout is
 reviewed and built, the historical 601f7bcd executable identity is not claimed
 to represent this newest source.
+
+Latest Go source recheck (2026-09-15; read-only): the clean
+`codex/structpy-tree` checkout now resolves to
+`3a5520d8fd56b86c430f39518a261e9030fa72ec`, including stage0 alignment for
+value-returning and unannotated-void function tails. The ignored executable at
+the canonical path is still stamped `7900a37…` with `vcs.modified=true`, so it
+is stale and remains unlaunched; a clean build from this revision still needs
+explicit reauthorization.
 
 ## Vendored dependency and bootstrap chain
 
