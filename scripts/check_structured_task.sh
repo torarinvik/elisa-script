@@ -46,6 +46,7 @@ for boundary in \
     'StructuredScopeState.Succeeded and' \
     'StructuredScopeState.Cancelled and' \
     'StructuredScopeState.Failed and' \
+    'StructuredScopeState.Joining and' \
     'scope.state != StructuredScopeState.Running' \
     'StructuredTaskEvent.RequestCancel' \
     'StructuredChildState.Cleaning and' \
@@ -67,6 +68,7 @@ for fixture_pattern in \
 done
 rg -q 'StructuredTaskError.JoinNotReady if child.state == StructuredChildState.Planned' "$model"
 rg -q 'fail_pending_rejected' "$fixture_file"
+rg -q 'forged_joining' "$fixture_file"
 
 rg -q 'EsStructuredTask::StructuredTaskScope' "$docs"
 rg -q 'ES-SCRIPT-046' "$ledger"

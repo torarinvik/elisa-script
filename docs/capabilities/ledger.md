@@ -583,7 +583,10 @@ Acknowledgement while a child is cleaning is rejected until all nested cleanup
 frames leave, and join cannot finish until active children are zero. The focused
 IR fixture, namespace inclusion, documentation, and check_structured_task.sh
 audit are compiler-free static evidence; scheduler queues, thread/task adapters,
-and runtime execution remain open.
+and runtime execution remain open. The transient `Joining` shape now rejects
+active or still-planned children, and child lifecycle events reject impossible
+scope phases before child lookup so malformed calls report stable transition
+errors.
 
 ES-SCRIPT-047 | EsExitStatus supplies a stable launcher/process-status mapping.
 Success, bounded user `main -> i64` statuses, usage/source/check/test/script/

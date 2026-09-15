@@ -628,7 +628,9 @@ cancellation until its cleanup depth returns to zero; nested cleanup entries are
 admitted up to the policy's `max_cleanup_depth`. Join reports failure
 or cancellation only after every active child is accounted for through
 `error[StructuredTaskError]`; a join also rejects any admitted child that is
-still `Planned`. Validation also requires `Succeeded` and `Cancelled` scopes
+still `Planned`. The transient `Joining` shape is also required to have no
+active children and all admitted children complete before it can settle.
+Validation also requires `Succeeded` and `Cancelled` scopes
 to account for every child with no failures, and rejects `Failed` scopes that
 still claim active children.
 
