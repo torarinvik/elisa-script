@@ -99,6 +99,15 @@ for helper in differential_run_text_bytes_fits differential_value_pool_compariso
     fi
 done
 
+for helper in differential_map_pair_probes_fit; do
+    if ! rg -q "def $helper\(" "$source_file"; then
+        printf 'differential case audit: missing map comparison guard %s\n' "$helper" >&2
+        exit 1
+    fi
+done
+rg -q 'DIFFERENTIAL_DEFAULT_MAX_MAP_PAIR_PROBES: usize = DIFFERENTIAL_DEFAULT_MAX_COMPARISON_PAIRS / 2' "$source_file"
+rg -q 'differential_map_pair_probes_fit\(left\.map_count\.usize\(\), right\.map_count\.usize\(\)\)' "$source_file"
+
 for helper in differential_world_payload_add_fits differential_world_payload_text_fits differential_world_payload_bytes_fits differential_world_payload_fits differential_world_text_field_lengths_valid differential_case_name_valid differential_runner_name_valid differential_oracle_name_valid; do
     if ! rg -q "def $helper\(" "$source_file"; then
         printf 'differential case audit: missing world payload helper %s\n' "$helper" >&2
@@ -181,7 +190,7 @@ for boundary in 'stdin_bytes: mutable darray[u8]' 'stdin_binary: bool' 'InvalidP
     fi
 done
 
-for boundary in 'differential_comparison_rejects_oversized_run_text' 'differential_comparison_rejects_oversized_value_pool_text' 'run text exceeds differential budget' 'owned value text exceeds differential budget' 'differential_process_capture_adapter_rejects_oversized_inputs' 'process capture inputs exceed differential budget' 'differential_process_capture_adapter_rejects_malformed_inputs' 'process capture inputs are structurally invalid' 'differential_runtime_adapter_rejects_oversized_process_snapshots' 'differential_runtime_adapter_rejects_oversized_text_snapshots'; do
+for boundary in 'differential_comparison_rejects_oversized_run_text' 'differential_comparison_rejects_oversized_value_pool_text' 'differential_comparison_rejects_quadratic_unordered_map_probe_budget' 'run text exceeds differential budget' 'owned value text exceeds differential budget' 'differential_process_capture_adapter_rejects_oversized_inputs' 'process capture inputs exceed differential budget' 'differential_process_capture_adapter_rejects_malformed_inputs' 'process capture inputs are structurally invalid' 'differential_runtime_adapter_rejects_oversized_process_snapshots' 'differential_runtime_adapter_rejects_oversized_text_snapshots'; do
     if ! rg -Fq "$boundary" "$fixture_file"; then
         printf 'differential case audit: missing comparison-bound coverage %s\n' "$boundary" >&2
         exit 1

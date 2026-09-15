@@ -257,11 +257,14 @@ bypass adapter constructors therefore fail closed with a bounded comparison
 record instead of allocating from an untrusted count.
 Comparator work is bounded independently of pool size: it selects at most one
 million pending pairs and rejects aggregate paths deeper than 128 levels.
-Array pairs carry their depth through the explicit state machine, while map
-pair matching propagates the same bound across its helper calls. Cyclic or
-pathologically shared flat snapshots therefore become a deterministic
-`ObservationValue` mismatch instead of an infinite comparison or host-stack
-overflow.
+Array pairs carry their depth through the explicit state machine. Unordered map
+matching additionally admits the quadratic left/right candidate-probe product
+only within a conservative half-budget (one probe may compare both a key and a
+value), using division rather than multiplication so the check cannot wrap.
+This prevents each nested map helper from resetting an effectively unbounded
+quadratic search. Cyclic or pathologically shared flat snapshots therefore
+become a deterministic `ObservationValue` mismatch instead of an infinite
+comparison or host-stack overflow.
 
 The module keeps state-machine cursors, process-host symbols, and comparison
 helpers private; only runner/value records and the documented adapter/comparator
