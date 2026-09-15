@@ -39,6 +39,15 @@ module EsLuaBundleMetadata:
             commands: darray[MetadataAssignment] = []
 
 
+        struct MetadataFacts:
+            generated_at_utc: sview
+            git_head: sview = "unknown"
+            git_branch: sview = "unknown"
+            git_status: sview = "unknown"
+            hostname: sview = "unknown"
+            uname: sview = "unknown"
+
+
         error MetadataArgumentsError:
             ArgumentTooLarge
             MissingOptionValue
@@ -52,6 +61,14 @@ module EsLuaBundleMetadata:
             PathTooLong
 
 
+        error MetadataJsonError:
+            InvalidArguments
+            InvalidFacts
+            InvalidLimit
+            InvalidUtf8
+            OutputLimitExceeded
+
+
     private:
         const enum MetadataOptionKind of u8:
             Unknown
@@ -62,6 +79,11 @@ module EsLuaBundleMetadata:
             OutDir
             Setting
             Command
+
+
+        const module Json:
+            HEX: sview = "0123456789abcdef"
+            MAX_BYTES: usize = 67108864
 
 
         def metadata_option_matches(spelling: sview, candidate: sview) -> bool:
@@ -123,6 +145,219 @@ module EsLuaBundleMetadata:
                 index <- index - 1
                 return true if entries[index].key == key
             return false
+
+
+        def metadata_assignment_less(left: MetadataAssignment, right: MetadataAssignment) -> bool:
+            common: usize = len(left.key) if len(left.key) < len(right.key) else len(right.key)
+            for index in 0..<common |left, right|:
+                return true if sview_at(left.key, index) < sview_at(right.key, index)
+                return false if sview_at(left.key, index) > sview_at(right.key, index)
+            return len(left.key) < len(right.key)
+
+
+        def metadata_final_assignments(entries: darray[MetadataAssignment]) -> darray[MetadataAssignment] can[Memory.Allocate, Abort.Panic]:
+            result: mutable darray[MetadataAssignment] = []
+            for entry in entries |result|:
+                found: mutable bool = false
+                for index in 0..<result.count |result, entry, found|:
+                    if result[index].key == entry.key:
+                        result[index].value <- entry.value
+                        found <- true
+                        break
+                result.push(entry) if not found
+            if result.count > 1:
+                for index in 1..<result.count |result|:
+                    current: MetadataAssignment = result[index]
+                    cursor: mutable usize = index
+                    while cursor > 0 and metadata_assignment_less(current, result[cursor - 1]) |cursor, current, result|:
+                        result[cursor] <- result[cursor - 1]
+                        cursor <- cursor - 1
+                    result[cursor] <- current
+            return result
+
+
+        def metadata_arguments_shape_valid(arguments: MetadataArguments) -> bool:
+            return false if not arguments.has_output or not arguments.has_bundle_type or not arguments.has_repo_root or not arguments.has_out_dir
+            return false if len(arguments.output) > Limits::PATH_BYTES or len(arguments.bundle_type) > Limits::ARGUMENT_BYTES or len(arguments.repo_root) > Limits::PATH_BYTES or len(arguments.out_dir) > Limits::PATH_BYTES
+            return false if arguments.settings.count > Limits::ENTRIES or arguments.commands.count > Limits::ENTRIES
+            for entry in arguments.settings:
+                return false if len(entry.key) == 0 or len(entry.key) > Limits::ARGUMENT_BYTES or len(entry.value) > Limits::ARGUMENT_BYTES
+            for entry in arguments.commands:
+                return false if len(entry.key) == 0 or len(entry.key) > Limits::ARGUMENT_BYTES or len(entry.value) > Limits::ARGUMENT_BYTES
+            return true
+
+
+        def metadata_facts_valid(facts: MetadataFacts) -> bool:
+            return false if len(facts.generated_at_utc) != 20
+            for index in 0..<20 |facts|:
+                if index == 4 or index == 7:
+                    return false if sview_at(facts.generated_at_utc, index) != 45u8
+                elif index == 10:
+                    return false if sview_at(facts.generated_at_utc, index) != 84u8
+                elif index == 13 or index == 16:
+                    return false if sview_at(facts.generated_at_utc, index) != 58u8
+                elif index == 19:
+                    return false if sview_at(facts.generated_at_utc, index) != 90u8
+                else:
+                    return false if sview_at(facts.generated_at_utc, index) < 48u8 or sview_at(facts.generated_at_utc, index) > 57u8
+            return false if len(facts.generated_at_utc) > Limits::ARGUMENT_BYTES or len(facts.git_head) > Limits::ARGUMENT_BYTES or len(facts.git_branch) > Limits::ARGUMENT_BYTES or len(facts.git_status) > Limits::ARGUMENT_BYTES or len(facts.hostname) > Limits::ARGUMENT_BYTES or len(facts.uname) > Limits::ARGUMENT_BYTES
+            return true
+
+
+        def metadata_json_append_byte(output: mutable darray[u8]&, byte: u8, limit: usize) -> void error[MetadataJsonError] can[Memory.Allocate, Abort.Panic]:
+            raise MetadataJsonError.OutputLimitExceeded if output.count >= limit
+            output.push(byte)
+
+
+        def metadata_json_append_text(output: mutable darray[u8]&, text: sview, limit: usize) -> void error[MetadataJsonError] can[Memory.Allocate, Abort.Panic]:
+            raise MetadataJsonError.OutputLimitExceeded if len(text) > limit - output.count
+            for index in 0..<len(text) |output, text|:
+                output.push(sview_at(text, index))
+
+
+        def metadata_json_append_hex4(output: mutable darray[u8]&, value: u32, limit: usize) -> void error[MetadataJsonError] can[Memory.Allocate, Abort.Panic]:
+            try metadata_json_append_text(output, "\\u", limit)
+            for shift in [12u32, 8u32, 4u32, 0u32] |output, value|:
+                try metadata_json_append_byte(output, sview_at(Json::HEX, ((value >> shift) & 15u32).usize()), limit)
+
+
+        def metadata_json_append_escaped(output: mutable darray[u8]&, value: sview, limit: usize) -> void error[MetadataJsonError] can[Memory.Allocate, Abort.Panic]:
+            try metadata_json_append_byte(output, 34u8, limit)
+            cursor: mutable usize = 0
+            while cursor < len(value):
+                first: u8 = sview_at(value, cursor)
+                codepoint: mutable u32 = 0
+                width: mutable usize = 1
+                if first <= 127u8:
+                    codepoint <- first.u32()
+                elif first >= 194u8 and first <= 223u8 and cursor + 1 < len(value):
+                    second: u8 = sview_at(value, cursor + 1)
+                    raise MetadataJsonError.InvalidUtf8 if second < 128u8 or second > 191u8
+                    codepoint <- ((first & 31u8).u32() << 6) | (second & 63u8).u32()
+                    width <- 2
+                elif first >= 224u8 and first <= 239u8 and cursor + 2 < len(value):
+                    second: u8 = sview_at(value, cursor + 1)
+                    third: u8 = sview_at(value, cursor + 2)
+                    raise MetadataJsonError.InvalidUtf8 if second < 128u8 or second > 191u8 or third < 128u8 or third > 191u8
+                    codepoint <- ((first & 15u8).u32() << 12) | ((second & 63u8).u32() << 6) | (third & 63u8).u32()
+                    raise MetadataJsonError.InvalidUtf8 if codepoint < 2048u32 or codepoint >= 55296u32 and codepoint <= 57343u32
+                    width <- 3
+                elif first >= 240u8 and first <= 244u8 and cursor + 3 < len(value):
+                    second: u8 = sview_at(value, cursor + 1)
+                    third: u8 = sview_at(value, cursor + 2)
+                    fourth: u8 = sview_at(value, cursor + 3)
+                    raise MetadataJsonError.InvalidUtf8 if second < 128u8 or second > 191u8 or third < 128u8 or third > 191u8 or fourth < 128u8 or fourth > 191u8
+                    codepoint <- ((first & 7u8).u32() << 18) | ((second & 63u8).u32() << 12) | ((third & 63u8).u32() << 6) | (fourth & 63u8).u32()
+                    raise MetadataJsonError.InvalidUtf8 if codepoint < 65536u32 or codepoint > 1114111u32
+                    width <- 4
+                else:
+                    raise MetadataJsonError.InvalidUtf8
+                if codepoint == 34u32 or codepoint == 92u32:
+                    try metadata_json_append_byte(output, 92u8, limit)
+                    try metadata_json_append_byte(output, codepoint.u8(), limit)
+                elif codepoint == 8u32:
+                    try metadata_json_append_text(output, "\\b", limit)
+                elif codepoint == 9u32:
+                    try metadata_json_append_text(output, "\\t", limit)
+                elif codepoint == 10u32:
+                    try metadata_json_append_text(output, "\\n", limit)
+                elif codepoint == 12u32:
+                    try metadata_json_append_text(output, "\\f", limit)
+                elif codepoint == 13u32:
+                    try metadata_json_append_text(output, "\\r", limit)
+                elif codepoint < 32u32:
+                    try metadata_json_append_hex4(output, codepoint, limit)
+                elif codepoint <= 126u32:
+                    try metadata_json_append_byte(output, codepoint.u8(), limit)
+                elif codepoint <= 65535u32:
+                    try metadata_json_append_hex4(output, codepoint, limit)
+                else:
+                    high: u32 = 55296u32 + ((codepoint - 65536u32) >> 10)
+                    low: u32 = 56320u32 + ((codepoint - 65536u32) & 1023u32)
+                    try metadata_json_append_hex4(output, high, limit)
+                    try metadata_json_append_hex4(output, low, limit)
+                cursor <- cursor + width
+            try metadata_json_append_byte(output, 34u8, limit)
+
+
+        def metadata_json_append_json_key(output: mutable darray[u8]&, key: sview, limit: usize) -> void error[MetadataJsonError] can[Memory.Allocate, Abort.Panic]:
+            try metadata_json_append_escaped(output, key, limit)
+
+
+        def metadata_json_append_assignment_object(output: mutable darray[u8]&, entries: darray[MetadataAssignment], indent: sview, limit: usize) -> void error[MetadataJsonError] can[Memory.Allocate, Abort.Panic]:
+            final_entries: darray[MetadataAssignment] = metadata_final_assignments(entries)
+            if final_entries.count == 0:
+                try metadata_json_append_text(output, "{}", limit)
+                return
+            try metadata_json_append_text(output, "{\n", limit)
+            for index in 0..<final_entries.count |output, final_entries, indent, limit|:
+                try metadata_json_append_text(output, indent, limit)
+                try metadata_json_append_json_key(output, final_entries[index].key, limit)
+                try metadata_json_append_text(output, ": ", limit)
+                try metadata_json_append_escaped(output, final_entries[index].value, limit)
+                try metadata_json_append_text(output, "\n" if index + 1 == final_entries.count else ",\n", limit)
+            try metadata_json_append_text(output, "  }", limit)
+
+        def metadata_json_append_git_object(output: mutable darray[u8]&, facts: MetadataFacts, limit: usize) -> void error[MetadataJsonError] can[Memory.Allocate, Abort.Panic]:
+            try metadata_json_append_text(output, "{\n    ", limit)
+            try metadata_json_append_json_key(output, "branch", limit)
+            try metadata_json_append_text(output, ": ", limit)
+            try metadata_json_append_escaped(output, facts.git_branch, limit)
+            try metadata_json_append_text(output, ",\n    ", limit)
+            try metadata_json_append_json_key(output, "head", limit)
+            try metadata_json_append_text(output, ": ", limit)
+            try metadata_json_append_escaped(output, facts.git_head, limit)
+            try metadata_json_append_text(output, ",\n    ", limit)
+            try metadata_json_append_json_key(output, "status", limit)
+            try metadata_json_append_text(output, ": ", limit)
+            try metadata_json_append_escaped(output, facts.git_status, limit)
+            try metadata_json_append_text(output, "\n  }", limit)
+
+
+    public:
+        def render_metadata_json(arguments: MetadataArguments&, facts: MetadataFacts&, max_bytes: usize = Json::MAX_BYTES) -> darray[u8] error[MetadataJsonError] can[Memory.Allocate, Abort.Panic]:
+            raise MetadataJsonError.InvalidArguments if not metadata_arguments_shape_valid(arguments)
+            raise MetadataJsonError.InvalidFacts if not metadata_facts_valid(facts)
+            raise MetadataJsonError.InvalidLimit if max_bytes == 0 or max_bytes > Json::MAX_BYTES
+            output: mutable darray[u8] = []
+            try metadata_json_append_text(output, "{\n  ", max_bytes)
+            try metadata_json_append_json_key(output, "bundle_type", max_bytes)
+            try metadata_json_append_text(output, ": ", max_bytes)
+            try metadata_json_append_escaped(output, arguments.bundle_type, max_bytes)
+            try metadata_json_append_text(output, ",\n  ", max_bytes)
+            try metadata_json_append_json_key(output, "commands", max_bytes)
+            try metadata_json_append_text(output, ": ", max_bytes)
+            try metadata_json_append_assignment_object(output, arguments.commands, "    ", max_bytes)
+            try metadata_json_append_text(output, ",\n  ", max_bytes)
+            try metadata_json_append_json_key(output, "generated_at_utc", max_bytes)
+            try metadata_json_append_text(output, ": ", max_bytes)
+            try metadata_json_append_escaped(output, facts.generated_at_utc, max_bytes)
+            try metadata_json_append_text(output, ",\n  ", max_bytes)
+            try metadata_json_append_json_key(output, "git", max_bytes)
+            try metadata_json_append_text(output, ": ", max_bytes)
+            try metadata_json_append_git_object(output, facts, max_bytes)
+            try metadata_json_append_text(output, ",\n  ", max_bytes)
+            try metadata_json_append_json_key(output, "hostname", max_bytes)
+            try metadata_json_append_text(output, ": ", max_bytes)
+            try metadata_json_append_escaped(output, facts.hostname, max_bytes)
+            try metadata_json_append_text(output, ",\n  ", max_bytes)
+            try metadata_json_append_json_key(output, "out_dir", max_bytes)
+            try metadata_json_append_text(output, ": ", max_bytes)
+            try metadata_json_append_escaped(output, arguments.out_dir, max_bytes)
+            try metadata_json_append_text(output, ",\n  ", max_bytes)
+            try metadata_json_append_json_key(output, "repo_root", max_bytes)
+            try metadata_json_append_text(output, ": ", max_bytes)
+            try metadata_json_append_escaped(output, arguments.repo_root, max_bytes)
+            try metadata_json_append_text(output, ",\n  ", max_bytes)
+            try metadata_json_append_json_key(output, "settings", max_bytes)
+            try metadata_json_append_text(output, ": ", max_bytes)
+            try metadata_json_append_assignment_object(output, arguments.settings, "    ", max_bytes)
+            try metadata_json_append_text(output, ",\n  ", max_bytes)
+            try metadata_json_append_json_key(output, "uname", max_bytes)
+            try metadata_json_append_text(output, ": ", max_bytes)
+            try metadata_json_append_escaped(output, facts.uname, max_bytes)
+            try metadata_json_append_text(output, "\n}\n", max_bytes)
+            return output
 
 
     public:

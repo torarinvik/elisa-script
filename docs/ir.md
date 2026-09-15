@@ -3487,5 +3487,7 @@ replacement. `parse_metadata_arguments` accepts exact or unambiguous argparse-
 style long options, preserves repeated setting/command entries with
 last-value lookup, rejects post-`--` positional data, and applies per-argument,
 path, and entry-count ceilings before a host adapter can create or replace a
-destination. It is pure and does not provide host facts, JSON publication, or
-acceptance evidence yet.
+destination. Its pure `render_metadata_json` seam validates the injected UTC
+second shape and emits bounded, deterministic, sorted `ensure_ascii` JSON with
+last-value assignment materialization. It still does not provide host facts,
+atomic publication, or acceptance evidence.

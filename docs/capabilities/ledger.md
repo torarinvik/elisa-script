@@ -1210,10 +1210,12 @@ a real child failure. Static fixtures cover both cancellation orderings,
 retry-before-reap, stale reap receipts, and forged draining state. No compiler,
 test, script, or audit process was run.
 
-The W04 Lua bundle metadata replacement now has a pure `EsLuaBundleMetadata`
-argument seam. It enforces typed required options, exact or unambiguous long
-option prefixes, repeated setting/command last-value lookup, `--` positional
-boundaries, path/argument/entry ceilings, and typed malformed-assignment
-failures. The focused IR fixture and `check_lua_bundle_metadata.sh` audit are
-source-only; host facts, deterministic `ensure_ascii` JSON, atomic publication,
-and parity execution remain open.
+The W04 Lua bundle metadata replacement now has pure `EsLuaBundleMetadata`
+argument and serialization seams. It enforces typed required options, exact or
+unambiguous long option prefixes, repeated setting/command last-value lookup,
+`--` positional boundaries, path/argument/entry ceilings, and typed malformed-
+assignment failures. The serializer validates the injected UTC-second shape,
+sorts final assignment keys, emits bounded `ensure_ascii` JSON, and rejects
+invalid UTF-8. The focused IR fixture and `check_lua_bundle_metadata.sh` audit
+remain source-only; effectful host facts, atomic publication, and parity
+execution remain open.

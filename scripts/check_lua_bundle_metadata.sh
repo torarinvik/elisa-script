@@ -21,8 +21,11 @@ for declaration in \
     'const module Options:' \
     'struct MetadataAssignment:' \
     'struct MetadataArguments:' \
+    'struct MetadataFacts:' \
     'error MetadataArgumentsError:' \
-    'def parse_metadata_arguments\('; do
+    'error MetadataJsonError:' \
+    'def parse_metadata_arguments\(' \
+    'def render_metadata_json\('; do
     rg -q "$declaration" "$model"
 done
 
@@ -41,7 +44,15 @@ for boundary in \
     'EntryLimitExceeded' \
     'PathTooLong' \
     'metadata_assignment_value' \
-    'valid_and_last_wins'; do
+    'metadata_final_assignments' \
+    'metadata_facts_valid' \
+    'metadata_json_append_hex4' \
+    'MetadataJsonError.InvalidFacts' \
+    'MetadataJsonError.InvalidUtf8' \
+    'MetadataJsonError.OutputLimitExceeded' \
+    'valid_and_last_wins' \
+    'render_metadata_json' \
+    'small_limit'; do
     rg -q "$boundary" "$model" "$fixture"
 done
 
@@ -49,4 +60,4 @@ rg -q 'include "\.\./runtime/lua_bundle_metadata_model\.elisa"' "$ir"
 rg -q 'using EsLuaBundleMetadata' "$fixture"
 rg -q 'W04' "$plan" "$tasks"
 
-printf 'lua bundle metadata audit: typed bounded option parsing, repeated-key last-wins, and explicit boundaries are present\n'
+printf 'lua bundle metadata audit: typed parsing, bounded sorted JSON serialization, repeated-key last-wins, and explicit boundaries are present\n'
