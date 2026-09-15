@@ -4,7 +4,8 @@ This is a read-only identity record for the development/validation boundary.
 It is intentionally separate from execution evidence: compiler and test
 execution remain disabled until the explicit reauthorization gate is opened.
 
-Captured: 2026-09-14
+Initial baseline captured: 2026-09-14
+Latest metadata recheck: 2026-09-15
 
 ## Elisascript worktree
 
