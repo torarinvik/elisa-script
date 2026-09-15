@@ -51,6 +51,7 @@ for boundary in \
     'DirectoryTreeState.Planned and' \
     'DirectoryTreeState.Complete and' \
     'DirectoryTreeState.Cancelled and' \
+    'session.active_depth > session.entries.count' \
     'DirectoryTreeEvent.Descend' \
     'entry.depth != session.active_depth' \
     'can_descend: bool = false' \
@@ -72,7 +73,8 @@ for fixture_pattern in \
     'DirectoryTreeError.NotDirectory' \
     'DirectoryTreeError.ParentDepthMismatch' \
     'DirectoryTreeError.EmbeddedNul' \
-    'repeated_descend_rejected'; do
+    'repeated_descend_rejected' \
+    'forged_orphan_scope'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 rg -Fq 'follow_symlink' "$fixture_file"
