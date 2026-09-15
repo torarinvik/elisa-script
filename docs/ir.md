@@ -1614,9 +1614,10 @@ typed, and `Descend`/`Leave` maintain an explicit depth stack. Cancellation and
 completion require a balanced walk; fail-fast failures inside a nested scope
 remain in `Walking` until matching `Leave` edges unwind to depth zero, then
 become `Failed`, while further visits are rejected. Failure counts are bounded
-before each failure edge, and malformed paths, non-directories, denied
-symlink descent, limits, and identity/byte accounting failures use
-`error[DirectoryTreeError]`.
+before each failure edge, and embedded NULs are classified as
+`DirectoryTreeError.EmbeddedNul` before ordinary malformed-path errors;
+non-directories, denied symlink descent, limits, and identity/byte accounting
+failures use `error[DirectoryTreeError]`.
 
 `EsDirectoryMutation::DirectoryMutationSession` is the bounded recursive
 copy/remove planning boundary. Every admitted entry carries source and (for

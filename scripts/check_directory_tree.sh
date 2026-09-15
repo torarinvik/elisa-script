@@ -43,6 +43,7 @@ for boundary in \
     'DirectoryTreeSymlinkPolicy.DoNotFollow' \
     'DirectoryTreeFailureMode.Collect' \
     'DirectoryTreeError.CycleDetected' \
+    'raise DirectoryTreeError.EmbeddedNul if sview_contains_byte(entry.path, 0)' \
     'DirectoryTreeError.DepthLimitExceeded' \
     'DirectoryTreeError.SymlinkTraversalDenied' \
     'DirectoryTreeError.AccountingInvalid' \
@@ -69,6 +70,7 @@ for fixture_pattern in \
     'DirectoryTreeError.CycleDetected' \
     'DirectoryTreeError.NotDirectory' \
     'DirectoryTreeError.ParentDepthMismatch' \
+    'DirectoryTreeError.EmbeddedNul' \
     'repeated_descend_rejected'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
