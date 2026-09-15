@@ -188,6 +188,9 @@ vectors above their one-million-entry caps before scanning or materializing any
 field, so callers cannot reuse it as a fail-open preflight. Runner validation
 checks those vector counts first, preserving the typed `TooManyArguments` and
 `TooManyEnvironmentEntries` diagnostics before field-length admission.
+Runner kinds are also admitted through an explicit closed-set predicate, so an
+unknown enum ordinal cannot fall through the generic entry/argument states and
+be accepted as a runnable differential side.
 
 The interpreter and direct-bytecode engine cap ordered `observe` events at one
 million per run. Crossing that shared budget raises `InterpretError.OutputLimit`

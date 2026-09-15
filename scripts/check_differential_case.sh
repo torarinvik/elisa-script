@@ -41,7 +41,7 @@ for declaration in 'struct DifferentialWorldFile' 'struct DifferentialWorld' 'st
     fi
 done
 
-for helper in differential_case_effective_limit differential_case_runner_with_limits prepare_differential_case_runner; do
+for helper in differential_case_effective_limit differential_case_runner_with_limits differential_runner_kind_valid prepare_differential_case_runner; do
     if ! rg -q "def $helper\\(" "$source_file"; then
         printf 'differential case audit: missing case limit preparation helper %s\n' "$helper" >&2
         exit 1
@@ -50,6 +50,7 @@ done
 rg -q 'case\.timeout_steps == 0 or case\.timeout_steps <= DIFFERENTIAL_DEFAULT_MAX_TIMEOUT_STEPS' "$source_file"
 rg -q 'case\.max_output_bytes == 0 or case\.max_output_bytes <= DIFFERENTIAL_DEFAULT_MAX_OUTPUT_BYTES' "$source_file"
 rg -q 'runner\.timeout_steps > 0 and runner\.timeout_steps <= DIFFERENTIAL_DEFAULT_MAX_TIMEOUT_STEPS' "$source_file"
+rg -q 'DifferentialRunnerIssueKind\.InvalidKind' "$source_file"
 rg -q 'invocation\.timeout_steps > DIFFERENTIAL_DEFAULT_MAX_TIMEOUT_STEPS' "$source_file"
 rg -q 'timeout_steps: timeout_steps, max_output_bytes: max_output_bytes, required_effects: runner\.required_effects, required_errors: runner\.required_errors' "$source_file"
 rg -q 'arguments: runner\.arguments, handlers: runner\.handlers, working_directory: runner\.working_directory, environment: runner\.environment, stdin: runner\.stdin, stdin_bytes: runner\.stdin_bytes, stdin_binary: runner\.stdin_binary, protocol: runner\.protocol' "$source_file"
@@ -72,7 +73,7 @@ rg -q 'def differential_stream_pair_within_limit\(' "$source_file"
 rg -q 'differential_stream_pair_within_limit\(stdout_size, stderr_size, invocation\.max_output_bytes\)' "$source_file"
 rg -q 'differential_stream_pair_within_limit\(stdout_size, stderr_size, max_output_bytes\)' "$source_file"
 
-for fixture in differential_case_validation_rejects_limits_above_shared_hard_budgets differential_case_runner_preparation_tightens_both_sides_without_losing_runner_fields differential_case_runner_preparation_inherits_each_sides_runner_limits_when_case_limits_are_zero differential_runner_validation_rejects_timeout_above_shared_hard_budget differential_process_execution_rejects_timeout_above_shared_hard_budget_before_launch differential_process_execution_enforces_one_aggregate_output_ceiling differential_elisascript_case_output_ceiling_rejects_before_console_write; do
+for fixture in differential_case_validation_rejects_limits_above_shared_hard_budgets differential_case_runner_preparation_tightens_both_sides_without_losing_runner_fields differential_case_runner_preparation_inherits_each_sides_runner_limits_when_case_limits_are_zero differential_runner_validation_accepts_every_declared_runner_kind differential_runner_validation_rejects_timeout_above_shared_hard_budget differential_process_execution_rejects_timeout_above_shared_hard_budget_before_launch differential_process_execution_enforces_one_aggregate_output_ceiling differential_elisascript_case_output_ceiling_rejects_before_console_write; do
     if ! rg -q "def $fixture\\(" "$fixture_file"; then
         printf 'differential case audit: missing case limit fixture %s\n' "$fixture" >&2
         exit 1
