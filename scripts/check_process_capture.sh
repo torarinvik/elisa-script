@@ -10,9 +10,10 @@ differential="$repo_root/src/testing/differential.elisa"
 process_runtime="$repo_root/src/runtime/process_posix.elisa"
 source_file="$repo_root/src/ir/source_file.elisa"
 tests="$repo_root/test/differential/elisascript_differential_test.elisa"
+interpreter_tests="$repo_root/test/ir/elisascript_interpreter_test.elisa"
 plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$interpreter" "$differential" "$process_runtime" "$source_file" "$tests" "$plan"; do
+for required_file in "$interpreter" "$differential" "$process_runtime" "$source_file" "$tests" "$interpreter_tests" "$plan"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'process capture audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -29,6 +30,8 @@ rg -q 'elisascript_posix_tmpfile\(\)' "$differential"
 # the shared terminate/reap edge before releasing stream handles.
 rg -q 'def process_setpgid_parent\(' "$interpreter"
 rg -q 'def process_wait_terminate\(' "$interpreter"
+rg -q 'def process_wait_group_has_members\(' "$interpreter"
+rg -q 'def process_wait_group_quiescent\(' "$interpreter"
 rg -q 'def differential_setpgid_parent\(' "$differential"
 rg -q 'def differential_terminate_process\(' "$differential"
 rg -q 'const module ProcessWait:' "$interpreter"
@@ -44,6 +47,7 @@ rg -q 'process_wait_signal\(-waiter\.pid, ProcessWait::SIGNAL_KILL\)' "$interpre
 rg -q 'differential_signal_process\(-pid, DIFFERENTIAL_SIGNAL_TERM\)' "$differential"
 rg -q 'differential_signal_process\(-pid, DIFFERENTIAL_SIGNAL_KILL\)' "$differential"
 rg -q 'process_wait_terminate\(waiter\)' "$interpreter"
+rg -U -q 'waiter\.group_ready and not process_wait_group_quiescent\(waiter\.pid\):[\s\S]{0,768}process_wait_terminate_group\(waiter\)' "$interpreter"
 rg -q 'differential_terminate_process\(pid, group_ready, status\)' "$differential"
 rg -q 'elisascript_posix_waitpid_impl' "$process_runtime"
 
@@ -74,6 +78,7 @@ rg -q 'differential_process_capture_adapter_rejects_oversized_inputs' "$tests"
 rg -q 'process capture exceeds output limit' "$tests"
 rg -q 'process capture inputs exceed differential budget' "$tests"
 rg -q 'process capture inputs are structurally invalid' "$tests"
+rg -q 'interpreter_rejects_capture_before_descendant_group_quiescence' "$interpreter_tests"
 rg -q 'timeout' "$differential"
 rg -q 'Q07:.*process capture' "$plan"
 

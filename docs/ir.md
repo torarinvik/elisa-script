@@ -2181,7 +2181,12 @@ walks in the reference helper, use `lstat` to avoid following symlink entries,
 and are eligible for direct bytecode dispatch. `CopyTree` normalizes the source
 and destination lexically before mutation and rejects a
 source-equal or descendant destination, preventing the recursive walk from
-discovering its own output; the depth bound remains defense in depth.
+discovering its own output; the depth bound remains defense in depth. Its
+canonical overlap preflight decomposes a normalized destination, so a relative
+destination with no slash resolves its parent through `.` instead of passing an
+empty spelling to `realpath`, and a trailing separator cannot erase the
+destination leaf. `dest` and `dest/` therefore share the same pre-mutation
+safety check.
 `PathJoin`, `PathParent`, `PathName`, `PathExtension`, and `PathStem` are pure typed path-shape operations.
 `PathJoin` verifies `Named(Path) × Text -> Named(Path)` and uses the core `Fs.join`
 separator/absolute-leaf rules; `PathParent` verifies `Named(Path) -> Named(Path)`;
@@ -2335,6 +2340,14 @@ group before returning, so a surviving descendant cannot escape cleanup.
 Parent-side `setpgid` treats POSIX `EACCES` as confirmed admission when the
 child has already crossed `exec` after its child-side group setup; only other
 non-retryable failures use the direct-child fallback.
+After the direct leader is reaped, capture-capable process waits probe the
+confirmed private group with signal zero for a bounded grace window before
+publishing temporary-file output. A surviving group member (for example, a
+background child that inherited stdout or stderr) is terminated and reported
+as `InterpretFailure.Process` rather than allowing a partial regular-file
+snapshot to escape. This is group-quiescence evidence only: descendants that
+escape or reparent outside the group still require an authoritative host
+supervisor for whole-tree containment.
 `EsProcess::ProcessCommand` is the higher-level shell-free command value for
 adapters that need more than the primitive opcode: it keeps the executable,
 ordered argv, child working directory, ordered environment overrides, stdio

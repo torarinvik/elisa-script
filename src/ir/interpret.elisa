@@ -4731,13 +4731,22 @@ extend EsIr:
         def copy_tree_destination_canonical_overlaps_source(machine: mutable Machine&, source: sview, destination: sview) -> bool can[Memory.Allocate, Abort.Panic]:
             canonical_source: RuntimeValue = evaluate_path_real(machine, runtime_text(source))
             return false if machine.failure != InterpretFailure.None
-            destination_parent: sview = Fs::parent(destination)
-            if not path_shape_text_valid(destination_parent):
+            # Decompose a normalized destination.  Without this, a valid
+            # relative destination such as `build-out` produces an empty
+            # parent and is sent to `realpath("")`, while `build-out/`
+            # produces an empty filename.  Both spellings are ordinary
+            # filesystem paths and must reach the same canonical overlap
+            # check before the destination mkdir.
+            normalized_destination: dstr = Fs::normalize(&perm_arena, destination)
+            normalized_destination_text: sview = bytes_view(normalized_destination)
+            if not path_shape_result_valid(normalized_destination_text):
                 interpret_set_failure(machine, InterpretFailure.FileIo)
                 return false
+            parent_spelling: sview = Fs::parent(normalized_destination_text)
+            destination_parent: sview = "." if parent_spelling == "" else parent_spelling
             canonical_parent: RuntimeValue = evaluate_path_real(machine, runtime_text(destination_parent))
             return false if machine.failure != InterpretFailure.None
-            destination_leaf: sview = Fs::filename(destination)
+            destination_leaf: sview = Fs::filename(normalized_destination_text)
             if not path_shape_text_valid(destination_leaf) or not path_join_length_fits(canonical_parent.text, destination_leaf):
                 interpret_set_failure(machine, InterpretFailure.FileIo)
                 return false
@@ -5483,6 +5492,37 @@ extend EsIr:
             process_wait_signal(-waiter.pid, ProcessWait::SIGNAL_KILL)
 
 
+        # A reaped leader does not imply that a child which inherited the
+        # temporary stdout/stderr descriptors has stopped.  Probe only the
+        # confirmed private group; an unknown host error is treated as
+        # "still present" so a capture is never published without a bounded
+        # quiescence observation.
+        def process_wait_group_has_members(pid: int) -> bool can[Blocking.IO]:
+            retries: mutable usize = 0
+            while retries <= PosixRetry::EINTR_RETRIES:
+                return true if elisascript_posix_kill(-pid, 0) == 0
+                errno: mutable int& = elisascript_posix_errno()
+                return false if errno[0] == EsRuntime::DarwinErrno::ESRCH
+                return true if errno[0] == EsRuntime::DarwinErrno::EACCES
+                if errno[0] == EsRuntime::DarwinErrno::EINTR:
+                    retries <- retries + 1
+                    continue
+                return true
+            return true
+
+
+        # Give short-lived descendants a bounded opportunity to close their
+        # inherited descriptors.  A surviving group is handled by the caller
+        # as a process failure and is terminated before any output is read.
+        def process_wait_group_quiescent(pid: int) -> bool can[Blocking.IO]:
+            polls: mutable u64 = 0
+            while polls < ProcessWait::TERM_GRACE_POLLS:
+                return true if not process_wait_group_has_members(pid)
+                return false if not process_wait_grace_sleep()
+                polls <- polls + 1
+            return not process_wait_group_has_members(pid)
+
+
         def process_resource_acquire(machine: mutable Machine&) -> bool:
             if runtime_resource_acquire(machine.resource_usage, machine.resource_policy, RuntimeResourceCounter.Process):
                 return true
@@ -5609,6 +5649,15 @@ extend EsIr:
                 # final sample cannot be skipped.
                 if process_wait_output_exceeded(waiter):
                     process_wait_terminate_group(waiter)
+                    return ProcessWaitState.Error
+                if waiter.group_ready and not process_wait_group_quiescent(waiter.pid):
+                    # Never read a regular-file snapshot while a confirmed
+                    # group member can still append through an inherited
+                    # descriptor.  The group cleanup is best effort; the
+                    # typed Process failure prevents unstable evidence from
+                    # escaping this boundary.
+                    process_wait_terminate_group(waiter)
+                    waiter.failed <- true
                     return ProcessWaitState.Error
                 return ProcessWaitState.Exited
             if waited != waiter.pid:
