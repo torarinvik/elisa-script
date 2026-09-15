@@ -1868,7 +1868,10 @@ discovery, process launch/reap, and report transport; the source fixture and
 `error_text` is promoted into the test message when no explicit message is
 provided (and conflicting non-empty values are rejected), so host diagnostics
 cannot vanish from the sealed report. Per-channel diagnostic text is capped at
-1 MiB while the runner's retained aggregate remains capped at 64 MiB.
+1 MiB while the runner's retained aggregate remains capped at 64 MiB. Running
+and successful terminal snapshots also reject nonzero failed, crashed, timed
+out, cancelled, or error counters unless the corresponding failure/cancellation
+state is exposed, preventing forged failures from being reported as success.
 
 Before any regex opcode executes, both backends enforce a shared input-size
 boundary: haystack text is at most 64 MiB, the compiled-pattern payload is at

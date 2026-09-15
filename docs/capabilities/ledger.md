@@ -696,7 +696,8 @@ implementations now receive an explicit system/custom/test-only trust policy
 shape with paired client identity paths; certificate validation, streaming, and
 live service adapters remain open. `NetworkStream`/`NetworkChunk` now supply a
 bounded, sequence-checked pause/resume buffer contract with explicit drain and
-cancel edges for those adapters; cancellation clears buffered payload state.
+cancel edges for those adapters; cancellation clears buffered payload state
+before both `Cancelling` and `Cancelled` states can be observed.
 
 ## Evidence record template
 
@@ -1307,3 +1308,21 @@ The process environment resolver now rechecks the materialized `Inherit` and
 overlay/copy, closing the gap where valid bounded inputs could combine into an
 oversized child environment. The source fixture and documentation are static
 evidence only; no compiler, test, script, or audit process was run.
+
+The differential generator validator now applies the same nonempty-input
+readiness rule as its `Complete` transition, rejecting caller-forged completed
+sessions with zero generated cases. The focused fixture, documentation, and
+compiler-free checker are static evidence only; no compiler, test, script, or
+audit process was run.
+
+The network stream validator now rejects buffered payload or final-chunk state
+in both `Cancelling` and `Cancelled`; cancellation clears those fields before
+exposing either state. The focused fixture, documentation, and compiler-free
+checker are static evidence only; no compiler, test, script, or audit process
+was run.
+
+The test-runner validator now rejects `Running` and successful `Complete`
+snapshots that carry hidden failed/crashed/timed-out/cancelled/error counters,
+and rejects `Cancelled` snapshots carrying hidden failures unless the failure
+latch exposes `Failed`. The focused forged-runner fixture and audit token are
+static evidence only; no compiler, test, script, or audit process was run.
