@@ -1619,7 +1619,8 @@ Merge runs are consumed in ordinal order; `Commit` is accepted
 only after every sealed run has been merged. Destination/staging collisions,
 duplicate run paths, active-run misuse, forged lifecycle state, accounting drift,
 impossible inactive-run cursors, and cancellation or failure transitions are typed through
-`error[RecordSpillError]`; the host owns
+`error[RecordSpillError]`. `Merging` and `Sealed` states require at least one
+sealed run, matching the only transition that can enter either state; the host owns
 sorting, temporary-file creation, fsync/rename, cleanup, and crash recovery.
 
 `EsDirectoryTree::DirectoryTreeSession` makes recursive filesystem traversal

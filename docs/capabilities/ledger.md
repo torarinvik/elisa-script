@@ -1071,8 +1071,9 @@ pipe/process adapters, signal escalation, and execution evidence remain open.
 ES-SCRIPT-034 | EsRecordSpill supplies a bounded external-sort run contract.
 Distinct staging/run/destination paths, stable run ordinals, per-run and
 aggregate record/byte ceilings, explicit `SealRun → BeginMerge → MergeRun* →
-Commit` ordering, ordered merge indices, Ready-to-Spilling re-entry, and failure/cancellation cleanup
-edges are validated through `error[RecordSpillError]`. The focused IR fixture,
+Commit` ordering, ordered merge indices, Ready-to-Spilling re-entry, nonempty
+Merging/Sealed states, and failure/cancellation cleanup edges are validated
+through `error[RecordSpillError]`. The focused IR fixture,
 namespace inclusion, documentation, and check_record_spill.sh audit are static
 evidence; sorting, fsync/rename, cleanup, crash recovery, and host execution
 remain open.

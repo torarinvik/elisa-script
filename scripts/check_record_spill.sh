@@ -43,6 +43,7 @@ for boundary in \
     'RecordSpillState.Merging' \
     'RecordSpillState.Sealed' \
     'session.merged_runs != session.runs.count' \
+    'session.state == RecordSpillState.Merging or session.state == RecordSpillState.Sealed' \
     'RecordSpillEvent.SealRun' \
     'session.state <- RecordSpillState.Spilling' \
     'RecordSpillEvent.BeginMerge' \
@@ -64,6 +65,8 @@ for fixture_pattern in \
     'RecordSpillEvent.MergeRun' \
     'RecordSpillError.MergeOrderInvalid' \
     'RecordSpillError.AccountingInvalid' \
+    'forged_empty_merging' \
+    'forged_empty_sealed' \
     'forged_state'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
