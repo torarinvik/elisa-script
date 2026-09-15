@@ -44,6 +44,7 @@ for boundary in \
     'not session.has_last_zero and session.last_zero_start != 0' \
     'session.has_last_zero and session.last_zero_start > session.input_bytes' \
     'session.state == RegexCallbackState.Complete and session.cursor != session.input_bytes' \
+    'session.cursor <- session.input_bytes' \
     'policy.max_captures != 0' \
     'session.pending and session.state != RegexCallbackState.Matching' \
     'RegexCallbackEvent.Match' \
