@@ -137,13 +137,19 @@ filesystem, process, hostname, or wall-clock access. A typed host adapter then
 supplies Git/hostname/uname results and an injected clock value. The serializer
 must manually or equivalently emit sorted, two-space JSON with
 `ensure_ascii=True`. For atomic publication, the caller must securely create a
-private sibling staging file and retain its owned descriptor before invoking
-`file_stream_publish_staged`; a path-only helper call is not sufficient to
-prove exclusive staging or crash-safe replacement. The typed publication seam
+private sibling staging file and retain its owned descriptor before invoking a
+descriptor-aware publication adapter; the existing path-only
+`file_stream_publish_staged` helper cannot consume these proofs. A path-only
+helper call is not sufficient to prove exclusive staging or crash-safe
+replacement. The typed publication seam
 must also retain parent/staging device and inode identities under one owner
-token, prove a directory parent and regular private single-link staging file,
-and enter an explicit uncertain-publication state if the rename acknowledgement
-is lost after the publish edge.
+token, retain both owned descriptors through the publish edge, prove a
+directory parent and regular private single-link staging file, and reject
+publication after either descriptor has been closed. A close edge is cleanup
+only; it is also rejected while rename is in flight until the host reports
+success or an uncertain outcome. The seam must enter an explicit
+uncertain-publication state if rename or post-rename directory durability
+acknowledgement is lost after the publish edge.
 
 ## Acceptance matrix
 

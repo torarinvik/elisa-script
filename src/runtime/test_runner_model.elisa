@@ -1,0 +1,649 @@
+# Typed test discovery, execution, retry, and report-sealing contract.
+#
+# The runner is deliberately host-neutral. A host discovers TestSpec values,
+# launches their ProcessCommand values, and submits a ProcessResult together
+# with the one-based attempt token. The state machine never spawns a process or
+# writes a report itself; it only proves that selection, ownership, retries,
+# terminal outcomes, cancellation, and OutputDocument construction agree.
+
+module EsTestRunner:
+    using EsOutput
+    using EsProcess
+
+    public:
+        const module Limits:
+            TESTS: usize = 4096
+            NAME_BYTES: usize = 4096
+            SELECTION_REASON_BYTES: usize = 65536
+            # Individual diagnostics/captured channels are capped below the
+            # aggregate runner/output budget to keep one hostile case from
+            # monopolizing retained memory.
+            MESSAGE_BYTES: usize = 1048576
+            ATTEMPTS: usize = 16
+            PARALLEL: usize = 64
+            OUTPUT_BYTES: usize = 67108864
+
+
+        const enum TestRetryPolicy of u8:
+            None
+            Failed
+            AllFailures
+
+
+        const enum TestRunnerState of u8:
+            Planned
+            Discovering
+            Selecting
+            Running
+            Draining
+            Reporting
+            Complete
+            Failed
+            Cancelling
+            Cancelled
+
+
+        const enum TestCaseState of u8:
+            Discovered
+            Selected
+            Running
+            Retryable
+            Passed
+            Flaky
+            Failed
+            Skipped
+            Crashed
+            TimedOut
+            Cancelled
+            Error
+
+
+        const enum TestOutcome of u8:
+            NotRun
+            Passed
+            Flaky
+            Failed
+            Skipped
+            Crashed
+            TimedOut
+            Cancelled
+            Error
+
+
+        const enum TestRunnerEvent of u8:
+            Begin
+            Discover
+            DiscoveryDone
+            Select
+            SelectionDone
+            Launch
+            Complete
+            Retry
+            BeginReport
+            SealReport
+            Fail
+            Cancel
+            CancelAck
+
+
+        struct TestSpec:
+            test_id: u64
+            name: sview
+            command: ProcessCommand
+
+
+        struct TestResult:
+            published: bool = false
+            outcome: TestOutcome = TestOutcome.NotRun
+            process: ProcessResult = ProcessResult{kind: ProcessResultKind.SpawnFailure}
+            attempt_token: u64 = 0
+            duration_ms: u64 = 0
+            # Host error text is projected into message when message is empty;
+            # conflicting non-empty diagnostics are rejected at completion.
+            message: sview = ""
+
+
+        struct TestCase:
+            spec: TestSpec
+            selected: bool = false
+            selection_reason: sview = ""
+            state: TestCaseState = TestCaseState.Discovered
+            attempts: usize = 0
+            attempt_token: u64 = 0
+            result: TestResult = TestResult{}
+
+
+        struct TestRunner:
+            cases: darray[TestCase] = []
+            state: TestRunnerState = TestRunnerState.Planned
+            retry_policy: TestRetryPolicy = TestRetryPolicy.AllFailures
+            max_attempts: usize = Limits::ATTEMPTS
+            max_parallel: usize = Limits::PARALLEL
+            active: usize = 0
+            selected: usize = 0
+            terminal: usize = 0
+            passed: usize = 0
+            flaky: usize = 0
+            failed: usize = 0
+            skipped: usize = 0
+            crashed: usize = 0
+            timed_out: usize = 0
+            cancelled: usize = 0
+            errors: usize = 0
+            output_bytes: usize = 0
+            failure_latched: bool = false
+            cancellation_requested: bool = false
+            report: OutputDocument = OutputDocument{}
+
+
+        error TestRunnerError:
+            InvalidState
+            InvalidEvent
+            InvalidPolicy
+            InvalidRetryPolicy
+            InvalidIndex
+            InvalidSpec
+            InvalidTestId
+            DuplicateTestId
+            DuplicateTestName
+            TestLimitExceeded
+            NameInvalid
+            SelectionReasonInvalid
+            MessageInvalid
+            AttemptLimitExceeded
+            ParallelLimitExceeded
+            StaleAttempt
+            InvalidCaseState
+            InvalidOutcome
+            CompletionNotReady
+            RetryNotReady
+            ReportNotReady
+            ReportInvalid
+            AccountingInvalid
+            CancelNotReady
+
+
+    private:
+        def test_retry_policy_valid(policy: TestRetryPolicy) -> bool:
+            return policy in {TestRetryPolicy.None, TestRetryPolicy.Failed, TestRetryPolicy.AllFailures}
+
+
+        def test_runner_state_valid(state: TestRunnerState) -> bool:
+            return state in {TestRunnerState.Planned, TestRunnerState.Discovering, TestRunnerState.Selecting, TestRunnerState.Running, TestRunnerState.Draining, TestRunnerState.Reporting, TestRunnerState.Complete, TestRunnerState.Failed, TestRunnerState.Cancelling, TestRunnerState.Cancelled}
+
+
+        def test_case_state_valid(state: TestCaseState) -> bool:
+            return state in {TestCaseState.Discovered, TestCaseState.Selected, TestCaseState.Running, TestCaseState.Retryable, TestCaseState.Passed, TestCaseState.Flaky, TestCaseState.Failed, TestCaseState.Skipped, TestCaseState.Crashed, TestCaseState.TimedOut, TestCaseState.Cancelled, TestCaseState.Error}
+
+
+        def test_outcome_valid(outcome: TestOutcome) -> bool:
+            return outcome in {TestOutcome.NotRun, TestOutcome.Passed, TestOutcome.Flaky, TestOutcome.Failed, TestOutcome.Skipped, TestOutcome.Crashed, TestOutcome.TimedOut, TestOutcome.Cancelled, TestOutcome.Error}
+
+
+        def test_runner_event_valid(event: TestRunnerEvent) -> bool:
+            return event in {TestRunnerEvent.Begin, TestRunnerEvent.Discover, TestRunnerEvent.DiscoveryDone, TestRunnerEvent.Select, TestRunnerEvent.SelectionDone, TestRunnerEvent.Launch, TestRunnerEvent.Complete, TestRunnerEvent.Retry, TestRunnerEvent.BeginReport, TestRunnerEvent.SealReport, TestRunnerEvent.Fail, TestRunnerEvent.Cancel, TestRunnerEvent.CancelAck}
+
+
+        def test_runner_text_valid(value: sview, limit: usize, allow_empty: bool = true) -> bool:
+            return false if not allow_empty and sview_len(value) == 0
+            return sview_len(value) < limit and not sview_contains_byte(value, 0)
+
+
+        def test_case_terminal(state: TestCaseState) -> bool:
+            return state == TestCaseState.Passed or state == TestCaseState.Flaky or state == TestCaseState.Failed or state == TestCaseState.Skipped or state == TestCaseState.Crashed or state == TestCaseState.TimedOut or state == TestCaseState.Cancelled or state == TestCaseState.Error
+
+
+        def test_case_active(state: TestCaseState) -> bool:
+            return state == TestCaseState.Running
+
+
+        def test_case_result_bytes(case: TestCase, limit: usize) -> usize error[TestRunnerError]:
+            total: mutable usize = 0
+            if case.result.published:
+                raise TestRunnerError.MessageInvalid if not test_runner_text_valid(case.result.message, Limits::MESSAGE_BYTES)
+                raise TestRunnerError.MessageInvalid if not test_runner_text_valid(case.result.process.stdout, Limits::MESSAGE_BYTES)
+                raise TestRunnerError.MessageInvalid if not test_runner_text_valid(case.result.process.stderr, Limits::MESSAGE_BYTES)
+                raise TestRunnerError.MessageInvalid if not test_runner_text_valid(case.result.process.error_text, Limits::MESSAGE_BYTES)
+                raise TestRunnerError.MessageInvalid if case.result.process.error_text != "" and case.result.message != case.result.process.error_text
+                raise TestRunnerError.MessageInvalid if not test_runner_text_valid(case.spec.name, Limits::NAME_BYTES, false)
+                for value in [case.spec.name, case.result.message, case.result.process.stdout, case.result.process.stderr] |total, limit|:
+                    raise TestRunnerError.AccountingInvalid if total > limit
+                    raise TestRunnerError.AccountingInvalid if sview_len(value) > limit - total
+                    total <- total + sview_len(value)
+            return total
+
+
+        def test_result_unpublished_valid(result: TestResult) -> bool:
+            return not result.published and result.outcome == TestOutcome.NotRun and result.process.kind == ProcessResultKind.SpawnFailure and result.process.exit_status == 0 and result.process.signal == 0 and result.process.stdout == "" and result.process.stderr == "" and result.process.error_text == "" and result.attempt_token == 0 and result.duration_ms == 0 and result.message == ""
+
+
+        def test_result_matches_state(result: TestResult, state: TestCaseState, attempts: usize, attempt_token: u64, cancellation_requested: bool = false) -> bool error[TestRunnerError]:
+            raise TestRunnerError.InvalidOutcome if not result.published or not test_outcome_valid(result.outcome) or result.outcome == TestOutcome.NotRun
+            raise TestRunnerError.InvalidOutcome if result.attempt_token != attempt_token
+            raise TestRunnerError.MessageInvalid if not test_runner_text_valid(result.message, Limits::MESSAGE_BYTES)
+            raise TestRunnerError.MessageInvalid if result.process.error_text != "" and result.message != result.process.error_text
+            raise TestRunnerError.InvalidOutcome if result.outcome == TestOutcome.Passed and state != TestCaseState.Passed
+            raise TestRunnerError.InvalidOutcome if result.outcome == TestOutcome.Flaky and state != TestCaseState.Flaky
+            raise TestRunnerError.InvalidOutcome if result.outcome == TestOutcome.Failed and state != TestCaseState.Failed
+            raise TestRunnerError.InvalidOutcome if result.outcome == TestOutcome.Skipped and state != TestCaseState.Skipped
+            raise TestRunnerError.InvalidOutcome if result.outcome == TestOutcome.Crashed and state != TestCaseState.Crashed
+            raise TestRunnerError.InvalidOutcome if result.outcome == TestOutcome.TimedOut and state != TestCaseState.TimedOut
+            raise TestRunnerError.InvalidOutcome if result.outcome == TestOutcome.Cancelled and state != TestCaseState.Cancelled
+            raise TestRunnerError.InvalidOutcome if result.outcome == TestOutcome.Error and state != TestCaseState.Error
+            valid_process: mutable bool = false
+            catch validate_process_result(result.process):
+                ok:
+                    valid_process <- true
+                error failure:
+                    valid_process <- false
+            raise TestRunnerError.InvalidOutcome if not valid_process
+            if result.outcome == TestOutcome.Skipped:
+                raise TestRunnerError.InvalidOutcome if attempts != 0 or attempt_token != 0 or result.process.kind != ProcessResultKind.Cancelled
+                return true
+            if result.outcome == TestOutcome.Cancelled and attempts == 0:
+                raise TestRunnerError.InvalidOutcome if attempt_token != 0 or result.process.kind != ProcessResultKind.Cancelled
+                return true
+            raise TestRunnerError.AttemptLimitExceeded if attempts == 0 or result.attempt_token == 0
+            raise TestRunnerError.InvalidOutcome if result.outcome == TestOutcome.Flaky and attempts < 2
+            raise TestRunnerError.InvalidOutcome if result.outcome == TestOutcome.Passed and attempts > 1
+            derived: TestOutcome = try test_outcome_from_process(result.process)
+            raise TestRunnerError.InvalidOutcome if result.outcome == TestOutcome.Flaky and derived != TestOutcome.Passed
+            unexpected_cancellation: bool = result.outcome == TestOutcome.Error and result.process.kind == ProcessResultKind.Cancelled and not cancellation_requested
+            raise TestRunnerError.InvalidOutcome if result.outcome != TestOutcome.Flaky and derived != result.outcome and not unexpected_cancellation
+            raise TestRunnerError.InvalidOutcome if unexpected_cancellation and state != TestCaseState.Error
+            return true
+
+
+        def test_spec_valid(spec: TestSpec) -> bool error[TestRunnerError]:
+            raise TestRunnerError.InvalidTestId if spec.test_id == 0
+            raise TestRunnerError.NameInvalid if not test_runner_text_valid(spec.name, Limits::NAME_BYTES, false)
+            valid_command: mutable bool = false
+            catch validate_process_command(spec.command):
+                ok:
+                    valid_command <- true
+                error failure:
+                    valid_command <- false
+            raise TestRunnerError.InvalidSpec if not valid_command
+            return true
+
+
+        def test_outcome_from_process(result: ProcessResult) -> TestOutcome error[TestRunnerError]:
+            valid_result: mutable bool = false
+            catch validate_process_result(result):
+                ok:
+                    valid_result <- true
+                error failure:
+                    valid_result <- false
+            raise TestRunnerError.InvalidOutcome if not valid_result
+            if result.kind == ProcessResultKind.Exited:
+                return TestOutcome.Passed if result.exit_status == 0 else TestOutcome.Failed
+            return TestOutcome.Crashed if result.kind == ProcessResultKind.Signaled else TestOutcome.TimedOut if result.kind == ProcessResultKind.TimedOut else TestOutcome.Cancelled if result.kind == ProcessResultKind.Cancelled else TestOutcome.Error
+
+
+        def test_outcome_retryable(outcome: TestOutcome, policy: TestRetryPolicy) -> bool:
+            return false if policy == TestRetryPolicy.None or outcome == TestOutcome.Cancelled or outcome == TestOutcome.Skipped or outcome == TestOutcome.Passed or outcome == TestOutcome.Flaky
+            return outcome == TestOutcome.Failed if policy == TestRetryPolicy.Failed else true
+
+
+        def test_runner_refresh_accounting(runner: mutable TestRunner&) -> void error[TestRunnerError]:
+            active: mutable usize = 0
+            selected: mutable usize = 0
+            terminal: mutable usize = 0
+            passed: mutable usize = 0
+            flaky: mutable usize = 0
+            failed: mutable usize = 0
+            skipped: mutable usize = 0
+            crashed: mutable usize = 0
+            timed_out: mutable usize = 0
+            cancelled: mutable usize = 0
+            errors: mutable usize = 0
+            output: mutable usize = 0
+            for case in runner.cases |runner, active, selected, terminal, passed, flaky, failed, skipped, crashed, timed_out, cancelled, errors, output|:
+                selected <- selected + 1 if case.selected
+                active <- active + 1 if test_case_active(case.state)
+                if test_case_terminal(case.state):
+                    terminal <- terminal + 1
+                    passed <- passed + 1 if case.state == TestCaseState.Passed
+                    flaky <- flaky + 1 if case.state == TestCaseState.Flaky
+                    failed <- failed + 1 if case.state == TestCaseState.Failed
+                    skipped <- skipped + 1 if case.state == TestCaseState.Skipped
+                    crashed <- crashed + 1 if case.state == TestCaseState.Crashed
+                    timed_out <- timed_out + 1 if case.state == TestCaseState.TimedOut
+                    cancelled <- cancelled + 1 if case.state == TestCaseState.Cancelled
+                    errors <- errors + 1 if case.state == TestCaseState.Error
+                if case.result.published:
+                    case_bytes: usize = try test_case_result_bytes(case, Limits::OUTPUT_BYTES)
+                    raise TestRunnerError.AccountingInvalid if output > Limits::OUTPUT_BYTES or case_bytes > Limits::OUTPUT_BYTES - output
+                    output <- output + case_bytes
+            runner.active <- active
+            runner.selected <- selected
+            runner.terminal <- terminal
+            runner.passed <- passed
+            runner.flaky <- flaky
+            runner.failed <- failed
+            runner.skipped <- skipped
+            runner.crashed <- crashed
+            runner.timed_out <- timed_out
+            runner.cancelled <- cancelled
+            runner.errors <- errors
+            runner.output_bytes <- output
+            return
+
+
+        def test_runner_accounting_matches(runner: TestRunner&) -> bool error[TestRunnerError]:
+            active: mutable usize = 0
+            selected: mutable usize = 0
+            terminal: mutable usize = 0
+            passed: mutable usize = 0
+            flaky: mutable usize = 0
+            failed: mutable usize = 0
+            skipped: mutable usize = 0
+            crashed: mutable usize = 0
+            timed_out: mutable usize = 0
+            cancelled: mutable usize = 0
+            errors: mutable usize = 0
+            output: mutable usize = 0
+            for case in runner.cases |runner, active, selected, terminal, passed, flaky, failed, skipped, crashed, timed_out, cancelled, errors, output|:
+                selected <- selected + 1 if case.selected
+                active <- active + 1 if test_case_active(case.state)
+                terminal <- terminal + 1 if test_case_terminal(case.state)
+                passed <- passed + 1 if case.state == TestCaseState.Passed
+                flaky <- flaky + 1 if case.state == TestCaseState.Flaky
+                failed <- failed + 1 if case.state == TestCaseState.Failed
+                skipped <- skipped + 1 if case.state == TestCaseState.Skipped
+                crashed <- crashed + 1 if case.state == TestCaseState.Crashed
+                timed_out <- timed_out + 1 if case.state == TestCaseState.TimedOut
+                cancelled <- cancelled + 1 if case.state == TestCaseState.Cancelled
+                errors <- errors + 1 if case.state == TestCaseState.Error
+                if case.result.published:
+                    case_bytes: usize = try test_case_result_bytes(case, Limits::OUTPUT_BYTES)
+                    raise TestRunnerError.AccountingInvalid if output > Limits::OUTPUT_BYTES or case_bytes > Limits::OUTPUT_BYTES - output
+                    output <- output + case_bytes
+            return active == runner.active and selected == runner.selected and terminal == runner.terminal and passed == runner.passed and flaky == runner.flaky and failed == runner.failed and skipped == runner.skipped and crashed == runner.crashed and timed_out == runner.timed_out and cancelled == runner.cancelled and errors == runner.errors and output == runner.output_bytes
+
+
+        def test_runner_all_terminal(runner: TestRunner&) -> bool:
+            return runner.terminal == runner.cases.count
+
+
+        def test_case_status(case: TestCase) -> OutputStatus error[TestRunnerError]:
+            return OutputStatus.Pass if case.state == TestCaseState.Passed or case.state == TestCaseState.Flaky else OutputStatus.Skip if case.state == TestCaseState.Skipped or case.state == TestCaseState.Cancelled else OutputStatus.Fail if case.state == TestCaseState.Failed else OutputStatus.Error
+
+
+        def test_runner_build_report(runner: mutable TestRunner&) -> void error[TestRunnerError] can[Memory.Allocate, Abort.Panic]:
+            report_started: mutable bool = false
+            catch advance_output_document(runner.report, OutputDocumentEvent.Begin):
+                ok value:
+                    report_started <- value == OutputDocumentState.Building
+                error failure:
+                    report_started <- false
+            raise TestRunnerError.ReportInvalid if not report_started
+            for case in runner.cases |runner|:
+                record: OutputRecord = OutputRecord{name: case.spec.name, status: try test_case_status(case), message: case.result.message, stdout: case.result.process.stdout, stderr: case.result.process.stderr, duration_ms: case.result.duration_ms}
+                appended: mutable bool = false
+                catch advance_output_document(runner.report, OutputDocumentEvent.Append, record):
+                    ok value:
+                        appended <- value == OutputDocumentState.Building
+                    error failure:
+                        appended <- false
+                raise TestRunnerError.ReportInvalid if not appended
+            return
+
+
+    public:
+        def validate_test_runner(runner: TestRunner&) -> bool error[TestRunnerError]:
+            raise TestRunnerError.InvalidState if not test_runner_state_valid(runner.state)
+            raise TestRunnerError.InvalidRetryPolicy if not test_retry_policy_valid(runner.retry_policy)
+            raise TestRunnerError.InvalidPolicy if runner.max_attempts == 0 or runner.max_attempts > Limits::ATTEMPTS or runner.max_parallel == 0 or runner.max_parallel > Limits::PARALLEL
+            raise TestRunnerError.TestLimitExceeded if runner.cases.count > Limits::TESTS
+            raise TestRunnerError.ParallelLimitExceeded if runner.active > runner.max_parallel
+            raise TestRunnerError.AccountingInvalid if runner.selected > runner.cases.count or runner.terminal > runner.cases.count
+            raise TestRunnerError.AccountingInvalid if runner.output_bytes > Limits::OUTPUT_BYTES
+            valid_report: mutable bool = false
+            catch validate_output_document(runner.report):
+                ok:
+                    valid_report <- true
+                error failure:
+                    valid_report <- false
+            raise TestRunnerError.ReportInvalid if not valid_report
+            if runner.state == TestRunnerState.Planned:
+                raise TestRunnerError.AccountingInvalid if runner.cases.count != 0 or runner.active != 0 or runner.selected != 0 or runner.terminal != 0 or runner.failure_latched or runner.cancellation_requested or runner.report.state != OutputDocumentState.Empty
+            elif runner.state == TestRunnerState.Discovering:
+                raise TestRunnerError.AccountingInvalid if runner.active != 0 or runner.selected != 0 or runner.terminal != 0 or runner.failure_latched or runner.cancellation_requested or runner.report.state != OutputDocumentState.Empty
+            elif runner.state == TestRunnerState.Selecting:
+                raise TestRunnerError.AccountingInvalid if runner.active != 0 or runner.terminal != 0 or runner.failure_latched or runner.cancellation_requested or runner.report.state != OutputDocumentState.Empty
+            elif runner.state == TestRunnerState.Running:
+                raise TestRunnerError.AccountingInvalid if runner.report.state != OutputDocumentState.Empty or runner.cancellation_requested or runner.failure_latched
+            elif runner.state == TestRunnerState.Draining:
+                raise TestRunnerError.AccountingInvalid if not runner.failure_latched or runner.cancellation_requested or runner.active == 0 or runner.report.state != OutputDocumentState.Empty
+            elif runner.state == TestRunnerState.Cancelling:
+                raise TestRunnerError.AccountingInvalid if not runner.cancellation_requested or runner.active == 0 or runner.report.state != OutputDocumentState.Empty
+            elif runner.state == TestRunnerState.Reporting:
+                raise TestRunnerError.ReportNotReady if runner.report.state != OutputDocumentState.Building or not test_runner_all_terminal(runner) or runner.active != 0
+                raise TestRunnerError.AccountingInvalid if runner.report.text_bytes != runner.output_bytes
+            elif runner.state == TestRunnerState.Complete:
+                raise TestRunnerError.AccountingInvalid if runner.failure_latched or runner.cancellation_requested
+                raise TestRunnerError.ReportNotReady if runner.report.state != OutputDocumentState.Sealed or not test_runner_all_terminal(runner) or runner.active != 0
+                raise TestRunnerError.AccountingInvalid if runner.report.text_bytes != runner.output_bytes
+            elif runner.state == TestRunnerState.Failed:
+                # A failure observed while cancellation is already in flight
+                # still owns the final outcome.  Keep both facts in the
+                # snapshot so report sealing can prove that Failed wins.
+                raise TestRunnerError.AccountingInvalid if not runner.failure_latched
+                if runner.report.state == OutputDocumentState.Empty:
+                    raise TestRunnerError.CompletionNotReady if runner.active != 0 or not test_runner_all_terminal(runner)
+                else:
+                    raise TestRunnerError.ReportNotReady if runner.report.state != OutputDocumentState.Sealed or not test_runner_all_terminal(runner) or runner.active != 0
+                    raise TestRunnerError.AccountingInvalid if runner.report.text_bytes != runner.output_bytes
+            elif runner.state == TestRunnerState.Cancelled:
+                raise TestRunnerError.AccountingInvalid if not runner.cancellation_requested or runner.failure_latched
+                if runner.report.state == OutputDocumentState.Empty:
+                    raise TestRunnerError.CompletionNotReady if runner.active != 0 or not test_runner_all_terminal(runner)
+                else:
+                    raise TestRunnerError.ReportNotReady if runner.report.state != OutputDocumentState.Sealed or not test_runner_all_terminal(runner) or runner.active != 0
+                    raise TestRunnerError.AccountingInvalid if runner.report.text_bytes != runner.output_bytes
+            for case in runner.cases |runner|:
+                try test_spec_valid(case.spec)
+                raise TestRunnerError.SelectionReasonInvalid if not test_runner_text_valid(case.selection_reason, Limits::SELECTION_REASON_BYTES)
+                raise TestRunnerError.InvalidCaseState if not test_case_state_valid(case.state)
+                raise TestRunnerError.AttemptLimitExceeded if case.attempts > runner.max_attempts
+                raise TestRunnerError.AccountingInvalid if case.attempts == 0 and case.attempt_token != 0
+                raise TestRunnerError.AccountingInvalid if case.attempts != 0 and case.attempt_token != case.attempts.u64()
+                raise TestRunnerError.InvalidCaseState if (runner.state == TestRunnerState.Discovering or runner.state == TestRunnerState.Selecting) and case.state != TestCaseState.Discovered
+                raise TestRunnerError.InvalidCaseState if (runner.state == TestRunnerState.Running or runner.state == TestRunnerState.Draining or runner.state == TestRunnerState.Cancelling) and case.state == TestCaseState.Discovered
+                raise TestRunnerError.InvalidCaseState if (runner.state == TestRunnerState.Draining or runner.state == TestRunnerState.Cancelling) and (case.state == TestCaseState.Selected or case.state == TestCaseState.Retryable)
+                if case.state == TestCaseState.Discovered:
+                    raise TestRunnerError.InvalidOutcome if case.selected or not test_result_unpublished_valid(case.result)
+                elif case.state == TestCaseState.Selected:
+                    raise TestRunnerError.InvalidOutcome if not case.selected or not test_result_unpublished_valid(case.result)
+                elif case.state == TestCaseState.Running:
+                    raise TestRunnerError.InvalidOutcome if not case.selected or case.attempts == 0 or not test_result_unpublished_valid(case.result)
+                elif case.state == TestCaseState.Retryable:
+                    raise TestRunnerError.InvalidOutcome if not case.selected
+                    raise TestRunnerError.InvalidOutcome if case.result.outcome == TestOutcome.Error and case.result.process.kind == ProcessResultKind.Cancelled
+                    raise TestRunnerError.InvalidOutcome if not test_outcome_retryable(case.result.outcome, runner.retry_policy) or case.attempts >= runner.max_attempts
+                    try test_result_matches_state(case.result, TestCaseState.Failed if case.result.outcome == TestOutcome.Failed else TestCaseState.Crashed if case.result.outcome == TestOutcome.Crashed else TestCaseState.TimedOut if case.result.outcome == TestOutcome.TimedOut else TestCaseState.Error, case.attempts, case.attempt_token)
+                elif test_case_terminal(case.state):
+                    raise TestRunnerError.InvalidOutcome if case.state != TestCaseState.Skipped and case.state != TestCaseState.Cancelled and not case.selected
+                    raise TestRunnerError.InvalidOutcome if case.state == TestCaseState.Skipped and case.selected
+                    try test_result_matches_state(case.result, case.state, case.attempts, case.attempt_token, runner.cancellation_requested)
+            for earlier_index in 0..<runner.cases.count |runner|:
+                earlier: TestCase = runner.cases[earlier_index]
+                for later_index in (earlier_index + 1)..<runner.cases.count |runner, earlier|:
+                    raise TestRunnerError.DuplicateTestId if earlier.spec.test_id == runner.cases[later_index].spec.test_id
+                    raise TestRunnerError.DuplicateTestName if earlier.spec.name == runner.cases[later_index].spec.name
+            accounting_ok: bool = try test_runner_accounting_matches(runner)
+            raise TestRunnerError.AccountingInvalid if not accounting_ok
+            return true
+
+
+        def advance_test_runner(runner: mutable TestRunner&, event: TestRunnerEvent, case_index: usize = 0, selected: bool = false, selection_reason: sview = "", attempt_token: u64 = 0, process: ProcessResult = ProcessResult{kind: ProcessResultKind.SpawnFailure}, message: sview = "", duration_ms: u64 = 0, spec: TestSpec = TestSpec{}) -> TestRunnerState error[TestRunnerError] can[Memory.Allocate, Abort.Panic]:
+            try validate_test_runner(runner)
+            raise TestRunnerError.InvalidEvent if not test_runner_event_valid(event)
+            if event == TestRunnerEvent.Begin:
+                raise TestRunnerError.InvalidState if runner.state != TestRunnerState.Planned
+                runner.state <- TestRunnerState.Discovering
+            elif event == TestRunnerEvent.Discover:
+                raise TestRunnerError.InvalidState if runner.state != TestRunnerState.Discovering
+                raise TestRunnerError.TestLimitExceeded if runner.cases.count >= Limits::TESTS
+                try test_spec_valid(spec)
+                for existing in runner.cases:
+                    raise TestRunnerError.DuplicateTestId if existing.spec.test_id == spec.test_id
+                    raise TestRunnerError.DuplicateTestName if existing.spec.name == spec.name
+                runner.cases.push(TestCase{spec: spec})
+            elif event == TestRunnerEvent.DiscoveryDone:
+                raise TestRunnerError.InvalidState if runner.state != TestRunnerState.Discovering
+                runner.state <- TestRunnerState.Selecting
+            elif event == TestRunnerEvent.Select:
+                raise TestRunnerError.InvalidState if runner.state != TestRunnerState.Selecting
+                raise TestRunnerError.InvalidIndex if case_index >= runner.cases.count
+                raise TestRunnerError.InvalidCaseState if runner.cases[case_index].state != TestCaseState.Discovered
+                raise TestRunnerError.SelectionReasonInvalid if not test_runner_text_valid(selection_reason, Limits::SELECTION_REASON_BYTES)
+                runner.cases[case_index].selected <- selected
+                runner.cases[case_index].selection_reason <- selection_reason
+                try test_runner_refresh_accounting(runner)
+            elif event == TestRunnerEvent.SelectionDone:
+                raise TestRunnerError.InvalidState if runner.state != TestRunnerState.Selecting
+                for index in 0..<runner.cases.count |runner|:
+                    if runner.cases[index].selected:
+                        runner.cases[index].state <- TestCaseState.Selected
+                    else:
+                        reason: sview = runner.cases[index].selection_reason
+                        reason <- "not selected" if reason == ""
+                        runner.cases[index].selection_reason <- reason
+                        runner.cases[index].result <- TestResult{published: true, outcome: TestOutcome.Skipped, process: ProcessResult{kind: ProcessResultKind.Cancelled}, message: reason}
+                        runner.cases[index].state <- TestCaseState.Skipped
+                try test_runner_refresh_accounting(runner)
+                runner.state <- TestRunnerState.Running
+            elif event == TestRunnerEvent.Launch:
+                raise TestRunnerError.InvalidState if runner.state != TestRunnerState.Running
+                raise TestRunnerError.InvalidIndex if case_index >= runner.cases.count
+                raise TestRunnerError.InvalidCaseState if runner.cases[case_index].state != TestCaseState.Selected
+                raise TestRunnerError.ParallelLimitExceeded if runner.active >= runner.max_parallel
+                raise TestRunnerError.AttemptLimitExceeded if runner.cases[case_index].attempts >= runner.max_attempts
+                runner.cases[case_index].state <- TestCaseState.Running
+                runner.cases[case_index].attempts <- runner.cases[case_index].attempts + 1
+                runner.cases[case_index].attempt_token <- runner.cases[case_index].attempts.u64()
+                runner.cases[case_index].result <- TestResult{}
+                try test_runner_refresh_accounting(runner)
+            elif event == TestRunnerEvent.Complete:
+                raise TestRunnerError.InvalidState if runner.state != TestRunnerState.Running and runner.state != TestRunnerState.Draining and runner.state != TestRunnerState.Cancelling
+                raise TestRunnerError.InvalidIndex if case_index >= runner.cases.count
+                raise TestRunnerError.InvalidCaseState if runner.cases[case_index].state != TestCaseState.Running
+                raise TestRunnerError.StaleAttempt if attempt_token == 0 or attempt_token != runner.cases[case_index].attempt_token
+                raise TestRunnerError.MessageInvalid if not test_runner_text_valid(message, Limits::MESSAGE_BYTES)
+                raise TestRunnerError.MessageInvalid if not test_runner_text_valid(process.stdout, Limits::MESSAGE_BYTES) or not test_runner_text_valid(process.stderr, Limits::MESSAGE_BYTES) or not test_runner_text_valid(process.error_text, Limits::MESSAGE_BYTES)
+                raise TestRunnerError.MessageInvalid if message != "" and process.error_text != "" and message != process.error_text
+                effective_message: mutable sview = message
+                effective_message <- process.error_text if effective_message == "" and process.error_text != ""
+                outcome: TestOutcome = try test_outcome_from_process(process)
+                terminal_outcome: mutable TestOutcome = outcome
+                terminal_state: mutable TestCaseState = TestCaseState.Failed
+                unexpected_cancellation: bool = outcome == TestOutcome.Cancelled and runner.state == TestRunnerState.Running and not runner.cancellation_requested
+                if unexpected_cancellation:
+                    terminal_outcome <- TestOutcome.Error
+                    terminal_state <- TestCaseState.Error
+                elif outcome == TestOutcome.Passed:
+                    terminal_outcome <- TestOutcome.Flaky if runner.cases[case_index].attempts > 1 else TestOutcome.Passed
+                    terminal_state <- TestCaseState.Flaky if runner.cases[case_index].attempts > 1 else TestCaseState.Passed
+                elif outcome == TestOutcome.Failed:
+                    terminal_state <- TestCaseState.Failed
+                elif outcome == TestOutcome.Crashed:
+                    terminal_state <- TestCaseState.Crashed
+                elif outcome == TestOutcome.TimedOut:
+                    terminal_state <- TestCaseState.TimedOut
+                elif outcome == TestOutcome.Cancelled:
+                    terminal_state <- TestCaseState.Cancelled
+                else:
+                    terminal_state <- TestCaseState.Error
+                raise TestRunnerError.AccountingInvalid if runner.active == 0
+                runner.cases[case_index].result <- TestResult{published: true, outcome: terminal_outcome, process: process, attempt_token: attempt_token, duration_ms: duration_ms, message: effective_message}
+                runner.active <- runner.active - 1
+                if runner.state == TestRunnerState.Running and not unexpected_cancellation and test_outcome_retryable(outcome, runner.retry_policy) and runner.cases[case_index].attempts < runner.max_attempts:
+                    runner.cases[case_index].state <- TestCaseState.Retryable
+                else:
+                    runner.cases[case_index].state <- terminal_state
+                    terminal_failure: bool = terminal_state == TestCaseState.Failed or terminal_state == TestCaseState.Crashed or terminal_state == TestCaseState.TimedOut or terminal_state == TestCaseState.Error
+                    if terminal_failure:
+                        runner.failure_latched <- true
+                        if runner.state == TestRunnerState.Running:
+                            for pending_index in 0..<runner.cases.count |runner|:
+                                if runner.cases[pending_index].state == TestCaseState.Selected or runner.cases[pending_index].state == TestCaseState.Retryable:
+                                    runner.cases[pending_index].selected <- true
+                                    runner.cases[pending_index].result <- TestResult{published: true, outcome: TestOutcome.Cancelled, process: ProcessResult{kind: ProcessResultKind.Cancelled}, attempt_token: runner.cases[pending_index].attempt_token, message: "runner stopped after test failure"}
+                                    runner.cases[pending_index].state <- TestCaseState.Cancelled
+                try test_runner_refresh_accounting(runner)
+                if runner.state == TestRunnerState.Running and runner.failure_latched:
+                    runner.state <- TestRunnerState.Failed if runner.active == 0 else TestRunnerState.Draining
+                elif runner.state == TestRunnerState.Draining and runner.active == 0:
+                    runner.state <- TestRunnerState.Failed
+                elif runner.state == TestRunnerState.Cancelling and runner.active == 0:
+                    runner.state <- TestRunnerState.Failed if runner.failure_latched else TestRunnerState.Cancelled
+            elif event == TestRunnerEvent.Retry:
+                raise TestRunnerError.InvalidState if runner.state != TestRunnerState.Running
+                raise TestRunnerError.InvalidIndex if case_index >= runner.cases.count
+                raise TestRunnerError.RetryNotReady if runner.cases[case_index].state != TestCaseState.Retryable
+                runner.cases[case_index].state <- TestCaseState.Selected
+                runner.cases[case_index].result <- TestResult{}
+                try test_runner_refresh_accounting(runner)
+            elif event == TestRunnerEvent.BeginReport:
+                raise TestRunnerError.InvalidState if runner.state != TestRunnerState.Running and runner.state != TestRunnerState.Failed and runner.state != TestRunnerState.Cancelled
+                try test_runner_refresh_accounting(runner)
+                raise TestRunnerError.CompletionNotReady if runner.active != 0 or not test_runner_all_terminal(runner)
+                raise TestRunnerError.ReportNotReady if runner.report.state != OutputDocumentState.Empty
+                raise TestRunnerError.ReportInvalid if runner.output_bytes > runner.report.options.max_bytes
+                try test_runner_build_report(runner)
+                runner.state <- TestRunnerState.Reporting
+            elif event == TestRunnerEvent.SealReport:
+                raise TestRunnerError.ReportNotReady if runner.state != TestRunnerState.Reporting
+                sealed: mutable bool = false
+                catch advance_output_document(runner.report, OutputDocumentEvent.Seal):
+                    ok value:
+                        sealed <- value == OutputDocumentState.Sealed
+                    error failure:
+                        sealed <- false
+                raise TestRunnerError.ReportInvalid if not sealed
+                runner.state <- TestRunnerState.Failed if runner.failure_latched else TestRunnerState.Cancelled if runner.cancellation_requested else TestRunnerState.Complete
+            elif event == TestRunnerEvent.Fail:
+                raise TestRunnerError.InvalidState if runner.state == TestRunnerState.Planned or runner.state == TestRunnerState.Complete or runner.state == TestRunnerState.Failed or runner.state == TestRunnerState.Cancelled or runner.state == TestRunnerState.Reporting
+                runner.failure_latched <- true
+                for index in 0..<runner.cases.count |runner|:
+                    if runner.cases[index].state == TestCaseState.Discovered:
+                        runner.cases[index].selected <- false
+                        runner.cases[index].selection_reason <- "runner stopped after infrastructure failure"
+                        runner.cases[index].result <- TestResult{published: true, outcome: TestOutcome.Cancelled, process: ProcessResult{kind: ProcessResultKind.Cancelled}, message: "runner stopped after infrastructure failure"}
+                        runner.cases[index].state <- TestCaseState.Cancelled
+                    elif runner.cases[index].state == TestCaseState.Selected or runner.cases[index].state == TestCaseState.Retryable:
+                        runner.cases[index].selected <- true
+                        runner.cases[index].result <- TestResult{published: true, outcome: TestOutcome.Cancelled, process: ProcessResult{kind: ProcessResultKind.Cancelled}, attempt_token: runner.cases[index].attempt_token, message: "runner stopped after infrastructure failure"}
+                        runner.cases[index].state <- TestCaseState.Cancelled
+                try test_runner_refresh_accounting(runner)
+                if runner.state == TestRunnerState.Cancelling:
+                    runner.state <- TestRunnerState.Failed if runner.active == 0 else TestRunnerState.Cancelling
+                else:
+                    runner.state <- TestRunnerState.Failed if runner.active == 0 else TestRunnerState.Draining
+            elif event == TestRunnerEvent.Cancel:
+                raise TestRunnerError.InvalidState if runner.state == TestRunnerState.Complete or runner.state == TestRunnerState.Failed or runner.state == TestRunnerState.Cancelled or runner.state == TestRunnerState.Reporting or runner.failure_latched
+                runner.cancellation_requested <- true
+                if runner.state == TestRunnerState.Planned or runner.state == TestRunnerState.Discovering or runner.state == TestRunnerState.Selecting:
+                    for index in 0..<runner.cases.count |runner|:
+                        runner.cases[index].selected <- false
+                        runner.cases[index].selection_reason <- "cancelled before launch"
+                        runner.cases[index].result <- TestResult{published: true, outcome: TestOutcome.Cancelled, process: ProcessResult{kind: ProcessResultKind.Cancelled}, message: "cancelled before launch"}
+                        runner.cases[index].state <- TestCaseState.Cancelled
+                    try test_runner_refresh_accounting(runner)
+                    runner.state <- TestRunnerState.Cancelled
+                else:
+                    for index in 0..<runner.cases.count |runner|:
+                        if runner.cases[index].state == TestCaseState.Selected or runner.cases[index].state == TestCaseState.Retryable:
+                            runner.cases[index].selected <- true
+                            runner.cases[index].result <- TestResult{published: true, outcome: TestOutcome.Cancelled, process: ProcessResult{kind: ProcessResultKind.Cancelled}, attempt_token: runner.cases[index].attempt_token, message: "cancelled before launch"}
+                            runner.cases[index].state <- TestCaseState.Cancelled
+                    try test_runner_refresh_accounting(runner)
+                    runner.state <- TestRunnerState.Cancelling if runner.active != 0 else TestRunnerState.Failed if runner.failure_latched else TestRunnerState.Cancelled
+            elif event == TestRunnerEvent.CancelAck:
+                raise TestRunnerError.CancelNotReady if runner.state != TestRunnerState.Cancelling
+                try test_runner_refresh_accounting(runner)
+                raise TestRunnerError.CancelNotReady if runner.active != 0 or not test_runner_all_terminal(runner)
+                runner.state <- TestRunnerState.Failed if runner.failure_latched else TestRunnerState.Cancelled
+            return runner.state

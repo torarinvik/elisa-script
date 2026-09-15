@@ -1,9 +1,10 @@
 # Pure publication admission contract for Lua bundle metadata.
 #
-# The host adapter still owns mkstemp, descriptor writes, fsync, rename, and
-# cleanup. This state machine records the facts that must be acknowledged before
-# `file_stream_publish_staged` may be called, so a path-only helper cannot be
-# mistaken for exclusive staging or crash-safe replacement.
+# The host adapter still owns descriptor-relative creation, writes, fsync,
+# rename, close, and cleanup. This state machine records the facts that must be
+# acknowledged at each publication edge. The existing path-only
+# `file_stream_publish_staged` helper cannot consume these descriptor proofs and
+# must not be treated as the secure adapter for this contract.
 
 module EsLuaBundlePublication:
     public:
@@ -49,6 +50,8 @@ module EsLuaBundlePublication:
         struct PublicationParentProof:
             device: u64
             inode: u64
+            # Opaque host identity for the retained parent descriptor.
+            descriptor_token: u64
             owner_token: u64
             directory: bool = false
 
@@ -56,6 +59,10 @@ module EsLuaBundlePublication:
         struct PublicationStagingProof:
             device: u64
             inode: u64
+            parent_device: u64
+            parent_inode: u64
+            # Opaque host identity for the retained staging descriptor.
+            descriptor_token: u64
             owner_token: u64
             link_count: usize
             regular: bool = false
@@ -65,10 +72,16 @@ module EsLuaBundlePublication:
         struct PublicationSession:
             request: PublicationRequest
             state: PublicationState = PublicationState.Planned
-            parent_proof: PublicationParentProof = PublicationParentProof{device: 0, inode: 0, owner_token: 0}
-            staging_proof: PublicationStagingProof = PublicationStagingProof{device: 0, inode: 0, owner_token: 0, link_count: 0}
+            parent_proof: PublicationParentProof = PublicationParentProof{device: 0, inode: 0, descriptor_token: 0, owner_token: 0}
+            staging_proof: PublicationStagingProof = PublicationStagingProof{device: 0, inode: 0, parent_device: 0, parent_inode: 0, descriptor_token: 0, owner_token: 0, link_count: 0}
             staging_sibling: bool = false
             staging_exclusive: bool = false
+            # The parent and staging descriptors are a paired ownership unit;
+            # a live publication keeps both open through the publish edge, while
+            # cleanup closes the pair together when publication is abandoned.
+            parent_descriptor_owned: bool = false
+            parent_descriptor_closed: bool = false
+            # These two fields describe the staging descriptor.
             descriptor_owned: bool = false
             descriptor_closed: bool = false
             bytes_written: usize = 0
@@ -90,6 +103,8 @@ module EsLuaBundlePublication:
             ParentIdentityMissing
             StagingIdentityMissing
             OwnerMismatch
+            ParentMismatch
+            DescriptorCollision
             StagingIdentityInvalid
             WriteNotReady
             WriteLimitExceeded
@@ -126,23 +141,31 @@ module EsLuaBundlePublication:
 
 
         def publication_parent_proof_valid(proof: PublicationParentProof) -> bool:
-            return proof.device != 0 and proof.inode != 0 and proof.owner_token != 0 and proof.directory
+            return proof.device != 0 and proof.inode != 0 and proof.descriptor_token != 0 and proof.owner_token != 0 and proof.directory
 
 
         def publication_parent_proof_identity_present(proof: PublicationParentProof) -> bool:
-            return proof.device != 0 and proof.inode != 0 and proof.owner_token != 0
+            return proof.device != 0 and proof.inode != 0 and proof.descriptor_token != 0 and proof.owner_token != 0
 
 
         def publication_staging_proof_valid(proof: PublicationStagingProof) -> bool:
-            return proof.device != 0 and proof.inode != 0 and proof.owner_token != 0 and proof.link_count == 1 and proof.regular and proof.private_mode
+            return proof.device != 0 and proof.inode != 0 and proof.parent_device != 0 and proof.parent_inode != 0 and proof.descriptor_token != 0 and proof.owner_token != 0 and proof.link_count == 1 and proof.regular and proof.private_mode
 
 
         def publication_staging_proof_identity_present(proof: PublicationStagingProof) -> bool:
-            return proof.device != 0 and proof.inode != 0 and proof.owner_token != 0
+            return proof.device != 0 and proof.inode != 0 and proof.parent_device != 0 and proof.parent_inode != 0 and proof.descriptor_token != 0 and proof.owner_token != 0
+
+
+        def publication_parent_proof_empty(proof: PublicationParentProof) -> bool:
+            return proof.device == 0 and proof.inode == 0 and proof.descriptor_token == 0 and proof.owner_token == 0 and not proof.directory
+
+
+        def publication_staging_proof_empty(proof: PublicationStagingProof) -> bool:
+            return proof.device == 0 and proof.inode == 0 and proof.parent_device == 0 and proof.parent_inode == 0 and proof.descriptor_token == 0 and proof.owner_token == 0 and proof.link_count == 0 and not proof.regular and not proof.private_mode
 
 
         def publication_identity_proofs_valid(parent: PublicationParentProof, staging: PublicationStagingProof) -> bool:
-            return publication_parent_proof_valid(parent) and publication_staging_proof_valid(staging) and parent.owner_token == staging.owner_token and parent.device == staging.device
+            return publication_parent_proof_valid(parent) and publication_staging_proof_valid(staging) and parent.owner_token == staging.owner_token and parent.device == staging.device and parent.device == staging.parent_device and parent.inode == staging.parent_inode and parent.descriptor_token != staging.descriptor_token
 
 
     public:
@@ -150,27 +173,47 @@ module EsLuaBundlePublication:
             raise PublicationError.InvalidState if not publication_state_valid(session.state)
             try publication_request_valid(session.request)
             raise PublicationError.BytesInvalid if session.bytes_written > session.request.bytes
+            raise PublicationError.AccountingInvalid if session.parent_descriptor_owned and session.parent_descriptor_closed
             raise PublicationError.AccountingInvalid if session.descriptor_owned and session.descriptor_closed
+            raise PublicationError.AccountingInvalid if session.parent_descriptor_owned and not session.descriptor_owned
+            raise PublicationError.AccountingInvalid if session.descriptor_owned and not session.parent_descriptor_owned
+            raise PublicationError.AccountingInvalid if session.parent_descriptor_closed and not session.descriptor_closed
+            raise PublicationError.AccountingInvalid if session.descriptor_closed and not session.parent_descriptor_closed
             raise PublicationError.AccountingInvalid if session.stage_synced and session.bytes_written != session.request.bytes
-            raise PublicationError.StageAdmissionMissing if (session.state == PublicationState.Staged or session.state == PublicationState.Publishing or session.state == PublicationState.Published) and not session.staging_sibling
-            raise PublicationError.StageAdmissionMissing if (session.state == PublicationState.Staged or session.state == PublicationState.Publishing or session.state == PublicationState.Published) and not session.staging_exclusive
-            raise PublicationError.SyncNotReady if (session.state == PublicationState.Staged or session.state == PublicationState.Publishing or session.state == PublicationState.Published) and not session.stage_synced
-            raise PublicationError.DescriptorOwnershipMissing if session.state == PublicationState.Staged and not session.descriptor_closed
-            raise PublicationError.DescriptorOwnershipMissing if session.state == PublicationState.Publishing and not session.descriptor_closed
+            raise PublicationError.StageAdmissionMissing if (session.state == PublicationState.Staged or session.state == PublicationState.Publishing or session.state == PublicationState.Published or session.state == PublicationState.PublishedUncertain) and (not session.staging_sibling or not session.staging_exclusive)
+            raise PublicationError.SyncNotReady if (session.state == PublicationState.Staged or session.state == PublicationState.Publishing or session.state == PublicationState.Published or session.state == PublicationState.PublishedUncertain) and not session.stage_synced
             raise PublicationError.ParentIdentityMissing if (session.state == PublicationState.Staged or session.state == PublicationState.Publishing or session.state == PublicationState.Published or session.state == PublicationState.PublishedUncertain) and not publication_parent_proof_valid(session.parent_proof)
             raise PublicationError.StagingIdentityMissing if (session.state == PublicationState.Staged or session.state == PublicationState.Publishing or session.state == PublicationState.Published or session.state == PublicationState.PublishedUncertain) and not publication_staging_proof_valid(session.staging_proof)
             raise PublicationError.OwnerMismatch if (session.state == PublicationState.Staged or session.state == PublicationState.Publishing or session.state == PublicationState.Published or session.state == PublicationState.PublishedUncertain) and not publication_identity_proofs_valid(session.parent_proof, session.staging_proof)
+            raise PublicationError.StageAdmissionMissing if session.staging_sibling and not session.staging_exclusive
+            raise PublicationError.StageAdmissionMissing if session.staging_exclusive and not session.staging_sibling
+            raise PublicationError.AccountingInvalid if not session.staging_sibling and (session.staging_exclusive or not publication_parent_proof_empty(session.parent_proof) or not publication_staging_proof_empty(session.staging_proof) or session.parent_descriptor_owned or session.parent_descriptor_closed or session.descriptor_owned or session.descriptor_closed or session.bytes_written != 0 or session.stage_synced)
+            if session.staging_sibling:
+                raise PublicationError.ParentIdentityMissing if not publication_parent_proof_valid(session.parent_proof)
+                raise PublicationError.StagingIdentityMissing if not publication_staging_proof_valid(session.staging_proof)
+                raise PublicationError.OwnerMismatch if not publication_identity_proofs_valid(session.parent_proof, session.staging_proof)
+                raise PublicationError.DescriptorOwnershipMissing if not session.parent_descriptor_owned and not session.parent_descriptor_closed
+                raise PublicationError.DescriptorOwnershipMissing if not session.descriptor_owned and not session.descriptor_closed
+            raise PublicationError.DescriptorOwnershipMissing if session.state == PublicationState.Publishing and (not session.parent_descriptor_owned or session.parent_descriptor_closed or not session.descriptor_owned or session.descriptor_closed)
             raise PublicationError.RenameAckMissing if session.state == PublicationState.Published and not session.rename_acknowledged
             raise PublicationError.DirectorySyncMissing if session.state == PublicationState.Published and session.request.require_directory_sync and not session.directory_synced
-            raise PublicationError.AccountingInvalid if session.state == PublicationState.PublishedUncertain and (not session.staging_sibling or not session.staging_exclusive or not session.descriptor_closed or not session.stage_synced or session.rename_acknowledged or session.destination_preserved_on_failure)
+            raise PublicationError.AccountingInvalid if session.rename_acknowledged and session.state != PublicationState.Published
+            raise PublicationError.AccountingInvalid if session.directory_synced and not session.rename_acknowledged
+            raise PublicationError.AccountingInvalid if session.state == PublicationState.Staging and session.stage_synced
+            raise PublicationError.AccountingInvalid if session.state == PublicationState.PublishedUncertain and (not session.staging_sibling or not session.staging_exclusive or not session.stage_synced or session.rename_acknowledged or session.destination_preserved_on_failure)
+            raise PublicationError.DescriptorOwnershipMissing if session.state == PublicationState.PublishedUncertain and not session.descriptor_owned and not session.descriptor_closed
             raise PublicationError.DestinationNotPreserved if (session.state == PublicationState.Failed or session.state == PublicationState.Cancelled) and not session.destination_preserved_on_failure
             raise PublicationError.AccountingInvalid if (session.state == PublicationState.Failed or session.state == PublicationState.Cancelled) and session.rename_acknowledged
+            if session.state == PublicationState.Failed or session.state == PublicationState.Cancelled:
+                raise PublicationError.DescriptorOwnershipMissing if session.staging_sibling and (session.parent_descriptor_owned or not session.parent_descriptor_closed or session.descriptor_owned or not session.descriptor_closed)
+            if session.state == PublicationState.Cancelling:
+                raise PublicationError.DescriptorOwnershipMissing if session.staging_sibling and (session.parent_descriptor_owned or not session.parent_descriptor_closed or session.descriptor_owned or not session.descriptor_closed)
             if session.state == PublicationState.Planned:
-                raise PublicationError.AccountingInvalid if session.parent_proof.device != 0 or session.parent_proof.inode != 0 or session.parent_proof.owner_token != 0 or session.staging_proof.device != 0 or session.staging_proof.inode != 0 or session.staging_proof.owner_token != 0 or session.staging_proof.link_count != 0 or session.staging_sibling or session.staging_exclusive or session.descriptor_owned or session.descriptor_closed or session.bytes_written != 0 or session.stage_synced or session.rename_acknowledged or session.directory_synced
+                raise PublicationError.AccountingInvalid if session.parent_proof.device != 0 or session.parent_proof.inode != 0 or session.parent_proof.descriptor_token != 0 or session.parent_proof.owner_token != 0 or session.staging_proof.device != 0 or session.staging_proof.inode != 0 or session.staging_proof.parent_device != 0 or session.staging_proof.parent_inode != 0 or session.staging_proof.descriptor_token != 0 or session.staging_proof.owner_token != 0 or session.staging_proof.link_count != 0 or session.staging_sibling or session.staging_exclusive or session.parent_descriptor_owned or session.parent_descriptor_closed or session.descriptor_owned or session.descriptor_closed or session.bytes_written != 0 or session.stage_synced or session.rename_acknowledged or session.directory_synced
             return true
 
 
-        def advance_publication(session: mutable PublicationSession&, event: PublicationEvent, bytes_delta: usize = 0, staging_sibling: bool = false, staging_exclusive: bool = false, descriptor_owned: bool = false, destination_preserved: bool = true, directory_synced: bool = false, parent_proof: PublicationParentProof = PublicationParentProof{device: 0, inode: 0, owner_token: 0}, staging_proof: PublicationStagingProof = PublicationStagingProof{device: 0, inode: 0, owner_token: 0, link_count: 0}) -> PublicationState error[PublicationError] can[Memory.Allocate, Abort.Panic]:
+        def advance_publication(session: mutable PublicationSession&, event: PublicationEvent, bytes_delta: usize = 0, staging_sibling: bool = false, staging_exclusive: bool = false, descriptor_owned: bool = false, destination_preserved: bool = true, directory_synced: bool = false, parent_proof: PublicationParentProof = PublicationParentProof{device: 0, inode: 0, descriptor_token: 0, owner_token: 0}, staging_proof: PublicationStagingProof = PublicationStagingProof{device: 0, inode: 0, parent_device: 0, parent_inode: 0, descriptor_token: 0, owner_token: 0, link_count: 0}, parent_descriptor_owned: bool = false) -> PublicationState error[PublicationError] can[Memory.Allocate, Abort.Panic]:
             try validate_publication(session)
             raise PublicationError.InvalidEvent if not publication_event_valid(event)
             if event == PublicationEvent.Begin:
@@ -178,56 +221,76 @@ module EsLuaBundlePublication:
                 session.state <- PublicationState.Staging
             elif event == PublicationEvent.StageCreated:
                 raise PublicationError.InvalidState if session.state != PublicationState.Staging
-                raise PublicationError.InvalidState if session.staging_sibling or session.staging_exclusive or session.descriptor_owned or session.descriptor_closed
+                raise PublicationError.InvalidState if session.staging_sibling or session.staging_exclusive or session.parent_descriptor_owned or session.parent_descriptor_closed or session.descriptor_owned or session.descriptor_closed
                 raise PublicationError.StageAdmissionMissing if not staging_sibling or not staging_exclusive
                 raise PublicationError.DescriptorOwnershipMissing if not descriptor_owned
+                raise PublicationError.DescriptorOwnershipMissing if not parent_descriptor_owned
                 raise PublicationError.ParentIdentityMissing if not publication_parent_proof_identity_present(parent_proof)
                 raise PublicationError.StagingIdentityMissing if not publication_staging_proof_identity_present(staging_proof)
                 raise PublicationError.StagingIdentityInvalid if not parent_proof.directory or not staging_proof.regular or not staging_proof.private_mode or staging_proof.link_count != 1
+                raise PublicationError.ParentMismatch if parent_proof.device != staging_proof.device or parent_proof.device != staging_proof.parent_device or parent_proof.inode != staging_proof.parent_inode
+                raise PublicationError.DescriptorCollision if parent_proof.descriptor_token == staging_proof.descriptor_token
                 raise PublicationError.OwnerMismatch if not publication_identity_proofs_valid(parent_proof, staging_proof)
                 session.staging_sibling <- true
                 session.staging_exclusive <- true
+                session.parent_descriptor_owned <- true
                 session.descriptor_owned <- true
                 session.parent_proof <- parent_proof
                 session.staging_proof <- staging_proof
             elif event == PublicationEvent.Write:
-                raise PublicationError.WriteNotReady if session.state != PublicationState.Staging or not session.staging_sibling or not session.staging_exclusive or not session.descriptor_owned or session.descriptor_closed
+                raise PublicationError.WriteNotReady if session.state != PublicationState.Staging or not session.staging_sibling or not session.staging_exclusive or not session.parent_descriptor_owned or session.parent_descriptor_closed or not session.descriptor_owned or session.descriptor_closed
                 raise PublicationError.WriteLimitExceeded if bytes_delta == 0 or bytes_delta > session.request.bytes - session.bytes_written
                 session.bytes_written <- session.bytes_written + bytes_delta
             elif event == PublicationEvent.Sync:
-                raise PublicationError.SyncNotReady if session.state != PublicationState.Staging or not session.descriptor_owned or session.descriptor_closed or session.bytes_written != session.request.bytes
+                raise PublicationError.SyncNotReady if session.state != PublicationState.Staging or not session.parent_descriptor_owned or session.parent_descriptor_closed or not session.descriptor_owned or session.descriptor_closed or session.bytes_written != session.request.bytes
                 raise PublicationError.InvalidState if session.stage_synced
                 session.stage_synced <- true
+                session.state <- PublicationState.Staged
             elif event == PublicationEvent.Close:
-                raise PublicationError.CloseNotReady if session.state != PublicationState.Staging or not session.stage_synced or not session.descriptor_owned or session.descriptor_closed
+                # Closing is a paired cleanup edge. It never advances a
+                # publication toward Publish and leaves the lifecycle state
+                # available for Fail/Cancel accounting.
+                # A rename is in flight while Publishing. The host must first
+                # report PublishAck or OutcomeUnknown; closing descriptors in
+                # that interval would otherwise strand the session with no
+                # valid recovery edge.
+                raise PublicationError.CloseNotReady if session.state != PublicationState.Staging and session.state != PublicationState.Staged and session.state != PublicationState.Published and session.state != PublicationState.PublishedUncertain
+                raise PublicationError.CloseNotReady if not session.staging_sibling or not session.staging_exclusive or not session.parent_descriptor_owned or session.parent_descriptor_closed or not session.descriptor_owned or session.descriptor_closed
                 session.descriptor_owned <- false
                 session.descriptor_closed <- true
-                session.state <- PublicationState.Staged
+                session.parent_descriptor_owned <- false
+                session.parent_descriptor_closed <- true
             elif event == PublicationEvent.Publish:
-                raise PublicationError.PublishNotReady if session.state != PublicationState.Staged or not session.staging_sibling or not session.staging_exclusive or not session.descriptor_closed or not session.stage_synced
+                raise PublicationError.PublishNotReady if session.state != PublicationState.Staged or not session.staging_sibling or not session.staging_exclusive or not session.parent_descriptor_owned or session.parent_descriptor_closed or not session.descriptor_owned or session.descriptor_closed or not session.stage_synced
                 session.state <- PublicationState.Publishing
             elif event == PublicationEvent.PublishAck:
-                raise PublicationError.PublishNotReady if session.state != PublicationState.Publishing
+                # The host reports the rename and, when requested, the
+                # descriptor-relative parent-directory fsync together. Both
+                # retained descriptors remain live until this acknowledgement.
+                raise PublicationError.PublishNotReady if session.state != PublicationState.Publishing or not session.parent_descriptor_owned or session.parent_descriptor_closed or not session.descriptor_owned or session.descriptor_closed
                 raise PublicationError.DirectorySyncMissing if session.request.require_directory_sync and not directory_synced
                 session.rename_acknowledged <- true
                 session.directory_synced <- directory_synced
                 session.state <- PublicationState.Published
             elif event == PublicationEvent.OutcomeUnknown:
-                raise PublicationError.PublishNotReady if session.state != PublicationState.Publishing
+                raise PublicationError.PublishNotReady if session.state != PublicationState.Publishing or not session.parent_descriptor_owned or session.parent_descriptor_closed or not session.descriptor_owned or session.descriptor_closed
                 session.destination_preserved_on_failure <- false
                 session.state <- PublicationState.PublishedUncertain
             elif event == PublicationEvent.Fail:
                 raise PublicationError.InvalidState if session.state == PublicationState.Planned or session.state == PublicationState.Published or session.state == PublicationState.Failed or session.state == PublicationState.Cancelled
                 raise PublicationError.PublicationUncertain if session.state == PublicationState.PublishedUncertain
                 raise PublicationError.DestinationNotPreserved if not destination_preserved
+                raise PublicationError.DescriptorOwnershipMissing if session.staging_sibling and (session.parent_descriptor_owned or not session.parent_descriptor_closed or session.descriptor_owned or not session.descriptor_closed)
                 session.destination_preserved_on_failure <- true
                 session.state <- PublicationState.Failed
             elif event == PublicationEvent.Cancel:
                 raise PublicationError.CancelNotReady if session.state != PublicationState.Planned and session.state != PublicationState.Staging and session.state != PublicationState.Staged
                 raise PublicationError.DestinationNotPreserved if not destination_preserved
+                raise PublicationError.DescriptorOwnershipMissing if session.staging_sibling and (session.parent_descriptor_owned or not session.parent_descriptor_closed or session.descriptor_owned or not session.descriptor_closed)
                 session.destination_preserved_on_failure <- true
                 session.state <- PublicationState.Cancelling
             elif event == PublicationEvent.CancelAck:
                 raise PublicationError.CancelNotReady if session.state != PublicationState.Cancelling
+                raise PublicationError.DescriptorOwnershipMissing if session.staging_sibling and (session.parent_descriptor_owned or not session.parent_descriptor_closed or session.descriptor_owned or not session.descriptor_closed)
                 session.state <- PublicationState.Cancelled
             return session.state

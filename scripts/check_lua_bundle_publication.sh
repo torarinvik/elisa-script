@@ -37,6 +37,14 @@ for boundary in \
     'StagingIdentityMissing' \
     'StagingIdentityInvalid' \
     'OwnerMismatch' \
+    'ParentMismatch' \
+    'DescriptorCollision' \
+    'parent_device' \
+    'parent_inode' \
+    'descriptor_token' \
+    'parent_descriptor_owned' \
+    'parent_descriptor_closed' \
+    'publication_parent_proof_empty' \
     'publication_identity_proofs_valid' \
     'WriteLimitExceeded' \
     'DirectorySyncMissing' \
@@ -45,6 +53,9 @@ for boundary in \
     'PublicationEvent.OutcomeUnknown' \
     'PublicationUncertain' \
     'PublicationEvent.StageCreated' \
+    'PublicationEvent.Close' \
+    'session.state != PublicationState.Publishing' \
+    'PublicationError.PublishNotReady' \
     'PublicationEvent.PublishAck'; do
     rg -q "$boundary" "$model" "$fixture"
 done
@@ -52,6 +63,11 @@ done
 rg -q 'include "\.\./runtime/lua_bundle_publication_model\.elisa"' "$ir"
 rg -q 'using EsLuaBundlePublication' "$fixture"
 rg -q 'typed_lua_bundle_publication_requires_exclusive_staging' "$fixture"
+rg -q 'close_cannot_publish' "$fixture"
+rg -q 'parent_mismatch_rejected' "$fixture"
+rg -q 'descriptor_collision_rejected' "$fixture"
+rg -q 'missing_parent_descriptor_rejected' "$fixture"
+rg -q 'cancelled.parent_descriptor_closed' "$fixture"
 rg -q 'W04' "$plan" "$tasks"
 
-printf 'lua bundle publication audit: exclusive sibling staging, descriptor ownership, bounded writes, directory sync, and failure preservation are present\n'
+printf 'lua bundle publication audit: exclusive sibling staging, paired descriptor ownership, identity-bound publish admission, bounded writes, directory sync, and failure preservation are present\n'

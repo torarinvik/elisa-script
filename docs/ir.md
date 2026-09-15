@@ -1022,7 +1022,10 @@ caller-created sibling staging file and can sync the destination parent after
 rename; it rejects equal staging and destination paths with the typed
 `FileStreamError.PathCollision` row before crossing the host rename boundary,
 reports rename and directory-sync failures separately, and leaves staging
-cleanup policy with the caller.
+cleanup policy with the caller. It is intentionally path-based and has no
+descriptor-identity or retained-parent-descriptor contract; W04 publication
+must use the descriptor-aware `EsLuaBundlePublication` seam and a matching host
+adapter instead of treating this helper as proof of secure staging.
 `file_stream_close` is idempotent only for a self-consistent terminal state:
 `Closed` must carry a null handle, while an `Open` stream must carry a live
 handle. Split-brain handles assembled outside the adapter fail with the typed
@@ -1823,6 +1826,30 @@ remaining siblings but still terminates as `Failed`; cancellation cannot mask
 the failed child. If cancellation arrives before that child’s reap receipt,
 `CancelAck` records the child as a failed terminal outcome before cancelling
 the siblings.
+
+`EsTestRunner` builds the test/CI layer over these process and output
+contracts. `TestSpec` binds a stable nonzero ID and unique name to one
+validated `ProcessCommand`; discovery and selection are separate states, so
+unselected cases become explicit skipped records with a bounded reason rather
+than disappearing. Each selected launch consumes a one-based attempt token,
+and a completion receipt must echo that token. Process outcomes are classified
+as pass, flaky pass, failure, crash, timeout, cancellation, or error; retry
+policy and attempt ceilings are explicit, and a failed attempt becomes
+`Retryable` without being counted terminal until the host sends `Retry` and
+launches again. An exhausted or non-retryable failure, including an unexpected
+process cancellation, latches failure, cancels queued work, and drains live
+children through explicit `Draining`/`Cancelling` states. A requested
+cancellation yields `Cancelled` only when no failure is latched, so `Failed`
+wins if both events occur. Only after every case is terminal can
+`BeginReport → SealReport` construct a bounded, ordered `OutputDocument` for
+Human/JSON/JUnit renderers. The runner never
+spawns or writes files itself, so host adapters remain responsible for
+discovery, process launch/reap, and report transport; the source fixture and
+`check_test_runner.sh` audit are static evidence only. A process adapter's
+`error_text` is promoted into the test message when no explicit message is
+provided (and conflicting non-empty values are rejected), so host diagnostics
+cannot vanish from the sealed report. Per-channel diagnostic text is capped at
+1 MiB while the runner's retained aggregate remains capped at 64 MiB.
 
 Before any regex opcode executes, both backends enforce a shared input-size
 boundary: haystack text is at most 64 MiB, the compiled-pattern payload is at
@@ -3549,9 +3576,15 @@ Git queries, with explicit child working-directory, locale, stdio, failure,
 and bounded-timeout policy. The effectful process/clock adapter, atomic
 publication, and acceptance evidence remain open; `EsLuaBundlePublication` now
 provides the pure admission state machine for exclusive sibling staging,
-descriptor closure, rename acknowledgement, directory sync, and failure
-preservation. Typed parent/staging proofs bind device, inode, owner token,
-regular/private/single-link staging, and the shared parent device before the
-publish edge. If the rename outcome is lost after that edge, the machine enters
+paired parent/staging descriptor ownership, bounded writes, rename
+acknowledgement, directory sync, and failure preservation. Typed parent/staging
+proofs bind device, inode, opaque descriptor token, owner token,
+regular/private/single-link staging, and the exact parent device/inode before
+the publish edge. `Sync` reaches `Staged` only while both descriptors remain
+open; `Publish` and its acknowledgement are rejected after either descriptor
+has been closed, and `Close` is rejected while `Publishing` until the host
+reports `PublishAck` or `OutcomeUnknown`. Close is cleanup rather than
+publication authority. If rename or post-rename directory durability
+acknowledgement is lost after that edge, the machine enters
 `PublishedUncertain` through `OutcomeUnknown` and refuses to relabel the
 publication as an ordinary failure.
