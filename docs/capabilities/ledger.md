@@ -573,14 +573,14 @@ remain open.
 
 ES-SCRIPT-046 | EsStructuredTask supplies a bounded structured-concurrency
 contract for scheduler adapters. Child ownership and counts, empty planned
-scopes, fail-fast versus aggregate failure, state-consistent shielded cleanup
-depth, cancellation
+scopes, fail-fast versus aggregate failure, state-consistent nested shielded
+cleanup depth up to the configured limit, cancellation
 acknowledgement, and terminal join outcomes are explicit state-machine edges.
-Acknowledgement while a child is cleaning is rejected, and join cannot finish
-until active children are zero. The focused IR fixture, namespace inclusion,
-documentation, and check_structured_task.sh audit are compiler-free static
-evidence; scheduler queues, thread/task adapters, and runtime execution remain
-open.
+Acknowledgement while a child is cleaning is rejected until all nested cleanup
+frames leave, and join cannot finish until active children are zero. The focused
+IR fixture, namespace inclusion, documentation, and check_structured_task.sh
+audit are compiler-free static evidence; scheduler queues, thread/task adapters,
+and runtime execution remain open.
 
 ES-SCRIPT-047 | EsExitStatus supplies a stable launcher/process-status mapping.
 Success, bounded user `main -> i64` statuses, usage/source/check/test/script/

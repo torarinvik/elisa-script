@@ -41,6 +41,7 @@ for boundary in \
     'Limits::PATH_BYTES' \
     'directory_tree_identity_index' \
     'DirectoryTreeSymlinkPolicy.DoNotFollow' \
+    'DirectoryTreeSymlinkPolicy.FollowDirectories' \
     'DirectoryTreeFailureMode.Collect' \
     'DirectoryTreeError.CycleDetected' \
     'raise DirectoryTreeError.EmbeddedNul if sview_contains_byte(entry.path, 0)' \
@@ -75,6 +76,7 @@ for fixture_pattern in \
     rg -q "$fixture_pattern" "$fixture_file"
 done
 rg -Fq 'follow_symlink' "$fixture_file"
+rg -Fq 'symlink_descent_rejected' "$fixture_file"
 
 rg -q 'EsDirectoryTree::DirectoryTreeSession' "$docs"
 rg -q 'ES-FS-003' "$ledger"

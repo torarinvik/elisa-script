@@ -621,7 +621,8 @@ for scheduler adapters. Child start/success/failure, fail-fast transition,
 scope cancellation, cleanup entry/exit, cancellation acknowledgement, and join
 are separate transitions. Planned scopes must be empty, cleanup depth is present
 only for `Cleaning` children, a child in `Cleaning` cannot acknowledge
-cancellation until its cleanup depth returns to zero, and join reports failure
+cancellation until its cleanup depth returns to zero; nested cleanup entries are
+admitted up to the policy's `max_cleanup_depth`. Join reports failure
 or cancellation only after every active child is accounted for through
 `error[StructuredTaskError]`; a join also rejects any admitted child that is
 still `Planned`. Validation also requires `Succeeded` and `Cancelled` scopes
@@ -1630,10 +1631,10 @@ policy explicit. A walk caps depth, entries, retained identities, and bytes;
 each visited path has a nonzero identity and a depth matching the active
 parent scope, and duplicate
 identities fail closed as cycle/alias protection. Planned snapshots are empty,
-`DoNotFollow`, `FollowFiles`,
-and `FollowDirectories` symlink policies plus fail-fast/collect behavior are
-enforced at `Descend`, including admission of symlinked directories only under
-`FollowDirectories`,
+`DoNotFollow` and `FollowDirectories` symlink policies plus fail-fast/collect
+behavior are enforced at `Descend`, including admission of symlinked
+directories only under `FollowDirectories`; regular-file symlinks remain leaves
+because traversal has no target-resolution edge. These failures are
 typed, and `Descend`/`Leave` maintain an explicit depth stack. Cancellation and
 completion require a balanced walk; fail-fast failures inside a nested scope
 remain in `Walking` until matching `Leave` edges unwind to depth zero, then

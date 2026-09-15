@@ -52,6 +52,7 @@ for boundary in \
     'StructuredChildState.Cleaning and child.cleanup_depth'; do
     rg -q "$boundary" "$model"
 done
+rg -q 'child_state != StructuredChildState.CancelRequested and child_state != StructuredChildState.Cleaning' "$model"
 rg -q 'forged_failed_planned' "$fixture_file"
 
 for fixture_pattern in \
@@ -59,6 +60,7 @@ for fixture_pattern in \
     'typed_structured_task_contract_shields_cleanup_before_join' \
     'StructuredTaskEvent.EnterCleanup' \
     'StructuredTaskError.CancellationShielded' \
+    'still_shielded' \
     'StructuredScopeState.Cancelled' \
     'StructuredTaskError.CleanupDepthInvalid'; do
     rg -q "$fixture_pattern" "$fixture_file"
