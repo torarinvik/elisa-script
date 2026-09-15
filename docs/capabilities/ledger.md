@@ -1177,3 +1177,10 @@ bytes, strict status, and typed resource/cleanup requirements. The pinned
 checkout currently lacks the driver's expected Lua frontend source root, so
 the future launcher must fail closed before spawning any child. This is static
 contract evidence only; no Python, C, compiler, or fixture process has run.
+
+The W06 pattern-action boundary now carries an explicit `RecordStreamPolicy`
+inside `RecordPatternPolicy`; observations are validated against the caller's
+separator-preservation and record-byte settings instead of a default policy.
+Static fixtures cover both a preserved separator accepted by the opt-in policy
+and the same observation rejected by the default policy. No compiler, test,
+script, or audit process was run.

@@ -23,6 +23,7 @@ for declaration in \
     'const enum RecordPatternPredicateKind of u8' \
     'const enum RecordPatternAction of u8' \
     'struct RecordPatternClause:' \
+    'record_policy: RecordStreamPolicy' \
     'struct RecordPatternObservation:' \
     'struct RecordPatternDecision:' \
     'struct RecordPatternSession:' \
@@ -51,6 +52,10 @@ for fixture_pattern in \
     'RecordPatternPredicateKind.RecordNumberEquals' \
     'RecordPatternError.ObservationShapeInvalid' \
     'RecordPatternError.AccountingInvalid' \
+    'session.policy.record_policy' \
+    'preserved_policy' \
+    'preserved_observation' \
+    'rejected_separator_session' \
     'forged_accounting' \
     'record_pattern_selected'; do
     rg -q "$fixture_pattern" "$fixture_file"
