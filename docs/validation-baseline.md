@@ -59,11 +59,13 @@ The latest committed source observed in the adjacent compiler repository is
 `e85e8282c7b8dc588ba2ba53f0912d98769b1f1a` on `codex/structpy-tree`. Its latest
 work hardens extern boundary checks, owned native-resource contracts, and
 refreshed IR artifacts on top of the earlier FFI, lowering, and region
-optimizations. The checkout is clean and has no built `compiler/bin/elisac`. The
-immutable commit is therefore the latest source reference. Until an explicitly
-authorized isolated clean checkout is reviewed and built, the older 601f7bcd
-executable remains the only wrapper-accepted binary and is not claimed to
-represent this newest source.
+optimizations. The source checkout is clean, but its ignored
+`compiler/bin/elisac` was built from `7900a37…` with `vcs.modified=true`; it is
+neither a reproducible build of this revision nor an authorized validation
+target. The immutable commit is therefore the latest source reference. Until an
+explicitly authorized isolated clean checkout is reviewed and built, the older
+601f7bcd executable remains the only wrapper-accepted binary and is not claimed
+to represent this newest source.
 
 ## Vendored dependency and bootstrap chain
 

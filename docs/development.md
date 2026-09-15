@@ -26,11 +26,14 @@ The latest committed Elisa compiler source currently visible is
 `e85e8282c7b8dc588ba2ba53f0912d98769b1f1a` on the adjacent
 `codex/structpy-tree` checkout. Its latest work hardens extern boundary checks,
 owned native-resource contracts, and refreshed IR artifacts on top of the earlier
-FFI, lowering, and region optimizations. The checkout is clean but has no built
-executable. Do not substitute it into a wrapper or build it while the validation
-hold is active. After explicit reauthorization, create an isolated clean checkout
-of this exact revision, build an executable there, record its digest in
-`docs/validation-baseline.md`, and update the wrapper pin before any fixture run.
+FFI, lowering, and region optimizations. The source checkout is clean, but its
+ignored executable was built from `7900a37…` with `vcs.modified=true`, so it is
+neither a reproducible build of this revision nor an authorized validation
+target. Do not substitute it into a wrapper or build anything while the
+validation hold is active. After explicit reauthorization, create an isolated
+clean checkout of this exact revision, build an executable there, record its
+digest in `docs/validation-baseline.md`, and update the wrapper pin before any
+fixture run.
 
 ```sh
 ELISASCRIPT_VALIDATION_REAUTHORIZED=1 \

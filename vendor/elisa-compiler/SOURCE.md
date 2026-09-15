@@ -42,8 +42,9 @@ On 2026-09-15 the latest committed compiler source visible for a future isolated
 refresh was `e85e8282c7b8dc588ba2ba53f0912d98769b1f1a` on
 `codex/structpy-tree`. Its latest work hardens extern boundary checks, owned
 native-resource contracts, and refreshed IR artifacts on top of the earlier FFI,
-lowering, and region optimizations. The adjacent checkout is clean and has no
-`compiler/bin/elisac`, so no executable is claimed or launched from it. This
+lowering, and region optimizations. The adjacent source checkout is clean, but
+its ignored `compiler/bin/elisac` was built from `7900a37…` with
+`vcs.modified=true`; no executable is claimed or launched from it. This
 immutable commit is the source reference for the next explicitly authorized
 refresh; create a clean isolated checkout, review it, and atomically update the
 validation pin before building.
