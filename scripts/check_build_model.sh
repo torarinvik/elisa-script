@@ -35,6 +35,7 @@ done
 
 for boundary in \
     'DependencyOrderInvalid' \
+    'DuplicateDependency' \
     'MissingDependency' \
     'InvalidParallelism' \
     'DependencyNotReady' \
@@ -80,6 +81,10 @@ for fixture_pattern in \
     'BuildContractError.DependencyOrderInvalid'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
+
+rg -Fq 'BuildContractError.DuplicateDependency' "$fixture"
+rg -Fq 'for dependency_index in 0..<node.dependencies.count |node|' "$model"
+rg -Fq 'node.dependencies[earlier] == dependency' "$model"
 
 rg -Fq '`EsBuild` is the shell-replacement boundary' "$docs"
 rg -Fq 'P10 build-graph follow-up' "$plan"
