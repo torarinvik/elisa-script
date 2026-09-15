@@ -1029,7 +1029,11 @@ incomplete multi-byte sequence cannot bypass the typed `InvalidUtf8` error.
 `file_stream_tell` reports the logical position before an unpublished
 lookahead, and `file_stream_seek` exposes explicit begin/current/end origins;
 current-origin seeks rewind that lookahead before applying the requested
-offset, while all successful seeks clear the pending slot.
+offset, while all successful seeks clear the pending slot. A seek on a UTF-8
+write/append stream is rejected while an incomplete code point remains, since
+discarding that decoder state after output has been emitted would make an
+invalid prefix appear valid to later writes or close; read seeks may establish
+a new decoder boundary.
 `file_stream_sync` is write/append-only and flushes the libc stream before
 calling descriptor `fsync`; flush and descriptor failures remain distinct
 typed errors.

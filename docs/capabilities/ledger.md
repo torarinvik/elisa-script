@@ -398,6 +398,8 @@ The stream now also carries an explicit `Auto`/`Bytes`/`Utf8` encoding policy,
 with incremental strict-UTF-8 validation for text streams and byte-preserving
 binary operation; split three- and four-byte continuation bounds are explicit
 in the IR fixture, and invalid or incomplete sequences remain typed failures.
+Output seeks reject an incomplete UTF-8 code point before clearing decoder
+state, so a flushed invalid prefix cannot be hidden from later sync or close.
 Staged publication now has a reusable typed rename edge with optional parent
 directory sync; equal staging and destination paths are rejected with typed
 `FileStreamError.PathCollision` before the host rename, rename and
