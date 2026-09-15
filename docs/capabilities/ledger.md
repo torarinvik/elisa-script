@@ -801,6 +801,18 @@ transitions without mutating parent
 process state. The focused IR fixture and check_environment_model.sh audit are
 static evidence; host environment snapshot/apply adapters remain open.
 
+ES-SCRIPT-053 | EsConfig supplies a pure, bounded configuration precedence
+boundary for defaults, file values, environment values, and command-line
+overrides. Each source and key is unique, keys reject empty/control/separator
+bytes, values reject NUL and line terminators, and layer/result counts and
+aggregate payload ceilings plus per-entry lengths are checked before mutation.
+Resolution keeps the highest
+priority value, preserves present-but-empty values, and returns borrowed values
+in deterministic bytewise key order; lookup never reads process-global state.
+The focused IR fixture, namespace inclusion, documentation, and
+check_config_model.sh audit are static evidence; file/environment/CLI adapters,
+storage-lifetime enforcement, and compiler/runtime qualification remain open.
+
 ES-SCRIPT-009 | EsCsvMaterialize supplies bounded source field spans, contiguous
 policy-checked record layout, quote markers, shared field/record ceilings,
 subtraction-safe record starts, exact-limit admission, clean ready-state

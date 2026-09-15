@@ -1,0 +1,199 @@
+# Typed configuration precedence and deterministic materialization.
+#
+# Configuration is data until a host adapter reads a file or environment and
+# supplies one of the explicit layers. Command-line values win over
+# environment, file, and defaults; an unset layer is represented by no entry,
+# while an empty value remains an intentional value. The resolver owns no file,
+# process, or global-environment effects.
+
+module EsConfig:
+    public:
+        const module Limits:
+            LAYERS: usize = 4
+            ENTRIES_PER_LAYER: usize = 4096
+            OUTPUTS: usize = 4096
+            KEY_BYTES: usize = 4096
+            VALUE_BYTES: usize = 65536
+            LAYER_BYTES: usize = 16777216
+            OUTPUT_BYTES: usize = 16777216
+
+
+        const enum ConfigSource of u8:
+            Defaults
+            File
+            Environment
+            CommandLine
+
+
+        struct ConfigEntry:
+            key: sview
+            value: sview
+
+
+        struct ConfigLayer:
+            source: ConfigSource
+            entries: darray[ConfigEntry] = []
+
+
+        struct ConfigValue:
+            key: sview
+            value: sview
+            source: ConfigSource
+
+
+        struct ConfigLookup:
+            present: bool = false
+            value: sview = ""
+            source: ConfigSource = ConfigSource.Defaults
+
+
+        error ConfigError:
+            LayerLimitExceeded
+            EntryLimitExceeded
+            LayerBytesExceeded
+            OutputLimitExceeded
+            OutputBytesExceeded
+            InvalidSource
+            DuplicateLayer
+            InvalidKey
+            KeyTooLong
+            ValueTooLong
+            DuplicateKey
+            InvalidValue
+
+
+    private:
+        def config_source_valid(source: ConfigSource) -> bool:
+            return source in {ConfigSource.Defaults, ConfigSource.File, ConfigSource.Environment, ConfigSource.CommandLine}
+
+
+        def config_source_priority(source: ConfigSource) -> usize:
+            return 0 if source == ConfigSource.Defaults else 1 if source == ConfigSource.File else 2 if source == ConfigSource.Environment else 3
+
+
+        def config_key_valid(key: sview) -> bool:
+            return false if sview_len(key) == 0
+            for index in 0..<sview_len(key) |key|:
+                byte: u8 = sview_at(key, index)
+                return false if byte < 32 or byte == 127 or byte == 61
+            return true
+
+
+        def config_value_valid(value: sview) -> bool:
+            return not sview_contains_byte(value, 0) and not sview_contains_byte(value, 10) and not sview_contains_byte(value, 13)
+
+
+        def config_entry_bytes(key: sview, value: sview) -> usize:
+            return sview_len(key) + sview_len(value) + 2
+
+
+        def config_entry_fits(current: usize, key: sview, value: sview, limit: usize) -> bool:
+            return false if current > limit
+            remaining: mutable usize = limit - current
+            key_bytes: usize = sview_len(key)
+            value_bytes: usize = sview_len(value)
+            return false if key_bytes > remaining
+            remaining <- remaining - key_bytes
+            return false if value_bytes > remaining
+            remaining <- remaining - value_bytes
+            return remaining >= 2
+
+
+        def config_value_index(values: darray[ConfigValue], key: sview) -> usize:
+            for index in 0..<values.count |values, key|:
+                return index if values[index].key == key
+            return values.count
+
+
+        def config_key_less(left: sview, right: sview) -> bool:
+            left_length: usize = sview_len(left)
+            right_length: usize = sview_len(right)
+            common: usize = left_length if left_length < right_length else right_length
+            for index in 0..<common |left, right|:
+                return true if sview_at(left, index) < sview_at(right, index)
+                return false if sview_at(left, index) > sview_at(right, index)
+            return left_length < right_length
+
+
+        def config_layer_valid(layer: ConfigLayer) -> bool error[ConfigError]:
+            raise ConfigError.InvalidSource if not config_source_valid(layer.source)
+            raise ConfigError.EntryLimitExceeded if layer.entries.count > Limits::ENTRIES_PER_LAYER
+            layer_bytes: mutable usize = 0
+            for index in 0..<layer.entries.count |layer|:
+                entry: ConfigEntry = layer.entries[index]
+                raise ConfigError.InvalidKey if not config_key_valid(entry.key)
+                raise ConfigError.KeyTooLong if sview_len(entry.key) >= Limits::KEY_BYTES
+                raise ConfigError.ValueTooLong if sview_len(entry.value) >= Limits::VALUE_BYTES
+                raise ConfigError.InvalidValue if not config_value_valid(entry.value)
+                raise ConfigError.LayerBytesExceeded if not config_entry_fits(layer_bytes, entry.key, entry.value, Limits::LAYER_BYTES)
+                layer_bytes <- layer_bytes + config_entry_bytes(entry.key, entry.value)
+                for earlier in 0..<index |layer, entry|:
+                    raise ConfigError.DuplicateKey if layer.entries[earlier].key == entry.key
+            return true
+
+
+        def config_values_valid(values: darray[ConfigValue]) -> bool error[ConfigError]:
+            raise ConfigError.OutputLimitExceeded if values.count > Limits::OUTPUTS
+            output_bytes: mutable usize = 0
+            for index in 0..<values.count |values|:
+                value: ConfigValue = values[index]
+                raise ConfigError.InvalidSource if not config_source_valid(value.source)
+                raise ConfigError.InvalidKey if not config_key_valid(value.key)
+                raise ConfigError.KeyTooLong if sview_len(value.key) >= Limits::KEY_BYTES
+                raise ConfigError.ValueTooLong if sview_len(value.value) >= Limits::VALUE_BYTES
+                raise ConfigError.InvalidValue if not config_value_valid(value.value)
+                raise ConfigError.OutputBytesExceeded if not config_entry_fits(output_bytes, value.key, value.value, Limits::OUTPUT_BYTES)
+                output_bytes <- output_bytes + config_entry_bytes(value.key, value.value)
+                for earlier in 0..<index |values, value|:
+                    raise ConfigError.DuplicateKey if values[earlier].key == value.key
+            return true
+
+
+    public:
+        def validate_config_layers(layers: darray[ConfigLayer]) -> bool error[ConfigError]:
+            raise ConfigError.LayerLimitExceeded if layers.count > Limits::LAYERS
+            for index in 0..<layers.count |layers|:
+                layer: ConfigLayer = layers[index]
+                try config_layer_valid(layer)
+                for earlier in 0..<index |layers, layer|:
+                    raise ConfigError.DuplicateLayer if layers[earlier].source == layer.source
+            return true
+
+
+        def resolve_config_layers(layers: darray[ConfigLayer]) -> darray[ConfigValue] error[ConfigError] can[Memory.Allocate, Abort.Panic]:
+            try validate_config_layers(layers)
+            result: mutable darray[ConfigValue] = []
+            result_bytes: mutable usize = 0
+            for layer in layers:
+                for entry in layer.entries:
+                    index: usize = config_value_index(result, entry.key)
+                    candidate: ConfigValue = ConfigValue{key: entry.key, value: entry.value, source: layer.source}
+                    if index == result.count:
+                        raise ConfigError.OutputLimitExceeded if result.count >= Limits::OUTPUTS
+                        raise ConfigError.OutputBytesExceeded if not config_entry_fits(result_bytes, entry.key, entry.value, Limits::OUTPUT_BYTES)
+                        result.push(candidate)
+                        result_bytes <- result_bytes + config_entry_bytes(entry.key, entry.value)
+                    elif config_source_priority(layer.source) > config_source_priority(result[index].source):
+                        previous_bytes: usize = config_entry_bytes(result[index].key, result[index].value)
+                        without_previous: usize = result_bytes - previous_bytes
+                        raise ConfigError.OutputBytesExceeded if not config_entry_fits(without_previous, entry.key, entry.value, Limits::OUTPUT_BYTES)
+                        result[index] <- candidate
+                        result_bytes <- without_previous + config_entry_bytes(entry.key, entry.value)
+            if result.count > 1:
+                for index in 1..<result.count |result|:
+                    current: ConfigValue = result[index]
+                    cursor: mutable usize = index
+                    while cursor > 0 and config_key_less(current.key, result[cursor - 1].key) |cursor, current, result|:
+                        result[cursor] <- result[cursor - 1]
+                        cursor <- cursor - 1
+                    result[cursor] <- current
+            return result
+
+
+        def lookup_config_value(values: darray[ConfigValue], key: sview) -> ConfigLookup error[ConfigError]:
+            try config_values_valid(values)
+            raise ConfigError.InvalidKey if not config_key_valid(key)
+            raise ConfigError.KeyTooLong if sview_len(key) >= Limits::KEY_BYTES
+            index: usize = config_value_index(values, key)
+            return ConfigLookup{} if index == values.count
+            return ConfigLookup{present: true, value: values[index].value, source: values[index].source}

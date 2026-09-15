@@ -2558,6 +2558,21 @@ value accounts for only the previous value payload rather than double-counting
 the name/terminator overhead.
 Fresh `Ready` snapshots must be empty and zero-accounted, and `Unset` validates
 the variable name before resolving tombstones.
+
+`EsConfig` is the pure configuration precedence boundary for script-facing
+defaults, files, environment overlays, and command-line overrides. Its four
+`ConfigSource` layers have explicit `Defaults < File < Environment <
+CommandLine` priority; a source may occur at most once, and each layer may
+contain a key at most once. Keys reject empty/control/separator bytes, values
+reject NUL and line terminators, and per-layer/result counts plus aggregate
+payload bytes are bounded before mutation. The resolver keeps the
+highest-priority value, preserves an empty value as present, and returns
+borrowed `sview` values in deterministic bytewise key order. `lookup_config_value`
+therefore distinguishes an absent key from an intentionally empty value without
+consulting files, process-global environment, or command-line state; adapters
+must provide those observations as explicit layers and keep their storage alive
+for the returned views.
+
 `CreateDirectory`, `CreateDirectories`, `RemoveDirectory`, and `ChangeDirectory` verify as
 `Named(Path) -> Bool` with `Directory.Write` and `DirectoryError`.
 The legacy `CreateDirectory` form takes one path operand. `Path.mkdir` may use
