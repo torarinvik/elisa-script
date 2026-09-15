@@ -43,7 +43,8 @@ for boundary in \
     'MissingOptionValue' \
     'ArgumentLimitExceeded' \
     'SourcePathLimitExceeded' \
-    'option_end_seen'; do
+    'option_end_seen' \
+    'arguments[index] == "--" and not invocation.option_end_seen'; do
     rg -Fq "$boundary" "$model"
 done
 

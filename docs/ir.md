@@ -103,8 +103,9 @@ program-wide namespace.
 and help/version modes are explicit, `--color` and `--strict-engine` are typed
 options, source-requiring modes accept only the `.elisascript` suffix, and the
 first source path ends launcher-option parsing. A literal `--`
-marks the script-argument boundary; subsequent values are preserved byte-for-
-byte and are never shell-expanded. `validate_cli_invocation` enforces source,
+marks the script-argument boundary and is omitted from the script's argv;
+subsequent values are preserved byte-for-byte and are never shell-expanded.
+`validate_cli_invocation` enforces source,
 argument, NUL, and text ceilings, rejects source/script arguments for
 source-free help/version modes, and rejects repeated colors through
 `error[CliContractError]`, while
