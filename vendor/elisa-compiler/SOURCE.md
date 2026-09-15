@@ -71,6 +71,8 @@ The current adapted fixes are tracked separately from the snapshot identity:
   function-return lookups instead of scanning the full declaration table.
 - `0d92a608`: materialize `sview` constants with both their global pointer and
   decoded length at use sites.
+- `df144c9c`: skip the disjointness fixed-point scan unless the no-alias
+  metadata feature is enabled.
 
 These changes are limited to the vendored APIs and deliberately omit newer
 backend files whose supporting tables are not present in `e56d6f2d`.
