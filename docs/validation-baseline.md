@@ -56,14 +56,14 @@ Building or launching a compiler remains disabled until explicit
 reauthorization and a bounded, reviewed build plan.
 
 The latest committed source observed in the adjacent compiler repository is
-`7900a37a2cdec0d8f32f90cb2d064c2ec5d41b9a` on `codex/structpy-tree`. It includes
-the current FFI/extern pointer-bound and owned-resource work on top of the
-earlier lowering and region optimizations. The checkout currently has tracked
-and untracked changes and no built `compiler/bin/elisac`. The immutable commit
-is therefore the latest source reference, while the dirty checkout is not itself
-a reproducible build input. Until an explicitly authorized isolated clean
-checkout is reviewed and built, the older 601f7bcd executable remains the only
-wrapper-accepted binary and is not claimed to represent the latest source.
+`e85e8282c7b8dc588ba2ba53f0912d98769b1f1a` on `codex/structpy-tree`. Its latest
+work hardens extern boundary checks, owned native-resource contracts, and
+refreshed IR artifacts on top of the earlier FFI, lowering, and region
+optimizations. The checkout is clean and has no built `compiler/bin/elisac`. The
+immutable commit is therefore the latest source reference. Until an explicitly
+authorized isolated clean checkout is reviewed and built, the older 601f7bcd
+executable remains the only wrapper-accepted binary and is not claimed to
+represent this newest source.
 
 ## Vendored dependency and bootstrap chain
 

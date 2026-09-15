@@ -39,13 +39,14 @@ typed-literal validation. Their rationale and tests are documented under `docs/`
 ## Latest upstream source observation
 
 On 2026-09-15 the latest committed compiler source visible for a future isolated
-refresh was `7900a37a2cdec0d8f32f90cb2d064c2ec5d41b9a` on
-`codex/structpy-tree`. It includes the current FFI/extern pointer-bound and
-owned-resource work on top of the earlier lowering and region optimizations. The
-adjacent checkout is dirty and has no `compiler/bin/elisac`, so no executable is
-claimed or launched from it. This immutable commit is the source reference for
-the next explicitly authorized refresh; create a clean isolated checkout, review
-it, and atomically update the validation pin before building.
+refresh was `e85e8282c7b8dc588ba2ba53f0912d98769b1f1a` on
+`codex/structpy-tree`. Its latest work hardens extern boundary checks, owned
+native-resource contracts, and refreshed IR artifacts on top of the earlier FFI,
+lowering, and region optimizations. The adjacent checkout is clean and has no
+`compiler/bin/elisac`, so no executable is claimed or launched from it. This
+immutable commit is the source reference for the next explicitly authorized
+refresh; create a clean isolated checkout, review it, and atomically update the
+validation pin before building.
 
 That source is substantially different from this vendored `e56d6f2d` snapshot.
 The vendored tree contains Elisascript-specific adaptations (including
