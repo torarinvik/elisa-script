@@ -1149,7 +1149,8 @@ depth and byte accounting, explicit applied/skipped/failed entry outcomes,
 symlink preserve/follow/skip/reject policy, fail-fast versus collected partial
 failures, fail-fast scope unwinding before terminal `Failed`, balanced directory
 scopes, source-equal/descendant and duplicate copy-destination rejection,
-clean planned state, cycle/alias rejection, resource limits, and cancellation
+trailing-separator-normalized equal and descendant rejection, clean planned
+state, cycle/alias rejection, resource limits, and cancellation
 through `error[DirectoryMutationError]`; session and entry source/destination
 NULs are classified as `EmbeddedNul` before ordinary path or destination
 errors, including during `Plan` admission. The focused IR

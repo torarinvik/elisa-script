@@ -2681,6 +2681,14 @@ consulting files, process-global environment, or command-line state; adapters
 must provide those observations as explicit layers and keep their storage alive
 for the returned views.
 
+`EsDirectoryMutation` validates recursive copy/remove plans before a host
+adapter mutates the filesystem. Source and destination containment compares
+trim trailing separators (while preserving the root separator), so an equal
+path or a descendant such as `/tmp/source/` → `/tmp/source/child` is always
+reported as `DirectoryMutationError.DestinationCollision`; ordinary prefix
+names such as `/tmp/source-old` are not treated as descendants. The same
+check applies to session paths and every planned entry.
+
 `CreateDirectory`, `CreateDirectories`, `RemoveDirectory`, and `ChangeDirectory` verify as
 `Named(Path) -> Bool` with `Directory.Write` and `DirectoryError`.
 The legacy `CreateDirectory` form takes one path operand. `Path.mkdir` may use

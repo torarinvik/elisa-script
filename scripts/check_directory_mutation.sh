@@ -52,6 +52,10 @@ for boundary in \
     'DirectoryMutationError.DestinationCollision' \
     'accounted_bytes > session.policy.max_bytes' \
     'entry.bytes > session.policy.max_bytes - accounted_bytes' \
+    'directory_mutation_trim_trailing_separators' \
+    'while finish > 1 and sview_at(path, finish - 1) == 47' \
+    'source_end == destination_end and source\[0:source_end\] == destination\[0:destination_end\]' \
+    'source_end == 1 and sview_at(source, 0) == 47' \
     'directory_mutation_destination_nested' \
     'raise DirectoryMutationError.EmbeddedNul if sview_contains_byte\(session.source_path, 0\)' \
     'raise DirectoryMutationError.EmbeddedNul if sview_contains_byte\(session.destination_path, 0\)' \
@@ -78,6 +82,8 @@ for fixture_pattern in \
     'DirectoryMutationError.ActiveScope' \
     'repeated_enter_rejected' \
     'stale_regular_enter_rejected' \
+    'trailing_nested_destination' \
+    'equivalent_trailing_destination' \
     'nul_source_precedes_invalid_path' \
     'nul_destination_precedes_invalid_path' \
     'nul_plan_source_precedes_invalid_path' \
