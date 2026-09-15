@@ -1042,9 +1042,10 @@ callback dispatch and multi-file traversal remain open.
 
 ES-SCRIPT-027 | EsRecordAggregate supplies a bounded insertion-ordered keyed
 counter for AWK/Perl-style associative aggregation. It enforces group/event/key
-budgets, rejects duplicate internal groups and malformed keys, preserves first
+budgets with inclusive aggregate-key admission, rejects duplicate internal groups and malformed keys, preserves first
 ordinals, and now admits explicit bounded unsigned sums through `AddValue` with
-sealed count/sum lookup. Planned sessions must start empty; sum overflow and
+sealed count/sum lookup. A key exactly at `max_key_bytes` is accepted while the
+next byte is rejected. Planned sessions must start empty; sum overflow and
 terminal mutation remain typed `error[RecordAggregateError]`. The focused IR fixture, namespace inclusion,
 documentation, and check_record_aggregate.sh audit are static evidence; signed
 numeric policies, joins, spill-to-disk aggregation, and host execution remain

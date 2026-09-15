@@ -1575,7 +1575,8 @@ file has ever been opened and requires the per-file counter to be zero after
 count operation for AWK/Perl-style keyed aggregation. Keys retain insertion
 order, duplicate keys increment their count without changing that order, and
 planned sessions must be empty before `Begin`; new groups plus aggregate key
-bytes are admitted against explicit ceilings.
+bytes are admitted against explicit inclusive ceilings, so a key exactly
+`max_key_bytes` bytes long is valid and the next byte is rejected.
 `AddValue` adds a bounded unsigned value to the same stable group, with an
 explicit per-session sum ceiling; `record_aggregate_group_count` and
 `record_aggregate_group_sum` are available only after `Seal`. Malformed keys,

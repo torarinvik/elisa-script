@@ -38,6 +38,7 @@ for boundary in \
     'RECORD_AGGREGATE_MAX_KEY_BYTES' \
     'RECORD_AGGREGATE_MAX_SUM' \
     'record_aggregate_key_valid' \
+    'sview_len\(key\) <= policy.max_key_bytes' \
     'RecordAggregateError.GroupLimitExceeded' \
     'RecordAggregateError.EventLimitExceeded' \
     'RecordAggregateError.KeyBytesLimitExceeded' \
@@ -60,6 +61,8 @@ for fixture_pattern in \
     'typed_record_aggregate_contract_is_bounded_and_insertion_ordered' \
     'RecordAggregateEvent.Add' \
     'record_aggregate_group_count' \
+    'max_key_bytes: 5' \
+    '"12345"' \
     'forged_aggregate_order' \
     'RecordAggregateError.GroupIndexInvalid'; do
     rg -q "$fixture_pattern" "$fixture_file"
