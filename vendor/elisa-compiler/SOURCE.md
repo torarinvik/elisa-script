@@ -40,21 +40,23 @@ typed-literal validation. Their rationale and tests are documented under `docs/`
 
 On 2026-09-15 the latest self-hosted Elisa compiler source visible for a future
 adapted refresh was `d6a693c0f724c05f7b71418658dd8bda95ba73b3` on the clean
-`main` checkout at `../Elisa-compiler`. It merges the recent catch-binder,
+`main` checkout at `/Users/torarinvikbjarko/Documents/Coding Projects/Elisa Projects/Elisa-compiler`.
+It merges the recent catch-binder,
 value-returning-tail, module-callee, private-extern, and stage compatibility
 fixes on top of the extern-resource ABI and lowering work. This source is
 materially newer than the vendored `e56d6f2d` snapshot, but the differences are
 too broad for an unreviewed wholesale replacement.
 
-The separate Go Elisa-core source checkout used by the guarded validation path
-is clean at `3a5520d8fd56b86c430f39518a261e9030fa72ec` on
-`codex/structpy-tree`. Its latest source commits align stage0 with
-value-returning and unannotated-void function tails. Its ignored
-`compiler/bin/elisac` remains built from `7900a37…` with `vcs.modified=true`; no
-executable is claimed or launched from it. This immutable Go commit is the
-source reference for the next explicitly authorized validation build; create a
-clean isolated checkout, review it, and atomically update the validation pin
-before building.
+The separate Go Elisa-core source checkout currently visible for the guarded
+validation path is clean at `3a5520d8fd56b86c430f39518a261e9030fa72ec` on its
+`main` branch at `/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/Elisa-core`.
+Its latest source commits align stage0 with value-returning and unannotated-void
+function tails. The explicitly pinned `structpy-tree/compiler/bin/elisac`
+path is absent in this workspace, and the old Elisa-core executable is a
+different main-worktree artifact; no executable is claimed or launched from
+either path. This immutable Go commit is the source reference for a future
+explicitly authorized validation build; create a clean isolated checkout,
+review it, and atomically update the validation pin before building.
 
 That source is substantially different from this vendored `e56d6f2d` snapshot.
 The vendored tree contains Elisascript-specific adaptations (including
