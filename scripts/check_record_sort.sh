@@ -43,6 +43,7 @@ for boundary in \
     'RecordSortError.UniqueViolation' \
     'not key.present and (key.text != "" or key.integer != 0)' \
     'key.kind == RecordSortKeyKind.Integer and key.text != ""' \
+    'key.kind == RecordSortKeyKind.Text and key.integer != 0' \
     'session.state == RecordSortState.Planned and' \
     'record_sort_keys_equal' \
     'RecordSortError.TextLimitExceeded' \

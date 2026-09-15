@@ -1184,3 +1184,8 @@ separator-preservation and record-byte settings instead of a default policy.
 Static fixtures cover both a preserved separator accepted by the opt-in policy
 and the same observation rejected by the default policy. No compiler, test,
 script, or audit process was run.
+
+The record-sort boundary now rejects nonzero hidden integer payloads on text
+keys, matching the existing canonical payload rules for missing and integer
+keys. A static fixture covers the malformed text-key payload; no compiler, test,
+script, or audit process was run.
