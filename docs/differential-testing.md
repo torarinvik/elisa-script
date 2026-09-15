@@ -1102,8 +1102,12 @@ kind, so the reducer never silently turns binary data into text.
 `shrink_differential_runs` adds the next bounded layer for already captured
 runs: it clears each side's stdout/stderr and removes each observation in a
 fixed order, retaining only candidates whose original first-difference kind
-survives. It never mutates the input pools or launches either side, and caps
-candidate count at the same runtime default. It then clears one aggregate
+survives. Before shrinking, each run must satisfy the same per-channel and
+aggregate text, value-pool, outcome, engine-metadata, and nested-range
+envelopes used by comparison; malformed caller-constructed evidence yields an
+invalid result instead of a misleading minimized case. It never mutates the
+input pools or launches either side, and caps candidate count at the same
+runtime default. It then clears one aggregate
 array/map slot at a time from each side's owned value pool, after validating
 every root, observation, and nested range; the original mismatch category must
 still survive, so an aggregate reduction cannot silently turn a value mismatch
