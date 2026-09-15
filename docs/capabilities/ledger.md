@@ -928,12 +928,15 @@ fingerprint; admits one attempt per side/root; and requires the attempt and
 matching fingerprint claim when completing `NativeProcess`/`PythonAdapter`
 runs. Version-2 ESPS/ESVP sidecars now preserve that setup receipt, and complete
 bundle admission rejects absent or mismatched per-side receipt pairs while
-allowing explicit zero/zero generic runs. The focused fixture and documentation
-are static source evidence only; no fixture, compiler, or audit was run. Public
-records are forgeable, so this does not prove child provenance. Ambient capture
-provenance, actual root materialization, indexed large-environment merging,
-in-process virtualization, descendant quiescence, and crash recovery remain
-open.
+allowing explicit zero/zero generic runs. Admission also reconstructs ordinary
+observable comparison evidence from paired ESPS/ESVP sidecars, rejecting forged
+Equal reports, process/value outcome or exit-status disagreement, and wrong
+ordinary first-difference kind/index even when the ESIX fingerprints are
+self-consistent. The focused fixture and documentation are static source
+evidence only; no fixture, compiler, or audit was run. Public records are
+forgeable, so this does not prove child provenance. Ambient capture provenance,
+actual root materialization, indexed large-environment merging, in-process
+virtualization, descendant quiescence, and crash recovery remain open.
 
 ES-SCRIPT-020 | EsDifferentialRedaction supplies explicit exact-name/all-value
 redaction policy, bounded environment capture, deterministic value fingerprints,
@@ -1054,7 +1057,9 @@ active parallelism, attempts before launch, pending/running/awaiting-reap/retrya
 terminal-state accounting, launch attempt tokens, stale-receipt rejection,
 explicit reap acknowledgement before retry, planned cancellation, fail-fast versus aggregate
 failure, including fail-fast draining where every active sibling fails, and
-scoped `Cancel → CancelAck` cleanup.
+scoped `Cancel → CancelAck` cleanup. In-flight `Running` and `Cancelling`
+snapshots must retain unfinished work, preventing a forged terminal snapshot
+from being relabelled as cancellation.
 The focused IR fixture, namespace inclusion, documentation, and
 check_process_batch.sh audit are static evidence; scheduler ownership, actual
 pipe/process adapters, signal escalation, and execution evidence remain open.
