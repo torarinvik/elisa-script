@@ -1780,7 +1780,9 @@ carries the source `RecordStreamPolicy` explicitly, so separator preservation
 and the record byte ceiling are not replaced by a silent default during
 observation validation. Predicate text at exactly the configured text ceiling
 is admitted consistently with the record byte ceiling. Validation reconciles decision cardinality/selection counters and
-running/terminal clause-state shape. Shape mismatches, unterminated ranges,
+running/terminal clause-state shape, and requires strictly increasing global
+record numbers in the retained decisions. Shape mismatches, duplicate or
+out-of-order records, unterminated ranges,
 malformed predicates, text limits, cancellation, and terminal transitions use
 `error[RecordPatternError]`; regex compilation and callback dispatch remain
 separate adapters.

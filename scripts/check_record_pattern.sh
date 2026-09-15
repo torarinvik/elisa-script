@@ -40,6 +40,7 @@ for boundary in \
     'RecordPatternEvent.Record' \
     'RecordPatternError.ObservationShapeInvalid' \
     'RecordPatternError.AccountingInvalid' \
+    'decision.record_number <= session.decisions[index - 1].record_number' \
     'RecordPatternError.EndNotReady' \
     'record_pattern_predicate_valid(clause.end, policy)' \
     'session.decisions.count != session.processed_records' \
@@ -58,6 +59,8 @@ for fixture_pattern in \
     'preserved_observation' \
     'rejected_separator_session' \
     'forged_accounting' \
+    'forged_record_order' \
+    'duplicate_record_order' \
     'hidden_end_payload' \
     'RecordPatternError.InvalidClause' \
     'record_pattern_selected' \

@@ -1120,7 +1120,8 @@ integration remain open.
 ES-SCRIPT-039 | EsRecordPattern supplies bounded pattern/action filtering and
 inclusive-range selection for Perl/AWK-style record streams. Typed predicates,
 explicit Select/Skip actions, host-supplied External observations, range-active
-state, one decision per record, inclusive text/record ceilings, shape checks, and terminal
+state, one decision per record, strictly increasing global record numbers,
+inclusive text/record ceilings, shape checks, and terminal
 failure/cancellation edges are validated through `error[RecordPatternError]`.
 The focused IR fixture, namespace inclusion, documentation, and
 check_record_pattern.sh audit are static evidence; regex adapter integration,
