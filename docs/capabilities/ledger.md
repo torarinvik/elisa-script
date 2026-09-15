@@ -656,7 +656,7 @@ stream readers, external sort, lifecycle hooks, and transactional in-place edits
 remain open.
 
 `EsNetwork::NetworkRequest` and `NetworkResponse` now define a bounded,
-transport-neutral HTTP/TLS contract with explicit methods, ordered headers,
+transport-neutral HTTP/TLS contract with explicit methods, ordered headers (with ASCII case-insensitive duplicate rejection),
 binary bodies, timeout/response ceilings, redirect policy, and distinct DNS,
 TLS, transport, timeout, protocol, status, decode, and cancellation outcomes.
 `NetworkRetryPolicy` makes retries explicit and bounded: `Never` is one-shot,
