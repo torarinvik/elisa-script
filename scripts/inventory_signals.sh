@@ -115,7 +115,15 @@ if ! find "$scan_root" \
         limit=$3
         depth=0
         if [ "$candidate" != "$root" ]; then
-            relative=${candidate#"$root"/}
+            # `${root}/` would be `//` for the filesystem root, which does
+            # not match the single slash prefix in a find-produced path.
+            # Strip the root spelling itself in that case so `/child` is
+            # measured as one descendant directory rather than two.
+            if [ "$root" = "/" ]; then
+                relative=${candidate#/}
+            else
+                relative=${candidate#"$root"/}
+            fi
             depth=1
             while :; do
                 case "$relative" in
