@@ -453,7 +453,7 @@ static policy evidence until every host bridge actually consumes the derived
 policy and execution tests are reauthorized.
 
 `EsProcess::ProcessCommand` now supplies a typed shell-free command record with
-ordered argv/environment vectors, child cwd (included in aggregate terminated-byte accounting), explicit stdio modes, timeout and
+ordered argv/environment vectors (with a one-million name/value-pair ceiling), child cwd (included in aggregate terminated-byte accounting), explicit stdio modes, timeout and
 failure policy fields, and a bounded `error[ProcessCommandError]` validator.
 `resolve_process_environment` now turns a captured ambient vector plus the
 declared `Inherit`/`Replace`/`Clear` policy into one deterministic child vector,

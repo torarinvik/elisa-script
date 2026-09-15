@@ -2226,6 +2226,7 @@ that exceed the `PROCESS_COMMAND_MAX_ARGUMENTS` one-million-argument or
 64 MiB terminated-byte ceilings,
 odd environment pairs (reported as `EnvironmentVectorMalformed`), empty or
 `=`-containing names, duplicate overrides,
+and environment vectors above the one-million name/value-pair ceiling,
 unknown policy ordinals, and unsupported stdio modes with
 `error[ProcessCommandError]`. The environment vector is intentionally flat so
 insertion order is explicit and host adapters cannot inherit map-order or shell
