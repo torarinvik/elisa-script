@@ -1013,7 +1013,8 @@ are checked before reconciliation to prevent overflow; inner, left,
 right, and full outer policies are explicit; duplicate keys produce bounded
 Cartesian pair counts and unmatched outer rows contribute one pair each. The
 sealed pair-count query and all invalid lifecycle, key, ordinal, accounting,
-and pair-limit paths use `error[RecordJoinError]`. The focused IR fixture,
+and pair-limit paths use `error[RecordJoinError]`, including distinct
+`EmbeddedNul` rejection for keys and values. The focused IR fixture,
 namespace inclusion, documentation, and check_record_join.sh audit are static
 evidence; pair materialization, spill/merge adapters, and host execution remain
 open.

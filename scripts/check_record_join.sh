@@ -43,6 +43,7 @@ for boundary in \
     'session.left_count > session.rows.count or session.right_count > session.rows.count' \
     'RecordJoinKind.Full' \
     'RecordJoinError.EmptyKey' \
+    'RecordJoinError.EmbeddedNul' \
     'RecordJoinError.PairLimitExceeded' \
     'RecordJoinError.AccountingInvalid' \
     'session.state == RecordJoinState.Planned and' \
@@ -58,7 +59,8 @@ for fixture_pattern in \
     'RecordJoinSide.Right' \
     'record_join_pair_count' \
     'forged_count_bound' \
-    'RecordJoinError.EmptyKey'; do
+    'RecordJoinError.EmptyKey' \
+    'RecordJoinError.EmbeddedNul'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 

@@ -1547,7 +1547,7 @@ must be empty before `Begin`, and admission caps row, key, and value bytes befor
 mutation. `Inner`, `Left`, `Right`, and `Full`
 policies are explicit. After `Seal`, `record_join_pair_count` counts duplicate
 key Cartesian matches in insertion order and adds one pair for each unmatched
-outer row where requested, all under a pair ceiling. Empty/NUL keys, broken
+outer row where requested, all under a pair ceiling. Empty keys, NUL keys/values, broken
 ordinals, overflow-safe accounting drift checks, and post-terminal mutation return
 `error[RecordJoinError]`; materializing the paired rows and external sort/merge
 remain host responsibilities.
