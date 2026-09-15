@@ -306,19 +306,25 @@ Another candidate-only filesystem case creates a
 129-file include chain and checks the 128-frame depth rejection while cleaning
 up every generated file. A separate candidate-only case repeats one completed
 child include 16,385 times to pin the independent include-directive ceiling;
-it avoids invoking the Python loader on this generated bound case. Positive
-snapshots are also checked against their checked-in JSON. The Python adapter
+it avoids invoking the Python loader on this generated bound case. Another
+candidate-only case creates 4,096 unique sibling includes so the root plus
+those children reaches the independent 4,096-file ceiling; it cleans every
+generated file and avoids invoking the Python loader. Positive snapshots are
+also checked against their checked-in JSON. The Python adapter
 verifies the working-tree scanner blob against the pinned Git commit before
 calling it.
 Before invoking the reference's recursive loader, the adapter performs a
 streaming include-graph preflight with the same per-file, graph-byte,
-output-byte, path, path-component-work, directive, and depth ceilings; this
+output-byte, path, path-component-work, directive, depth, and unique-file
+ceilings; this
 avoids unbounded oracle reads while retaining the pinned loader as the
 accepted-input reference. It also normalizes host `OSError` read failures to
 the candidate's stable path diagnostic. This test source has not been run: it
 remains behind the disabled bounded compiler wrapper and does not yet cover
-aggregate include-graph bytes, unique include-file count, structured-output
-overflow, unreadable input under a non-root user, or caller integration.
+aggregate include-graph bytes, structured-output overflow, unreadable input
+under a non-root user, or caller integration. The unique-file rejection is
+covered only by the candidate-only generated source case; it has not been
+executed.
 
 The separate `test/script_parity/wasm_export_scan_launcher_test.elisascript`
 source compares the configured launcher executable process against the pinned
