@@ -9,7 +9,7 @@ Latest metadata recheck: 2026-09-15
 
 ## Elisascript worktree
 
-- Repository revision before this baseline refresh: `243fc78b4d31f1d17b753928c1a67bbf15c71357`
+- Repository revision before this baseline refresh: `268a9203aaa00f1d373ed5ba84ea106a9a46c0ec`
 - Tracked dirty files: none
 - Ignored local planning file: `IMPLEMENTATION_PLAN.md`
 - Working tree policy: never commit the ignored plan or `.DS_Store` files
@@ -44,6 +44,13 @@ The pinned executable above therefore remains the only identity accepted by the
 validation wrappers, but it is not claimed to represent this newest source.
 Building or launching a compiler remains disabled until explicit
 reauthorization and a bounded, reviewed build plan.
+
+A separate local compiler worktree is currently at `8d7db0561d0f72c1f548fa6a73d071c86b2fe57`
+on `codex/shared-typed-edir-lowering`, but it has tracked and untracked changes
+and no built `compiler/bin/elisac`. It is not a reproducible compiler identity;
+the clean c605 snapshot above remains the latest eligible source-only reference
+until that worktree is deliberately cleaned, reviewed, and built in an isolated
+authorized session.
 
 ## Vendored dependency and bootstrap chain
 
