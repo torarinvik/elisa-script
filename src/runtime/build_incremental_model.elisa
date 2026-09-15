@@ -1,0 +1,229 @@
+# Bounded, pure incremental-build admission.
+#
+# `EsBuild` and `EsBuildScheduler` own command graphs and execution state. This
+# module owns the CMake/Ninja-style question that must happen before dispatch:
+# does a target still describe the current recipe, inputs, dependencies, and
+# outputs, or must it be rebuilt? Hosts provide the current observations; no
+# filesystem or process effect is performed here.
+
+module EsBuildIncremental:
+    public:
+        const module Limits:
+            TARGETS: usize = 4096
+            INPUTS: usize = 4096
+            OUTPUTS: usize = 4096
+            DEPENDENCIES: usize = 4096
+            OBSERVATIONS: usize = 16384
+            PATH_BYTES: usize = 4096
+            NAME_BYTES: usize = 4096
+
+
+        const enum BuildIncrementalTargetKind of u8:
+            Executable
+            StaticLibrary
+            SharedLibrary
+            GeneratedFile
+
+
+        const enum BuildIncrementalDecision of u8:
+            UpToDate
+            RecipeChanged
+            DependencyMissing
+            DependencyDirty
+            ObservationMissing
+            InputMissing
+            InputChanged
+            OutputMissing
+            OutputChanged
+
+
+        struct BuildIncrementalFile:
+            path: sview
+            fingerprint: u64
+
+
+        # A file record in a target is the fingerprint captured by the last
+        # successful build. A zero fingerprint is never a valid manifest entry.
+        struct BuildIncrementalTarget:
+            name: sview
+            kind: BuildIncrementalTargetKind
+            recipe_fingerprint: u64
+            inputs: darray[BuildIncrementalFile] = []
+            outputs: darray[BuildIncrementalFile] = []
+            dependencies: darray[sview] = []
+
+
+        # Observations are supplied by a host adapter after it has statted or
+        # hashed a path. Missing paths carry no fingerprint, so a stale output
+        # cannot be confused with a valid all-zero digest.
+        struct BuildIncrementalObservation:
+            path: sview
+            present: bool = false
+            fingerprint: u64 = 0
+
+
+        struct BuildIncrementalDependencyObservation:
+            name: sview
+            current: bool = false
+
+
+        error BuildIncrementalError:
+            EmptyManifest
+            TargetLimitExceeded
+            InvalidTargetKind
+            InvalidTargetName
+            InvalidPath
+            FingerprintMissing
+            InputLimitExceeded
+            OutputRequired
+            OutputLimitExceeded
+            DependencyLimitExceeded
+            ObservationLimitExceeded
+            InvalidObservation
+            InvalidDependencyObservation
+            DuplicateTarget
+            DuplicateInput
+            DuplicateOutput
+            OutputCollision
+            InputOutputCollision
+            DuplicateDependency
+            MissingDependency
+            DependencyOrderInvalid
+
+
+    private:
+        def build_incremental_target_kind_valid(kind: BuildIncrementalTargetKind) -> bool:
+            return kind in {BuildIncrementalTargetKind.Executable, BuildIncrementalTargetKind.StaticLibrary, BuildIncrementalTargetKind.SharedLibrary, BuildIncrementalTargetKind.GeneratedFile}
+
+
+        def build_incremental_name_valid(name: sview) -> bool:
+            return len(name) != 0 and len(name) < Limits::NAME_BYTES and not sview_contains_byte(name, 0) and not sview_contains_byte(name, 9) and not sview_contains_byte(name, 10) and not sview_contains_byte(name, 13)
+
+
+        def build_incremental_path_valid(path: sview) -> bool:
+            return len(path) != 0 and len(path) < Limits::PATH_BYTES and not sview_contains_byte(path, 0) and not sview_contains_byte(path, 9) and not sview_contains_byte(path, 10) and not sview_contains_byte(path, 13)
+
+
+        def build_incremental_file_index(files: darray[BuildIncrementalFile], path: sview) -> usize:
+            for index in 0..<files.count |files, path|:
+                return index if files[index].path == path
+            return files.count
+
+
+        def build_incremental_target_index(targets: darray[BuildIncrementalTarget], name: sview) -> usize:
+            for index in 0..<targets.count |targets, name|:
+                return index if targets[index].name == name
+            return targets.count
+
+
+        def build_incremental_observation_index(observations: darray[BuildIncrementalObservation], path: sview) -> usize:
+            for index in 0..<observations.count |observations, path|:
+                return index if observations[index].path == path
+            return observations.count
+
+
+        def build_incremental_dependency_index(observations: darray[BuildIncrementalDependencyObservation], name: sview) -> usize:
+            for index in 0..<observations.count |observations, name|:
+                return index if observations[index].name == name
+            return observations.count
+
+
+        def build_incremental_target_valid(target: BuildIncrementalTarget) -> bool error[BuildIncrementalError]:
+            raise BuildIncrementalError.InvalidTargetKind if not build_incremental_target_kind_valid(target.kind)
+            raise BuildIncrementalError.InvalidTargetName if not build_incremental_name_valid(target.name)
+            raise BuildIncrementalError.FingerprintMissing if target.recipe_fingerprint == 0
+            raise BuildIncrementalError.InputLimitExceeded if target.inputs.count > Limits::INPUTS
+            raise BuildIncrementalError.OutputRequired if target.outputs.count == 0
+            raise BuildIncrementalError.OutputLimitExceeded if target.outputs.count > Limits::OUTPUTS
+            raise BuildIncrementalError.DependencyLimitExceeded if target.dependencies.count > Limits::DEPENDENCIES
+            for input_index in 0..<target.inputs.count |target|:
+                input: BuildIncrementalFile = target.inputs[input_index]
+                raise BuildIncrementalError.InvalidPath if not build_incremental_path_valid(input.path)
+                raise BuildIncrementalError.FingerprintMissing if input.fingerprint == 0
+                for earlier in 0..<input_index |target, input|:
+                    raise BuildIncrementalError.DuplicateInput if target.inputs[earlier].path == input.path
+            for output_index in 0..<target.outputs.count |target|:
+                output: BuildIncrementalFile = target.outputs[output_index]
+                raise BuildIncrementalError.InvalidPath if not build_incremental_path_valid(output.path)
+                raise BuildIncrementalError.FingerprintMissing if output.fingerprint == 0
+                for earlier in 0..<output_index |target, output|:
+                    raise BuildIncrementalError.DuplicateOutput if target.outputs[earlier].path == output.path
+                raise BuildIncrementalError.InputOutputCollision if build_incremental_file_index(target.inputs, output.path) != target.inputs.count
+            for dependency_index in 0..<target.dependencies.count |target|:
+                dependency: sview = target.dependencies[dependency_index]
+                raise BuildIncrementalError.InvalidTargetName if not build_incremental_name_valid(dependency)
+                for earlier in 0..<dependency_index |target, dependency|:
+                    raise BuildIncrementalError.DuplicateDependency if target.dependencies[earlier] == dependency
+            return true
+
+
+        def build_incremental_observations_valid(observations: darray[BuildIncrementalObservation]) -> bool error[BuildIncrementalError]:
+            raise BuildIncrementalError.ObservationLimitExceeded if observations.count > Limits::OBSERVATIONS
+            for index in 0..<observations.count |observations|:
+                observation: BuildIncrementalObservation = observations[index]
+                raise BuildIncrementalError.InvalidPath if not build_incremental_path_valid(observation.path)
+                if observation.present:
+                    raise BuildIncrementalError.FingerprintMissing if observation.fingerprint == 0
+                else:
+                    raise BuildIncrementalError.InvalidObservation if observation.fingerprint != 0
+                for earlier in 0..<index |observations, observation|:
+                    raise BuildIncrementalError.InvalidObservation if observations[earlier].path == observation.path
+            return true
+
+
+        def build_incremental_dependencies_valid(dependencies: darray[BuildIncrementalDependencyObservation]) -> bool error[BuildIncrementalError]:
+            raise BuildIncrementalError.DependencyLimitExceeded if dependencies.count > Limits::DEPENDENCIES
+            for index in 0..<dependencies.count |dependencies|:
+                dependency: BuildIncrementalDependencyObservation = dependencies[index]
+                raise BuildIncrementalError.InvalidTargetName if not build_incremental_name_valid(dependency.name)
+                for earlier in 0..<index |dependencies, dependency|:
+                    raise BuildIncrementalError.InvalidDependencyObservation if dependencies[earlier].name == dependency.name
+            return true
+
+
+    public:
+        # Validate a complete target manifest before it is handed to the
+        # scheduler. Dependency order is deterministic and prevents a manifest
+        # from claiming a consumer before its producer exists.
+        def validate_build_incremental_manifest(targets: darray[BuildIncrementalTarget]) -> bool error[BuildIncrementalError]:
+            raise BuildIncrementalError.EmptyManifest if targets.count == 0
+            raise BuildIncrementalError.TargetLimitExceeded if targets.count > Limits::TARGETS
+            for index in 0..<targets.count |targets|:
+                target: BuildIncrementalTarget = targets[index]
+                try build_incremental_target_valid(target)
+                for earlier in 0..<index |targets, target|:
+                    raise BuildIncrementalError.DuplicateTarget if targets[earlier].name == target.name
+                    for output in target.outputs |targets, earlier, target|:
+                        raise BuildIncrementalError.OutputCollision if build_incremental_file_index(targets[earlier].outputs, output.path) != targets[earlier].outputs.count
+                for dependency in target.dependencies:
+                    dependency_index: usize = build_incremental_target_index(targets, dependency)
+                    raise BuildIncrementalError.MissingDependency if dependency_index == targets.count
+                    raise BuildIncrementalError.DependencyOrderInvalid if dependency_index >= index
+            return true
+
+
+        # Return the first deterministic reason a target is stale. `UpToDate`
+        # means every declared input/output and dependency was observed and
+        # matched; the scheduler may then admit a cache hit without launching a
+        # compiler or linker.
+        def classify_build_incremental_target(target: BuildIncrementalTarget, current_recipe_fingerprint: u64, observations: darray[BuildIncrementalObservation], dependencies: darray[BuildIncrementalDependencyObservation]) -> BuildIncrementalDecision error[BuildIncrementalError]:
+            try build_incremental_target_valid(target)
+            try build_incremental_observations_valid(observations)
+            try build_incremental_dependencies_valid(dependencies)
+            raise BuildIncrementalError.FingerprintMissing if current_recipe_fingerprint == 0
+            return BuildIncrementalDecision.RecipeChanged if current_recipe_fingerprint != target.recipe_fingerprint
+            for dependency in target.dependencies:
+                dependency_index: usize = build_incremental_dependency_index(dependencies, dependency)
+                return BuildIncrementalDecision.DependencyMissing if dependency_index == dependencies.count
+                return BuildIncrementalDecision.DependencyDirty if not dependencies[dependency_index].current
+            for input in target.inputs:
+                observation_index: usize = build_incremental_observation_index(observations, input.path)
+                return BuildIncrementalDecision.ObservationMissing if observation_index == observations.count
+                return BuildIncrementalDecision.InputMissing if not observations[observation_index].present
+                return BuildIncrementalDecision.InputChanged if observations[observation_index].fingerprint != input.fingerprint
+            for output in target.outputs:
+                observation_index: usize = build_incremental_observation_index(observations, output.path)
+                return BuildIncrementalDecision.ObservationMissing if observation_index == observations.count
+                return BuildIncrementalDecision.OutputMissing if not observations[observation_index].present
+                return BuildIncrementalDecision.OutputChanged if observations[observation_index].fingerprint != output.fingerprint
+            return BuildIncrementalDecision.UpToDate

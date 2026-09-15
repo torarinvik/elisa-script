@@ -539,6 +539,18 @@ Cancellation acknowledgement also accounts any still-running nodes as
 `Cancelled` after the host confirms they stopped; it cannot leave active
 children unaccounted.
 
+`EsBuildIncremental` is the pure CMake/Ninja-style stale-decision boundary over
+that graph. A bounded target manifest records the last successful recipe,
+input, and output fingerprints plus ordered target dependencies. A host adapter
+supplies current path observations and dependency-current flags; classification
+returns `UpToDate`, `RecipeChanged`, `DependencyDirty`, `InputChanged`,
+`OutputMissing`, or another typed reason before the scheduler can admit a
+cache hit or dispatch a rebuild. Duplicate paths, missing fingerprints,
+dependency-order violations, and malformed observations are rejected through
+`error[BuildIncrementalError]`. The module performs no filesystem or process
+effects, so it is independently testable and can drive clean/no-op/incremental
+build comparisons.
+
 `EsResource` is the ownership ledger shared by runtime adapters. A lease names
 the resource kind, nonzero identity, and owner token; `ResourceLedger` keeps
 active/failed counts bounded and rejects duplicate identities. The close path is

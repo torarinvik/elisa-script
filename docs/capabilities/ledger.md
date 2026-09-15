@@ -687,6 +687,9 @@ ES-SCRIPT-002 | EsBuildScheduler supplies deterministic dependency-ready
 queues with clean ready-state admission, exact fingerprint cache admission, bounded parallel dispatch,
 completion/failure accounting, queue-gated cache hits, and cancellation transitions over EsBuild;
 cancellation cannot relabel an already succeeded graph.
+`EsBuildIncremental` adds the bounded pure manifest boundary for recipe,
+dependency, input, and output fingerprint classification, distinguishing no-op
+targets from typed rebuild reasons before scheduler dispatch.
 Failure is latched immediately even while active siblings remain. The graph and
 scheduler enter `Failing`, cancel unstarted nodes, clear the ready queue, and
 reject new dispatch/cache hits. Sibling results can be reported during draining;
