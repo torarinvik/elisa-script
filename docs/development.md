@@ -22,18 +22,25 @@ commands, not authorization to run them; the environment variable is a manual ga
 not standing approval. Do not launch a compiler or test wrapper unless the user
 explicitly reauthorizes validation in the active task.
 
-The latest committed Elisa compiler source currently visible is
-`e85e8282c7b8dc588ba2ba53f0912d98769b1f1a` on the adjacent
-`codex/structpy-tree` checkout. Its latest work hardens extern boundary checks,
-owned native-resource contracts, and refreshed IR artifacts on top of the earlier
-FFI, lowering, and region optimizations. The source checkout is clean, but its
-ignored executable was built from `7900a37…` with `vcs.modified=true`, so it is
-neither a reproducible build of this revision nor an authorized validation
-target. Do not substitute it into a wrapper or build anything while the
-validation hold is active. After explicit reauthorization, create an isolated
-clean checkout of this exact revision, build an executable there, record its
-digest in `docs/validation-baseline.md`, and update the wrapper pin before any
-fixture run.
+The latest self-hosted Elisa compiler source currently visible is
+`565ccb2fd585d03f94457185376f526e1930b1cb` on the clean `main` checkout at
+`../Elisa-compiler`. Its recent history includes the catch-binder and
+value-returning-tail fixes, nested-module constant lowering, static-if module
+handling, and self-hosted extern-resource ABI support. The Elisascript vendor
+tree is an adapted `e56d6f2d` snapshot, so refresh it deliberately rather than
+copying this checkout wholesale.
+
+The separate Go Elisa-core checkout used for the guarded validation path is
+clean at `e85e8282c7b8dc588ba2ba53f0912d98769b1f1a` on `codex/structpy-tree`.
+Its latest work hardens extern boundary checks, owned native-resource contracts,
+and refreshed IR artifacts on top of the earlier FFI, lowering, and region
+optimizations. Its ignored executable was built from `7900a37…` with
+`vcs.modified=true`, so it is neither a reproducible build of this revision nor
+an authorized validation target. Do not substitute it into a wrapper or build
+anything while the validation hold is active. After explicit reauthorization,
+create an isolated clean checkout of the exact Go compiler revision, build an
+executable there, record its digest in `docs/validation-baseline.md`, and update
+the wrapper pin before any fixture run.
 
 ```sh
 ELISASCRIPT_VALIDATION_REAUTHORIZED=1 \
