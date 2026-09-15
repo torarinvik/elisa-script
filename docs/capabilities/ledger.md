@@ -1293,3 +1293,14 @@ closes the pair for cleanup and cannot authorize a later publish. A lost rename
 or post-rename directory durability acknowledgement is represented as
 `PublishedUncertain` rather than an ordinary failed publication. Parity
 execution remains open.
+
+The package lock validator now rejects duplicate dependency edges within a
+single lock entry, using the same `DuplicateDependency` contract as manifests
+and build graphs. A focused IR fixture and compiler-free audit cover the
+malformed lock shape; no compiler, test, script, or audit process was run.
+
+The process environment resolver now rechecks the materialized `Inherit` and
+`Replace` vectors against pair-count and terminated-byte ceilings after
+overlay/copy, closing the gap where valid bounded inputs could combine into an
+oversized child environment. The source fixture and documentation are static
+evidence only; no compiler, test, script, or audit process was run.

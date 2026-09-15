@@ -156,7 +156,8 @@ versioned root, typed runtime/development/build/native dependencies, native
 dependency names, and an offline-only policy. `PackageLock` records the same
 offline policy alongside exact
 ordered entries with source kind, locator, four-word integrity identity, and
-bounded transitive dependency names. `validate_package_resolution` checks root
+bounded transitive dependency names; duplicate dependency edges are rejected
+before resolution. `validate_package_resolution` checks root
 identity, offline-policy agreement, every manifest constraint (including empty equal-bound intervals), and every lock dependency before source
 loading; `advance_package_resolution` exposes the explicit
 `Declared → Locked → Verified` state machine with fail/reset edges. Registry

@@ -55,7 +55,8 @@ for fixture_pattern in \
     'PackageResolutionEvent.Lock' \
     'PackageResolutionEvent.Verify' \
     'PackageContractError.MissingLockedDependency' \
-    'PackageContractError.LockOrderInvalid'; do
+    'PackageContractError.LockOrderInvalid' \
+    'PackageContractError.DuplicateDependency'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 
