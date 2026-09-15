@@ -1165,8 +1165,9 @@ through `error[DirectoryMutationError]`; session and entry source/destination
 NULs are classified as `EmbeddedNul` before ordinary path or destination
 errors, including during `Plan` admission. The focused IR
 fixture, namespace inclusion, documentation, and check_directory_mutation.sh
-audit are static evidence (`03650492`); mkdir/copy/unlink/rmdir adapters, canonical path
-containment, permissions, rollback, and race fixtures remain host work.
+audit are static evidence (`03650492`, plus normalized duplicate-destination
+admission); mkdir/copy/unlink/rmdir adapters, canonical path containment,
+permissions, rollback, and race fixtures remain host work.
 
 ES-FS-006 | EsWorkingDirectory supplies an exclusive per-invocation cwd
 ownership contract for the unavoidable process-global chdir fallback. It

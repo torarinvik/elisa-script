@@ -53,6 +53,7 @@ for boundary in \
     'accounted_bytes > session.policy.max_bytes' \
     'entry.bytes > session.policy.max_bytes - accounted_bytes' \
     'directory_mutation_trim_trailing_separators' \
+    'directory_mutation_paths_equivalent' \
     'while finish > 1 and sview_at(path, finish - 1) == 47' \
     'source_end == destination_end and source\[0:source_end\] == destination\[0:destination_end\]' \
     'source_end == 1 and sview_at(source, 0) == 47' \
@@ -79,6 +80,8 @@ for fixture_pattern in \
     'DirectoryMutationEvent.Failure' \
     'DirectoryMutationEvent.Cancel' \
     'DirectoryMutationError.DestinationCollision' \
+    'normalized_collision' \
+    'normalized_plan_rejected' \
     'DirectoryMutationError.ActiveScope' \
     'repeated_enter_rejected' \
     'stale_regular_enter_rejected' \

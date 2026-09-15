@@ -2711,7 +2711,10 @@ trim trailing separators (while preserving the root separator), so an equal
 path or a descendant such as `/tmp/source/` → `/tmp/source/child` is always
 reported as `DirectoryMutationError.DestinationCollision`; ordinary prefix
 names such as `/tmp/source-old` are not treated as descendants. The same
-check applies to session paths and every planned entry.
+check applies to session paths and every planned entry. Duplicate copy
+destinations use the same normalized equivalence relation, and `Plan` rejects
+the duplicate before mutating the session, so spellings such as `out/` and
+`out` cannot leave an invalid plan behind.
 
 `CreateDirectory`, `CreateDirectories`, `RemoveDirectory`, and `ChangeDirectory` verify as
 `Named(Path) -> Bool` with `Directory.Write` and `DirectoryError`.
