@@ -688,7 +688,9 @@ a failed session cannot be re-terminated.
 
 `EsArchive::ArchiveSession` is the admission boundary for tar/zip extraction.
 Relative path segments reject absolute paths, backslashes, empty/dot/traversal
-segments, embedded NULs, and overlong names before publication. Entry count,
+segments, embedded NULs, and overlong names before publication; one or more
+trailing separators are accepted as archive directory spelling and ignored for
+duplicate-path comparison. Entry count,
 per-entry bytes, subtraction-safe aggregate bytes, duplicate ids/paths, link policy, and
 planned/extracting/committed/failed/cancelled states are bounded through
 `error[ArchiveError]`; non-link entries cannot carry hidden link targets, a

@@ -45,6 +45,9 @@ for boundary in \
     'ArchiveError.TotalLimitBytesExceeded' \
     'accounted > session.policy.max_total_bytes' \
     'entry.size > session.policy.max_total_bytes - accounted' \
+    'archive_trim_trailing_separators' \
+    'while finish > 1 and sview_at(path, finish - 1) == 47' \
+    'archive_paths_equivalent' \
     'ArchiveError.AccountingInvalid' \
     'ArchiveSessionState.Planned and' \
     'event == ArchiveEvent.Fail' \
@@ -58,6 +61,8 @@ for fixture_pattern in \
     'ArchiveError.TraversalPath' \
     'ArchiveError.LinkRejected' \
     'ArchiveSessionState.Committed' \
+    'directory_separator' \
+    'duplicate_trailing_path' \
     'ArchiveError.AccountingInvalid'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
