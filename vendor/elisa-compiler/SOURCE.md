@@ -87,6 +87,9 @@ The current adapted fixes are tracked separately from the snapshot identity:
   C-string `strlen` bridge and pre-index declared protocol annotations before
   repeated unknown-interface lookups. Both are semantics-preserving source
   adaptations of the latest self-hosted semantic fast paths.
+- `9bf231e6`: remove a duplicate parenthesized-subtree walk in the disjointness
+  proof scanner; the first expression-shape dispatch already visits `Expr.Paren`
+  exactly once, so the second traversal only repeated work.
 - `cad39806`: anchor the companion `BraceMembershipMisuse` diagnostic at the
   actual set/dict initializer instead of the affine element or key type. This
   is a source-location-only correction; the primary affine diagnostic remains
