@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pinned process adapter for W09 scanner and build-payload parity."""
+"""Pinned process adapter for W09 scanner, build-payload, and flatten-payload parity."""
 
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ ROOT = Path(__file__).resolve().parents[1]
 REFERENCE_ROOT = ROOT.parent / "Elisa-compiler"
 REFERENCE_RELATIVE = Path("scripts/wasm_export_scan.py")
 BUILD_PAYLOAD_OPTION = "--build-payload"
+FLATTEN_PAYLOAD_OPTION = "--flatten-payload"
 
 
 def load_pinned_reference() -> ModuleType:
@@ -220,11 +221,12 @@ def preflight_reference_input(
 
 def main(arguments: list[str]) -> int:
     build_payload = bool(arguments) and arguments[0] == BUILD_PAYLOAD_OPTION
-    if build_payload:
+    flatten_payload = bool(arguments) and arguments[0] == FLATTEN_PAYLOAD_OPTION
+    if build_payload or flatten_payload:
         if len(arguments) != 2:
             sys.stderr.write(
                 "usage: wasm export scan <source> [expected-json] "
-                "| --build-payload <source>\n"
+                "| --build-payload <source> | --flatten-payload <source>\n"
             )
             return 2
         source_argument = arguments[1]
@@ -232,7 +234,7 @@ def main(arguments: list[str]) -> int:
         if len(arguments) not in (1, 2):
             sys.stderr.write(
                 "usage: wasm export scan <source> [expected-json] "
-                "| --build-payload <source>\n"
+                "| --build-payload <source> | --flatten-payload <source>\n"
             )
             return 2
         source_argument = arguments[0]
@@ -261,14 +263,16 @@ def main(arguments: list[str]) -> int:
 
     if len(source.encode("utf-8")) > MAX_SOURCE_BYTES:
         return fail("WASM source exceeds Elisascript scan limit")
-    try:
-        exports = scanner.parse_exports(source)
-    except scanner.WasmBuildError as error:
-        return fail(str(error))
-    except Exception as error:
-        return fail(f"pinned scanner raised an unexpected error: {error}", 2)
+    exports = []
+    if not flatten_payload:
+        try:
+            exports = scanner.parse_exports(source)
+        except scanner.WasmBuildError as error:
+            return fail(str(error))
+        except Exception as error:
+            return fail(f"pinned scanner raised an unexpected error: {error}", 2)
 
-    if not build_payload and len(arguments) == 2:
+    if not build_payload and not flatten_payload and len(arguments) == 2:
         try:
             expected = json.loads(Path(arguments[1]).read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -276,13 +280,14 @@ def main(arguments: list[str]) -> int:
         if exports != expected:
             return fail("pinned Python output differs from the checked-in expected JSON", 2)
 
-    output_value = (
-        {"version": 1, "flattened_source": source, "exports": exports}
-        if build_payload
-        else exports
-    )
+    if flatten_payload:
+        output_value = {"version": 1, "flattened_source": source}
+    elif build_payload:
+        output_value = {"version": 1, "flattened_source": source, "exports": exports}
+    else:
+        output_value = exports
     output = json.dumps(output_value, ensure_ascii=False, separators=(",", ":"))
-    output_limit = MAX_CALLER_PAYLOAD_BYTES if build_payload else MAX_JSON_BYTES
+    output_limit = MAX_CALLER_PAYLOAD_BYTES if build_payload or flatten_payload else MAX_JSON_BYTES
     if len(output.encode("utf-8")) > output_limit:
         return fail("structured output exceeds Elisascript scan limit")
     sys.stdout.buffer.write(output.encode("utf-8") + b"\n")

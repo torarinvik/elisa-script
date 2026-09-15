@@ -98,9 +98,10 @@ human-readable output.
 
 The launcher accepts either
 `<launcher> scripts/wasm_export_scan.elisascript <absolute-source-path>` or
-`<launcher> scripts/wasm_export_scan.elisascript --build-payload <absolute-source-path>`.
-The `--build-payload` option is reserved in the first operand position.
-The second form is a caller-migration seam: its compact JSON object has ordered
+`<launcher> scripts/wasm_export_scan.elisascript --build-payload <absolute-source-path>`
+or `<launcher> scripts/wasm_export_scan.elisascript --flatten-payload <absolute-source-path>`.
+These options are reserved in the first operand position. The build-payload
+form is a caller-migration seam: its compact JSON object has ordered
 fields `version`, `flattened_source`, and `exports`; `version` is integer `1`,
 `flattened_source` is the exact UTF-8 include-expanded source consumed by the
 scanner, and `exports` has the row schema above. Its JSON bytes are capped at
@@ -109,25 +110,32 @@ differential runner's 64 MiB hard capture limit. The scanner additionally caps
 each export at 4,096 parameters and the complete export set at 16,384
 parameters. The optional host-side payload client applies the same aggregate
 ceiling before passing records to the build flow. These cardinality limits do
-not impose a hard RSS bound on the subprocess or on JSON decoding. Both forms
-use the same path loader and scan.
+not impose a hard RSS bound on the subprocess or on JSON decoding. All modes
+use the same bounded path loader.
 
-The default form emits only the compact ordered JSON export array. On success,
-either form exits with status `0`, appends one newline to stdout, and leaves
-stderr empty. Process failures are:
+The flatten-payload form does not require exports. Its ordered version-1 object
+contains only `version` and `flattened_source`, allowing callers to use the
+candidate's include expansion for runtime-source cache keys without invoking
+the export parser.
+
+The default form emits only the compact ordered JSON export array. Each payload
+form emits its compact object. On success, every form exits with status `0`,
+appends one newline to stdout, and leaves stderr empty. Process failures are:
 
 - On a source, include, parse, ABI, or bounded-resource failure: exit status
   `1`, empty stdout, and stderr containing exactly
   `wasm export scan: MESSAGE\n`, where `MESSAGE` is the candidate/reference
   diagnostic for the case.
 - On an invalid mode/operand count: exit status `2`, empty stdout, and stderr
-  exactly `usage: wasm export scan <source> | --build-payload <source>\n`.
+  exactly `usage: wasm export scan <source> | --build-payload <source> | --flatten-payload <source>\n`.
 
 The launcher parity source compares status/stdout/stderr for the default
 single-source invocation and scanner cases. It also compares the build payload
 against the Python adapter for ordinary, nested, diamond, missing, and
 Unicode-line-separator inputs, and checks the candidate's invalid-arity tuple
-for default and payload modes. The arity check is not compared against the
+for default and payload modes. The source fixture separately pins flatten-only
+include expansion order, including a file with no export-parser dependency.
+The arity check is not compared against the
 Python adapter: the adapter has its own optional expected-JSON argument and
 its usage text is not the candidate CLI contract.
 The length-delimited response frame used by `differential_path_response` is an
@@ -223,7 +231,7 @@ only unless they are valid Elisa programs.
 | Invalid source | ignored malformed export forms and exact no-export failure; colon forms admitted by the pinned target regex are preserved |
 | Include graph | nested/absolute/relative, duplicate and diamond include order, cycle chain, missing file, relative/absolute dangling symlink targets, nested links, target and post-link `..` resolution, no-newline splice, CRLF/bare-CR normalization, empty file |
 | Bounds and failure | bounded file/aggregate bytes, materialized source line count, per-export and aggregate parameter counts, include depth/count, aggregate path-component and symlink-expansion work, explicit and implicit header-suffix scan work, aggregate duplicate-name comparison work, unreadable and invalid UTF-8 input, no partial success output |
-| Integration (future acceptance; not covered by this launcher test) | resolved absolute source path; ordered JSON-array mode and versioned `{version, flattened_source, exports}` payload; exact scan-failure and wrong-arity process tuples; consumption by the pinned `wasm_build.py` caller; no Python scanner on the accepted replacement path |
+| Integration (future acceptance; not covered by this launcher test) | resolved absolute source path; ordered JSON-array mode and versioned `{version, flattened_source, exports}` / `{version, flattened_source}` payloads; exact scan-failure and wrong-arity process tuples; consumption by the pinned `wasm_build.py` caller and runtime-cache hashing; no Python scanner on the accepted replacement path |
 
 Current caller review (source-only; not adoption evidence): the pinned
 `wasm_build.py` now has an opt-in `--export-scan-launcher` plus
@@ -231,13 +239,16 @@ Current caller review (source-only; not adoption evidence): the pinned
 path, bounds captured process output to 64 MiB and runtime to 120 seconds,
 validates the versioned payload and ordered record shapes, and passes the
 returned flattened source and exports through the existing build flow. The
+same configured caller can now request flatten-only payloads for the runtime
+cache hash, including runtime sources that declare no exports; the façade's
+small type normalizer has been localized so it no longer imports the scanner.
 default still calls Python `read_flat_source` and `parse_exports`, preserving
 the packager's role as the parity oracle; Python imports/re-exports remain
 available. The source contains unit cases for payload validation and default
-selection, but neither the unit cases nor an actual caller invocation have
-run. Runtime-cache source flattening and `wasm_facade.py`'s `normalize_type`
-still use Python, so this opt-in is an integration seam, not an accepted
-replacement or adoption evidence.
+selection, flatten-payload validation, runtime-cache selection, and facade
+normalization, but neither the unit cases nor an actual caller invocation have
+run. This remains an opt-in integration seam, not accepted replacement or
+adoption evidence.
 
 The first parity slice is represented by
 `test/script_parity/wasm_export_scan_test.elisascript` and its pinned-process
