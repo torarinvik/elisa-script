@@ -48,6 +48,7 @@ for boundary in \
     'RecordContractError.InvalidFieldRange' \
     'RecordContractError.SchemaMissing' \
     'record_number == 0' \
+    'not field.present and field.value != ""' \
     'field.value != record.raw'; do
     rg -q "$boundary" "$model"
 done

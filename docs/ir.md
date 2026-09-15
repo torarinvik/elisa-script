@@ -1432,7 +1432,8 @@ separator actually consumed when `preserve_separator` is enabled.
 `validate_record_stream_policy`, `validate_record`,
 and `validate_record_field` validate both the shared policy and parent-record
 metadata, then reject embedded NULs, oversized text, zero metadata
-numbers, out-of-range field slices, and inconsistent field payloads through
+numbers, out-of-range field slices, non-empty payloads on absent fields, and
+inconsistent field payloads through
 `error[RecordContractError]` before a scanner, regex walk, or aggregation buffer
 is allocated. This is a reusable contract; record I/O, external sort, and
 transactional in-place rewriting remain host adapters.
