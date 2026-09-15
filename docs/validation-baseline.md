@@ -19,12 +19,12 @@ Latest metadata recheck: 2026-09-15
 - Ignored local planning file: `IMPLEMENTATION_PLAN.md`
 - Working tree policy: never commit the ignored plan or `.DS_Store` files
 
-## Existing validation binary (safety-held; not the latest source)
+## Historical validation binary identity (safety-held; not the latest source)
 
-The executable identity below is retained only so the fail-closed wrappers have
-an explicit, auditable target after validation is reauthorized. It predates the
-latest committed compiler source recorded below and must not be described as a
-current compiler build.
+The executable identity below is retained as the last approved wrapper baseline,
+not as a claim about the bytes currently at that path. It predates the latest
+committed compiler source recorded below and must not be described as a current
+compiler build.
 
 - Compiler source checkout: `/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree`
 - Compiler source revision: `601f7bcd3de62877723ab7f5c5f9a502fb6ef9ae`
@@ -40,8 +40,18 @@ current compiler build.
 
 The installed `~/.elisac` compiler and the Elisa-core main-worktree binary are
 not permitted validation targets. The bounded wrappers refuse any executable
-other than the exact canonical pinned StructPy `compiler/bin/elisac` and fail closed unless
-`ELISASCRIPT_VALIDATION_REAUTHORIZED=1` is explicitly supplied.
+other than the exact canonical pinned StructPy `compiler/bin/elisac` and fail
+closed unless `ELISASCRIPT_VALIDATION_REAUTHORIZED=1` is explicitly supplied.
+
+### Current unqualified artifact observation
+
+On 2026-09-15 the canonical path contained an ignored Mach-O executable with
+SHA-256 `3624b7e4d7dc6009df5efe7e8c2ff5f8d074ad321a4b133cfd0d74ecce03933d`,
+embedded binary revision `7900a37a2cdec0d8f32f90cb2d064c2ec5d41b9a`, and
+`vcs.modified=true`. The clean source checkout is now at `e85e8282…`, so this
+artifact is stale and fails the identity checks; it is not launched or accepted
+for validation. A clean, immutable build of the latest source remains required
+after explicit reauthorization.
 
 ## Earlier clean detached source snapshot
 
@@ -59,13 +69,10 @@ The latest committed source observed in the adjacent compiler repository is
 `e85e8282c7b8dc588ba2ba53f0912d98769b1f1a` on `codex/structpy-tree`. Its latest
 work hardens extern boundary checks, owned native-resource contracts, and
 refreshed IR artifacts on top of the earlier FFI, lowering, and region
-optimizations. The source checkout is clean, but its ignored
-`compiler/bin/elisac` was built from `7900a37…` with `vcs.modified=true`; it is
-neither a reproducible build of this revision nor an authorized validation
-target. The immutable commit is therefore the latest source reference. Until an
-explicitly authorized isolated clean checkout is reviewed and built, the older
-601f7bcd executable remains the only wrapper-accepted binary and is not claimed
-to represent this newest source.
+optimizations. The immutable commit is therefore the latest source reference.
+Until an explicitly authorized isolated clean checkout is reviewed and built,
+the historical 601f7bcd executable identity is not claimed to represent this
+newest source.
 
 ## Vendored dependency and bootstrap chain
 
