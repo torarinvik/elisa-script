@@ -60,11 +60,14 @@ for fixture_pattern in \
     'forged_accounting' \
     'hidden_end_payload' \
     'RecordPatternError.InvalidClause' \
-    'record_pattern_selected'; do
+    'record_pattern_selected' \
+    'boundary_pattern_policy' \
+    'max_text_bytes: 4'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 rg -Fq 'record_selected: mutable bool = false' "$model"
 rg -Fq 'multi_clauses' "$fixture_file"
+rg -Fq 'sview_len(value) <= policy.max_text_bytes' "$model"
 
 rg -q 'EsRecordPattern::RecordPatternSession' "$docs"
 rg -q 'ES-SCRIPT-039' "$ledger"
