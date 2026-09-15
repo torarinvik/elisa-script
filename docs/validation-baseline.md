@@ -14,7 +14,12 @@ Latest metadata recheck: 2026-09-15
 - Ignored local planning file: `IMPLEMENTATION_PLAN.md`
 - Working tree policy: never commit the ignored plan or `.DS_Store` files
 
-## Pinned compiler identity
+## Existing validation binary (safety-held; not the latest source)
+
+The executable identity below is retained only so the fail-closed wrappers have
+an explicit, auditable target after validation is reauthorized. It predates the
+latest committed compiler source recorded below and must not be described as a
+current compiler build.
 
 - Compiler source checkout: `/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree`
 - Compiler source revision: `601f7bcd3de62877723ab7f5c5f9a502fb6ef9ae`
