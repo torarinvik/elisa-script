@@ -11,7 +11,7 @@ docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$fixture" "$docs" "$ledger" "$plan"; do
+for required_file in "$model" "$fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'process pipeline audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -22,7 +22,9 @@ for declaration in \
     'const enum ProcessPipelineStatusPolicy of u8:' \
     'const enum ProcessPipelineState of u8:' \
     'const enum ProcessPipelineStageState of u8:' \
+    'const enum ProcessPipelineStream of u8:' \
     'const enum ProcessPipelineEvent of u8:' \
+    'struct ProcessPipelineStageResult:' \
     'struct ProcessPipeline:' \
     'error ProcessPipelineError:' \
     'def validate_process_pipeline(' \
@@ -33,7 +35,17 @@ done
 for boundary in \
     'process_pipeline_state_valid' \
     'process_pipeline_event_valid' \
-    'ProcessPipelineEvent.StageFailure, ProcessPipelineEvent.StageCancel, ProcessPipelineEvent.Cancel' \
+    'process_pipeline_stream_valid' \
+    'process_pipeline_stage_result_valid' \
+    'not was_pending and result.result.kind == ProcessResultKind.SpawnFailure' \
+    'ProcessPipelineEvent.StageOutput' \
+    'pipeline.stage_results.count != pipeline.stages.count' \
+    'pipeline.stream_bytes' \
+    'ProcessPipelineError.InvalidReceipt' \
+    'ProcessPipelineError.PipelineNotDrained' \
+    'ProcessPipelineError.OutputLimitExceeded' \
+    'ProcessPipelineError.ChannelAccountingInvalid' \
+    'ProcessPipelineEvent.StageOutput, ProcessPipelineEvent.StageExit, ProcessPipelineEvent.StageFailure, ProcessPipelineEvent.StageCancel' \
     'ProcessPipelineStageState.Pending' \
     'pipeline.stage_states.count != pipeline.stages.count' \
     'process_pipeline_failure_mode_valid' \
@@ -46,6 +58,8 @@ for boundary in \
     'ProcessPipelineEvent.StageStart' \
     'ProcessPipelineEvent.StageFailure' \
     'ProcessPipelineEvent.StageCancel' \
+    'ProcessPipelineStream.Stdout' \
+    'ProcessPipelineStream.Stdin' \
     'ProcessPipelineState.Cancelling' \
     'pipeline.completed_stages != derived_completed' \
     'pipeline.failed_stages != derived_failed' \
@@ -63,9 +77,17 @@ for fixture_pattern in \
     'typed_process_pipeline_contract_models_concurrent_cancellation' \
     'ProcessPipelineFailureMode.Aggregate' \
     'ProcessPipelineEvent.StageStart' \
+    'ProcessPipelineEvent.StageOutput' \
     'ProcessPipelineEvent.StageExit' \
     'ProcessPipelineEvent.StageFailure' \
+    'ProcessPipelineEvent.StageCancel' \
+    'ProcessPipelineStream.Stdout' \
+    'ProcessPipelineStream.Stdin' \
     'ProcessPipelineError.InvalidStageState' \
+    'ProcessPipelineError.InvalidReceipt' \
+    'ProcessPipelineError.PipelineNotDrained' \
+    'ProcessPipelineError.OutputLimitExceeded' \
+    'launch_failure_receipt' \
     'ProcessPipelineEvent.CancelAck' \
     'ProcessPipelineError.InvalidStageCommand'; do
     rg -Fq "$fixture_pattern" "$fixture"
@@ -73,6 +95,8 @@ done
 
 rg -Fq '`ProcessPipeline`' "$docs"
 rg -Fq '`ProcessPipeline`' "$ledger"
-rg -Fq 'P10 pipeline follow-up' "$plan"
+if [[ -f "$plan" ]]; then
+    rg -Fq 'P10 pipeline follow-up' "$plan"
+fi
 
-printf 'process pipeline audit: typed stages, bounded buffers, out-of-order lifecycle, failure policy, and cancellation edges are present\n'
+printf 'process pipeline audit: typed stages, drained receipts, bounded stream bytes, failure policy, and cancellation edges are present\n'

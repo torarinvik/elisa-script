@@ -474,10 +474,15 @@ escalation remain open. `ProcessPipeline` validates ordered stage commands,
 bounded stage/buffer limits, fail-fast versus aggregate failure policy, and a
 per-stage lifecycle that admits arbitrary completion order, rejects duplicate
 terminal events, and derives aggregate completion/failure/cancellation counts
-from the stage ledger. Cancellation acknowledgment requires every stage to be
-terminal. The source fixture and compiler-free audit are static evidence only;
-OS-pipe transport, concurrent draining/reaping, and launch rollback remain
-open.
+from the stage ledger. Stage receipts now require validated outcomes, explicit
+stdin closure, stdout/stderr EOF, matching per-channel byte counts, and a
+bounded aggregate stream-byte budget charged by `StageOutput`; cancellation
+acknowledgment requires every stage to be terminal and drained. The source
+fixture and compiler-free audit are static evidence only; OS-pipe transport,
+backpressure/SIGPIPE behavior, concurrent polling/reaping, and launch rollback
+remain open. A pending launch failure is `SpawnFailure`, while a running-stage
+failure is necessarily post-launch; stdin closure is a logical no-more-writes
+acknowledgement even when direct stdio is inherited, null, or file-backed.
 The typed script pipeline facade keeps ordinary shell last-stage status as its
 default and gives pipefail-style status a distinct builtin and IR opcode; this
 status policy is separate from `ProcessPipeline` fail-fast/aggregate execution

@@ -2283,17 +2283,25 @@ It validates every stage through `ProcessCommand`, caps stage count and
 aggregate buffer policy, and records a separate lifecycle for each stage
 (`Pending`, `Running`, `Exited`, `Failed`, or `Cancelled`). `Start` creates the
 bounded pending-stage ledger; the adapter reports each successful launch with
-`StageStart`, then may report exits or failures in any stage order. Fail-fast
-failure enters cancellation draining, while aggregate failure keeps other
-stages running. `StageFailure` on a pending stage represents a launch failure;
-on a running stage it represents a process failure. Cancellation may account
-for either a live stage being reaped or a pending stage that was never launched.
-`CancelAck` is accepted only after
-every stage is terminal and no stage failed. Duplicate terminal events,
-impossible stage transitions, and forged aggregate counters raise
-`error[ProcessPipelineError]`. This is a lifecycle model, not a streaming
-transport: pipe draining, SIGPIPE behavior, concurrent I/O, launch rollback,
-and child reaping remain host responsibilities.
+`StageStart`, then may report output chunks and exits or failures in any stage
+order. `StageOutput` charges each stdin/stdout/stderr byte to one bounded
+aggregate stream budget, so a host cannot defer an output-limit failure until
+after it has retained unbounded intermediate data. A terminal
+`ProcessPipelineStageResult` must carry a validated `ProcessResult`, matching
+stream counters, explicit stdin closure, and EOF on both output channels;
+`CancelAck` is accepted only after every stage is terminal and every receipt is
+drained. Fail-fast failure enters cancellation draining, while aggregate
+failure keeps other stages running. `StageFailure` on a pending stage requires
+the `SpawnFailure` outcome; on a running stage it records a post-launch process
+outcome and rejects `SpawnFailure`. The stdin closure is a logical no-more-
+writes acknowledgement even when a command uses inherited, null, or file
+stdio; a pipeline adapter may replace direct stdio routes with connected pipes,
+but must account for those logical channels through the receipt.
+Duplicate terminal events, impossible stage transitions, forged receipts, and
+counter mismatches raise `error[ProcessPipelineError]`. The contract is now
+ready for a concurrent pipe adapter, but it is not that adapter: OS pipe
+backpressure, SIGPIPE behavior, polling, launch rollback, and child reaping
+remain host responsibilities.
 
 `EsProcessOutput::ProcessOutputSession` makes shell redirection explicit. A
 route contains bounded `Inherit`, `Null`, `Capture`, `TruncateFile`, or

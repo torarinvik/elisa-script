@@ -130,6 +130,12 @@ module EsProcess:
             Cancelled
 
 
+        const enum ProcessPipelineStream of u8:
+            Stdin
+            Stdout
+            Stderr
+
+
         const enum ProcessPipelineEvent of u8:
             Start
             StageStart
@@ -138,11 +144,35 @@ module EsProcess:
             StageCancel
             Cancel
             CancelAck
+            # Appended to preserve the numeric identity of the original
+            # lifecycle events for hosts that persist or bridge event tags.
+            StageOutput
+
+
+        # A terminal receipt is not publishable until the host has logically
+        # closed the stage's stdin (no more writes are possible) and observed
+        # EOF on both output channels. The closure is logical for inherited,
+        # null, file, or pipeline-owned routes; it does not require the model
+        # to own a particular descriptor. Stream byte counters remain separate
+        # from captured `ProcessResult` views so a concurrent adapter can drain
+        # data without retaining every byte. Pipeline adapters may override a
+        # command's direct stdio route with connected channels, but must report
+        # those logical channels through this receipt.
+        struct ProcessPipelineStageResult:
+            published: bool = false
+            result: ProcessResult = ProcessResult{}
+            stdin_closed: bool = false
+            stdout_eof: bool = false
+            stderr_eof: bool = false
+            stdin_bytes: usize = 0
+            stdout_bytes: usize = 0
+            stderr_bytes: usize = 0
 
 
         struct ProcessPipeline:
             stages: darray[ProcessCommand] = []
             stage_states: darray[ProcessPipelineStageState] = []
+            stage_results: darray[ProcessPipelineStageResult] = []
             state: ProcessPipelineState = ProcessPipelineState.Planned
             failure_mode: ProcessPipelineFailureMode = ProcessPipelineFailureMode.FailFast
             cancellation_requested: bool = false
@@ -150,6 +180,7 @@ module EsProcess:
             failed_stages: usize = 0
             cancelled_stages: usize = 0
             buffer_limit_bytes: usize = PROCESS_PIPELINE_MAX_BUFFER_BYTES
+            stream_bytes: usize = 0
 
 
         error ProcessCommandError:
@@ -196,7 +227,11 @@ module EsProcess:
             InvalidStageState
             InvalidStageCommand
             InvalidBufferLimit
+            InvalidChannel
+            InvalidReceipt
             PipelineNotDrained
+            OutputLimitExceeded
+            ChannelAccountingInvalid
             PipelineAccountingInvalid
 
 
@@ -221,12 +256,55 @@ module EsProcess:
                 return state in {ProcessPipelineStageState.Pending, ProcessPipelineStageState.Running, ProcessPipelineStageState.Exited, ProcessPipelineStageState.Failed, ProcessPipelineStageState.Cancelled}
 
 
+            def process_pipeline_stream_valid(stream: ProcessPipelineStream) -> bool:
+                return stream in {ProcessPipelineStream.Stdin, ProcessPipelineStream.Stdout, ProcessPipelineStream.Stderr}
+
+
             def process_pipeline_event_valid(event: ProcessPipelineEvent) -> bool:
-                return event in {ProcessPipelineEvent.Start, ProcessPipelineEvent.StageStart, ProcessPipelineEvent.StageExit, ProcessPipelineEvent.StageFailure, ProcessPipelineEvent.StageCancel, ProcessPipelineEvent.Cancel, ProcessPipelineEvent.CancelAck}
+                return event in {ProcessPipelineEvent.Start, ProcessPipelineEvent.StageStart, ProcessPipelineEvent.StageOutput, ProcessPipelineEvent.StageExit, ProcessPipelineEvent.StageFailure, ProcessPipelineEvent.StageCancel, ProcessPipelineEvent.Cancel, ProcessPipelineEvent.CancelAck}
 
 
             def process_pipeline_failure_mode_valid(mode: ProcessPipelineFailureMode) -> bool:
                 return mode in {ProcessPipelineFailureMode.FailFast, ProcessPipelineFailureMode.Aggregate}
+
+
+            def process_pipeline_stage_result_open_valid(result: ProcessPipelineStageResult) -> bool:
+                return not result.published and not result.stdin_closed and not result.stdout_eof and not result.stderr_eof and result.result.kind == ProcessResultKind.Exited and result.result.exit_status == 0 and result.result.signal == 0 and result.result.stdout == "" and result.result.stderr == "" and result.result.error_text == ""
+
+
+            def process_pipeline_stage_result_valid(result: ProcessPipelineStageResult, event: ProcessPipelineEvent, observed: ProcessPipelineStageResult, was_pending: bool = false) -> bool error[ProcessPipelineError]:
+                raise ProcessPipelineError.InvalidReceipt if not result.published
+                raise ProcessPipelineError.PipelineNotDrained if not result.stdin_closed or not result.stdout_eof or not result.stderr_eof
+                checked_result: mutable ProcessResult = result.result
+                valid: mutable bool = false
+                catch validate_process_result(checked_result):
+                    ok:
+                        valid <- true
+                    error failure:
+                        valid <- false
+                raise ProcessPipelineError.InvalidReceipt if not valid
+                raise ProcessPipelineError.InvalidReceipt if result.stdin_bytes != observed.stdin_bytes or result.stdout_bytes != observed.stdout_bytes or result.stderr_bytes != observed.stderr_bytes
+                raise ProcessPipelineError.InvalidReceipt if result.stdout_bytes < sview_len(result.result.stdout) or result.stderr_bytes < sview_len(result.result.stderr)
+                raise ProcessPipelineError.InvalidReceipt if was_pending and result.result.kind != ProcessResultKind.SpawnFailure
+                raise ProcessPipelineError.InvalidReceipt if not was_pending and result.result.kind == ProcessResultKind.SpawnFailure
+                if event == ProcessPipelineEvent.StageExit:
+                    raise ProcessPipelineError.InvalidReceipt if result.result.kind != ProcessResultKind.Exited or result.result.exit_status != 0
+                elif event == ProcessPipelineEvent.StageCancel:
+                    raise ProcessPipelineError.InvalidReceipt if result.result.kind != ProcessResultKind.Cancelled
+                elif event == ProcessPipelineEvent.StageFailure:
+                    raise ProcessPipelineError.InvalidReceipt if result.result.kind == ProcessResultKind.Exited and result.result.exit_status == 0
+                    raise ProcessPipelineError.InvalidReceipt if result.result.kind == ProcessResultKind.Cancelled
+                return true
+
+
+            def process_pipeline_stage_result_add_fits(total: usize, result: ProcessPipelineStageResult, limit: usize) -> bool:
+                return false if total > limit
+                remaining: mutable usize = limit - total
+                return false if result.stdin_bytes > remaining
+                remaining <- remaining - result.stdin_bytes
+                return false if result.stdout_bytes > remaining
+                remaining <- remaining - result.stdout_bytes
+                return result.stderr_bytes <= remaining
 
 
             def process_result_kind_valid(kind: ProcessResultKind) -> bool:
@@ -382,14 +460,30 @@ module EsProcess:
                 raise ProcessPipelineError.InvalidFailureMode if not process_pipeline_failure_mode_valid(pipeline.failure_mode)
                 raise ProcessPipelineError.InvalidBufferLimit if pipeline.buffer_limit_bytes == 0 or pipeline.buffer_limit_bytes > PROCESS_PIPELINE_MAX_BUFFER_BYTES
                 if pipeline.state == ProcessPipelineState.Planned:
-                    raise ProcessPipelineError.PipelineAccountingInvalid if pipeline.stage_states.count != 0 or pipeline.cancellation_requested or pipeline.completed_stages != 0 or pipeline.failed_stages != 0 or pipeline.cancelled_stages != 0
+                    raise ProcessPipelineError.PipelineAccountingInvalid if pipeline.stage_states.count != 0 or pipeline.stage_results.count != 0 or pipeline.cancellation_requested or pipeline.completed_stages != 0 or pipeline.failed_stages != 0 or pipeline.cancelled_stages != 0 or pipeline.stream_bytes != 0
                 else:
-                    raise ProcessPipelineError.PipelineAccountingInvalid if pipeline.stage_states.count != pipeline.stages.count
+                    raise ProcessPipelineError.PipelineAccountingInvalid if pipeline.stage_states.count != pipeline.stages.count or pipeline.stage_results.count != pipeline.stages.count
+                    raise ProcessPipelineError.OutputLimitExceeded if pipeline.stream_bytes > pipeline.buffer_limit_bytes
                     derived_completed: mutable usize = 0
                     derived_failed: mutable usize = 0
                     derived_cancelled: mutable usize = 0
-                    for stage_state in pipeline.stage_states |pipeline, derived_completed, derived_failed, derived_cancelled|:
+                    derived_stream_bytes: mutable usize = 0
+                    for index in 0..<pipeline.stage_states.count |pipeline, derived_completed, derived_failed, derived_cancelled, derived_stream_bytes|:
+                        stage_state: ProcessPipelineStageState = pipeline.stage_states[index]
+                        stage_result: ProcessPipelineStageResult = pipeline.stage_results[index]
                         raise ProcessPipelineError.InvalidStageState if not process_pipeline_stage_state_valid(stage_state)
+                        if stage_state == ProcessPipelineStageState.Pending:
+                            raise ProcessPipelineError.InvalidReceipt if not process_pipeline_stage_result_open_valid(stage_result) or stage_result.stdin_bytes != 0 or stage_result.stdout_bytes != 0 or stage_result.stderr_bytes != 0
+                        elif stage_state == ProcessPipelineStageState.Running:
+                            raise ProcessPipelineError.InvalidReceipt if not process_pipeline_stage_result_open_valid(stage_result)
+                        elif stage_state == ProcessPipelineStageState.Exited:
+                            try process_pipeline_stage_result_valid(stage_result, ProcessPipelineEvent.StageExit, stage_result)
+                        elif stage_state == ProcessPipelineStageState.Failed:
+                            try process_pipeline_stage_result_valid(stage_result, ProcessPipelineEvent.StageFailure, stage_result)
+                        elif stage_state == ProcessPipelineStageState.Cancelled:
+                            try process_pipeline_stage_result_valid(stage_result, ProcessPipelineEvent.StageCancel, stage_result)
+                        raise ProcessPipelineError.OutputLimitExceeded if not process_pipeline_stage_result_add_fits(derived_stream_bytes, stage_result, pipeline.buffer_limit_bytes)
+                        derived_stream_bytes <- derived_stream_bytes + stage_result.stdin_bytes + stage_result.stdout_bytes + stage_result.stderr_bytes
                         if stage_state == ProcessPipelineStageState.Exited or stage_state == ProcessPipelineStageState.Failed or stage_state == ProcessPipelineStageState.Cancelled:
                             derived_completed <- derived_completed + 1
                         if stage_state == ProcessPipelineStageState.Failed:
@@ -397,6 +491,7 @@ module EsProcess:
                         if stage_state == ProcessPipelineStageState.Cancelled:
                             derived_cancelled <- derived_cancelled + 1
                     raise ProcessPipelineError.PipelineAccountingInvalid if pipeline.completed_stages != derived_completed or pipeline.failed_stages != derived_failed or pipeline.cancelled_stages != derived_cancelled
+                    raise ProcessPipelineError.ChannelAccountingInvalid if pipeline.stream_bytes != derived_stream_bytes
                     if pipeline.state == ProcessPipelineState.Running:
                         raise ProcessPipelineError.PipelineAccountingInvalid if pipeline.cancellation_requested or pipeline.completed_stages >= pipeline.stages.count
                         raise ProcessPipelineError.PipelineAccountingInvalid if pipeline.failure_mode == ProcessPipelineFailureMode.FailFast and pipeline.failed_stages != 0
@@ -434,7 +529,7 @@ module EsProcess:
                         pipeline.cancelled_stages <- pipeline.cancelled_stages + 1
 
 
-            def advance_process_pipeline(pipeline: mutable ProcessPipeline&, event: ProcessPipelineEvent, stage_index: usize = 0) -> ProcessPipelineState error[ProcessPipelineError] can[Memory.Allocate, Abort.Panic]:
+            def advance_process_pipeline(pipeline: mutable ProcessPipeline&, event: ProcessPipelineEvent, stage_index: usize = 0, receipt: ProcessPipelineStageResult = ProcessPipelineStageResult{}, stream: ProcessPipelineStream = ProcessPipelineStream.Stdout, bytes: usize = 0) -> ProcessPipelineState error[ProcessPipelineError] can[Memory.Allocate, Abort.Panic]:
                 try validate_process_pipeline(pipeline)
                 raise ProcessPipelineError.InvalidPipelineEvent if not process_pipeline_event_valid(event)
                 # Planned pipelines have no per-stage state vector. Only Start
@@ -444,16 +539,33 @@ module EsProcess:
                     raise ProcessPipelineError.InvalidPipelineState if pipeline.state != ProcessPipelineState.Planned
                     for stage_offset in 0..<pipeline.stages.count |pipeline|:
                         pipeline.stage_states.push(ProcessPipelineStageState.Pending)
+                        pipeline.stage_results.push(ProcessPipelineStageResult{})
                     pipeline.state <- ProcessPipelineState.Running
                 elif event == ProcessPipelineEvent.StageStart:
                     raise ProcessPipelineError.InvalidStageIndex if stage_index >= pipeline.stages.count
                     raise ProcessPipelineError.InvalidStageState if pipeline.stage_states[stage_index] != ProcessPipelineStageState.Pending
                     raise ProcessPipelineError.InvalidPipelineState if pipeline.state != ProcessPipelineState.Running
                     pipeline.stage_states[stage_index] <- ProcessPipelineStageState.Running
+                elif event == ProcessPipelineEvent.StageOutput:
+                    raise ProcessPipelineError.InvalidStageIndex if stage_index >= pipeline.stages.count
+                    raise ProcessPipelineError.InvalidStageState if pipeline.stage_states[stage_index] != ProcessPipelineStageState.Running
+                    raise ProcessPipelineError.InvalidPipelineState if pipeline.state != ProcessPipelineState.Running and pipeline.state != ProcessPipelineState.Cancelling
+                    raise ProcessPipelineError.InvalidChannel if not process_pipeline_stream_valid(stream)
+                    raise ProcessPipelineError.InvalidReceipt if bytes == 0
+                    raise ProcessPipelineError.OutputLimitExceeded if bytes > pipeline.buffer_limit_bytes - pipeline.stream_bytes
+                    if stream == ProcessPipelineStream.Stdin:
+                        pipeline.stage_results[stage_index].stdin_bytes <- pipeline.stage_results[stage_index].stdin_bytes + bytes
+                    elif stream == ProcessPipelineStream.Stdout:
+                        pipeline.stage_results[stage_index].stdout_bytes <- pipeline.stage_results[stage_index].stdout_bytes + bytes
+                    else:
+                        pipeline.stage_results[stage_index].stderr_bytes <- pipeline.stage_results[stage_index].stderr_bytes + bytes
+                    pipeline.stream_bytes <- pipeline.stream_bytes + bytes
                 elif event == ProcessPipelineEvent.StageExit:
                     raise ProcessPipelineError.InvalidStageIndex if stage_index >= pipeline.stages.count
                     raise ProcessPipelineError.InvalidStageState if pipeline.stage_states[stage_index] != ProcessPipelineStageState.Running
                     raise ProcessPipelineError.InvalidPipelineState if pipeline.state != ProcessPipelineState.Running and pipeline.state != ProcessPipelineState.Cancelling
+                    try process_pipeline_stage_result_valid(receipt, ProcessPipelineEvent.StageExit, pipeline.stage_results[stage_index])
+                    pipeline.stage_results[stage_index] <- receipt
                     pipeline.stage_states[stage_index] <- ProcessPipelineStageState.Exited
                     process_pipeline_refresh_accounting(pipeline)
                     if pipeline.completed_stages == pipeline.stages.count:
@@ -467,6 +579,9 @@ module EsProcess:
                     # Running means the launched process reported failure.
                     raise ProcessPipelineError.InvalidStageState if pipeline.stage_states[stage_index] != ProcessPipelineStageState.Pending and pipeline.stage_states[stage_index] != ProcessPipelineStageState.Running
                     raise ProcessPipelineError.InvalidPipelineState if pipeline.state != ProcessPipelineState.Running and pipeline.state != ProcessPipelineState.Cancelling
+                    was_pending: bool = pipeline.stage_states[stage_index] == ProcessPipelineStageState.Pending
+                    try process_pipeline_stage_result_valid(receipt, ProcessPipelineEvent.StageFailure, pipeline.stage_results[stage_index], was_pending)
+                    pipeline.stage_results[stage_index] <- receipt
                     pipeline.stage_states[stage_index] <- ProcessPipelineStageState.Failed
                     if pipeline.failure_mode == ProcessPipelineFailureMode.FailFast and pipeline.state == ProcessPipelineState.Running and pipeline.completed_stages < pipeline.stages.count - 1:
                         pipeline.cancellation_requested <- true
@@ -478,6 +593,8 @@ module EsProcess:
                     raise ProcessPipelineError.InvalidStageIndex if stage_index >= pipeline.stages.count
                     raise ProcessPipelineError.InvalidStageState if pipeline.stage_states[stage_index] != ProcessPipelineStageState.Pending and pipeline.stage_states[stage_index] != ProcessPipelineStageState.Running
                     raise ProcessPipelineError.InvalidPipelineState if pipeline.state != ProcessPipelineState.Cancelling or not pipeline.cancellation_requested
+                    try process_pipeline_stage_result_valid(receipt, ProcessPipelineEvent.StageCancel, pipeline.stage_results[stage_index])
+                    pipeline.stage_results[stage_index] <- receipt
                     pipeline.stage_states[stage_index] <- ProcessPipelineStageState.Cancelled
                     process_pipeline_refresh_accounting(pipeline)
                     if pipeline.completed_stages == pipeline.stages.count and pipeline.failed_stages != 0:
@@ -487,6 +604,7 @@ module EsProcess:
                         pipeline.cancellation_requested <- true
                         for stage_offset in 0..<pipeline.stages.count |pipeline|:
                             pipeline.stage_states.push(ProcessPipelineStageState.Cancelled)
+                            pipeline.stage_results.push(ProcessPipelineStageResult{published: true, result: ProcessResult{kind: ProcessResultKind.Cancelled}, stdin_closed: true, stdout_eof: true, stderr_eof: true})
                         process_pipeline_refresh_accounting(pipeline)
                         pipeline.state <- ProcessPipelineState.Cancelled
                     else:
