@@ -2300,7 +2300,9 @@ child vector from a captured ambient vector: `Inherit` overlays in place order,
 `Replace` discards ambient entries without inspecting them, and `Clear` emits
 none without inspecting them, so malformed ambient data cannot affect a mode
 that does not consume it. `Inherit` validates the captured vector before
-overlaying it, and no mode touches process-global state. This model is a
+overlaying it and revalidates the materialized child vector against the same
+pair-count and terminated-byte ceilings, so combined ambient and command data
+cannot bypass process bounds; no mode touches process-global state. This model is a
 validated adapter boundary; fork/exec,
 Windows process creation, background scheduling, and streaming callbacks remain
 host integrations rather than hidden behavior in the value itself.
