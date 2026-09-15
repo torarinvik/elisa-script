@@ -53,10 +53,13 @@ for boundary in \
     'ProcessBatchError.ReapNotReady' \
     'attempt_token' \
     'reap_acknowledged' \
+    'queued' \
     'session.jobs\[pending\].attempts >= session.policy.max_attempts' \
     'ProcessBatchState.Planned and' \
     'ProcessBatchState.Succeeded and' \
     'ProcessBatchState.Failed and' \
+    'session.state == ProcessBatchState.Draining and' \
+    'session.state <- ProcessBatchState.Failed if session.fail_fast_latched' \
     'ProcessBatchState.Draining' \
     'ProcessBatchState.Cancelled and' \
     'session.failed > session.jobs.count - session.completed' \
@@ -75,8 +78,13 @@ for fixture_pattern in \
     'forged_completed_cancelled' \
     'forged_failed' \
     'forged_failed_with_pending' \
+    'forged_draining' \
     'ProcessBatchEvent.ReapAck' \
     'StaleAttempt' \
+    'retry_without_reap' \
+    'stale_reap_receipt' \
+    'stale_reap_again' \
+    'fail_fast_cancel' \
     'launch_limit'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done

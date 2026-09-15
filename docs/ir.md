@@ -1793,6 +1793,9 @@ exhaustion, no-pending launches, counter drift, and post-terminal events return
 `error[ProcessBatchError]`.
 Aggregate success/failure counters are reconciled with subtraction-based
 bounds, so forged maximum-width counters cannot wrap their admission checks.
+Once fail-fast has latched a real failure, `Cancel → CancelAck` drains the
+remaining siblings but still terminates as `Failed`; cancellation cannot mask
+the failed child.
 
 Before any regex opcode executes, both backends enforce a shared input-size
 boundary: haystack text is at most 64 MiB, the compiled-pattern payload is at

@@ -75,6 +75,9 @@ module EsProcessBatch:
             active: usize = 0
             completed: usize = 0
             failed: usize = 0
+            # Once a fail-fast failure is observed, no new queued work may be
+            # admitted while the failed child is awaiting its reap receipt.
+            fail_fast_latched: bool = false
 
 
         error ProcessBatchError:
@@ -151,13 +154,14 @@ module EsProcessBatch:
             raise ProcessBatchError.ParallelLimitExceeded if session.active > session.policy.max_parallel
             raise ProcessBatchError.AccountingInvalid if session.completed > session.jobs.count
             raise ProcessBatchError.AccountingInvalid if session.failed > session.jobs.count - session.completed
-            raise ProcessBatchError.AccountingInvalid if session.state == ProcessBatchState.Planned and (session.active != 0 or session.completed != 0 or session.failed != 0)
+            raise ProcessBatchError.AccountingInvalid if session.state == ProcessBatchState.Planned and (session.active != 0 or session.completed != 0 or session.failed != 0 or session.fail_fast_latched)
             active: mutable usize = 0
             completed: mutable usize = 0
             failed: mutable usize = 0
             unfinished: mutable usize = 0
             cancelled: mutable usize = 0
-            for index in 0..<session.jobs.count |session, active, completed, failed, unfinished, cancelled|:
+            queued: mutable usize = 0
+            for index in 0..<session.jobs.count |session, active, completed, failed, unfinished, cancelled, queued|:
                 job: ProcessBatchJob = session.jobs[index]
                 raise ProcessBatchError.InvalidJobId if job.id == 0
                 raise ProcessBatchError.InvalidJobState if not process_batch_job_state_valid(job.state)
@@ -168,6 +172,7 @@ module EsProcessBatch:
                 completed <- completed + 1 if job.state == ProcessBatchJobState.Succeeded
                 failed <- failed + 1 if job.state == ProcessBatchJobState.Failed
                 cancelled <- cancelled + 1 if job.state == ProcessBatchJobState.Cancelled
+                queued <- queued + 1 if job.state == ProcessBatchJobState.Pending or job.state == ProcessBatchJobState.Retryable
                 raise ProcessBatchError.AccountingInvalid if job.attempts == 0 and job.attempt_token != 0
                 raise ProcessBatchError.AccountingInvalid if job.attempts != 0 and job.attempt_token == 0
                 raise ProcessBatchError.AccountingInvalid if job.attempts != 0 and job.attempt_token != job.attempts.u64()
@@ -178,9 +183,11 @@ module EsProcessBatch:
                 for earlier in 0..<index |session, job|:
                     raise ProcessBatchError.DuplicateJobId if session.jobs[earlier].id == job.id
             raise ProcessBatchError.AccountingInvalid if active != session.active or completed != session.completed or failed != session.failed
+            raise ProcessBatchError.AccountingInvalid if session.state == ProcessBatchState.Running and session.fail_fast_latched
             raise ProcessBatchError.AccountingInvalid if session.state == ProcessBatchState.Succeeded and (active != 0 or failed != 0 or completed != session.jobs.count)
             raise ProcessBatchError.AccountingInvalid if session.state == ProcessBatchState.Failed and (failed == 0 or active != 0 or unfinished != 0)
-            raise ProcessBatchError.AccountingInvalid if session.state == ProcessBatchState.Cancelled and (unfinished != 0 or (session.jobs.count != 0 and cancelled == 0))
+            raise ProcessBatchError.AccountingInvalid if session.state == ProcessBatchState.Draining and (not session.fail_fast_latched or unfinished == 0 or queued != 0)
+            raise ProcessBatchError.AccountingInvalid if session.state == ProcessBatchState.Cancelled and (session.fail_fast_latched or unfinished != 0 or (session.jobs.count != 0 and cancelled == 0))
             return true
 
 
@@ -219,6 +226,11 @@ module EsProcessBatch:
                 session.active <- session.active - 1
                 session.jobs[job_index].state <- ProcessBatchJobState.AwaitingReap
                 session.jobs[job_index].reap_acknowledged <- false
+                if session.policy.failure_mode == ProcessBatchFailureMode.FailFast and (session.jobs[job_index].attempts >= session.policy.max_attempts or session.state == ProcessBatchState.Draining):
+                    session.fail_fast_latched <- true
+                    for index in 0..<session.jobs.count |session|:
+                        session.jobs[index].state <- ProcessBatchJobState.Cancelled if session.jobs[index].state == ProcessBatchJobState.Pending or session.jobs[index].state == ProcessBatchJobState.Retryable
+                    session.state <- ProcessBatchState.Draining
             elif event == ProcessBatchEvent.ReapAck:
                 raise ProcessBatchError.InvalidState if session.state != ProcessBatchState.Running and session.state != ProcessBatchState.Draining
                 raise ProcessBatchError.InvalidJobIndex if job_index >= session.jobs.count
@@ -231,6 +243,7 @@ module EsProcessBatch:
                     session.jobs[job_index].state <- ProcessBatchJobState.Failed
                     session.failed <- session.failed + 1
                     if session.policy.failure_mode == ProcessBatchFailureMode.FailFast:
+                        session.fail_fast_latched <- true
                         for index in 0..<session.jobs.count |session|:
                             session.jobs[index].state <- ProcessBatchJobState.Cancelled if session.jobs[index].state == ProcessBatchJobState.Pending or session.jobs[index].state == ProcessBatchJobState.Retryable
                         session.state <- ProcessBatchState.Failed if session.active == 0 else ProcessBatchState.Draining
@@ -255,5 +268,9 @@ module EsProcessBatch:
                     session.jobs[index].state <- ProcessBatchJobState.Cancelled if session.jobs[index].state == ProcessBatchJobState.Pending or session.jobs[index].state == ProcessBatchJobState.Retryable or session.jobs[index].state == ProcessBatchJobState.Running or session.jobs[index].state == ProcessBatchJobState.AwaitingReap
                     session.jobs[index].reap_acknowledged <- true if session.jobs[index].state == ProcessBatchJobState.Cancelled
                 session.active <- 0
-                session.state <- ProcessBatchState.Cancelled
+                # A latched fail-fast failure remains the terminal outcome even
+                # when the host cancels the still-running siblings. This keeps
+                # cancellation from masking a real failed child, matching the
+                # scheduler's Failing -> Failed drain semantics.
+                session.state <- ProcessBatchState.Failed if session.fail_fast_latched else ProcessBatchState.Cancelled
             return session.state

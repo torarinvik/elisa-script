@@ -71,6 +71,8 @@ for fixture_pattern in \
     'forged_impossible_ack' \
     'forged_committed_sync' \
     'forged_rollback_directory' \
+    'forged_failed_directory' \
+    'forged_cancelled_directory' \
     'forged_rolled_back_commit' \
     'forged_commit_directory'; do
     rg -q "$fixture_pattern" "$fixture_file"
