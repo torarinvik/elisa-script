@@ -27,7 +27,9 @@ The latest self-hosted Elisa compiler source currently visible is the clean
 `d6a693c0f724c05f7b71418658dd8bda95ba73b3` (2026-09-15). It includes the
 module-callee, private-extern, catch-binder, value-tail, and stage-compatibility
 fixes merged on top of the extern-resource ABI and lowering work. The
-Elisascript vendor tree is an adapted `e56d6f2d` snapshot, so refresh it
+upstream lexer buffer-return optimization (`c7c849c7`) is also represented by
+the focused Elisascript adaptation in `vendor/elisa-compiler/src/lexer`.
+The remaining vendor tree is an adapted `e56d6f2d` snapshot, so refresh it
 deliberately rather than copying this checkout wholesale.
 
 The separate Go Elisa-core checkout used for the guarded validation path is
