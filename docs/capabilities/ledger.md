@@ -509,6 +509,8 @@ evidence, while descriptor writes and concurrent drains remain host work.
 message-level backpressure with explicit close/cancel acknowledgement edges;
 cancelled scopes continue to admit child terminal reports while draining, so
 `CancelAck` cannot deadlock behind active children;
+an observed child failure wins a cancellation race and cannot be relabelled as
+`Cancelled`;
 channel validation reconciles zero/nonzero message and byte aggregates, requires
 an exact final-message drain, and
 rejects an empty imported Closing state and failed scopes with unaccounted

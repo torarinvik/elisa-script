@@ -2410,7 +2410,9 @@ rejects closing/failed/terminal records whose child accounting is inconsistent,
 including failed scopes with unstarted children; cancellation
 acknowledgement is admitted only after active children reach zero; child
 completion/failure reports remain admissible while cancelling so the scheduler
-can drain already-running work before that acknowledgement. Receiving
+can drain already-running work before that acknowledgement. A failure already
+recorded before `CancelAck` wins the cancellation race and leaves the scope
+`Failed`, never silently `Cancelled`. Receiving
 the final message must account for all remaining buffered bytes, preventing a
 zero-message/nonzero-byte state. It
 requires explicit close or cancellation acknowledgement; channels cap both
