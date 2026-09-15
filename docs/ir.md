@@ -1396,8 +1396,9 @@ for Perl/AWK-style record processing. Separator mode is explicit (`Line`,
 `Literal`, `Regex`, or `Paragraph`), as is field extraction (`Whole`,
 `Whitespace`, `Literal`, `Regex`, `FixedWidth`, or `Schema`). Literal/regex
 separators must be present only in their selected modes; fixed-width policies
-require nonzero widths whose sum remains within the shared 64 MiB text envelope,
-then continue through the shared schema/separator checks; schema policies require
+require nonzero widths whose sum remains within both the policy's
+`max_record_bytes` ceiling and the shared 64 MiB text envelope, then continue
+through the shared schema/separator checks; schema policies require
 a nonempty schema name. Every record carries source,
 optional filename, global/file-local numbers, byte offset, raw bytes, and the
 separator actually consumed when `preserve_separator` is enabled.
