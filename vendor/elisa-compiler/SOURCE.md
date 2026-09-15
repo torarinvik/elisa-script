@@ -69,6 +69,8 @@ The current adapted fixes are tracked separately from the snapshot identity:
   with a fallback for legacy non-aggregate lowering paths.
 - `a584ab52`: traverse the existing symbol-name chains for enum and unique
   function-return lookups instead of scanning the full declaration table.
+- `0d92a608`: materialize `sview` constants with both their global pointer and
+  decoded length at use sites.
 
 These changes are limited to the vendored APIs and deliberately omit newer
 backend files whose supporting tables are not present in `e56d6f2d`.
