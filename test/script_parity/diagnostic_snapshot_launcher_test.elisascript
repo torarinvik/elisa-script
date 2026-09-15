@@ -29,6 +29,49 @@ module EsDiagnosticSnapshotLauncherParity:
             exit_status: i64
             stdout: sview
             stderr: sview
+            extra_arguments: darray[sview] = []
+
+
+        struct TemporaryDirectory:
+            path: Path
+            created: bool = false
+
+
+        def make_temporary_directory(prefix: sview) -> TemporaryDirectory can[Memory.Allocate, Abort.Panic, File.Write]:
+            created_path: Path = try temp_directory(prefix) else err:
+                return TemporaryDirectory{path: path("."), created: false}
+            return TemporaryDirectory{path: created_path, created: true}
+
+
+        def write_fixture_bytes(target: Path, contents: darray[u8]) -> bool can[Memory.Allocate, Abort.Panic, File.Write]:
+            written: usize = try write_bytes(target, contents) else 0u64
+            return written == contents.count
+
+
+        def remove_fixture_path(target: Path) -> bool can[Memory.Allocate, Abort.Panic, File.Write]:
+            return try remove_path(target) else false
+
+
+        def remove_fixture_directory(target: Path) -> bool can[Memory.Allocate, Abort.Panic, File.Write, Directory.Write]:
+            return try remove_directory(target) else false
+
+
+        def append_text_bytes(target: mutable darray[u8]&, value: sview) -> void can[Memory.Allocate, Abort.Panic]:
+            for byte in value |target|:
+                target.push(byte)
+
+
+        def append_crlf_text_bytes(target: mutable darray[u8]&, value: sview) -> void can[Memory.Allocate, Abort.Panic]:
+            for byte in value |target|:
+                target.push(13u8) if byte == 10u8
+                target.push(byte)
+
+
+        def append_exact_padding(target: mutable darray[u8]&, size: usize) -> bool can[Memory.Allocate, Abort.Panic]:
+            return false if target.count > size
+            while target.count < size |target, size|:
+                target.push(35u8)
+            return true
 
 
         def lowercase_sha256_hex_byte(value: u8) -> bool:
@@ -74,11 +117,16 @@ module EsDiagnosticSnapshotLauncherParity:
                 return false
             source_path: Path = try path_real(path(test_case.source_path)) else err:
                 return false
+            reference_arguments: mutable darray[sview] = [f"{reference_script_path}", f"{source_path}"]
+            candidate_arguments: mutable darray[sview] = [f"{candidate_script_path}", f"{source_path}"]
+            for argument in test_case.extra_arguments |reference_arguments, candidate_arguments|:
+                reference_arguments.push(argument)
+                candidate_arguments.push(argument)
             reference_runner: DifferentialRunner = DifferentialRunner{
                 kind: DifferentialRunnerKind.NativeProcess,
                 name: "shell-diagnostic-snapshot-reference",
                 target: Commands::REFERENCE_SHELL,
-                arguments: [f"{reference_script_path}", f"{source_path}"],
+                arguments: reference_arguments,
                 environment: [
                     DifferentialEnvironmentEntry{name: "PATH", value: Commands::CONTROLLED_PATH},
                     DifferentialEnvironmentEntry{name: "LC_ALL", value: "C"}
@@ -99,7 +147,7 @@ module EsDiagnosticSnapshotLauncherParity:
                 kind: DifferentialRunnerKind.NativeProcess,
                 name: "public-elisascript-diagnostic-snapshot",
                 target: launcher,
-                arguments: [f"{candidate_script_path}", f"{source_path}"],
+                arguments: candidate_arguments,
                 environment: [
                     DifferentialEnvironmentEntry{name: "PATH", value: Commands::CONTROLLED_PATH},
                     DifferentialEnvironmentEntry{name: "LC_ALL", value: "C"}
@@ -129,12 +177,79 @@ module EsDiagnosticSnapshotLauncherParity:
             return true
 
 
+        def generated_boundary_cases_match(launcher: sview) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Console.Format, Console.Write, File.Read, File.Write, Directory.Read, Directory.Write, Unsafe.PointerCast]:
+            temporary: TemporaryDirectory = make_temporary_directory("elisascript-diagnostic-snapshot-limits")
+            return false if not temporary.created
+            root_path: Path = try path_real(temporary.path) else err:
+                _ = remove_fixture_directory(temporary.path)
+                return false
+            generated_path: Path = root_path.joinpath("runner.elisa")
+            generated_text: sview = f"{generated_path}"
+            source_path: Path = path("test/fixtures/script_parity/diagnostic_snapshot/positive/runner.elisa")
+            positive_source: sview = try read_text(source_path) else err:
+                _ = remove_fixture_directory(root_path)
+                return false
+            all_ok: mutable bool = true
+
+            exact_size: mutable darray[u8] = []
+            append_text_bytes(exact_size, positive_source)
+            all_ok <- append_exact_padding(exact_size, 262144u64) and all_ok
+            all_ok <- write_fixture_bytes(generated_path, exact_size) and all_ok
+            exact_case: ExpectedCase = ExpectedCase{source_path: generated_text, exit_status: 0, stdout: "diagnostic snapshot audit: 2 fields covered (execution intentionally excluded)\n", stderr: ""}
+            all_ok <- launcher_case_matches(launcher, exact_case) and all_ok
+
+            oversized: mutable darray[u8] = []
+            append_text_bytes(oversized, positive_source)
+            all_ok <- append_exact_padding(oversized, 262145u64) and all_ok
+            all_ok <- write_fixture_bytes(generated_path, oversized) and all_ok
+            oversized_case: ExpectedCase = ExpectedCase{source_path: generated_text, exit_status: 1, stdout: "", stderr: "diagnostic snapshot audit: runner source exceeds audit limit\n"}
+            all_ok <- launcher_case_matches(launcher, oversized_case) and all_ok
+
+            crlf_source: mutable darray[u8] = []
+            append_crlf_text_bytes(crlf_source, positive_source)
+            all_ok <- write_fixture_bytes(generated_path, crlf_source) and all_ok
+            crlf_case: ExpectedCase = ExpectedCase{source_path: generated_text, exit_status: 0, stdout: "diagnostic snapshot audit: 2 fields covered (execution intentionally excluded)\n", stderr: ""}
+            all_ok <- launcher_case_matches(launcher, crlf_case) and all_ok
+
+            bare_cr_source: mutable darray[u8] = []
+            append_text_bytes(bare_cr_source, positive_source)
+            bare_cr_source.push(13u8)
+            all_ok <- write_fixture_bytes(generated_path, bare_cr_source) and all_ok
+            bare_cr_case: ExpectedCase = ExpectedCase{source_path: generated_text, exit_status: 1, stdout: "", stderr: "diagnostic snapshot audit: bare carriage return is unsupported\n"}
+            all_ok <- launcher_case_matches(launcher, bare_cr_case) and all_ok
+
+            fields_source: mutable darray[u8] = []
+            append_text_bytes(fields_source, "module EsIr:\n    public:\n        struct ElisascriptProgramDiagnostic:\n")
+            for index in 0..<257 |fields_source|:
+                append_text_bytes(fields_source, f"            field_{index}: sview\n")
+            all_ok <- write_fixture_bytes(generated_path, fields_source) and all_ok
+            fields_case: ExpectedCase = ExpectedCase{source_path: generated_text, exit_status: 1, stdout: "", stderr: "diagnostic snapshot audit: diagnostic field count exceeds audit limit\n"}
+            all_ok <- launcher_case_matches(launcher, fields_case) and all_ok
+
+            long_field_source: mutable darray[u8] = []
+            append_text_bytes(long_field_source, "module EsIr:\n    public:\n        struct ElisascriptProgramDiagnostic:\n            ")
+            for _ in 0..<129 |long_field_source|:
+                long_field_source.push(97u8)
+            append_text_bytes(long_field_source, ": sview\n")
+            all_ok <- write_fixture_bytes(generated_path, long_field_source) and all_ok
+            long_field_case: ExpectedCase = ExpectedCase{source_path: generated_text, exit_status: 1, stdout: "", stderr: "diagnostic snapshot audit: diagnostic field name exceeds audit limit\n"}
+            all_ok <- launcher_case_matches(launcher, long_field_case) and all_ok
+
+            all_ok <- write_fixture_bytes(generated_path, exact_size) and all_ok
+            extra_argument_case: ExpectedCase = ExpectedCase{source_path: generated_text, exit_status: 2, stdout: "", stderr: "usage: diagnostic snapshot audit [runner-source]\n", extra_arguments: ["extra"]}
+            all_ok <- launcher_case_matches(launcher, extra_argument_case) and all_ok
+
+            _ = remove_fixture_path(generated_path)
+            cleanup_ok: bool = remove_fixture_directory(root_path)
+            return all_ok and cleanup_ok
+
+
     public:
         def pinned_compiler_path() -> sview:
             return Commands::PINNED_COMPILER
 
 
-        def all_launcher_cases_match(launcher: sview) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, File.Read, Directory.Read, Unsafe.PointerCast]:
+        def all_launcher_cases_match(launcher: sview) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, File.Read, File.Write, Directory.Read, Directory.Write, Unsafe.PointerCast]:
             expected_stdout: sview = "diagnostic snapshot audit: 2 fields covered (execution intentionally excluded)\n"
             cases: darray[ExpectedCase] = [
                 ExpectedCase{source_path: "test/fixtures/script_parity/diagnostic_snapshot/positive/runner.elisa", exit_status: 0, stdout: expected_stdout, stderr: ""},
@@ -147,12 +262,12 @@ module EsDiagnosticSnapshotLauncherParity:
             ]
             for test_case in cases:
                 return false if not launcher_case_matches(launcher, test_case)
-            return true
+            return generated_boundary_cases_match(launcher)
 
 
 @test
 def diagnostic_snapshot_public_launcher_matches_shell_and_golden_output() -> void:
-    can Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, Environment.Read, File.Read, Directory.Read, Unsafe.PointerCast:
+    can Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, Environment.Read, File.Read, File.Write, Directory.Read, Directory.Write, Unsafe.PointerCast:
         reauthorized: sview = try getenv("ELISASCRIPT_VALIDATION_REAUTHORIZED", "") else err:
             ""
         compiler: sview = try getenv("ELISA_LOCAL_COMPILER", "") else err:

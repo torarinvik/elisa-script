@@ -18,18 +18,28 @@ implementations.
 | `missing_equality_source` | 1 | empty | `diagnostic snapshot audit: structural equality omits source\n` |
 | `missing_operations` | 1 | empty | `diagnostic snapshot audit: missing snapshot operations\n` |
 
+The launcher also creates bounded temporary byte fixtures and compares both
+implementations against these tuples:
+
+| Generated case | Status | Stdout | Stderr |
+| --- | ---: | --- | --- |
+| exactly 262,144 source bytes | 0 | `diagnostic snapshot audit: 2 fields covered (execution intentionally excluded)\n` | empty |
+| 262,145 source bytes | 1 | empty | `diagnostic snapshot audit: runner source exceeds audit limit\n` |
+| CRLF-normalized positive source | 0 | `diagnostic snapshot audit: 2 fields covered (execution intentionally excluded)\n` | empty |
+| bare carriage return | 1 | empty | `diagnostic snapshot audit: bare carriage return is unsupported\n` |
+| 257 diagnostic fields | 1 | empty | `diagnostic snapshot audit: diagnostic field count exceeds audit limit\n` |
+| 129-byte diagnostic field name | 1 | empty | `diagnostic snapshot audit: diagnostic field name exceeds audit limit\n` |
+| one extra CLI operand | 2 | empty | `usage: diagnostic snapshot audit [runner-source]\n` |
+
 The positive fixture proves the `execution` exclusion remains intentional.
 `compact_fields` uses declarations with no space before the colon and an
 optional space before the colon; it ensures field-name extraction follows the
 parser's token-based treatment of insignificant whitespace. The four
 field-omission fixtures cover every required field in each comparison
-operation. Static source inspection shows CRLF normalization and bare-CR
-rejection (`status 1`, stderr
-`diagnostic snapshot audit: bare carriage return is unsupported\n`), but this
-matrix does not yet contain raw CRLF/bare-CR byte fixtures or CLI/resource-limit
-boundary cases. Add those before accepting newline and boundary parity. None of
-these expectations have been executed; the standing compiler validation hold
-remains in force.
+operation. The generated cases exercise raw CRLF/bare-CR bytes, the exact
+source-byte ceiling, field-count/name ceilings, and the extra-operand usage
+boundary. None of these expectations have been executed; the standing compiler
+validation hold remains in force.
 
 The shell command still resolves its omitted-path default relative to its own
 location. The Elisascript convenience default is relative to the caller's
@@ -47,9 +57,8 @@ side alone. The source requires
 `ELISASCRIPT_VALIDATION_REAUTHORIZED=1`, the pinned local compiler path, an
 absolute `ELISASCRIPT_PUBLIC_LAUNCHER`, and its supplied SHA-256, checked before
 and after all cases. Run it only through the bounded validation wrapper after
-explicit reauthorization. This source covers only the checked-in text fixtures;
-raw CRLF/bare-CR bytes and CLI/resource boundaries remain acceptance gaps, and
-no execution evidence exists under the current validation hold. The recorded
-digest must be tied to the intended launcher build separately, and the
-path-based artifact must remain immutable during the run; pre/post hashing
-does not prevent a transient replacement between checks.
+explicit reauthorization. This source covers the checked-in fixtures plus
+bounded temporary byte/resource cases. The recorded digest must be tied to the
+intended launcher build separately, and the path-based artifact must remain
+immutable during the run; pre/post hashing does not prevent a transient
+replacement between checks.
