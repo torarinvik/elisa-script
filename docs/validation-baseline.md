@@ -32,6 +32,18 @@ not permitted validation targets. The bounded wrappers refuse any executable
 other than the exact canonical pinned StructPy `compiler/bin/elisac` and fail closed unless
 `ELISASCRIPT_VALIDATION_REAUTHORIZED=1` is explicitly supplied.
 
+## Newest source snapshot observed
+
+On 2026-09-15 a read-only audit found a clean detached compiler source snapshot
+at `/private/tmp/elisa-compiler-debugger-c605b3fa`, revision
+`c605b3faa516de7b2f4945a9ac4ccb21d78ae2e0`. It contains the newer shared typed
+scalar lowering and duplicate-EDIR-lowering optimizations and is two commits
+ahead of its `fd2cb3cf` upstream-main base. It has no built `compiler/bin/elisac`.
+The pinned executable above therefore remains the only identity accepted by the
+validation wrappers, but it is not claimed to represent this newest source.
+Building or launching a compiler remains disabled until explicit
+reauthorization and a bounded, reviewed build plan.
+
 ## Vendored dependency and bootstrap chain
 
 - Vendored Elisa frontend/runtime snapshot: `vendor/elisa-compiler/SOURCE.md`

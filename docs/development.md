@@ -17,6 +17,15 @@ commands, not authorization to run them; the environment variable is a manual ga
 not standing approval. Do not launch a compiler or test wrapper unless the user
 explicitly reauthorizes validation in the active task.
 
+The newest source-only compiler snapshot currently available is
+`/private/tmp/elisa-compiler-debugger-c605b3fa` at
+`c605b3faa516de7b2f4945a9ac4ccb21d78ae2e0`; it contains the latest lowering
+optimizations but has no built executable. Do not substitute it into a wrapper
+or build it while the validation hold is active. After explicit
+reauthorization, build an isolated executable from that clean snapshot, record
+its exact revision and digest in `docs/validation-baseline.md`, and update the
+wrapper pin before any fixture run.
+
 ```sh
 ELISASCRIPT_VALIDATION_REAUTHORIZED=1 \
 ELISA_LOCAL_COMPILER="/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac" \
