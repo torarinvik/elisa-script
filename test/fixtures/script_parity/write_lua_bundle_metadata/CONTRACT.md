@@ -139,7 +139,11 @@ must manually or equivalently emit sorted, two-space JSON with
 `ensure_ascii=True`. For atomic publication, the caller must securely create a
 private sibling staging file and retain its owned descriptor before invoking
 `file_stream_publish_staged`; a path-only helper call is not sufficient to
-prove exclusive staging or crash-safe replacement.
+prove exclusive staging or crash-safe replacement. The typed publication seam
+must also retain parent/staging device and inode identities under one owner
+token, prove a directory parent and regular private single-link staging file,
+and enter an explicit uncertain-publication state if the rename acknowledgement
+is lost after the publish edge.
 
 ## Acceptance matrix
 
