@@ -59,6 +59,8 @@ for boundary in \
     'scheduler.state == BuildSchedulerState.Failed' \
     'CompleteNotReady' \
     'CancelNotReady' \
+    'scheduler.state == BuildSchedulerState.Ready' \
+    'scheduler.state <- BuildSchedulerState.Cancelled' \
     'scheduler.graph.state == BuildGraphState.Succeeded'; do
     rg -Fq "$boundary" "$model"
 done
@@ -78,6 +80,7 @@ for fixture_pattern in \
     'cache_after_failure' \
     'completed_during_drain' \
     'forged_cancelling_failure' \
+    'planned_cancel_scheduler' \
     'BuildSchedulerState.Complete' \
     'completed_cancel_rejected'; do
     rg -Fq "$fixture_pattern" "$fixture"

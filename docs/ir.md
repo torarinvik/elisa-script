@@ -3622,7 +3622,9 @@ cache hits must also consume a currently queued ready node, preventing an
 out-of-order cache completion after queue corruption; validation also rejects
 cache entries for unknown graph nodes and manually
 injected queue entries whose dependencies are not complete. Cancellation is
-rejected once the embedded graph has already succeeded, and a ready scheduler
+rejected once the embedded graph has already succeeded; a ready scheduler can
+also be cancelled before `Begin`, which marks every planned node cancelled and
+keeps the embedded graph and scheduler ledgers in sync. A ready scheduler
 cannot carry a pre-injected dispatch queue (preloaded cache entries remain
 valid for the first refresh).
 The scheduler mirrors its active/completed ledger into the embedded graph and
