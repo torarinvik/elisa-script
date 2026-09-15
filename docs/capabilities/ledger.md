@@ -1014,8 +1014,9 @@ open.
 
 ES-SCRIPT-033 | EsProcessBatch supplies a bounded fan-out/fan-in process-map
 contract without launching children. It enforces unique job IDs, maximum jobs,
-active parallelism, attempts before launch, pending/running/retryable/terminal states,
-terminal-state accounting, planned cancellation, fail-fast versus aggregate
+active parallelism, attempts before launch, pending/running/awaiting-reap/retryable/terminal states,
+terminal-state accounting, launch attempt tokens, stale-receipt rejection,
+explicit reap acknowledgement before retry, planned cancellation, fail-fast versus aggregate
 failure, including fail-fast draining where every active sibling fails, and
 scoped `Cancel → CancelAck` cleanup.
 The focused IR fixture, namespace inclusion, documentation, and

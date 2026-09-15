@@ -1761,9 +1761,13 @@ Active transport phases also retain the neutral success/zero-status pair until
 the explicit receive-completion or failure edge.
 
 `EsProcessBatch::ProcessBatchSession` supplies the bounded fan-out/fan-in layer
-for process maps. Jobs have unique IDs, pending/running/retryable/terminal
-states, bounded attempts, and explicit launch/complete/fail/retry edges; launch
-rechecks the selected pending job's attempt ceiling before mutation. A policy caps total jobs and active parallelism and selects fail-fast versus
+for process maps. Jobs have unique IDs, pending/running/awaiting-reap/retryable/
+terminal states, bounded attempts, and explicit launch/complete/fail/reap/retry
+edges; launch rechecks the selected pending job's attempt ceiling before
+mutation. Every launch publishes a nonzero attempt token, and complete/fail/
+reap receipts must echo the current token, so a delayed receipt from an older
+retry cannot mutate a newer process. A failed job must receive `ReapAck` before
+it becomes retryable or terminal. A policy caps total jobs and active parallelism and selects fail-fast versus
 aggregate failure. Planned cancellation marks all pending jobs cancelled,
 `Succeeded` requires every job completed, and `Cancelled` cannot retain
 unfinished jobs. `Cancel → CancelAck` marks every still-owned slot cancelled;

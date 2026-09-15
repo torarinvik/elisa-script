@@ -23,7 +23,9 @@ for declaration in \
     'const enum ProcessBatchFailureMode of u8' \
     'const enum ProcessBatchState of u8' \
     'const enum ProcessBatchJobState of u8' \
+    'AwaitingReap' \
     'const enum ProcessBatchEvent of u8' \
+    'ReapAck' \
     'struct ProcessBatchPolicy:' \
     'struct ProcessBatchJob:' \
     'struct ProcessBatchSession:' \
@@ -47,6 +49,10 @@ for boundary in \
     'ProcessBatchError.ParallelLimitExceeded' \
     'ProcessBatchError.DuplicateJobId' \
     'ProcessBatchError.RetryNotReady' \
+    'ProcessBatchError.StaleAttempt' \
+    'ProcessBatchError.ReapNotReady' \
+    'attempt_token' \
+    'reap_acknowledged' \
     'session.jobs\[pending\].attempts >= session.policy.max_attempts' \
     'ProcessBatchState.Planned and' \
     'ProcessBatchState.Succeeded and' \
@@ -69,6 +75,8 @@ for fixture_pattern in \
     'forged_completed_cancelled' \
     'forged_failed' \
     'forged_failed_with_pending' \
+    'ProcessBatchEvent.ReapAck' \
+    'StaleAttempt' \
     'launch_limit'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done

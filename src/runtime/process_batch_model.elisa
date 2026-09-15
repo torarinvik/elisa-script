@@ -30,6 +30,7 @@ module EsProcessBatch:
         const enum ProcessBatchJobState of u8:
             Pending
             Running
+            AwaitingReap
             Retryable
             Succeeded
             Failed
@@ -41,6 +42,7 @@ module EsProcessBatch:
             Launch
             Complete
             Fail
+            ReapAck
             Retry
             Cancel
             CancelAck
@@ -57,6 +59,13 @@ module EsProcessBatch:
             id: u64
             state: ProcessBatchJobState = ProcessBatchJobState.Pending
             attempts: usize = 0
+            # A host receipt must echo the token returned by the matching
+            # launch. Attempt counts are not sufficient once a delayed event
+            # from an earlier retry can arrive after a new launch.
+            attempt_token: u64 = 0
+            # Pending/terminal jobs have no unreaped child. A failed running
+            # job must pass through AwaitingReap before it may be retried.
+            reap_acknowledged: bool = true
 
 
         struct ProcessBatchSession:
@@ -74,6 +83,7 @@ module EsProcessBatch:
             InvalidPolicy
             InvalidFailureMode
             InvalidJobState
+            StaleAttempt
             InvalidJobIndex
             DuplicateJobId
             InvalidJobId
@@ -83,6 +93,7 @@ module EsProcessBatch:
             AccountingInvalid
             NoPendingJob
             RetryNotReady
+            ReapNotReady
             CancelNotReady
 
 
@@ -92,11 +103,11 @@ module EsProcessBatch:
 
 
         def process_batch_job_state_valid(state: ProcessBatchJobState) -> bool:
-            return state in {ProcessBatchJobState.Pending, ProcessBatchJobState.Running, ProcessBatchJobState.Retryable, ProcessBatchJobState.Succeeded, ProcessBatchJobState.Failed, ProcessBatchJobState.Cancelled}
+            return state in {ProcessBatchJobState.Pending, ProcessBatchJobState.Running, ProcessBatchJobState.AwaitingReap, ProcessBatchJobState.Retryable, ProcessBatchJobState.Succeeded, ProcessBatchJobState.Failed, ProcessBatchJobState.Cancelled}
 
 
         def process_batch_event_valid(event: ProcessBatchEvent) -> bool:
-            return event in {ProcessBatchEvent.Begin, ProcessBatchEvent.Launch, ProcessBatchEvent.Complete, ProcessBatchEvent.Fail, ProcessBatchEvent.Retry, ProcessBatchEvent.Cancel, ProcessBatchEvent.CancelAck}
+            return event in {ProcessBatchEvent.Begin, ProcessBatchEvent.Launch, ProcessBatchEvent.Complete, ProcessBatchEvent.Fail, ProcessBatchEvent.ReapAck, ProcessBatchEvent.Retry, ProcessBatchEvent.Cancel, ProcessBatchEvent.CancelAck}
 
 
         def process_batch_failure_mode_valid(mode: ProcessBatchFailureMode) -> bool:
@@ -116,7 +127,7 @@ module EsProcessBatch:
 
 
         def process_batch_job_requires_attempt(state: ProcessBatchJobState) -> bool:
-            return state == ProcessBatchJobState.Running or state == ProcessBatchJobState.Retryable or state == ProcessBatchJobState.Succeeded or state == ProcessBatchJobState.Failed
+            return state == ProcessBatchJobState.Running or state == ProcessBatchJobState.AwaitingReap or state == ProcessBatchJobState.Retryable or state == ProcessBatchJobState.Succeeded or state == ProcessBatchJobState.Failed
 
 
         def process_batch_pending_index(session: ProcessBatchSession&) -> usize:
@@ -157,7 +168,13 @@ module EsProcessBatch:
                 completed <- completed + 1 if job.state == ProcessBatchJobState.Succeeded
                 failed <- failed + 1 if job.state == ProcessBatchJobState.Failed
                 cancelled <- cancelled + 1 if job.state == ProcessBatchJobState.Cancelled
-                unfinished <- unfinished + 1 if job.state == ProcessBatchJobState.Pending or job.state == ProcessBatchJobState.Running or job.state == ProcessBatchJobState.Retryable
+                raise ProcessBatchError.AccountingInvalid if job.attempts == 0 and job.attempt_token != 0
+                raise ProcessBatchError.AccountingInvalid if job.attempts != 0 and job.attempt_token == 0
+                raise ProcessBatchError.AccountingInvalid if job.attempt_token > job.attempts
+                raise ProcessBatchError.AccountingInvalid if job.state == ProcessBatchJobState.Running and job.reap_acknowledged
+                raise ProcessBatchError.AccountingInvalid if job.state == ProcessBatchJobState.AwaitingReap and job.reap_acknowledged
+                raise ProcessBatchError.AccountingInvalid if (job.state == ProcessBatchJobState.Pending or job.state == ProcessBatchJobState.Retryable or job.state == ProcessBatchJobState.Succeeded or job.state == ProcessBatchJobState.Failed or job.state == ProcessBatchJobState.Cancelled) and not job.reap_acknowledged
+                unfinished <- unfinished + 1 if job.state == ProcessBatchJobState.Pending or job.state == ProcessBatchJobState.Running or job.state == ProcessBatchJobState.AwaitingReap or job.state == ProcessBatchJobState.Retryable
                 for earlier in 0..<index |session, job|:
                     raise ProcessBatchError.DuplicateJobId if session.jobs[earlier].id == job.id
             raise ProcessBatchError.AccountingInvalid if active != session.active or completed != session.completed or failed != session.failed
@@ -167,7 +184,7 @@ module EsProcessBatch:
             return true
 
 
-        def advance_process_batch(session: mutable ProcessBatchSession&, event: ProcessBatchEvent, job_index: usize = 0) -> ProcessBatchState error[ProcessBatchError]:
+        def advance_process_batch(session: mutable ProcessBatchSession&, event: ProcessBatchEvent, job_index: usize = 0, attempt_token: u64 = 0) -> ProcessBatchState error[ProcessBatchError]:
             try validate_process_batch(session)
             raise ProcessBatchError.InvalidEvent if not process_batch_event_valid(event)
             if event == ProcessBatchEvent.Begin:
@@ -181,12 +198,16 @@ module EsProcessBatch:
                 raise ProcessBatchError.AttemptLimitExceeded if session.jobs[pending].attempts >= session.policy.max_attempts
                 session.jobs[pending].state <- ProcessBatchJobState.Running
                 session.jobs[pending].attempts <- session.jobs[pending].attempts + 1
+                session.jobs[pending].attempt_token <- session.jobs[pending].attempts.u64()
+                session.jobs[pending].reap_acknowledged <- false
                 session.active <- session.active + 1
             elif event == ProcessBatchEvent.Complete:
                 raise ProcessBatchError.InvalidState if session.state != ProcessBatchState.Running and session.state != ProcessBatchState.Draining
                 raise ProcessBatchError.InvalidJobIndex if job_index >= session.jobs.count
                 raise ProcessBatchError.InvalidJobState if session.jobs[job_index].state != ProcessBatchJobState.Running
+                raise ProcessBatchError.StaleAttempt if attempt_token == 0 or attempt_token != session.jobs[job_index].attempt_token
                 session.jobs[job_index].state <- ProcessBatchJobState.Succeeded
+                session.jobs[job_index].reap_acknowledged <- true
                 session.active <- session.active - 1
                 session.completed <- session.completed + 1
                 session.state <- ProcessBatchState.Failed if process_batch_all_terminal(session) and session.failed != 0 else ProcessBatchState.Succeeded if process_batch_all_terminal(session) else session.state
@@ -194,7 +215,16 @@ module EsProcessBatch:
                 raise ProcessBatchError.InvalidState if session.state != ProcessBatchState.Running and session.state != ProcessBatchState.Draining
                 raise ProcessBatchError.InvalidJobIndex if job_index >= session.jobs.count
                 raise ProcessBatchError.InvalidJobState if session.jobs[job_index].state != ProcessBatchJobState.Running
+                raise ProcessBatchError.StaleAttempt if attempt_token == 0 or attempt_token != session.jobs[job_index].attempt_token
                 session.active <- session.active - 1
+                session.jobs[job_index].state <- ProcessBatchJobState.AwaitingReap
+                session.jobs[job_index].reap_acknowledged <- false
+            elif event == ProcessBatchEvent.ReapAck:
+                raise ProcessBatchError.InvalidState if session.state != ProcessBatchState.Running and session.state != ProcessBatchState.Draining
+                raise ProcessBatchError.InvalidJobIndex if job_index >= session.jobs.count
+                raise ProcessBatchError.ReapNotReady if session.jobs[job_index].state != ProcessBatchJobState.AwaitingReap
+                raise ProcessBatchError.StaleAttempt if attempt_token == 0 or attempt_token != session.jobs[job_index].attempt_token
+                session.jobs[job_index].reap_acknowledged <- true
                 if session.jobs[job_index].attempts < session.policy.max_attempts and session.state != ProcessBatchState.Draining:
                     session.jobs[job_index].state <- ProcessBatchJobState.Retryable
                 else:
@@ -209,6 +239,7 @@ module EsProcessBatch:
                 raise ProcessBatchError.InvalidState if session.state != ProcessBatchState.Running and session.state != ProcessBatchState.Draining
                 raise ProcessBatchError.InvalidJobIndex if job_index >= session.jobs.count
                 raise ProcessBatchError.RetryNotReady if session.jobs[job_index].state != ProcessBatchJobState.Retryable
+                raise ProcessBatchError.ReapNotReady if not session.jobs[job_index].reap_acknowledged
                 session.jobs[job_index].state <- ProcessBatchJobState.Pending
             elif event == ProcessBatchEvent.Cancel:
                 raise ProcessBatchError.CancelNotReady if session.state == ProcessBatchState.Succeeded or session.state == ProcessBatchState.Failed or session.state == ProcessBatchState.Cancelled
@@ -221,7 +252,8 @@ module EsProcessBatch:
             elif event == ProcessBatchEvent.CancelAck:
                 raise ProcessBatchError.InvalidState if session.state != ProcessBatchState.Cancelling
                 for index in 0..<session.jobs.count |session|:
-                    session.jobs[index].state <- ProcessBatchJobState.Cancelled if session.jobs[index].state == ProcessBatchJobState.Pending or session.jobs[index].state == ProcessBatchJobState.Retryable or session.jobs[index].state == ProcessBatchJobState.Running
+                    session.jobs[index].state <- ProcessBatchJobState.Cancelled if session.jobs[index].state == ProcessBatchJobState.Pending or session.jobs[index].state == ProcessBatchJobState.Retryable or session.jobs[index].state == ProcessBatchJobState.Running or session.jobs[index].state == ProcessBatchJobState.AwaitingReap
+                    session.jobs[index].reap_acknowledged <- true if session.jobs[index].state == ProcessBatchJobState.Cancelled
                 session.active <- 0
                 session.state <- ProcessBatchState.Cancelled
             return session.state
