@@ -199,7 +199,10 @@ cover both ordinary dispatch and shadowing by a source `len` function.
 The semantic fixture now independently checks the inferred `usize` result and
 rejects both a mismatched destination and an extra method argument (`dbcce1f`).
 
-The IR verifier now enforces that every `Opcode.Length` result is the exact
+The IR verifier now enforces that handler stack operations are control-only:
+`HandlerPush` and `HandlerPop` must have no operands, no SSA result id, and a
+`Void` result type, matching the runtime's discard semantics. It also enforces
+that every `Opcode.Length` result is the exact
 unsigned 64-bit `usize` representation rather than merely any integer kind, and
 the same predicate is shared by text/array counts, file size/mode, text/byte
 writes, and standard-stream writes; static IR fixtures keep valid `usize`

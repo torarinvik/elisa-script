@@ -1234,6 +1234,10 @@ installation. `Resume` names the handler whose continuation it consumes and
 requires one payload operand plus a typed result; the verifier rejects terminal
 handlers, malformed payload/result pairs, unknown handlers, and unbalanced
 handler operations.
+Handler installation and removal are control-only operations: they must carry
+no operand slice, no SSA result id, and a `Void` result type. This keeps a
+malformed handler instruction from manufacturing a value that the runtime
+stack operation would silently discard.
 Executable handler clauses map an exact effect family and operation to an ordinary
 typed IR function. At each covered `Perform`, verification matches the performed
 payload to that function's parameters and its return type to the resumed value.
