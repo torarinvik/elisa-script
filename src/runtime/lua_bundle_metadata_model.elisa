@@ -10,6 +10,7 @@ module EsLuaBundleMetadata:
     public:
         const module Limits:
             ARGUMENT_BYTES: usize = 65536
+            METADATA_BYTES: usize = 67108864
             HOST_OUTPUT_BYTES: usize = 65536
             HOST_TIMEOUT_MICROS: u64 = 5000000
             PATH_BYTES: usize = 4096
@@ -79,6 +80,8 @@ module EsLuaBundleMetadata:
             EmptyAssignmentKey
             EntryLimitExceeded
             PathTooLong
+            AggregateBytesExceeded
+            EmbeddedNul
 
 
         error MetadataJsonError:
@@ -109,7 +112,7 @@ module EsLuaBundleMetadata:
 
         const module Json:
             HEX: sview = "0123456789abcdef"
-            MAX_BYTES: usize = 67108864
+            MAX_BYTES: usize = Limits::METADATA_BYTES
 
 
         struct MetadataObservedText:
@@ -186,6 +189,26 @@ module EsLuaBundleMetadata:
             entries.push(MetadataAssignment{key: value[0:separator], value: value[separator + 1:len(value)]})
 
 
+        def metadata_payload_add_fits(total: mutable usize&, value: sview) -> bool:
+            return false if total > Limits::METADATA_BYTES
+            return false if len(value) > Limits::METADATA_BYTES - total
+            total <- total + len(value)
+            return true
+
+
+        def metadata_arguments_payload_fits(arguments: MetadataArguments) -> bool:
+            total: mutable usize = 0
+            return false if not metadata_payload_add_fits(total, arguments.output)
+            return false if not metadata_payload_add_fits(total, arguments.bundle_type)
+            return false if not metadata_payload_add_fits(total, arguments.repo_root)
+            return false if not metadata_payload_add_fits(total, arguments.out_dir)
+            for entry in arguments.settings |total|:
+                return false if not metadata_payload_add_fits(total, entry.key) or not metadata_payload_add_fits(total, entry.value)
+            for entry in arguments.commands |total|:
+                return false if not metadata_payload_add_fits(total, entry.key) or not metadata_payload_add_fits(total, entry.value)
+            return true
+
+
         def metadata_assignment_value(entries: darray[MetadataAssignment], key: sview) -> sview:
             index: mutable usize = entries.count
             while index > 0:
@@ -233,13 +256,16 @@ module EsLuaBundleMetadata:
 
         def metadata_arguments_shape_valid(arguments: MetadataArguments) -> bool:
             return false if not arguments.has_output or not arguments.has_bundle_type or not arguments.has_repo_root or not arguments.has_out_dir
-            return false if len(arguments.output) > Limits::PATH_BYTES or len(arguments.bundle_type) > Limits::ARGUMENT_BYTES or len(arguments.repo_root) > Limits::PATH_BYTES or len(arguments.out_dir) > Limits::PATH_BYTES
+            return false if len(arguments.output) >= Limits::PATH_BYTES or len(arguments.bundle_type) > Limits::ARGUMENT_BYTES or len(arguments.repo_root) >= Limits::PATH_BYTES or len(arguments.out_dir) >= Limits::PATH_BYTES
+            return false if sview_contains_byte(arguments.output, 0) or sview_contains_byte(arguments.bundle_type, 0) or sview_contains_byte(arguments.repo_root, 0) or sview_contains_byte(arguments.out_dir, 0)
             return false if arguments.settings.count > Limits::ENTRIES or arguments.commands.count > Limits::ENTRIES
             for entry in arguments.settings:
                 return false if len(entry.key) == 0 or len(entry.key) > Limits::ARGUMENT_BYTES or len(entry.value) > Limits::ARGUMENT_BYTES
+                return false if sview_contains_byte(entry.key, 0) or sview_contains_byte(entry.value, 0)
             for entry in arguments.commands:
                 return false if len(entry.key) == 0 or len(entry.key) > Limits::ARGUMENT_BYTES or len(entry.value) > Limits::ARGUMENT_BYTES
-            return true
+                return false if sview_contains_byte(entry.key, 0) or sview_contains_byte(entry.value, 0)
+            return metadata_arguments_payload_fits(arguments)
 
 
         def metadata_facts_valid(facts: MetadataFacts) -> bool:
@@ -516,6 +542,7 @@ module EsLuaBundleMetadata:
             while index < arguments.count:
                 token: sview = arguments[index]
                 raise MetadataArgumentsError.ArgumentTooLarge if len(token) > Limits::ARGUMENT_BYTES
+                raise MetadataArgumentsError.EmbeddedNul if sview_contains_byte(token, 0)
                 if options_ended:
                     raise MetadataArgumentsError.UnexpectedPositional
                 if token == "--":
@@ -536,28 +563,30 @@ module EsLuaBundleMetadata:
                         raise MetadataArgumentsError.MissingOptionValue if index + 1 >= arguments.count
                         next_value: sview = arguments[index + 1]
                         raise MetadataArgumentsError.ArgumentTooLarge if len(next_value) > Limits::ARGUMENT_BYTES
+                        raise MetadataArgumentsError.EmbeddedNul if sview_contains_byte(next_value, 0)
                         raise MetadataArgumentsError.MissingOptionValue if metadata_value_looks_like_option(next_value)
                         value <- next_value
                         index <- index + 1
                     if kind == MetadataOptionKind.Output:
-                        raise MetadataArgumentsError.PathTooLong if len(value) > Limits::PATH_BYTES
+                        raise MetadataArgumentsError.PathTooLong if len(value) >= Limits::PATH_BYTES
                         result.output <- value
                         result.has_output <- true
                     elif kind == MetadataOptionKind.BundleType:
                         result.bundle_type <- value
                         result.has_bundle_type <- true
                     elif kind == MetadataOptionKind.RepoRoot:
-                        raise MetadataArgumentsError.PathTooLong if len(value) > Limits::PATH_BYTES
+                        raise MetadataArgumentsError.PathTooLong if len(value) >= Limits::PATH_BYTES
                         result.repo_root <- value
                         result.has_repo_root <- true
                     elif kind == MetadataOptionKind.OutDir:
-                        raise MetadataArgumentsError.PathTooLong if len(value) > Limits::PATH_BYTES
+                        raise MetadataArgumentsError.PathTooLong if len(value) >= Limits::PATH_BYTES
                         result.out_dir <- value
                         result.has_out_dir <- true
                     elif kind == MetadataOptionKind.Setting:
                         try metadata_append_assignment(result.settings, value)
                     else:
                         try metadata_append_assignment(result.commands, value)
+                    raise MetadataArgumentsError.AggregateBytesExceeded if not metadata_arguments_payload_fits(result)
                     index <- index + 1
             raise MetadataArgumentsError.MissingRequiredOption if not result.has_output or not result.has_bundle_type or not result.has_repo_root or not result.has_out_dir
             return result

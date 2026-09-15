@@ -21,6 +21,7 @@ for declaration in \
     'const module Options:' \
     'HOST_OUTPUT_BYTES' \
     'HOST_TIMEOUT_MICROS' \
+    'METADATA_BYTES' \
     'struct MetadataAssignment:' \
     'struct MetadataArguments:' \
     'struct MetadataFacts:' \
@@ -49,6 +50,10 @@ for boundary in \
     'EmptyAssignmentKey' \
     'EntryLimitExceeded' \
     'PathTooLong' \
+    'AggregateBytesExceeded' \
+    'EmbeddedNul' \
+    'metadata_payload_add_fits' \
+    'metadata_arguments_payload_fits' \
     'metadata_assignment_value' \
     'metadata_final_assignments' \
     'metadata_facts_valid' \
@@ -73,6 +78,8 @@ for boundary in \
     'valid_and_last_wins' \
     'negative_lookalike' \
     'exponent_lookalike' \
+    'embedded_nul' \
+    'exact_path_rejected' \
     'render_metadata_json' \
     'small_limit'; do
     rg -q "$boundary" "$model" "$fixture"

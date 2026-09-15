@@ -126,10 +126,11 @@ write must leave any previous destination unchanged.
 
 The port must impose explicit ceilings before allocating untrusted data. The
 initial fixture profile is 64 KiB per argv text value, 4,096 settings and
-commands per kind, 64 MiB aggregate metadata bytes, and 4,096-byte path
-operands. Larger values fail with a typed diagnostic and no destination
-mutation. These are replacement safety requirements, not claims about the
-unbounded Python reference.
+commands per kind, 64 MiB aggregate metadata bytes, and a strict 4,096-byte
+path operand ceiling. Embedded NUL bytes are rejected at the typed argv
+boundary before any host string or filesystem adapter sees them. Larger values
+fail with a typed diagnostic and no destination mutation. These are replacement
+safety requirements, not claims about the unbounded Python reference.
 
 The replacement is designed around pure deterministic seams first:
 `MetadataArguments`, `HostFacts`, and `ClockFacts` are constructible without

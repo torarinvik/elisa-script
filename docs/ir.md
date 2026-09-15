@@ -3571,9 +3571,9 @@ instead of reporting ordinary user cancellation.
 replacement. `parse_metadata_arguments` accepts exact or unambiguous argparse-
 style long options, preserves repeated setting/command entries with
 last-value lookup, rejects post-`--` positional data, applies argparse's exact
-negative-number exception for separated values, and applies per-argument, path,
-and entry-count ceilings before a host adapter can create or replace a
-destination. Its pure `metadata_facts_from_processes` seam classifies bounded
+negative-number exception for separated values, and applies per-argument,
+aggregate metadata, NUL, path, and entry-count ceilings before a host adapter
+can create or replace a destination. Its pure `metadata_facts_from_processes` seam classifies bounded
 typed process outcomes, applies the Git HEAD/branch/status fallback rules, and
 trims UTF-8 Unicode whitespace before `render_metadata_json` validates the
 injected UTC-second shape and emits bounded, deterministic, sorted

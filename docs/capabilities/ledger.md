@@ -1260,9 +1260,10 @@ test, script, or audit process was run.
 The W04 Lua bundle metadata replacement now has pure `EsLuaBundleMetadata`
 argument, host-observation, and serialization seams. It enforces typed required
 options, exact or unambiguous long option prefixes, repeated setting/command
-last-value lookup, `--` positional boundaries, path/argument/entry ceilings,
-argparse-compatible negative-number boundaries, and typed malformed-assignment
-failures. The observation seam admits at most
+last-value lookup, `--` positional boundaries, argparse-compatible
+negative-number boundaries, NUL/path/argument/entry ceilings, and aggregate
+metadata-byte admission before storing assignments. The observation seam admits
+at most
 64 KiB per captured stdout, trims Unicode whitespace, and applies the Git
 HEAD/branch/status fallback contract; `metadata_host_command` emits validated
 shell-free command plans for hostname, uname, and Git with explicit child cwd,
