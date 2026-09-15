@@ -483,7 +483,9 @@ escalation remain open. `ProcessPipeline` validates ordered stage commands,
 bounded stage/buffer limits, fail-fast versus aggregate failure policy, and a
 per-stage lifecycle that admits arbitrary completion order, rejects duplicate
 terminal events, and derives aggregate completion/failure/cancellation counts
-from the stage ledger. Stage receipts now require validated outcomes, explicit
+from the stage ledger. A fail-fast receipt enters cancellation draining whenever
+another stage remains, including the two-stage case where the failed stage is
+already terminal. Stage receipts now require validated outcomes, explicit
 stdin closure, stdout/stderr EOF, matching per-channel byte counts, and a
 bounded aggregate stream-byte budget charged by `StageOutput`; cancellation
 acknowledgment requires every stage to be terminal and drained. The source

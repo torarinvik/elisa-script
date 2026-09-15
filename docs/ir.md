@@ -2327,8 +2327,9 @@ after it has retained unbounded intermediate data. A terminal
 `ProcessPipelineStageResult` must carry a validated `ProcessResult`, matching
 stream counters, explicit stdin closure, and EOF on both output channels;
 `CancelAck` is accepted only after every stage is terminal and every receipt is
-drained. Fail-fast failure enters cancellation draining, while aggregate
-failure keeps other stages running. `StageFailure` on a pending stage requires
+drained. Fail-fast failure enters cancellation draining whenever another stage
+remains, including the two-stage case where the failed stage is already
+terminal, while aggregate failure keeps other stages running. `StageFailure` on a pending stage requires
 the `SpawnFailure` outcome; on a running stage it records a post-launch process
 outcome and rejects `SpawnFailure`. The stdin closure is a logical no-more-
 writes acknowledgement even when a command uses inherited, null, or file
