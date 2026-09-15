@@ -49,6 +49,7 @@ for boundary in \
     'RecordMaterializerState.Planned' \
     'RecordMaterializerState.Collecting' \
     'RecordMaterializerState.Sealed' \
+    'state != RecordMaterializerState.Planned and state != RecordMaterializerState.Collecting' \
     'RecordMaterializerEvent.BeginRecord' \
     'RecordMaterializerEvent.EndRecord' \
     'RecordMaterializerEvent.Seal' \
@@ -78,6 +79,9 @@ for fixture_pattern in \
     'RecordMaterializerState.Cancelled'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
+
+rg -Fq 'empty: mutable RecordMaterializer' "$fixture_file"
+rg -Fq 'advance_record_materializer(empty, RecordMaterializerEvent.Seal)' "$fixture_file"
 
 rg -q 'EsRecordMaterialize::RecordMaterializer' "$docs"
 rg -q 'ES-SCRIPT-023' "$ledger"

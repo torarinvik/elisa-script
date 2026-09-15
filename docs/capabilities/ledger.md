@@ -936,7 +936,8 @@ failure, and cancellation transitions. It validates every borrowed record and
 field against EsRecord, enforces the record ceiling before `EndRecord` plus field/text ceilings, preserves ordered
 field indices, checks contiguous record-to-field ownership, clears inactive
 borrowed records/cursors after close or rollback, and rejects
-post-terminal mutation through typed `error[RecordMaterializerError]`. The
+post-terminal mutation through typed `error[RecordMaterializerError]`. Empty
+input may seal directly without fabricating a record. The
 focused IR fixture, namespace inclusion, documentation, and
 check_record_materializer.sh audit are static evidence; byte-stream adapters,
 regex scanning, external sort, and transactional rewrite execution remain open.

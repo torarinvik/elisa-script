@@ -1435,8 +1435,9 @@ No implicit float conversion occurs at the record boundary.
 `EsRecordMaterialize::RecordMaterializer` adds the bounded stream-adapter
 boundary without embedding a regex engine or file descriptor. A producer opens
 one `Record`, appends zero or more validated `RecordField` values in index order,
-closes that record after enforcing the record ceiling, and repeats until `Seal`; `Fail` and `Cancel` are explicit
-terminal alternatives. The materializer retains borrowed record/field spans,
+closes that record after enforcing the record ceiling, and repeats until `Seal`;
+an empty input may seal directly from the planned state. `Fail` and `Cancel` are
+explicit terminal alternatives. The materializer retains borrowed record/field spans,
 checks contiguous record-to-field ownership, counts record/field/text budgets
 with subtraction-safe admission (including start-before-count range checks), and
 rejects all transitions after sealing or
