@@ -3491,7 +3491,11 @@ destination. Its pure `metadata_facts_from_processes` seam classifies bounded
 typed process outcomes, applies the Git HEAD/branch/status fallback rules, and
 trims UTF-8 Unicode whitespace before `render_metadata_json` validates the
 injected UTC-second shape and emits bounded, deterministic, sorted
-`ensure_ascii` JSON. The effectful process/clock adapter, atomic publication,
-and acceptance evidence remain open; `EsLuaBundlePublication` now provides the
-pure admission state machine for exclusive sibling staging, descriptor closure,
-rename acknowledgement, directory sync, and failure preservation.
+`ensure_ascii` JSON. `metadata_host_command` additionally produces validated,
+shell-free `ProcessCommand` plans for `hostname`, `uname -a`, and the three
+Git queries, with explicit child working-directory, locale, stdio, failure,
+and bounded-timeout policy. The effectful process/clock adapter, atomic
+publication, and acceptance evidence remain open; `EsLuaBundlePublication` now
+provides the pure admission state machine for exclusive sibling staging,
+descriptor closure, rename acknowledgement, directory sync, and failure
+preservation.

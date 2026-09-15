@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Compiler-free audit for the pure W04 Lua bundle metadata argument boundary.
+# Compiler-free audit for the pure W04 Lua bundle metadata and host-command boundary.
 set -euo pipefail
 
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
@@ -20,13 +20,17 @@ for declaration in \
     'const module Limits:' \
     'const module Options:' \
     'HOST_OUTPUT_BYTES' \
+    'HOST_TIMEOUT_MICROS' \
     'struct MetadataAssignment:' \
     'struct MetadataArguments:' \
     'struct MetadataFacts:' \
     'struct MetadataProcessResults:' \
+    'const enum MetadataHostCommandKind' \
     'error MetadataArgumentsError:' \
     'error MetadataJsonError:' \
+    'error MetadataCommandError:' \
     'def parse_metadata_arguments\(' \
+    'def metadata_host_command\(' \
     'def render_metadata_json\('; do
     rg -q "$declaration" "$model"
 done
@@ -49,6 +53,15 @@ for boundary in \
     'metadata_final_assignments' \
     'metadata_facts_valid' \
     'metadata_facts_from_processes' \
+    'metadata_host_command' \
+    'MetadataHostCommandKind.GitStatus' \
+    'MetadataCommandError.InvalidRepoRoot' \
+    'ProcessFailureMode.Allow' \
+    'ProcessStdioMode.Capture' \
+    'ProcessStdioMode.Null' \
+    'HOST_TIMEOUT_MICROS' \
+    'C.UTF-8' \
+    'working_directory' \
     'metadata_unicode_whitespace' \
     'metadata_json_decode_utf8' \
     'ProcessResultKind.Exited' \
@@ -66,4 +79,4 @@ rg -q 'include "\.\./runtime/lua_bundle_metadata_model\.elisa"' "$ir"
 rg -q 'using EsLuaBundleMetadata' "$fixture"
 rg -q 'W04' "$plan" "$tasks"
 
-printf 'lua bundle metadata audit: typed parsing, bounded host normalization, sorted JSON serialization, repeated-key last-wins, and explicit boundaries are present\n'
+printf 'lua bundle metadata audit: typed parsing, bounded host command planning/normalization, sorted JSON serialization, repeated-key last-wins, and explicit boundaries are present\n'
