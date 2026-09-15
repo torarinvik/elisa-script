@@ -118,6 +118,12 @@ module EsPackageCache:
             return true
 
 
+        def cache_entry_index(cache: PackageCache&, candidate: PackageCacheEntry) -> usize:
+            for index in 0..<cache.entries.count |cache, candidate|:
+                return index if cache_entry_equal(cache.entries[index], candidate)
+            return cache.entries.count
+
+
     public:
         def validate_package_cache(cache: PackageCache&) -> bool error[PackageCacheError]:
             raise PackageCacheError.InvalidState if not cache_state_valid(cache.state)
@@ -157,15 +163,35 @@ module EsPackageCache:
                 cache.state <- PackageCacheState.Updating
             elif event == PackageCacheEvent.Store:
                 raise PackageCacheError.InvalidState if cache.state != PackageCacheState.Updating
-                raise PackageCacheError.EntryLimitExceeded if cache.entries.count >= PACKAGE_CACHE_MAX_ENTRIES
                 try cache_entry_valid(entry)
-                raise PackageCacheError.ByteLimitExceeded if entry.byte_count > PACKAGE_CACHE_MAX_BYTES - cache.bytes
-                if cache.entries.count != 0:
-                    previous: PackageCacheEntry = cache.entries[cache.entries.count - 1]
-                    raise PackageCacheError.DuplicateEntry if cache_entry_equal(previous, entry)
-                    raise PackageCacheError.OrderInvalid if not cache_entry_before(previous, entry)
-                cache.entries.push(entry)
-                cache.bytes <- cache.bytes + entry.byte_count
+                # `valid=false` is an internal tombstone produced only by
+                # Invalidate.  Accepting one from Store would publish an
+                # unusable entry and make a successful refresh indistinguish-
+                # able from a cache that can never satisfy a lookup.
+                raise PackageCacheError.EntryInvalid if not entry.valid
+                existing_index: usize = cache_entry_index(cache, entry)
+                if existing_index != cache.entries.count:
+                    # Invalidate deliberately leaves the ordered row in place
+                    # so a refresh can replace it without rebuilding the
+                    # entire cache.  A live row with the same package identity
+                    # remains a duplicate, while a tombstone is replaced with
+                    # exact aggregate-byte re-accounting.
+                    raise PackageCacheError.DuplicateEntry if cache.entries[existing_index].valid
+                    old_bytes: usize = cache.entries[existing_index].byte_count
+                    raise PackageCacheError.ByteLimitExceeded if old_bytes > cache.bytes
+                    retained_bytes: usize = cache.bytes - old_bytes
+                    raise PackageCacheError.ByteLimitExceeded if entry.byte_count > PACKAGE_CACHE_MAX_BYTES - retained_bytes
+                    cache.entries[existing_index] <- entry
+                    cache.bytes <- retained_bytes + entry.byte_count
+                else:
+                    raise PackageCacheError.EntryLimitExceeded if cache.entries.count >= PACKAGE_CACHE_MAX_ENTRIES
+                    raise PackageCacheError.ByteLimitExceeded if entry.byte_count > PACKAGE_CACHE_MAX_BYTES - cache.bytes
+                    if cache.entries.count != 0:
+                        previous: PackageCacheEntry = cache.entries[cache.entries.count - 1]
+                        raise PackageCacheError.DuplicateEntry if cache_entry_equal(previous, entry)
+                        raise PackageCacheError.OrderInvalid if not cache_entry_before(previous, entry)
+                    cache.entries.push(entry)
+                    cache.bytes <- cache.bytes + entry.byte_count
             elif event == PackageCacheEvent.Seal:
                 raise PackageCacheError.InvalidState if cache.state != PackageCacheState.Updating
                 cache.state <- PackageCacheState.Ready

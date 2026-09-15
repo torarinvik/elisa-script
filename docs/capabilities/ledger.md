@@ -742,7 +742,8 @@ cache persistence adapters remain open.
 
 ES-SCRIPT-005 | EsPackageCache supplies bounded ordered entries, aggregate
 byte admission, integrity/fingerprint identity, sealed exact lookup, explicit
-invalidation, loading-only failure, and typed cache-miss/reset transitions. The focused IR fixture
+invalidation with in-place tombstone refresh and exact byte re-accounting,
+valid-entry store admission, loading-only failure, and typed cache-miss/reset transitions. The focused IR fixture
 and check_package_cache.sh audit are static evidence; atomic host persistence
 and crash recovery remain open.
 

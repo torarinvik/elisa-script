@@ -35,9 +35,12 @@ done
 for boundary in \
     'cache_entry_before' \
     'cache_entry_equal' \
+    'cache_entry_index' \
     'package_version_precedes' \
     'locator: sview, fingerprint: u64' \
     'entry.locator == locator' \
+    'not entry.valid' \
+    'retained_bytes' \
     'CacheNotReady' \
     'CacheMiss' \
     'EntryIndexInvalid' \
@@ -59,6 +62,8 @@ for fixture_pattern in \
     'wrong_locator' \
     'PackageCacheError.CacheMiss' \
     'PackageCacheEvent.Invalidate' \
+    'refresh_cache' \
+    'replacement' \
     'forged_empty'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done

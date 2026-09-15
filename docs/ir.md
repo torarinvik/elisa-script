@@ -177,10 +177,12 @@ explicit; an
 EsPackageCache complements the registry with a bounded identity cache. Entries
 are ordered and integrity-bound, aggregate bytes are checked before admission,
 lookup requires an exact fingerprint, and invalidation moves the cache back
-through an updating state before it can be sealed again. Failure is admitted
-only while updating, and a cache miss is typed; an `Empty` cache cannot carry
-preloaded entries or bytes. Host reads,
-writes, and atomic replacement remain outside the IR.
+through an updating state before it can be sealed again. A refresh replaces an
+invalidated tombstone in place, preserving order while re-accounting the
+replacement's exact byte count; live duplicate identities remain rejected and
+only valid entries may be stored. Failure is admitted only while updating, and
+a cache miss is typed; an `Empty` cache cannot carry preloaded entries or bytes.
+Host reads, writes, and atomic replacement remain outside the IR.
 
 `EsData` is the format-neutral boundary for the P8 structured-data libraries.
 `DataDecodeLimits` caps input bytes, tokens, nesting, records, fields, and field
