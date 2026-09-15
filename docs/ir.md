@@ -1794,7 +1794,9 @@ accounting reject forged terminal completion before any adapter is called, and
 cancelled streams must discard buffered bytes and final-chunk state;
 enqueueing cannot exceed
 the configured in-flight ceiling or occur after a final chunk; a stream cannot
-finish until the final chunk has been observed and all buffered bytes consumed.
+finish until the final chunk has been observed and all buffered bytes consumed;
+cancellation clears buffered bytes and final-chunk state before both the
+`Cancelling` and `Cancelled` states are exposed.
 
 EsNetworkSession binds those policies to one transport attempt. It requires
 the DNS/connect/TLS/send/receive order, charges request and response bytes

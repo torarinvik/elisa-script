@@ -87,7 +87,7 @@ for boundary in \
     'StreamNotComplete' \
     'StreamNotDrained' \
     'StreamAccountingInvalid' \
-    'stream.state == NetworkStreamState.Cancelled and' \
+    'stream.state == NetworkStreamState.Cancelling or stream.state == NetworkStreamState.Cancelled' \
     'network_request_state_is_active' \
     'network_request_state_requires_attempt' \
     'job.attempts > job.max_attempts' \
@@ -115,6 +115,7 @@ for fixture_pattern in \
     'NetworkContractError.ChunkSequenceMismatch' \
     'NetworkContractError.StreamNotDrained' \
     'NetworkContractError.StreamAccountingInvalid' \
+    'forged_cancelling_stream' \
     'NetworkRequestState.Cancelling' \
     'NetworkRequestState.Cancelled' \
     'NetworkContractError.DuplicateHeaderName' \
