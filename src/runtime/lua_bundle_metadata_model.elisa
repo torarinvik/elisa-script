@@ -1,0 +1,196 @@
+# Typed argument contract for the Lua bundle metadata generator.
+#
+# The host-facing writer is deliberately layered on top of this pure parser.
+# It owns no process, clock, Git, or filesystem effects; callers can therefore
+# differential-test option semantics before a destination is touched.
+
+module EsLuaBundleMetadata:
+    public:
+        const module Limits:
+            ARGUMENT_BYTES: usize = 65536
+            PATH_BYTES: usize = 4096
+            ENTRIES: usize = 4096
+
+
+        const module Options:
+            OUTPUT: sview = "--output"
+            BUNDLE_TYPE: sview = "--bundle-type"
+            REPO_ROOT: sview = "--repo-root"
+            OUT_DIR: sview = "--out-dir"
+            SETTING: sview = "--setting"
+            COMMAND: sview = "--command"
+
+
+        struct MetadataAssignment:
+            key: sview
+            value: sview
+
+
+        struct MetadataArguments:
+            output: sview = ""
+            bundle_type: sview = ""
+            repo_root: sview = ""
+            out_dir: sview = ""
+            has_output: bool = false
+            has_bundle_type: bool = false
+            has_repo_root: bool = false
+            has_out_dir: bool = false
+            settings: darray[MetadataAssignment] = []
+            commands: darray[MetadataAssignment] = []
+
+
+        error MetadataArgumentsError:
+            ArgumentTooLarge
+            MissingOptionValue
+            UnknownOption
+            AmbiguousOption
+            UnexpectedPositional
+            MissingRequiredOption
+            InvalidAssignment
+            EmptyAssignmentKey
+            EntryLimitExceeded
+            PathTooLong
+
+
+    private:
+        const enum MetadataOptionKind of u8:
+            Unknown
+            Ambiguous
+            Output
+            BundleType
+            RepoRoot
+            OutDir
+            Setting
+            Command
+
+
+        def metadata_option_matches(spelling: sview, candidate: sview) -> bool:
+            return false if len(spelling) == 0 or len(spelling) > len(candidate)
+            return candidate[0:len(spelling)] == spelling
+
+
+        def metadata_option_kind(spelling: sview) -> MetadataOptionKind:
+            matches: mutable usize = 0
+            selected: mutable MetadataOptionKind = MetadataOptionKind.Unknown
+            if metadata_option_matches(spelling, Options::OUTPUT):
+                matches <- matches + 1
+                selected <- MetadataOptionKind.Output
+            if metadata_option_matches(spelling, Options::BUNDLE_TYPE):
+                matches <- matches + 1
+                selected <- MetadataOptionKind.BundleType
+            if metadata_option_matches(spelling, Options::REPO_ROOT):
+                matches <- matches + 1
+                selected <- MetadataOptionKind.RepoRoot
+            if metadata_option_matches(spelling, Options::OUT_DIR):
+                matches <- matches + 1
+                selected <- MetadataOptionKind.OutDir
+            if metadata_option_matches(spelling, Options::SETTING):
+                matches <- matches + 1
+                selected <- MetadataOptionKind.Setting
+            if metadata_option_matches(spelling, Options::COMMAND):
+                matches <- matches + 1
+                selected <- MetadataOptionKind.Command
+            return MetadataOptionKind.Unknown if matches == 0
+            return MetadataOptionKind.Ambiguous if matches > 1
+            return selected
+
+
+        def metadata_value_looks_like_option(value: sview) -> bool:
+            return false if len(value) < 2 or sview_at(value, 0) != 45u8
+            return false if sview_at(value, 1) >= 48u8 and sview_at(value, 1) <= 57u8
+            return true
+
+
+        def metadata_append_assignment(entries: mutable darray[MetadataAssignment]&, value: sview) -> void error[MetadataArgumentsError]:
+            raise MetadataArgumentsError.EntryLimitExceeded if entries.count >= Limits::ENTRIES
+            separator: i64 = value.index("=")
+            raise MetadataArgumentsError.InvalidAssignment if separator < 0
+            raise MetadataArgumentsError.EmptyAssignmentKey if separator == 0
+            entries.push(MetadataAssignment{key: value[0:separator], value: value[separator + 1:len(value)]})
+
+
+        def metadata_assignment_value(entries: darray[MetadataAssignment], key: sview) -> sview:
+            index: mutable usize = entries.count
+            while index > 0:
+                index <- index - 1
+                return entries[index].value if entries[index].key == key
+            return ""
+
+
+        def metadata_assignment_present(entries: darray[MetadataAssignment], key: sview) -> bool:
+            index: mutable usize = entries.count
+            while index > 0:
+                index <- index - 1
+                return true if entries[index].key == key
+            return false
+
+
+    public:
+        def parse_metadata_arguments(arguments: darray[sview]) -> MetadataArguments error[MetadataArgumentsError]:
+            result: mutable MetadataArguments = MetadataArguments{}
+            index: mutable usize = 0
+            options_ended: mutable bool = false
+            while index < arguments.count:
+                token: sview = arguments[index]
+                raise MetadataArgumentsError.ArgumentTooLarge if len(token) > Limits::ARGUMENT_BYTES
+                if options_ended:
+                    raise MetadataArgumentsError.UnexpectedPositional
+                if token == "--":
+                    options_ended <- true
+                    index <- index + 1
+                else:
+                    raise MetadataArgumentsError.UnexpectedPositional if len(token) < 2 or token[0:2] != "--"
+                    equals: i64 = token.index("=")
+                    option_name: sview = token if equals < 0 else token[0:equals]
+                    kind: MetadataOptionKind = metadata_option_kind(option_name)
+                    raise MetadataArgumentsError.UnknownOption if kind == MetadataOptionKind.Unknown
+                    raise MetadataArgumentsError.AmbiguousOption if kind == MetadataOptionKind.Ambiguous
+                    attached: bool = equals >= 0
+                    value: mutable sview = ""
+                    if attached:
+                        value <- token[equals + 1:len(token)]
+                    else:
+                        raise MetadataArgumentsError.MissingOptionValue if index + 1 >= arguments.count
+                        next_value: sview = arguments[index + 1]
+                        raise MetadataArgumentsError.ArgumentTooLarge if len(next_value) > Limits::ARGUMENT_BYTES
+                        raise MetadataArgumentsError.MissingOptionValue if metadata_value_looks_like_option(next_value)
+                        value <- next_value
+                        index <- index + 1
+                    if kind == MetadataOptionKind.Output:
+                        raise MetadataArgumentsError.PathTooLong if len(value) > Limits::PATH_BYTES
+                        result.output <- value
+                        result.has_output <- true
+                    elif kind == MetadataOptionKind.BundleType:
+                        result.bundle_type <- value
+                        result.has_bundle_type <- true
+                    elif kind == MetadataOptionKind.RepoRoot:
+                        raise MetadataArgumentsError.PathTooLong if len(value) > Limits::PATH_BYTES
+                        result.repo_root <- value
+                        result.has_repo_root <- true
+                    elif kind == MetadataOptionKind.OutDir:
+                        raise MetadataArgumentsError.PathTooLong if len(value) > Limits::PATH_BYTES
+                        result.out_dir <- value
+                        result.has_out_dir <- true
+                    elif kind == MetadataOptionKind.Setting:
+                        try metadata_append_assignment(result.settings, value)
+                    else:
+                        try metadata_append_assignment(result.commands, value)
+                    index <- index + 1
+            raise MetadataArgumentsError.MissingRequiredOption if not result.has_output or not result.has_bundle_type or not result.has_repo_root or not result.has_out_dir
+            return result
+
+
+        def metadata_setting_value(arguments: MetadataArguments, key: sview) -> sview:
+            return metadata_assignment_value(arguments.settings, key)
+
+
+        def metadata_command_value(arguments: MetadataArguments, key: sview) -> sview:
+            return metadata_assignment_value(arguments.commands, key)
+
+
+        def metadata_has_setting(arguments: MetadataArguments, key: sview) -> bool:
+            return metadata_assignment_present(arguments.settings, key)
+
+
+        def metadata_has_command(arguments: MetadataArguments, key: sview) -> bool:
+            return metadata_assignment_present(arguments.commands, key)

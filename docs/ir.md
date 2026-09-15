@@ -3481,3 +3481,11 @@ ready queue is cleared and dispatch/cache hits are blocked; sibling results may
 still be accounted, or host-confirmed stop/reap acknowledgement drains them.
 Only then does the scheduler reach `Failed`, preserving the original failure
 instead of reporting ordinary user cancellation.
+
+`EsLuaBundleMetadata` is the first typed seam for the W04 Lua bundle metadata
+replacement. `parse_metadata_arguments` accepts exact or unambiguous argparse-
+style long options, preserves repeated setting/command entries with
+last-value lookup, rejects post-`--` positional data, and applies per-argument,
+path, and entry-count ceilings before a host adapter can create or replace a
+destination. It is pure and does not provide host facts, JSON publication, or
+acceptance evidence yet.
