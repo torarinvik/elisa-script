@@ -89,7 +89,57 @@ done
 # count is conservative for filenames containing newlines, which is safe for a
 # discovery-only report.
 max_scan_files=200000
+max_scan_depth=64
 max_scan_file_bytes='8M'
+
+signal_tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/elisascript-signals.XXXXXX")" || {
+    echo "inventory_signals: unable to create private temporary directory" >&2
+    exit 3
+}
+cleanup_signal_tmp() {
+    rm -rf -- "$signal_tmp_dir"
+}
+trap cleanup_signal_tmp EXIT HUP INT TERM
+
+depth_violation_paths="$signal_tmp_dir/depth.paths"
+# BSD find has no GNU -maxdepth. This portable predicate runs only for
+# directories: shallow directories return false and are descended into, while
+# a directory below the allowed relative depth prints itself and -prune stops
+# traversal. The shell helper receives the path as an argument, so unusual
+# characters are not reparsed as find syntax.
+if ! find "$scan_root" \
+    \( -path '*/.git' -o -path '*/node_modules' -o -path '*/.venv' -o -path '*/__pycache__' -o -path '*/vendor' -o -path '*/third_party' \) -prune -o \
+    \( -type d -exec sh -c '
+        root=$1
+        candidate=$2
+        limit=$3
+        depth=0
+        if [ "$candidate" != "$root" ]; then
+            relative=${candidate#"$root"/}
+            depth=1
+            while :; do
+                case "$relative" in
+                    */*)
+                        relative=${relative#*/}
+                        depth=$((depth + 1))
+                        ;;
+                    *)
+                        break
+                        ;;
+                esac
+            done
+        fi
+        [ "$depth" -gt "$limit" ]
+    ' inventory-signals-depth "$scan_root" {} "$max_scan_depth" \; -print -prune \) \
+    > "$depth_violation_paths" 2>/dev/null; then
+    echo "inventory_signals: executable-file traversal failed for $scan_root" >&2
+    exit 3
+fi
+if [ -s "$depth_violation_paths" ]; then
+    echo "inventory_signals: executable-file traversal failed for $scan_root" >&2
+    exit 3
+fi
+
 scan_file_count="$(find "$scan_root" \
     \( -path '*/.git' -o -path '*/node_modules' -o -path '*/.venv' -o -path '*/__pycache__' -o -path '*/vendor' -o -path '*/third_party' \) -prune -o \
     -type f -print 2>/dev/null | wc -l | tr -d '[:space:]')"
@@ -103,15 +153,6 @@ if [ "$scan_file_count" -gt "$max_scan_files" ]; then
     echo "inventory_signals: root contains $scan_file_count regular files; split the root (limit $max_scan_files)" >&2
     exit 3
 fi
-
-signal_tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/elisascript-signals.XXXXXX")" || {
-    echo "inventory_signals: unable to create private temporary directory" >&2
-    exit 3
-}
-cleanup_signal_tmp() {
-    rm -rf -- "$signal_tmp_dir"
-}
-trap cleanup_signal_tmp EXIT HUP INT TERM
 
 executable_paths="$signal_tmp_dir/executable.paths"
 shebang_paths="$signal_tmp_dir/shebang.paths"

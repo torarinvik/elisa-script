@@ -167,9 +167,10 @@ its inherited ignore/config/binary policy; the draft is not yet evidence of
 signal parity or adoption.
 
 The signal reference excludes `.git`, `node_modules`, `.venv`, `__pycache__`,
-`vendor`, and `third_party` from its `find` traversal and refuses a root reported
-to contain more than 200,000 regular files. A root whose own physical basename
-is one of those excluded names produces only the header. Both implementations
+`vendor`, and `third_party` from its `find` traversal, rejects a descendant
+directory deeper than 64 levels (the root is depth zero), and refuses a root
+reported to contain more than 200,000 regular files. A root whose own physical
+basename is one of those excluded names produces only the header. Both implementations
 first apply Bash-logical `cd` normalization and then resolve the selected root
 physically once; output paths are absolute physical paths even when the input is
 relative or a symlink to a directory. This follows an explicit root symlink,
@@ -199,7 +200,12 @@ executable files. This is an availability check, not a reservation: a tool can
 still disappear or be replaced before process creation, so tool-spawn failures
 remain a separate runtime failure case.
 
-The shell reference's line-oriented path lists and TSV output cannot represent
+The shell reference's depth preflight uses a portable `find -exec` predicate
+because macOS `find` has no GNU `-maxdepth`; a depth violation is reported as
+`inventory_signals: executable-file traversal failed for <root>` before the
+header is emitted. The native candidate maps generic walker failures to that
+same executable-traversal diagnostic while retaining distinct resource and TSV
+errors. The shell reference's line-oriented path lists and TSV output cannot represent
 tabs or line breaks in paths unambiguously, and it has no explicit final-output
 byte ceiling. Its initial `find | wc -l | tr` count also does not preserve the
 first `find` status; a later executable traversal checks its own status, but
@@ -228,10 +234,11 @@ nonzero native-walk or sort status fails closed. These are deliberate
 candidate-only safety and resource policies until the reference and boundary
 fixtures are aligned; exact parity is not claimed.
 
-The native single walk avoids the shell reference's separate `find | wc`
-count and executable `find` traversal, so its process and filesystem-race
-failure behavior differs. It also bounds empty-directory traversal with
-directory, entry, and depth limits that the shell reference does not share.
+The native single walk avoids the shell reference's separate depth preflight,
+`find | wc` count, and executable `find` traversal, so its process and
+filesystem-race failure behavior differs. It also bounds empty-directory
+traversal with directory, entry, and depth limits; the shell reference now
+shares the depth limit but not the directory/entry ceilings.
 The compiler runtime currently caps each captured process stream at 64 MiB
 and applies a process deadline, but these are not a measured or enforced
 peak-RSS ceiling. Ripgrep output is captured before NUL parsing, the candidate
@@ -251,7 +258,8 @@ covers the six partial execute-bit combinations, hidden and ignored files,
 excluded child directories, an outside-root symlink, TSV-delimiter rejection,
 and a marker proving discoveries are not executed. A NUL-containing file and
 an over-8-MiB file both contain otherwise-matching shebangs, exercising
-ripgrep's binary and size policies. A candidate-only case runs with a private
+ripgrep's binary and size policies. A generated depth-65 tree now exercises the
+shared depth rejection and no-header diagnostic in both launchers. A candidate-only case runs with a private
 PATH containing `rg` and `sort` but no `find`, proving the source-level
 candidate contract does not require `find` (the shell oracle does). The fixture
 is uncompiled and unrun; a direct low-limit walker test now covers file,
