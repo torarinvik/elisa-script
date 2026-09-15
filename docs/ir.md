@@ -549,9 +549,11 @@ returns `UpToDate`, `RecipeChanged`, `DependencyDirty`, `InputChanged`,
 `OutputMissing`, or another typed reason before the scheduler can admit a
 cache hit or dispatch a rebuild. Duplicate paths, missing fingerprints,
 dependency-order violations, and malformed observations are rejected through
-`error[BuildIncrementalError]`. The module performs no filesystem or process
-effects, so it is independently testable and can drive clean/no-op/incremental
-build comparisons.
+`error[BuildIncrementalError]`. A target that consumes a path produced by
+another target must name that producer directly; undeclared output edges are
+rejected before scheduling so a consumer cannot run against a stale generated
+file. The module performs no filesystem or process effects, so it is
+independently testable and can drive clean/no-op/incremental build comparisons.
 
 `EsResource` is the ownership ledger shared by runtime adapters. A lease names
 the resource kind, nonzero identity, and owner token; `ResourceLedger` keeps

@@ -46,7 +46,10 @@ for boundary in \
     'BuildIncrementalError.DuplicateOutput' \
     'BuildIncrementalError.OutputCollision' \
     'BuildIncrementalError.InputOutputCollision' \
+    'BuildIncrementalError.UndeclaredOutputDependency' \
     'BuildIncrementalError.DependencyOrderInvalid' \
+    'build_incremental_dependency_declared' \
+    'producer.outputs' \
     'current_recipe_fingerprint != target.recipe_fingerprint' \
     'try build_incremental_observations_valid(observations)' \
     'try build_incremental_dependencies_valid(dependencies)'; do
@@ -60,6 +63,7 @@ for fixture_check in \
     'BuildIncrementalDecision.OutputChanged' \
     'BuildIncrementalError.DuplicateInput' \
     'BuildIncrementalError.OutputCollision' \
+    'BuildIncrementalError.UndeclaredOutputDependency' \
     'BuildIncrementalError.DependencyOrderInvalid'; do
     rg -Fq "$fixture_check" "$fixture"
 done
