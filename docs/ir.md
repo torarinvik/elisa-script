@@ -565,6 +565,17 @@ another target must name that producer directly; undeclared output edges are
 rejected before scheduling so a consumer cannot run against a stale generated
 file. The module performs no filesystem or process effects, so it is
 independently testable and can drive clean/no-op/incremental build comparisons.
+`plan_build_incremental_cleanup` reconciles a previously successful manifest
+with the current graph in deterministic target/output order. It returns a
+bounded list of outputs removed by a target deletion or rename, retains an
+output adopted by another current target, and rejects
+`OrphanedOutputInput` when a current consumer still names a removed generated
+output. The returned `BuildIncrementalStaleOutput` includes the previous owner
+and fingerprint so a host adapter can re-check the build root and file identity
+immediately before deletion; an empty current manifest means that all previous
+outputs are obsolete for cleanup purposes, while the scheduler-facing manifest
+validator still rejects an empty graph. The pure module never removes files
+itself.
 
 `EsResource` is the ownership ledger shared by runtime adapters. A lease names
 the resource kind, nonzero identity, and owner token; `ResourceLedger` keeps
@@ -1888,6 +1899,9 @@ cannot vanish from the sealed report. Per-channel diagnostic text is capped at
 and successful terminal snapshots also reject nonzero failed, crashed, timed
 out, cancelled, or error counters unless the corresponding failure/cancellation
 state is exposed, preventing forged failures from being reported as success.
+The intermediate `Reporting` state applies the same latch consistency before
+`SealReport`, so a forged failed report cannot be sealed and returned as
+`Complete`.
 
 Before any regex opcode executes, both backends enforce a shared input-size
 boundary: haystack text is at most 64 MiB, the compiled-pattern payload is at

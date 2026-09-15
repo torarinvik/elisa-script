@@ -88,7 +88,8 @@ for fixture_pattern in \
     'TestRunnerState.Failed' \
     'TestOutcome.Error' \
     'OutputDocumentState.Sealed' \
-    'forged_hidden_failure'; do
+    'forged_hidden_failure' \
+    'forged_reporting_failure'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 

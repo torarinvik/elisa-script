@@ -22,10 +22,12 @@ for declaration in \
     'Limits::INPUTS' \
     'Limits::OUTPUTS' \
     'Limits::OBSERVATIONS' \
+    'Limits::CLEANUP_OUTPUTS' \
     'const enum BuildIncrementalTargetKind of u8:' \
     'Phony' \
     'const enum BuildIncrementalDecision of u8:' \
     'struct BuildIncrementalTarget:' \
+    'struct BuildIncrementalStaleOutput:' \
     'struct BuildIncrementalObservation:' \
     'error BuildIncrementalError:' \
     'len(name) < Limits::NAME_BYTES' \
@@ -48,9 +50,13 @@ for boundary in \
     'BuildIncrementalError.OutputCollision' \
     'BuildIncrementalError.InputOutputCollision' \
     'BuildIncrementalError.UndeclaredOutputDependency' \
+    'BuildIncrementalError.OrphanedOutputInput' \
+    'BuildIncrementalError.CleanupOutputLimitExceeded' \
     'BuildIncrementalError.DependencyOrderInvalid' \
     'build_incremental_dependency_declared' \
+    'build_incremental_output_owner_index' \
     'producer.outputs' \
+    'def plan_build_incremental_cleanup(' \
     'current_recipe_fingerprint != target.recipe_fingerprint' \
     'try build_incremental_observations_valid(observations)' \
     'try build_incremental_dependencies_valid(dependencies)'; do
@@ -66,6 +72,8 @@ for fixture_check in \
     'BuildIncrementalError.OutputForbidden' \
     'BuildIncrementalError.OutputCollision' \
     'BuildIncrementalError.UndeclaredOutputDependency' \
+    'plan_build_incremental_cleanup' \
+    'BuildIncrementalError.OrphanedOutputInput' \
     'BuildIncrementalError.DependencyOrderInvalid'; do
     rg -Fq "$fixture_check" "$fixture"
 done

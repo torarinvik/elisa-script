@@ -14,6 +14,7 @@ module EsBuildIncremental:
             OUTPUTS: usize = 4096
             DEPENDENCIES: usize = 4096
             OBSERVATIONS: usize = 16384
+            CLEANUP_OUTPUTS: usize = 16384
             PATH_BYTES: usize = 4096
             NAME_BYTES: usize = 4096
 
@@ -41,6 +42,15 @@ module EsBuildIncremental:
         struct BuildIncrementalFile:
             path: sview
             fingerprint: u64
+
+
+        # A stale output is data for a host cleanup adapter, not permission to
+        # delete anything. The previous owner and fingerprint let that adapter
+        # re-check ownership and identity immediately before a destructive
+        # operation.
+        struct BuildIncrementalStaleOutput:
+            target_name: sview
+            output: BuildIncrementalFile
 
 
         # A file record in a target is the fingerprint captured by the last
@@ -92,6 +102,8 @@ module EsBuildIncremental:
             MissingDependency
             DependencyOrderInvalid
             UndeclaredOutputDependency
+            OrphanedOutputInput
+            CleanupOutputLimitExceeded
 
 
     private:
@@ -116,6 +128,13 @@ module EsBuildIncremental:
         def build_incremental_target_index(targets: darray[BuildIncrementalTarget], name: sview) -> usize:
             for index in 0..<targets.count |targets, name|:
                 return index if targets[index].name == name
+            return targets.count
+
+
+        def build_incremental_output_owner_index(targets: darray[BuildIncrementalTarget], path: sview) -> usize:
+            for target_index in 0..<targets.count |targets, path|:
+                for output in targets[target_index].outputs |targets, path|:
+                    return target_index if output.path == path
             return targets.count
 
 
@@ -221,6 +240,35 @@ module EsBuildIncremental:
                             for input in target.inputs |targets, target, producer, produced|:
                                 raise BuildIncrementalError.UndeclaredOutputDependency if produced.path == input.path and not build_incremental_dependency_declared(target, producer.name)
             return true
+
+
+        # Reconcile a successful manifest with the current manifest before the
+        # host removes anything. Outputs absent from the current graph are
+        # returned in deterministic previous-manifest order. An output adopted
+        # by another current target is retained, while a current consumer that
+        # still names a removed generated output is rejected rather than being
+        # allowed to reuse a stale artifact as if it were a source input. An
+        # empty current manifest is valid here and means that every previous
+        # output is obsolete; the scheduler-facing manifest validator still
+        # rejects an empty graph.
+        # The returned plan is pure; filesystem identity, build-root safety, and
+        # the final deletion remain host-adapter responsibilities.
+        def plan_build_incremental_cleanup(previous_targets: darray[BuildIncrementalTarget], current_targets: darray[BuildIncrementalTarget]) -> darray[BuildIncrementalStaleOutput] error[BuildIncrementalError]:
+            cleanup: mutable darray[BuildIncrementalStaleOutput] = []
+            if current_targets.count != 0:
+                try validate_build_incremental_manifest(current_targets)
+            return cleanup if previous_targets.count == 0
+            try validate_build_incremental_manifest(previous_targets)
+            for previous in previous_targets:
+                for output in previous.outputs:
+                    output_owner: usize = build_incremental_output_owner_index(current_targets, output.path)
+                    if output_owner == current_targets.count:
+                        for current in current_targets:
+                            for input in current.inputs |current, previous, output|:
+                                raise BuildIncrementalError.OrphanedOutputInput if input.path == output.path
+                        raise BuildIncrementalError.CleanupOutputLimitExceeded if cleanup.count >= Limits::CLEANUP_OUTPUTS
+                        cleanup.push(BuildIncrementalStaleOutput{target_name: previous.name, output: output})
+            return cleanup
 
 
         # Return the first deterministic reason a target is stale. `UpToDate`
