@@ -1240,12 +1240,13 @@ be one of the six declared ownership classes. Unknown enum ordinals are rejected
 as handler-contract issues rather than being treated as replay-safe by default.
 Multi-shot captures whose declared type is an array or map are rejected as
 `UnsafeMultiShot` at verification time until deep aggregate storage cloning is
-available. When a capture carries an interned TypeTable descriptor, verification
-walks its bounded child graph and rejects nested array/map descendants as well;
-unknown or malformed child links fail closed. The runtime keeps the same
-fail-closed root check for legacy hand-built descriptors. The IR regression
-fixture also covers a malformed nominal root whose interned child graph hides an
-array, requiring both the unsafe multi-shot and invalid-table diagnostics.
+available. Verification checks both the six-level legacy inline descriptor
+chain and, when present, the capture's interned TypeTable identity; the bounded
+child graph rejects nested array/map descendants as well, and unknown or
+malformed child links fail closed. The runtime keeps a matching fail-closed
+check for legacy hand-built descriptors. The IR regression fixtures cover both
+inline and interned nominal roots that hide an array, with the malformed table
+case requiring both the unsafe multi-shot and invalid-table diagnostics.
 TypeTable interning proves the existing child pool count before subtracting the
 new descriptor width, so oversized generated descriptors cannot wrap their
 capacity check.
@@ -3569,8 +3570,9 @@ instead of reporting ordinary user cancellation.
 `EsLuaBundleMetadata` is the first typed seam for the W04 Lua bundle metadata
 replacement. `parse_metadata_arguments` accepts exact or unambiguous argparse-
 style long options, preserves repeated setting/command entries with
-last-value lookup, rejects post-`--` positional data, and applies per-argument,
-path, and entry-count ceilings before a host adapter can create or replace a
+last-value lookup, rejects post-`--` positional data, applies argparse's exact
+negative-number exception for separated values, and applies per-argument, path,
+and entry-count ceilings before a host adapter can create or replace a
 destination. Its pure `metadata_facts_from_processes` seam classifies bounded
 typed process outcomes, applies the Git HEAD/branch/status fallback rules, and
 trims UTF-8 Unicode whitespace before `render_metadata_json` validates the

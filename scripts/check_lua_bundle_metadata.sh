@@ -62,6 +62,7 @@ for boundary in \
     'HOST_TIMEOUT_MICROS' \
     'C.UTF-8' \
     'working_directory' \
+    'metadata_ascii_digit' \
     'metadata_unicode_whitespace' \
     'metadata_json_decode_utf8' \
     'ProcessResultKind.Exited' \
@@ -70,6 +71,8 @@ for boundary in \
     'MetadataJsonError.InvalidUtf8' \
     'MetadataJsonError.OutputLimitExceeded' \
     'valid_and_last_wins' \
+    'negative_lookalike' \
+    'exponent_lookalike' \
     'render_metadata_json' \
     'small_limit'; do
     rg -q "$boundary" "$model" "$fixture"
@@ -79,4 +82,4 @@ rg -q 'include "\.\./runtime/lua_bundle_metadata_model\.elisa"' "$ir"
 rg -q 'using EsLuaBundleMetadata' "$fixture"
 rg -q 'W04' "$plan" "$tasks"
 
-printf 'lua bundle metadata audit: typed parsing, bounded host command planning/normalization, sorted JSON serialization, repeated-key last-wins, and explicit boundaries are present\n'
+printf 'lua bundle metadata audit: typed parsing with argparse negative-number boundaries, bounded host command planning/normalization, sorted JSON serialization, repeated-key last-wins, and explicit limits are present\n'

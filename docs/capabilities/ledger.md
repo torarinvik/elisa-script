@@ -435,12 +435,13 @@ compiler-free `check_builtin_effect_metadata.sh` audit pins both permissions at
 the registry, semantic, lowerer, verifier, and documentation boundaries; general
 effect-ID migration and executed validation remain open.
 
-Multi-shot handler verification now walks interned TypeTable child descriptors
-with a bounded fail-closed traversal, rejecting nested array/map storage rather
-than only root aggregate captures. Legacy inline descriptors retain the root-kind
-guard; a malformed nominal-root regression fixture proves the nested guard emits
-an `UnsafeMultiShot` issue alongside the structural table error. Deep cloning and
-adversarial execution evidence remain open.
+Multi-shot handler verification now checks both the six-level legacy inline type
+chain and interned TypeTable child descriptors with bounded fail-closed
+traversals, rejecting nested array/map storage rather than only root aggregate
+captures. A malformed nominal-root regression fixture proves the interned guard
+emits an `UnsafeMultiShot` issue alongside the structural table error, while a
+second fixture covers the inline legacy path. Deep cloning and adversarial
+execution evidence remain open.
 
 Recent static increments are committed as `72f3325` (Path line semantics audit),
 `0739d4c` (typed cleanup guard), `b0ecf06` (cache cleanup integration),
@@ -1260,7 +1261,8 @@ The W04 Lua bundle metadata replacement now has pure `EsLuaBundleMetadata`
 argument, host-observation, and serialization seams. It enforces typed required
 options, exact or unambiguous long option prefixes, repeated setting/command
 last-value lookup, `--` positional boundaries, path/argument/entry ceilings,
-and typed malformed-assignment failures. The observation seam admits at most
+argparse-compatible negative-number boundaries, and typed malformed-assignment
+failures. The observation seam admits at most
 64 KiB per captured stdout, trims Unicode whitespace, and applies the Git
 HEAD/branch/status fallback contract; `metadata_host_command` emits validated
 shell-free command plans for hostname, uname, and Git with explicit child cwd,

@@ -21,6 +21,9 @@ if ! rg -q 'def type_table_contains_mutable_aggregate\(type_id: u32, table: Type
 fi
 
 if ! rg -q 'type_table_child\(type_id, position\.u16\(\), table\)' "$verifier_file" || \
+   ! rg -q 'def type_inline_contains_mutable_aggregate\(value: Type\)' "$verifier_file" || \
+   ! rg -q 'value\.element_element_element_element_element_element_kind in \{TypeKind\.Array, TypeKind\.Map\}' "$verifier_file" || \
+   ! rg -q 'type_inline_contains_mutable_aggregate\(capture\.type\)' "$verifier_file" || \
    ! rg -q 'capture\.type\.descriptor_id != 0 and type_table_contains_mutable_aggregate' "$verifier_file" || \
    ! rg -q 'unknown or malformed child links fail closed' "$ir_docs" || \
    ! rg -q 'interned TypeTable child descriptors' "$ledger_file" || \

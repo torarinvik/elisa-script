@@ -16,10 +16,11 @@ implement, but it must not assign a different meaning to a form it accepts.
   repeated resumes only when every capture is statically `Unrestricted` and the
   verifier/runtime continuation budgets are available.
 - Multi-shot aggregate captures are currently rejected: declared array/map
-  captures produce `UnsafeMultiShot` during IR verification, and legacy
-  descriptors are rejected with `InvalidContinuation` at runtime. A future deep
-  clone protocol must be explicit, recursively typed, and versioned before this
-  restriction is relaxed.
+  captures, including nested values in either the six-level legacy inline type
+  chain or an interned TypeTable graph, produce `UnsafeMultiShot` during IR
+  verification, and legacy descriptors are rejected with `InvalidContinuation`
+  at runtime. A future deep clone protocol must be explicit, recursively typed,
+  and versioned before this restriction is relaxed.
 
 ## Resumption semantics
 
