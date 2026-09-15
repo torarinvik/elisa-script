@@ -63,6 +63,8 @@ for boundary in \
     'NETWORK_MAX_BUFFER_BYTES' \
     'NETWORK_MAX_STREAM_CHUNKS' \
     'network_headers_valid' \
+    'network_header_name_byte_valid' \
+    'network_header_value_valid' \
     'network_header_name_byte_equal' \
     'network_header_names_equal' \
     'left_folded' \
@@ -70,6 +72,8 @@ for boundary in \
     'network_retry_backoff_micros' \
     'network_tls_path_valid' \
     'DuplicateHeaderName' \
+    'HeaderValueInvalid' \
+    'byte < 32u8 and byte != 9u8' \
     'InvalidTimeout' \
     'InvalidResponseLimit' \
     'InvalidRetryAttempts' \
@@ -118,7 +122,9 @@ for fixture_pattern in \
     'NetworkContractError.InvalidStatus' \
     'forged_cancelled_stream' \
     'case_insensitive_headers' \
-    'case_insensitive_duplicate_rejected'; do
+    'case_insensitive_duplicate_rejected' \
+    'invalid_header_name' \
+    'invalid_header_value'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 

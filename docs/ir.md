@@ -1723,7 +1723,7 @@ binary body, positive timeout, response ceiling, and redirect policy; responses
 carry a closed outcome (`Success`, DNS/TLS/transport failure, timeout, protocol,
 status, decode, or cancellation), status, headers, body, and bounded error text.
 `validate_network_request` and `validate_network_response` reject malformed or
-duplicate (ASCII case-insensitive) headers, embedded NULs, oversized URL/header/body payloads, zero
+duplicate (ASCII case-insensitive) headers, non-token field names, control bytes in values, embedded NULs, oversized URL/header/body payloads, zero
 timeouts, invalid response ceilings, and status/outcome contradictions through
 `error[NetworkContractError]`. `NetworkRetryPolicy` makes retry intent explicit:
 `Never` permits one attempt, `IdempotentOnly` permits bounded retries only for
