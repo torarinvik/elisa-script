@@ -22,9 +22,9 @@ commands, not authorization to run them; the environment variable is a manual ga
 not standing approval. Do not launch a compiler or test wrapper unless the user
 explicitly reauthorizes validation in the active task.
 
-The latest self-hosted Elisa compiler source currently visible is the clean
-`main` checkout at `../Elisa-compiler`, revision
-`d6a693c0f724c05f7b71418658dd8bda95ba73b3` (2026-09-15). It includes the
+The latest self-hosted Elisa compiler source currently visible (read-only
+rechecked 2026-09-16) is the clean `main` checkout at `../Elisa-compiler`,
+revision `d6a693c0f724c05f7b71418658dd8bda95ba73b3` (committed 2026-09-15). It includes the
 module-callee, private-extern, catch-binder, value-tail, and stage-compatibility
 fixes merged on top of the extern-resource ABI and lowering work. The
 upstream lexer buffer-return optimization (`c7c849c7`) is also represented by
@@ -32,8 +32,9 @@ the focused Elisascript adaptation in `vendor/elisa-compiler/src/lexer`.
 The remaining vendor tree is an adapted `e56d6f2d` snapshot, so refresh it
 deliberately rather than copying this checkout wholesale.
 
-The separate Go Elisa-core source checkout currently visible is clean at
-revision `3a5520d8fd56b86c430f39518a261e9030fa72ec` on its `main` branch at
+The separate Go Elisa-core source checkout currently visible (read-only
+rechecked 2026-09-16) is clean at revision
+`3a5520d8fd56b86c430f39518a261e9030fa72ec` on its `main` branch at
 `/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/Elisa-core`. It
 includes the latest stage0 alignment for value-returning and unannotated-void
 function tails. The explicitly safety-pinned `structpy-tree/compiler/bin/elisac`
