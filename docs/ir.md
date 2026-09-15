@@ -1475,7 +1475,9 @@ acknowledgement before its corresponding state transition, including a
 `Committing` snapshot that omits required directory synchronization.
 It also rejects rollback acknowledgements in non-rollback states and committed
 snapshots that omit staging synchronization, so terminal records cannot be
-forged by mixing flags from different lifecycle phases.
+forged by mixing flags from different lifecycle phases. Directory synchronization
+and commit acknowledgement are also globally subordinate to staged synchronization,
+and a required directory sync is mandatory before any acknowledged commit.
 The typed contract performs no rename or fsync itself, leaving platform error
 mapping, permissions, crash recovery, and multi-file traversal to host code.
 

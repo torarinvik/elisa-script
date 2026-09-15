@@ -38,6 +38,9 @@ for boundary in \
     'record_rewrite_symlink_mode_valid' \
     'RecordRewriteError.PathCollision' \
     'RecordRewriteError.OutputLimitExceeded' \
+    'session.directory_synced and not session.staged_synced' \
+    'session.commit_acknowledged and not session.staged_synced' \
+    'session.commit_acknowledged and session.plan.require_directory_sync' \
     'session.state == RecordRewriteState.Staging' \
     'session.state == RecordRewriteState.Committing and session.rollback_acknowledged' \
     'session.state == RecordRewriteState.Committed and not session.staged_synced' \
@@ -66,7 +69,10 @@ for fixture_pattern in \
     'RecordRewriteEvent.RollbackAck' \
     'RecordRewriteError.PathCollision' \
     'forged_impossible_ack' \
-    'forged_committed_sync'; do
+    'forged_committed_sync' \
+    'forged_rollback_directory' \
+    'forged_rolled_back_commit' \
+    'forged_commit_directory'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
 

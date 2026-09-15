@@ -1189,3 +1189,9 @@ The record-sort boundary now rejects nonzero hidden integer payloads on text
 keys, matching the existing canonical payload rules for missing and integer
 keys. A static fixture covers the malformed text-key payload; no compiler, test,
 script, or audit process was run.
+
+The record-rewrite validator now globally rejects forged directory-sync or
+commit-acknowledgement flags without staged synchronization, and rejects an
+acknowledged commit without the required directory sync. Static rollback and
+commit fixtures cover these cases; no compiler, test, script, or audit process
+was run.
