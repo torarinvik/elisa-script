@@ -14,8 +14,10 @@ roots_audit="$repo_root/scripts/check_migration_roots.sh"
 
 walker_file="$repo_root/scripts/inventory_walk.elisascript"
 walker_test="$repo_root/test/script_parity/inventory_walk_test.elisascript"
+candidate_file="$repo_root/scripts/inventory_candidates.elisascript"
+candidate_fixture="$repo_root/test/fixtures/script_parity/inventory_candidates/EXPECTATIONS.md"
 
-for required_file in "$roots_file" "$schema_file" "$review_file" "$review_audit" "$roots_audit" "$coordinator" "$walker_file" "$walker_test" "$repo_root/scripts/inventory_candidates.sh" "$repo_root/scripts/inventory_signals.sh"; do
+for required_file in "$roots_file" "$schema_file" "$review_file" "$review_audit" "$roots_audit" "$coordinator" "$walker_file" "$walker_test" "$candidate_file" "$candidate_fixture" "$repo_root/scripts/inventory_candidates.sh" "$repo_root/scripts/inventory_signals.sh"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'migration inventory audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -116,6 +118,26 @@ for walker_case in 'RegularFileLimitExceeded' 'DirectoryLimitExceeded' 'EntryLim
 done
 if ! rg -q 'required_mode_bits' "$repo_root/scripts/inventory_signals.elisascript" || ! rg -q 'suffixes: \[' "$repo_root/scripts/inventory_candidates.elisascript"; then
     printf 'migration inventory audit: scanners do not configure the shared walker's typed selectors\n' >&2
+    exit 1
+fi
+
+# The Bash oracle uses `sort -u`, so a native walker must not merely sort the
+# selected paths: a future backend or duplicated dirent must not duplicate a
+# manifest row. Require a bounded sort-then-adjacent-scan implementation and
+# pin the same invariant in the source-only fixture contract.
+for candidate_invariant in \
+    'def sorted_unique_paths' \
+    'ordered: darray[sview] = sorted(values)' \
+    'unique: mutable darray[sview] = []' \
+    'unique[unique.count - 1] != value' \
+    'ordered_paths <- sorted_unique_paths(candidate_paths)'; do
+    if ! rg -Fq "$candidate_invariant" "$candidate_file"; then
+        printf 'migration inventory audit: candidate is missing sorted adjacent-dedup invariant %s\n' "$candidate_invariant" >&2
+        exit 1
+    fi
+done
+if ! rg -Fq 'bounded adjacent-dedup' "$candidate_fixture" || ! rg -Fq 'sort -u' "$candidate_fixture"; then
+    printf 'migration inventory audit: candidate fixture does not pin sort -u uniqueness semantics\n' >&2
     exit 1
 fi
 

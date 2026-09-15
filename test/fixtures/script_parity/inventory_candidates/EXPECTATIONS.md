@@ -27,6 +27,15 @@ are `test`; build/target/.github/.gitlab/.circleci are `build`; build/target/
 dist/generated dispositions are `classify-generated`; other records are
 `classify`.
 
+The source-level candidate contract also requires a bounded adjacent-dedup pass
+after sorting its selected path views. This is the native equivalent of Bash's
+`sort -u`: it keeps one copy of each equal bytewise path without a map or a
+quadratic membership scan. The ordinary quiescent directory fixture cannot
+produce duplicate dirents, so `scripts/check_migration_inventory.sh` checks
+the implementation shape and this expectation text statically; a future
+walker/backend that supplies duplicate paths must still produce the same unique
+manifest.
+
 Failure cases pin exact status and diagnostics with no stdout header:
 
 | Case | Status | Stderr |

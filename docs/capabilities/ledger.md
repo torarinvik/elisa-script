@@ -127,6 +127,13 @@ IR metadata now has the bounded, borrowed-view `ESIA` version-2 envelope with
 digest words and legacy/length/corruption fixtures (`f2c9693`); cache migration
 and execution evidence remain open.
 
+The ES-INV-001 candidate manifest contract includes the reference's `sort -u`
+uniqueness semantics: `scripts/inventory_candidates.elisascript` sorts selected
+paths and performs a bounded adjacent-dedup scan. The source-only expectation
+fixture and `scripts/check_migration_inventory.sh` audit pin this shape; the
+implementation is recorded in `4c0eb453`. No compiler, fixture, or parity run
+has been executed under the validation hold.
+
 | Requirement ID | Contract and acceptance surface | Status | Source / revision | Backends | Workflow | Open issue / next action |
 |---|---|---|---|---|---|---|
 | ES-FE-001 | `.elisascript` source loading, bounded filename/source adapters, pre-allocation filename admission, deterministic spans, exact-size short-read retry, bounded C-string terminator scanning, bounded permanent parser/semantic/lowering diagnostic payloads and counts, deterministic payload correlation, bounded source-line/caret excerpts, versioned fingerprint and structural diagnostic snapshot equality, compiler-free field-coverage auditing, and per-phase fixture coverage. | implemented / static | `src/ir/source.elisa`, `src/ir/source_file.elisa`, `src/ir/runner.elisa`, `src/driver/elisascript.elisa`, `scripts/check_diagnostic_snapshot.sh`, `test/ir/elisascript_runner_test.elisa`; `52d0c13`, `4927559`, `8c5ff29`, `3586c64`, `bd2161f`, `aa63e90`, `4a9c864`, `a59be03`, `a8969f1`, `277ce56`, `023dff7`, `621def7`, `1e92a3e`, `cf379e8`, `c7b167a` | interpreter + bytecode facade | CLI, build tools | Execute lexer/parser/source corpus after reauthorization; record exact parser/semantic/lowering diagnostic snapshots. |

@@ -25,11 +25,13 @@ non-hostile tree and are not security boundaries. It prunes exactly `.git`,
 `__pycache__`, `vendor`, and `third_party`, wherever those names occur as
 directory components. Matching is case-sensitive: `*.py`, `*.pl`, `*.pm`,
 `*.awk`, `*.sh`, `*.bash`, `*.zsh`, `*.fish`, and exact `Makefile` or
-`makefile` basenames. Candidate paths are globally sorted by unsigned
-byte-lexicographic order. Spaces and UTF-8 names are retained; any path with a
-tab, CR, or LF is rejected because those bytes cannot be represented
-unambiguously in the TSV stream. Any traversal or resource failure exits before
-the header is written.
+`makefile` basenames. Candidate paths are globally sorted and deduplicated by
+unsigned byte-lexicographic order. The native candidate performs an adjacent
+deduplication scan after sorting, matching the reference's `sort -u` contract
+without a map or an unbounded membership scan. Spaces and UTF-8 names are
+retained; any path with a tab, CR, or LF is rejected because those bytes cannot
+be represented unambiguously in the TSV stream. Any traversal or resource
+failure exits before the header is written.
 
 Limits are 200,000 regular files, 200,000 traversed non-pruned directories,
 64 traversed descendant directory levels (the root is depth zero), 262,144
