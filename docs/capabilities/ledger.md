@@ -633,8 +633,10 @@ message transport, and runtime ownership tables remain open.
 
 ES-SCRIPT-041 | EsExecutable supplies a bounded shell-free executable-discovery
 contract. It keeps command names, PATH entries, candidate indices within the
-PATH, regular-file and executable observations, selected executable identity,
-and exhausted Missing outcomes distinct under `error[ExecutableDiscoveryError]`.
+PATH, exact indexed entry/name candidate derivation (including empty and
+trailing-slash entries), regular-file and executable observations, selected
+executable identity, and exhausted Missing outcomes distinct under
+`error[ExecutableDiscoveryError]`.
 The focused IR
 fixture, namespace inclusion, documentation, and check_executable.sh audit are
 static evidence; PATH access, permission/stat calls, platform search rules, and

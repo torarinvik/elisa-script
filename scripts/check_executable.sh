@@ -39,6 +39,7 @@ for boundary in \
     'Limits::CANDIDATES' \
     'Limits::PATH_BYTES' \
     'ExecutableDiscoveryEvent.Candidate' \
+    'def executable_candidate_path_matches' \
     'ExecutableDiscoveryError.MissingNotReady' \
     'ExecutableDiscoveryError.CandidateOrderInvalid' \
     'ExecutableDiscoveryState.Found' \
@@ -58,6 +59,10 @@ for fixture_pattern in \
     'ExecutableDiscoveryError.CandidateInvalid'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
+
+rg -q 'allow_empty_path_entry: true' "$fixture_file"
+rg -q 'forged_candidate' "$fixture_file"
+rg -q 'examined_candidates == 0' "$fixture_file"
 
 rg -q 'EsExecutable::ExecutableDiscoverySession' "$docs"
 rg -q 'ES-SCRIPT-041' "$ledger"

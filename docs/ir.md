@@ -2344,8 +2344,11 @@ integrations.
 
 `EsExecutable::ExecutableDiscoverySession` keeps shell-free command lookup
 typed. A bounded PATH-entry search submits candidate observations with stable
-indices within the supplied PATH entries; only a regular, executable candidate
-becomes an `Executable` result.
+indices within the supplied PATH entries. Each candidate path is checked against
+the exact indexed entry/name derivation: an empty entry yields `name`, a trailing
+`/` is not doubled, and all other entries yield `entry + "/" + name`. A mismatch
+is rejected before candidate accounting advances; only a regular, executable
+candidate becomes an `Executable` result.
 The result is distinct from an arbitrary `Path`, while exhausted search emits
 `Missing`, and invalid candidate order, names, NULs, limits, cancellation, and
 premature missing results, forged selected indices, and non-exhausted terminal
