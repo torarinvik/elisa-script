@@ -1,9 +1,11 @@
 # Lua bundle metadata parity contract
 
 This fixture binds W04 to the real Python manifest writer at
-`/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/effect-worktree/compiler/scripts/write_lua_bundle_metadata.py`.
-The reference is inspected as source only; no Python process is launched by
-this contract. The eventual Elisascript replacement must produce the same
+`compiler/scripts/write_lua_bundle_metadata.py` in the pinned reference
+checkout (currently observed under `Go projects/effect-worktree/`). The
+machine-specific checkout path is deliberately not part of the contract. The
+reference is inspected as source only; no Python process is launched by this
+contract. The eventual Elisascript replacement must produce the same
 observable metadata for the accepted fixture matrix without importing or
 calling the Python file.
 
@@ -28,6 +30,15 @@ their final order independent of insertion order. Unknown options, missing
 option values, and missing required options use the reference argparse failure
 shape and status 2.
 
+The reference uses Python `argparse`: long options accept both the separated
+form (`--output PATH`) and the `--output=PATH` form, and unambiguous long-option
+abbreviations are accepted. `--` ends option parsing, so a value beginning
+with a dash must be passed with the equals form or after an explicit value
+position as appropriate. Repeated `--setting` and `--command` occurrences are
+accepted in argv order. The replacement must document any deliberate
+compatibility boundary around abbreviations, because silently accepting an
+ambiguous abbreviation would not match argparse.
+
 The replacement must parse argv as typed values. It must never concatenate the
 options into a shell command or reinterpret setting/command values as shell
 syntax. A `--` argument is handled by the launcher contract, not by this
@@ -37,7 +48,8 @@ script's argparse surface, and must be covered explicitly before adoption.
 
 The output is UTF-8 JSON followed by exactly one LF. `json.dumps(...,
 indent=2, sort_keys=True)` gives the canonical byte shape: two-space nested
-indentation, lexicographically sorted object keys, and no trailing spaces. The
+indentation, lexicographically sorted object keys, no trailing spaces, and the
+Python default `ensure_ascii=True` escaping for non-ASCII characters. The
 top-level object has exactly these keys:
 
 ```text
@@ -61,7 +73,11 @@ deterministic host seam rather than comparing a live timestamp.
 
 The reference runs `hostname` and `uname -a` with captured text and uses
 `unknown` when either command cannot be started, exits nonzero, or emits no
-usable text after `.strip()`. It then gathers Git metadata under `repo_root`:
+usable text after `.strip()`. On the POSIX reference host, the captured
+subprocess text is decoded by Python's text-mode locale rules and the final
+JSON is written with UTF-8 encoding and the platform's normal LF newline.
+Fixtures use valid UTF-8 text and must pin any non-ASCII host output before
+comparing bytes. It then gathers Git metadata under `repo_root`:
 
 1. `git rev-parse HEAD` failure or empty output makes `head`, `branch`, and
    `status` all `unknown`.
@@ -74,6 +90,11 @@ usable text after `.strip()`. It then gathers Git metadata under `repo_root`:
 The replacement must use an argv-vector process effect with an explicit
 working directory for Git and must preserve spaces, empty values, and newline
 trimming exactly. It must not treat a failed status query as a clean tree.
+Because the Python reference has unbounded `capture_output=True`, the
+replacement must add a bounded process adapter: the initial fixture profile is
+an 8 MiB combined stdout/stderr limit and a finite per-command deadline. A
+limit or deadline failure is a typed host-observation failure and must resolve
+to `unknown` without waiting indefinitely or allocating unbounded output.
 
 ## Filesystem and failure behavior
 
