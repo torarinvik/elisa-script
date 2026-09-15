@@ -5468,6 +5468,21 @@ extend EsIr:
                 retries <- retries + 1
 
 
+        # The direct child may already have been reaped when the final output
+        # sample discovers an overflow. Do not signal waiter.pid in that case:
+        # the PID can be reused immediately after waitpid. The private group
+        # remains the only safe cleanup target for descendants. Give them the
+        # same bounded TERM window as the live-child path, then force KILL.
+        def process_wait_terminate_group(waiter: ProcessWaiter&) -> void can[Blocking.IO]:
+            return if not waiter.group_ready
+            process_wait_signal(-waiter.pid, ProcessWait::SIGNAL_TERM)
+            grace_polls: mutable u64 = 0
+            while grace_polls < ProcessWait::TERM_GRACE_POLLS:
+                break if not process_wait_grace_sleep()
+                grace_polls <- grace_polls + 1
+            process_wait_signal(-waiter.pid, ProcessWait::SIGNAL_KILL)
+
+
         def process_resource_acquire(machine: mutable Machine&) -> bool:
             if runtime_resource_acquire(machine.resource_usage, machine.resource_policy, RuntimeResourceCounter.Process):
                 return true
@@ -5592,7 +5607,9 @@ extend EsIr:
                 # A short-lived child may finish between polls after producing
                 # its full output. Recheck both streams after reaping so the
                 # final sample cannot be skipped.
-                return ProcessWaitState.Error if process_wait_output_exceeded(waiter)
+                if process_wait_output_exceeded(waiter):
+                    process_wait_terminate_group(waiter)
+                    return ProcessWaitState.Error
                 return ProcessWaitState.Exited
             if waited != waiter.pid:
                 if waited < 0:
