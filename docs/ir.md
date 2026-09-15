@@ -942,9 +942,12 @@ the execution artifact; counts are descriptive telemetry, while
 `EsBytecode.make_bytecode_artifact` provides the typed pairing for that record:
 it stores the canonical module fingerprint, all four canonical SHA-256 digest
 words, source revision, backend tag, and capability report together.
-`bytecode_artifact_matches_module` recomputes both identities and capability
-counts/decision, so stale metadata cannot be accepted merely because the source
-revision string was left unchanged. `canonical_bytecode_artifact_bytes` emits
+`bytecode_artifact_matches_module` first validates the payload's dispatch/layout
+and reconstructed IR, then compares its canonical fingerprint and all four
+digest words with the source module before checking capability counts/decision.
+This prevents a changed instruction from being admitted merely because it kept
+the same counts and source-revision string. Legacy migration uses the same
+payload gate. `canonical_bytecode_artifact_bytes` emits
 version-2 `ESBC` metadata with length-prefixed backend/revision strings, the
 module fingerprint, all digest words, and the complete capability snapshot.
 Version 1 envelopes are intentionally rejected: cache migration must rewrite
@@ -1089,8 +1092,10 @@ field, the four non-zero digest words, and other bounded length-prefixed fields,
 known engine ordinal, consistent direct/fallback flag, all capability counters,
 capability counters representable by the host `usize`, and no trailing bytes.
 `bytecode_artifact_metadata_valid` performs the same
-cross-field checks on a decoded record, including nonzero module identity, while `bytecode_artifact_matches_module`
-still compares the fingerprint and recomputed capability report before execution.
+cross-field checks on a decoded record, including nonzero module identity, while
+`bytecode_artifact_matches_module` independently validates dispatch/layout and
+the reconstructed IR, binds the payload identity to the source module, and only
+then compares the recomputed capability report before execution.
 
 `EsBytecode.execute_bytecode_direct_only` is the strict evidence entrypoint. It
 performs the same dispatch-table and IR verification, then rejects any module

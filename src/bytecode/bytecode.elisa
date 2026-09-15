@@ -3237,6 +3237,39 @@ module EsBytecode:
             return BytecodeArtifact{format_version: 2, backend: "bytecode", source_revision: source_revision, module_fingerprint: module_fingerprint(module), module_digest_0: canonical_module_digest_word(module, 0), module_digest_1: canonical_module_digest_word(module, 1), module_digest_2: canonical_module_digest_word(module, 2), module_digest_3: canonical_module_digest_word(module, 3), capability: bytecode_capability_report(bytecode)}
 
 
+        # Bootstrap execution path. Rebuild the exact verified IR shape from the
+        # bytecode tables, then enter the reference semantic engine. This keeps
+        # effect, error, continuation, and resource behavior identical while the
+        # packed bytecode dispatch loop is developed independently.
+        def bytecode_to_ir[@r](module: BytecodeModule& @r) -> Module:
+            functions: mutable darray[Function] = []
+            for bytecode_function in module.functions |functions|:
+                blocks: mutable darray[Block] = []
+                offset: mutable u32 = 0
+                for bytecode_block in bytecode_function.blocks |blocks, offset|:
+                    blocks.push(Block{id: bytecode_block.id, parameter_start: bytecode_block.parameter_start, parameter_count: bytecode_block.parameter_count, instruction_start: offset, instruction_count: bytecode_block.instruction_count, terminator: bytecode_block.terminator})
+                    offset <- offset + bytecode_block.instruction_count
+                functions.push(Function{name: bytecode_function.name, parameters: bytecode_function.parameters, return_type: bytecode_function.return_type, effects: bytecode_function.effects, operand_pool: bytecode_function.operand_pool, edge_arg_pool: bytecode_function.edge_arg_pool, block_parameter_pool: bytecode_function.block_parameter_pool, instruction_pool: bytecode_function.instructions, blocks: blocks, entry: bytecode_function.entry, errors: bytecode_function.errors})
+            return Module{name: module.name, functions: functions, globals: module.globals, handlers: module.handlers, type_table: module.type_table}
+
+
+    private:
+        # Reconstruct and verify the payload before treating its sidecar
+        # metadata as admissible. Counts and a capability flag are not enough
+        # to bind a mutable bytecode payload: a changed instruction can preserve
+        # both while still changing the program that a cache would execute.
+        def bytecode_artifact_payload_matches_module(module: Module&, bytecode: BytecodeModule&) -> bool can[Memory.Allocate, Abort.Panic]:
+            return false if not bytecode_dispatch_table_valid(bytecode)
+            reconstructed: Module = bytecode_to_ir(bytecode)
+            return false if verify(reconstructed).count != 0
+            return false if module_fingerprint(reconstructed) != module_fingerprint(module)
+            return false if canonical_module_digest_word(reconstructed, 0) != canonical_module_digest_word(module, 0)
+            return false if canonical_module_digest_word(reconstructed, 1) != canonical_module_digest_word(module, 1)
+            return false if canonical_module_digest_word(reconstructed, 2) != canonical_module_digest_word(module, 2)
+            return canonical_module_digest_word(reconstructed, 3) == canonical_module_digest_word(module, 3)
+
+
+    public:
         # Upgrade an in-memory version-1 bytecode record only when both its
         # compact module identity and capability snapshot still match the
         # verified inputs.  Digest words are recomputed from the module; the
@@ -3245,6 +3278,7 @@ module EsBytecode:
         def migrate_bytecode_artifact(legacy: BytecodeArtifact, module: Module&, bytecode: BytecodeModule&) -> BytecodeArtifact can[Memory.Allocate, Abort.Panic]:
             invalid: BytecodeArtifact = BytecodeArtifact{format_version: 2, backend: "", source_revision: "", module_fingerprint: 0, module_digest_0: 0, module_digest_1: 0, module_digest_2: 0, module_digest_3: 0, capability: BytecodeCapabilityReport{engine: ExecutionEngine.DirectBytecode, direct_supported: false, function_count: 0, instruction_count: 0, global_count: 0}}
             return invalid if legacy.format_version != 1 or legacy.backend != "bytecode" or legacy.module_fingerprint != module_fingerprint(module)
+            return invalid if not bytecode_artifact_payload_matches_module(module, bytecode)
             migrated: BytecodeArtifact = make_bytecode_artifact(module, bytecode, legacy.source_revision)
             return invalid if legacy.capability.engine != migrated.capability.engine or legacy.capability.direct_supported != migrated.capability.direct_supported or legacy.capability.function_count != migrated.capability.function_count or legacy.capability.instruction_count != migrated.capability.instruction_count or legacy.capability.global_count != migrated.capability.global_count
             return invalid if not bytecode_artifact_metadata_valid(migrated)
@@ -3252,8 +3286,10 @@ module EsBytecode:
 
 
         def bytecode_artifact_matches_module(artifact: BytecodeArtifact, module: Module&, bytecode: BytecodeModule&) -> bool can[Memory.Allocate, Abort.Panic]:
+            return false if not bytecode_artifact_metadata_valid(artifact)
+            return false if not bytecode_artifact_payload_matches_module(module, bytecode)
             current: BytecodeCapabilityReport = bytecode_capability_report(bytecode)
-            return bytecode_artifact_metadata_valid(artifact) and artifact.module_fingerprint == module_fingerprint(module) and artifact.module_digest_0 == canonical_module_digest_word(module, 0) and artifact.module_digest_1 == canonical_module_digest_word(module, 1) and artifact.module_digest_2 == canonical_module_digest_word(module, 2) and artifact.module_digest_3 == canonical_module_digest_word(module, 3) and artifact.capability.engine == current.engine and artifact.capability.direct_supported == current.direct_supported and artifact.capability.function_count == current.function_count and artifact.capability.instruction_count == current.instruction_count and artifact.capability.global_count == current.global_count
+            return artifact.module_fingerprint == module_fingerprint(module) and artifact.module_digest_0 == canonical_module_digest_word(module, 0) and artifact.module_digest_1 == canonical_module_digest_word(module, 1) and artifact.module_digest_2 == canonical_module_digest_word(module, 2) and artifact.module_digest_3 == canonical_module_digest_word(module, 3) and artifact.capability.engine == current.engine and artifact.capability.direct_supported == current.direct_supported and artifact.capability.function_count == current.function_count and artifact.capability.instruction_count == current.instruction_count and artifact.capability.global_count == current.global_count
 
 
         def execution_capability_from_bytecode(report: BytecodeCapabilityReport) -> ExecutionCapability:
@@ -3525,22 +3561,6 @@ module EsBytecode:
                     offset <- offset + source_block.instruction_count
                 functions.push(BytecodeFunction{name: source_function.name, parameters: source_function.parameters, return_type: source_function.return_type, effects: source_function.effects, errors: source_function.errors, operand_pool: source_function.operand_pool, edge_arg_pool: source_function.edge_arg_pool, block_parameter_pool: source_function.block_parameter_pool, instructions: instructions, dispatch_classes: dispatch_classes, blocks: blocks, entry: source_function.entry})
             return BytecodeLowerResult{module: BytecodeModule{name: module.name, functions: functions, globals: module.globals, handlers: module.handlers, type_table: module.type_table}, issues: []}
-
-
-        # Bootstrap execution path. Rebuild the exact verified IR shape from the
-        # bytecode tables, then enter the reference semantic engine. This keeps
-        # effect, error, continuation, and resource behavior identical while the
-        # packed bytecode dispatch loop is developed independently.
-        def bytecode_to_ir[@r](module: BytecodeModule& @r) -> Module:
-            functions: mutable darray[Function] = []
-            for bytecode_function in module.functions |functions|:
-                blocks: mutable darray[Block] = []
-                offset: mutable u32 = 0
-                for bytecode_block in bytecode_function.blocks |blocks, offset|:
-                    blocks.push(Block{id: bytecode_block.id, parameter_start: bytecode_block.parameter_start, parameter_count: bytecode_block.parameter_count, instruction_start: offset, instruction_count: bytecode_block.instruction_count, terminator: bytecode_block.terminator})
-                    offset <- offset + bytecode_block.instruction_count
-                functions.push(Function{name: bytecode_function.name, parameters: bytecode_function.parameters, return_type: bytecode_function.return_type, effects: bytecode_function.effects, operand_pool: bytecode_function.operand_pool, edge_arg_pool: bytecode_function.edge_arg_pool, block_parameter_pool: bytecode_function.block_parameter_pool, instruction_pool: bytecode_function.instructions, blocks: blocks, entry: bytecode_function.entry, errors: bytecode_function.errors})
-            return Module{name: module.name, functions: functions, globals: module.globals, handlers: module.handlers, type_table: module.type_table}
 
 
         def execute_bytecode(module: BytecodeModule&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, step_limit: u64 = ES_RUNTIME_DEFAULT_MAX_STEPS, observation_limit: usize = ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS, invocation_context: ScriptInvocationContext = ScriptInvocationContext{}) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:

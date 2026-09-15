@@ -693,7 +693,9 @@ version-2 length-prefixed `ESBC` envelope, which carries the four fixed-width
 digest words and rejects legacy version-1 records until they are migrated. Its
 `bytecode_artifact_fingerprint` is a deterministic cache/correlation key only;
 the artifact still must satisfy `bytecode_artifact_matches_module` against the
-exact verified module and capability report before execution.
+exact verified source module and payload identity. That admission path validates
+the dispatch/layout and reconstructed IR before comparing the capability report,
+so a same-sized but changed instruction cannot enter a differential run.
 `canonical_differential_artifact_manifest_bytes` emits ESDF version 5 and binds
 the canonical observation schema with four SHA-256 words; a complete verified
 module digest remains available as a separate four-word binding. Versions 1–4
