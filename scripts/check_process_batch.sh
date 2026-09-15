@@ -85,6 +85,7 @@ for fixture_pattern in \
     'stale_reap_receipt' \
     'stale_reap_again' \
     'fail_fast_cancel' \
+    'fail_fast_cancel_before_reap' \
     'launch_limit'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done

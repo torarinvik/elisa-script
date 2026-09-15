@@ -1795,7 +1795,9 @@ Aggregate success/failure counters are reconciled with subtraction-based
 bounds, so forged maximum-width counters cannot wrap their admission checks.
 Once fail-fast has latched a real failure, `Cancel → CancelAck` drains the
 remaining siblings but still terminates as `Failed`; cancellation cannot mask
-the failed child.
+the failed child. If cancellation arrives before that child’s reap receipt,
+`CancelAck` records the child as a failed terminal outcome before cancelling
+the siblings.
 
 Before any regex opcode executes, both backends enforce a shared input-size
 boundary: haystack text is at most 64 MiB, the compiled-pattern payload is at

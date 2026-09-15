@@ -1204,7 +1204,8 @@ fixtures cover the source boundary. No compiler, test, script, or audit process
 was run.
 
 The process-batch contract now latches fail-fast failure before sibling
-draining and preserves `Failed` through cancellation acknowledgement, preventing
-an explicit cancel from masking a real child failure. Static fixtures cover
-retry-before-reap, stale reap receipts, forged draining state, and fail-fast
-cancellation. No compiler, test, script, or audit process was run.
+draining and preserves `Failed` through cancellation acknowledgement, including
+a failed child still awaiting reap, preventing an explicit cancel from masking
+a real child failure. Static fixtures cover both cancellation orderings,
+retry-before-reap, stale reap receipts, and forged draining state. No compiler,
+test, script, or audit process was run.
