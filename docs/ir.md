@@ -516,9 +516,11 @@ EsOutputRender adds the renderer-side state machine. Validation requires a
 sealed document before any renderer state is admitted; it consumes records in index order, charges JSON and XML escaping
 expansion before each chunk, accumulates every per-record component with
 checked addition, and accounts format framing bytes against the same
-document budget, validates state/chunk/record accounting, and refuses completion
-until every record has been emitted. Cancellation and failure are explicit
-transitions, leaving actual host writes to a bounded adapter.
+document budget. It reconciles the emitted-byte total with the exact rendered
+prefix (including header and, only on completion, footer), validates
+state/chunk/record accounting, and refuses completion until every record has
+been emitted. Cancellation and failure are explicit transitions, leaving actual
+host writes to a bounded adapter.
 
 `EsBuild` is the shell-replacement boundary for build and test recipes.
 `BuildGraph` contains typed `ProcessCommand` nodes, stable fingerprints,

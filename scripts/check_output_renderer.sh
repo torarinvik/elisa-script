@@ -35,6 +35,7 @@ for boundary in \
     'output_render_json_escaped_bytes' \
     'output_render_xml_escaped_bytes' \
     'output_render_accumulate' \
+    'output_render_expected_emitted_bytes' \
     'output_render_header_bytes' \
     'output_render_footer_bytes' \
     'DocumentNotSealed' \
@@ -55,7 +56,8 @@ for fixture_pattern in \
     'OutputRenderEvent.Finish' \
     'OutputRenderEvent.CancelAck' \
     'OutputRenderState.Complete' \
-    'render_budget_rejected'; do
+    'render_budget_rejected' \
+    'forged_emitted_rejected'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 
