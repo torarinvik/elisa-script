@@ -828,7 +828,7 @@ work. The poll-batching fixture and static audit are not executed while
 compiler validation remains suspended.
 
 ES-SCRIPT-008 | EsCliWorkflow maps every accepted launcher mode to a fixed
-typed step sequence, validates mode-specific ordering and state/cursor
+typed step sequence (with a distinct `ExecuteTests` step for `--test`), validates mode-specific ordering and state/cursor
 accounting (including unfinished cancellation cursors),
 accounting, and exposes explicit step completion, failure, and cancellation
 transitions. The focused IR

@@ -57,6 +57,7 @@ for fixture_pattern in \
     'typed_cli_workflow_contract_maps_modes_to_ordered_steps' \
     'CliWorkflowEvent.StepComplete' \
     'CliWorkflowStep.Verify' \
+    'CliWorkflowStep.ExecuteTests' \
     'CliWorkflowStep.Format' \
     'CliWorkflowEvent.CancelAck' \
     'forged_cancelling_cursor' \
