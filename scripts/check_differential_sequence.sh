@@ -36,7 +36,9 @@ for boundary in \
     'ObservationLimitExceeded' \
     'ObservationAccountingInvalid' \
     'CompletionNotReady' \
-    'DivergenceStateInvalid'; do
+    'DivergenceStateInvalid' \
+    'sequence.first_divergence != sequence.steps.count - 1' \
+    'forged_divergence_pointer'; do
     rg -Fq "$boundary" "$model"
 done
 

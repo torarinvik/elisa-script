@@ -1190,7 +1190,10 @@ remain unqualified compatibility inputs.
 boundary. Each step has an ordered index, independent reference/candidate
 fingerprints, an observation count, and an explicit equality decision. The
 sequence validator reconciles the aggregate observation count against the
-per-step counts before accepting a trace;
+per-step counts before accepting a trace. It also derives the first unequal
+step from the retained records: a `Diverged` sequence must stop at that exact
+step, all earlier steps must be equal, and `Running`/`Completed` sequences
+cannot hide an unequal step or a forged divergence pointer;
 `EsDifferentialStability::DifferentialStabilitySession` is the bounded repeat
 boundary for adapters whose output may vary between runs. A policy declares a
 minimum and maximum repeat count (capped at sixteen) and explicitly chooses
