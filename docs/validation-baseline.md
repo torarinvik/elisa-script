@@ -1,5 +1,10 @@
 # Validation baseline
 
+> **2026-09-15 native launcher update:** The engine task authorized bounded native
+> integration work, and its check now passes. See [the validation record](engine-check-validation.md)
+> for compiler fixes, installation, and test evidence. The historical pinned wrappers
+> and their broader validation hold described below were not reopened.
+
 This is a read-only identity record for the development/validation boundary.
 It is intentionally separate from execution evidence: compiler and test
 execution remain disabled until the explicit reauthorization gate is opened.
@@ -51,9 +56,10 @@ Building or launching a compiler remains disabled until explicit
 reauthorization and a bounded, reviewed build plan.
 
 The latest committed source observed in the adjacent compiler repository is
-`8d7db0561d0f72c1f548fa6a73d071c86b2fe57` on
-`codex/shared-typed-edir-lowering`. The commit includes newer EDIR function-call
-lowering plus semantic/backend optimization work beyond c605, but the checkout
+`0d92a608c789a697b2321c985bd74483e03e196a` on
+`codex/elisascript-native-integration`. Its ancestry includes the newer EDIR
+function-call lowering, nested-module constant folding, and extern pointer-bound
+optimizations after `8d7db0561d0f72c1f548fa6a73d071c86b2fe57`. The checkout
 currently has tracked and untracked changes and no built `compiler/bin/elisac`.
 The immutable commit is therefore the latest source reference, while the dirty
 checkout is not itself a reproducible build input. Until an explicitly

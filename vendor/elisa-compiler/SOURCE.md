@@ -39,13 +39,14 @@ typed-literal validation. Their rationale and tests are documented under `docs/`
 ## Latest upstream source observation
 
 On 2026-09-15 the latest committed compiler source visible for a future isolated
-refresh was `8d7db0561d0f72c1f548fa6a73d071c86b2fe57` on
-`codex/shared-typed-edir-lowering`. It is ahead of the earlier clean c605 source
-and includes newer EDIR function-call lowering plus semantic/backend
-optimizations. The adjacent checkout is dirty and has no `compiler/bin/elisac`,
-so no executable is claimed or launched from it. The commit is the source
-reference for the next explicitly authorized refresh; create a clean isolated
-checkout, review it, and atomically update the validation pin before building.
+refresh was `0d92a608c789a697b2321c985bd74483e03e196a` on
+`codex/elisascript-native-integration`. It includes newer EDIR function-call
+lowering, nested-module constant folding, and extern pointer-bound optimizations
+after `8d7db0561d0f72c1f548fa6a73d071c86b2fe57`. The adjacent checkout is dirty
+and has no `compiler/bin/elisac`, so no executable is claimed or launched from
+it. This immutable commit is the source reference for the next explicitly
+authorized refresh; create a clean isolated checkout, review it, and atomically
+update the validation pin before building.
 
 That source is substantially different from this vendored `e56d6f2d` snapshot.
 The vendored tree contains Elisascript-specific adaptations (including

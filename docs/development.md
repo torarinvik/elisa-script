@@ -1,5 +1,10 @@
 # Elisascript development builds
 
+> **2026-09-15 native launcher update:** The engine task authorized bounded native
+> integration work, and its check now passes. See [the validation record](engine-check-validation.md)
+> for compiler fixes, installation, and test evidence. The historical pinned wrappers
+> and their broader validation hold described below were not reopened.
+
 The current pinned identity and host/bootstrap metadata are recorded in
 [`docs/validation-baseline.md`](validation-baseline.md). Refresh that record
 before changing the compiler pin or treating any validation result as
@@ -18,10 +23,10 @@ not standing approval. Do not launch a compiler or test wrapper unless the user
 explicitly reauthorizes validation in the active task.
 
 The latest committed Elisa compiler source currently visible is
-`8d7db0561d0f72c1f548fa6a73d071c86b2fe57` on
-`codex/shared-typed-edir-lowering`. It is ahead of the previously captured
-`c605b3faa516de7b2f4945a9ac4ccb21d78ae2e0` source and includes the newer EDIR
-function-call lowering and semantic/backend optimizations, but the checkout has
+`0d92a608c789a697b2321c985bd74483e03e196a` on the adjacent
+`codex/elisascript-native-integration` checkout. It includes the newer EDIR
+function-call lowering, nested-module constant folding, and extern pointer-bound
+optimizations beyond `8d7db0561d0f72c1f548fa6a73d071c86b2fe57`. The checkout has
 uncommitted changes and no built executable. Do not substitute it into a
 wrapper or build it while the validation hold is active. After explicit
 reauthorization, create an isolated clean checkout of this exact revision,
