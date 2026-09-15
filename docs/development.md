@@ -29,6 +29,11 @@ module-callee, private-extern, catch-binder, value-tail, and stage-compatibility
 fixes merged on top of the extern-resource ABI and lowering work. The
 upstream lexer buffer-return optimization (`c7c849c7`) is also represented by
 the focused Elisascript adaptation in `vendor/elisa-compiler/src/lexer`.
+The vendored snapshot also carries the compatible semantic fast paths from
+`142d9b03` (direct `sview` length checks and one-time protocol indexing) and
+the backend disjointness-scan de-duplication from `9bf231e6`; newer allocator,
+arena-cache, and ABI/backend changes remain deliberately unmerged until a
+compatibility refresh is reviewed.
 The remaining vendor tree is an adapted `e56d6f2d` snapshot, so refresh it
 deliberately rather than copying this checkout wholesale.
 
