@@ -607,8 +607,9 @@ state transitions; length checks precede content scans so oversize text reports
 `TextLimitExceeded` and embedded NULs report `EmbeddedNul`; forwarding cannot
 reclassify the origin, a captured envelope cannot claim forwarding history, and
 a forwarded envelope must record at least one forward. Future/self causes
-are rejected, cause depth and retained text are bounded, and handled errors
-cannot be cancelled again through `error[ErrorProvenanceError]`.
+are rejected, cause depth and retained text are bounded inclusively at their
+configured budgets, and handled errors cannot be cancelled again through
+`error[ErrorProvenanceError]`.
 
 `EsCancellation::CancellationLedger` is the cooperative cancellation boundary
 for VM safe points and blocking host adapters. Tokens have bounded parent/child
