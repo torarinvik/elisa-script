@@ -80,6 +80,10 @@ The current adapted fixes are tracked separately from the snapshot identity:
 - `c7c849c7`: return completed lexer token buffers directly from ordinary and
   span tokenization, while retaining the safe copy-out for lexer comment
   side-channel results.
+- `cad39806`: anchor the companion `BraceMembershipMisuse` diagnostic at the
+  actual set/dict initializer instead of the affine element or key type. This
+  is a source-location-only correction; the primary affine diagnostic remains
+  anchored at the rejected type argument.
 
 These changes are limited to the vendored APIs and deliberately omit newer
 backend files whose supporting tables are not present in `e56d6f2d`.
