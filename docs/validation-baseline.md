@@ -10,7 +10,7 @@ It is intentionally separate from execution evidence: compiler and test
 execution remain disabled until the explicit reauthorization gate is opened.
 
 Initial baseline captured: 2026-09-14
-Latest metadata recheck: 2026-09-15
+Latest metadata recheck: 2026-09-16
 
 ## Elisascript worktree
 
@@ -72,7 +72,7 @@ lowering, static-if module handling, and self-hosted extern-resource ABI support
 The vendored `e56d6f2d` tree is adapted, so this source requires a deliberate
 compatibility refresh rather than a wholesale copy.
 
-Latest self-hosted source recheck (2026-09-15; read-only): the clean `main`
+Latest self-hosted source recheck (2026-09-16; read-only): the clean `main`
 checkout now resolves to merge commit
 `d6a693c0f724c05f7b71418658dd8bda95ba73b3`, which adds module-callee, private
 extern, catch-binder, value-tail, and stage compatibility fixes on top of the
@@ -86,7 +86,7 @@ IR artifacts on top of the earlier FFI, lowering, and region optimizations. The
 immutable Go commit was the source reference for the guarded validation path;
 the historical 601f7bcd executable identity is not claimed to represent it.
 
-Latest Go source recheck (2026-09-15; read-only): the clean `main` checkout at
+Latest Go source recheck (2026-09-16; read-only): the clean `main` checkout at
 `/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/Elisa-core`
 resolves to `3a5520d8fd56b86c430f39518a261e9030fa72ec`, including stage0
 alignment for value-returning and unannotated-void function tails. The

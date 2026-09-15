@@ -38,7 +38,7 @@ typed-literal validation. Their rationale and tests are documented under `docs/`
 
 ## Latest upstream source observation
 
-On 2026-09-15 the latest self-hosted Elisa compiler source visible for a future
+On 2026-09-16 the latest self-hosted Elisa compiler source visible for a future
 adapted refresh was `d6a693c0f724c05f7b71418658dd8bda95ba73b3` on the clean
 `main` checkout at `/Users/torarinvikbjarko/Documents/Coding Projects/Elisa Projects/Elisa-compiler`.
 It merges the recent catch-binder,
