@@ -37,6 +37,8 @@ for boundary in \
     'ObservationAccountingInvalid' \
     'CompletionNotReady' \
     'DivergenceStateInvalid' \
+    'sequence.next_index != sequence.steps.count' \
+    'forged_step_cursor' \
     'sequence.first_divergence != sequence.steps.count - 1' \
     'forged_divergence_pointer'; do
     rg -Fq "$boundary" "$model"
