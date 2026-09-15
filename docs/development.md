@@ -17,14 +17,16 @@ commands, not authorization to run them; the environment variable is a manual ga
 not standing approval. Do not launch a compiler or test wrapper unless the user
 explicitly reauthorizes validation in the active task.
 
-The newest source-only compiler snapshot currently available is
-`/private/tmp/elisa-compiler-debugger-c605b3fa` at
-`c605b3faa516de7b2f4945a9ac4ccb21d78ae2e0`; it contains the latest lowering
-optimizations but has no built executable. Do not substitute it into a wrapper
-or build it while the validation hold is active. After explicit
-reauthorization, build an isolated executable from that clean snapshot, record
-its exact revision and digest in `docs/validation-baseline.md`, and update the
-wrapper pin before any fixture run.
+The latest committed Elisa compiler source currently visible is
+`8d7db0561d0f72c1f548fa6a73d071c86b2fe57` on
+`codex/shared-typed-edir-lowering`. It is ahead of the previously captured
+`c605b3faa516de7b2f4945a9ac4ccb21d78ae2e0` source and includes the newer EDIR
+function-call lowering and semantic/backend optimizations, but the checkout has
+uncommitted changes and no built executable. Do not substitute it into a
+wrapper or build it while the validation hold is active. After explicit
+reauthorization, create an isolated clean checkout of this exact revision,
+build an executable there, record its digest in `docs/validation-baseline.md`,
+and update the wrapper pin before any fixture run.
 
 ```sh
 ELISASCRIPT_VALIDATION_REAUTHORIZED=1 \

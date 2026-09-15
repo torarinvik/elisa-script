@@ -38,24 +38,21 @@ typed-literal validation. Their rationale and tests are documented under `docs/`
 
 ## Latest upstream source observation
 
-On 2026-09-15 the newest clean compiler source available for a future isolated
-refresh was `/private/tmp/elisa-compiler-debugger-c605b3fa` at commit
-`c605b3faa516de7b2f4945a9ac4ccb21d78ae2e0`, two commits beyond its
-`fd2cb3cf` upstream-main base. Its recent commits include shared typed scalar
-CoreIR lowering for EDIR and LLVM plus removal of a duplicate EDIR fallback.
-That checkout is 879 commits ahead of the vendored `e56d6f2d` snapshot and has
-a substantially different source layout. The vendored tree also contains
-Elisascript-specific adaptations (including runtime-size argument handling,
-backend attribute guards, and the local EDIR path), so replacing it wholesale
-or copying the optimizer files selectively would silently mix incompatible
-compiler revisions.
+On 2026-09-15 the latest committed compiler source visible for a future isolated
+refresh was `8d7db0561d0f72c1f548fa6a73d071c86b2fe57` on
+`codex/shared-typed-edir-lowering`. It is ahead of the earlier clean c605 source
+and includes newer EDIR function-call lowering plus semantic/backend
+optimizations. The adjacent checkout is dirty and has no `compiler/bin/elisac`,
+so no executable is claimed or launched from it. The commit is the source
+reference for the next explicitly authorized refresh; create a clean isolated
+checkout, review it, and atomically update the validation pin before building.
 
-The c605 snapshot is therefore the required latest-source candidate for the
-next explicitly authorized compiler refresh, while this directory remains the
-known-compatible adapted snapshot. Development and validation records must
-name the c605 revision when referring to the latest compiler; no executable is
-claimed or launched from it until an isolated build, source review, and atomic
-pin update are authorized.
+That source is substantially different from this vendored `e56d6f2d` snapshot.
+The vendored tree contains Elisascript-specific adaptations (including
+runtime-size argument handling, backend attribute guards, and the local EDIR
+path), so replacing it wholesale or copying optimizer files selectively would
+silently mix incompatible compiler revisions. This directory remains the
+known-compatible adapted snapshot until a deliberate refresh is completed.
 
 ## Modification policy
 

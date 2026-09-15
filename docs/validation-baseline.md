@@ -9,7 +9,7 @@ Latest metadata recheck: 2026-09-15
 
 ## Elisascript worktree
 
-- Repository revision before this baseline refresh: `268a9203aaa00f1d373ed5ba84ea106a9a46c0ec`
+- Repository revision before this baseline refresh: `44b57993b4e7fb6493855394fd3bd9712dab0bcc`
 - Tracked dirty files: none
 - Ignored local planning file: `IMPLEMENTATION_PLAN.md`
 - Working tree policy: never commit the ignored plan or `.DS_Store` files
@@ -45,12 +45,16 @@ validation wrappers, but it is not claimed to represent this newest source.
 Building or launching a compiler remains disabled until explicit
 reauthorization and a bounded, reviewed build plan.
 
-A separate local compiler worktree is currently at `8d7db0561d0f72c1f548fa6a73d071c86b2fe57`
-on `codex/shared-typed-edir-lowering`, but it has tracked and untracked changes
-and no built `compiler/bin/elisac`. It is not a reproducible compiler identity;
-the clean c605 snapshot above remains the latest eligible source-only reference
-until that worktree is deliberately cleaned, reviewed, and built in an isolated
-authorized session.
+The latest committed source observed in the adjacent compiler repository is
+`8d7db0561d0f72c1f548fa6a73d071c86b2fe57` on
+`codex/shared-typed-edir-lowering`. The commit includes newer EDIR function-call
+lowering plus semantic/backend optimization work beyond c605, but the checkout
+currently has tracked and untracked changes and no built `compiler/bin/elisac`.
+The immutable commit is therefore the latest source reference, while the dirty
+checkout is not itself a reproducible build input. Until an explicitly
+authorized isolated clean checkout is reviewed and built, the older 601f7bcd
+executable remains the only wrapper-accepted binary and is not claimed to
+represent the latest source.
 
 ## Vendored dependency and bootstrap chain
 
@@ -67,9 +71,9 @@ authorized session.
 
 - Operating system: macOS `26.6.2` (Darwin `25.6.0`)
 - Architecture: `arm64`
-- Validation state: suspended; the local compiler was rebuilt from the clean
-  source checkout and its embedded metadata was inspected, but the Elisa
-  compiler itself and all tests/validation scripts remain unrun
+- Validation state: suspended; compiler source identities were inspected
+  read-only, but the Elisa compiler itself and all tests/validation scripts
+  remain unrun
 
 The checked-in wrappers require an absolute `setsid` helper, launch each future
 compiler in a private process group, sample aggregate RSS across the process group
