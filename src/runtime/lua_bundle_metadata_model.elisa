@@ -5,9 +5,12 @@
 # differential-test option semantics before a destination is touched.
 
 module EsLuaBundleMetadata:
+    using EsProcess
+
     public:
         const module Limits:
             ARGUMENT_BYTES: usize = 65536
+            HOST_OUTPUT_BYTES: usize = 65536
             PATH_BYTES: usize = 4096
             ENTRIES: usize = 4096
 
@@ -48,6 +51,14 @@ module EsLuaBundleMetadata:
             uname: sview = "unknown"
 
 
+        struct MetadataProcessResults:
+            hostname: ProcessResult = ProcessResult{}
+            uname: ProcessResult = ProcessResult{}
+            git_head: ProcessResult = ProcessResult{}
+            git_branch: ProcessResult = ProcessResult{}
+            git_status: ProcessResult = ProcessResult{}
+
+
         error MetadataArgumentsError:
             ArgumentTooLarge
             MissingOptionValue
@@ -84,6 +95,11 @@ module EsLuaBundleMetadata:
         const module Json:
             HEX: sview = "0123456789abcdef"
             MAX_BYTES: usize = 67108864
+
+
+        struct MetadataObservedText:
+            available: bool = false
+            value: sview = ""
 
 
         def metadata_option_matches(spelling: sview, candidate: sview) -> bool:
@@ -204,6 +220,49 @@ module EsLuaBundleMetadata:
             return true
 
 
+        def metadata_unicode_whitespace(codepoint: u32) -> bool:
+            return true if codepoint >= 9u32 and codepoint <= 13u32
+            return true if codepoint >= 28u32 and codepoint <= 32u32
+            return true if codepoint == 133u32 or codepoint == 160u32 or codepoint == 5760u32
+            return true if codepoint >= 8192u32 and codepoint <= 8202u32
+            return true if codepoint == 8232u32 or codepoint == 8233u32 or codepoint == 8239u32 or codepoint == 8287u32 or codepoint == 12288u32
+            return false
+
+
+        def metadata_trim_process_text(value: sview) -> sview error[MetadataJsonError]:
+            cursor: mutable usize = 0
+            start: mutable usize = 0
+            end: mutable usize = 0
+            found: mutable bool = false
+            while cursor < len(value):
+                before: usize = cursor
+                codepoint: mutable u32 = 0
+                try metadata_json_decode_utf8(value, cursor, codepoint)
+                if not metadata_unicode_whitespace(codepoint):
+                    start <- before if not found
+                    found <- true
+                    end <- cursor
+            return "" if not found
+            return value[start:end]
+
+
+        def metadata_process_observation(result: ProcessResult&) -> MetadataObservedText:
+            valid: mutable bool = false
+            catch validate_process_result(result):
+                ok:
+                    valid <- true
+                error failure:
+                    valid <- false
+            return MetadataObservedText{} if not valid or result.kind != ProcessResultKind.Exited or result.exit_status != 0 or len(result.stdout) > Limits::HOST_OUTPUT_BYTES
+            trimmed: mutable sview = ""
+            catch metadata_trim_process_text(result.stdout):
+                ok value:
+                    trimmed <- value
+                error failure:
+                    return MetadataObservedText{}
+            return MetadataObservedText{available: true, value: trimmed}
+
+
         def metadata_json_append_byte(output: mutable darray[u8]&, byte: u8, limit: usize) -> void error[MetadataJsonError] can[Memory.Allocate, Abort.Panic]:
             raise MetadataJsonError.OutputLimitExceeded if output.count >= limit
             output.push(byte)
@@ -221,37 +280,43 @@ module EsLuaBundleMetadata:
                 try metadata_json_append_byte(output, sview_at(Json::HEX, ((value >> shift) & 15u32).usize()), limit)
 
 
+        def metadata_json_decode_utf8(value: sview, cursor: mutable usize&, codepoint: mutable u32&) -> void error[MetadataJsonError]:
+            raise MetadataJsonError.InvalidUtf8 if cursor >= len(value)
+            first: u8 = sview_at(value, cursor)
+            width: mutable usize = 1
+            if first <= 127u8:
+                codepoint <- first.u32()
+            elif first >= 194u8 and first <= 223u8 and cursor + 1 < len(value):
+                second: u8 = sview_at(value, cursor + 1)
+                raise MetadataJsonError.InvalidUtf8 if second < 128u8 or second > 191u8
+                codepoint <- ((first & 31u8).u32() << 6) | (second & 63u8).u32()
+                width <- 2
+            elif first >= 224u8 and first <= 239u8 and cursor + 2 < len(value):
+                second: u8 = sview_at(value, cursor + 1)
+                third: u8 = sview_at(value, cursor + 2)
+                raise MetadataJsonError.InvalidUtf8 if second < 128u8 or second > 191u8 or third < 128u8 or third > 191u8
+                codepoint <- ((first & 15u8).u32() << 12) | ((second & 63u8).u32() << 6) | (third & 63u8).u32()
+                raise MetadataJsonError.InvalidUtf8 if codepoint < 2048u32 or codepoint >= 55296u32 and codepoint <= 57343u32
+                width <- 3
+            elif first >= 240u8 and first <= 244u8 and cursor + 3 < len(value):
+                second: u8 = sview_at(value, cursor + 1)
+                third: u8 = sview_at(value, cursor + 2)
+                fourth: u8 = sview_at(value, cursor + 3)
+                raise MetadataJsonError.InvalidUtf8 if second < 128u8 or second > 191u8 or third < 128u8 or third > 191u8 or fourth < 128u8 or fourth > 191u8
+                codepoint <- ((first & 7u8).u32() << 18) | ((second & 63u8).u32() << 12) | ((third & 63u8).u32() << 6) | (fourth & 63u8).u32()
+                raise MetadataJsonError.InvalidUtf8 if codepoint < 65536u32 or codepoint > 1114111u32
+                width <- 4
+            else:
+                raise MetadataJsonError.InvalidUtf8
+            cursor <- cursor + width
+
+
         def metadata_json_append_escaped(output: mutable darray[u8]&, value: sview, limit: usize) -> void error[MetadataJsonError] can[Memory.Allocate, Abort.Panic]:
             try metadata_json_append_byte(output, 34u8, limit)
             cursor: mutable usize = 0
             while cursor < len(value):
-                first: u8 = sview_at(value, cursor)
                 codepoint: mutable u32 = 0
-                width: mutable usize = 1
-                if first <= 127u8:
-                    codepoint <- first.u32()
-                elif first >= 194u8 and first <= 223u8 and cursor + 1 < len(value):
-                    second: u8 = sview_at(value, cursor + 1)
-                    raise MetadataJsonError.InvalidUtf8 if second < 128u8 or second > 191u8
-                    codepoint <- ((first & 31u8).u32() << 6) | (second & 63u8).u32()
-                    width <- 2
-                elif first >= 224u8 and first <= 239u8 and cursor + 2 < len(value):
-                    second: u8 = sview_at(value, cursor + 1)
-                    third: u8 = sview_at(value, cursor + 2)
-                    raise MetadataJsonError.InvalidUtf8 if second < 128u8 or second > 191u8 or third < 128u8 or third > 191u8
-                    codepoint <- ((first & 15u8).u32() << 12) | ((second & 63u8).u32() << 6) | (third & 63u8).u32()
-                    raise MetadataJsonError.InvalidUtf8 if codepoint < 2048u32 or codepoint >= 55296u32 and codepoint <= 57343u32
-                    width <- 3
-                elif first >= 240u8 and first <= 244u8 and cursor + 3 < len(value):
-                    second: u8 = sview_at(value, cursor + 1)
-                    third: u8 = sview_at(value, cursor + 2)
-                    fourth: u8 = sview_at(value, cursor + 3)
-                    raise MetadataJsonError.InvalidUtf8 if second < 128u8 or second > 191u8 or third < 128u8 or third > 191u8 or fourth < 128u8 or fourth > 191u8
-                    codepoint <- ((first & 7u8).u32() << 18) | ((second & 63u8).u32() << 12) | ((third & 63u8).u32() << 6) | (fourth & 63u8).u32()
-                    raise MetadataJsonError.InvalidUtf8 if codepoint < 65536u32 or codepoint > 1114111u32
-                    width <- 4
-                else:
-                    raise MetadataJsonError.InvalidUtf8
+                try metadata_json_decode_utf8(value, cursor, codepoint)
                 if codepoint == 34u32 or codepoint == 92u32:
                     try metadata_json_append_byte(output, 92u8, limit)
                     try metadata_json_append_byte(output, codepoint.u8(), limit)
@@ -276,7 +341,6 @@ module EsLuaBundleMetadata:
                     low: u32 = 56320u32 + ((codepoint - 65536u32) & 1023u32)
                     try metadata_json_append_hex4(output, high, limit)
                     try metadata_json_append_hex4(output, low, limit)
-                cursor <- cursor + width
             try metadata_json_append_byte(output, 34u8, limit)
 
 
@@ -315,6 +379,24 @@ module EsLuaBundleMetadata:
 
 
     public:
+        def metadata_facts_from_processes(generated_at_utc: sview, results: MetadataProcessResults&) -> MetadataFacts error[MetadataJsonError]:
+            facts: mutable MetadataFacts = MetadataFacts{generated_at_utc: generated_at_utc}
+            hostname: MetadataObservedText = metadata_process_observation(results.hostname)
+            uname: MetadataObservedText = metadata_process_observation(results.uname)
+            head: MetadataObservedText = metadata_process_observation(results.git_head)
+            branch: MetadataObservedText = metadata_process_observation(results.git_branch)
+            status: MetadataObservedText = metadata_process_observation(results.git_status)
+            facts.hostname <- hostname.value if hostname.available and hostname.value != "" else "unknown"
+            facts.uname <- uname.value if uname.available and uname.value != "" else "unknown"
+            if head.available and head.value != "":
+                facts.git_head <- head.value
+                facts.git_branch <- branch.value if branch.available and branch.value != "" else "unknown"
+                if status.available:
+                    facts.git_status <- "clean" if status.value == "" else "dirty"
+            raise MetadataJsonError.InvalidFacts if not metadata_facts_valid(facts)
+            return facts
+
+
         def render_metadata_json(arguments: MetadataArguments&, facts: MetadataFacts&, max_bytes: usize = Json::MAX_BYTES) -> darray[u8] error[MetadataJsonError] can[Memory.Allocate, Abort.Panic]:
             raise MetadataJsonError.InvalidArguments if not metadata_arguments_shape_valid(arguments)
             raise MetadataJsonError.InvalidFacts if not metadata_facts_valid(facts)

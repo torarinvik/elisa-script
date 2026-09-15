@@ -1211,11 +1211,13 @@ retry-before-reap, stale reap receipts, and forged draining state. No compiler,
 test, script, or audit process was run.
 
 The W04 Lua bundle metadata replacement now has pure `EsLuaBundleMetadata`
-argument and serialization seams. It enforces typed required options, exact or
-unambiguous long option prefixes, repeated setting/command last-value lookup,
-`--` positional boundaries, path/argument/entry ceilings, and typed malformed-
-assignment failures. The serializer validates the injected UTC-second shape,
-sorts final assignment keys, emits bounded `ensure_ascii` JSON, and rejects
-invalid UTF-8. The focused IR fixture and `check_lua_bundle_metadata.sh` audit
-remain source-only; effectful host facts, atomic publication, and parity
-execution remain open.
+argument, host-observation, and serialization seams. It enforces typed required
+options, exact or unambiguous long option prefixes, repeated setting/command
+last-value lookup, `--` positional boundaries, path/argument/entry ceilings,
+and typed malformed-assignment failures. The observation seam admits at most
+64 KiB per captured stdout, trims Unicode whitespace, and applies the Git
+HEAD/branch/status fallback contract; the serializer validates the injected
+UTC-second shape, sorts final assignment keys, emits bounded `ensure_ascii`
+JSON, and rejects invalid UTF-8. The focused IR fixture and
+`check_lua_bundle_metadata.sh` audit remain source-only; effectful process/clock
+adapters, atomic publication, and parity execution remain open.

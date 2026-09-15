@@ -3487,7 +3487,9 @@ replacement. `parse_metadata_arguments` accepts exact or unambiguous argparse-
 style long options, preserves repeated setting/command entries with
 last-value lookup, rejects post-`--` positional data, and applies per-argument,
 path, and entry-count ceilings before a host adapter can create or replace a
-destination. Its pure `render_metadata_json` seam validates the injected UTC
-second shape and emits bounded, deterministic, sorted `ensure_ascii` JSON with
-last-value assignment materialization. It still does not provide host facts,
-atomic publication, or acceptance evidence.
+destination. Its pure `metadata_facts_from_processes` seam classifies bounded
+typed process outcomes, applies the Git HEAD/branch/status fallback rules, and
+trims UTF-8 Unicode whitespace before `render_metadata_json` validates the
+injected UTC-second shape and emits bounded, deterministic, sorted
+`ensure_ascii` JSON. The effectful process/clock adapter, atomic publication,
+and acceptance evidence remain open.

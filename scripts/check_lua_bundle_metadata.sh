@@ -19,9 +19,11 @@ for declaration in \
     '^module EsLuaBundleMetadata:' \
     'const module Limits:' \
     'const module Options:' \
+    'HOST_OUTPUT_BYTES' \
     'struct MetadataAssignment:' \
     'struct MetadataArguments:' \
     'struct MetadataFacts:' \
+    'struct MetadataProcessResults:' \
     'error MetadataArgumentsError:' \
     'error MetadataJsonError:' \
     'def parse_metadata_arguments\(' \
@@ -46,6 +48,10 @@ for boundary in \
     'metadata_assignment_value' \
     'metadata_final_assignments' \
     'metadata_facts_valid' \
+    'metadata_facts_from_processes' \
+    'metadata_unicode_whitespace' \
+    'metadata_json_decode_utf8' \
+    'ProcessResultKind.Exited' \
     'metadata_json_append_hex4' \
     'MetadataJsonError.InvalidFacts' \
     'MetadataJsonError.InvalidUtf8' \
@@ -60,4 +66,4 @@ rg -q 'include "\.\./runtime/lua_bundle_metadata_model\.elisa"' "$ir"
 rg -q 'using EsLuaBundleMetadata' "$fixture"
 rg -q 'W04' "$plan" "$tasks"
 
-printf 'lua bundle metadata audit: typed parsing, bounded sorted JSON serialization, repeated-key last-wins, and explicit boundaries are present\n'
+printf 'lua bundle metadata audit: typed parsing, bounded host normalization, sorted JSON serialization, repeated-key last-wins, and explicit boundaries are present\n'
