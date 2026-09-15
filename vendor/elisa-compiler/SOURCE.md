@@ -80,6 +80,9 @@ The current adapted fixes are tracked separately from the snapshot identity:
 - `c7c849c7`: return completed lexer token buffers directly from ordinary and
   span tokenization, while retaining the safe copy-out for lexer comment
   side-channel results.
+- `cb333aec`: short-circuit unequal `sview` lengths before the runtime byte
+  walk and inline the public context equality wrapper, preserving the same
+  semantics while avoiding a redundant call on the hot path.
 - `cad39806`: anchor the companion `BraceMembershipMisuse` diagnostic at the
   actual set/dict initializer instead of the affine element or key type. This
   is a source-location-only correction; the primary affine diagnostic remains
