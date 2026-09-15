@@ -466,7 +466,9 @@ ordered argv/environment vectors (with a one-million name/value-pair ceiling), c
 failure policy fields, and a bounded `error[ProcessCommandError]` validator.
 `resolve_process_environment` now turns a captured ambient vector plus the
 declared `Inherit`/`Replace`/`Clear` policy into one deterministic child vector,
-so adapters need not consult or mutate process-global environment state.
+validating the ambient vector only for `Inherit`; `Replace` and `Clear` discard
+it without inspection, so irrelevant malformed ambient data cannot block those
+modes. Adapters need not consult or mutate process-global environment state.
 The differential process adapter materializes every invocation through this
 validator before fork/exec, while retaining binary stdin as a length-delimited
 side channel. It is still static adapter-boundary evidence only; platform process
@@ -474,7 +476,8 @@ creation, background jobs, and streaming callback execution remain open.
 `ProcessResult` now supplies the corresponding closed outcome vocabulary for
 normal exits, signal death, spawn/timeout/cancellation/output-limit/host-I/O
 failures, with bounded stdout/stderr/error payloads and signal consistency
-validation through `error[ProcessResultError]`.
+validation through `error[ProcessResultError]`. Non-exit outcomes retain a zero
+exit-status sentinel; only normal `Exited` results may carry a nonzero status.
 `ProcessJob` adds a typed background-supervision state machine with bounded
 attempts, explicit cancellation acknowledgement, consumed-attempt validation for
 cancelled jobs, and typed invalid-transition

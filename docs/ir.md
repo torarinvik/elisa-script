@@ -2294,14 +2294,20 @@ unknown policy ordinals, and unsupported stdio modes with
 insertion order is explicit and host adapters cannot inherit map-order or shell
 assignment semantics. `resolve_process_environment` materializes an exact
 child vector from a captured ambient vector: `Inherit` overlays in place order,
-`Replace` discards ambient entries, and `Clear` emits none, without touching
-process-global state. This model is a validated adapter boundary; fork/exec,
+`Replace` discards ambient entries without inspecting them, and `Clear` emits
+none without inspecting them, so malformed ambient data cannot affect a mode
+that does not consume it. `Inherit` validates the captured vector before
+overlaying it, and no mode touches process-global state. This model is a
+validated adapter boundary; fork/exec,
 Windows process creation, background scheduling, and streaming callbacks remain
 host integrations rather than hidden behavior in the value itself.
 `EsProcess::ProcessResult` is the matching outcome boundary. Its closed
 `ProcessResultKind` distinguishes normal exit, signal death, spawn failure,
 timeout, cancellation, output-limit termination, and host I/O failure; a signal
-kind requires a nonzero signal within the shared 1–64 signal envelope while every other kind rejects one. Captured
+kind requires a nonzero signal within the shared 1–64 signal envelope while every other kind rejects one. Only
+`Exited` carries a nonzero exit status; all timeout, cancellation, spawn,
+signal, output-limit, and host-I/O outcomes retain the zero status sentinel.
+Captured
 stdout, stderr, and adapter error text receive length-first NUL admission and a
 shared terminated-byte ceiling through `error[ProcessResultError]`, so a failed
 child cannot be silently reclassified as an ordinary exit status; normal exit
