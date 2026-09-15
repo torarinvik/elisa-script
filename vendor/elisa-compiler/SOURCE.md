@@ -61,6 +61,14 @@ path), so replacing it wholesale or copying optimizer files selectively would
 silently mix incompatible compiler revisions. This directory remains the
 known-compatible adapted snapshot until a deliberate refresh is completed.
 
+The current adapted fixes are tracked separately from the snapshot identity:
+
+- `07dfa7a9` / `0d92a608`: nested-module constant ownership and use-site lowering;
+- `10fdfaa6`: catch-all error binders and implicit value-returning block tails.
+
+These changes are limited to the vendored APIs and deliberately omit newer
+backend files whose supporting tables are not present in `e56d6f2d`.
+
 ## Modification policy
 
 Keep general Elisa language fixes suitable for both compilers in the upstream
