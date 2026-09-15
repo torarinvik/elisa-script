@@ -48,10 +48,10 @@ closed unless `ELISASCRIPT_VALIDATION_REAUTHORIZED=1` is explicitly supplied.
 On 2026-09-15 the canonical path contained an ignored Mach-O executable with
 SHA-256 `3624b7e4d7dc6009df5efe7e8c2ff5f8d074ad321a4b133cfd0d74ecce03933d`,
 embedded binary revision `7900a37a2cdec0d8f32f90cb2d064c2ec5d41b9a`, and
-`vcs.modified=true`. The clean source checkout is now at `e85e8282…`, so this
-artifact is stale and fails the identity checks; it is not launched or accepted
-for validation. A clean, immutable build of the latest source remains required
-after explicit reauthorization.
+`vcs.modified=true`. At the time of this observation the clean source checkout
+was `e85e8282…`, so this artifact was already stale and failed the identity
+checks; it is not launched or accepted for validation. A clean, immutable build
+of the latest source remains required after explicit reauthorization.
 
 ## Earlier clean detached source snapshot
 
@@ -65,13 +65,12 @@ validation wrappers, but it is not claimed to represent this newest source.
 Building or launching a compiler remains disabled until explicit
 reauthorization and a bounded, reviewed build plan.
 
-The latest self-hosted Elisa compiler source observed in
-`../Elisa-compiler` is `565ccb2fd585d03f94457185376f526e1930b1cb` on clean
-`main`. Its recent history includes catch-binder and value-returning-tail fixes,
-nested-module constant lowering, static-if module handling, and self-hosted
-extern-resource ABI support. The vendored `e56d6f2d` tree is adapted, so this
-source requires a deliberate compatibility refresh rather than a wholesale
-copy.
+An earlier self-hosted source observation recorded
+`565ccb2fd585d03f94457185376f526e1930b1cb` on clean `main`. Its recent history
+included catch-binder and value-returning-tail fixes, nested-module constant
+lowering, static-if module handling, and self-hosted extern-resource ABI support.
+The vendored `e56d6f2d` tree is adapted, so this source requires a deliberate
+compatibility refresh rather than a wholesale copy.
 
 Latest self-hosted source recheck (2026-09-15; read-only): the clean `main`
 checkout now resolves to merge commit
@@ -80,14 +79,12 @@ extern, catch-binder, value-tail, and stage compatibility fixes on top of the
 previous ABI/lowering work. The vendored `e56d6f2d` tree remains the known-
 compatible adapted snapshot; no compiler was rebuilt or launched.
 
-The latest Go Elisa-core source observed in the validation checkout is
-`e85e8282c7b8dc588ba2ba53f0912d98769b1f1a` on `codex/structpy-tree`. Its latest
-work hardens extern boundary checks, owned native-resource contracts, and
-refreshed IR artifacts on top of the earlier FFI, lowering, and region
-optimizations. The immutable Go commit is the source reference for the guarded
-validation path. Until an explicitly authorized isolated clean checkout is
-reviewed and built, the historical 601f7bcd executable identity is not claimed
-to represent this newest source.
+An earlier Go Elisa-core source observation recorded
+`e85e8282c7b8dc588ba2ba53f0912d98769b1f1a` on `codex/structpy-tree`. Its work
+hardened extern boundary checks, owned native-resource contracts, and refreshed
+IR artifacts on top of the earlier FFI, lowering, and region optimizations. The
+immutable Go commit was the source reference for the guarded validation path;
+the historical 601f7bcd executable identity is not claimed to represent it.
 
 Latest Go source recheck (2026-09-15; read-only): the clean
 `codex/structpy-tree` checkout now resolves to
