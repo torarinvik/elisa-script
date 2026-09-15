@@ -37,6 +37,7 @@ for boundary in \
     'SourceExtensionInvalid' \
     'ArtifactBytesExceeded' \
     'total_bytes' \
+    'total_bytes > INSTALL_MAX_TOTAL_ARTIFACT_BYTES' \
     'INSTALL_MAX_TOTAL_ARTIFACT_BYTES - total_bytes' \
     'IntegrityMissing' \
     'DuplicateDestination' \
