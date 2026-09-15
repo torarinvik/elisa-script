@@ -51,6 +51,8 @@ for boundary in \
     'session.retry_ready <- true' \
     'session.retry_ready <- false' \
     'FileLockError.DuplicateOwnerPath' \
+    'raise FileLockError.EmbeddedNul if sview_contains_byte(lease.path, 0)' \
+    'raise FileLockError.EmbeddedNul if sview_contains_byte(session.request.path, 0)' \
     'table.next_lease_id <= lease.lease_id' \
     'table.next_lease_id == 18446744073709551615u64' \
     'active_leases' \
@@ -71,6 +73,7 @@ for fixture_pattern in \
     'repeated_retry' \
     'FileLockEvent.ReleaseAck' \
     'FileLockEvent.CancelAck' \
+    'FileLockError.EmbeddedNul' \
     'forged_identity' \
     'exhausted_rejected'; do
     rg -q "$fixture_pattern" "$fixture_file"

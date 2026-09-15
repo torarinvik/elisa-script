@@ -1581,8 +1581,10 @@ next acquisition attempt so a caller cannot spin retries without progress. A
 held lease remains active through `Releasing` until
 the host acknowledges release, while failures decrement active accounting and
 retain a failed lease record. Held, releasing, and released sessions also
-require a consumed acquisition attempt. Lease allocation rejects the terminal
-`u64` identity before publishing a lease, so the next-identity counter cannot
+require a consumed acquisition attempt. Embedded NULs in lease and request
+paths are classified as `FileLockError.EmbeddedNul` before ordinary path errors.
+Lease allocation rejects the terminal `u64` identity before publishing a lease,
+so the next-identity counter cannot
 wrap to zero or leave a partially committed table. The contract is deliberately
 advisory-only: lease identities are monotonic and cannot collide with the next
 allocation; platform lock calls, mandatory-locking behavior, fairness, and race

@@ -1066,7 +1066,8 @@ same-owner re-entry conflicts are rejected. Acquisition attempts, retry,
 timeout, cancellation acknowledgement, release acknowledgement, failed leases,
 terminal lease-id exhaustion before publication, and active-lease accounting
 are explicit state-machine edges under
-`error[FileLockError]`. The focused IR fixture, namespace inclusion,
+`error[FileLockError]`; lease and request path NULs are classified distinctly
+as `EmbeddedNul` before ordinary path errors. The focused IR fixture, namespace inclusion,
 documentation, and check_file_lock.sh audit are static evidence; platform
 flock/LockFileEx calls, fairness, mandatory-locking differences, and race
 fixtures remain host work.
