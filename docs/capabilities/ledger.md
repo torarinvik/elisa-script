@@ -1168,3 +1168,12 @@ A generated W09 link-name differential case also applies an empty quoted
 annotation after a nonempty one and checks that it clears the pending value and
 omits the optional JSON key, matching the pinned Python `group(1) or group(2)`
 behavior. It has not run.
+
+The W05 build/test-driver slice is now bound to the pinned Python
+`run_lua_frontend_differential.py` workflow by
+`test/fixtures/script_parity/lua_frontend_differential/CONTRACT.md`. The
+contract records the exact argv graph, corpus/fingerprint semantics, report
+bytes, strict status, and typed resource/cleanup requirements. The pinned
+checkout currently lacks the driver's expected Lua frontend source root, so
+the future launcher must fail closed before spawning any child. This is static
+contract evidence only; no Python, C, compiler, or fixture process has run.
