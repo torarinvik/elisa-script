@@ -79,6 +79,8 @@ rg -Fq 'parse_implicit_main(line, line_number, main_seen, header_work)' "$candid
 rg -Fq 'export_name_scan_charge(name_work, compared_bytes)' "$candidate"
 rg -Fq 'parse_export_line(line, line_number, pending_link_name, has_pending_link_name, seen_names, header_work, name_work)' "$candidate"
 rg -Fq 'Every scanned identifier is nonempty' "$candidate"
+rg -Fq 'U+070F SYRIAC ABBREVIATION MARK' "$candidate"
+rg -Fq 'U+070F SYRIAC ABBREVIATION MARK' "$fixture"
 if rg -Fq 'seen_names.contains("main")' "$candidate"; then
     printf 'W09 bounds audit: main presence must not rescan the export-name vector\n' >&2
     exit 1

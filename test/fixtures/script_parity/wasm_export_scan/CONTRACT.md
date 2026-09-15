@@ -289,7 +289,7 @@ implicit `main` before a later explicit duplicate, plus repeated implicit
 definitions that must yield only one row. The ordering cases include many
 ordinary lines between exports to exercise the maintained presence flag. A
 generated unsupported-type diagnostic containing U+009F, U+00AD, U+061C,
-U+180E, U+200B, U+200E, U+202A, U+2060, and U+FEFF is compared with the pinned
+U+070F, U+180E, U+200B, U+200E, U+202A, U+2060, and U+FEFF is compared with the pinned
 Python adapter to check C1, soft-hyphen, Arabic letter mark, format, zero-width,
 embedding, and zero-width-no-break-space `repr` escaping. The checked-in
 `unsupported_type.input` fixture carries U+FEFF, U+200E, U+061C, and U+2060 in
