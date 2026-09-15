@@ -1690,7 +1690,8 @@ preserved bytes skipped during zero-width progress, and the final suffix under o
 and capture budgets must be nonzero,
 zero-width matches must advance (including the EOF non-progress guard), and a
 callback cannot be re-entered while a replacement is pending. Match/capture/
-output limits, malformed spans, cancellation, and premature end use
+output limits, spans that rewind before the consumed cursor, malformed spans,
+cancellation, and premature end use
 `error[RegexCallbackError]`; validation also rejects forged planned counters and
 pending callbacks outside matching, and a complete session must have consumed
 the entire input cursor. Callback invocation and capture materialization

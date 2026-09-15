@@ -47,6 +47,7 @@ for boundary in \
     'session.cursor <- session.input_bytes' \
     'policy.max_captures != 0' \
     'session.pending and session.state != RegexCallbackState.Matching' \
+    'session.pending and session.pending_start < session.cursor' \
     'RegexCallbackEvent.Match' \
     'RegexCallbackEvent.Replace' \
     'RegexCallbackState.Complete'; do
@@ -64,6 +65,7 @@ for fixture_pattern in \
     'RegexCallbackError.MatchLimitExceeded' \
     'RegexCallbackError.AccountingInvalid' \
     'forged_pending' \
+    'forged_pending_order' \
     'forged_zero_marker' \
     'forged_zero_offset' \
     'forged_complete_cursor' \
