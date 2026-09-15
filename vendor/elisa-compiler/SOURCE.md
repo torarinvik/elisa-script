@@ -83,6 +83,10 @@ The current adapted fixes are tracked separately from the snapshot identity:
 - `cb333aec`: short-circuit unequal `sview` lengths before the runtime byte
   walk and inline the public context equality wrapper, preserving the same
   semantics while avoiding a redundant call on the hot path.
+- `142d9b03`: avoid routing unreachable-match empty-key checks through the
+  C-string `strlen` bridge and pre-index declared protocol annotations before
+  repeated unknown-interface lookups. Both are semantics-preserving source
+  adaptations of the latest self-hosted semantic fast paths.
 - `cad39806`: anchor the companion `BraceMembershipMisuse` diagnostic at the
   actual set/dict initializer instead of the affine element or key type. This
   is a source-location-only correction; the primary affine diagnostic remains
