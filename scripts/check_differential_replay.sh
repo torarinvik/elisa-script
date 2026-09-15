@@ -48,6 +48,17 @@ for boundary in \
     rg -Fq "$boundary" "$model"
 done
 
+for boundary in \
+    'ComparisonEvidence' \
+    'differential_artifact_comparison_evidence_valid' \
+    'comparison sidecar does not describe the process and value-pool evidence' \
+    'reference_process.outcome != reference_values.outcome' \
+    'candidate_process.exit_status != candidate_values.exit_status' \
+    'comparison.reference_outcome != reference_process.outcome' \
+    'comparison.reference_value_kind != reference_values.root_value.kind'; do
+    rg -Fq "$boundary" "$consumer"
+done
+
 rg -Fq 'include "./replay_model.elisa"' "$consumer"
 rg -Fq 'using EsDifferentialReplay' "$fixture"
 for fixture_pattern in \
@@ -60,7 +71,9 @@ for fixture_pattern in \
     'forged_completed_replay' \
     'forged_failed_replay' \
     'forged_cancelled_replay' \
-    'forged_admission_identity'; do
+    'forged_admission_identity' \
+    'forged_equal_index' \
+    'DifferentialArtifactReplayIssue.ComparisonInvalid'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 

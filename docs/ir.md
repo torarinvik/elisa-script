@@ -1813,7 +1813,10 @@ aggregate failure. Planned cancellation marks all pending jobs cancelled,
 unfinished jobs. `Cancel → CancelAck` marks every still-owned slot cancelled;
 fail-fast exhaustion enters `Draining`, cancels queued work, and waits for
 active siblings to finish (whether they complete or fail) before reaching `Failed`; a `Failed` snapshot likewise
-requires every job to be terminal and cannot retain active or queued work;
+requires every job to be terminal and cannot retain active or queued work.
+`Running` and `Cancelling` snapshots must still retain unfinished work, so a
+forged already-terminal snapshot cannot be relabelled as cancelled by
+`CancelAck`;
 the contract never starts a child or sends a signal. Non-pending execution
 states also require a consumed attempt, so a retry/failure record cannot be
 forged before its first launch. Duplicate IDs, stale job indices, retry

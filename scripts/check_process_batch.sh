@@ -62,6 +62,8 @@ for boundary in \
     'session.state <- ProcessBatchState.Failed if session.fail_fast_latched' \
     'ProcessBatchState.Draining' \
     'ProcessBatchState.Cancelled and' \
+    'ProcessBatchState.Running and unfinished == 0' \
+    'ProcessBatchState.Cancelling and unfinished == 0' \
     'session.failed > session.jobs.count - session.completed' \
     'cancelled == 0'; do
     rg -q "$boundary" "$model"
@@ -86,6 +88,8 @@ for fixture_pattern in \
     'stale_reap_again' \
     'fail_fast_cancel' \
     'fail_fast_cancel_before_reap' \
+    'forged_running_complete' \
+    'forged_cancelling_complete' \
     'launch_limit'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done

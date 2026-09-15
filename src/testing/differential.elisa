@@ -4295,6 +4295,7 @@ module EsDifferential:
             ReferenceValuePool
             CandidateValuePool
             SetupReceipts
+            ComparisonEvidence
             Fingerprints
             Done
 
@@ -4307,6 +4308,34 @@ module EsDifferential:
 
         def differential_artifact_replay_failure(issue: DifferentialArtifactReplayIssue, reason: sview) -> DifferentialArtifactReplayCheck:
             return DifferentialArtifactReplayCheck{valid: false, issue: issue, reason: reason}
+
+
+        # Reconstruct the observable run represented by one process stream and
+        # one value-pool sidecar.  Bundle admission must compare these payloads
+        # rather than trusting a separately written ESCR `equal` bit: an index
+        # can be internally self-consistent while its comparison report still
+        # describes a different pair of sidecars.
+        def differential_artifact_run_from_sidecars(process: DifferentialProcessStreamArtifact&, values: DifferentialValuePoolArtifact&) -> DifferentialRun:
+            return DifferentialRun{exit_status: process.exit_status, error_text: process.error_text, stdout: process.stdout, stderr: process.stderr, observations: values.observations, values: values.values, return_value: values.root_value, outcome: process.outcome, process_setup_fingerprint: process.process_setup_fingerprint}
+
+
+        # ESCR intentionally stores only compact first-difference evidence, so
+        # exact engine/case/schema failures cannot always be reconstructed from
+        # ESPS/ESVP alone.  Ordinary observable claims can: reject a forged
+        # Equal report, and reject a wrong ordinary mismatch kind/index, while
+        # preserving the explicit engine and contract failure categories.
+        def differential_artifact_comparison_evidence_valid(manifest: DifferentialArtifactManifest&, comparison: DifferentialComparisonArtifact&, reference_process: DifferentialProcessStreamArtifact&, candidate_process: DifferentialProcessStreamArtifact&, reference_values: DifferentialValuePoolArtifact&, candidate_values: DifferentialValuePoolArtifact&) -> bool can[Memory.Allocate, Abort.Panic]:
+            return false if reference_process.outcome != reference_values.outcome or candidate_process.outcome != candidate_values.outcome
+            return false if reference_process.exit_status != reference_values.exit_status or candidate_process.exit_status != candidate_values.exit_status
+            return false if comparison.reference_outcome != reference_process.outcome or comparison.candidate_outcome != candidate_process.outcome
+            return false if comparison.reference_value_kind != reference_values.root_value.kind or comparison.candidate_value_kind != candidate_values.root_value.kind
+            reference_run: DifferentialRun = differential_artifact_run_from_sidecars(reference_process, reference_values)
+            candidate_run: DifferentialRun = differential_artifact_run_from_sidecars(candidate_process, candidate_values)
+            derived: DifferentialComparison = compare_differential_runs_with_policy(reference_run, candidate_run, manifest.comparator)
+            return true if comparison.kind == DifferentialDifferenceKind.Engine or comparison.kind == DifferentialDifferenceKind.CaseInvalid or comparison.kind == DifferentialDifferenceKind.ObservationContract
+            return derived.equal if comparison.kind == DifferentialDifferenceKind.Equal
+            return false if comparison.equal != derived.equal
+            return comparison.kind == derived.kind and comparison.index == derived.index
 
 
     public:
@@ -4439,10 +4468,18 @@ module EsDifferential:
                     -> Validate
 
                 Validate, DifferentialArtifactReplayState.SetupReceipts if reference_process.process_setup_fingerprint == reference_values.process_setup_fingerprint and candidate_process.process_setup_fingerprint == candidate_values.process_setup_fingerprint:
-                    cursor.state <- DifferentialArtifactReplayState.Fingerprints
+                    cursor.state <- DifferentialArtifactReplayState.ComparisonEvidence
                     -> Validate
                 Validate, DifferentialArtifactReplayState.SetupReceipts:
                     cursor.result <- differential_artifact_replay_failure(DifferentialArtifactReplayIssue.ProcessSetupMismatch, "process and value-pool sidecars carry different setup receipts")
+                    cursor.state <- DifferentialArtifactReplayState.Done
+                    -> Validate
+
+                Validate, DifferentialArtifactReplayState.ComparisonEvidence if differential_artifact_comparison_evidence_valid(manifest, comparison, reference_process, candidate_process, reference_values, candidate_values):
+                    cursor.state <- DifferentialArtifactReplayState.Fingerprints
+                    -> Validate
+                Validate, DifferentialArtifactReplayState.ComparisonEvidence:
+                    cursor.result <- differential_artifact_replay_failure(DifferentialArtifactReplayIssue.ComparisonInvalid, "comparison sidecar does not describe the process and value-pool evidence")
                     cursor.state <- DifferentialArtifactReplayState.Done
                     -> Validate
 

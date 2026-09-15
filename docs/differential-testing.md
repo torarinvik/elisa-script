@@ -791,10 +791,17 @@ requires a valid `Complete` index, recomputes the manifest fingerprint, checks
 each sidecar's validity and manifest binding, enforces reference/candidate side
 identity for process streams and value pools, requires each ESPS setup receipt
 to match its corresponding ESVP receipt (including zero/zero for generic
-unbound runs), and compares all six recorded sidecar fingerprints. Prepared,
-stale, mixed-side, missing/mismatched-receipt, malformed, or cross-manifest
-bundles return a typed `DifferentialArtifactReplayCheck` failure and are not
-eligible for replay; the validator itself never executes the reproduction entry.
+unbound runs), and reconstructs the ordinary observable comparison from the
+paired ESPS/ESVP payloads before comparing all six recorded sidecar
+fingerprints. It rejects forged `Equal` reports, mismatched process/value
+outcomes or exit statuses, and wrong ordinary first-difference kind/index even
+when the ESIX fingerprints are internally self-consistent. Explicit engine and
+observation-contract failure categories remain compact evidence that cannot be
+fully reconstructed from these sidecars alone. Prepared, stale, mixed-side,
+missing/mismatched-receipt, semantically inconsistent, malformed, or
+cross-manifest bundles return a typed `DifferentialArtifactReplayCheck`
+failure and are not eligible for replay; the validator itself never executes
+the reproduction entry.
 
 `DifferentialWorldSnapshot` captures the complete validated world contract and
 its deterministic fingerprint. `validate_differential_world_snapshot` checks
