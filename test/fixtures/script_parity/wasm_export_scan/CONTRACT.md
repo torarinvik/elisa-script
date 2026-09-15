@@ -105,8 +105,12 @@ fields `version`, `flattened_source`, and `exports`; `version` is integer `1`,
 `flattened_source` is the exact UTF-8 include-expanded source consumed by the
 scanner, and `exports` has the row schema above. Its JSON bytes are capped at
 64 MiB minus one byte so the final newline keeps total stdout at or below the
-differential runner's 64 MiB hard capture limit. Both forms use the same path
-loader and scan.
+differential runner's 64 MiB hard capture limit. The scanner additionally caps
+each export at 4,096 parameters and the complete export set at 16,384
+parameters. The optional host-side payload client applies the same aggregate
+ceiling before passing records to the build flow. These cardinality limits do
+not impose a hard RSS bound on the subprocess or on JSON decoding. Both forms
+use the same path loader and scan.
 
 The default form emits only the compact ordered JSON export array. On success,
 either form exits with status `0`, appends one newline to stdout, and leaves
@@ -218,7 +222,7 @@ only unless they are valid Elisa programs.
 | `main` | implicit position and fields, repeated definitions, explicit-before/after behavior, duplicate line diagnostic |
 | Invalid source | ignored malformed export forms and exact no-export failure; colon forms admitted by the pinned target regex are preserved |
 | Include graph | nested/absolute/relative, duplicate and diamond include order, cycle chain, missing file, relative/absolute dangling symlink targets, nested links, target and post-link `..` resolution, no-newline splice, CRLF/bare-CR normalization, empty file |
-| Bounds and failure | bounded file/aggregate bytes, materialized source line count, include depth/count, aggregate path-component and symlink-expansion work, explicit and implicit header-suffix scan work, aggregate duplicate-name comparison work, unreadable and invalid UTF-8 input, no partial success output |
+| Bounds and failure | bounded file/aggregate bytes, materialized source line count, per-export and aggregate parameter counts, include depth/count, aggregate path-component and symlink-expansion work, explicit and implicit header-suffix scan work, aggregate duplicate-name comparison work, unreadable and invalid UTF-8 input, no partial success output |
 | Integration (future acceptance; not covered by this launcher test) | resolved absolute source path; ordered JSON-array mode and versioned `{version, flattened_source, exports}` payload; exact scan-failure and wrong-arity process tuples; consumption by the pinned `wasm_build.py` caller; no Python scanner on the accepted replacement path |
 
 Current caller review (source-only; not adoption evidence): the pinned
@@ -284,7 +288,10 @@ candidate-only line-view cap, without entering Python. These are static source
 contracts, not executed evidence; the selected `repr` cases do not prove full
 Unicode printability parity. A candidate-only generated input also
 exercises rejection of 4,097 parameters before creating `Parameter` records,
-without entering Python. Another candidate-only filesystem case creates a
+without entering Python. A candidate-only generated input also puts five
+exports at 4,096, 4,096, 4,096, 4,096, and one parameter respectively to check
+the aggregate ceiling of 16,384 without entering the unbounded Python parser.
+Another candidate-only filesystem case creates a
 129-file include chain and checks the 128-frame depth rejection while cleaning
 up every generated file. A separate candidate-only case repeats one completed
 child include 16,385 times to pin the independent include-directive ceiling;
