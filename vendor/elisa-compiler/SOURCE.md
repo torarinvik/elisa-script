@@ -75,6 +75,9 @@ The current adapted fixes are tracked separately from the snapshot identity:
   decoded length at use sites.
 - `df144c9c`: skip the disjointness fixed-point scan unless the no-alias
   metadata feature is enabled.
+- `c7c849c7`: return completed lexer token buffers directly from ordinary and
+  span tokenization, while retaining the safe copy-out for lexer comment
+  side-channel results.
 
 These changes are limited to the vendored APIs and deliberately omit newer
 backend files whose supporting tables are not present in `e56d6f2d`.

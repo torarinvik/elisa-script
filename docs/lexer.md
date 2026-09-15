@@ -35,6 +35,13 @@ consumed, physical line numbering is preserved, and the shebang is not reported
 as a source comment to tooling. A `#!` elsewhere remains an ordinary Elisa `#`
 comment.
 
+The tokenization entry points return their completed token buffer directly.
+This preserves the lexer-owned allocation and avoids a second element-by-element
+copy for ordinary and span lexing. Comment harvesting intentionally retains its
+copy-out step because the comment side channel is tied to the temporary lexer
+state. This is the adapted form of the upstream Elisa optimization in
+`c7c849c7` (2026-09-15); no newer lexer ownership changes are assumed here.
+
 ## Typed literals
 
 The lexer does not hard-code scripting literal names. These forms:
