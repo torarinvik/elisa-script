@@ -1268,7 +1268,7 @@ at most
 HEAD/branch/status fallback contract; `metadata_host_command` emits validated
 shell-free command plans for hostname, uname, and Git with explicit child cwd,
 locale, stdio, failure, and bounded-timeout policy; the serializer validates
-the injected UTC-second shape, sorts final assignment keys, emits bounded `ensure_ascii`
+the injected UTC-second shape and calendar ranges, sorts final assignment keys, emits bounded `ensure_ascii`
 JSON, and rejects invalid UTF-8. The focused IR fixture and
 `check_lua_bundle_metadata.sh` audit remain source-only; effectful process/clock
 adapters and publication are still effectful, but `EsLuaBundlePublication` now

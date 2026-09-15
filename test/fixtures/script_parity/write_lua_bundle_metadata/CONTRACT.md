@@ -82,8 +82,9 @@ uname
 
 `settings` and `commands` are JSON objects whose string values are the parsed
 right-hand sides. `generated_at_utc` is the UTC wall clock at second precision,
-formatted `YYYY-MM-DDTHH:MM:SSZ`; parity fixtures replace the clock with a
-deterministic host seam rather than comparing a live timestamp.
+formatted `YYYY-MM-DDTHH:MM:SSZ` with valid calendar and clock ranges; parity
+fixtures replace the clock with a deterministic host seam rather than comparing
+a live timestamp.
 
 ## Host observations
 

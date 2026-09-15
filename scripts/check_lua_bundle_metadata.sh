@@ -54,6 +54,7 @@ for boundary in \
     'EmbeddedNul' \
     'metadata_payload_add_fits' \
     'metadata_arguments_payload_fits' \
+    'metadata_timestamp_calendar_valid' \
     'metadata_assignment_value' \
     'metadata_final_assignments' \
     'metadata_facts_valid' \
@@ -80,6 +81,7 @@ for boundary in \
     'exponent_lookalike' \
     'embedded_nul' \
     'exact_path_rejected' \
+    'invalid_calendar' \
     'render_metadata_json' \
     'small_limit'; do
     rg -q "$boundary" "$model" "$fixture"
