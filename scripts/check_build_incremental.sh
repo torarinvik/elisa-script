@@ -44,6 +44,7 @@ for boundary in \
     'BuildIncrementalTargetKind.Phony' \
     'BuildIncrementalError.DuplicateInput' \
     'BuildIncrementalError.DuplicateOutput' \
+    'BuildIncrementalError.OutputForbidden' \
     'BuildIncrementalError.OutputCollision' \
     'BuildIncrementalError.InputOutputCollision' \
     'BuildIncrementalError.UndeclaredOutputDependency' \
@@ -62,6 +63,7 @@ for fixture_check in \
     'BuildIncrementalDecision.InputMissing' \
     'BuildIncrementalDecision.OutputChanged' \
     'BuildIncrementalError.DuplicateInput' \
+    'BuildIncrementalError.OutputForbidden' \
     'BuildIncrementalError.OutputCollision' \
     'BuildIncrementalError.UndeclaredOutputDependency' \
     'BuildIncrementalError.DependencyOrderInvalid'; do

@@ -705,7 +705,8 @@ cancellation cannot relabel an already succeeded graph.
 `EsBuildIncremental` adds the bounded pure manifest boundary for recipe,
 dependency, input, and output fingerprint classification, distinguishing no-op
 targets (including outputless `Phony` aggregate/test targets) from typed rebuild
-reasons before scheduler dispatch. A target consuming another target's output
+reasons before scheduler dispatch. Phony targets that declare outputs are
+rejected before they can be treated as real artifacts. A target consuming another target's output
 must also declare that producer directly; undeclared output dependencies are
 rejected before scheduler dispatch so stale generated files cannot be consumed.
 Failure is latched immediately even while active siblings remain. The graph and

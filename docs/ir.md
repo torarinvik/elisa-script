@@ -543,7 +543,9 @@ children unaccounted.
 that graph. A bounded target manifest records the last successful recipe,
 input, and output fingerprints plus ordered target dependencies. `Phony` targets
 cover aggregate, test, and alias tasks that intentionally have no output file;
-their recipe and dependency state is still classified. A host adapter
+validation rejects any phony target that declares an output, while accepting
+outputless phony targets whose recipe and dependency state is still classified.
+A host adapter
 supplies current path observations and dependency-current flags; classification
 returns `UpToDate`, `RecipeChanged`, `DependencyDirty`, `InputChanged`,
 `OutputMissing`, or another typed reason before the scheduler can admit a
