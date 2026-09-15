@@ -3492,4 +3492,6 @@ typed process outcomes, applies the Git HEAD/branch/status fallback rules, and
 trims UTF-8 Unicode whitespace before `render_metadata_json` validates the
 injected UTC-second shape and emits bounded, deterministic, sorted
 `ensure_ascii` JSON. The effectful process/clock adapter, atomic publication,
-and acceptance evidence remain open.
+and acceptance evidence remain open; `EsLuaBundlePublication` now provides the
+pure admission state machine for exclusive sibling staging, descriptor closure,
+rename acknowledgement, directory sync, and failure preservation.

@@ -1,0 +1,173 @@
+# Pure publication admission contract for Lua bundle metadata.
+#
+# The host adapter still owns mkstemp, descriptor writes, fsync, rename, and
+# cleanup. This state machine records the facts that must be acknowledged before
+# `file_stream_publish_staged` may be called, so a path-only helper cannot be
+# mistaken for exclusive staging or crash-safe replacement.
+
+module EsLuaBundlePublication:
+    public:
+        const module Limits:
+            BYTES: usize = 67108864
+            PATH_BYTES: usize = 4096
+
+
+        const enum PublicationState of u8:
+            Planned
+            Staging
+            Staged
+            Publishing
+            Published
+            Failed
+            Cancelling
+            Cancelled
+
+
+        const enum PublicationEvent of u8:
+            Begin
+            StageCreated
+            Write
+            Sync
+            Close
+            Publish
+            PublishAck
+            Fail
+            Cancel
+            CancelAck
+
+
+        struct PublicationRequest:
+            destination: sview
+            staging: sview
+            directory: sview = ""
+            bytes: usize
+            require_directory_sync: bool = true
+
+
+        struct PublicationSession:
+            request: PublicationRequest
+            state: PublicationState = PublicationState.Planned
+            staging_sibling: bool = false
+            staging_exclusive: bool = false
+            descriptor_owned: bool = false
+            descriptor_closed: bool = false
+            bytes_written: usize = 0
+            stage_synced: bool = false
+            rename_acknowledged: bool = false
+            directory_synced: bool = false
+            destination_preserved_on_failure: bool = true
+
+
+        error PublicationError:
+            InvalidState
+            InvalidEvent
+            InvalidRequest
+            InvalidPath
+            PathCollision
+            BytesInvalid
+            StageAdmissionMissing
+            DescriptorOwnershipMissing
+            WriteNotReady
+            WriteLimitExceeded
+            SyncNotReady
+            CloseNotReady
+            PublishNotReady
+            RenameAckMissing
+            DirectorySyncMissing
+            DestinationNotPreserved
+            CancelNotReady
+            AccountingInvalid
+
+
+    private:
+        def publication_state_valid(state: PublicationState) -> bool:
+            return state in {PublicationState.Planned, PublicationState.Staging, PublicationState.Staged, PublicationState.Publishing, PublicationState.Published, PublicationState.Failed, PublicationState.Cancelling, PublicationState.Cancelled}
+
+
+        def publication_event_valid(event: PublicationEvent) -> bool:
+            return event in {PublicationEvent.Begin, PublicationEvent.StageCreated, PublicationEvent.Write, PublicationEvent.Sync, PublicationEvent.Close, PublicationEvent.Publish, PublicationEvent.PublishAck, PublicationEvent.Fail, PublicationEvent.Cancel, PublicationEvent.CancelAck}
+
+
+        def publication_path_valid(path: sview, optional: bool) -> bool:
+            return optional if path == "" else sview_len(path) < Limits::PATH_BYTES and not sview_contains_byte(path, 0)
+
+
+        def publication_request_valid(request: PublicationRequest) -> bool error[PublicationError]:
+            raise PublicationError.InvalidPath if not publication_path_valid(request.destination, false) or not publication_path_valid(request.staging, false) or not publication_path_valid(request.directory, true)
+            raise PublicationError.PathCollision if request.destination == request.staging
+            raise PublicationError.BytesInvalid if request.bytes == 0 or request.bytes > Limits::BYTES
+            raise PublicationError.InvalidRequest if request.require_directory_sync and request.directory == ""
+            return true
+
+
+    public:
+        def validate_publication(session: PublicationSession&) -> bool error[PublicationError]:
+            raise PublicationError.InvalidState if not publication_state_valid(session.state)
+            try publication_request_valid(session.request)
+            raise PublicationError.BytesInvalid if session.bytes_written > session.request.bytes
+            raise PublicationError.AccountingInvalid if session.descriptor_owned and session.descriptor_closed
+            raise PublicationError.AccountingInvalid if session.stage_synced and session.bytes_written != session.request.bytes
+            raise PublicationError.StageAdmissionMissing if (session.state == PublicationState.Staged or session.state == PublicationState.Publishing or session.state == PublicationState.Published) and not session.staging_sibling
+            raise PublicationError.StageAdmissionMissing if (session.state == PublicationState.Staged or session.state == PublicationState.Publishing or session.state == PublicationState.Published) and not session.staging_exclusive
+            raise PublicationError.SyncNotReady if (session.state == PublicationState.Staged or session.state == PublicationState.Publishing or session.state == PublicationState.Published) and not session.stage_synced
+            raise PublicationError.DescriptorOwnershipMissing if session.state == PublicationState.Staged and not session.descriptor_closed
+            raise PublicationError.DescriptorOwnershipMissing if session.state == PublicationState.Publishing and not session.descriptor_closed
+            raise PublicationError.RenameAckMissing if session.state == PublicationState.Published and not session.rename_acknowledged
+            raise PublicationError.DirectorySyncMissing if session.state == PublicationState.Published and session.request.require_directory_sync and not session.directory_synced
+            raise PublicationError.DestinationNotPreserved if (session.state == PublicationState.Failed or session.state == PublicationState.Cancelled) and not session.destination_preserved_on_failure
+            raise PublicationError.AccountingInvalid if (session.state == PublicationState.Failed or session.state == PublicationState.Cancelled) and session.rename_acknowledged
+            if session.state == PublicationState.Planned:
+                raise PublicationError.AccountingInvalid if session.staging_sibling or session.staging_exclusive or session.descriptor_owned or session.descriptor_closed or session.bytes_written != 0 or session.stage_synced or session.rename_acknowledged or session.directory_synced
+            return true
+
+
+        def advance_publication(session: mutable PublicationSession&, event: PublicationEvent, bytes_delta: usize = 0, staging_sibling: bool = false, staging_exclusive: bool = false, descriptor_owned: bool = false, destination_preserved: bool = true, directory_synced: bool = false) -> PublicationState error[PublicationError] can[Memory.Allocate, Abort.Panic]:
+            try validate_publication(session)
+            raise PublicationError.InvalidEvent if not publication_event_valid(event)
+            if event == PublicationEvent.Begin:
+                raise PublicationError.InvalidState if session.state != PublicationState.Planned
+                session.state <- PublicationState.Staging
+            elif event == PublicationEvent.StageCreated:
+                raise PublicationError.InvalidState if session.state != PublicationState.Staging
+                raise PublicationError.InvalidState if session.staging_sibling or session.staging_exclusive or session.descriptor_owned or session.descriptor_closed
+                raise PublicationError.StageAdmissionMissing if not staging_sibling or not staging_exclusive
+                raise PublicationError.DescriptorOwnershipMissing if not descriptor_owned
+                session.staging_sibling <- true
+                session.staging_exclusive <- true
+                session.descriptor_owned <- true
+            elif event == PublicationEvent.Write:
+                raise PublicationError.WriteNotReady if session.state != PublicationState.Staging or not session.staging_sibling or not session.staging_exclusive or not session.descriptor_owned or session.descriptor_closed
+                raise PublicationError.WriteLimitExceeded if bytes_delta == 0 or bytes_delta > session.request.bytes - session.bytes_written
+                session.bytes_written <- session.bytes_written + bytes_delta
+            elif event == PublicationEvent.Sync:
+                raise PublicationError.SyncNotReady if session.state != PublicationState.Staging or not session.descriptor_owned or session.descriptor_closed or session.bytes_written != session.request.bytes
+                raise PublicationError.InvalidState if session.stage_synced
+                session.stage_synced <- true
+            elif event == PublicationEvent.Close:
+                raise PublicationError.CloseNotReady if session.state != PublicationState.Staging or not session.stage_synced or not session.descriptor_owned or session.descriptor_closed
+                session.descriptor_owned <- false
+                session.descriptor_closed <- true
+                session.state <- PublicationState.Staged
+            elif event == PublicationEvent.Publish:
+                raise PublicationError.PublishNotReady if session.state != PublicationState.Staged or not session.staging_sibling or not session.staging_exclusive or not session.descriptor_closed or not session.stage_synced
+                session.state <- PublicationState.Publishing
+            elif event == PublicationEvent.PublishAck:
+                raise PublicationError.PublishNotReady if session.state != PublicationState.Publishing
+                raise PublicationError.DirectorySyncMissing if session.request.require_directory_sync and not directory_synced
+                session.rename_acknowledged <- true
+                session.directory_synced <- directory_synced
+                session.state <- PublicationState.Published
+            elif event == PublicationEvent.Fail:
+                raise PublicationError.InvalidState if session.state == PublicationState.Planned or session.state == PublicationState.Published or session.state == PublicationState.Failed or session.state == PublicationState.Cancelled
+                raise PublicationError.DestinationNotPreserved if not destination_preserved
+                session.destination_preserved_on_failure <- true
+                session.state <- PublicationState.Failed
+            elif event == PublicationEvent.Cancel:
+                raise PublicationError.CancelNotReady if session.state != PublicationState.Planned and session.state != PublicationState.Staging and session.state != PublicationState.Staged
+                raise PublicationError.DestinationNotPreserved if not destination_preserved
+                session.destination_preserved_on_failure <- true
+                session.state <- PublicationState.Cancelling
+            elif event == PublicationEvent.CancelAck:
+                raise PublicationError.CancelNotReady if session.state != PublicationState.Cancelling
+                session.state <- PublicationState.Cancelled
+            return session.state

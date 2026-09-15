@@ -1220,4 +1220,7 @@ HEAD/branch/status fallback contract; the serializer validates the injected
 UTC-second shape, sorts final assignment keys, emits bounded `ensure_ascii`
 JSON, and rejects invalid UTF-8. The focused IR fixture and
 `check_lua_bundle_metadata.sh` audit remain source-only; effectful process/clock
-adapters, atomic publication, and parity execution remain open.
+adapters and publication are still effectful, but `EsLuaBundlePublication` now
+provides a pure admission state machine for exclusive sibling staging,
+descriptor closure, rename acknowledgement, directory sync, and failure
+preservation. Parity execution remains open.
