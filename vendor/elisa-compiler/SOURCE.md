@@ -65,6 +65,8 @@ The current adapted fixes are tracked separately from the snapshot identity:
 
 - `07dfa7a9` / `0d92a608`: nested-module constant ownership and use-site lowering;
 - `10fdfaa6`: catch-all error binders and implicit value-returning block tails.
+- `2d44a99e`: short-circuit unequal `sview` lengths before the runtime byte walk,
+  with a fallback for legacy non-aggregate lowering paths.
 
 These changes are limited to the vendored APIs and deliberately omit newer
 backend files whose supporting tables are not present in `e56d6f2d`.
