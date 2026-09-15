@@ -1195,3 +1195,10 @@ commit-acknowledgement flags without staged synchronization, and rejects an
 acknowledged commit without the required directory sync. Static rollback and
 commit fixtures cover these cases; no compiler, test, script, or audit process
 was run.
+
+The IR lowerer now uses only the closed `TypeKind` vocabulary when checking
+explicitly suffixed integer literals in contextual positions; stale references
+to the removed `TypeKind.Unmodeled` member were removed. A compiler-free
+`check_lower_ast_integrity.sh` audit and signed/unsigned contextual-return
+fixtures cover the source boundary. No compiler, test, script, or audit process
+was run.

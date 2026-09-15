@@ -70,6 +70,12 @@ sizes, bytecode slots, or host ABI facts. Those belong to target-specific loweri
 The copied compiler's EASM remains a later machine-level representation and is
 not used as the shared IR.
 
+Contextual integer literals use an empty `Named` descriptor as the explicit
+unknown/context sentinel. The lowerer must only compare against members of the
+closed `TypeKind` enum; `scripts/check_lower_ast_integrity.sh` is a compiler-free
+guard for this invariant and for both signed and unsigned suffixed literals in
+contextual return positions.
+
 ## Host-runtime namespace
 
 `EsRuntime` is the sole qualified namespace for the POSIX host boundary. Its
