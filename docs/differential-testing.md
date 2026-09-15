@@ -1199,7 +1199,10 @@ step from the retained records: a `Diverged` sequence must stop at that exact
 step, all earlier steps must be equal, and `Running`/`Completed` sequences
 cannot hide an unequal step or a forged divergence pointer. The append cursor
 must equal the retained step count, so a restored or caller-constructed trace
-cannot append a duplicate step index;
+cannot append a duplicate step index. Checkpoints must also refer to a
+reached step boundary, and a divergent trace may not retain a checkpoint after
+the first unequal step; this keeps caller-constructed future work outside the
+sealed prefix;
 `EsDifferentialStability::DifferentialStabilitySession` is the bounded repeat
 boundary for adapters whose output may vary between runs. A policy declares a
 minimum and maximum repeat count (capped at sixteen) and explicitly chooses

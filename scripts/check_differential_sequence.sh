@@ -39,6 +39,10 @@ for boundary in \
     'DivergenceStateInvalid' \
     'sequence.next_index != sequence.steps.count' \
     'forged_step_cursor' \
+    'checkpoint.index > sequence.next_index' \
+    'forged_future_checkpoint' \
+    'checkpoint.index > sequence.first_divergence' \
+    'forged_post_divergence_checkpoint' \
     'sequence.first_divergence != sequence.steps.count - 1' \
     'forged_divergence_pointer'; do
     rg -Fq "$boundary" "$model"
