@@ -1975,7 +1975,9 @@ budgets before allocating its result: at most `EsIr::LauncherLimits::ARGUMENTS`
 script arguments and at most `EsIr::LauncherLimits::ARGUMENT_BYTES` aggregate
 script-argument bytes. Count and byte-budget violations are typed
 `TooManyArguments` and `ArgumentsTooLarge` CLI errors, so library callers
-cannot bypass the driver's pre-admission checks. Usage errors use process
+cannot bypass the driver's pre-admission checks. Reusing an
+`ElisascriptCliRequest` is also safe: the parser clears its derived fields
+before validation, including when validation fails. Usage errors use process
 status `2`, while source,
 entrypoint, bytecode, and execution failures use status `1`. The driver includes
 the source path and failing phase in stderr diagnostics, and source,

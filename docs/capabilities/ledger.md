@@ -1334,3 +1334,9 @@ resetting the comparison budget and turning malformed large maps into
 unbounded work. The focused differential fixture, checker, and documentation
 are static evidence only; no compiler, test, script, or audit process was run
 (`60ac5dd3`).
+
+The reusable `ElisascriptCliRequest` parser now clears all derived fields before
+validation, including on failure, so stale source arguments, mode, color,
+strict-engine, and option-boundary state cannot leak across launcher requests.
+The runner fixture, CLI audit token, and documentation are source evidence
+only; no compiler, test, script, or audit process was run.

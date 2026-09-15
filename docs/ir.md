@@ -3532,6 +3532,9 @@ and sends that request through `parse_elisascript_cli`. The parser requires a
 `.elisascript` source path, rejects embedded NUL bytes in the source and every
 typed argument, and preserves every
 remaining argv element—including spaces and empty strings—as one typed value.
+The reusable request record is reset before validation, including on a rejected
+parse, so mode, color, strict-engine, option-boundary, source, and argument
+state from an earlier invocation cannot leak into a later one.
 It enforces the same public launcher budgets as the native adapter before
 allocating the request (`EsIr::LauncherLimits::ARGUMENTS` script arguments and
 `EsIr::LauncherLimits::ARGUMENT_BYTES` aggregate script-argument bytes), reporting
