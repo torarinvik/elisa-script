@@ -67,6 +67,8 @@ The current adapted fixes are tracked separately from the snapshot identity:
 - `10fdfaa6`: catch-all error binders and implicit value-returning block tails.
 - `2d44a99e`: short-circuit unequal `sview` lengths before the runtime byte walk,
   with a fallback for legacy non-aggregate lowering paths.
+- `a584ab52`: traverse the existing symbol-name chains for enum and unique
+  function-return lookups instead of scanning the full declaration table.
 
 These changes are limited to the vendored APIs and deliberately omit newer
 backend files whose supporting tables are not present in `e56d6f2d`.
