@@ -519,7 +519,7 @@ ES-SCRIPT-043 | EsErrorProvenance supplies a bounded cross-boundary error
 envelope. It preserves origin, phase, code, source coordinates, bounded text,
 retryability, and earlier cause identity across capture/forward/handle/cancel
 edges; state/history mismatches, future/self causes, cause-depth overflow, duplicate envelopes, origin
-reclassification, retained-text overflow, and post-terminal transitions are
+reclassification, embedded-NUL and retained-text overflow, and post-terminal transitions are
 typed under `error[ErrorProvenanceError]`. The focused IR fixture, namespace
 inclusion, documentation, and check_error_provenance.sh audit are static
 evidence; driver/host adapter integration and executed diagnostics remain open.

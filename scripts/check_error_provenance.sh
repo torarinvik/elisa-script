@@ -40,6 +40,7 @@ for boundary in \
     'ErrorOrigin.LimitExceeded' \
     'ErrorProvenanceEvent.Forward' \
     'ErrorProvenanceError.InvalidCause' \
+    'ErrorProvenanceError.EmbeddedNul' \
     'ErrorEnvelopeState.Captured and envelope.forward_count != 0' \
     'ErrorEnvelopeState.Forwarded and envelope.forward_count == 0' \
     'ErrorProvenanceError.CauseDepthExceeded' \
@@ -54,6 +55,7 @@ for fixture_pattern in \
     'ErrorOrigin.Script' \
     'ErrorProvenanceEvent.Handle' \
     'ErrorProvenanceError.InvalidCause' \
+    'nul_message_rejected' \
     'forged_forward_history'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done

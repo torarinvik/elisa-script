@@ -564,9 +564,10 @@ across runner and driver boundaries. Each envelope records a closed origin
 (`Script`, `Host`, `InvalidCompilerOutput`, `Cancelled`, or `LimitExceeded`),
 phase, nonzero code, bounded message, optional source location, retryability,
 and an earlier cause id. Capture, forward, handle, and cancel are explicit
-state transitions; forwarding cannot reclassify the origin, a captured envelope
-cannot claim forwarding history, and a forwarded envelope must record at least
-one forward. Future/self causes
+state transitions; length checks precede content scans so oversize text reports
+`TextLimitExceeded` and embedded NULs report `EmbeddedNul`; forwarding cannot
+reclassify the origin, a captured envelope cannot claim forwarding history, and
+a forwarded envelope must record at least one forward. Future/self causes
 are rejected, cause depth and retained text are bounded, and handled errors
 cannot be cancelled again through `error[ErrorProvenanceError]`.
 
