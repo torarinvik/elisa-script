@@ -1239,6 +1239,8 @@ JSON, and rejects invalid UTF-8. The focused IR fixture and
 adapters and publication are still effectful, but `EsLuaBundlePublication` now
 provides a pure admission state machine for exclusive sibling staging,
 descriptor closure, rename acknowledgement, directory sync, and failure
-preservation. A lost rename acknowledgement is represented as
+preservation. Typed parent/staging identity proofs bind device, inode, owner
+token, regular/private/single-link staging, and the shared parent device before
+publication. A lost rename acknowledgement is represented as
 `PublishedUncertain` rather than an ordinary failed publication. Parity
 execution remains open.

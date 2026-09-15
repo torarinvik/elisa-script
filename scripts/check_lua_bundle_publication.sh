@@ -21,6 +21,8 @@ for declaration in \
     'const enum PublicationState' \
     'const enum PublicationEvent' \
     'struct PublicationRequest:' \
+    'struct PublicationParentProof:' \
+    'struct PublicationStagingProof:' \
     'struct PublicationSession:' \
     'error PublicationError:' \
     'def validate_publication' \
@@ -31,6 +33,11 @@ done
 for boundary in \
     'StageAdmissionMissing' \
     'DescriptorOwnershipMissing' \
+    'ParentIdentityMissing' \
+    'StagingIdentityMissing' \
+    'StagingIdentityInvalid' \
+    'OwnerMismatch' \
+    'publication_identity_proofs_valid' \
     'WriteLimitExceeded' \
     'DirectorySyncMissing' \
     'DestinationNotPreserved' \
