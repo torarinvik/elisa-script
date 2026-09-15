@@ -1873,7 +1873,8 @@ Once fail-fast has latched a real failure, `Cancel → CancelAck` drains the
 remaining siblings but still terminates as `Failed`; cancellation cannot mask
 the failed child. If cancellation arrives before that child’s reap receipt,
 `CancelAck` records the child as a failed terminal outcome before cancelling
-the siblings.
+the siblings. The latch is valid only under the `FailFast` policy; an imported
+aggregate batch cannot smuggle itself into fail-fast draining.
 
 `EsTestRunner` builds the test/CI layer over these process and output
 contracts. `TestSpec` binds a stable nonzero ID and unique name to one

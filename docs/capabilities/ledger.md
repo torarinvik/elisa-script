@@ -1089,7 +1089,8 @@ active parallelism, attempts before launch, pending/running/awaiting-reap/retrya
 terminal-state accounting, launch attempt tokens, stale-receipt rejection,
 explicit reap acknowledgement before retry, planned cancellation, fail-fast versus aggregate
 failure, including fail-fast draining where every active sibling fails, and
-scoped `Cancel → CancelAck` cleanup. In-flight `Running` and `Cancelling`
+scoped `Cancel → CancelAck` cleanup. The fail-fast latch is policy-bound, so an
+aggregate batch cannot be forged as fail-fast draining. In-flight `Running` and `Cancelling`
 snapshots must retain unfinished work, preventing a forged terminal snapshot
 from being relabelled as cancellation.
 The focused IR fixture, namespace inclusion, documentation, and

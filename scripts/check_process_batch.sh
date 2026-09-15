@@ -65,6 +65,7 @@ for boundary in \
     'ProcessBatchState.Running and unfinished == 0' \
     'ProcessBatchState.Cancelling and unfinished == 0' \
     'session.failed > session.jobs.count - session.completed' \
+    'session.fail_fast_latched and session.policy.failure_mode != ProcessBatchFailureMode.FailFast' \
     'cancelled == 0'; do
     rg -q "$boundary" "$model"
 done
@@ -81,6 +82,7 @@ for fixture_pattern in \
     'forged_failed' \
     'forged_failed_with_pending' \
     'forged_draining' \
+    'forged_aggregate_latch' \
     'ProcessBatchEvent.ReapAck' \
     'StaleAttempt' \
     'retry_without_reap' \
