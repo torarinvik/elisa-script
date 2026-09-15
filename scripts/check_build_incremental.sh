@@ -23,6 +23,7 @@ for declaration in \
     'Limits::OUTPUTS' \
     'Limits::OBSERVATIONS' \
     'const enum BuildIncrementalTargetKind of u8:' \
+    'Phony' \
     'const enum BuildIncrementalDecision of u8:' \
     'struct BuildIncrementalTarget:' \
     'struct BuildIncrementalObservation:' \
@@ -40,6 +41,7 @@ for boundary in \
     'BuildIncrementalDecision.DependencyDirty' \
     'BuildIncrementalDecision.InputChanged' \
     'BuildIncrementalDecision.OutputMissing' \
+    'BuildIncrementalTargetKind.Phony' \
     'BuildIncrementalError.DuplicateInput' \
     'BuildIncrementalError.DuplicateOutput' \
     'BuildIncrementalError.OutputCollision' \
