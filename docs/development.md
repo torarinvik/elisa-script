@@ -27,11 +27,13 @@ rechecked 2026-09-16) is the clean `main` checkout at `../Elisa-compiler`,
 revision `5329edfdbefa27b5c1c51253da0073256ed51058` (committed 2026-09-16). It
 includes the module-callee, private-extern, catch-binder, value-tail, and
 stage-compatibility fixes plus the recent wasm intrinsic/component-runtime
-corrections and target-machine optimization-level matching (`5329edfd`) on top
+corrections (including the wasm memory-intrinsic overload fix) and target-machine
+optimization-level matching (`5329edfd`) on top
 of the extern-resource ABI and lowering work. The upstream lexer buffer-return
 optimization (`c7c849c7`) is also represented by the focused Elisascript
 adaptation in `vendor/elisa-compiler/src/lexer`; the compatible target-machine
-level helper is mirrored in `vendor/elisa-compiler/src/backend/codegen_debug.elisa`.
+level helper and wasm intrinsic overload fix are mirrored in
+`vendor/elisa-compiler/src/backend/{codegen_debug,codegen_declare}.elisa`.
 The vendored snapshot also carries the compatible semantic fast paths from
 `142d9b03` (direct `sview` length checks and one-time protocol indexing) and
 the backend disjointness-scan de-duplication from `9bf231e6`; newer allocator,

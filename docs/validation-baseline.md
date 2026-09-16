@@ -75,8 +75,9 @@ compatibility refresh rather than a wholesale copy.
 Latest self-hosted source recheck (2026-09-16; read-only): the clean `main`
 checkout now resolves to
 `5329edfdbefa27b5c1c51253da0073256ed51058`, adding the recent wasm
-intrinsic/component-runtime corrections and target-machine optimization-level
-matching on top of the `d6a693c0` module-callee, private-extern, catch-binder,
+intrinsic/component-runtime corrections (including the memory-intrinsic
+overload fix) and target-machine optimization-level matching on top of the
+`d6a693c0` module-callee, private-extern, catch-binder,
 value-tail, and stage compatibility fixes. The vendored `e56d6f2d` tree remains
 the known-compatible adapted snapshot; its target-machine helper now exposes a
 level-aware entry point, but no compiler was rebuilt or launched.

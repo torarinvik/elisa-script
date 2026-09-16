@@ -102,6 +102,12 @@ The current adapted fixes are tracked separately from the snapshot identity:
   compatibility path for metadata/report callers. The excluded upstream driver
   still owns the policy that selects the level; no executable was rebuilt or
   launched here.
+- `d7aead96`: mirror the WebAssembly memory-intrinsic overload correction in
+  the compatible declaration backend. `memory.grow` and `memory.size` are
+  overloaded by their i32 result, not by their two source parameters, so the
+  declaration helper now passes exactly one overload type. The newer
+  freestanding component-runtime string helper is not present in this snapshot
+  and remains intentionally unmerged.
 
 These changes are limited to the vendored APIs and deliberately omit newer
 backend files whose supporting tables are not present in `e56d6f2d`.
