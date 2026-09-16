@@ -763,11 +763,14 @@ persistence, and host cancellation adapters remain open.
 
 ES-SCRIPT-003 | EsOutputRender supplies sealed-document admission at validation,
 ordered record consumption, format framing, JSON/XML escape expansion accounting
-with overflow-safe per-record accumulation,
-shared output-budget enforcement, exact emitted-prefix reconciliation, and
-explicit failure/cancellation edges.
-The focused IR fixture and check_output_renderer.sh audit are static evidence;
-actual stdout/stderr writes remain a host-adapter follow-up.
+with overflow-safe per-record accumulation, shared output-budget enforcement,
+exact emitted-prefix reconciliation, and explicit failure/cancellation edges.
+`EsOutputTransport` adds a bounded renderer-to-host hand-off with exact
+frame-kind/index/sequence/byte acknowledgements and short-write, reorder, forge,
+and per-frame/total-limit rejection; it retains no borrowed text and performs no
+OS write. The focused IR fixture and check_output_renderer.sh audit are static
+evidence; concrete formatting and actual stdout/stderr writes remain host-adapter
+follow-ups.
 
 ES-SCRIPT-004 | EsPackageRegistry supplies bounded candidate rows, semver-aware
 deterministic ordering (stable releases follow matching prereleases in only that direction), integrity admission, sealed-state lookup by PackageConstraint, and

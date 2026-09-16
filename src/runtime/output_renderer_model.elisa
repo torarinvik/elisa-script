@@ -31,6 +31,26 @@ module EsOutputRender:
             CancelAck
 
 
+        const enum OutputRenderFrameKind of u8:
+            Header
+            Record
+            Footer
+
+
+        # A frame is a renderer-to-host hand-off descriptor, not an owned byte
+        # buffer.  The formatter uses `kind` and `record_index` to produce the
+        # bytes while `bytes` and `sequence` bind that production to the
+        # renderer's checked accounting.  Keeping text out of this value makes
+        # it safe to pass across a host write boundary without retaining a
+        # borrowed view beyond the current render step.
+        struct OutputRenderFrame:
+            kind: OutputRenderFrameKind = OutputRenderFrameKind.Header
+            record_index: usize = 0
+            sequence: usize = 0
+            bytes: usize = 0
+            final_frame: bool = false
+
+
         struct OutputRender:
             document: OutputDocument
             state: OutputRenderState = OutputRenderState.Ready
@@ -59,6 +79,10 @@ module EsOutputRender:
 
         def output_render_event_valid(event: OutputRenderEvent) -> bool:
             return event in {OutputRenderEvent.Begin, OutputRenderEvent.Emit, OutputRenderEvent.Finish, OutputRenderEvent.Fail, OutputRenderEvent.Cancel, OutputRenderEvent.CancelAck}
+
+
+        def output_render_frame_kind_valid(kind: OutputRenderFrameKind) -> bool:
+            return kind in {OutputRenderFrameKind.Header, OutputRenderFrameKind.Record, OutputRenderFrameKind.Footer}
 
 
         def output_render_add(current: usize, addition: usize, limit: usize) -> bool:
@@ -176,6 +200,35 @@ module EsOutputRender:
             else:
                 raise OutputRenderError.AccountingInvalid if render.chunks != render.next_record + 1
             return true
+
+
+        def peek_output_render_frame(render: OutputRender&) -> OutputRenderFrame error[OutputRenderError]:
+            # Peeking is deliberately side-effect free.  A host adapter can
+            # format and write the returned frame, then acknowledge it through
+            # `next_output_render_frame`; a failed write therefore cannot
+            # consume a renderer frame by accident.
+            try validate_output_render(render)
+            if render.state == OutputRenderState.Ready:
+                return OutputRenderFrame{kind: OutputRenderFrameKind.Header, sequence: render.chunks, bytes: try output_render_header_bytes(render.document)}
+            raise OutputRenderError.InvalidState if render.state != OutputRenderState.Rendering
+            if render.next_record < render.document.records.count:
+                return OutputRenderFrame{kind: OutputRenderFrameKind.Record, record_index: render.next_record, sequence: render.chunks, bytes: try output_render_record_bytes(render.document, render.document.records[render.next_record], render.next_record == 0)}
+            return OutputRenderFrame{kind: OutputRenderFrameKind.Footer, sequence: render.chunks, bytes: try output_render_footer_bytes(render.document), final_frame: true}
+
+
+        def next_output_render_frame(render: mutable OutputRender&, frame: mutable OutputRenderFrame&) -> OutputRenderState error[OutputRenderError]:
+            candidate: OutputRenderFrame = try peek_output_render_frame(render)
+            if candidate.kind == OutputRenderFrameKind.Header:
+                _ = try advance_output_render(render, OutputRenderEvent.Begin)
+            elif candidate.kind == OutputRenderFrameKind.Record:
+                _ = try advance_output_render(render, OutputRenderEvent.Emit, candidate.record_index)
+            elif candidate.kind == OutputRenderFrameKind.Footer:
+                _ = try advance_output_render(render, OutputRenderEvent.Finish)
+            else:
+                raise OutputRenderError.InvalidState
+            raise OutputRenderError.AccountingInvalid if not output_render_frame_kind_valid(candidate.kind)
+            frame <- candidate
+            return render.state
 
 
         def advance_output_render(render: mutable OutputRender&, event: OutputRenderEvent, record_index: usize = 0) -> OutputRenderState error[OutputRenderError]:
