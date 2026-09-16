@@ -1176,7 +1176,12 @@ processes remain eligible for ordinary behavioral comparison, but cannot claim
 resource equivalence without an adapter-owned snapshot.
 
 `compare_differential_runs` remains a value/observation comparator and therefore
-does not reject an unknown engine by default. Backend qualification must use
+does not require an unknown engine by default, but every comparison still
+validates both run outcome ordinals and any engine/capability metadata that a
+caller claims. A malformed outcome or contradictory known backend metadata is
+a typed non-equal `Outcome`/`Engine` difference, even when the engine
+requirement is `Ignore`; it cannot reach the equality state machine. Backend
+qualification must use
 `compare_differential_runs_with_engine_requirement` with an explicit
 `DifferentialEngineRequirement`: `RequireKnown` checks that both sides report an
 engine, `RequireDistinct` additionally requires different known engines, and
