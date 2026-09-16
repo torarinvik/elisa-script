@@ -1985,6 +1985,16 @@ their retained source region; length-delimited byte loaders copy input into
 the loader context's permanent region before returning views. The wrappers do
 not invoke tests or alter serialized IR identity.
 
+The runner's `discover_elisascript_file_tests` adapter binds the file-loader
+catalog to `EsScriptTest` in source order without requiring `main`; it leaves a
+validated session in `Planned` so cancellation or execution policy remains an
+explicit caller transition. `execute_elisascript_test` accepts only a planned,
+bounded descriptor whose bytecode function is zero-argument and `void`, clears
+observations/storage for a fresh case, and invokes the named entry through the
+shared policy-aware bytecode facade. Unknown names and signature drift are
+typed `ScriptTestError`s, while runtime failures remain `InterpretError`s; the
+helper does not infer success from a non-void value.
+
 Before any regex opcode executes, both backends enforce a shared input-size
 boundary: haystack text is at most 64 MiB, the compiled-pattern payload is at
 most 64 KiB, and replacement text is at most 64 MiB. Oversized operands fail

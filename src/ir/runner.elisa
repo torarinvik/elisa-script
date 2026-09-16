@@ -9,6 +9,7 @@
 
 using EsBytecode
 using EsCli
+using EsScriptTest
 
 
 error ElisascriptEntrypointError:
@@ -401,6 +402,58 @@ extend EsIr:
 
                 Validate, ElisascriptEntrypointState.Done:
                     break
+
+
+        # Discover top-level `@test` functions without requiring a `main`
+        # entrypoint. The loader keeps function names in its retained source
+        # region; this adapter copies only the bounded descriptors into the
+        # host-neutral `EsScriptTest` state machine and leaves it Planned for a
+        # later execution adapter to begin.
+        def discover_elisascript_file_tests_with_handlers(filename: u8&, module_name: sview, handlers: darray[Handler]&, session: mutable ScriptTestSession&) -> Module error[ElisascriptSourceError, ScriptTestError] can[Memory.Allocate, Abort.Panic]:
+            session.cases.truncate(0)
+            session.state <- ScriptTestState.Planned
+            session.next_case <- 0
+            session.active_case <- EsScriptTest::Limits::NO_ACTIVE
+            session.passed <- 0
+            session.failed <- 0
+            session.failure <- ScriptTestFailure{}
+            session.cancellation_requested <- false
+            metadata: mutable darray[ElisascriptTestFunction] = []
+            module: Module = try lower_elisascript_file_with_handlers_tests(filename, module_name, handlers, metadata)
+            candidate: mutable ScriptTestSession = ScriptTestSession{}
+            for index in 0..<metadata.count |metadata, candidate|:
+                spec: ScriptTestSpec = ScriptTestSpec{ordinal: index, name: metadata[index].name, line: metadata[index].line}
+                try advance_script_test(candidate, ScriptTestEvent.Discover, spec: spec)
+            try validate_script_test_session(candidate)
+            session <- candidate
+            return module
+
+
+        def discover_elisascript_file_tests(filename: u8&, module_name: sview, session: mutable ScriptTestSession&) -> Module error[ElisascriptSourceError, ScriptTestError] can[Memory.Allocate, Abort.Panic]:
+            handlers: darray[Handler] = []
+            return discover_elisascript_file_tests_with_handlers(filename, module_name, handlers, session)
+
+
+        # Invoke exactly one discovered zero-argument void function. The caller
+        # supplies fresh observation/storage arrays for each case; truncating
+        # them here makes accidental reuse fail closed instead of leaking state
+        # from an earlier test. Runtime failures remain typed `InterpretError`s
+        # so the multi-case adapter can map them to `CaseFail` diagnostics.
+        def execute_elisascript_test(module: BytecodeModule&, spec: ScriptTestSpec&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, policy: RuntimeResourcePolicy = RuntimeResourcePolicy{}, invocation_context: ScriptInvocationContext = ScriptInvocationContext{}) -> Execution error[InterpretError, ScriptTestError] can[Memory.Allocate, Abort.Panic]:
+            try validate_script_test_spec(spec)
+            function_index: mutable usize = module.functions.count
+            for index in 0..<module.functions.count |module, spec, function_index|:
+                if function_index == module.functions.count and module.functions[index].name == spec.name:
+                    function_index <- index
+            raise ScriptTestError.FunctionNotFound if function_index == module.functions.count
+            function: BytecodeFunction = module.functions[function_index]
+            raise ScriptTestError.FunctionSignatureInvalid if function.parameters.count != 0 or function.return_type.kind != TypeKind.Void
+            observations.truncate(0)
+            storage.truncate(0)
+            arguments: darray[RuntimeValue] = []
+            execution: Execution = try execute_bytecode_with_resource_policy(module, spec.name, arguments, observations, storage, policy, invocation_context)
+            raise InterpretError.TypeMismatch if execution.value.kind != RuntimeValueKind.Void
+            return execution
 
 
     private:

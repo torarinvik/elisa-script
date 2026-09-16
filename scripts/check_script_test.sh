@@ -6,13 +6,15 @@ set -euo pipefail
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 model="$repo_root/src/runtime/script_test_model.elisa"
+runner="$repo_root/src/ir/runner.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
+runner_fixture="$repo_root/test/ir/elisascript_runner_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$ir" "$fixture" "$docs" "$ledger" "$plan"; do
+for required_file in "$model" "$runner" "$ir" "$fixture" "$runner_fixture" "$docs" "$ledger" "$plan"; do
     [[ -f "$required_file" ]] || { printf 'script test audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -26,9 +28,18 @@ for declaration in \
     'struct ScriptTestFailure:' \
     'struct ScriptTestSession:' \
     'error ScriptTestError:' \
+    'def validate_script_test_spec(' \
     'def validate_script_test_session(' \
     'def advance_script_test('; do
     rg -Fq "$declaration" "$model"
+done
+
+for runner_declaration in \
+    'using EsScriptTest' \
+    'def discover_elisascript_file_tests_with_handlers(' \
+    'def discover_elisascript_file_tests(' \
+    'def execute_elisascript_test('; do
+    rg -Fq "$runner_declaration" "$runner"
 done
 
 for boundary in \
@@ -44,6 +55,8 @@ for boundary in \
     'CaseNotReady' \
     'CaseOrderInvalid' \
     'CancellationNotReady' \
+    'FunctionNotFound' \
+    'FunctionSignatureInvalid' \
     'counted_cancelled' \
     'ScriptTestState.Cancelling' \
     'ScriptTestState.Cancelled' \
@@ -73,8 +86,20 @@ for fixture_pattern in \
     rg -Fq "$fixture_pattern" "$fixture"
 done
 
+for runner_fixture_pattern in \
+    'runner_discovers_file_tests_without_requiring_main' \
+    'discover_elisascript_file_tests(' \
+    'runner_executes_one_void_test_with_fresh_case_storage' \
+    'execute_elisascript_test(' \
+    'ScriptTestError.FunctionSignatureInvalid'; do
+    rg -Fq "$runner_fixture_pattern" "$runner_fixture"
+done
+
 rg -Fq '`EsScriptTest` supplies' "$docs"
+rg -Fq 'The runner' "$docs"
 rg -Fq 'ES-TEST-002 | `EsScriptTest`' "$ledger"
+rg -Fq 'ES-TEST-005 | runner discovery and single-case invocation' "$ledger"
 rg -Fq 'In-process test state machine' "$plan"
+rg -Fq 'Runner discovery and single-case invocation' "$plan"
 
 printf 'script test audit: bounded discovery, ordered execution, failure diagnostics, and cancellation are present\n'
