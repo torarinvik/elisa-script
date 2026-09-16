@@ -9,8 +9,11 @@ docs="$script_dir/../docs/development.md"
 baseline="$script_dir/../docs/validation-baseline.md"
 
 [ -x "$helper" ]
-rg -q 'ELISA_LOCAL_COMPILER:-\$\{ELISACORE_BIN:-\$default_compiler\}' "$helper"
+rg -q 'ELISA_LOCAL_COMPILER:-\$\{ELISACORE_BIN:-\$expected_compiler_path\}' "$helper"
 rg -q 'Go projects/structpy-tree/compiler/bin/elisac' "$helper"
+rg -Fq 'expected_compiler_path="/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac"' "$helper"
+rg -Fq 'if [ "$compiler" != "$expected_compiler_path" ]; then' "$helper"
+rg -q 'suffix match is insufficient' "$helper"
 rg -q 'compiler symlinks are not accepted' "$helper"
 rg -q 'git -C "\$compiler_root" rev-parse HEAD' "$helper"
 rg -q 'git -C "\$compiler_root" status --porcelain --untracked-files=normal' "$helper"

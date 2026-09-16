@@ -8,16 +8,17 @@ umask 077
 
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
-default_compiler="$(CDPATH= cd -- "$script_dir/../../../Go projects/structpy-tree/compiler/bin" && pwd)/elisac"
-compiler="${ELISA_LOCAL_COMPILER:-${ELISACORE_BIN:-$default_compiler}}"
+expected_compiler_path="/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac"
+compiler="${ELISA_LOCAL_COMPILER:-${ELISACORE_BIN:-$expected_compiler_path}}"
 
-case "$compiler" in
-    *"/Go projects/structpy-tree/compiler/bin/elisac") ;;
-    *)
-        echo "validation_identity: refusing compiler outside the pinned StructPy checkout" >&2
-        exit 2
-        ;;
-esac
+# Accept only the canonical physical path. A suffix match is insufficient:
+# an unrelated checkout can be named `structpy-tree` and otherwise pass the
+# source-revision checks below. The wrappers canonicalize their input before
+# calling this helper, so path aliases are rejected before identity lookup.
+if [ "$compiler" != "$expected_compiler_path" ]; then
+    echo "validation_identity: refusing compiler other than the canonical local StructPy compiler: $expected_compiler_path" >&2
+    exit 2
+fi
 
 if [ ! -f "$compiler" ] || [ ! -x "$compiler" ]; then
     echo "validation_identity: compiler is not an executable regular file: $compiler" >&2
