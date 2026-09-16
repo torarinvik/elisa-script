@@ -9,6 +9,7 @@
 
 using EsBytecode
 using EsCli
+using EsOutput
 using EsScriptTest
 
 
@@ -584,6 +585,40 @@ extend EsIr:
             raise InterpretError.UnsupportedInstruction if runtime_resource_policy_has_unaccounted_dimensions(policy)
 
 
+        def elisascript_test_engine_valid(engine: ExecutionEngine) -> bool:
+            return engine in {ExecutionEngine.ReferenceInterpreter, ExecutionEngine.DirectBytecode, ExecutionEngine.BytecodeInterpreterFallback}
+
+
+        def elisascript_validate_test_run(result: ElisascriptTestRun&) -> bool error[ScriptTestError]:
+            try validate_script_test_session(result.session)
+            raise ScriptTestError.FailureInvalid if result.runtime_error_known != (result.session.state == ScriptTestState.Failed)
+            raise ScriptTestError.TestLimitExceeded if result.executions.count > EsScriptTest::Limits::TESTS
+            raise ScriptTestError.AccountingInvalid if result.executions.count != result.session.passed
+            default_policy: RuntimeResourcePolicy = RuntimeResourcePolicy{}
+            raise ScriptTestError.AccountingInvalid if not runtime_resource_usage_within_policy(result.usage, default_policy)
+            for index in 0..<result.executions.count |result|:
+                execution: ElisascriptTestExecution = result.executions[index]
+                raise ScriptTestError.InvalidOrdinal if execution.ordinal != index or index >= result.session.cases.count or result.session.cases[index].state != ScriptTestCaseState.Passed
+                raise ScriptTestError.AccountingInvalid if execution.observation_count > EsIr::ES_RUNTIME_DEFAULT_MAX_OBSERVATIONS or execution.storage_values > EsIr::ES_RUNTIME_DEFAULT_MAX_STORAGE_VALUES or execution.output_bytes > EsIr::ES_RUNTIME_DEFAULT_MAX_OUTPUT_BYTES
+                raise ScriptTestError.InvalidState if not elisascript_test_engine_valid(execution.engine)
+            return true
+
+
+        def elisascript_test_report_record(session: ScriptTestSession&, index: usize) -> OutputRecord error[ScriptTestError]:
+            raise ScriptTestError.CaseOrderInvalid if index >= session.cases.count
+            spec: ScriptTestSpec = session.cases[index]
+            if spec.state == ScriptTestCaseState.Passed:
+                return OutputRecord{name: spec.name, status: OutputStatus.Pass}
+            if spec.state == ScriptTestCaseState.Failed:
+                raise ScriptTestError.FailureInvalid if session.failure.index != index or session.failure.name != spec.name
+                return OutputRecord{name: spec.name, status: OutputStatus.Fail, message: session.failure.message}
+            if spec.state == ScriptTestCaseState.Cancelled:
+                return OutputRecord{name: spec.name, status: OutputStatus.Skip, message: "cancelled before execution"}
+            if session.state == ScriptTestState.Failed and spec.state == ScriptTestCaseState.Planned:
+                return OutputRecord{name: spec.name, status: OutputStatus.Skip, message: "not run after test failure"}
+            raise ScriptTestError.CaseNotReady
+
+
         const enum ElisascriptTestRunState of u8:
             Discover
             Lower
@@ -698,7 +733,7 @@ extend EsIr:
                 Run, ElisascriptTestRunState.Done:
                     break
 
-            try validate_script_test_session(result.session)
+            try elisascript_validate_test_run(result)
 
 
     public:
@@ -762,6 +797,26 @@ extend EsIr:
         def execute_elisascript_file_tests(filename: u8&, module_name: sview, result: mutable ElisascriptTestRun&, policy: RuntimeResourcePolicy = RuntimeResourcePolicy{}, cancel_requested: bool = false) -> void error[ElisascriptSourceError, ScriptTestError, InterpretError] can[Memory.Allocate, Abort.Panic]:
             handlers: darray[Handler] = []
             return execute_elisascript_file_tests_with_handlers(filename, module_name, handlers, result, policy, cancel_requested)
+
+
+        # Project a terminal in-process run into the shared sealed output
+        # document. Building a temporary document first keeps a caller's
+        # existing report untouched if validation or a bounded append fails.
+        # Failed runs retain their first failure; trailing planned cases are
+        # explicit skips, matching the external test-runner report contract.
+        def build_elisascript_test_report(result: ElisascriptTestRun&, options: OutputOptions, report: mutable OutputDocument&) -> void error[ScriptTestError, OutputContractError] can[Memory.Allocate, Abort.Panic]:
+            try elisascript_validate_test_run(result)
+            raise ScriptTestError.NoTests if result.session.cases.count == 0
+            raise ScriptTestError.CaseNotReady if result.session.state == ScriptTestState.Planned or result.session.state == ScriptTestState.Running or result.session.state == ScriptTestState.Cancelling
+            try validate_output_options(options)
+            candidate: mutable OutputDocument = OutputDocument{options: options}
+            _ = try advance_output_document(candidate, OutputDocumentEvent.Begin)
+            for index in 0..<result.session.cases.count |result, candidate|:
+                record: OutputRecord = try elisascript_test_report_record(result.session, index)
+                _ = try advance_output_document(candidate, OutputDocumentEvent.Append, record)
+            _ = try advance_output_document(candidate, OutputDocumentEvent.Seal)
+            try validate_output_document(candidate)
+            report <- candidate
 
 
     private:

@@ -50,7 +50,8 @@ for runner_declaration in \
     'def execute_elisascript_source_tests_with_handlers(' \
     'def execute_elisascript_source_tests(' \
     'def execute_elisascript_source_bytes_tests_with_handlers(' \
-    'def execute_elisascript_source_bytes_tests('; do
+    'def execute_elisascript_source_bytes_tests(' \
+    'def build_elisascript_test_report('; do
     rg -Fq "$runner_declaration" "$runner"
 done
 
@@ -90,7 +91,12 @@ for multi_case_boundary in \
     'successful completed-case' \
     'result.executions.push(ElisascriptTestExecution' \
     'elisascript_test_session_from_metadata' \
-    'elisascript_run_test_module'; do
+    'elisascript_run_test_module' \
+    'elisascript_validate_test_run' \
+    'elisascript_test_report_record' \
+    'OutputDocumentEvent.Begin' \
+    'OutputDocumentEvent.Seal' \
+    'trailing planned cases'; do
     rg -Fq "$multi_case_boundary" "$runner"
 done
 
@@ -128,7 +134,9 @@ for runner_fixture_pattern in \
     'runtime_error == InterpretError.Assertion' \
     'runner_executes_source_buffer_tests_through_same_machine' \
     'execute_elisascript_source_tests(' \
-    'execute_elisascript_source_bytes_tests('; do
+    'execute_elisascript_source_bytes_tests(' \
+    'build_elisascript_test_report(' \
+    'OutputStatus.Fail'; do
     rg -Fq "$runner_fixture_pattern" "$runner_fixture"
 done
 

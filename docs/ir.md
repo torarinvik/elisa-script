@@ -2018,7 +2018,15 @@ only between cases, with `Cancel → CancelAck` leaving every unstarted case
 source-byte adapters all call the same machine; each has dynamic-handler and
 no-handler entry points, so source-buffer differential runs cannot silently
 use a different policy or failure path. Driver `--test` routing and
-compiler/runtime qualification remain open.
+compiler/runtime qualification remain open. The private run validator checks
+that successful summaries match the passed prefix, scalar counters stay within
+shared ceilings, and the runtime-error latch agrees with the terminal state.
+`build_elisascript_test_report` projects a terminal run into a temporary
+shared `OutputDocument` and publishes it only after `Begin → Append* → Seal`
+validation succeeds. Passing cases are
+`Pass`, the first runtime failure is `Fail`, and trailing planned or cancelled
+cases are explicit `Skip` records; a report cannot be built from a planned,
+running, or cancellation-in-flight session.
 
 Before any regex opcode executes, both backends enforce a shared input-size
 boundary: haystack text is at most 64 MiB, the compiled-pattern payload is at
