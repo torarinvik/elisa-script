@@ -7,6 +7,7 @@ script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 model="$repo_root/src/runtime/script_test_model.elisa"
 runner="$repo_root/src/ir/runner.elisa"
+execution="$repo_root/src/ir/execution.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 runner_fixture="$repo_root/test/ir/elisascript_runner_test.elisa"
@@ -14,9 +15,16 @@ docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$runner" "$ir" "$fixture" "$runner_fixture" "$docs" "$ledger" "$plan"; do
+for required_file in "$model" "$runner" "$execution" "$ir" "$fixture" "$runner_fixture" "$docs" "$ledger" "$plan"; do
     [[ -f "$required_file" ]] || { printf 'script test audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
+
+# The execution facade is a separate include root used by the native driver.
+# Keep its test/report dependencies explicit so a source-only include reduction
+# cannot leave runner symbols available in IR fixtures but missing at the
+# actual launcher boundary.
+rg -Fq 'include "../runtime/output_model.elisa"' "$execution"
+rg -Fq 'include "../runtime/script_test_model.elisa"' "$execution"
 
 for declaration in \
     'module EsScriptTest:' \
