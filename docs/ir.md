@@ -1992,7 +1992,9 @@ loading, so a failed reload cannot leak a prior catalog, and leaves a validated
 session in `Planned` so cancellation or execution policy remains an explicit
 caller transition. Source-buffer discovery borrows both source and filename
 bytes; source-byte discovery copies the source payload but still borrows the
-filename during the returned module's lifetime. `execute_elisascript_test` accepts only a planned,
+filename during the returned module's lifetime. Report names and failure/skip
+messages borrow the same session/source backing storage and must be rendered
+or copied before that storage is released. `execute_elisascript_test` accepts only a planned,
 bounded descriptor whose bytecode function is zero-argument and `void`, clears
 observations/storage for a fresh case, and invokes the named entry through the
 shared policy-aware bytecode facade. Unknown names and signature drift are
@@ -2020,12 +2022,15 @@ no-handler entry points, so source-buffer differential runs cannot silently
 use a different policy or failure path. Driver `--test` routing and
 compiler/runtime qualification remain open. The private run validator checks
 that successful summaries match the passed prefix, scalar counters stay within
-shared ceilings, and the runtime-error latch agrees with the terminal state.
+shared ceilings, and rejects a runtime-error latch on a non-failed state. A
+runner-produced runtime failure still sets the latch on `Failed`, while a
+host/static failed session may legitimately carry no `InterpretError` enum.
 `build_elisascript_test_report` projects a terminal run into a temporary
 shared `OutputDocument` and publishes it only after `Begin → Append* → Seal`
 validation succeeds. Passing cases are
 `Pass`, the first runtime failure is `Fail`, and trailing planned or cancelled
-cases are explicit `Skip` records; a report cannot be built from a planned,
+cases are explicit `Skip` records using the canonical messages `runner stopped
+after test failure` and `cancelled before launch`; a report cannot be built from a planned,
 running, or cancellation-in-flight session.
 
 Before any regex opcode executes, both backends enforce a shared input-size

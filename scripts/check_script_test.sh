@@ -96,7 +96,9 @@ for multi_case_boundary in \
     'elisascript_test_report_record' \
     'OutputDocumentEvent.Begin' \
     'OutputDocumentEvent.Seal' \
-    'trailing planned cases'; do
+    'trailing planned cases' \
+    'runner stopped after test failure' \
+    'cancelled before launch'; do
     rg -Fq "$multi_case_boundary" "$runner"
 done
 
@@ -132,6 +134,8 @@ for runner_fixture_pattern in \
     'cancel_requested: true' \
     'runner_maps_runtime_failure_to_typed_case_diagnostic' \
     'runtime_error == InterpretError.Assertion' \
+    'runner stopped after test failure' \
+    'cancelled before launch' \
     'runner_executes_source_buffer_tests_through_same_machine' \
     'execute_elisascript_source_tests(' \
     'execute_elisascript_source_bytes_tests(' \
