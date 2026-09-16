@@ -729,7 +729,7 @@ process-tree outcome; and any known polling or measurement limitation. A
 successful static diff check is recorded as static review, never as execution.
 
 ES-SCRIPT-002 | EsBuildScheduler supplies deterministic dependency-ready
-queues with clean ready-state admission, exact fingerprint cache admission, bounded parallel dispatch,
+queues with clean ready-state admission, ascending ready-queue order, exact fingerprint cache admission, bounded parallel dispatch,
 completion/failure accounting, queue-gated cache hits, and cancellation transitions over EsBuild;
 cancellation cannot relabel an already succeeded graph, and a pre-start cancellation
 marks every planned node terminal while keeping the scheduler and embedded graph

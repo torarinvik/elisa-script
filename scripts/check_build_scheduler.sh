@@ -55,6 +55,8 @@ for boundary in \
     'scheduler.active_nodes <- scheduler.active_nodes - 1' \
     'scheduler.ready_queue.count != 0' \
     'scheduler.state == BuildSchedulerState.Ready and scheduler.ready_queue.count != 0' \
+    'QueueOrderInvalid' \
+    'scheduler.ready_queue[index - 1] > queued' \
     'scheduler.state == BuildSchedulerState.Complete' \
     'scheduler.state == BuildSchedulerState.Failed' \
     'CompleteNotReady' \
@@ -81,6 +83,7 @@ for fixture_pattern in \
     'completed_during_drain' \
     'forged_cancelling_failure' \
     'planned_cancel_scheduler' \
+    'forged_queue_order' \
     'BuildSchedulerState.Complete' \
     'completed_cancel_rejected'; do
     rg -Fq "$fixture_pattern" "$fixture"

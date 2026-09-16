@@ -3774,8 +3774,9 @@ aggregate completed-node and cache-hit bounds are validated in separate
 subtraction-safe steps before active-node capacity is computed;
 cache hits must also consume a currently queued ready node, preventing an
 out-of-order cache completion after queue corruption; validation also rejects
-cache entries for unknown graph nodes and manually
-injected queue entries whose dependencies are not complete. Cancellation is
+cache entries for unknown graph nodes, manually injected queue entries whose
+dependencies are not complete, and ready queues that are not in the ascending
+order emitted by graph traversal. Cancellation is
 rejected once the embedded graph has already succeeded; a ready scheduler can
 also be cancelled before `Begin`, which marks every planned node cancelled and
 keeps the embedded graph and scheduler ledgers in sync. A ready scheduler
