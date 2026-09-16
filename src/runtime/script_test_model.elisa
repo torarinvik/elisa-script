@@ -1,0 +1,255 @@
+# Bounded in-process `@test` discovery and execution contract.
+#
+# This model is deliberately separate from EsTestRunner: that runner owns
+# external process cases, while this one owns zero-argument functions executed
+# in the already verified script module.  The host/engine supplies each case
+# result; the state machine prevents a skipped, duplicated, or out-of-order
+# callback from becoming a false-green test run.
+
+module EsScriptTest:
+    public:
+        const module Limits:
+            # Discovery uses a bounded duplicate-name scan. Keep the ceiling
+            # aligned with the external runner until a hashed name index is
+            # part of the public contract.
+            TESTS: usize = 4096
+            NAME_BYTES: usize = 4096
+            MESSAGE_BYTES: usize = 1048576
+            NO_ACTIVE: usize = TESTS
+
+
+        const enum ScriptTestCaseState of u8:
+            Planned
+            Running
+            Passed
+            Failed
+            Cancelled
+
+
+        const enum ScriptTestState of u8:
+            Planned
+            Running
+            Cancelling
+            Passed
+            Failed
+            Cancelled
+
+
+        const enum ScriptTestEvent of u8:
+            Discover
+            Begin
+            CaseBegin
+            CasePass
+            CaseFail
+            Cancel
+            CancelAck
+
+
+        struct ScriptTestSpec:
+            ordinal: usize
+            name: sview
+            line: u32
+            state: ScriptTestCaseState = ScriptTestCaseState.Planned
+
+
+        struct ScriptTestFailure:
+            index: usize = 0
+            name: sview = ""
+            line: u32 = 0
+            message: sview = ""
+
+
+        struct ScriptTestSession:
+            cases: darray[ScriptTestSpec] = []
+            state: ScriptTestState = ScriptTestState.Planned
+            next_case: usize = 0
+            active_case: usize = Limits::NO_ACTIVE
+            passed: usize = 0
+            failed: usize = 0
+            failure: ScriptTestFailure = ScriptTestFailure{}
+            cancellation_requested: bool = false
+
+
+        error ScriptTestError:
+            InvalidState
+            InvalidEvent
+            TestLimitExceeded
+            NameInvalid
+            MessageInvalid
+            LineInvalid
+            DuplicateName
+            InvalidOrdinal
+            InvalidCaseState
+            InvalidTransition
+            NoTests
+            ActiveCase
+            CaseNotReady
+            CaseOrderInvalid
+            FailureInvalid
+            CancellationNotReady
+            AccountingInvalid
+
+
+    private:
+        def script_test_state_valid(state: ScriptTestState) -> bool:
+            return state in {ScriptTestState.Planned, ScriptTestState.Running, ScriptTestState.Cancelling, ScriptTestState.Passed, ScriptTestState.Failed, ScriptTestState.Cancelled}
+
+
+        def script_test_event_valid(event: ScriptTestEvent) -> bool:
+            return event in {ScriptTestEvent.Discover, ScriptTestEvent.Begin, ScriptTestEvent.CaseBegin, ScriptTestEvent.CasePass, ScriptTestEvent.CaseFail, ScriptTestEvent.Cancel, ScriptTestEvent.CancelAck}
+
+
+        def script_test_case_state_valid(state: ScriptTestCaseState) -> bool:
+            return state in {ScriptTestCaseState.Planned, ScriptTestCaseState.Running, ScriptTestCaseState.Passed, ScriptTestCaseState.Failed, ScriptTestCaseState.Cancelled}
+
+
+        def script_test_name_valid(name: sview) -> bool:
+            return sview_len(name) != 0 and sview_len(name) < Limits::NAME_BYTES and not sview_contains_byte(name, 0)
+
+
+        def script_test_message_valid(message: sview) -> bool:
+            return sview_len(message) < Limits::MESSAGE_BYTES and not sview_contains_byte(message, 0)
+
+
+        def script_test_spec_valid(spec: ScriptTestSpec, ordinal: usize) -> bool:
+            return spec.ordinal == ordinal and spec.line != 0 and script_test_name_valid(spec.name) and script_test_case_state_valid(spec.state)
+
+
+        def script_test_failure_empty(failure: ScriptTestFailure) -> bool:
+            return failure.index == 0 and failure.name == "" and failure.line == 0 and failure.message == ""
+
+
+    public:
+        def validate_script_test_session(session: ScriptTestSession&) -> bool error[ScriptTestError]:
+            raise ScriptTestError.InvalidState if not script_test_state_valid(session.state)
+            raise ScriptTestError.TestLimitExceeded if session.cases.count > Limits::TESTS
+            raise ScriptTestError.CaseOrderInvalid if session.next_case > session.cases.count
+            raise ScriptTestError.CaseOrderInvalid if session.active_case != Limits::NO_ACTIVE and session.active_case >= session.cases.count
+            raise ScriptTestError.AccountingInvalid if session.passed > session.cases.count or session.failed > session.cases.count
+            raise ScriptTestError.MessageInvalid if not script_test_message_valid(session.failure.message)
+            counted_passed: mutable usize = 0
+            counted_failed: mutable usize = 0
+            counted_running: mutable usize = 0
+            counted_cancelled: mutable usize = 0
+            for index in 0..<session.cases.count |session, counted_passed, counted_failed, counted_running, counted_cancelled|:
+                spec: ScriptTestSpec = session.cases[index]
+                raise ScriptTestError.InvalidOrdinal if not script_test_spec_valid(spec, index)
+                counted_passed <- counted_passed + 1 if spec.state == ScriptTestCaseState.Passed
+                counted_failed <- counted_failed + 1 if spec.state == ScriptTestCaseState.Failed
+                counted_running <- counted_running + 1 if spec.state == ScriptTestCaseState.Running
+                counted_cancelled <- counted_cancelled + 1 if spec.state == ScriptTestCaseState.Cancelled
+                for earlier in 0..<index |session, spec|:
+                    raise ScriptTestError.DuplicateName if session.cases[earlier].name == spec.name
+            raise ScriptTestError.AccountingInvalid if counted_passed != session.passed or counted_failed != session.failed
+            raise ScriptTestError.ActiveCase if counted_running > 1
+            raise ScriptTestError.ActiveCase if session.active_case == Limits::NO_ACTIVE and counted_running != 0
+            raise ScriptTestError.ActiveCase if session.active_case != Limits::NO_ACTIVE and (counted_running != 1 or session.cases[session.active_case].state != ScriptTestCaseState.Running)
+            if session.state == ScriptTestState.Planned:
+                raise ScriptTestError.CaseOrderInvalid if session.next_case != 0 or session.active_case != Limits::NO_ACTIVE or session.passed != 0 or session.failed != 0 or session.cancellation_requested
+                raise ScriptTestError.InvalidCaseState if counted_running != 0 or counted_passed != 0 or counted_failed != 0 or counted_cancelled != 0
+                raise ScriptTestError.FailureInvalid if not script_test_failure_empty(session.failure)
+            elif session.state == ScriptTestState.Running:
+                raise ScriptTestError.NoTests if session.cases.count == 0
+                raise ScriptTestError.CaseOrderInvalid if session.next_case >= session.cases.count
+                raise ScriptTestError.CaseOrderInvalid if session.cancellation_requested or session.failed != 0 or counted_cancelled != 0
+                raise ScriptTestError.CaseOrderInvalid if session.passed != session.next_case
+                raise ScriptTestError.FailureInvalid if not script_test_failure_empty(session.failure)
+                for index in 0..<session.next_case |session|:
+                    raise ScriptTestError.CaseOrderInvalid if session.cases[index].state != ScriptTestCaseState.Passed
+                if session.active_case == Limits::NO_ACTIVE:
+                    raise ScriptTestError.CaseOrderInvalid if session.cases[session.next_case].state != ScriptTestCaseState.Planned
+                else:
+                    raise ScriptTestError.CaseOrderInvalid if session.active_case != session.next_case
+                    raise ScriptTestError.CaseOrderInvalid if session.cases[session.next_case].state != ScriptTestCaseState.Running
+                for index in (session.next_case + 1)..<session.cases.count |session|:
+                    raise ScriptTestError.CaseOrderInvalid if session.cases[index].state != ScriptTestCaseState.Planned
+            elif session.state == ScriptTestState.Cancelling:
+                raise ScriptTestError.CancellationNotReady if not session.cancellation_requested
+                raise ScriptTestError.CaseOrderInvalid if session.failed != 0 or counted_cancelled != 0 or session.passed != session.next_case
+                raise ScriptTestError.FailureInvalid if not script_test_failure_empty(session.failure)
+                for index in 0..<session.next_case |session|:
+                    raise ScriptTestError.CaseOrderInvalid if session.cases[index].state != ScriptTestCaseState.Passed
+                if session.cases.count != 0:
+                    raise ScriptTestError.CaseOrderInvalid if session.next_case >= session.cases.count
+                    if session.active_case == Limits::NO_ACTIVE:
+                        raise ScriptTestError.CaseOrderInvalid if session.cases[session.next_case].state != ScriptTestCaseState.Planned
+                    else:
+                        raise ScriptTestError.CaseOrderInvalid if session.active_case != session.next_case or session.cases[session.next_case].state != ScriptTestCaseState.Running
+                for index in (session.next_case + 1)..<session.cases.count |session|:
+                    raise ScriptTestError.CaseOrderInvalid if session.cases[index].state != ScriptTestCaseState.Planned
+            elif session.state == ScriptTestState.Passed:
+                raise ScriptTestError.CaseOrderInvalid if session.cases.count == 0 or session.next_case != session.cases.count or session.active_case != Limits::NO_ACTIVE or session.passed != session.cases.count or session.failed != 0 or session.cancellation_requested or counted_cancelled != 0
+                raise ScriptTestError.FailureInvalid if not script_test_failure_empty(session.failure)
+            elif session.state == ScriptTestState.Failed:
+                raise ScriptTestError.CaseOrderInvalid if session.active_case != Limits::NO_ACTIVE or session.failed != 1 or session.cancellation_requested
+                raise ScriptTestError.FailureInvalid if session.failure.index >= session.cases.count or session.failure.name == "" or session.failure.line == 0
+                raise ScriptTestError.FailureInvalid if session.cases[session.failure.index].state != ScriptTestCaseState.Failed or session.cases[session.failure.index].name != session.failure.name or session.cases[session.failure.index].line != session.failure.line or session.next_case != session.failure.index or session.passed != session.failure.index
+                for index in 0..<session.failure.index |session|:
+                    raise ScriptTestError.CaseOrderInvalid if session.cases[index].state != ScriptTestCaseState.Passed
+                for index in (session.failure.index + 1)..<session.cases.count |session|:
+                    raise ScriptTestError.CaseOrderInvalid if session.cases[index].state != ScriptTestCaseState.Planned
+            elif session.state == ScriptTestState.Cancelled:
+                raise ScriptTestError.CancellationNotReady if not session.cancellation_requested or session.active_case != Limits::NO_ACTIVE or counted_running != 0 or counted_failed != 0
+                raise ScriptTestError.FailureInvalid if not script_test_failure_empty(session.failure)
+                raise ScriptTestError.CaseOrderInvalid if session.passed != session.next_case or counted_cancelled != session.cases.count - session.next_case
+                for index in 0..<session.next_case |session|:
+                    raise ScriptTestError.CaseOrderInvalid if session.cases[index].state != ScriptTestCaseState.Passed
+                for index in session.next_case..<session.cases.count |session|:
+                    raise ScriptTestError.CaseOrderInvalid if session.cases[index].state != ScriptTestCaseState.Cancelled
+            return true
+
+
+        def advance_script_test(session: mutable ScriptTestSession&, event: ScriptTestEvent, case_index: usize = Limits::NO_ACTIVE, spec: ScriptTestSpec = ScriptTestSpec{ordinal: 0, name: "", line: 0}, message: sview = "") -> ScriptTestState error[ScriptTestError]:
+            try validate_script_test_session(session)
+            raise ScriptTestError.InvalidEvent if not script_test_event_valid(event)
+            if event == ScriptTestEvent.Discover:
+                raise ScriptTestError.InvalidTransition if session.state != ScriptTestState.Planned
+                raise ScriptTestError.TestLimitExceeded if session.cases.count >= Limits::TESTS
+                raise ScriptTestError.InvalidOrdinal if spec.ordinal != session.cases.count
+                raise ScriptTestError.LineInvalid if spec.line == 0
+                raise ScriptTestError.NameInvalid if not script_test_name_valid(spec.name)
+                raise ScriptTestError.InvalidCaseState if spec.state != ScriptTestCaseState.Planned
+                for existing in session.cases:
+                    raise ScriptTestError.DuplicateName if existing.name == spec.name
+                session.cases.push(spec)
+            elif event == ScriptTestEvent.Begin:
+                raise ScriptTestError.InvalidTransition if session.state != ScriptTestState.Planned
+                raise ScriptTestError.NoTests if session.cases.count == 0
+                session.state <- ScriptTestState.Running
+            elif event == ScriptTestEvent.CaseBegin:
+                raise ScriptTestError.CaseNotReady if session.state != ScriptTestState.Running or session.active_case != Limits::NO_ACTIVE or session.next_case >= session.cases.count
+                raise ScriptTestError.CaseOrderInvalid if case_index >= session.cases.count
+                raise ScriptTestError.CaseOrderInvalid if case_index != session.next_case or session.cases[case_index].state != ScriptTestCaseState.Planned
+                session.active_case <- case_index
+                session.cases[case_index].state <- ScriptTestCaseState.Running
+            elif event == ScriptTestEvent.CasePass:
+                raise ScriptTestError.CaseNotReady if session.state != ScriptTestState.Running or session.active_case == Limits::NO_ACTIVE
+                raise ScriptTestError.CaseOrderInvalid if case_index >= session.cases.count
+                raise ScriptTestError.CaseNotReady if case_index != session.active_case or session.cases[case_index].state != ScriptTestCaseState.Running
+                session.cases[case_index].state <- ScriptTestCaseState.Passed
+                session.passed <- session.passed + 1
+                session.next_case <- session.next_case + 1
+                session.active_case <- Limits::NO_ACTIVE
+                session.state <- ScriptTestState.Passed if session.next_case == session.cases.count
+            elif event == ScriptTestEvent.CaseFail:
+                raise ScriptTestError.CaseNotReady if session.state != ScriptTestState.Running or session.active_case == Limits::NO_ACTIVE
+                raise ScriptTestError.CaseOrderInvalid if case_index >= session.cases.count
+                raise ScriptTestError.CaseNotReady if case_index != session.active_case or session.cases[case_index].state != ScriptTestCaseState.Running
+                raise ScriptTestError.MessageInvalid if not script_test_message_valid(message)
+                session.cases[case_index].state <- ScriptTestCaseState.Failed
+                session.failed <- 1
+                session.failure <- ScriptTestFailure{index: case_index, name: session.cases[case_index].name, line: session.cases[case_index].line, message: message}
+                session.active_case <- Limits::NO_ACTIVE
+                session.state <- ScriptTestState.Failed
+            elif event == ScriptTestEvent.Cancel:
+                raise ScriptTestError.CancellationNotReady if session.state != ScriptTestState.Planned and session.state != ScriptTestState.Running
+                session.cancellation_requested <- true
+                session.state <- ScriptTestState.Cancelling
+            elif event == ScriptTestEvent.CancelAck:
+                raise ScriptTestError.CancellationNotReady if session.state != ScriptTestState.Cancelling
+                for index in session.next_case..<session.cases.count |session|:
+                    session.cases[index].state <- ScriptTestCaseState.Cancelled
+                session.active_case <- Limits::NO_ACTIVE
+                session.state <- ScriptTestState.Cancelled
+            try validate_script_test_session(session)
+            return session.state

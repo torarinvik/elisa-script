@@ -1951,6 +1951,22 @@ The intermediate `Reporting` state applies the same latch consistency before
 `SealReport`, so a forged failed report cannot be sealed and returned as
 `Complete`.
 
+`EsScriptTest` supplies the in-process `@test` boundary used by the CLI's
+`ExecuteTests` workflow step. Discovery is ordered and bounded to 4,096 cases;
+each case carries a nonempty NUL-free name, source line, and planned state.
+`Begin → CaseBegin → CasePass/CaseFail` executes one verified zero-argument test
+at a time, keeps the passed prefix and active case cursor explicit, and retains
+the first failure's case/name/line/message for deterministic diagnostics. A
+run with no discovered cases is rejected instead of becoming a false green.
+`Cancel → CancelAck` marks every unfinished case cancelled and reaches a
+terminal state only after the active cursor is cleared. Duplicate names,
+forged case states, skipped/out-of-order callbacks, hidden counters, and
+malformed cancellation snapshots are rejected by `error[ScriptTestError]`.
+The module is a pure state machine: discovery, function invocation, fresh
+per-case storage, timeout/resource policy, and report rendering remain host or
+runner adapters. The focused IR fixture and `check_script_test.sh` audit are
+static evidence only while compiler/test execution is held.
+
 Before any regex opcode executes, both backends enforce a shared input-size
 boundary: haystack text is at most 64 MiB, the compiled-pattern payload is at
 most 64 KiB, and replacement text is at most 64 MiB. Oversized operands fail
