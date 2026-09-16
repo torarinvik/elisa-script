@@ -792,7 +792,8 @@ The focused IR fixture and check_handle_model.sh audit are static evidence;
 platform descriptor acquisition and actual close calls remain host adapters.
 
 ES-SCRIPT-007 | EsProcessSession binds validated ProcessCommand values to
-clean pre-spawn state, distinct spawn handle identities, bounded stdout/stderr
+clean pre-spawn state, distinct spawn handle identities for captured stdin,
+stdout, and stderr, bounded stdout/stderr
 aggregate accounting, bounded polls, typed terminal outcomes, and explicit timeout/cancellation
 edges; an Exit edge records the adapter-supplied exit status while non-exit
 terminal states retain a zero sentinel; a Created session
@@ -1113,6 +1114,9 @@ scoped `Cancel → CancelAck` cleanup. The fail-fast latch is policy-bound, so a
 aggregate batch cannot be forged as fail-fast draining. In-flight `Running` and `Cancelling`
 snapshots must retain unfinished work, preventing a forged terminal snapshot
 from being relabelled as cancellation.
+Failures below the attempt ceiling remain retryable under `FailFast` until the
+explicit reap acknowledgement; only exhausted or already-draining failures
+latch terminal failure.
 The focused IR fixture, namespace inclusion, documentation, and
 check_process_batch.sh audit are static evidence; scheduler ownership, actual
 pipe/process adapters, signal escalation, and execution evidence remain open.

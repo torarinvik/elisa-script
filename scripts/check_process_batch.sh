@@ -90,6 +90,8 @@ for fixture_pattern in \
     'stale_reap_again' \
     'fail_fast_cancel' \
     'fail_fast_cancel_before_reap' \
+    'fail_fast_retry_policy' \
+    'fail_fast_retry.fail_fast_latched' \
     'forged_running_complete' \
     'forged_cancelling_complete' \
     'launch_limit'; do

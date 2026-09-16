@@ -33,6 +33,8 @@ done
 for boundary in \
     'session_stream_handle_valid' \
     'session_handle_ids_distinct' \
+    'stdin_resource_id' \
+    'session.command.stdin_mode' \
     'OutputLimitExceeded' \
     'PollLimitExceeded' \
     'InvalidOutcome' \

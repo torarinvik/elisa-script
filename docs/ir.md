@@ -1914,6 +1914,9 @@ unfinished jobs. `Cancel → CancelAck` marks every still-owned slot cancelled;
 fail-fast exhaustion enters `Draining`, cancels queued work, and waits for
 active siblings to finish (whether they complete or fail) before reaching `Failed`; a `Failed` snapshot likewise
 requires every job to be terminal and cannot retain active or queued work.
+Failures below the attempt ceiling remain `Retryable` under `FailFast` after
+`ReapAck`; only an exhausted attempt or a previously latched drain enters
+terminal failure.
 `Running` and `Cancelling` snapshots must still retain unfinished work, so a
 forged already-terminal snapshot cannot be relabelled as cancelled by
 `CancelAck`;
@@ -2558,7 +2561,7 @@ already-charged output total before subtracting remaining output capacity;
 descriptor writes and concurrent drain behavior remain host work.
 
 EsProcessSession binds that command value to an adapter lifecycle. Spawn must
-provide distinct child/stdout/stderr handle identities when capture is
+provide distinct child/stdin/stdout/stderr handle identities when capture is
 requested; creation carries no pre-spawn handles or output counters, spawn
 resets the result sentinel, stdout and stderr progress charge one shared output
 ceiling, polls charge a bounded polling budget, and only typed exit/failure/timeout or

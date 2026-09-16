@@ -40,6 +40,11 @@ module EsProcessSession:
             command: ProcessCommand
             state: ProcessSessionState = ProcessSessionState.Created
             child_resource_id: u64 = 0
+            # Capture on stdin is a host-owned writable pipe just like capture
+            # on stdout/stderr is a host-owned readable pipe. Keep its logical
+            # identity in the session so a host cannot claim a captured input
+            # route while retaining no handle through which input can flow.
+            stdin_resource_id: u64 = 0
             stdout_resource_id: u64 = 0
             stderr_resource_id: u64 = 0
             max_output_bytes: usize = PROCESS_SESSION_MAX_OUTPUT_BYTES
@@ -88,8 +93,8 @@ module EsProcessSession:
             return id != 0
 
 
-        def session_handle_ids_distinct(child: u64, stdout: u64, stderr: u64) -> bool:
-            return (child == 0 or stdout == 0 or child != stdout) and (child == 0 or stderr == 0 or child != stderr) and (stdout == 0 or stderr == 0 or stdout != stderr)
+        def session_handle_ids_distinct(child: u64, stdin: u64, stdout: u64, stderr: u64) -> bool:
+            return (child == 0 or stdin == 0 or child != stdin) and (child == 0 or stdout == 0 or child != stdout) and (child == 0 or stderr == 0 or child != stderr) and (stdin == 0 or stdout == 0 or stdin != stdout) and (stdin == 0 or stderr == 0 or stdin != stderr) and (stdout == 0 or stderr == 0 or stdout != stderr)
 
 
         def session_stream_handle_valid(mode: ProcessStdioMode, resource_id: u64) -> bool:
@@ -110,12 +115,13 @@ module EsProcessSession:
             raise ProcessSessionError.OutputLimitExceeded if session.stdout_bytes > session.max_output_bytes or session.stderr_bytes > session.max_output_bytes or session.output_bytes > session.max_output_bytes
             raise ProcessSessionError.AccountingInvalid if session.output_bytes != session.stdout_bytes + session.stderr_bytes
             raise ProcessSessionError.PollLimitExceeded if session.polls > session.max_polls
-            raise ProcessSessionError.AccountingInvalid if session.state == ProcessSessionState.Created and (session.child_resource_id != 0 or session.stdout_resource_id != 0 or session.stderr_resource_id != 0 or session.stdout_bytes != 0 or session.stderr_bytes != 0 or session.output_bytes != 0 or session.polls != 0 or session.exit_status != 0)
+            raise ProcessSessionError.AccountingInvalid if session.state == ProcessSessionState.Created and (session.child_resource_id != 0 or session.stdin_resource_id != 0 or session.stdout_resource_id != 0 or session.stderr_resource_id != 0 or session.stdout_bytes != 0 or session.stderr_bytes != 0 or session.output_bytes != 0 or session.polls != 0 or session.exit_status != 0)
             raise ProcessSessionError.InvalidOutcome if session.state == ProcessSessionState.Created and session.result_kind != ProcessResultKind.SpawnFailure
             raise ProcessSessionError.HandleIdentityInvalid if session.state != ProcessSessionState.Created and not session_handle_id_valid(session.child_resource_id)
+            raise ProcessSessionError.HandleIdentityInvalid if session.state != ProcessSessionState.Created and not session_stream_handle_valid(session.command.stdin_mode, session.stdin_resource_id)
             raise ProcessSessionError.HandleIdentityInvalid if session.state != ProcessSessionState.Created and not session_stream_handle_valid(session.command.stdout_mode, session.stdout_resource_id)
             raise ProcessSessionError.HandleIdentityInvalid if session.state != ProcessSessionState.Created and not session_stream_handle_valid(session.command.stderr_mode, session.stderr_resource_id)
-            raise ProcessSessionError.DuplicateHandleIdentity if not session_handle_ids_distinct(session.child_resource_id, session.stdout_resource_id, session.stderr_resource_id)
+            raise ProcessSessionError.DuplicateHandleIdentity if not session_handle_ids_distinct(session.child_resource_id, session.stdin_resource_id, session.stdout_resource_id, session.stderr_resource_id)
             raise ProcessSessionError.InvalidOutcome if not session_result_kind_valid(session.result_kind)
             raise ProcessSessionError.InvalidOutcome if (session.state == ProcessSessionState.Running or session.state == ProcessSessionState.Collecting) and session.result_kind != ProcessResultKind.SpawnFailure
             raise ProcessSessionError.InvalidOutcome if session.state == ProcessSessionState.Exited and session.result_kind != ProcessResultKind.Exited and session.result_kind != ProcessResultKind.Signaled
@@ -127,15 +133,19 @@ module EsProcessSession:
             return true
 
 
-        def advance_process_session(session: mutable ProcessSession&, event: ProcessSessionEvent, bytes_delta: usize = 0, result_kind: ProcessResultKind = ProcessResultKind.Exited, child_resource_id: u64 = 0, stdout_resource_id: u64 = 0, stderr_resource_id: u64 = 0, exit_status: i64 = 0) -> ProcessSessionState error[ProcessSessionError]:
+        # `stdin_resource_id` is appended after the historical positional
+        # arguments so existing adapters keep their call shape. New spawn
+        # adapters should pass it by name when `stdin_mode` is Capture.
+        def advance_process_session(session: mutable ProcessSession&, event: ProcessSessionEvent, bytes_delta: usize = 0, result_kind: ProcessResultKind = ProcessResultKind.Exited, child_resource_id: u64 = 0, stdout_resource_id: u64 = 0, stderr_resource_id: u64 = 0, exit_status: i64 = 0, stdin_resource_id: u64 = 0) -> ProcessSessionState error[ProcessSessionError]:
             try validate_process_session(session)
             raise ProcessSessionError.InvalidEvent if not session_event_valid(event)
             if event == ProcessSessionEvent.Spawn:
                 raise ProcessSessionError.InvalidState if session.state != ProcessSessionState.Created
                 raise ProcessSessionError.HandleIdentityInvalid if not session_handle_id_valid(child_resource_id)
-                raise ProcessSessionError.DuplicateHandleIdentity if not session_handle_ids_distinct(child_resource_id, stdout_resource_id, stderr_resource_id)
-                raise ProcessSessionError.HandleIdentityInvalid if not session_stream_handle_valid(session.command.stdout_mode, stdout_resource_id) or not session_stream_handle_valid(session.command.stderr_mode, stderr_resource_id)
+                raise ProcessSessionError.DuplicateHandleIdentity if not session_handle_ids_distinct(child_resource_id, stdin_resource_id, stdout_resource_id, stderr_resource_id)
+                raise ProcessSessionError.HandleIdentityInvalid if not session_stream_handle_valid(session.command.stdin_mode, stdin_resource_id) or not session_stream_handle_valid(session.command.stdout_mode, stdout_resource_id) or not session_stream_handle_valid(session.command.stderr_mode, stderr_resource_id)
                 session.child_resource_id <- child_resource_id
+                session.stdin_resource_id <- stdin_resource_id
                 session.stdout_resource_id <- stdout_resource_id
                 session.stderr_resource_id <- stderr_resource_id
                 session.result_kind <- ProcessResultKind.SpawnFailure
