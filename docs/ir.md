@@ -1976,6 +1976,15 @@ additional cases. The metadata intentionally stays outside `Module` and
 serialized bytecode; source/file loader wrappers and the runner will copy it
 only while the source region remains alive.
 
+Source/file loader wrappers preserve the compact `Module` APIs while exposing
+this catalog through caller-owned `darray[ElisascriptTestFunction]` storage.
+The diagnostic-and-tests core clears the destination before validation and
+publishes metadata only after lowering and IR verification succeed, so every
+failure leaves an empty catalog. Buffer and file loaders borrow names from
+their retained source region; length-delimited byte loaders copy input into
+the loader context's permanent region before returning views. The wrappers do
+not invoke tests or alter serialized IR identity.
+
 Before any regex opcode executes, both backends enforce a shared input-size
 boundary: haystack text is at most 64 MiB, the compiled-pattern payload is at
 most 64 KiB, and replacement text is at most 64 MiB. Oversized operands fail
