@@ -38,7 +38,11 @@ for runner_declaration in \
     'using EsScriptTest' \
     'def discover_elisascript_file_tests_with_handlers(' \
     'def discover_elisascript_file_tests(' \
-    'def execute_elisascript_test('; do
+    'struct ElisascriptTestExecution:' \
+    'struct ElisascriptTestRun:' \
+    'def execute_elisascript_test(' \
+    'def execute_elisascript_file_tests_with_handlers(' \
+    'def execute_elisascript_file_tests('; do
     rg -Fq "$runner_declaration" "$runner"
 done
 
@@ -66,6 +70,20 @@ for boundary in \
     rg -Fq "$boundary" "$model"
 done
 
+for multi_case_boundary in \
+    'elisascript_test_remaining_policy' \
+    'elisascript_test_usage_add' \
+    'cursor.state <- ElisascriptTestRunState.CaseBegin' \
+    'ScriptTestEvent.CaseFail' \
+    'ScriptTestEvent.CancelAck' \
+    'result.runtime_error_known <- true' \
+    'cursor.invocation_context' \
+    'runtime_resource_policy_has_unaccounted_dimensions' \
+    'successful completed-case' \
+    'result.executions.push(ElisascriptTestExecution'; do
+    rg -Fq "$multi_case_boundary" "$runner"
+done
+
 rg -Fq 'include "../runtime/script_test_model.elisa"' "$ir"
 rg -Fq 'using EsScriptTest' "$fixture"
 for fixture_pattern in \
@@ -91,7 +109,13 @@ for runner_fixture_pattern in \
     'discover_elisascript_file_tests(' \
     'runner_executes_one_void_test_with_fresh_case_storage' \
     'execute_elisascript_test(' \
-    'ScriptTestError.FunctionSignatureInvalid'; do
+    'ScriptTestError.FunctionSignatureInvalid' \
+    'runner_executes_file_tests_in_source_order_with_suite_budget' \
+    'execute_elisascript_file_tests(' \
+    'runner_cancels_unstarted_file_tests_at_state_machine_boundary' \
+    'cancel_requested: true' \
+    'runner_maps_runtime_failure_to_typed_case_diagnostic' \
+    'runtime_error == InterpretError.Assertion'; do
     rg -Fq "$runner_fixture_pattern" "$runner_fixture"
 done
 

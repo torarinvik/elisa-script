@@ -434,12 +434,38 @@ extend EsIr:
             return discover_elisascript_file_tests_with_handlers(filename, module_name, handlers, session)
 
 
-        # Invoke exactly one discovered zero-argument void function. The caller
-        # supplies fresh observation/storage arrays for each case; truncating
-        # them here makes accidental reuse fail closed instead of leaking state
-        # from an earlier test. Runtime failures remain typed `InterpretError`s
-        # so the multi-case adapter can map them to `CaseFail` diagnostics.
-        def execute_elisascript_test(module: BytecodeModule&, spec: ScriptTestSpec&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, policy: RuntimeResourcePolicy = RuntimeResourcePolicy{}, invocation_context: ScriptInvocationContext = ScriptInvocationContext{}) -> Execution error[InterpretError, ScriptTestError] can[Memory.Allocate, Abort.Panic]:
+        # A per-case execution summary deliberately stores only scalar facts.
+        # Runtime values, observations, and aggregate views borrow the caller's
+        # temporary storage and must not be retained after the next case resets
+        # that storage. These fields are sufficient for deterministic reports
+        # and differential evidence without exposing stale views.
+        struct ElisascriptTestExecution:
+            ordinal: usize
+            steps: u64 = 0
+            observation_count: usize = 0
+            storage_values: usize = 0
+            output_bytes: usize = 0
+            engine: ExecutionEngine = ExecutionEngine.ReferenceInterpreter
+
+
+        # The suite result keeps the state-machine session and bounded runtime
+        # evidence together. `executions` contains successful completed-case
+        # summaries only; a failed case has no trustworthy `Execution` value
+        # because the runtime currently returns its error without telemetry.
+        # Its identity and diagnostic live in `session.failure`, while the
+        # typed enum remains here so hosts do not parse a human string.
+        struct ElisascriptTestRun:
+            session: ScriptTestSession = ScriptTestSession{}
+            executions: darray[ElisascriptTestExecution] = []
+            # Consumptive fields (steps, elapsed time, output, regex work) are
+            # suite totals; active/retained dimensions are the observed peak.
+            usage: RuntimeResourceUsage = RuntimeResourceUsage{}
+            runtime_error_known: bool = false
+            runtime_error: InterpretError = InterpretError.Process
+
+
+    private:
+        def elisascript_test_function_index(module: BytecodeModule&, spec: ScriptTestSpec) -> usize error[ScriptTestError]:
             try validate_script_test_spec(spec)
             function_index: mutable usize = module.functions.count
             for index in 0..<module.functions.count |module, spec, function_index|:
@@ -448,12 +474,214 @@ extend EsIr:
             raise ScriptTestError.FunctionNotFound if function_index == module.functions.count
             function: BytecodeFunction = module.functions[function_index]
             raise ScriptTestError.FunctionSignatureInvalid if function.parameters.count != 0 or function.return_type.kind != TypeKind.Void
+            return function_index
+
+
+        # Sequential test cases share consumptive budgets, while handles,
+        # child leaders, retained observations, and memory describe a peak
+        # live footprint. Sum the former and retain the maximum of the latter;
+        # treating an active count as consumptive would incorrectly deny a
+        # later case after the earlier case has cleaned up.
+        def elisascript_test_usage_add(total: mutable RuntimeResourceUsage&, addition: RuntimeResourceUsage&, policy: RuntimeResourcePolicy&) -> bool:
+            candidate: mutable RuntimeResourceUsage = total
+            return false if not runtime_resource_add_steps(candidate, policy, addition.steps)
+            return false if not runtime_resource_add_elapsed(candidate, policy, addition.elapsed_micros)
+            return false if not runtime_resource_add_output(candidate, policy, addition.output_bytes)
+            return false if not runtime_resource_add_regex_work(candidate, policy, addition.regex_work)
+            candidate.memory_bytes <- addition.memory_bytes if addition.memory_bytes > candidate.memory_bytes
+            candidate.open_handles <- addition.open_handles if addition.open_handles > candidate.open_handles
+            candidate.processes <- addition.processes if addition.processes > candidate.processes
+            candidate.retained_traces <- addition.retained_traces if addition.retained_traces > candidate.retained_traces
+            candidate.concurrent_tasks <- addition.concurrent_tasks if addition.concurrent_tasks > candidate.concurrent_tasks
+            return false if candidate.memory_bytes > policy.memory_bytes or candidate.open_handles > policy.open_handles or candidate.processes > policy.processes or candidate.retained_traces > policy.retained_traces or candidate.concurrent_tasks > policy.concurrent_tasks
+            total <- candidate
+            return true
+
+
+        # Derive the next case's admission policy from suite usage. Only
+        # consumptive dimensions are subtracted; peak live dimensions are
+        # checked independently when their next execution reports usage.
+        def elisascript_test_remaining_policy(usage: RuntimeResourceUsage&, policy: RuntimeResourcePolicy&) -> RuntimeResourcePolicy:
+            result: mutable RuntimeResourcePolicy = policy
+            result.steps <- 0 if usage.steps >= policy.steps else policy.steps - usage.steps
+            result.elapsed_micros <- 0 if policy.elapsed_micros == 0 or usage.elapsed_micros >= policy.elapsed_micros else policy.elapsed_micros - usage.elapsed_micros
+            result.output_bytes <- 0 if usage.output_bytes >= policy.output_bytes else policy.output_bytes - usage.output_bytes
+            result.regex_work <- 0 if usage.regex_work >= policy.regex_work else policy.regex_work - usage.regex_work
+            return result
+
+
+        def elisascript_test_runtime_message(failure: InterpretError) -> sview:
+            # Keep the externally visible message bounded and deterministic;
+            # callers that need the precise category use `runtime_error`.
+            _ = failure
+            return "test execution failed"
+
+
+        def elisascript_execute_test_runtime(module: BytecodeModule&, spec: ScriptTestSpec, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, policy: RuntimeResourcePolicy, invocation_context: ScriptInvocationContext) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             observations.truncate(0)
             storage.truncate(0)
             arguments: darray[RuntimeValue] = []
             execution: Execution = try execute_bytecode_with_resource_policy(module, spec.name, arguments, observations, storage, policy, invocation_context)
             raise InterpretError.TypeMismatch if execution.value.kind != RuntimeValueKind.Void
             return execution
+
+
+        const enum ElisascriptTestRunState of u8:
+            Discover
+            Lower
+            Validate
+            Begin
+            Select
+            CaseBegin
+            Execute
+            RecordPass
+            RecordFail
+            Cancel
+            CancelAck
+            Done
+
+
+        struct ElisascriptTestRunCursor:
+            state: mutable ElisascriptTestRunState
+            index: mutable usize = 0
+            cancel_requested: bool = false
+            module: mutable Module = Module{name: "", functions: []}
+            lowered: mutable BytecodeModule = BytecodeModule{name: "", functions: [], handlers: []}
+            observations: mutable darray[Observation] = []
+            storage: mutable darray[RuntimeValue] = []
+            execution: mutable Execution = Execution{value: runtime_void(), steps: 0}
+            invocation_context: mutable ScriptInvocationContext = ScriptInvocationContext{}
+
+
+    public:
+        # Invoke exactly one discovered zero-argument void function. The caller
+        # supplies fresh observation/storage arrays for each case; truncating
+        # them here makes accidental reuse fail closed instead of leaking state
+        # from an earlier test. Runtime failures remain typed `InterpretError`s
+        # so the multi-case adapter can map them to `CaseFail` diagnostics.
+        def execute_elisascript_test(module: BytecodeModule&, spec: ScriptTestSpec&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, policy: RuntimeResourcePolicy = RuntimeResourcePolicy{}, invocation_context: ScriptInvocationContext = ScriptInvocationContext{}) -> Execution error[InterpretError, ScriptTestError] can[Memory.Allocate, Abort.Panic]:
+            _ = try elisascript_test_function_index(module, spec)
+            return try elisascript_execute_test_runtime(module, spec, observations, storage, policy, invocation_context)
+
+
+        # Execute every discovered top-level `@test` in source order. The
+        # session transitions are the authority: no case is run before
+        # `CaseBegin`, a runtime failure becomes exactly one `CaseFail`, and a
+        # cancellation request is acknowledged only between cases. The bool is
+        # a synchronous boundary snapshot: `true` cancels before the first
+        # case, while host-driven mid-case cancellation needs a future step
+        # API. The module is lowered once, and the suite budget is carried
+        # across cases through `elisascript_test_remaining_policy` instead of
+        # silently resetting a step/output allowance for every function.
+        def execute_elisascript_file_tests_with_handlers(filename: u8&, module_name: sview, handlers: darray[Handler]&, result: mutable ElisascriptTestRun&, policy: RuntimeResourcePolicy = RuntimeResourcePolicy{}, cancel_requested: bool = false) -> void error[ElisascriptSourceError, ScriptTestError, InterpretError] can[Memory.Allocate, Abort.Panic]:
+            result.session.cases.truncate(0)
+            result.session.state <- ScriptTestState.Planned
+            result.session.next_case <- 0
+            result.session.active_case <- EsScriptTest::Limits::NO_ACTIVE
+            result.session.passed <- 0
+            result.session.failed <- 0
+            result.session.failure <- ScriptTestFailure{}
+            result.session.cancellation_requested <- false
+            result.executions.truncate(0)
+            result.usage <- RuntimeResourceUsage{}
+            result.runtime_error_known <- false
+            result.runtime_error <- InterpretError.Process
+            raise InterpretError.OutputLimit if not runtime_resource_policy_valid(policy)
+            raise InterpretError.UnsupportedInstruction if runtime_resource_policy_has_unaccounted_dimensions(policy)
+
+            cursor: mutable ElisascriptTestRunCursor = ElisascriptTestRunCursor{state: ElisascriptTestRunState.Discover, cancel_requested: cancel_requested}
+            machine over cursor.state:
+                state Run
+                start Run
+
+                Run, ElisascriptTestRunState.Discover:
+                    cursor.module <- try discover_elisascript_file_tests_with_handlers(filename, module_name, handlers, result.session)
+                    cursor.state <- ElisascriptTestRunState.Lower
+                    -> Run
+
+                Run, ElisascriptTestRunState.Lower:
+                    lowered_result: BytecodeLowerResult = lower_bytecode(cursor.module)
+                    raise InterpretError.VerificationFailed if lowered_result.issues.count != 0
+                    cursor.lowered <- lowered_result.module
+                    cursor.invocation_context <- elisascript_optional_script_invocation_context(filename)
+                    cursor.state <- ElisascriptTestRunState.Validate
+                    -> Run
+
+                Run, ElisascriptTestRunState.Validate:
+                    for spec in result.session.cases |result, cursor|:
+                        _ = try elisascript_test_function_index(cursor.lowered, spec)
+                    cursor.state <- ElisascriptTestRunState.Begin
+                    -> Run
+
+                Run, ElisascriptTestRunState.Begin:
+                    _ = try advance_script_test(result.session, ScriptTestEvent.Begin)
+                    cursor.state <- ElisascriptTestRunState.Select
+                    -> Run
+
+                Run, ElisascriptTestRunState.Select if result.session.state == ScriptTestState.Passed:
+                    cursor.state <- ElisascriptTestRunState.Done
+                    -> Run
+
+                Run, ElisascriptTestRunState.Select if cursor.cancel_requested:
+                    cursor.state <- ElisascriptTestRunState.Cancel
+                    -> Run
+
+                Run, ElisascriptTestRunState.Select:
+                    cursor.index <- result.session.next_case
+                    cursor.state <- ElisascriptTestRunState.CaseBegin
+                    -> Run
+
+                Run, ElisascriptTestRunState.CaseBegin:
+                    _ = try advance_script_test(result.session, ScriptTestEvent.CaseBegin, cursor.index)
+                    cursor.state <- ElisascriptTestRunState.Execute
+                    -> Run
+
+                Run, ElisascriptTestRunState.Execute:
+                    spec: ScriptTestSpec = result.session.cases[cursor.index]
+                    remaining: RuntimeResourcePolicy = elisascript_test_remaining_policy(result.usage, policy)
+                    catch elisascript_execute_test_runtime(cursor.lowered, spec, cursor.observations, cursor.storage, remaining, cursor.invocation_context):
+                        ok value:
+                            cursor.execution <- value
+                            cursor.state <- ElisascriptTestRunState.RecordPass
+                            -> Run
+                        error failure:
+                            result.runtime_error_known <- true
+                            result.runtime_error <- failure
+                            cursor.state <- ElisascriptTestRunState.RecordFail
+                            -> Run
+
+                Run, ElisascriptTestRunState.RecordPass:
+                    raise InterpretError.OutputLimit if not elisascript_test_usage_add(result.usage, cursor.execution.usage, policy)
+                    raise ScriptTestError.TestLimitExceeded if result.executions.count >= EsScriptTest::Limits::TESTS
+                    result.executions.push(ElisascriptTestExecution{ordinal: cursor.index, steps: cursor.execution.steps, observation_count: cursor.observations.count, storage_values: cursor.storage.count, output_bytes: cursor.execution.usage.output_bytes, engine: cursor.execution.engine})
+                    _ = try advance_script_test(result.session, ScriptTestEvent.CasePass, cursor.index)
+                    cursor.state <- ElisascriptTestRunState.Select
+                    -> Run
+
+                Run, ElisascriptTestRunState.RecordFail:
+                    _ = try advance_script_test(result.session, ScriptTestEvent.CaseFail, cursor.index, message: elisascript_test_runtime_message(result.runtime_error))
+                    cursor.state <- ElisascriptTestRunState.Done
+                    -> Run
+
+                Run, ElisascriptTestRunState.Cancel:
+                    _ = try advance_script_test(result.session, ScriptTestEvent.Cancel)
+                    cursor.state <- ElisascriptTestRunState.CancelAck
+                    -> Run
+
+                Run, ElisascriptTestRunState.CancelAck:
+                    _ = try advance_script_test(result.session, ScriptTestEvent.CancelAck)
+                    cursor.state <- ElisascriptTestRunState.Done
+                    -> Run
+
+                Run, ElisascriptTestRunState.Done:
+                    break
+
+            try validate_script_test_session(result.session)
+
+
+        def execute_elisascript_file_tests(filename: u8&, module_name: sview, result: mutable ElisascriptTestRun&, policy: RuntimeResourcePolicy = RuntimeResourcePolicy{}, cancel_requested: bool = false) -> void error[ElisascriptSourceError, ScriptTestError, InterpretError] can[Memory.Allocate, Abort.Panic]:
+            handlers: darray[Handler] = []
+            return execute_elisascript_file_tests_with_handlers(filename, module_name, handlers, result, policy, cancel_requested)
 
 
     private:

@@ -1995,6 +1995,25 @@ shared policy-aware bytecode facade. Unknown names and signature drift are
 typed `ScriptTestError`s, while runtime failures remain `InterpretError`s; the
 helper does not infer success from a non-void value.
 
+`execute_elisascript_file_tests` is the bounded multi-case adapter. It lowers
+the verified module once, prevalidates every discovered function, and drives
+`Begin → CaseBegin → CasePass/CaseFail` in source order through a state-machine
+cursor. Each case receives fresh observation/storage arrays and a remaining
+`RuntimeResourcePolicy`, so step/output/regex and other accounted dimensions
+cannot reset at a suite boundary. The returned `ElisascriptTestRun` retains
+only bounded scalar summaries for successful completed cases; suite usage sums
+consumptive dimensions and takes the maximum of reported active/retained
+dimensions. Live resources are still enforced during each invocation, but the
+current `Execution` contract does not expose historical in-case peaks.
+Borrowed runtime values are never retained. A runtime `InterpretError` becomes
+the first typed case failure while the error enum is preserved beside the
+session diagnostic. The boolean cancellation request is a synchronous
+boundary snapshot: it cancels before the first case when true and is checked
+only between cases, with `Cancel → CancelAck` leaving every unstarted case
+`Cancelled`. The adapter has both dynamic-handler and no-handler file entry
+points; driver `--test` routing and compiler/runtime qualification remain
+open.
+
 Before any regex opcode executes, both backends enforce a shared input-size
 boundary: haystack text is at most 64 MiB, the compiled-pattern payload is at
 most 64 KiB, and replacement text is at most 64 MiB. Oversized operands fail
