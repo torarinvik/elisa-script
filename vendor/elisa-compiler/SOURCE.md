@@ -39,11 +39,13 @@ typed-literal validation. Their rationale and tests are documented under `docs/`
 ## Latest upstream source observation
 
 On 2026-09-16 the latest self-hosted Elisa compiler source visible for a future
-adapted refresh was `d6a693c0f724c05f7b71418658dd8bda95ba73b3` on the clean
+adapted refresh was `5329edfdbefa27b5c1c51253da0073256ed51058` on the clean
 `main` checkout at `/Users/torarinvikbjarko/Documents/Coding Projects/Elisa Projects/Elisa-compiler`.
 It merges the recent catch-binder,
 value-returning-tail, module-callee, private-extern, and stage compatibility
-fixes on top of the extern-resource ABI and lowering work. This source is
+fixes plus wasm intrinsic/component-runtime corrections and target-machine
+optimization-level matching on top of the extern-resource ABI and lowering
+work. This source is
 materially newer than the vendored `e56d6f2d` snapshot, but the differences are
 too broad for an unreviewed wholesale replacement.
 
@@ -94,6 +96,12 @@ The current adapted fixes are tracked separately from the snapshot identity:
   actual set/dict initializer instead of the affine element or key type. This
   is a source-location-only correction; the primary affine diagnostic remains
   anchored at the rejected type argument.
+- `5329edfd`: mirror the target-machine optimization-level API in the compatible
+  backend snapshot. Optimized IR now has a level-aware target-machine entry
+  point, while the existing two-argument helper remains an explicit O0
+  compatibility path for metadata/report callers. The excluded upstream driver
+  still owns the policy that selects the level; no executable was rebuilt or
+  launched here.
 
 These changes are limited to the vendored APIs and deliberately omit newer
 backend files whose supporting tables are not present in `e56d6f2d`.
