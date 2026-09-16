@@ -1967,6 +1967,15 @@ per-case storage, timeout/resource policy, and report rendering remain host or
 runner adapters. The focused IR fixture and `check_script_test.sh` audit are
 static evidence only while compiler/test execution is held.
 
+`LowerResult.test_functions` is the first discovery side channel for that
+contract. The lowerer scans only direct top-level `Decl.Func` nodes, preserves
+source order, records the function name and definition line, and admits only
+parameter-free void functions carrying `@test`. It shares the 4,096-case
+ceiling and reports a bounded lowering issue rather than silently dropping
+additional cases. The metadata intentionally stays outside `Module` and
+serialized bytecode; source/file loader wrappers and the runner will copy it
+only while the source region remains alive.
+
 Before any regex opcode executes, both backends enforce a shared input-size
 boundary: haystack text is at most 64 MiB, the compiled-pattern payload is at
 most 64 KiB, and replacement text is at most 64 MiB. Oversized operands fail
