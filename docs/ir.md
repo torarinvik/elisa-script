@@ -107,7 +107,8 @@ marks the script-argument boundary and is omitted from the script's argv;
 subsequent values are preserved byte-for-byte and are never shell-expanded.
 `validate_cli_invocation` enforces source,
 argument, NUL, and text ceilings, rejects source/script arguments for
-source-free help/version modes, and rejects repeated colors through
+source-free help/version modes, rejects trailing arguments for `--test` until
+the test-selection channel is defined, and rejects repeated colors through
 `error[CliContractError]`, while
 `parse_cli_arguments` rejects unknown options, duplicate modes/options, and
 missing option values before source loading.
@@ -133,7 +134,9 @@ and verifies its IR/bytecode, and returns success without requiring `main`,
 staging script arguments, or executing code. Test/fmt/doc still return an
 explicit unsupported-mode diagnostic rather than silently taking the run
 path; source arguments and the `--` boundary are passed to the typed runner
-only for an actual run.
+only for an actual run. `--test` rejects trailing script arguments because the
+current in-process test adapter has no argument or selection semantics; this
+prevents a future driver route from silently discarding them.
 
 EsCliWorkflow separates planning from host execution. Each accepted mode maps
 to a fixed step sequence: run loads, lowers, verifies, executes the entrypoint,

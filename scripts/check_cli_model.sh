@@ -40,6 +40,7 @@ for boundary in \
     'DuplicateMode' \
     'DuplicateOption' \
     'UnexpectedArgument' \
+    'TestArgumentsUnsupported' \
     'InvalidSourceExtension' \
     'MissingOptionValue' \
     'ArgumentLimitExceeded' \

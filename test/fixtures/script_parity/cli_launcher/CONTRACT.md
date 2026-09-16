@@ -9,6 +9,9 @@ This fixture records the raw-host boundary that must agree with the typed
   continues past the remaining budget is an `ArgumentBytes` failure.
 - A scan that reaches the ordinary C-string ceiling before the aggregate
   ceiling is a `HostCString` failure.
+- `--test` currently has no script-argument or selection channel; trailing
+  values after its source are rejected as `TestArgumentsUnsupported` instead
+  of being silently ignored by a future driver route.
 - The aggregate classification is reported before any claim about the
   complete host string, because the bounded scan already proves that the
   launcher budget was exceeded.
