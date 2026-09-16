@@ -81,7 +81,9 @@ sources change, then rerun the Elisascript suites from this checkout.
 
 Resolve the compiler identity and keyed output directory before a validation
 session with `scripts/validation_identity.sh`. It requires a clean pinned source
-checkout and reads the Go build metadata embedded in `elisac`; the embedded VCS
+checkout at the exact canonical StructPy executable path
+`/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac`
+and reads the Go build metadata embedded in `elisac`; the embedded VCS
 revision must exactly match the checkout and report `vcs.modified=false`. This
 detects a stale binary or one built from modified sources without launching
 `elisac`. It also records the executable SHA-256, optimization/target/mode
