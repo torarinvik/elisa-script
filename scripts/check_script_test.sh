@@ -38,11 +38,19 @@ for runner_declaration in \
     'using EsScriptTest' \
     'def discover_elisascript_file_tests_with_handlers(' \
     'def discover_elisascript_file_tests(' \
+    'def discover_elisascript_source_tests_with_handlers(' \
+    'def discover_elisascript_source_tests(' \
+    'def discover_elisascript_source_bytes_tests_with_handlers(' \
+    'def discover_elisascript_source_bytes_tests(' \
     'struct ElisascriptTestExecution:' \
     'struct ElisascriptTestRun:' \
     'def execute_elisascript_test(' \
     'def execute_elisascript_file_tests_with_handlers(' \
-    'def execute_elisascript_file_tests('; do
+    'def execute_elisascript_file_tests(' \
+    'def execute_elisascript_source_tests_with_handlers(' \
+    'def execute_elisascript_source_tests(' \
+    'def execute_elisascript_source_bytes_tests_with_handlers(' \
+    'def execute_elisascript_source_bytes_tests('; do
     rg -Fq "$runner_declaration" "$runner"
 done
 
@@ -80,7 +88,9 @@ for multi_case_boundary in \
     'cursor.invocation_context' \
     'runtime_resource_policy_has_unaccounted_dimensions' \
     'successful completed-case' \
-    'result.executions.push(ElisascriptTestExecution'; do
+    'result.executions.push(ElisascriptTestExecution' \
+    'elisascript_test_session_from_metadata' \
+    'elisascript_run_test_module'; do
     rg -Fq "$multi_case_boundary" "$runner"
 done
 
@@ -115,7 +125,10 @@ for runner_fixture_pattern in \
     'runner_cancels_unstarted_file_tests_at_state_machine_boundary' \
     'cancel_requested: true' \
     'runner_maps_runtime_failure_to_typed_case_diagnostic' \
-    'runtime_error == InterpretError.Assertion'; do
+    'runtime_error == InterpretError.Assertion' \
+    'runner_executes_source_buffer_tests_through_same_machine' \
+    'execute_elisascript_source_tests(' \
+    'execute_elisascript_source_bytes_tests('; do
     rg -Fq "$runner_fixture_pattern" "$runner_fixture"
 done
 

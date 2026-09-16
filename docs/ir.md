@@ -1985,10 +1985,14 @@ their retained source region; length-delimited byte loaders copy input into
 the loader context's permanent region before returning views. The wrappers do
 not invoke tests or alter serialized IR identity.
 
-The runner's `discover_elisascript_file_tests` adapter binds the file-loader
-catalog to `EsScriptTest` in source order without requiring `main`; it leaves a
-validated session in `Planned` so cancellation or execution policy remains an
-explicit caller transition. `execute_elisascript_test` accepts only a planned,
+The runner's file, NUL-terminated source-buffer, and length-delimited
+source-byte discovery adapters bind their loader catalogs to `EsScriptTest` in
+source order without requiring `main`; each resets the caller's session before
+loading, so a failed reload cannot leak a prior catalog, and leaves a validated
+session in `Planned` so cancellation or execution policy remains an explicit
+caller transition. Source-buffer discovery borrows both source and filename
+bytes; source-byte discovery copies the source payload but still borrows the
+filename during the returned module's lifetime. `execute_elisascript_test` accepts only a planned,
 bounded descriptor whose bytecode function is zero-argument and `void`, clears
 observations/storage for a fresh case, and invokes the named entry through the
 shared policy-aware bytecode facade. Unknown names and signature drift are
@@ -2010,9 +2014,11 @@ the first typed case failure while the error enum is preserved beside the
 session diagnostic. The boolean cancellation request is a synchronous
 boundary snapshot: it cancels before the first case when true and is checked
 only between cases, with `Cancel → CancelAck` leaving every unstarted case
-`Cancelled`. The adapter has both dynamic-handler and no-handler file entry
-points; driver `--test` routing and compiler/runtime qualification remain
-open.
+`Cancelled`. File, NUL-terminated source-buffer, and length-delimited
+source-byte adapters all call the same machine; each has dynamic-handler and
+no-handler entry points, so source-buffer differential runs cannot silently
+use a different policy or failure path. Driver `--test` routing and
+compiler/runtime qualification remain open.
 
 Before any regex opcode executes, both backends enforce a shared input-size
 boundary: haystack text is at most 64 MiB, the compiled-pattern payload is at
