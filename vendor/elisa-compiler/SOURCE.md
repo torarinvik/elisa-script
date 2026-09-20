@@ -38,26 +38,27 @@ typed-literal validation. Their rationale and tests are documented under `docs/`
 
 ## Latest upstream source observation
 
-On 2026-09-20 the latest self-hosted Elisa compiler source visible for a future
-adapted refresh was `a51f3dd7` on the clean local `main` checkout at
-`/Users/torarinvikbjarko/Documents/Coding Projects/Elisa Projects/Elisa-compiler`
-(one commit ahead of `origin/main` at observation time). Since
+On 2026-09-20 the latest self-hosted upstream `main` observed is
+`a51f3dd710dccde137141a41ce67b878f1181872`. The local self-hosted checkout is
+at `43f7ebed53cf34512db7b602be345d0122bdcf3b`, two commits ahead of that
+upstream ref, with unrelated in-progress work left untouched. The vendored
+compiler remains the adapted `e56d6f2d` snapshot; the compatible analyzer
+optimization from `43f7ebed` is recorded below. Since
 `5329edfdbefa27b5c1c51253da0073256ed51058`, the source adds many semantic
-lookup-index optimizations and compiler correctness/diagnostic fixes. This
-source is materially newer than the vendored `e56d6f2d` snapshot, but the
+lookup-index optimizations and compiler correctness/diagnostic fixes. The
 differences are too broad for an unreviewed wholesale replacement.
 
-The separate Go Elisa-core source checkout currently visible for the guarded
-validation path is clean at `90228b6ff38091324f1f19ec7b81bbd2f39825bf` on its
-`main` branch at `/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/Elisa-core`.
-It includes nested-expression effect inference and generic private-field
-validation fixes, and is five commits ahead of its checked `origin/main` at
-observation time. The explicitly pinned `structpy-tree/compiler/bin/elisac`
-path is absent in this workspace, and the old Elisa-core executable is a
-different main-worktree artifact; no executable is claimed or launched from
-either path. This immutable Go commit is the source reference for a future
-explicitly authorized validation build; create a clean isolated checkout,
-review it, and atomically update the validation pin before building.
+The separate Go Elisa-core source checkout is clean at
+`90228b6ff38091324f1f19ec7b81bbd2f39825bf` on its `main` branch. Its refreshed
+`origin/main` is `414ddef7cbd2d9d2418b7811e6bad560cd63fccf`, an ancestor of the
+local source; the checkout is five commits ahead and includes nested-expression
+effect inference and generic private-field validation fixes. The explicitly
+pinned `structpy-tree/compiler/bin/elisac` path is absent in this workspace,
+and the old Elisa-core executable is a different main-worktree artifact; no
+executable is claimed or launched from either path. These immutable source
+commits are references for a future explicitly authorized validation build;
+create a clean isolated checkout, review it, and atomically update the
+validation pin before building.
 
 That source is substantially different from this vendored `e56d6f2d` snapshot.
 The vendored tree contains Elisascript-specific adaptations (including
@@ -133,6 +134,13 @@ The current adapted fixes are tracked separately from the snapshot identity:
   declaration helper now passes exactly one overload type. The newer
   freestanding component-runtime string helper is not present in this snapshot
   and remains intentionally unmerged.
+- `43f7ebed`: continue out of `cpu_check_declarations` immediately when
+  `cpu_facts_unclean` says the approximate call-precondition facts are not
+  modeled. The vendor already skipped `cpu_walk` in that case; this moves the
+  branch before per-function fact tables and scans are allocated while
+  preserving diagnostics. `test/compiler_compat/unclean_precondition_skip.elisa`
+  records the expected contrast: the unclean caller is suppressed and the
+  clean caller still contributes its warning. The fixture was not executed.
 
 These changes are limited to the vendored APIs and deliberately omit newer
 backend files whose supporting tables are not present in `e56d6f2d`.
