@@ -33,6 +33,7 @@ for declaration in \
     'len(name) < Limits::NAME_BYTES' \
     'len(path) < Limits::PATH_BYTES' \
     'def validate_build_incremental_manifest(' \
+    'def resolve_incremental_build_dependencies(' \
     'def classify_build_incremental_target('; do
     rg -Fq "$declaration" "$model"
 done
@@ -58,6 +59,8 @@ for boundary in \
     'producer.outputs' \
     'def plan_build_incremental_cleanup(' \
     'current_recipe_fingerprint != target.recipe_fingerprint' \
+    'return try resolve_build_dependencies(node_names, dependency_names)' \
+    'EsBuild::Limits::TOTAL_DEPENDENCIES - total_dependencies' \
     'try build_incremental_observations_valid(observations)' \
     'try build_incremental_dependencies_valid(dependencies)'; do
     rg -Fq "$boundary" "$model"
@@ -66,6 +69,7 @@ done
 rg -Fq 'include "../runtime/build_incremental_model.elisa"' "$ir"
 for fixture_check in \
     'typed_build_incremental_contract_distinguishes_noop_and_rebuild_reasons' \
+    'resolve_incremental_build_dependencies(manifest)' \
     'BuildIncrementalDecision.InputMissing' \
     'BuildIncrementalDecision.OutputChanged' \
     'BuildIncrementalError.DuplicateInput' \

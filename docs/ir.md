@@ -596,6 +596,10 @@ another target must name that producer directly; undeclared output edges are
 rejected before scheduling so a consumer cannot run against a stale generated
 file. The module performs no filesystem or process effects, so it is
 independently testable and can drive clean/no-op/incremental build comparisons.
+`resolve_incremental_build_dependencies` validates that same manifest and
+converts its target/dependency names into the canonical node indices and bound
+name-order index expected by `BuildGraph`; callers no longer need to maintain
+parallel hand-written name and index arrays.
 `plan_build_incremental_cleanup` reconciles a previously successful manifest
 with the current graph in deterministic target/output order. It returns a
 bounded list of outputs removed by a target deletion or rename, retains an
