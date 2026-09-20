@@ -150,13 +150,16 @@ then validates both observation streams against the case schema. A violation
 returns `DifferentialDifferenceKind.ObservationContract`; an invalid case is
 reported as `DifferentialDifferenceKind.CaseInvalid`. These new report kinds
 use ESCR version 3 while version-2 reports remain readable.
-The library currently exposes single-run adapters and has no paired case
-orchestrator. A host adapter making a case-level parity claim must call the
-case-aware comparator after both prepared sides have produced runs. The replay
-lifecycle compares while the captured runs are retained, then requires world
-restoration before exposing the comparison artifact or completing the session.
-The generic captured-run shrinker remains case-agnostic; it cannot prove a case
-schema without receiving the case itself.
+The library exposes single-run adapters and a typed `DifferentialCaseReplaySession`
+coordinator, but no end-to-end host replay driver. A host adapter making a
+case-level parity claim must call the case-aware comparator after both prepared
+sides have produced runs. The replay lifecycle orders and binds those runs,
+compares while captured evidence is retained, then requires world restoration
+before exposing the comparison artifact or completing the session. Callers
+still own root materialization, side execution, post-run capture, cleanup, and
+the evidence submitted for each transition. The generic captured-run shrinker
+remains case-agnostic; it cannot prove a case schema without receiving the case
+itself.
 
 Process invocations also distinguish text stdin from an owned binary stdin buffer.
 `stdin_binary` is required for byte payloads, mixed text/byte inputs are rejected,
@@ -960,12 +963,14 @@ world lifecycle.
 
 #### Filesystem-capture integration gate
 
-The snapshot model is not yet connected to `DifferentialCaseReplaySession`, and
-there is no host post-run tree collector. Do not treat a caller-supplied,
-sealed snapshot or a matching snapshot fingerprint as proof that a run's
+The snapshot model is not yet connected to `DifferentialCaseReplaySession`.
+There is a Darwin host post-run tree collector,
+`snapshot_darwin_differential_world`, but it is a separate operation and its
+`writers_quiescent` argument is only a caller assertion. Do not treat a
+caller-supplied sealed snapshot or matching fingerprint as proof that a run's
 filesystem effects have stopped changing. Before replay can attach such a
-snapshot, each side needs explicit evidence that its output is stable and its
-owned process scope is finished.
+snapshot, each side needs authoritative evidence that its output is stable and
+its owned process scope is finished.
 
 The current process adapter does not provide that evidence. It waits for and
 reaps the direct child, but stdout/stderr are temporary regular files rather
