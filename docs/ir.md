@@ -2720,6 +2720,10 @@ the 120-second default; zero disables the caller deadline but not the hard
 poll-count safety ceiling. Negative values fail as `ProcessError`. Deadline
 checks occur at poll boundaries, so termination includes the polling interval
 and the bounded process-group cleanup grace.
+`capture_process_stdout` and `capture_process_stderr` accept the same optional
+third timeout argument and apply the identical deadline policy. Capture APIs
+that accept stdin, a working directory, or environment overrides still use the
+default deadline; their public timeout parameters remain future work.
 The parent-side `setpgid(child, child)` admission also retries `EINTR`; any
 other failure leaves `group_ready` false and retains direct-child-only cleanup.
 Child stdout/stderr/stdin redirection retries interrupted `dup2` calls before

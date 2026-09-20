@@ -1300,14 +1300,14 @@ if ! rg -q 'name: "executable", receiver: "global".*argument_types: "sview".*ret
     printf 'builtin registry audit: executable process-constructor row is incomplete\n' >&2
     exit 1
 fi
-if ! rg -q 'name: "run_process", receiver: "global".*argument_types: "Executable,darray\[text\]".*return_type: "i64".*effects: "Process.Run".*errors: "ProcessError".*opcode: "RunProcess"' "$registry_file"; then
+if ! rg -q 'name: "run_process", receiver: "global".*arity_min: 2, arity_max: 3, argument_types: "Executable,darray\[text\],i64".*return_type: "i64".*effects: "Process.Run".*errors: "ProcessError".*opcode: "RunProcess"' "$registry_file"; then
     printf 'builtin registry audit: process-run row is incomplete\n' >&2
     exit 1
 fi
 for process_name in capture_process_stdout capture_process_stderr; do
     opcode="CaptureProcessStdout"
     [[ "$process_name" == "capture_process_stderr" ]] && opcode="CaptureProcessStderr"
-    if ! rg -q "name: \"$process_name\", receiver: \"global\".*argument_types: \"Executable,darray\\[text\\]\".*return_type: \"sview\".*effects: \"Process.Run\".*errors: \"ProcessError\".*opcode: \"$opcode\"" "$registry_file"; then
+    if ! rg -q "name: \"$process_name\", receiver: \"global\".*arity_min: 2, arity_max: 3, argument_types: \"Executable,darray\\[text\\],i64\".*return_type: \"sview\".*effects: \"Process.Run\".*errors: \"ProcessError\".*opcode: \"$opcode\"" "$registry_file"; then
         printf 'builtin registry audit: process stream-capture row is incomplete: %s\n' "$process_name" >&2
         exit 1
     fi
@@ -1341,7 +1341,8 @@ if ! rg -q 'executable_spec: EsBuiltin::BuiltinSpec = registry_spec' "$lowerer_f
     printf 'builtin registry audit: simple process lowerers do not consume registry shape/result/opcode metadata\n' >&2
     exit 1
 fi
-if ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Executable,darray\[text\]" and \(registry_spec\.opcode == "CaptureProcessStdout" or registry_spec\.opcode == "CaptureProcessStderr"\)' "$lowerer_file" || \
+if ! rg -q 'spec\.argument_types == "Executable,darray\[text\],i64"' "$lowerer_file" || \
+   ! rg -q 'has_timeout: bool = not has_stdin and arguments\.count == 3' "$lowerer_file" || \
    ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Executable,darray\[text\],sview" and \(registry_spec\.opcode == "CaptureProcessStdoutWithStdin" or registry_spec\.opcode == "CaptureProcessStderrWithStdin"\)' "$lowerer_file" || \
    ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Executable,darray\[text\],sview" and registry_spec\.opcode == "CaptureProcessResult"' "$lowerer_file" || \
    ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Executable,darray\[text\],sview,Path" and registry_spec\.opcode == "CaptureProcessResultInDirectory"' "$lowerer_file" || \
