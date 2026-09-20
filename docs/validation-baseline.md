@@ -85,8 +85,9 @@ and positional-construction checks, and the catch-line index for catch
 classification, mirroring upstream optimizations `187a33ef`, `65842568`,
 `41d1e229`, and `7e6dde06`. The integer constant folder also uses the vendor's
 existing character-literal decoder, adapting `15c54315`. The separate
-empty-struct diagnostic correction in `44a9cf62` remains under review because
-it changes behavior. No compiler was rebuilt or launched.
+empty-struct diagnostic correction in `44a9cf62` now queries declaration
+symbols for the shared named-type and invalid-struct-cast predicate and has a
+focused semantic regression fixture. No compiler was rebuilt or launched.
 
 An earlier Go Elisa-core source observation recorded
 `e85e8282c7b8dc588ba2ba53f0912d98769b1f1a` on `codex/structpy-tree`. Its work

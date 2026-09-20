@@ -122,10 +122,11 @@ The current adapted fixes are tracked separately from the snapshot identity:
   vendor's existing `parse_char_literal_code` helper. The `handled` flag is
   set only when that shared decoder accepts the literal, so unsupported forms
   still decline constant folding rather than becoming a guessed integer.
-- `44a9cf62` was reviewed but is not represented as a pure optimization: its
-  upstream declaration-kind check also recognizes empty structs, whereas this
-  snapshot's field-row check does not. Keep that behavior change separate until
-  the intended empty-struct diagnostic is covered by a semantic regression.
+- `44a9cf62`: recognize empty and positional-only structs in the shared named
+  struct diagnostic predicate used by both named-type mismatch and invalid
+  struct-cast checks, querying declaration symbols rather than requiring a
+  struct-field row. The semantic suite now has a focused empty-struct initializer
+  regression; validation was not run under the safety hold.
 - `d7aead96`: mirror the WebAssembly memory-intrinsic overload correction in
   the compatible declaration backend. `memory.grow` and `memory.size` are
   overloaded by their i32 result, not by their two source parameters, so the

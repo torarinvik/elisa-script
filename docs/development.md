@@ -41,9 +41,10 @@ rescanning annotations. Exact names and symbol kinds are rechecked, and the
 value-block query preserves first-declaration lookup order without importing
 the upstream compiler's newer index tables. Upstream `15c54315`'s global
 integer constant folder also uses the vendor's shared character-literal decoder.
-A nearby upstream `44a9cf62` change also recognizes empty structs in a
-diagnostic predicate; it
-is kept separate because that is a behavior correction, not only a fast path.
+Upstream `44a9cf62` is adapted separately as a diagnostic correctness fix: the
+named-struct predicate now recognizes empty and positional-only structs through
+declaration symbols, covering both named-type mismatch and invalid struct-cast
+classification, with a focused semantic regression fixture.
 The vendored snapshot also carries the compatible semantic fast paths from
 `142d9b03` (direct `sview` length checks and one-time protocol indexing) and
 the backend disjointness-scan de-duplication from `9bf231e6`; newer allocator,
