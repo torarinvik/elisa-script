@@ -354,6 +354,7 @@ extend EsIr:
             # Combined remaining budget for captured stdout plus stderr.
             output_limit: u64 = 0
             output_exceeded: mutable bool = false
+            timeout_micros: u64 = ProcessWait::MAX_RUNTIME_MICROS
             started_at: mutable EsMonotonicTime::MonotonicTimestamp = EsMonotonicTime::MonotonicTimestamp{seconds: 0, nanoseconds: 0}
             clock_started: mutable bool = false
             timed_out: mutable bool = false
@@ -5123,7 +5124,9 @@ extend EsIr:
             return runtime_void()
 
 
-        def evaluate_run_process(machine: mutable Machine&, storage: darray[RuntimeValue]&, executable: RuntimeValue, arguments: RuntimeValue) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+        def evaluate_run_process(machine: mutable Machine&, storage: darray[RuntimeValue]&, executable: RuntimeValue, arguments: RuntimeValue, timeout_micros: u64 = ProcessWait::MAX_RUNTIME_MICROS) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+            if not process_timeout_admitted(machine, timeout_micros):
+                return runtime_void()
             if executable.kind != RuntimeValueKind.Text or arguments.kind != RuntimeValueKind.Array:
                 interpret_set_failure(machine, InterpretFailure.TypeMismatch)
                 return runtime_void()
@@ -5200,7 +5203,7 @@ extend EsIr:
                     elisascript_posix_exit(127)
                     return runtime_void()
                 group_ready: bool = process_setpgid_parent(pid)
-                waiter: mutable ProcessWaiter = ProcessWaiter{pid: pid, group_ready: group_ready, status: 0, failed: false}
+                waiter: mutable ProcessWaiter = ProcessWaiter{pid: pid, group_ready: group_ready, status: 0, failed: false, timeout_micros: timeout_micros}
                 machine over process_wait_next(waiter):
                     state Wait
                     start Wait
@@ -5224,7 +5227,9 @@ extend EsIr:
                 return runtime_int((128 + signal_number).i64())
 
 
-        def evaluate_capture_process_stream(machine: mutable Machine&, storage: darray[RuntimeValue]&, executable: RuntimeValue, arguments: RuntimeValue, output_fd: int) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+        def evaluate_capture_process_stream(machine: mutable Machine&, storage: darray[RuntimeValue]&, executable: RuntimeValue, arguments: RuntimeValue, output_fd: int, timeout_micros: u64 = ProcessWait::MAX_RUNTIME_MICROS) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+            if not process_timeout_admitted(machine, timeout_micros):
+                return runtime_void()
             if executable.kind != RuntimeValueKind.Text or arguments.kind != RuntimeValueKind.Array:
                 interpret_set_failure(machine, InterpretFailure.TypeMismatch)
                 return runtime_void()
@@ -5312,7 +5317,7 @@ extend EsIr:
                     elisascript_posix_exit(127)
                     return runtime_void()
                 group_ready: bool = process_setpgid_parent(pid)
-                waiter: mutable ProcessWaiter = ProcessWaiter{pid: pid, group_ready: group_ready, status: 0, failed: false, stdout_stream: stream, output_limit: process_output_remaining(machine)}
+                waiter: mutable ProcessWaiter = ProcessWaiter{pid: pid, group_ready: group_ready, status: 0, failed: false, stdout_stream: stream, output_limit: process_output_remaining(machine), timeout_micros: timeout_micros}
                 machine over process_wait_next(waiter):
                     state Wait
                     start Wait
@@ -5609,6 +5614,13 @@ extend EsIr:
             return (machine.resource_policy.output_bytes - machine.resource_usage.output_bytes).u64()
 
 
+        def process_timeout_admitted(machine: mutable Machine&, timeout_micros: u64) -> bool:
+            if timeout_micros > EsProcess::PROCESS_COMMAND_MAX_TIMEOUT_MICROS:
+                interpret_set_failure(machine, InterpretFailure.Process)
+                return false
+            return true
+
+
         def process_wait_stream_size(waiter: mutable ProcessWaiter&, stream: heap void&) -> u64 can[Blocking.IO]:
             if fseek(stream, 0, FILEIO_SEEK_END) != 0:
                 waiter.failed <- true
@@ -5643,6 +5655,10 @@ extend EsIr:
 
 
         def process_wait_clock_start(waiter: mutable ProcessWaiter&) -> bool can[Blocking.IO]:
+            return false if waiter.timeout_micros > EsProcess::PROCESS_COMMAND_MAX_TIMEOUT_MICROS
+            if waiter.timeout_micros == 0u64:
+                waiter.clock_started <- true
+                return true
             sample: mutable EsMonotonicTime::MonotonicTimestamp = EsMonotonicTime::MonotonicTimestamp{seconds: 0, nanoseconds: 0}
             return false if elisascript_posix_monotonic_time(sample) != 0
             catch EsMonotonicTime::validate_monotonic_timestamp(sample):
@@ -5656,6 +5672,7 @@ extend EsIr:
 
 
         def process_wait_deadline_reached(waiter: mutable ProcessWaiter&) -> bool can[Blocking.IO]:
+            return false if waiter.timeout_micros == 0u64
             sample: mutable EsMonotonicTime::MonotonicTimestamp = EsMonotonicTime::MonotonicTimestamp{seconds: 0, nanoseconds: 0}
             if elisascript_posix_monotonic_time(sample) != 0:
                 waiter.failed <- true
@@ -5667,7 +5684,7 @@ extend EsIr:
                 error failure:
                     waiter.failed <- true
                     return false
-            return elapsed >= ProcessWait::MAX_RUNTIME_MICROS
+            return elapsed >= waiter.timeout_micros
 
 
         def process_wait_next(waiter: mutable ProcessWaiter&) -> ProcessWaitState can[Blocking.IO]:
@@ -5790,7 +5807,9 @@ extend EsIr:
         # next stage's stdin. This deliberately reuses the checked one-shot
         # ProcessCapture path, so argv handling, output limits, child setup, and
         # bounded waits are identical to standalone process execution.
-        def evaluate_capture_process_pipeline(machine: mutable Machine&, storage: mutable darray[RuntimeValue]&, executables: RuntimeValue, arguments: RuntimeValue, input: RuntimeValue, status_policy: EsProcess::ProcessPipelineStatusPolicy) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+        def evaluate_capture_process_pipeline(machine: mutable Machine&, storage: mutable darray[RuntimeValue]&, executables: RuntimeValue, arguments: RuntimeValue, input: RuntimeValue, status_policy: EsProcess::ProcessPipelineStatusPolicy, timeout_micros: u64 = ProcessWait::MAX_RUNTIME_MICROS) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+            if not process_timeout_admitted(machine, timeout_micros):
+                return runtime_void()
             if executables.kind != RuntimeValueKind.Array or arguments.kind != RuntimeValueKind.Array or input.kind != RuntimeValueKind.Text:
                 interpret_set_failure(machine, InterpretFailure.TypeMismatch)
                 return runtime_void()
@@ -5820,7 +5839,7 @@ extend EsIr:
                 if executable.kind != RuntimeValueKind.Text or stage_arguments.kind != RuntimeValueKind.Array:
                     interpret_set_failure(machine, InterpretFailure.TypeMismatch)
                     return runtime_void()
-                final_capture <- evaluate_capture_process_result(machine, storage, executable, stage_arguments, current_input, runtime_void(), runtime_void())
+                final_capture <- evaluate_capture_process_result(machine, storage, executable, stage_arguments, current_input, runtime_void(), runtime_void(), timeout_micros)
                 return runtime_void() if machine.failure != InterpretFailure.None
                 pipefail_exit_status <- final_capture.process_exit_status if final_capture.process_exit_status != 0
                 stage_stderr_length: usize = sview_len(final_capture.process_stderr)
@@ -5847,7 +5866,9 @@ extend EsIr:
             return final_capture
 
 
-        def evaluate_capture_process_result(machine: mutable Machine&, storage: mutable darray[RuntimeValue]&, executable: RuntimeValue, arguments: RuntimeValue, input: RuntimeValue, working_directory: RuntimeValue, environment: RuntimeValue) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+        def evaluate_capture_process_result(machine: mutable Machine&, storage: mutable darray[RuntimeValue]&, executable: RuntimeValue, arguments: RuntimeValue, input: RuntimeValue, working_directory: RuntimeValue, environment: RuntimeValue, timeout_micros: u64 = ProcessWait::MAX_RUNTIME_MICROS) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+            if not process_timeout_admitted(machine, timeout_micros):
+                return runtime_void()
             if executable.kind != RuntimeValueKind.Text or arguments.kind != RuntimeValueKind.Array or input.kind != RuntimeValueKind.Text or (working_directory.kind != RuntimeValueKind.Void and working_directory.kind != RuntimeValueKind.Text) or (environment.kind != RuntimeValueKind.Void and environment.kind != RuntimeValueKind.Map):
                 interpret_set_failure(machine, InterpretFailure.TypeMismatch)
                 return runtime_void()
@@ -6046,7 +6067,7 @@ extend EsIr:
                     elisascript_posix_exit(127)
                     return runtime_void()
                 group_ready: bool = process_setpgid_parent(pid)
-                waiter: mutable ProcessWaiter = ProcessWaiter{pid: pid, group_ready: group_ready, status: 0, failed: false, stdout_stream: stdout_stream, stderr_stream: stderr_stream, output_limit: process_output_remaining(machine)}
+                waiter: mutable ProcessWaiter = ProcessWaiter{pid: pid, group_ready: group_ready, status: 0, failed: false, stdout_stream: stdout_stream, stderr_stream: stderr_stream, output_limit: process_output_remaining(machine), timeout_micros: timeout_micros}
                 machine over process_wait_next(waiter):
                     state Wait
                     start Wait
@@ -6103,7 +6124,9 @@ extend EsIr:
             return runtime_void()
 
 
-        def evaluate_capture_process_stream_with_stdin(machine: mutable Machine&, storage: mutable darray[RuntimeValue]&, executable: RuntimeValue, arguments: RuntimeValue, input: RuntimeValue, output_fd: int) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+        def evaluate_capture_process_stream_with_stdin(machine: mutable Machine&, storage: mutable darray[RuntimeValue]&, executable: RuntimeValue, arguments: RuntimeValue, input: RuntimeValue, output_fd: int, timeout_micros: u64 = ProcessWait::MAX_RUNTIME_MICROS) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+            if not process_timeout_admitted(machine, timeout_micros):
+                return runtime_void()
             if executable.kind != RuntimeValueKind.Text or arguments.kind != RuntimeValueKind.Array or input.kind != RuntimeValueKind.Text:
                 interpret_set_failure(machine, InterpretFailure.TypeMismatch)
                 return runtime_void()
@@ -6224,7 +6247,7 @@ extend EsIr:
                     elisascript_posix_exit(127)
                     return runtime_void()
                 group_ready: bool = process_setpgid_parent(pid)
-                waiter: mutable ProcessWaiter = ProcessWaiter{pid: pid, group_ready: group_ready, status: 0, failed: false, stdout_stream: output_stream, output_limit: process_output_remaining(machine)}
+                waiter: mutable ProcessWaiter = ProcessWaiter{pid: pid, group_ready: group_ready, status: 0, failed: false, stdout_stream: output_stream, output_limit: process_output_remaining(machine), timeout_micros: timeout_micros}
                 machine over process_wait_next(waiter):
                     state Wait
                     start Wait
