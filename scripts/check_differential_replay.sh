@@ -37,7 +37,12 @@ for boundary in \
     'ComparisonNotReady' \
     'RestoreMismatch' \
     'RestorationNotReady' \
+    'not session.has_admission and session.admission_fingerprint != 0' \
     'session.admission_fingerprint != session.expected_manifest_fingerprint' \
+    'not session.has_reference and session.reference_run_fingerprint != 0' \
+    'not session.has_candidate and session.candidate_run_fingerprint != 0' \
+    'not session.has_comparison and session.comparison_fingerprint != 0' \
+    'not session.has_restoration and session.restored_world_fingerprint != 0' \
     'session.restored_world_fingerprint != session.expected_world_fingerprint' \
     'session.has_materialization_attempt and not session.has_restoration' \
     'session.state == DifferentialReplayState.Restoring and session.disposition == DifferentialReplayDisposition.Normal' \
@@ -65,6 +70,7 @@ for fixture_pattern in \
     'differential_replay_abort_paths_restore_started_worlds_before_terminal_state' \
     'DifferentialReplayEvent.Admit' \
     'DifferentialReplayEvent.CompareComplete' \
+    'forged_hidden_replay_fingerprint' \
     'DifferentialReplayEvent.RestoreComplete' \
     'DifferentialReplayError.RunOrderInvalid' \
     'forged_completed_replay' \

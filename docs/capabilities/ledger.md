@@ -1009,7 +1009,9 @@ instrumentation and execution evidence remain open.
 ES-SCRIPT-019 | EsDifferentialReplay supplies a bounded replay lifecycle that
 binds manifest/world fingerprints, enforces an explicit side order, requires
 both run identities and a comparison before restoration, and rejects stale or
-wrong-world completion. Replay-bound process setup now resolves selected-side
+wrong-world completion. Each admission/run/comparison/restoration fingerprint
+must remain zero while its evidence flag is absent, rejecting hidden stale
+identities in caller-built sessions. Replay-bound process setup now resolves selected-side
 cwd, argv, stdin, environment, locale, and timezone; records a setup
 fingerprint; admits one attempt per side/root; and requires the attempt and
 matching fingerprint claim when completing `NativeProcess`/`PythonAdapter`

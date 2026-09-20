@@ -1045,8 +1045,10 @@ cancelled session is terminal only after the original world fingerprint is
 verified; pre-materialization termination remains safe to complete directly.
 Conflicting termination requests, rejected order, stale admission, wrong-world,
 missing-comparison, forged phase flags, and failed-restore edges remain typed
-state errors. The contract does not launch the reproduction entry or perform
-cleanup itself.
+state errors. A fingerprint field must also remain zero until its matching
+evidence flag is set, so caller-constructed snapshots cannot hide stale run,
+comparison, admission, or restoration identities. The contract does not launch
+the reproduction entry or perform cleanup itself.
 
 `DifferentialCaseReplaySession` composes that lifecycle with a validated
 `DifferentialCase`, its exact ESDF v5 manifest, the world snapshot, and the two-
