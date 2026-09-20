@@ -2728,10 +2728,12 @@ argument. The fifth argument caps captured stdout plus stderr for that call,
 and cannot widen the enclosing runtime's remaining output budget. Negative or
 over-runtime-ceiling limits fail before spawn; exceeding an admitted limit
 terminates the child and reports `OutputLimit`. All use the identical deadline
-policy.
-Stream-capture APIs with stdin, and capture variants with cwd or environment
-overrides, still use the default deadline; their public timeout parameters
-remain future work.
+policy. The cwd and environment variants of `capture_process_result` accept
+the same optional timeout and capture ceiling after their required directory
+and/or environment arguments. Their omitted values retain the same defaults;
+the ceiling still applies to combined stdout and stderr.
+Stream-capture APIs with stdin and pipelines still use the default deadline;
+their public timeout parameters remain future work.
 The parent-side `setpgid(child, child)` admission also retries `EINTR`; any
 other failure leaves `group_ready` false and retains direct-child-only cleanup.
 Child stdout/stderr/stdin redirection retries interrupted `dup2` calls before

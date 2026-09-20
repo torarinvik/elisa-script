@@ -1344,12 +1344,17 @@ fi
 if ! rg -q 'spec\.argument_types == "Executable,darray\[text\],i64"' "$lowerer_file" || \
    ! rg -q 'has_timeout: bool = not has_stdin and arguments\.count == 3' "$lowerer_file" || \
    ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Executable,darray\[text\],sview" and \(registry_spec\.opcode == "CaptureProcessStdoutWithStdin" or registry_spec\.opcode == "CaptureProcessStderrWithStdin"\)' "$lowerer_file" || \
-   ! rg -q 'has_timeout: bool = spec\.opcode == "CaptureProcessResult" and arguments\.count >= 4' "$lowerer_file" || \
-   ! rg -q 'has_output_limit: bool = spec\.opcode == "CaptureProcessResult" and arguments\.count == 5' "$lowerer_file" || \
+   ! rg -q 'has_timeout: mutable bool = false' "$lowerer_file" || \
+   ! rg -q 'has_output_limit: mutable bool = false' "$lowerer_file" || \
+   ! rg -q 'has_timeout <- arguments\.count > next_argument' "$lowerer_file" || \
+   ! rg -q 'has_output_limit <- arguments\.count == next_argument \+ 2' "$lowerer_file" || \
    ! rg -q 'state\.operand_pool\.push\(output_limit_value\.value\) if has_output_limit' "$lowerer_file" || \
-   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Executable,darray\[text\],sview,Path" and registry_spec\.opcode == "CaptureProcessResultInDirectory"' "$lowerer_file" || \
-   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Executable,darray\[text\],sview,dict\[sview,sview\]" and registry_spec\.opcode == "CaptureProcessResultWithEnvironment"' "$lowerer_file" || \
-   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Executable,darray\[text\],sview,Path,dict\[sview,sview\]" and registry_spec\.opcode == "CaptureProcessResultInDirectoryWithEnvironment"' "$lowerer_file"; then
+   ! rg -q 'spec\.argument_types == "Executable,darray\[text\],sview,Path,i64,i64" and \(index == 4 or index == 5\)' "$semantic_builtin_checker" || \
+   ! rg -q 'spec\.argument_types == "Executable,darray\[text\],sview,dict\[sview,sview\],i64,i64" and \(index == 4 or index == 5\)' "$semantic_builtin_checker" || \
+   ! rg -q 'spec\.argument_types == "Executable,darray\[text\],sview,Path,dict\[sview,sview\],i64,i64" and \(index == 5 or index == 6\)' "$semantic_builtin_checker" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Executable,darray\[text\],sview,Path,i64,i64" and registry_spec\.opcode == "CaptureProcessResultInDirectory"' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Executable,darray\[text\],sview,dict\[sview,sview\],i64,i64" and registry_spec\.opcode == "CaptureProcessResultWithEnvironment"' "$lowerer_file" || \
+   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Executable,darray\[text\],sview,Path,dict\[sview,sview\],i64,i64" and registry_spec\.opcode == "CaptureProcessResultInDirectoryWithEnvironment"' "$lowerer_file"; then
     printf 'builtin registry audit: process capture lowerers do not consume registry receiver/argument metadata\n' >&2
     exit 1
 fi
@@ -1357,11 +1362,11 @@ if ! rg -q 'name: "capture_process_result", receiver: "global".*arity_min: 3, ar
     printf 'builtin registry audit: process-result capture row is incomplete\n' >&2
     exit 1
 fi
-if ! rg -q 'name: "capture_process_result_in_directory", receiver: "global".*argument_types: "Executable,darray\[text\],sview,Path".*return_type: "ProcessCapture".*effects: "Process.Run".*errors: "ProcessError".*opcode: "CaptureProcessResultInDirectory"' "$registry_file"; then
+if ! rg -q 'name: "capture_process_result_in_directory", receiver: "global", arity_min: 4, arity_max: 6, argument_types: "Executable,darray\[text\],sview,Path,i64,i64".*return_type: "ProcessCapture".*effects: "Process.Run".*errors: "ProcessError".*opcode: "CaptureProcessResultInDirectory"' "$registry_file"; then
     printf 'builtin registry audit: process directory-result capture row is incomplete\n' >&2
     exit 1
 fi
-if ! rg -q 'name: "capture_process_result_with_environment", receiver: "global".*argument_types: "Executable,darray\[text\],sview,dict\[sview,sview\]".*return_type: "ProcessCapture".*effects: "Process.Run".*errors: "ProcessError".*opcode: "CaptureProcessResultWithEnvironment"' "$registry_file" || ! rg -q 'name: "capture_process_result_in_directory_with_environment", receiver: "global".*argument_types: "Executable,darray\[text\],sview,Path,dict\[sview,sview\]".*return_type: "ProcessCapture".*effects: "Process.Run".*errors: "ProcessError".*opcode: "CaptureProcessResultInDirectoryWithEnvironment"' "$registry_file"; then
+if ! rg -q 'name: "capture_process_result_with_environment", receiver: "global", arity_min: 4, arity_max: 6, argument_types: "Executable,darray\[text\],sview,dict\[sview,sview\],i64,i64".*return_type: "ProcessCapture".*effects: "Process.Run".*errors: "ProcessError".*opcode: "CaptureProcessResultWithEnvironment"' "$registry_file" || ! rg -q 'name: "capture_process_result_in_directory_with_environment", receiver: "global", arity_min: 5, arity_max: 7, argument_types: "Executable,darray\[text\],sview,Path,dict\[sview,sview\],i64,i64".*return_type: "ProcessCapture".*effects: "Process.Run".*errors: "ProcessError".*opcode: "CaptureProcessResultInDirectoryWithEnvironment"' "$registry_file"; then
     printf 'builtin registry audit: process environment-result capture rows are incomplete\n' >&2
     exit 1
 fi
