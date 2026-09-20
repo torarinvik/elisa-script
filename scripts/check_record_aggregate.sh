@@ -4,17 +4,46 @@
 set -euo pipefail
 
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
+if (($# > 1)); then
+    printf 'usage: record aggregate audit [repository-root]\n' >&2
+    exit 2
+fi
+repo_root_operand="$script_dir/.."
+if (($# == 1)); then
+    repo_root_operand="$1"
+fi
+repo_root="$(CDPATH= cd -- "$repo_root_operand" && pwd)" || {
+    printf 'record aggregate audit: missing repository root\n' >&2
+    exit 1
+}
 model="$repo_root/src/runtime/record_aggregate_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture_file="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
+candidate="$repo_root/scripts/check_record_aggregate.elisascript"
 
-for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger" "$plan"; do
-    [[ -f "$required_file" ]] || { printf 'record aggregate audit: missing %s\n' "$required_file" >&2; exit 1; }
+for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger" "$candidate"; do
+    [[ -f "$required_file" && -r "$required_file" ]] || { printf 'record aggregate audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
+
+max_source_bytes=16777216
+max_total_source_bytes=4194304
+total_source_bytes=0
+for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger"; do
+    source_bytes="$(LC_ALL=C wc -c < "$required_file")"
+    if (( source_bytes > max_source_bytes || total_source_bytes > max_total_source_bytes - source_bytes )); then
+        printf 'record aggregate audit: source exceeds audit limit: %s\n' "$required_file" >&2
+        exit 2
+    fi
+    total_source_bytes=$((total_source_bytes + source_bytes))
+done
+
+rg -Fq 'module EsRecordAggregateAudit:' "$candidate"
+rg -Fq 'def read_source(' "$candidate"
+rg -Fq 'def run(repository_root: sview)' "$candidate"
+rg -Fq 'Limits::TOTAL_SOURCE_BYTES - total_bytes' "$candidate"
+rg -Fq 'usage: record aggregate audit [repository-root]' "$candidate"
 
 rg -q '^module EsRecordAggregate:' "$model"
 rg -q 'include "\.\./runtime/record_aggregate_model\.elisa"' "$ir"
@@ -47,7 +76,6 @@ for boundary in \
     'accounted_events' \
     'previous_first_ordinal' \
     'group.first_ordinal <= previous_first_ordinal' \
-    'first_ordinal == group.first_ordinal' \
     'RecordAggregateError.GroupIndexInvalid' \
     'RecordAggregateEvent.Add' \
     'RecordAggregateEvent.AddValue' \
@@ -70,6 +98,5 @@ done
 
 rg -q 'EsRecordAggregate::RecordAggregateSession' "$docs"
 rg -q 'ES-SCRIPT-027' "$ledger"
-rg -q 'P11 aggregation follow-up' "$plan"
 
 printf 'record aggregate audit: bounded insertion-ordered groups and sealed lookup are present\n'

@@ -1,0 +1,169 @@
+# Bounded Elisascript port of check_record_aggregate.sh.
+# Pass the same repository root to this candidate and the shell reference when
+# running a parity case; the candidate never starts rg or another child process.
+
+module EsRecordAggregateAudit:
+    private:
+        const module Limits:
+            SOURCE_BYTES: usize = 16777216
+            TOTAL_SOURCE_BYTES: usize = 4194304
+
+
+        const module Inputs:
+            MODEL: sview = "src/runtime/record_aggregate_model.elisa"
+            IR: sview = "src/ir/ir.elisa"
+            FIXTURE: sview = "test/ir/elisascript_ir_test.elisa"
+            DOCS: sview = "docs/ir.md"
+            LEDGER: sview = "docs/capabilities/ledger.md"
+
+
+        error AuditReadError:
+            Missing
+            LimitExceeded
+
+
+        def display_path(root: sview, relative: sview) -> sview can[Memory.Allocate, Abort.Panic]:
+            return "/" + relative if root == "/"
+            return root + "/" + relative
+
+
+        def read_source(input_path: Path, total_bytes: mutable usize&) -> sview error[AuditReadError] can[Memory.Allocate, Abort.Panic, File.Read]:
+            if not is_file(input_path):
+                raise AuditReadError.Missing
+
+            source_size: usize = try file_size(input_path) else err:
+                raise AuditReadError.Missing
+
+            raise AuditReadError.LimitExceeded if source_size > Limits::SOURCE_BYTES
+            raise AuditReadError.LimitExceeded if source_size > Limits::TOTAL_SOURCE_BYTES - total_bytes
+            total_bytes <- total_bytes + source_size
+
+            source: sview = try read_text(input_path) else err:
+                raise AuditReadError.Missing
+
+            # read_text is not a bounded-read primitive. Check for ordinary
+            # growth races after the read; the stable checkout assumption is
+            # documented so this audit does not claim an RSS guarantee.
+            raise AuditReadError.LimitExceeded if len(source) > source_size or len(source) > Limits::SOURCE_BYTES
+            return source
+
+
+        def has_prefix_line(source: sview, prefix: sview) -> bool can[Memory.Allocate, Abort.Panic]:
+            lines: darray[sview] = split_lines(source)
+            for line in lines:
+                return true if line.startswith(prefix)
+            return false
+
+
+        def contains_all(source: sview, required: darray[sview]) -> bool:
+            for needle in required:
+                return false if source.index(needle) < 0
+            return true
+
+
+    public:
+        def run(repository_root: sview) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, Directory.Read, File.Read]:
+            if repository_root == "":
+                eprint("record aggregate audit: missing repository root")
+                return 1i64
+            root_absolute: Path = try path_real(path_absolute(path(repository_root))) else err:
+                eprint("record aggregate audit: missing repository root")
+                return 1i64
+            root_text: sview = f"{root_absolute}"
+            relative_paths: darray[sview] = [Inputs::MODEL, Inputs::IR, Inputs::FIXTURE, Inputs::DOCS, Inputs::LEDGER]
+            sources: mutable darray[sview] = []
+            total_bytes: mutable usize = 0
+
+            for relative in relative_paths |relative_paths, root_absolute, root_text, sources, total_bytes|:
+                input_display: sview = display_path(root_text, relative)
+                input_path: Path = path_join(root_absolute, relative)
+                catch read_source(input_path, total_bytes):
+                    ok source:
+                        sources.push(source)
+                    error failure:
+                        if failure == AuditReadError.Missing:
+                            eprint(f"record aggregate audit: missing {input_display}")
+                            return 1i64
+                        eprint(f"record aggregate audit: source exceeds audit limit: {input_display}")
+                        return 2i64
+
+            model: sview = sources[0]
+            ir: sview = sources[1]
+            fixture: sview = sources[2]
+            docs: sview = sources[3]
+            ledger: sview = sources[4]
+
+            if not has_prefix_line(model, "module EsRecordAggregate:"):
+                return 1i64
+            if ir.index("include \"../runtime/record_aggregate_model.elisa\"") < 0:
+                return 1i64
+
+            declarations: darray[sview] = [
+                "const enum RecordAggregateState of u8",
+                "const enum RecordAggregateEvent of u8",
+                "struct RecordAggregatePolicy:",
+                "struct RecordAggregateGroup:",
+                "struct RecordAggregateSession:",
+                "error RecordAggregateError:",
+                "def validate_record_aggregate(",
+                "def record_aggregate_group_count(",
+                "def record_aggregate_group_sum(",
+                "def advance_record_aggregate("
+            ]
+            if not contains_all(model, declarations):
+                return 1i64
+
+            boundaries: darray[sview] = [
+                "RECORD_AGGREGATE_MAX_GROUPS",
+                "RECORD_AGGREGATE_MAX_EVENTS",
+                "RECORD_AGGREGATE_MAX_KEY_BYTES",
+                "RECORD_AGGREGATE_MAX_SUM",
+                "record_aggregate_key_valid",
+                "sview_len(key) <= policy.max_key_bytes",
+                "RecordAggregateError.GroupLimitExceeded",
+                "RecordAggregateError.EventLimitExceeded",
+                "RecordAggregateError.KeyBytesLimitExceeded",
+                "RecordAggregateError.AccountingInvalid",
+                "session.state == RecordAggregateState.Planned and",
+                "accounted_events",
+                "previous_first_ordinal",
+                "group.first_ordinal <= previous_first_ordinal",
+                "RecordAggregateError.GroupIndexInvalid",
+                "RecordAggregateEvent.Add",
+                "RecordAggregateEvent.AddValue",
+                "SumLimitExceeded",
+                "RecordAggregateEvent.Seal"
+            ]
+            if not contains_all(model, boundaries):
+                return 1i64
+
+            fixture_patterns: darray[sview] = [
+                "using EsRecordAggregate",
+                "typed_record_aggregate_contract_is_bounded_and_insertion_ordered",
+                "RecordAggregateEvent.Add",
+                "record_aggregate_group_count",
+                "max_key_bytes: 5",
+                "\"12345\"",
+                "forged_aggregate_order",
+                "RecordAggregateError.GroupIndexInvalid"
+            ]
+            if not contains_all(fixture, fixture_patterns):
+                return 1i64
+
+            return 1i64 if docs.index("EsRecordAggregate::RecordAggregateSession") < 0
+            return 1i64 if ledger.index("ES-SCRIPT-027") < 0
+
+            println("record aggregate audit: bounded insertion-ordered groups and sealed lookup are present")
+            return 0i64
+
+
+def main(arguments: darray[sview]) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, Directory.Read, File.Read]:
+    if arguments.count > 1:
+        eprint("usage: record aggregate audit [repository-root]")
+        return 2i64
+
+    repository_root: sview = "."
+    if arguments.count == 1:
+        repository_root <- arguments[0]
+
+    return EsRecordAggregateAudit::run(repository_root)
