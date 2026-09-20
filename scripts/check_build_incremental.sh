@@ -26,6 +26,7 @@ for declaration in \
     'Limits::INPUTS' \
     'Limits::OUTPUTS' \
     'Limits::OBSERVATIONS' \
+    'Limits::TOTAL_DEPENDENCIES' \
     'Limits::CLEANUP_OUTPUTS' \
     'Limits::TOTAL_INPUTS' \
     'Limits::TOTAL_OUTPUTS' \
@@ -85,6 +86,7 @@ for boundary in \
     'build_incremental_path_owner_order' \
     'Limits::TOTAL_INPUTS - owners.count' \
     'Limits::TOTAL_OUTPUTS - owners.count' \
+    'Limits::TOTAL_DEPENDENCIES - total_dependencies' \
     'BuildIncrementalError.DuplicateInput if previous.path == current.path and previous.target_index == current.target_index' \
     'build_incremental_path_owner_position(current_manifest.output_owners, output.path)' \
     'build_incremental_path_owner_position(current_manifest.input_owners, output.path)' \

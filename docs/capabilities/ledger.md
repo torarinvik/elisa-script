@@ -746,8 +746,10 @@ indices and attached to a fresh `BuildGraph` through a checked, pure adapter;
 malformed edge or name-index data is rejected before the graph is mutated.
 Manifest admission uses bounded sorted path-owner indexes and a resolved
 dependency index instead of nested target/output/input scans; aggregate inputs
-and outputs are each limited to 1,048,576 records, and the observation ceiling
-is 2,097,152 unique-path records to cover both sets without aliasing them.
+and outputs are each limited to 1,048,576 records, aggregate dependency edges
+use the shared `EsBuild::Limits::TOTAL_DEPENDENCIES` ceiling and are rejected
+before adapter vectors are built, and the observation ceiling is 2,097,152
+unique-path records to cover both sets without aliasing them.
 The whole manifest can also be classified in topological order; dependency
 currentness is derived from prior decisions so stale state propagates to every
 dependent target without trusting caller-supplied flags. Observation records
