@@ -1344,14 +1344,16 @@ fi
 if ! rg -q 'spec\.argument_types == "Executable,darray\[text\],i64"' "$lowerer_file" || \
    ! rg -q 'has_timeout: bool = not has_stdin and arguments\.count == 3' "$lowerer_file" || \
    ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Executable,darray\[text\],sview" and \(registry_spec\.opcode == "CaptureProcessStdoutWithStdin" or registry_spec\.opcode == "CaptureProcessStderrWithStdin"\)' "$lowerer_file" || \
-   ! rg -q 'has_timeout: bool = spec\.opcode == "CaptureProcessResult" and arguments\.count == 4' "$lowerer_file" || \
+   ! rg -q 'has_timeout: bool = spec\.opcode == "CaptureProcessResult" and arguments\.count >= 4' "$lowerer_file" || \
+   ! rg -q 'has_output_limit: bool = spec\.opcode == "CaptureProcessResult" and arguments\.count == 5' "$lowerer_file" || \
+   ! rg -q 'state\.operand_pool\.push\(output_limit_value\.value\) if has_output_limit' "$lowerer_file" || \
    ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Executable,darray\[text\],sview,Path" and registry_spec\.opcode == "CaptureProcessResultInDirectory"' "$lowerer_file" || \
    ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Executable,darray\[text\],sview,dict\[sview,sview\]" and registry_spec\.opcode == "CaptureProcessResultWithEnvironment"' "$lowerer_file" || \
    ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Executable,darray\[text\],sview,Path,dict\[sview,sview\]" and registry_spec\.opcode == "CaptureProcessResultInDirectoryWithEnvironment"' "$lowerer_file"; then
     printf 'builtin registry audit: process capture lowerers do not consume registry receiver/argument metadata\n' >&2
     exit 1
 fi
-if ! rg -q 'name: "capture_process_result", receiver: "global".*arity_min: 3, arity_max: 4, argument_types: "Executable,darray\[text\],sview,i64".*return_type: "ProcessCapture".*effects: "Process.Run".*errors: "ProcessError".*opcode: "CaptureProcessResult"' "$registry_file"; then
+if ! rg -q 'name: "capture_process_result", receiver: "global".*arity_min: 3, arity_max: 5, argument_types: "Executable,darray\[text\],sview,i64,i64".*return_type: "ProcessCapture".*effects: "Process.Run".*errors: "ProcessError".*opcode: "CaptureProcessResult"' "$registry_file"; then
     printf 'builtin registry audit: process-result capture row is incomplete\n' >&2
     exit 1
 fi

@@ -5866,8 +5866,11 @@ extend EsIr:
             return final_capture
 
 
-        def evaluate_capture_process_result(machine: mutable Machine&, storage: mutable darray[RuntimeValue]&, executable: RuntimeValue, arguments: RuntimeValue, input: RuntimeValue, working_directory: RuntimeValue, environment: RuntimeValue, timeout_micros: u64 = ProcessWait::MAX_RUNTIME_MICROS) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+        def evaluate_capture_process_result(machine: mutable Machine&, storage: mutable darray[RuntimeValue]&, executable: RuntimeValue, arguments: RuntimeValue, input: RuntimeValue, working_directory: RuntimeValue, environment: RuntimeValue, timeout_micros: u64 = ProcessWait::MAX_RUNTIME_MICROS, output_limit_bytes: usize = ES_RUNTIME_DEFAULT_MAX_OUTPUT_BYTES) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
             if not process_timeout_admitted(machine, timeout_micros):
+                return runtime_void()
+            if output_limit_bytes > ES_RUNTIME_DEFAULT_MAX_OUTPUT_BYTES:
+                interpret_set_failure(machine, InterpretFailure.Process)
                 return runtime_void()
             if executable.kind != RuntimeValueKind.Text or arguments.kind != RuntimeValueKind.Array or input.kind != RuntimeValueKind.Text or (working_directory.kind != RuntimeValueKind.Void and working_directory.kind != RuntimeValueKind.Text) or (environment.kind != RuntimeValueKind.Void and environment.kind != RuntimeValueKind.Map):
                 interpret_set_failure(machine, InterpretFailure.TypeMismatch)
@@ -5896,6 +5899,11 @@ extend EsIr:
             if not process_input_bytes_fits(machine, input):
                 interpret_set_failure(machine, InterpretFailure.Process)
                 return runtime_void()
+            capture_output_limit: mutable u64 = process_output_remaining(machine)
+            if output_limit_bytes.u64() < capture_output_limit:
+                capture_output_limit <- output_limit_bytes.u64()
+            if machine.process_output_limit < capture_output_limit:
+                capture_output_limit <- machine.process_output_limit
             executable_bytes: dstr = nul_terminated_text(executable.text)
             if executable_bytes.items == null:
                 interpret_set_failure(machine, InterpretFailure.Process)
@@ -6067,7 +6075,7 @@ extend EsIr:
                     elisascript_posix_exit(127)
                     return runtime_void()
                 group_ready: bool = process_setpgid_parent(pid)
-                waiter: mutable ProcessWaiter = ProcessWaiter{pid: pid, group_ready: group_ready, status: 0, failed: false, stdout_stream: stdout_stream, stderr_stream: stderr_stream, output_limit: process_output_remaining(machine), timeout_micros: timeout_micros}
+                waiter: mutable ProcessWaiter = ProcessWaiter{pid: pid, group_ready: group_ready, status: 0, failed: false, stdout_stream: stdout_stream, stderr_stream: stderr_stream, output_limit: capture_output_limit, timeout_micros: timeout_micros}
                 machine over process_wait_next(waiter):
                     state Wait
                     start Wait
@@ -8260,14 +8268,23 @@ extend EsIr:
                                 arguments_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1], machine)
                                 input_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 2], machine)
                                 timeout_micros: mutable u64 = ProcessWait::MAX_RUNTIME_MICROS
-                                if instruction.operand_count == 4:
+                                output_limit_bytes: mutable usize = ES_RUNTIME_DEFAULT_MAX_OUTPUT_BYTES
+                                if instruction.operand_count >= 4:
                                     timeout_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 3], machine)
                                     if timeout_value.kind != RuntimeValueKind.Int or timeout_value.integer < 0:
                                         interpret_set_failure(machine, InterpretFailure.Process)
                                     else:
                                         timeout_micros <- timeout_value.integer.u64()
+                                if instruction.operand_count == 5:
+                                    output_limit_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 4], machine)
+                                    if output_limit_value.kind != RuntimeValueKind.Int or output_limit_value.integer < 0:
+                                        interpret_set_failure(machine, InterpretFailure.Process)
+                                    elif output_limit_value.integer.u64() > ES_RUNTIME_DEFAULT_MAX_OUTPUT_BYTES.u64():
+                                        interpret_set_failure(machine, InterpretFailure.Process)
+                                    else:
+                                        output_limit_bytes <- output_limit_value.integer.usize()
                                 if machine.failure == InterpretFailure.None:
-                                    dispatch.value <- evaluate_capture_process_result(machine, storage, executable_value, arguments_value, input_value, runtime_void(), runtime_void(), timeout_micros)
+                                    dispatch.value <- evaluate_capture_process_result(machine, storage, executable_value, arguments_value, input_value, runtime_void(), runtime_void(), timeout_micros, output_limit_bytes)
                                 break
 
                             Opcode.CaptureProcessResultInDirectory:
@@ -9173,7 +9190,9 @@ extend EsIr:
 
 
         def capture_process_result_in_directory_with_environment_value(storage: mutable darray[RuntimeValue]&, executable: sview, arguments: RuntimeValue, input: sview, directory: sview, environment: RuntimeValue) -> RuntimeValue error[InterpretError] can[Memory.Allocate, Abort.Panic]:
-            machine: mutable Machine = Machine{steps: 0, step_limit: 1, failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void()}
+            machine: mutable Machine = Machine{steps: 0, step_limit: 1, resource_policy: runtime_resource_policy_default(), failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void()}
+            machine.resource_policy.processes <- ES_RUNTIME_DEFAULT_MAX_PROCESSES
+            machine.resource_policy.open_handles <- ES_RUNTIME_DEFAULT_MAX_OPEN_HANDLES
             value: RuntimeValue = evaluate_capture_process_result(machine, storage, runtime_text(executable), arguments, runtime_text(input), runtime_text(directory), environment)
             if machine.failure != InterpretFailure.None:
                 try raise_interpret_failure(machine.failure)

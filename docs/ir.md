@@ -2723,7 +2723,12 @@ and the bounded process-group cleanup grace.
 `capture_process_stdout` and `capture_process_stderr` accept the same optional
 third timeout argument. The stdin-capable
 `capture_process_result(executable, arguments, input, timeout_micros)` accepts
-an optional fourth timeout argument. All use the identical deadline policy.
+an optional fourth timeout argument and an optional fifth `max_output_bytes`
+argument. The fifth argument caps captured stdout plus stderr for that call,
+and cannot widen the enclosing runtime's remaining output budget. Negative or
+over-runtime-ceiling limits fail before spawn; exceeding an admitted limit
+terminates the child and reports `OutputLimit`. All use the identical deadline
+policy.
 Stream-capture APIs with stdin, and capture variants with cwd or environment
 overrides, still use the default deadline; their public timeout parameters
 remain future work.
