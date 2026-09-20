@@ -1,9 +1,10 @@
 # Typed build/test orchestration graph.
 #
 # Build recipes are data, not shell snippets. Nodes carry validated
-# ProcessCommands, explicit dependency names, stable fingerprints, and bounded
-# logs. The graph order is a deterministic topological order: every dependency
-# must appear earlier, which rejects cycles before a scheduler starts a child.
+# ProcessCommands, resolved dependency indices, stable fingerprints, and
+# bounded logs. The graph order is a deterministic topological order: every
+# dependency must appear earlier, which rejects cycles before a scheduler
+# starts a child.
 
 module EsBuild:
     using EsProcess
@@ -47,7 +48,8 @@ module EsBuild:
         struct BuildNode:
             name: sview
             command: ProcessCommand
-            dependencies: darray[sview] = []
+            # Earlier node indices, sorted ascending and duplicate-free.
+            dependencies: darray[usize] = []
             fingerprint: u64
             state: BuildNodeState = BuildNodeState.Planned
             log_bytes: usize = 0
@@ -76,6 +78,7 @@ module EsBuild:
             DuplicateDependency
             MissingDependency
             DependencyOrderInvalid
+            DependencyListOrderInvalid
             DependencyNotReady
             InvalidCommand
             FingerprintMissing
@@ -100,12 +103,6 @@ module EsBuild:
 
         def build_name_valid(name: sview) -> bool:
             return sview_len(name) != 0 and sview_len(name) < PROCESS_COMMAND_MAX_TEXT_BYTES and not sview_contains_byte(name, 0)
-
-
-        def build_node_index(graph: BuildGraph&, name: sview) -> usize:
-            for index in 0..<graph.nodes.count |graph, name|:
-                return index if graph.nodes[index].name == name
-            return graph.nodes.count
 
 
     public:
@@ -141,15 +138,16 @@ module EsBuild:
                     error failure:
                         raise BuildContractError.InvalidCommand
                 raise BuildContractError.DependencyLimitExceeded if node.dependencies.count > Limits::DEPENDENCIES
-                for dependency in node.dependencies:
-                    raise BuildContractError.InvalidNodeName if not build_name_valid(dependency)
-                    dependency_index: usize = build_node_index(graph, dependency)
-                    raise BuildContractError.MissingDependency if dependency_index == graph.nodes.count
+                # Canonical earlier-node indices permit direct bounded lookups
+                # and make duplicate detection linear in the edge count.
+                for dependency_position in 0..<node.dependencies.count |node|:
+                    dependency_index: usize = node.dependencies[dependency_position]
+                    raise BuildContractError.MissingDependency if dependency_index >= graph.nodes.count
                     raise BuildContractError.DependencyOrderInvalid if dependency_index >= index
-                for dependency_index in 0..<node.dependencies.count |node|:
-                    dependency: sview = node.dependencies[dependency_index]
-                    for earlier in 0..<dependency_index |node, dependency|:
-                        raise BuildContractError.DuplicateDependency if node.dependencies[earlier] == dependency
+                    if dependency_position > 0:
+                        earlier_dependency: usize = node.dependencies[dependency_position - 1]
+                        raise BuildContractError.DuplicateDependency if earlier_dependency == dependency_index
+                        raise BuildContractError.DependencyListOrderInvalid if earlier_dependency > dependency_index
             raise BuildContractError.LogLimitExceeded if total_log_bytes != graph.log_bytes
             raise BuildContractError.NodeAccountingInvalid if graph.active_nodes != running_nodes or graph.completed_nodes != terminal_nodes or graph.failed_nodes != failed_nodes
             if graph.state == BuildGraphState.Planned:
@@ -182,8 +180,7 @@ module EsBuild:
                 raise BuildContractError.InvalidGraphState if graph.state != BuildGraphState.Running
                 raise BuildContractError.NodeIndexInvalid if node_index >= graph.nodes.count
                 raise BuildContractError.InvalidNodeState if graph.nodes[node_index].state != BuildNodeState.Planned
-                for dependency in graph.nodes[node_index].dependencies:
-                    dependency_index: usize = build_node_index(graph, dependency)
+                for dependency_index in graph.nodes[node_index].dependencies:
                     raise BuildContractError.DependencyNotReady if graph.nodes[dependency_index].state != BuildNodeState.Succeeded
                 raise BuildContractError.InvalidParallelism if graph.active_nodes >= graph.max_parallel
                 graph.nodes[node_index].state <- BuildNodeState.Running

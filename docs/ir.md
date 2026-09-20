@@ -544,14 +544,20 @@ of bytes produced by an external formatter.
 
 `EsBuild` is the shell-replacement boundary for build and test recipes.
 `BuildGraph` contains typed `ProcessCommand` nodes, stable fingerprints,
-bounded per-node/aggregate logs, and explicit dependency names. Validation
-requires a deterministic topological order (dependencies precede consumers),
-rejects missing/duplicate/cyclic dependencies, and preserves process-command
-errors. `advance_build_graph` limits active nodes, records per-node completion
-or failure, and exposes cancellation acknowledgement so a scheduler cannot
-silently overrun parallelism or abandon children. A node start is admitted only
-after every named dependency is `Succeeded`, so dependency readiness cannot be
-forged by an otherwise valid topological graph. Aggregate counters are
+bounded per-node/aggregate logs, and resolved dependency node indices. Each
+dependency index must refer to an earlier node; dependency lists are strictly
+ascending and duplicate-free, so edge validation and scheduler dependency
+readiness use direct bounded lookups without repeated dependency-name scans.
+The manifest/resolution layer is responsible for translating target names to
+those canonical indices. Target-name uniqueness and cache admission still use
+scans, so large-graph scaling remains unqualified. Validation rejects missing,
+duplicate, unordered, and cyclic dependencies and preserves process-command
+errors. `advance_build_graph` limits active nodes, records
+per-node completion or failure, and exposes cancellation acknowledgement so a
+scheduler cannot silently overrun parallelism or abandon children. A node
+start is admitted only after every indexed dependency is `Succeeded`, so
+dependency readiness cannot be forged by an otherwise valid topological graph.
+Aggregate counters are
 reconciled with node states, and terminal graph states reject forged progress
 or unfinished completion. A node failure is latched immediately, all remaining
 planned nodes become `Cancelled`, and the graph enters `Failing` while active

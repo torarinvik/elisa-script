@@ -35,6 +35,7 @@ done
 
 for boundary in \
     'DependencyOrderInvalid' \
+    'DependencyListOrderInvalid' \
     'DuplicateDependency' \
     'MissingDependency' \
     'InvalidParallelism' \
@@ -78,13 +79,14 @@ for fixture_pattern in \
     'forged_all_success_cancelled_state' \
     'graph_success_during_drain' \
     'cancel_after_failure' \
-    'BuildContractError.DependencyOrderInvalid'; do
+    'BuildContractError.DependencyOrderInvalid' \
+    'BuildContractError.DependencyListOrderInvalid'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 
 rg -Fq 'BuildContractError.DuplicateDependency' "$fixture"
-rg -Fq 'for dependency_index in 0..<node.dependencies.count |node|' "$model"
-rg -Fq 'node.dependencies[earlier] == dependency' "$model"
+rg -Fq 'for dependency_position in 0..<node.dependencies.count |node|' "$model"
+rg -Fq 'earlier_dependency > dependency_index' "$model"
 
 rg -Fq '`EsBuild` is the shell-replacement boundary' "$docs"
 rg -Fq 'P10 build-graph follow-up' "$plan"
