@@ -176,9 +176,10 @@ module EsProcessSession:
 
         # `stdin_resource_id` is appended after the historical positional
         # arguments so existing adapters keep their call shape. New spawn
-        # adapters should pass it by name when `stdin_mode` is Capture. A Poll
-        # on a finite-deadline command must include a sampled elapsed delta;
-        # no-timeout commands may omit it.
+        # adapters should pass it by name when `stdin_mode` is Capture. Polls
+        # and terminal Exit receipts for finite-deadline commands must include
+        # a sampled elapsed delta; otherwise an adapter could bypass the
+        # deadline by reporting completion without ever sampling its clock.
         def advance_process_session(session: mutable ProcessSession&, event: ProcessSessionEvent, bytes_delta: usize = 0, result_kind: ProcessResultKind = ProcessResultKind.Exited, child_resource_id: u64 = 0, stdout_resource_id: u64 = 0, stderr_resource_id: u64 = 0, exit_status: i64 = 0, stdin_resource_id: u64 = 0, elapsed_micros_delta: u64 = 0, elapsed_sampled: bool = false) -> ProcessSessionState error[ProcessSessionError]:
             try validate_process_session(session)
             raise ProcessSessionError.InvalidEvent if not session_event_valid(event)
@@ -217,9 +218,18 @@ module EsProcessSession:
                 raise ProcessSessionError.ExitNotReady if session.state != ProcessSessionState.Running and session.state != ProcessSessionState.Collecting
                 raise ProcessSessionError.InvalidOutcome if result_kind != ProcessResultKind.Exited and result_kind != ProcessResultKind.Signaled
                 raise ProcessSessionError.InvalidOutcome if exit_status < 0
-                session.result_kind <- result_kind
-                session.exit_status <- exit_status
-                session.state <- ProcessSessionState.Exited
+                next_elapsed_micros: u64 = try session_next_elapsed_micros(session, elapsed_micros_delta, elapsed_sampled)
+                session.elapsed_micros <- next_elapsed_micros
+                if session.command.timeout_micros != 0 and session.elapsed_micros == session.command.timeout_micros:
+                    # A completion first observed at or after the deadline is
+                    # conservatively classified as timed out. The host still
+                    # acknowledges cleanup before the result becomes terminal.
+                    session.result_kind <- ProcessResultKind.TimedOut
+                    session.state <- ProcessSessionState.TimingOut
+                else:
+                    session.result_kind <- result_kind
+                    session.exit_status <- exit_status
+                    session.state <- ProcessSessionState.Exited
             elif event == ProcessSessionEvent.Fail:
                 raise ProcessSessionError.InvalidState if session.state != ProcessSessionState.Running and session.state != ProcessSessionState.Collecting
                 raise ProcessSessionError.InvalidOutcome if result_kind != ProcessResultKind.HostIoFailure and result_kind != ProcessResultKind.OutputLimit

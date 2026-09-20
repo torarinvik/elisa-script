@@ -10,10 +10,11 @@ process_model="$repo_root/src/runtime/process_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 command_policy_fixture="$repo_root/test/driver/process_session_command_limits.elisascript"
+exit_deadline_fixture="$repo_root/test/driver/process_session_exit_deadline.elisascript"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$process_model" "$ir" "$fixture" "$command_policy_fixture" "$docs" "$ledger"; do
+for required_file in "$model" "$process_model" "$ir" "$fixture" "$command_policy_fixture" "$exit_deadline_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'process session audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -36,6 +37,13 @@ for declaration in \
     'def advance_process_session('; do
     rg -Fq "$declaration" "$model"
 done
+
+rg -Fq 'terminal Exit receipts for finite-deadline commands must include' "$model"
+rg -Fq 'next_elapsed_micros: u64 = try session_next_elapsed_micros(session, elapsed_micros_delta, elapsed_sampled)' "$model"
+rg -Fq 'finite_deadline_exit_requires_a_clock_sample' "$exit_deadline_fixture"
+rg -Fq 'exit_observed_at_deadline_enters_timeout_cleanup' "$exit_deadline_fixture"
+rg -Fq 'exit_observed_before_deadline_preserves_exit_status' "$exit_deadline_fixture"
+rg -Fq 'session.state == ProcessSessionState.TimingOut' "$exit_deadline_fixture"
 
 for boundary in \
     'session_stream_handle_valid' \
