@@ -1,4 +1,4 @@
-# Bounded deterministic JSON rendering for validated differential reports.
+# Bounded deterministic Human, JSON, and JUnit rendering for differential reports.
 #
 # This adapter deliberately serializes the typed report and repeat evidence as
 # data. It never infers outcome from summary text, process status, or messages.
@@ -16,6 +16,7 @@ module EsDifferentialReportRender:
             InvalidLimit
             InvalidFormat
             InvalidEnum
+            XmlCharacterInvalid
             OutputLimitExceeded
 
 
@@ -197,6 +198,202 @@ module EsDifferentialReportRender:
             try report_render_append_text(output, "]}", limit)
 
 
+        def report_render_xml_text_valid(value: sview) -> bool:
+            for index in 0..<sview_len(value) |value|:
+                byte: u8 = sview_at(value, index)
+                return false if byte < 32u8 and byte not in {9u8, 10u8, 13u8}
+                if byte == 239u8 and index + 2 < sview_len(value):
+                    return false if sview_at(value, index + 1) == 191u8 and sview_at(value, index + 2) in {190u8, 191u8}
+            return true
+
+
+        def report_render_xml_fields_valid(report: DifferentialReport&) -> bool:
+            return false if not report_render_xml_text_valid(report.case_name)
+            return false if not report_render_xml_text_valid(report.summary)
+            return false if not report_render_xml_text_valid(report.reference_engine)
+            return false if not report_render_xml_text_valid(report.candidate_engine)
+            return false if not report_render_xml_text_valid(report.artifact_path)
+            for message in report.messages |report|:
+                return false if not report_render_xml_text_valid(message)
+            return true
+
+
+        def report_render_append_xml_escaped(output: mutable darray[u8]&, value: sview, limit: usize) -> void error[DifferentialReportRenderError] can[Memory.Allocate, Abort.Panic]:
+            for index in 0..<sview_len(value) |output, value, limit|:
+                byte: u8 = sview_at(value, index)
+                if byte == 38u8:
+                    try report_render_append_text(output, "&amp;", limit)
+                elif byte == 60u8:
+                    try report_render_append_text(output, "&lt;", limit)
+                elif byte == 62u8:
+                    try report_render_append_text(output, "&gt;", limit)
+                elif byte == 34u8:
+                    try report_render_append_text(output, "&quot;", limit)
+                elif byte == 39u8:
+                    try report_render_append_text(output, "&apos;", limit)
+                elif byte == 9u8:
+                    try report_render_append_text(output, "&#x9;", limit)
+                elif byte == 10u8:
+                    try report_render_append_text(output, "&#xA;", limit)
+                elif byte == 13u8:
+                    try report_render_append_text(output, "&#xD;", limit)
+                else:
+                    try report_render_append_byte(output, byte, limit)
+
+
+        def report_render_append_xml_attribute(output: mutable darray[u8]&, value: sview, limit: usize) -> void error[DifferentialReportRenderError] can[Memory.Allocate, Abort.Panic]:
+            try report_render_append_byte(output, 34u8, limit)
+            try report_render_append_xml_escaped(output, value, limit)
+            try report_render_append_byte(output, 34u8, limit)
+
+
+        def report_render_append_xml_property(output: mutable darray[u8]&, name: sview, value: sview, limit: usize) -> void error[DifferentialReportRenderError] can[Memory.Allocate, Abort.Panic]:
+            try report_render_append_text(output, "        <property name=", limit)
+            try report_render_append_xml_attribute(output, name, limit)
+            try report_render_append_text(output, " value=", limit)
+            try report_render_append_xml_attribute(output, value, limit)
+            try report_render_append_text(output, "/>", limit)
+            try report_render_append_byte(output, 10u8, limit)
+
+
+        def report_render_append_xml_property_usize(output: mutable darray[u8]&, name: sview, value: usize, limit: usize) -> void error[DifferentialReportRenderError] can[Memory.Allocate, Abort.Panic]:
+            temporary: mutable darray[u8] = []
+            try report_render_append_usize(temporary, value, 24)
+            try report_render_append_xml_property(output, name, sview(temporary.items, 0, temporary.count), limit)
+
+
+        def report_render_append_xml_attribute_usize(output: mutable darray[u8]&, value: usize, limit: usize) -> void error[DifferentialReportRenderError] can[Memory.Allocate, Abort.Panic]:
+            temporary: mutable darray[u8] = []
+            try report_render_append_usize(temporary, value, 24)
+            try report_render_append_xml_attribute(output, sview(temporary.items, 0, temporary.count), limit)
+
+
+        def report_render_junit_failure_count(report: DifferentialReport&) -> usize:
+            return 1 if report.status == DifferentialReportStatus.Failed and report.category in {DifferentialReportCategory.ValueMismatch, DifferentialReportCategory.ErrorMismatch, DifferentialReportCategory.ObservationMismatch} else 0
+
+
+        def report_render_junit_error_count(report: DifferentialReport&) -> usize:
+            return 1 if report.status == DifferentialReportStatus.Failed and report.category in {DifferentialReportCategory.ProcessFailure, DifferentialReportCategory.Timeout, DifferentialReportCategory.Crash, DifferentialReportCategory.ArtifactFailure, DifferentialReportCategory.InvalidInput, DifferentialReportCategory.InfrastructureFailure} else 0
+
+
+        def report_render_junit_skipped_count(report: DifferentialReport&) -> usize:
+            return 1 if report.status == DifferentialReportStatus.Skipped or report.status == DifferentialReportStatus.Inconclusive else 0
+
+
+        def report_render_append_junit_outcome(output: mutable darray[u8]&, report: DifferentialReport&, limit: usize) -> void error[DifferentialReportRenderError] can[Memory.Allocate, Abort.Panic]:
+            if report.status == DifferentialReportStatus.Passed:
+                return
+            elif report_render_junit_failure_count(report) != 0:
+                try report_render_append_text(output, "      <failure type=", limit)
+                category_name: sview = try report_render_category_name(report.category)
+                try report_render_append_xml_attribute(output, category_name, limit)
+                try report_render_append_text(output, " message=", limit)
+                try report_render_append_xml_attribute(output, report.summary, limit)
+                try report_render_append_text(output, "/>", limit)
+                try report_render_append_byte(output, 10u8, limit)
+            elif report_render_junit_error_count(report) != 0:
+                try report_render_append_text(output, "      <error type=", limit)
+                category_name: sview = try report_render_category_name(report.category)
+                try report_render_append_xml_attribute(output, category_name, limit)
+                try report_render_append_text(output, " message=", limit)
+                try report_render_append_xml_attribute(output, report.summary, limit)
+                try report_render_append_text(output, "/>", limit)
+                try report_render_append_byte(output, 10u8, limit)
+            elif report_render_junit_skipped_count(report) != 0:
+                try report_render_append_text(output, "      <skipped message=", limit)
+                try report_render_append_xml_attribute(output, report.summary, limit)
+                try report_render_append_text(output, "/>", limit)
+                try report_render_append_byte(output, 10u8, limit)
+            else:
+                raise DifferentialReportRenderError.InvalidEnum
+
+
+        def report_render_append_junit_properties(output: mutable darray[u8]&, report: DifferentialReport&, limit: usize) -> void error[DifferentialReportRenderError] can[Memory.Allocate, Abort.Panic]:
+            status_name: sview = try report_render_status_name(report.status)
+            category_name: sview = try report_render_category_name(report.category)
+            try report_render_append_text(output, "      <properties>", limit)
+            try report_render_append_byte(output, 10u8, limit)
+            try report_render_append_xml_property(output, "elisascript.status", status_name, limit)
+            try report_render_append_xml_property(output, "elisascript.category", category_name, limit)
+            try report_render_append_xml_property(output, "elisascript.summary", report.summary, limit)
+            try report_render_append_xml_property(output, "elisascript.reference_engine", report.reference_engine, limit)
+            try report_render_append_xml_property(output, "elisascript.candidate_engine", report.candidate_engine, limit)
+            try report_render_append_xml_property(output, "elisascript.artifact_path", report.artifact_path, limit)
+            try report_render_append_xml_property_usize(output, "elisascript.repeat_count", report.repeat_count, limit)
+            deterministic_text: sview = "true" if report.deterministic else "false"
+            try report_render_append_xml_property(output, "elisascript.deterministic", deterministic_text, limit)
+            evidence_present_text: sview = "true" if report.has_stability_evidence else "false"
+            try report_render_append_xml_property(output, "elisascript.has_stability_evidence", evidence_present_text, limit)
+            stability_bytes: mutable darray[u8] = []
+            if report.has_stability_evidence:
+                try report_render_append_stability(stability_bytes, report.stability_evidence, limit)
+                try report_render_append_xml_property(output, "elisascript.stability_evidence", sview(stability_bytes.items, 0, stability_bytes.count), limit)
+            else:
+                try report_render_append_xml_property(output, "elisascript.stability_evidence", "null", limit)
+            for index in 0..<report.messages.count |output, report, limit|:
+                message_name: mutable darray[u8] = []
+                try report_render_append_text(message_name, "elisascript.message.", 64)
+                try report_render_append_usize(message_name, index, 64)
+                try report_render_append_xml_property(output, sview(message_name.items, 0, message_name.count), report.messages[index], limit)
+            try report_render_append_text(output, "      </properties>", limit)
+            try report_render_append_byte(output, 10u8, limit)
+
+
+        def report_render_append_human(report: DifferentialReport&, output: mutable darray[u8]&, limit: usize) -> void error[DifferentialReportRenderError] can[Memory.Allocate, Abort.Panic]:
+            status_name: sview = try report_render_status_name(report.status)
+            category_name: sview = try report_render_category_name(report.category)
+            try report_render_append_text(output, "Differential report", limit)
+            try report_render_append_byte(output, 10u8, limit)
+            try report_render_append_text(output, "status: ", limit)
+            try report_render_append_text(output, status_name, limit)
+            try report_render_append_byte(output, 10u8, limit)
+            try report_render_append_text(output, "category: ", limit)
+            try report_render_append_text(output, category_name, limit)
+            try report_render_append_byte(output, 10u8, limit)
+            try report_render_append_text(output, "case_name: ", limit)
+            try report_render_append_json_string(output, report.case_name, limit)
+            try report_render_append_byte(output, 10u8, limit)
+            try report_render_append_text(output, "summary: ", limit)
+            try report_render_append_json_string(output, report.summary, limit)
+            try report_render_append_byte(output, 10u8, limit)
+            try report_render_append_text(output, "reference_engine: ", limit)
+            try report_render_append_json_string(output, report.reference_engine, limit)
+            try report_render_append_byte(output, 10u8, limit)
+            try report_render_append_text(output, "candidate_engine: ", limit)
+            try report_render_append_json_string(output, report.candidate_engine, limit)
+            try report_render_append_byte(output, 10u8, limit)
+            try report_render_append_text(output, "artifact_path: ", limit)
+            try report_render_append_json_string(output, report.artifact_path, limit)
+            try report_render_append_byte(output, 10u8, limit)
+            try report_render_append_text(output, "repeat_count: ", limit)
+            try report_render_append_usize(output, report.repeat_count, limit)
+            try report_render_append_byte(output, 10u8, limit)
+            try report_render_append_text(output, "deterministic: ", limit)
+            if report.deterministic:
+                try report_render_append_text(output, "true", limit)
+            else:
+                try report_render_append_text(output, "false", limit)
+            try report_render_append_byte(output, 10u8, limit)
+            try report_render_append_text(output, "has_stability_evidence: ", limit)
+            if report.has_stability_evidence:
+                try report_render_append_text(output, "true", limit)
+                try report_render_append_byte(output, 10u8, limit)
+                try report_render_append_text(output, "stability_evidence: ", limit)
+                try report_render_append_stability(output, report.stability_evidence, limit)
+            else:
+                try report_render_append_text(output, "false", limit)
+                try report_render_append_byte(output, 10u8, limit)
+                try report_render_append_text(output, "stability_evidence: null", limit)
+            try report_render_append_byte(output, 10u8, limit)
+            try report_render_append_text(output, "messages:", limit)
+            try report_render_append_byte(output, 10u8, limit)
+            for message in report.messages |report, output, limit|:
+                try report_render_append_text(output, "  - ", limit)
+                try report_render_append_json_string(output, message, limit)
+                try report_render_append_byte(output, 10u8, limit)
+            try report_render_append_byte(output, 10u8, limit)
+
+
     public:
         def render_differential_report_json(report: DifferentialReport&, max_bytes: usize = Limits::MAX_BYTES) -> darray[u8] error[DifferentialReportError, DifferentialReportRenderError] can[Memory.Allocate, Abort.Panic]:
             raise DifferentialReportRenderError.InvalidLimit if max_bytes == 0 or max_bytes > Limits::MAX_BYTES
@@ -236,3 +433,86 @@ module EsDifferentialReportRender:
                 try report_render_append_json_string(output, report.messages[index], max_bytes)
             try report_render_append_text(output, "]}\n", max_bytes)
             return output
+
+
+        def render_differential_report_human(report: DifferentialReport&, max_bytes: usize = Limits::MAX_BYTES) -> darray[u8] error[DifferentialReportError, DifferentialReportRenderError] can[Memory.Allocate, Abort.Panic]:
+            raise DifferentialReportRenderError.InvalidLimit if max_bytes == 0 or max_bytes > Limits::MAX_BYTES
+            try validate_differential_report(report)
+            raise DifferentialReportRenderError.InvalidFormat if report.format != DifferentialReportFormat.Human
+            output: mutable darray[u8] = []
+            try report_render_append_human(report, output, max_bytes)
+            return output
+
+
+        def render_differential_report_junit(report: DifferentialReport&, max_bytes: usize = Limits::MAX_BYTES) -> darray[u8] error[DifferentialReportError, DifferentialReportRenderError] can[Memory.Allocate, Abort.Panic]:
+            raise DifferentialReportRenderError.InvalidLimit if max_bytes == 0 or max_bytes > Limits::MAX_BYTES
+            try validate_differential_report(report)
+            raise DifferentialReportRenderError.InvalidFormat if report.format != DifferentialReportFormat.Junit
+            raise DifferentialReportRenderError.XmlCharacterInvalid if not report_render_xml_fields_valid(report)
+            output: mutable darray[u8] = []
+            failures: usize = report_render_junit_failure_count(report)
+            errors: usize = report_render_junit_error_count(report)
+            skipped: usize = report_render_junit_skipped_count(report)
+            try report_render_append_text(output, "<?xml version=", max_bytes)
+            try report_render_append_xml_attribute(output, "1.0", max_bytes)
+            try report_render_append_text(output, " encoding=", max_bytes)
+            try report_render_append_xml_attribute(output, "UTF-8", max_bytes)
+            try report_render_append_text(output, "?>", max_bytes)
+            try report_render_append_byte(output, 10u8, max_bytes)
+            try report_render_append_text(output, "<testsuites tests=", max_bytes)
+            try report_render_append_xml_attribute(output, "1", max_bytes)
+            try report_render_append_text(output, " failures=", max_bytes)
+            try report_render_append_xml_attribute_usize(output, failures, max_bytes)
+            try report_render_append_text(output, " errors=", max_bytes)
+            try report_render_append_xml_attribute_usize(output, errors, max_bytes)
+            try report_render_append_text(output, " skipped=", max_bytes)
+            try report_render_append_xml_attribute_usize(output, skipped, max_bytes)
+            try report_render_append_text(output, ">", max_bytes)
+            try report_render_append_byte(output, 10u8, max_bytes)
+            try report_render_append_text(output, "  <testsuite name=", max_bytes)
+            try report_render_append_xml_attribute(output, "elisascript-differential", max_bytes)
+            try report_render_append_text(output, " tests=", max_bytes)
+            try report_render_append_xml_attribute(output, "1", max_bytes)
+            try report_render_append_text(output, " failures=", max_bytes)
+            try report_render_append_xml_attribute_usize(output, failures, max_bytes)
+            try report_render_append_text(output, " errors=", max_bytes)
+            try report_render_append_xml_attribute_usize(output, errors, max_bytes)
+            try report_render_append_text(output, " skipped=", max_bytes)
+            try report_render_append_xml_attribute_usize(output, skipped, max_bytes)
+            try report_render_append_text(output, ">", max_bytes)
+            try report_render_append_byte(output, 10u8, max_bytes)
+            try report_render_append_text(output, "    <testcase name=", max_bytes)
+            try report_render_append_xml_attribute(output, report.case_name, max_bytes)
+            try report_render_append_text(output, " classname=", max_bytes)
+            try report_render_append_xml_attribute(output, "differential", max_bytes)
+            try report_render_append_text(output, ">", max_bytes)
+            try report_render_append_byte(output, 10u8, max_bytes)
+            try report_render_append_junit_properties(output, report, max_bytes)
+            try report_render_append_junit_outcome(output, report, max_bytes)
+            if report.messages.count != 0:
+                try report_render_append_text(output, "      <system-out>", max_bytes)
+                for index in 0..<report.messages.count |output, report, max_bytes|:
+                    if index != 0:
+                        try report_render_append_byte(output, 10u8, max_bytes)
+                    try report_render_append_xml_escaped(output, report.messages[index], max_bytes)
+                try report_render_append_text(output, "</system-out>", max_bytes)
+                try report_render_append_byte(output, 10u8, max_bytes)
+            try report_render_append_text(output, "    </testcase>", max_bytes)
+            try report_render_append_byte(output, 10u8, max_bytes)
+            try report_render_append_text(output, "  </testsuite>", max_bytes)
+            try report_render_append_byte(output, 10u8, max_bytes)
+            try report_render_append_text(output, "</testsuites>", max_bytes)
+            try report_render_append_byte(output, 10u8, max_bytes)
+            return output
+
+
+        def render_differential_report(report: DifferentialReport&, max_bytes: usize = Limits::MAX_BYTES) -> darray[u8] error[DifferentialReportError, DifferentialReportRenderError] can[Memory.Allocate, Abort.Panic]:
+            raise DifferentialReportRenderError.InvalidLimit if max_bytes == 0 or max_bytes > Limits::MAX_BYTES
+            try validate_differential_report(report)
+            if report.format == DifferentialReportFormat.Human:
+                return try render_differential_report_human(report, max_bytes)
+            elif report.format == DifferentialReportFormat.Json:
+                return try render_differential_report_json(report, max_bytes)
+            elif report.format == DifferentialReportFormat.Junit:
+                return try render_differential_report_junit(report, max_bytes)
+            raise DifferentialReportRenderError.InvalidEnum

@@ -764,16 +764,20 @@ passing parity claim. The record validator checks internal consistency only;
 the no-evidence path also requires a pristine planned session, but the model
 does not authenticate that a host actually ran the reported repeats.
 
-The EsDifferentialReportRender function
-render_differential_report_json now serializes a validated JSON-format report
-as deterministic UTF-8 bytes, including the full validated
-stability policy, baseline, and ordered observations. Text is JSON-escaped and
-the output has a separate 32 MiB cap; 64-bit fingerprints are decimal strings
-so consumers that use IEEE-754 numbers do not silently lose identity bits. The
-current formatter accepts only JSON requests. Human and JUnit byte formatting,
-host stdout/file writes, and end-to-end report consumption remain open; this
-source-level increment has not been compiled or executed and is not acceptance
-evidence.
+The EsDifferentialReportRender function render_differential_report dispatches
+validated reports to deterministic Human, JSON, or JUnit UTF-8 byte formats.
+JSON contains the complete stability policy, baseline, and ordered
+observations; text is escaped, the output has a separate 32 MiB cap, and
+64-bit fingerprints are decimal strings so consumers that use IEEE-754 numbers
+do not silently lose identity bits. Human output quotes text fields with JSON
+string escaping to keep embedded newlines unambiguous. JUnit emits a
+testsuites/testsuite/testcase document, preserves the original typed status
+and category in properties, maps mismatches to failure, execution/infrastructure
+errors to error, and skipped or inconclusive outcomes to skipped. XML-illegal
+control characters are rejected rather than emitted as malformed XML. Host
+stdout/file writes and end-to-end report consumption remain open; these
+source-level serializers have not been compiled or executed and are not
+acceptance evidence.
 
 Each side's complete bounded process-facing payload can be persisted separately
 as an `ESPS` process-stream artifact with `make_differential_process_stream_artifact`.

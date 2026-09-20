@@ -20,8 +20,21 @@ for renderer_boundary in \
     'const module Limits:' \
     'MAX_BYTES: usize = 33554432' \
     'def render_differential_report_json(' \
+    'def render_differential_report_human(' \
+    'def render_differential_report_junit(' \
+    'def render_differential_report(' \
     'validate_differential_report(report)' \
     'report.format != DifferentialReportFormat.Json' \
+    'report.format != DifferentialReportFormat.Human' \
+    'report.format != DifferentialReportFormat.Junit' \
+    'report_render_xml_fields_valid(report)' \
+    'XmlCharacterInvalid' \
+    'report_render_junit_failure_count' \
+    'report_render_junit_error_count' \
+    'report_render_junit_skipped_count' \
+    'DifferentialReportStatus.Inconclusive' \
+    'DifferentialReportCategory.Flaky' \
+    'report_render_append_xml_escaped' \
     'OutputLimitExceeded' \
     'report_render_append_json_string' \
     'report_render_append_stability' \
@@ -131,9 +144,18 @@ rg -Fq 'DifferentialReportRenderError.OutputLimitExceeded' "$fixture"
 rg -Fq 'sview_eq(rendered, expected)' "$fixture"
 rg -Fq '9007199254740993u64' "$fixture"
 rg -Fq 'differential_test_sview_contains(evidence_text' "$fixture"
+if ! rg -Uq '(?m)^@test\r?\ndef differential_report_human_and_junit_renderers_preserve_outcomes\(\) -> void:' "$fixture"; then
+    printf 'differential report audit: Human/JUnit renderer regression is not registered\n' >&2
+    exit 1
+fi
+rg -Fq '<failure type=\"value_mismatch\" message=\"diff &amp; &lt;\"/>' "$fixture"
+rg -Fq 'DifferentialReportRenderError.XmlCharacterInvalid' "$fixture"
+rg -Fq 'render_differential_report(human_report)' "$fixture"
+rg -Fq 'inconclusive_evidence' "$fixture"
 
 rg -Fq 'EsDifferentialReport::DifferentialReport' "$docs"
 rg -Fq 'merely setting a repeat count is insufficient' "$docs"
-rg -Fq 'render_differential_report_json' "$docs"
+rg -Fq 'render_differential_report' "$docs"
+rg -Fq 'Human, JSON, or JUnit' "$docs"
 
-printf 'differential report audit: typed reports bind repeat claims and render bounded JSON evidence\n'
+printf 'differential report audit: typed reports bind repeat claims and render bounded Human/JSON/JUnit output\n'
