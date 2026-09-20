@@ -8,10 +8,8 @@ repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 model="$repo_root/src/runtime/lua_bundle_metadata_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
-tasks="$repo_root/SCRIPT_TASKS.md"
 
-for required_file in "$model" "$ir" "$fixture" "$plan" "$tasks"; do
+for required_file in "$model" "$ir" "$fixture"; do
     [[ -f "$required_file" ]] || { printf 'lua bundle metadata audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -89,6 +87,5 @@ done
 
 rg -q 'include "\.\./runtime/lua_bundle_metadata_model\.elisa"' "$ir"
 rg -q 'using EsLuaBundleMetadata' "$fixture"
-rg -q 'W04' "$plan" "$tasks"
 
 printf 'lua bundle metadata audit: typed parsing with argparse negative-number boundaries, bounded host command planning/normalization, sorted JSON serialization, repeated-key last-wins, and explicit limits are present\n'
