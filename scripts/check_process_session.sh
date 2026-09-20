@@ -20,13 +20,14 @@ fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 lowering_fixture="$repo_root/test/ir/elisascript_lowering_test.elisa"
 interpreter_fixture="$repo_root/test/ir/elisascript_interpreter_test.elisa"
 bytecode_fixture="$repo_root/test/ir/elisascript_bytecode_test.elisa"
+semantic_fixture="$repo_root/test/semantic/elisascript_semantic_test.elisa"
 command_policy_fixture="$repo_root/test/driver/process_session_command_limits.elisascript"
 exit_deadline_fixture="$repo_root/test/driver/process_session_exit_deadline.elisascript"
 clock_fixture="$repo_root/test/driver/monotonic_time_model.elisascript"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$clock_model" "$time_bridge" "$process_model" "$ir" "$execution" "$interpreter" "$lowerer" "$verifier" "$execution_bytecode" "$semantic_builtin_checker" "$fixture" "$lowering_fixture" "$interpreter_fixture" "$bytecode_fixture" "$command_policy_fixture" "$exit_deadline_fixture" "$clock_fixture" "$docs" "$ledger"; do
+for required_file in "$model" "$clock_model" "$time_bridge" "$process_model" "$ir" "$execution" "$interpreter" "$lowerer" "$verifier" "$execution_bytecode" "$semantic_builtin_checker" "$fixture" "$lowering_fixture" "$interpreter_fixture" "$bytecode_fixture" "$semantic_fixture" "$command_policy_fixture" "$exit_deadline_fixture" "$clock_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'process session audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -76,6 +77,10 @@ rg -Fq 'name: "run_process", receiver: "global", arity_min: 2, arity_max: 3, arg
 rg -Fq 'process_timeout_micros: mutable u64 = EsProcess::PROCESS_DEFAULT_TIMEOUT_MICROS' "$execution_bytecode"
 rg -Fq 'timeout_type: Type = type_from_name("i64")' "$lowerer"
 rg -Fq 'spec.argument_types == "Executable,darray[text],i64" and index == 2' "$semantic_builtin_checker"
+rg -Fq 'spec.argument_types == "Executable,darray[text],sview,i64" and index == 0' "$semantic_builtin_checker"
+rg -Fq 'spec.argument_types == "Executable,darray[text],sview,i64" and index == 1' "$semantic_builtin_checker"
+rg -Fq 'spec.argument_types == "Executable,darray[text],sview,i64" and index == 2' "$semantic_builtin_checker"
+rg -Fq 'spec.argument_types == "Executable,darray[text],sview,i64" and index == 3' "$semantic_builtin_checker"
 rg -Fq 'operand_count: mutable u16 = 2' "$lowerer"
 rg -Fq 'timeout_value.type.bits == 64' "$lowerer"
 rg -Fq 'valid_run_process_arity: bool = instruction.operand_count == 2 or instruction.operand_count == 3' "$verifier"
@@ -100,6 +105,16 @@ rg -Fq 'capture_process_stdout_value(storage, process_executable.text, process_a
 rg -Fq 'capture_process_stderr_value(storage, process_executable.text, process_arguments, process_timeout_micros)' "$execution_bytecode"
 rg -Fq 'valid_process_stream_arity: bool = instruction.operand_count == 2 or instruction.operand_count == 3' "$verifier"
 rg -Fq 'valid_timeout <- timeout_type.kind == TypeKind.Int and timeout_type.bits == 64 and timeout_type.signed' "$verifier"
+rg -Fq 'def capture_result_times_out() -> ProcessCapture' "$interpreter_fixture"
+rg -Fq 'def negative_capture_result_timeout() -> ProcessCapture' "$interpreter_fixture"
+rg -Fq 'result_timeout_reference_rejected and result_timeout_direct_rejected' "$bytecode_fixture"
+rg -Fq 'negative_result_timeout_reference_rejected and negative_result_timeout_direct_rejected' "$bytecode_fixture"
+rg -Fq 'valid_process_result_arity: bool = instruction.operand_count == 3 or instruction.operand_count == 4' "$verifier"
+rg -Fq 'capture_process_result_value(storage, process_executable.text, process_arguments, process_input.text, process_timeout_micros)' "$execution_bytecode"
+rg -Fq 'evaluate_capture_process_result(machine, storage, executable_value, arguments_value, input_value, runtime_void(), runtime_void(), timeout_micros)' "$interpreter"
+rg -Fq 'opcode_has_operand_count(timed_fn.instruction_pool, Opcode.CaptureProcessResult, 4)' "$lowering_fixture"
+rg -Fq 'registry_process_result_timeout_requires_i64' "$semantic_fixture"
+rg -Fq 'name: "capture_process_result", receiver: "global", arity_min: 3, arity_max: 4, argument_types: "Executable,darray[text],sview,i64"' "$repo_root/vendor/elisa-compiler/src/semantic/builtin_registry.elisa"
 rg -Fq 'def process_timeout_admitted(' "$interpreter"
 rg -Fq 'if not process_timeout_admitted(machine, timeout_micros):' "$interpreter"
 rg -Fq 'timeout_micros > EsProcess::PROCESS_COMMAND_MAX_TIMEOUT_MICROS' "$interpreter"
