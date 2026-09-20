@@ -1,0 +1,259 @@
+# Process-level parity for the namespace-manifest source audit.
+# Run only through the bounded validation wrapper after explicit reauthorization.
+# Cases read only checked-in, small source fixtures; they never execute fixture code.
+include "../../src/testing/differential.elisa"
+
+using EsDifferential
+
+
+module EsNamespaceManifestLauncherParity:
+    private:
+        const module Commands:
+            REFERENCE_SHELL: sview = "/bin/bash"
+            REFERENCE_SCRIPT: sview = "scripts/check_namespace_manifest.sh"
+            CANDIDATE_SCRIPT: sview = "scripts/check_namespace_manifest.elisascript"
+            SHA256_TOOL: sview = "/usr/bin/shasum"
+            CONTROLLED_PATH: sview = "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+            PINNED_COMPILER: sview = "/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac"
+            MAX_LAUNCHER_BYTES: usize = 67108864
+            MAX_HASH_OUTPUT_BYTES: u64 = 8192
+            MAX_OUTPUT_BYTES: u64 = 1048576
+            TIMEOUT_STEPS: u64 = 10000
+
+
+        const module Fixtures:
+            ROOT: sview = "test/fixtures/script_parity/namespace_manifest"
+            POSITIVE_ROOT: sview = "test/fixtures/script_parity/namespace_manifest/positive/src"
+            POSITIVE_PARSER: sview = "test/fixtures/script_parity/namespace_manifest/positive/parser_tokens.elisa"
+            MISSING_PARSER: sview = "test/fixtures/script_parity/namespace_manifest/positive/missing_parser_tokens.elisa"
+            DUPLICATE_ROOT: sview = "test/fixtures/script_parity/namespace_manifest/duplicate/src"
+            MISSING_INCLUDE_ROOT: sview = "test/fixtures/script_parity/namespace_manifest/missing_include/src"
+            PUBLIC_ABI_ROOT: sview = "test/fixtures/script_parity/namespace_manifest/public_abi/src"
+
+
+        struct ExpectedCase:
+            arguments: darray[sview]
+            exit_status: i64
+            stdout: sview
+            stderr: sview
+
+
+        def lowercase_sha256_hex_byte(value: u8) -> bool:
+            return value >= 48u8 and value <= 57u8 or value >= 97u8 and value <= 102u8
+
+
+        def launcher_has_expected_sha256(launcher: sview, expected_hex: sview) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Unsafe.PointerCast]:
+            return false if len(expected_hex) != 64
+            launcher_path: Path = path(launcher)
+            return false if not is_file(launcher_path)
+            launcher_size: usize = try file_size(launcher_path) else err:
+                return false
+            return false if launcher_size == 0 or launcher_size > Commands::MAX_LAUNCHER_BYTES
+
+            hash_runner: DifferentialRunner = DifferentialRunner{
+                kind: DifferentialRunnerKind.NativeProcess,
+                name: "public-elisascript-namespace-manifest-sha256",
+                target: Commands::SHA256_TOOL,
+                arguments: ["-a", "256", launcher],
+                environment_mode: EsProcess::ProcessEnvironmentMode.Clear,
+                timeout_steps: Commands::TIMEOUT_STEPS,
+                max_output_bytes: Commands::MAX_HASH_OUTPUT_BYTES
+            }
+            hash_run: mutable DifferentialRun = DifferentialRun{observations: []}
+            catch run_differential_process(hash_runner):
+                ok value:
+                    hash_run <- value
+                error failure:
+                    return false
+
+            return false if hash_run.outcome != DifferentialRunOutcome.Completed
+            return false if hash_run.exit_status != 0 or hash_run.stderr != ""
+            return false if hash_run.stdout != expected_hex + "  " + launcher + "\n"
+            for index in 0..<64 |hash_run, expected_hex|:
+                return false if not lowercase_sha256_hex_byte(sview_at(expected_hex, index))
+            return true
+
+
+        def launcher_case_matches(launcher: sview, test_case: ExpectedCase) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, File.Read, Directory.Read, Unsafe.PointerCast]:
+            reference_script: Path = try path_real(path(Commands::REFERENCE_SCRIPT)) else err:
+                return false
+            candidate_script: Path = try path_real(path(Commands::CANDIDATE_SCRIPT)) else err:
+                return false
+            reference_arguments: mutable darray[sview] = [f"{reference_script}"]
+            candidate_arguments: mutable darray[sview] = [f"{candidate_script}"]
+            for argument in test_case.arguments |reference_arguments, candidate_arguments|:
+                reference_arguments.push(argument)
+                candidate_arguments.push(argument)
+
+            environment: darray[DifferentialEnvironmentEntry] = [
+                DifferentialEnvironmentEntry{name: "PATH", value: Commands::CONTROLLED_PATH},
+                DifferentialEnvironmentEntry{name: "LC_ALL", value: "C"},
+                DifferentialEnvironmentEntry{name: "ELISA_LOCAL_COMPILER", value: Commands::PINNED_COMPILER},
+                DifferentialEnvironmentEntry{name: "ELISACORE_BIN", value: Commands::PINNED_COMPILER}
+            ]
+            reference_runner: DifferentialRunner = DifferentialRunner{
+                kind: DifferentialRunnerKind.NativeProcess,
+                name: "shell-namespace-manifest-reference",
+                target: Commands::REFERENCE_SHELL,
+                arguments: reference_arguments,
+                environment: environment,
+                environment_mode: EsProcess::ProcessEnvironmentMode.Replace,
+                timeout_steps: Commands::TIMEOUT_STEPS,
+                max_output_bytes: Commands::MAX_OUTPUT_BYTES
+            }
+            reference_run: mutable DifferentialRun = DifferentialRun{observations: []}
+            catch run_differential_process(reference_runner):
+                ok value:
+                    reference_run <- value
+                error failure:
+                    eprint("namespace manifest shell reference process failed")
+                    return false
+
+            candidate_runner: DifferentialRunner = DifferentialRunner{
+                kind: DifferentialRunnerKind.NativeProcess,
+                name: "public-elisascript-namespace-manifest",
+                target: launcher,
+                arguments: candidate_arguments,
+                environment: environment,
+                environment_mode: EsProcess::ProcessEnvironmentMode.Replace,
+                timeout_steps: Commands::TIMEOUT_STEPS,
+                max_output_bytes: Commands::MAX_OUTPUT_BYTES
+            }
+            candidate_run: mutable DifferentialRun = DifferentialRun{observations: []}
+            catch run_differential_process(candidate_runner):
+                ok value:
+                    candidate_run <- value
+                error failure:
+                    eprint("namespace manifest Elisascript process failed")
+                    return false
+
+            comparison: DifferentialComparison = compare_differential_runs(reference_run, candidate_run)
+            if reference_run.outcome != DifferentialRunOutcome.Completed or candidate_run.outcome != DifferentialRunOutcome.Completed or not comparison.equal:
+                eprint("namespace manifest process parity mismatch")
+                return false
+            if reference_run.exit_status != test_case.exit_status or reference_run.stdout != test_case.stdout or reference_run.stderr != test_case.stderr:
+                eprint("namespace manifest shell reference golden mismatch")
+                return false
+            if candidate_run.exit_status != test_case.exit_status or candidate_run.stdout != test_case.stdout or candidate_run.stderr != test_case.stderr:
+                eprint("namespace manifest Elisascript golden mismatch")
+                return false
+            return true
+
+
+        def fixture_path(relative: sview) -> sview can[Memory.Allocate, Abort.Panic, Directory.Read]:
+            resolved: Path = try path_real(path(relative)) else err:
+                return ""
+            return f"{resolved}"
+
+
+        def positive_manifest(root: sview) -> sview can[Memory.Allocate, Abort.Panic]:
+            output: mutable sview = "module\tfiles\tpublic_sections\tprivate_sections\n"
+            output <- output + "EsArtifactCache\t" + root + "/cache.elisa;\t1\t0\n"
+            output <- output + "EsBytecode\t" + root + "/bytecode.elisa;\t1\t0\n"
+            output <- output + "EsDifferential\t" + root + "/differential.elisa;\t1\t0\n"
+            output <- output + "EsDriver\t" + root + "/driver/elisascript.elisa;\t1\t0\n"
+            output <- output + "EsIr\t" + root + "/ir/ir_model.elisa;" + root + "/ir/lower_ast.elisa;" + root + "/ir/runner.elisa;\t2\t1\n"
+            output <- output + "EsIrArtifact\t" + root + "/ir_artifact.elisa;\t1\t0\n"
+            output <- output + "EsRuntime\t" + root + "/runtime.elisa;" + root + "/runtime/adapter.elisa;\t1\t1\n"
+            return output
+
+
+        def all_launcher_cases_match(launcher: sview) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, File.Read, Directory.Read, Unsafe.PointerCast]:
+            positive_root: sview = fixture_path(Fixtures::POSITIVE_ROOT)
+            positive_parser: sview = fixture_path(Fixtures::POSITIVE_PARSER)
+            missing_parser_tokens: sview = fixture_path(Fixtures::MISSING_PARSER)
+            duplicate_root: sview = fixture_path(Fixtures::DUPLICATE_ROOT)
+            missing_include_root: sview = fixture_path(Fixtures::MISSING_INCLUDE_ROOT)
+            public_abi_root: sview = fixture_path(Fixtures::PUBLIC_ABI_ROOT)
+            return false if positive_root == "" or positive_parser == "" or missing_parser_tokens == "" or duplicate_root == "" or missing_include_root == "" or public_abi_root == ""
+
+            missing_root: sview = positive_root + "/absent-root"
+            return false if is_directory(path(missing_root))
+            fixture_root: sview = fixture_path(Fixtures::ROOT)
+            return false if fixture_root == ""
+            missing_parser: sview = fixture_root + "/positive/absent_parser_tokens.elisa"
+            return false if is_file(path(missing_parser))
+
+            expected_cases: darray[ExpectedCase] = [
+                ExpectedCase{
+                    arguments: [positive_root, positive_parser],
+                    exit_status: 0,
+                    stdout: positive_manifest(positive_root),
+                    stderr: ""
+                },
+                ExpectedCase{
+                    arguments: [positive_root, missing_parser_tokens],
+                    exit_status: 1,
+                    stdout: "",
+                    stderr: "check_namespace_manifest: parse diagnostic renderer omits ParseErrorKind.UnexpectedToken\n"
+                },
+                ExpectedCase{
+                    arguments: [duplicate_root, positive_parser],
+                    exit_status: 1,
+                    stdout: "",
+                    stderr: "check_namespace_manifest: duplicate module declarations:\nClash\n"
+                },
+                ExpectedCase{
+                    arguments: [missing_include_root, positive_parser],
+                    exit_status: 1,
+                    stdout: "",
+                    stderr: "check_namespace_manifest: missing include: " + missing_include_root + "/a.elisa -> missing_fragment.elisa\n"
+                },
+                ExpectedCase{
+                    arguments: [public_abi_root, positive_parser],
+                    exit_status: 1,
+                    stdout: public_abi_root + "/runtime/posix.elisa: POSIX ABI declaration is not private at line 3\n",
+                    stderr: ""
+                },
+                ExpectedCase{
+                    arguments: [missing_root, positive_parser],
+                    exit_status: 2,
+                    stdout: "",
+                    stderr: "check_namespace_manifest: source root does not exist: " + missing_root + "\n"
+                },
+                ExpectedCase{
+                    arguments: [positive_root, missing_parser],
+                    exit_status: 1,
+                    stdout: "",
+                    stderr: "check_namespace_manifest: parser token source is missing: " + missing_parser + "\n"
+                },
+                ExpectedCase{
+                    arguments: [positive_root, positive_parser, "extra"],
+                    exit_status: 2,
+                    stdout: "",
+                    stderr: "usage: namespace manifest audit [source-root [parser-token-source]]\n"
+                }
+            ]
+            for test_case in expected_cases:
+                return false if not launcher_case_matches(launcher, test_case)
+            return true
+
+
+    public:
+        def pinned_compiler_path() -> sview:
+            return Commands::PINNED_COMPILER
+
+
+@test
+def namespace_manifest_public_launcher_matches_shell_and_golden_output() -> void:
+    can Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, Environment.Read, File.Read, Directory.Read, Unsafe.PointerCast:
+        reauthorized: sview = try getenv("ELISASCRIPT_VALIDATION_REAUTHORIZED", "") else err:
+            ""
+        compiler: sview = try getenv("ELISA_LOCAL_COMPILER", "") else err:
+            ""
+        elisacore_bin: sview = try getenv("ELISACORE_BIN", "") else err:
+            ""
+        launcher: sview = try getenv("ELISASCRIPT_PUBLIC_LAUNCHER", "") else err:
+            ""
+        launcher_hash: sview = try getenv("ELISASCRIPT_PUBLIC_LAUNCHER_SHA256", "") else err:
+            ""
+        assert reauthorized == "1"
+        assert compiler == EsNamespaceManifestLauncherParity::pinned_compiler_path()
+        assert elisacore_bin == EsNamespaceManifestLauncherParity::pinned_compiler_path()
+        assert launcher != ""
+        assert launcher.startswith("/")
+        assert EsNamespaceManifestLauncherParity::launcher_has_expected_sha256(launcher, launcher_hash)
+        println("public_launcher_path=" + launcher)
+        println("public_launcher_sha256=" + launcher_hash)
+        assert EsNamespaceManifestLauncherParity::all_launcher_cases_match(launcher)
+        assert EsNamespaceManifestLauncherParity::launcher_has_expected_sha256(launcher, launcher_hash)

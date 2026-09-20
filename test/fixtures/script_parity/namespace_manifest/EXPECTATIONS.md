@@ -3,9 +3,10 @@
 Run both implementations with the same explicit source root. For the positive
 case, also pass its `parser_tokens.elisa` as the second argument so neither side
 uses its working-directory-relative default. Substitute the absolute
-`SOURCE_ROOT` path in the expected output below. These are static expectations;
-the compiler validation hold means neither implementation nor the candidate
-has been executed on this matrix.
+`SOURCE_ROOT` path and, where present, the absolute `PARSER_SOURCE` path in the
+expected output below. These are static expectations; the compiler validation
+hold means neither implementation nor the candidate has been executed on this
+matrix.
 
 | Fixture | Status | Stdout | Stderr |
 | --- | ---: | --- | --- |
@@ -14,6 +15,9 @@ has been executed on this matrix.
 | `duplicate` | 1 | empty | `check_namespace_manifest: duplicate module declarations:\nClash\n` |
 | `missing_include` | 1 | empty | `check_namespace_manifest: missing include: {SOURCE_ROOT}/a.elisa -> missing_fragment.elisa\n` |
 | `public_abi` | 1 | `{SOURCE_ROOT}/runtime/posix.elisa: POSIX ABI declaration is not private at line 3\n` | empty |
+| nonexistent source root | 2 | empty | `check_namespace_manifest: source root does not exist: {SOURCE_ROOT}\n` |
+| missing parser-token source | 1 | empty | `check_namespace_manifest: parser token source is missing: {PARSER_SOURCE}\n` |
+| one extra CLI operand | 2 | empty | `usage: namespace manifest audit [source-root [parser-token-source]]\n` |
 
 These cases cover the initial A02 acceptance surface: a successful manifest,
 an omitted parser renderer variant, duplicate-module collision, missing literal
@@ -22,4 +26,8 @@ same indentation structure as the vendored parser source. The full reference
 additionally checks unknown imports/extensions, leaked `_impl` calls, bytecode
 and lowerer renderer exhaustiveness, diagnostic reset completeness, and the
 required module set; those paths are part of the source port but still need
-dedicated regression fixtures before acceptance.
+dedicated regression fixtures before acceptance. The process-level harness at
+`test/script_parity/namespace_manifest_launcher_test.elisascript` compares
+each tuple against both programs and pins the public launcher's hash before
+and after the matrix. It is source-only and remains unexecuted while compiler
+validation is suspended.
