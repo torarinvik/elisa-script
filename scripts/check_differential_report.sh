@@ -54,9 +54,17 @@ stability_include_line="$(rg -n -m1 -F 'include "./stability_model.elisa"' "$con
 report_include_line="$(rg -n -m1 -F 'include "./report_model.elisa"' "$consumer" | cut -d: -f1)"
 [[ -n "$stability_include_line" && -n "$report_include_line" ]]
 (( stability_include_line < report_include_line ))
+if ! rg -Uq '(?m)^@test\r?\ndef differential_report_contract_is_machine_readable_and_fail_closed\(\) -> void:' "$fixture"; then
+    printf 'differential report audit: registered report contract test is missing\n' >&2
+    exit 1
+fi
+report_fixture_body="$(awk '
+    /^def differential_report_contract_is_machine_readable_and_fail_closed\(\) -> void:$/ { in_fixture = 1; next }
+    in_fixture && /^@test$/ { exit }
+    in_fixture { print }
+' "$fixture")"
 rg -Fq 'using EsDifferentialReport' "$fixture"
 for fixture_pattern in \
-    'differential_report_contract_is_machine_readable_and_fail_closed' \
     'DifferentialReportFormat.Json' \
     'DifferentialReportFormat.Junit' \
     'DifferentialReportError.StatusCategoryMismatch' \
@@ -71,7 +79,10 @@ for fixture_pattern in \
     'flaky_without_repeats' \
     'stable_flaky_label' \
     'nondeterministic_failure'; do
-    rg -Fq "$fixture_pattern" "$fixture"
+    if ! rg -Fq "$fixture_pattern" <<< "$report_fixture_body"; then
+        printf 'differential report audit: contract case is absent from its test body: %s\n' "$fixture_pattern" >&2
+        exit 1
+    fi
 done
 
 rg -Fq 'EsDifferentialReport::DifferentialReport' "$docs"
