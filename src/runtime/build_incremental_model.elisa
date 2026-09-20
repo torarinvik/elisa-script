@@ -110,6 +110,12 @@ module EsBuildIncremental:
 
 
     private:
+        const enum BuildIncrementalPathOrder of u8:
+            Before
+            Equal
+            After
+
+
         def build_incremental_target_kind_valid(kind: BuildIncrementalTargetKind) -> bool:
             return kind in {BuildIncrementalTargetKind.Executable, BuildIncrementalTargetKind.StaticLibrary, BuildIncrementalTargetKind.SharedLibrary, BuildIncrementalTargetKind.GeneratedFile, BuildIncrementalTargetKind.Phony}
 
@@ -128,6 +134,83 @@ module EsBuildIncremental:
             return files.count
 
 
+        def build_incremental_path_order(left: sview, right: sview) -> BuildIncrementalPathOrder:
+            left_length: usize = len(left)
+            right_length: usize = len(right)
+            common: usize = left_length if left_length < right_length else right_length
+            for offset in 0..<common |left, right|:
+                return BuildIncrementalPathOrder.Before if sview_at(left, offset) < sview_at(right, offset)
+                return BuildIncrementalPathOrder.After if sview_at(left, offset) > sview_at(right, offset)
+            return BuildIncrementalPathOrder.Before if left_length < right_length
+            return BuildIncrementalPathOrder.After if left_length > right_length
+            return BuildIncrementalPathOrder.Equal
+
+
+        def build_sort_incremental_observation_indices(observations: darray[BuildIncrementalObservation], indices: mutable darray[usize]&, scratch: mutable darray[usize]&) -> void:
+            width: mutable usize = 1
+            while width < indices.count |observations, indices, scratch, width|:
+                start: mutable usize = 0
+                while start < indices.count |observations, indices, scratch, width, start|:
+                    middle: usize = start + width if width < indices.count - start else indices.count
+                    end: usize = middle + width if width < indices.count - middle else indices.count
+                    left: mutable usize = start
+                    right: mutable usize = middle
+                    destination: mutable usize = start
+                    while left < middle or right < end |observations, indices, scratch, width, start, middle, end, left, right, destination|:
+                        if right >= end:
+                            scratch[destination] <- indices[left]
+                            left <- left + 1
+                        elif left >= middle:
+                            scratch[destination] <- indices[right]
+                            right <- right + 1
+                        elif build_incremental_path_order(observations[indices[left]].path, observations[indices[right]].path) != BuildIncrementalPathOrder.After:
+                            scratch[destination] <- indices[left]
+                            left <- left + 1
+                        else:
+                            scratch[destination] <- indices[right]
+                            right <- right + 1
+                        destination <- destination + 1
+                    start <- end
+                for index in 0..<indices.count |indices, scratch|:
+                    indices[index] <- scratch[index]
+                width <- indices.count if width > indices.count / 2 else width * 2
+
+
+        def build_incremental_observation_order(observations: darray[BuildIncrementalObservation]) -> darray[usize] error[BuildIncrementalError] can[Memory.Allocate, Abort.Panic]:
+            raise BuildIncrementalError.ObservationLimitExceeded if observations.count > Limits::OBSERVATIONS
+            indices: mutable darray[usize] = []
+            scratch: mutable darray[usize] = []
+            for index in 0..<observations.count |observations, indices, scratch|:
+                observation: BuildIncrementalObservation = observations[index]
+                raise BuildIncrementalError.InvalidPath if not build_incremental_path_valid(observation.path)
+                if observation.present:
+                    raise BuildIncrementalError.FingerprintMissing if observation.fingerprint == 0
+                else:
+                    raise BuildIncrementalError.InvalidObservation if observation.fingerprint != 0
+                indices.push(index)
+                scratch.push(0)
+            build_sort_incremental_observation_indices(observations, indices, scratch)
+            if indices.count > 1:
+                for position in 1..<indices.count |observations, indices|:
+                    previous: BuildIncrementalObservation = observations[indices[position - 1]]
+                    current: BuildIncrementalObservation = observations[indices[position]]
+                    raise BuildIncrementalError.InvalidObservation if previous.path == current.path
+            return indices
+
+
+        def build_incremental_observation_index(observations: darray[BuildIncrementalObservation], sorted_indices: darray[usize], path: sview) -> usize:
+            low: mutable usize = 0
+            high: mutable usize = sorted_indices.count
+            while low < high |observations, sorted_indices, path, low, high|:
+                middle: usize = low + (high - low) / 2
+                observation_index: usize = sorted_indices[middle]
+                path_order: BuildIncrementalPathOrder = build_incremental_path_order(observations[observation_index].path, path)
+                return observation_index if path_order == BuildIncrementalPathOrder.Equal
+                low <- middle + 1 if path_order == BuildIncrementalPathOrder.Before
+                high <- middle if path_order == BuildIncrementalPathOrder.After
+            return observations.count
+
+
         def build_incremental_target_index(targets: darray[BuildIncrementalTarget], name: sview) -> usize:
             for index in 0..<targets.count |targets, name|:
                 return index if targets[index].name == name
@@ -139,12 +222,6 @@ module EsBuildIncremental:
                 for output in targets[target_index].outputs |targets, path|:
                     return target_index if output.path == path
             return targets.count
-
-
-        def build_incremental_observation_index(observations: darray[BuildIncrementalObservation], path: sview) -> usize:
-            for index in 0..<observations.count |observations, path|:
-                return index if observations[index].path == path
-            return observations.count
 
 
         def build_incremental_dependency_index(observations: darray[BuildIncrementalDependencyObservation], name: sview) -> usize:
@@ -183,20 +260,6 @@ module EsBuildIncremental:
             return true
 
 
-        def build_incremental_observations_valid(observations: darray[BuildIncrementalObservation]) -> bool error[BuildIncrementalError]:
-            raise BuildIncrementalError.ObservationLimitExceeded if observations.count > Limits::OBSERVATIONS
-            for index in 0..<observations.count |observations|:
-                observation: BuildIncrementalObservation = observations[index]
-                raise BuildIncrementalError.InvalidPath if not build_incremental_path_valid(observation.path)
-                if observation.present:
-                    raise BuildIncrementalError.FingerprintMissing if observation.fingerprint == 0
-                else:
-                    raise BuildIncrementalError.InvalidObservation if observation.fingerprint != 0
-                for earlier in 0..<index |observations, observation|:
-                    raise BuildIncrementalError.InvalidObservation if observations[earlier].path == observation.path
-            return true
-
-
         def build_incremental_dependencies_valid(dependencies: darray[BuildIncrementalDependencyObservation]) -> bool error[BuildIncrementalError]:
             raise BuildIncrementalError.DependencyLimitExceeded if dependencies.count > Limits::DEPENDENCIES
             for index in 0..<dependencies.count |dependencies|:
@@ -213,16 +276,16 @@ module EsBuildIncremental:
             return false
 
 
-        def build_incremental_target_decision_validated(target: BuildIncrementalTarget, current_recipe_fingerprint: u64, observations: darray[BuildIncrementalObservation], dependency_dirty: bool) -> BuildIncrementalDecision:
+        def build_incremental_target_decision_validated(target: BuildIncrementalTarget, current_recipe_fingerprint: u64, observations: darray[BuildIncrementalObservation], sorted_observation_indices: darray[usize], dependency_dirty: bool) -> BuildIncrementalDecision:
             return BuildIncrementalDecision.RecipeChanged if current_recipe_fingerprint != target.recipe_fingerprint
             return BuildIncrementalDecision.DependencyDirty if dependency_dirty
             for input in target.inputs:
-                observation_index: usize = build_incremental_observation_index(observations, input.path)
+                observation_index: usize = build_incremental_observation_index(observations, sorted_observation_indices, input.path)
                 return BuildIncrementalDecision.ObservationMissing if observation_index == observations.count
                 return BuildIncrementalDecision.InputMissing if not observations[observation_index].present
                 return BuildIncrementalDecision.InputChanged if observations[observation_index].fingerprint != input.fingerprint
             for output in target.outputs:
-                observation_index: usize = build_incremental_observation_index(observations, output.path)
+                observation_index: usize = build_incremental_observation_index(observations, sorted_observation_indices, output.path)
                 return BuildIncrementalDecision.ObservationMissing if observation_index == observations.count
                 return BuildIncrementalDecision.OutputMissing if not observations[observation_index].present
                 return BuildIncrementalDecision.OutputChanged if observations[observation_index].fingerprint != output.fingerprint
@@ -310,17 +373,17 @@ module EsBuildIncremental:
         # means every declared input/output and dependency was observed and
         # matched; the scheduler may then admit a cache hit without launching a
         # compiler or linker.
-        def classify_build_incremental_target(target: BuildIncrementalTarget, current_recipe_fingerprint: u64, observations: darray[BuildIncrementalObservation], dependencies: darray[BuildIncrementalDependencyObservation]) -> BuildIncrementalDecision error[BuildIncrementalError]:
+        def classify_build_incremental_target(target: BuildIncrementalTarget, current_recipe_fingerprint: u64, observations: darray[BuildIncrementalObservation], dependencies: darray[BuildIncrementalDependencyObservation]) -> BuildIncrementalDecision error[BuildIncrementalError] can[Memory.Allocate, Abort.Panic]:
             try build_incremental_target_valid(target)
-            try build_incremental_observations_valid(observations)
+            sorted_observation_indices: darray[usize] = try build_incremental_observation_order(observations)
             try build_incremental_dependencies_valid(dependencies)
             raise BuildIncrementalError.FingerprintMissing if current_recipe_fingerprint == 0
-            return build_incremental_target_decision_validated(target, current_recipe_fingerprint, observations, false) if current_recipe_fingerprint != target.recipe_fingerprint
+            return build_incremental_target_decision_validated(target, current_recipe_fingerprint, observations, sorted_observation_indices, false) if current_recipe_fingerprint != target.recipe_fingerprint
             for dependency in target.dependencies |target, dependencies|:
                 dependency_index: usize = build_incremental_dependency_index(dependencies, dependency)
                 return BuildIncrementalDecision.DependencyMissing if dependency_index == dependencies.count
-                return build_incremental_target_decision_validated(target, current_recipe_fingerprint, observations, true) if not dependencies[dependency_index].current
-            return build_incremental_target_decision_validated(target, current_recipe_fingerprint, observations, false)
+                return build_incremental_target_decision_validated(target, current_recipe_fingerprint, observations, sorted_observation_indices, true) if not dependencies[dependency_index].current
+            return build_incremental_target_decision_validated(target, current_recipe_fingerprint, observations, sorted_observation_indices, false)
 
 
         # Classify the complete topologically ordered manifest in one pass.
@@ -330,7 +393,7 @@ module EsBuildIncremental:
         def classify_build_incremental_manifest(targets: darray[BuildIncrementalTarget], current_recipe_fingerprints: darray[u64], observations: darray[BuildIncrementalObservation]) -> darray[BuildIncrementalDecision] error[BuildIncrementalError, BuildContractError] can[Memory.Allocate, Abort.Panic]:
             resolution: BuildDependencyResolution = try resolve_incremental_build_dependencies(targets)
             raise BuildIncrementalError.CurrentRecipeShapeInvalid if current_recipe_fingerprints.count != targets.count
-            try build_incremental_observations_valid(observations)
+            sorted_observation_indices: darray[usize] = try build_incremental_observation_order(observations)
             decisions: mutable darray[BuildIncrementalDecision] = []
             for target_index in 0..<targets.count |targets, current_recipe_fingerprints, observations, resolution, decisions|:
                 current_recipe_fingerprint: u64 = current_recipe_fingerprints[target_index]
@@ -338,6 +401,6 @@ module EsBuildIncremental:
                 dependency_dirty: mutable bool = false
                 for dependency_index in resolution.dependencies[target_index] |decisions, dependency_dirty|:
                     dependency_dirty <- true if decisions[dependency_index] != BuildIncrementalDecision.UpToDate
-                decision: BuildIncrementalDecision = build_incremental_target_decision_validated(targets[target_index], current_recipe_fingerprint, observations, dependency_dirty)
+                decision: BuildIncrementalDecision = build_incremental_target_decision_validated(targets[target_index], current_recipe_fingerprint, observations, sorted_observation_indices, dependency_dirty)
                 decisions.push(decision)
             return decisions

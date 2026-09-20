@@ -608,6 +608,9 @@ parallel hand-written name and index arrays.
 manifest target in manifest order. It derives each dependency's currentness
 from the already-classified earlier targets rather than accepting caller-made
 dependency flags, so staleness propagates through the DAG before dispatch.
+Observation paths are validated once into a bounded sorted index; duplicate
+paths are rejected and target input/output fingerprints use binary search
+rather than rescanning the full observation list.
 `plan_build_incremental_cleanup` reconciles a previously successful manifest
 with the current graph in deterministic target/output order. It returns a
 bounded list of outputs removed by a target deletion or rename, retains an

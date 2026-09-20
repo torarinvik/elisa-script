@@ -746,7 +746,9 @@ indices and attached to a fresh `BuildGraph` through a checked, pure adapter;
 malformed edge or name-index data is rejected before the graph is mutated.
 The whole manifest can also be classified in topological order; dependency
 currentness is derived from prior decisions so stale state propagates to every
-dependent target without trusting caller-supplied flags.
+dependent target without trusting caller-supplied flags. Observation records
+are validated into a bounded sorted path index with duplicate rejection, and
+input/output observation lookup is logarithmic.
 `plan_build_incremental_cleanup` reconciles a prior successful manifest with
 the current graph, returning bounded stale outputs in deterministic order for
 removed or renamed targets while retaining outputs adopted by another current

@@ -40,7 +40,9 @@ for declaration in \
     'def resolve_incremental_build_dependencies(' \
     'def classify_build_incremental_target(' \
     'def classify_build_incremental_manifest(' \
-    'def build_incremental_target_decision_validated('; do
+    'def build_incremental_target_decision_validated(' \
+    'def build_incremental_observation_order(' \
+    'def build_sort_incremental_observation_indices('; do
     rg -Fq "$declaration" "$model"
 done
 
@@ -61,6 +63,9 @@ for boundary in \
     'BuildIncrementalError.CleanupOutputLimitExceeded' \
     'BuildIncrementalError.DependencyOrderInvalid' \
     'BuildIncrementalError.CurrentRecipeShapeInvalid' \
+    'BuildIncrementalPathOrder' \
+    'build_incremental_path_order' \
+    'build_incremental_observation_index(observations, sorted_observation_indices, input.path)' \
     'build_incremental_dependency_declared' \
     'build_incremental_output_owner_index' \
     'producer.outputs' \
@@ -68,7 +73,7 @@ for boundary in \
     'current_recipe_fingerprint != target.recipe_fingerprint' \
     'return try resolve_build_dependencies(node_names, dependency_names)' \
     'EsBuild::Limits::TOTAL_DEPENDENCIES - total_dependencies' \
-    'try build_incremental_observations_valid(observations)' \
+    'build_incremental_observation_order(observations)' \
     'decisions[dependency_index] == BuildIncrementalDecision.UpToDate' \
     'try build_incremental_dependencies_valid(dependencies)'; do
     rg -Fq "$boundary" "$model"
@@ -80,6 +85,7 @@ for fixture_check in \
     'resolve_incremental_build_dependencies(manifest)' \
     'classify_build_incremental_manifest(manifest, changed_recipes, build_observations)' \
     'BuildIncrementalDecision.DependencyDirty' \
+    'duplicate_observation_rejected' \
     'attach_build_dependency_resolution(graph, resolution)' \
     'malformed_resolution_rejected' \
     'BuildIncrementalDecision.InputMissing' \
