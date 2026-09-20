@@ -929,6 +929,17 @@ The focused differential fixture, namespace inclusion, documentation, and
 check_differential_stability.sh audit are static evidence; scheduler-seed
 control, host repeat execution, and fresh-environment qualification remain open.
 
+ES-SCRIPT-054 | EsDifferentialReport validates renderer-neutral status and
+category claims. A flaky outcome must be Inconclusive, marked nondeterministic,
+and carry a completed validated stability session whose observation count
+matches the report; a repeat-count scalar alone is insufficient. Without
+stability evidence, a report is limited to one deterministic observation.
+Nondeterministic results cannot be promoted to a definitive mismatch or parity
+pass. These checks validate record consistency, not host execution provenance.
+The focused differential fixture, documentation, and
+check_differential_report.sh audit are source evidence only; report rendering
+and executed end-to-end parity remain open.
+
 ES-SCRIPT-014 | EsDifferentialFilesystem supplies bounded sealed post-run file
 tree snapshots with strict path ordering, a 64 MiB aggregate path-byte ceiling,
 up to 1,048,576 entries, 256 MiB aggregate exact content bytes, snapshot

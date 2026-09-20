@@ -751,7 +751,14 @@ an inconclusive result is limited to flaky or infrastructure causes. Case and
 engine identities, bounded summaries/messages, repeat counts, and optional
 artifact paths are length/NUL checked before a renderer emits text. Renderers
 must preserve these fields rather than reclassify failures from free-form
-stdout or exit codes.
+stdout or exit codes. A flaky report must be inconclusive, explicitly
+nondeterministic, and carry a completed validated stability session whose
+observation count matches the report and whose classification is
+`Nondeterministic`; merely setting a repeat count is insufficient. Without
+stability evidence, a report is limited to one deterministic observation.
+Nondeterministic results cannot be reported as a definitive mismatch or a
+passing parity claim. The record validator checks internal consistency only;
+it does not authenticate that a host actually ran the reported repeats.
 
 Each side's complete bounded process-facing payload can be persisted separately
 as an `ESPS` process-stream artifact with `make_differential_process_stream_artifact`.

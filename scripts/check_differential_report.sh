@@ -16,6 +16,7 @@ done
 
 for declaration in \
     'module EsDifferentialReport:' \
+    'using EsDifferentialStability' \
     'Limits::TEXT_BYTES' \
     'Limits::MESSAGES' \
     'Limits::REPEATS' \
@@ -23,6 +24,7 @@ for declaration in \
     'const enum DifferentialReportStatus of u8:' \
     'const enum DifferentialReportCategory of u8:' \
     'struct DifferentialReport:' \
+    'stability_evidence: DifferentialStabilitySession' \
     'error DifferentialReportError:' \
     'def validate_differential_report('; do
     rg -Fq "$declaration" "$model"
@@ -34,22 +36,43 @@ for boundary in \
     'differential_report_category_valid' \
     'StatusCategoryMismatch' \
     'NondeterministicPass' \
+    'NondeterministicClaimInvalid' \
+    'FlakyEvidenceInvalid' \
+    'StabilityEvidenceInvalid' \
+    'report.repeat_count < 2' \
+    'validate_differential_stability(report.stability_evidence)' \
+    'report.repeat_count != report.stability_evidence.observations.count' \
+    'DifferentialStabilityClassification.Nondeterministic' \
     'MessageLimitExceeded' \
     'RepeatCountInvalid'; do
     rg -Fq "$boundary" "$model"
 done
 
 rg -Fq 'include "./report_model.elisa"' "$consumer"
+stability_include_line="$(rg -n -m1 -F 'include "./stability_model.elisa"' "$consumer" | cut -d: -f1)"
+report_include_line="$(rg -n -m1 -F 'include "./report_model.elisa"' "$consumer" | cut -d: -f1)"
+[[ -n "$stability_include_line" && -n "$report_include_line" ]]
+(( stability_include_line < report_include_line ))
 rg -Fq 'using EsDifferentialReport' "$fixture"
 for fixture_pattern in \
     'differential_report_contract_is_machine_readable_and_fail_closed' \
     'DifferentialReportFormat.Json' \
     'DifferentialReportFormat.Junit' \
     'DifferentialReportError.StatusCategoryMismatch' \
-    'DifferentialReportError.NondeterministicPass'; do
+    'DifferentialReportError.NondeterministicPass' \
+    'DifferentialReportError.FlakyEvidenceInvalid' \
+    'DifferentialReportError.NondeterministicClaimInvalid' \
+    'has_stability_evidence: true' \
+    'repeated_pass' \
+    'mismatched_evidence_count' \
+    'flaky_stability' \
+    'flaky_without_repeats' \
+    'stable_flaky_label' \
+    'nondeterministic_failure'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 
 rg -Fq 'EsDifferentialReport::DifferentialReport' "$docs"
+rg -Fq 'merely setting a repeat count is insufficient' "$docs"
 
-printf 'differential report audit: typed formats, statuses, failure categories, identities, and bounded messages are present\n'
+printf 'differential report audit: typed reports bind repeat claims to validated stability evidence\n'
