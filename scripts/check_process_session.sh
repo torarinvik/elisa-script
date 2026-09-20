@@ -18,13 +18,15 @@ execution_bytecode="$repo_root/src/bytecode/bytecode.elisa"
 semantic_builtin_checker="$repo_root/vendor/elisa-compiler/src/semantic/check_ufcs_unknown_method.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 lowering_fixture="$repo_root/test/ir/elisascript_lowering_test.elisa"
+interpreter_fixture="$repo_root/test/ir/elisascript_interpreter_test.elisa"
+bytecode_fixture="$repo_root/test/ir/elisascript_bytecode_test.elisa"
 command_policy_fixture="$repo_root/test/driver/process_session_command_limits.elisascript"
 exit_deadline_fixture="$repo_root/test/driver/process_session_exit_deadline.elisascript"
 clock_fixture="$repo_root/test/driver/monotonic_time_model.elisascript"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$clock_model" "$time_bridge" "$process_model" "$ir" "$execution" "$interpreter" "$lowerer" "$verifier" "$execution_bytecode" "$semantic_builtin_checker" "$fixture" "$lowering_fixture" "$command_policy_fixture" "$exit_deadline_fixture" "$clock_fixture" "$docs" "$ledger"; do
+for required_file in "$model" "$clock_model" "$time_bridge" "$process_model" "$ir" "$execution" "$interpreter" "$lowerer" "$verifier" "$execution_bytecode" "$semantic_builtin_checker" "$fixture" "$lowering_fixture" "$interpreter_fixture" "$bytecode_fixture" "$command_policy_fixture" "$exit_deadline_fixture" "$clock_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'process session audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -83,6 +85,11 @@ rg -Fq 'process_timeout_micros <- timeout_value.integer.u64()' "$execution_bytec
 rg -Fq 'opcode_has_operand_count(timeout_fn.instruction_pool, Opcode.RunProcess, 3)' "$lowering_fixture"
 rg -Fq 'invalid_timeout_source' "$lowering_fixture"
 rg -Fq 'wrong_timeout_type_source' "$lowering_fixture"
+rg -Fq 'def times_out() -> i64' "$interpreter_fixture"
+rg -Fq 'def negative_timeout() -> i64' "$interpreter_fixture"
+rg -Fq 'assert timeout_rejected' "$interpreter_fixture"
+rg -Fq 'reference_timeout_rejected and direct_timeout_rejected' "$bytecode_fixture"
+rg -Fq 'negative_reference_rejected and negative_direct_rejected' "$bytecode_fixture"
 rg -Fq 'def process_timeout_admitted(' "$interpreter"
 rg -Fq 'if not process_timeout_admitted(machine, timeout_micros):' "$interpreter"
 rg -Fq 'timeout_micros > EsProcess::PROCESS_COMMAND_MAX_TIMEOUT_MICROS' "$interpreter"
