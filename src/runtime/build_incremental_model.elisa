@@ -15,7 +15,9 @@ module EsBuildIncremental:
             INPUTS: usize = 4096
             OUTPUTS: usize = 4096
             DEPENDENCIES: usize = 4096
-            OBSERVATIONS: usize = 16384
+            TOTAL_INPUTS: usize = 1048576
+            TOTAL_OUTPUTS: usize = 1048576
+            OBSERVATIONS: usize = 2097152
             CLEANUP_OUTPUTS: usize = 16384
             PATH_BYTES: usize = 4096
             NAME_BYTES: usize = 4096
@@ -96,6 +98,9 @@ module EsBuildIncremental:
             ObservationLimitExceeded
             InvalidObservation
             InvalidDependencyObservation
+            TotalInputLimitExceeded
+            TotalOutputLimitExceeded
+            DependencyResolutionInvalid
             DuplicateTarget
             DuplicateInput
             DuplicateOutput
@@ -114,6 +119,11 @@ module EsBuildIncremental:
             Before
             Equal
             After
+
+
+        struct BuildIncrementalPathOwner:
+            path: sview
+            target_index: usize
 
 
         def build_incremental_target_kind_valid(kind: BuildIncrementalTargetKind) -> bool:
@@ -144,6 +154,75 @@ module EsBuildIncremental:
             return BuildIncrementalPathOrder.Before if left_length < right_length
             return BuildIncrementalPathOrder.After if left_length > right_length
             return BuildIncrementalPathOrder.Equal
+
+
+        def build_incremental_path_owner_order(left: BuildIncrementalPathOwner, right: BuildIncrementalPathOwner) -> BuildIncrementalPathOrder:
+            path_order: BuildIncrementalPathOrder = build_incremental_path_order(left.path, right.path)
+            return path_order if path_order != BuildIncrementalPathOrder.Equal
+            return BuildIncrementalPathOrder.Before if left.target_index < right.target_index
+            return BuildIncrementalPathOrder.After if left.target_index > right.target_index
+            return BuildIncrementalPathOrder.Equal
+
+
+        def build_sort_incremental_path_owners(owners: mutable darray[BuildIncrementalPathOwner]&, scratch: mutable darray[BuildIncrementalPathOwner]&) -> void:
+            width: mutable usize = 1
+            while width < owners.count |owners, scratch, width|:
+                start: mutable usize = 0
+                while start < owners.count |owners, scratch, width, start|:
+                    middle: usize = start + width if width < owners.count - start else owners.count
+                    end: usize = middle + width if width < owners.count - middle else owners.count
+                    left: mutable usize = start
+                    right: mutable usize = middle
+                    destination: mutable usize = start
+                    while left < middle or right < end |owners, scratch, width, start, middle, end, left, right, destination|:
+                        if right >= end:
+                            scratch[destination] <- owners[left]
+                            left <- left + 1
+                        elif left >= middle:
+                            scratch[destination] <- owners[right]
+                            right <- right + 1
+                        elif build_incremental_path_owner_order(owners[left], owners[right]) != BuildIncrementalPathOrder.After:
+                            scratch[destination] <- owners[left]
+                            left <- left + 1
+                        else:
+                            scratch[destination] <- owners[right]
+                            right <- right + 1
+                        destination <- destination + 1
+                    start <- end
+                for index in 0..<owners.count |owners, scratch|:
+                    owners[index] <- scratch[index]
+                width <- owners.count if width > owners.count / 2 else width * 2
+
+
+        def build_incremental_path_owners(targets: darray[BuildIncrementalTarget], outputs: bool) -> darray[BuildIncrementalPathOwner] error[BuildIncrementalError] can[Memory.Allocate, Abort.Panic]:
+            owners: mutable darray[BuildIncrementalPathOwner] = []
+            scratch: mutable darray[BuildIncrementalPathOwner] = []
+            for target_index in 0..<targets.count |targets, owners, scratch, outputs|:
+                target: BuildIncrementalTarget = targets[target_index]
+                if outputs:
+                    raise BuildIncrementalError.TotalOutputLimitExceeded if target.outputs.count > Limits::TOTAL_OUTPUTS - owners.count
+                    for output in target.outputs |target, owners, scratch, outputs|:
+                        owners.push(BuildIncrementalPathOwner{path: output.path, target_index: target_index})
+                        scratch.push(BuildIncrementalPathOwner{path: "", target_index: 0})
+                else:
+                    raise BuildIncrementalError.TotalInputLimitExceeded if target.inputs.count > Limits::TOTAL_INPUTS - owners.count
+                    for input in target.inputs |target, owners, scratch, outputs|:
+                        owners.push(BuildIncrementalPathOwner{path: input.path, target_index: target_index})
+                        scratch.push(BuildIncrementalPathOwner{path: "", target_index: 0})
+            build_sort_incremental_path_owners(owners, scratch)
+            return owners
+
+
+        def build_incremental_path_owner_position(owners: darray[BuildIncrementalPathOwner], path: sview) -> usize:
+            low: mutable usize = 0
+            high: mutable usize = owners.count
+            while low < high |owners, path, low, high|:
+                middle: usize = low + (high - low) / 2
+                path_order: BuildIncrementalPathOrder = build_incremental_path_order(owners[middle].path, path)
+                return middle if path_order == BuildIncrementalPathOrder.Equal
+                low <- middle + 1 if path_order == BuildIncrementalPathOrder.Before
+                high <- middle if path_order == BuildIncrementalPathOrder.After
+            return owners.count
 
 
         def build_sort_incremental_observation_indices(observations: darray[BuildIncrementalObservation], indices: mutable darray[usize]&, scratch: mutable darray[usize]&) -> void:
@@ -211,12 +290,6 @@ module EsBuildIncremental:
             return observations.count
 
 
-        def build_incremental_target_index(targets: darray[BuildIncrementalTarget], name: sview) -> usize:
-            for index in 0..<targets.count |targets, name|:
-                return index if targets[index].name == name
-            return targets.count
-
-
         def build_incremental_output_owner_index(targets: darray[BuildIncrementalTarget], path: sview) -> usize:
             for target_index in 0..<targets.count |targets, path|:
                 for output in targets[target_index].outputs |targets, path|:
@@ -230,7 +303,7 @@ module EsBuildIncremental:
             return observations.count
 
 
-        def build_incremental_target_valid(target: BuildIncrementalTarget) -> bool error[BuildIncrementalError]:
+        def build_incremental_target_shape_valid(target: BuildIncrementalTarget) -> bool error[BuildIncrementalError]:
             raise BuildIncrementalError.InvalidTargetKind if not build_incremental_target_kind_valid(target.kind)
             raise BuildIncrementalError.InvalidTargetName if not build_incremental_name_valid(target.name)
             raise BuildIncrementalError.FingerprintMissing if target.recipe_fingerprint == 0
@@ -243,18 +316,28 @@ module EsBuildIncremental:
                 input: BuildIncrementalFile = target.inputs[input_index]
                 raise BuildIncrementalError.InvalidPath if not build_incremental_path_valid(input.path)
                 raise BuildIncrementalError.FingerprintMissing if input.fingerprint == 0
-                for earlier in 0..<input_index |target, input|:
-                    raise BuildIncrementalError.DuplicateInput if target.inputs[earlier].path == input.path
             for output_index in 0..<target.outputs.count |target|:
                 output: BuildIncrementalFile = target.outputs[output_index]
                 raise BuildIncrementalError.InvalidPath if not build_incremental_path_valid(output.path)
                 raise BuildIncrementalError.FingerprintMissing if output.fingerprint == 0
+            for dependency in target.dependencies:
+                raise BuildIncrementalError.InvalidTargetName if not build_incremental_name_valid(dependency)
+            return true
+
+
+        def build_incremental_target_valid(target: BuildIncrementalTarget) -> bool error[BuildIncrementalError]:
+            try build_incremental_target_shape_valid(target)
+            for input_index in 0..<target.inputs.count |target|:
+                input: BuildIncrementalFile = target.inputs[input_index]
+                for earlier in 0..<input_index |target, input|:
+                    raise BuildIncrementalError.DuplicateInput if target.inputs[earlier].path == input.path
+            for output_index in 0..<target.outputs.count |target|:
+                output: BuildIncrementalFile = target.outputs[output_index]
                 for earlier in 0..<output_index |target, output|:
                     raise BuildIncrementalError.DuplicateOutput if target.outputs[earlier].path == output.path
                 raise BuildIncrementalError.InputOutputCollision if build_incremental_file_index(target.inputs, output.path) != target.inputs.count
             for dependency_index in 0..<target.dependencies.count |target|:
                 dependency: sview = target.dependencies[dependency_index]
-                raise BuildIncrementalError.InvalidTargetName if not build_incremental_name_valid(dependency)
                 for earlier in 0..<dependency_index |target, dependency|:
                     raise BuildIncrementalError.DuplicateDependency if target.dependencies[earlier] == dependency
             return true
@@ -270,9 +353,15 @@ module EsBuildIncremental:
             return true
 
 
-        def build_incremental_dependency_declared(target: BuildIncrementalTarget, dependency_name: sview) -> bool:
-            for dependency in target.dependencies:
-                return true if dependency == dependency_name
+        def build_incremental_dependency_index_contains(dependencies: darray[usize], target_index: usize) -> bool:
+            low: mutable usize = 0
+            high: mutable usize = dependencies.count
+            while low < high |dependencies, target_index, low, high|:
+                middle: usize = low + (high - low) / 2
+                dependency_index: usize = dependencies[middle]
+                return true if dependency_index == target_index
+                low <- middle + 1 if dependency_index < target_index
+                high <- middle if dependency_index > target_index
             return false
 
 
@@ -292,52 +381,71 @@ module EsBuildIncremental:
             return BuildIncrementalDecision.UpToDate
 
 
-    public:
-        # Validate a complete target manifest before it is handed to the
-        # scheduler. Dependency order is deterministic and prevents a manifest
-        # from claiming a consumer before its producer exists.
-        def validate_build_incremental_manifest(targets: darray[BuildIncrementalTarget]) -> bool error[BuildIncrementalError]:
-            raise BuildIncrementalError.EmptyManifest if targets.count == 0
-            raise BuildIncrementalError.TargetLimitExceeded if targets.count > Limits::TARGETS
-            for index in 0..<targets.count |targets|:
-                target: BuildIncrementalTarget = targets[index]
-                try build_incremental_target_valid(target)
-                for earlier in 0..<index |targets, target|:
-                    raise BuildIncrementalError.DuplicateTarget if targets[earlier].name == target.name
-                    for output_index in 0..<target.outputs.count |targets, earlier, target|:
-                        output: BuildIncrementalFile = target.outputs[output_index]
-                        raise BuildIncrementalError.OutputCollision if build_incremental_file_index(targets[earlier].outputs, output.path) != targets[earlier].outputs.count
-                for dependency in target.dependencies:
-                    dependency_index: usize = build_incremental_target_index(targets, dependency)
-                    raise BuildIncrementalError.MissingDependency if dependency_index == targets.count
-                    raise BuildIncrementalError.DependencyOrderInvalid if dependency_index >= index
-                # A target that reads a generated output must name its producer
-                # directly. Without this edge, a scheduler can admit the
-                # consumer before generation (or reuse a stale output) even
-                # though both target manifests are individually well-formed.
-                for producer_index in 0..<targets.count |targets, target|:
-                    producer: BuildIncrementalTarget = targets[producer_index]
-                    if producer_index != index:
-                        for produced in producer.outputs |targets, target, producer|:
-                            for input in target.inputs |targets, target, producer, produced|:
-                                raise BuildIncrementalError.UndeclaredOutputDependency if produced.path == input.path and not build_incremental_dependency_declared(target, producer.name)
-            return true
-
-
-        # Validate and resolve the existing named-target manifest into the
-        # canonical graph-edge representation consumed by EsBuild.
-        def resolve_incremental_build_dependencies(targets: darray[BuildIncrementalTarget]) -> BuildDependencyResolution error[BuildIncrementalError, BuildContractError] can[Memory.Allocate, Abort.Panic]:
-            try validate_build_incremental_manifest(targets)
-            total_dependencies: mutable usize = 0
-            for target in targets |targets, total_dependencies|:
-                raise BuildContractError.DependencyLimitExceeded if target.dependencies.count > EsBuild::Limits::TOTAL_DEPENDENCIES - total_dependencies
-                total_dependencies <- total_dependencies + target.dependencies.count
+        def build_incremental_dependency_resolution(targets: darray[BuildIncrementalTarget]) -> BuildDependencyResolution error[BuildIncrementalError] can[Memory.Allocate, Abort.Panic]:
             node_names: mutable darray[sview] = []
             dependency_names: mutable darray[BuildDependencyNames] = []
             for target in targets |targets, node_names, dependency_names|:
                 node_names.push(target.name)
                 dependency_names.push(BuildDependencyNames{names: target.dependencies})
-            return try resolve_build_dependencies(node_names, dependency_names)
+            resolution: mutable BuildDependencyResolution = BuildDependencyResolution{}
+            catch resolve_build_dependencies(node_names, dependency_names):
+                ok value:
+                    resolution <- value
+                error failure:
+                    raise BuildIncrementalError.EmptyManifest if failure == BuildContractError.EmptyGraph
+                    raise BuildIncrementalError.TargetLimitExceeded if failure == BuildContractError.NodeLimitExceeded
+                    raise BuildIncrementalError.InvalidTargetName if failure == BuildContractError.InvalidNodeName
+                    raise BuildIncrementalError.DuplicateTarget if failure == BuildContractError.DuplicateNode
+                    raise BuildIncrementalError.DependencyLimitExceeded if failure == BuildContractError.DependencyLimitExceeded
+                    raise BuildIncrementalError.MissingDependency if failure == BuildContractError.MissingDependency
+                    raise BuildIncrementalError.DependencyOrderInvalid if failure == BuildContractError.DependencyOrderInvalid
+                    raise BuildIncrementalError.DuplicateDependency if failure == BuildContractError.DuplicateDependency
+                    raise BuildIncrementalError.DependencyResolutionInvalid
+            return resolution
+
+
+        def build_incremental_manifest_resolution(targets: darray[BuildIncrementalTarget]) -> BuildDependencyResolution error[BuildIncrementalError] can[Memory.Allocate, Abort.Panic]:
+            raise BuildIncrementalError.EmptyManifest if targets.count == 0
+            raise BuildIncrementalError.TargetLimitExceeded if targets.count > Limits::TARGETS
+            for target in targets:
+                try build_incremental_target_shape_valid(target)
+            resolution: BuildDependencyResolution = try build_incremental_dependency_resolution(targets)
+            output_owners: darray[BuildIncrementalPathOwner] = try build_incremental_path_owners(targets, true)
+            if output_owners.count > 1:
+                for position in 1..<output_owners.count |output_owners|:
+                    previous: BuildIncrementalPathOwner = output_owners[position - 1]
+                    current: BuildIncrementalPathOwner = output_owners[position]
+                    if previous.path == current.path:
+                        raise BuildIncrementalError.DuplicateOutput if previous.target_index == current.target_index
+                        raise BuildIncrementalError.OutputCollision
+            input_owners: darray[BuildIncrementalPathOwner] = try build_incremental_path_owners(targets, false)
+            if input_owners.count > 1:
+                for position in 1..<input_owners.count |input_owners|:
+                    previous: BuildIncrementalPathOwner = input_owners[position - 1]
+                    current: BuildIncrementalPathOwner = input_owners[position]
+                    raise BuildIncrementalError.DuplicateInput if previous.path == current.path and previous.target_index == current.target_index
+            for input_owner in input_owners |input_owners, output_owners, resolution|:
+                output_position: usize = build_incremental_path_owner_position(output_owners, input_owner.path)
+                if output_position != output_owners.count:
+                    output_target_index: usize = output_owners[output_position].target_index
+                    raise BuildIncrementalError.InputOutputCollision if output_target_index == input_owner.target_index
+                    raise BuildIncrementalError.UndeclaredOutputDependency if not build_incremental_dependency_index_contains(resolution.dependencies[input_owner.target_index], output_target_index)
+            return resolution
+
+
+    public:
+        # Validate a complete target manifest before it is handed to the
+        # scheduler. Dependency order is deterministic and prevents a manifest
+        # from claiming a consumer before its producer exists.
+        def validate_build_incremental_manifest(targets: darray[BuildIncrementalTarget]) -> bool error[BuildIncrementalError] can[Memory.Allocate, Abort.Panic]:
+            try build_incremental_manifest_resolution(targets)
+            return true
+
+
+        # Validate and resolve the existing named-target manifest into the
+        # canonical graph-edge representation consumed by EsBuild.
+        def resolve_incremental_build_dependencies(targets: darray[BuildIncrementalTarget]) -> BuildDependencyResolution error[BuildIncrementalError] can[Memory.Allocate, Abort.Panic]:
+            return try build_incremental_manifest_resolution(targets)
 
 
         # Reconcile a successful manifest with the current manifest before the
@@ -351,7 +459,7 @@ module EsBuildIncremental:
         # rejects an empty graph.
         # The returned plan is pure; filesystem identity, build-root safety, and
         # the final deletion remain host-adapter responsibilities.
-        def plan_build_incremental_cleanup(previous_targets: darray[BuildIncrementalTarget], current_targets: darray[BuildIncrementalTarget]) -> darray[BuildIncrementalStaleOutput] error[BuildIncrementalError]:
+        def plan_build_incremental_cleanup(previous_targets: darray[BuildIncrementalTarget], current_targets: darray[BuildIncrementalTarget]) -> darray[BuildIncrementalStaleOutput] error[BuildIncrementalError] can[Memory.Allocate, Abort.Panic]:
             cleanup: mutable darray[BuildIncrementalStaleOutput] = []
             if current_targets.count != 0:
                 try validate_build_incremental_manifest(current_targets)
@@ -390,7 +498,7 @@ module EsBuildIncremental:
         # Dependency-current flags are derived from earlier target decisions,
         # not supplied by a caller that could accidentally admit a stale cache
         # hit. The returned decision at index i belongs to targets[i].
-        def classify_build_incremental_manifest(targets: darray[BuildIncrementalTarget], current_recipe_fingerprints: darray[u64], observations: darray[BuildIncrementalObservation]) -> darray[BuildIncrementalDecision] error[BuildIncrementalError, BuildContractError] can[Memory.Allocate, Abort.Panic]:
+        def classify_build_incremental_manifest(targets: darray[BuildIncrementalTarget], current_recipe_fingerprints: darray[u64], observations: darray[BuildIncrementalObservation]) -> darray[BuildIncrementalDecision] error[BuildIncrementalError] can[Memory.Allocate, Abort.Panic]:
             resolution: BuildDependencyResolution = try resolve_incremental_build_dependencies(targets)
             raise BuildIncrementalError.CurrentRecipeShapeInvalid if current_recipe_fingerprints.count != targets.count
             sorted_observation_indices: darray[usize] = try build_incremental_observation_order(observations)

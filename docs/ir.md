@@ -604,6 +604,13 @@ independently testable and can drive clean/no-op/incremental build comparisons.
 converts its target/dependency names into the canonical node indices and bound
 name-order index expected by `BuildGraph`; callers no longer need to maintain
 parallel hand-written name and index arrays.
+Manifest validation resolves target/dependency names once and sorts bounded
+input/output path-owner indexes, rejecting duplicate inputs/outputs, cross-
+target output collisions, and undeclared generated-output edges without nested
+whole-manifest scans. Aggregate input and output records are each capped at
+1,048,576 so the indexes have an explicit memory ceiling.
+Observation capacity is 2,097,152 records, enough to fingerprint every unique
+path referenced by manifests at those aggregate ceilings.
 `classify_build_incremental_manifest` returns one deterministic decision per
 manifest target in manifest order. It derives each dependency's currentness
 from the already-classified earlier targets rather than accepting caller-made

@@ -27,6 +27,8 @@ for declaration in \
     'Limits::OUTPUTS' \
     'Limits::OBSERVATIONS' \
     'Limits::CLEANUP_OUTPUTS' \
+    'Limits::TOTAL_INPUTS' \
+    'Limits::TOTAL_OUTPUTS' \
     'const enum BuildIncrementalTargetKind of u8:' \
     'Phony' \
     'const enum BuildIncrementalDecision of u8:' \
@@ -38,6 +40,10 @@ for declaration in \
     'len(path) < Limits::PATH_BYTES' \
     'def validate_build_incremental_manifest(' \
     'def resolve_incremental_build_dependencies(' \
+    'def build_incremental_manifest_resolution(' \
+    'def build_incremental_dependency_resolution(' \
+    'def build_incremental_path_owners(' \
+    'def build_sort_incremental_path_owners(' \
     'def classify_build_incremental_target(' \
     'def classify_build_incremental_manifest(' \
     'def build_incremental_target_decision_validated(' \
@@ -63,16 +69,25 @@ for boundary in \
     'BuildIncrementalError.CleanupOutputLimitExceeded' \
     'BuildIncrementalError.DependencyOrderInvalid' \
     'BuildIncrementalError.CurrentRecipeShapeInvalid' \
+    'BuildIncrementalError.TotalInputLimitExceeded' \
+    'BuildIncrementalError.TotalOutputLimitExceeded' \
+    'BuildIncrementalError.DependencyResolutionInvalid' \
+    'BuildContractError.DuplicateNode' \
+    'BuildContractError.DuplicateDependency' \
+    'build_incremental_target_shape_valid(target)' \
     'BuildIncrementalPathOrder' \
     'build_incremental_path_order' \
     'build_incremental_observation_index(observations, sorted_observation_indices, input.path)' \
-    'build_incremental_dependency_declared' \
+    'build_incremental_dependency_index_contains' \
+    'build_incremental_dependency_index_contains(resolution.dependencies[input_owner.target_index], output_target_index)' \
+    'build_incremental_path_owner_position' \
+    'build_incremental_path_owner_order' \
+    'Limits::TOTAL_INPUTS - owners.count' \
+    'Limits::TOTAL_OUTPUTS - owners.count' \
+    'BuildIncrementalError.DuplicateInput if previous.path == current.path and previous.target_index == current.target_index' \
     'build_incremental_output_owner_index' \
-    'producer.outputs' \
     'def plan_build_incremental_cleanup(' \
     'current_recipe_fingerprint != target.recipe_fingerprint' \
-    'return try resolve_build_dependencies(node_names, dependency_names)' \
-    'EsBuild::Limits::TOTAL_DEPENDENCIES - total_dependencies' \
     'build_incremental_observation_order(observations)' \
     'decisions[dependency_index] == BuildIncrementalDecision.UpToDate' \
     'try build_incremental_dependencies_valid(dependencies)'; do
@@ -91,6 +106,12 @@ for fixture_check in \
     'BuildIncrementalDecision.InputMissing' \
     'BuildIncrementalDecision.OutputChanged' \
     'BuildIncrementalError.DuplicateInput' \
+    'BuildIncrementalError.DuplicateOutput' \
+    'BuildIncrementalError.DuplicateTarget' \
+    'BuildIncrementalError.DuplicateDependency' \
+    'duplicate_output_rejected' \
+    'duplicate_target_rejected' \
+    'duplicate_dependency_rejected' \
     'BuildIncrementalError.OutputForbidden' \
     'BuildIncrementalError.OutputCollision' \
     'BuildIncrementalError.UndeclaredOutputDependency' \
