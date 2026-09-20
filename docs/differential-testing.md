@@ -758,7 +758,8 @@ observation count matches the report and whose classification is
 stability evidence, a report is limited to one deterministic observation.
 Nondeterministic results cannot be reported as a definitive mismatch or a
 passing parity claim. The record validator checks internal consistency only;
-it does not authenticate that a host actually ran the reported repeats.
+the no-evidence path also requires a pristine planned session, but the model
+does not authenticate that a host actually ran the reported repeats.
 
 Each side's complete bounded process-facing payload can be persisted separately
 as an `ESPS` process-stream artifact with `make_differential_process_stream_artifact`.
@@ -1239,7 +1240,8 @@ The state machine and session validator both require the minimum repeat count
 before completion. Validation also binds `StableEqual` and `StableMismatch` to
 the baseline equality decision and rejects a completed nondeterministic result
 under the `Reject` policy. It rejects out-of-order or missing fingerprints and
-leaves execution, scheduler seeds, and host adapters outside the typed contract.
+requires a `Planned` stability session to be pristine. It leaves execution,
+scheduler seeds, and host adapters outside the typed contract.
 checkpoints carry both state identities. The state machine records the first
 non-equal step as `Diverged`, seals only after every step is complete, and
 rejects out-of-order steps, duplicate checkpoint order, zero identities, and

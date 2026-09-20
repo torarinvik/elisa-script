@@ -41,6 +41,8 @@ for boundary in \
     'expected_nondeterminism' \
     'session.stable_repeats != expected_stable_repeats' \
     'session.has_nondeterminism != expected_nondeterminism' \
+    'session.state == DifferentialStabilityState.Planned and (session.observations.count != 0' \
+    'session.state == DifferentialStabilityState.Planned and session.classification != DifferentialStabilityClassification.Unknown' \
     'session.state == DifferentialStabilityState.Completed and session.observations.count < session.policy.minimum_repeats' \
     'session.classification == DifferentialStabilityClassification.StableEqual' \
     'raise DifferentialStabilityError.ClassificationInvalid if not session.baseline_equal' \
@@ -64,6 +66,7 @@ for fixture_pattern in \
     rg -Fq "$fixture_pattern" "$fixture"
 done
 rg -Fq 'forged_stability_accounting' "$fixture"
+rg -Fq 'forged_planned_stability' "$fixture"
 rg -Fq 'completed_too_early' "$fixture"
 rg -Fq 'wrong_stability_label' "$fixture"
 rg -Fq 'forged_nondeterministic' "$fixture"

@@ -42,6 +42,7 @@ for boundary in \
     'report.repeat_count < 2' \
     'validate_differential_stability(report.stability_evidence)' \
     'report.repeat_count != report.stability_evidence.observations.count' \
+    'report.stability_evidence.state != DifferentialStabilityState.Planned' \
     'DifferentialStabilityClassification.Nondeterministic' \
     'MessageLimitExceeded' \
     'RepeatCountInvalid'; do
@@ -66,6 +67,7 @@ for fixture_pattern in \
     'repeated_pass' \
     'mismatched_evidence_count' \
     'flaky_stability' \
+    'hidden_stability_evidence' \
     'flaky_without_repeats' \
     'stable_flaky_label' \
     'nondeterministic_failure'; do

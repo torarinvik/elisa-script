@@ -924,7 +924,8 @@ Validation derives repeat accounting and the nondeterminism flag from retained
 observations, rejecting forged baselines and counters. It also independently
 requires the minimum repeat count for completed sessions, binds stable
 classifications to the baseline equality bit, and rejects a completed
-nondeterministic classification under the Reject policy.
+nondeterministic classification under the Reject policy. `Planned` sessions
+must be pristine; they cannot carry hidden repeat observations or accounting.
 The focused differential fixture, namespace inclusion, documentation, and
 check_differential_stability.sh audit are static evidence; scheduler-seed
 control, host repeat execution, and fresh-environment qualification remain open.
@@ -936,6 +937,7 @@ matches the report; a repeat-count scalar alone is insufficient. Without
 stability evidence, a report is limited to one deterministic observation.
 Nondeterministic results cannot be promoted to a definitive mismatch or parity
 pass. These checks validate record consistency, not host execution provenance.
+When the evidence flag is absent, the nested stability session must be pristine.
 The focused differential fixture, documentation, and
 check_differential_report.sh audit are source evidence only; report rendering
 and executed end-to-end parity remain open.
