@@ -6,15 +6,19 @@ set -euo pipefail
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 model="$repo_root/src/runtime/process_session_model.elisa"
+clock_model="$repo_root/src/runtime/monotonic_time_model.elisa"
+time_bridge="$repo_root/src/runtime/time_posix.elisa"
 process_model="$repo_root/src/runtime/process_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
+execution="$repo_root/src/ir/execution.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 command_policy_fixture="$repo_root/test/driver/process_session_command_limits.elisascript"
 exit_deadline_fixture="$repo_root/test/driver/process_session_exit_deadline.elisascript"
+clock_fixture="$repo_root/test/driver/monotonic_time_model.elisascript"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$process_model" "$ir" "$fixture" "$command_policy_fixture" "$exit_deadline_fixture" "$docs" "$ledger"; do
+for required_file in "$model" "$clock_model" "$time_bridge" "$process_model" "$ir" "$execution" "$fixture" "$command_policy_fixture" "$exit_deadline_fixture" "$clock_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'process session audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -44,6 +48,17 @@ rg -Fq 'finite_deadline_exit_requires_a_clock_sample' "$exit_deadline_fixture"
 rg -Fq 'exit_observed_at_deadline_enters_timeout_cleanup' "$exit_deadline_fixture"
 rg -Fq 'exit_observed_before_deadline_preserves_exit_status' "$exit_deadline_fixture"
 rg -Fq 'session.state == ProcessSessionState.TimingOut' "$exit_deadline_fixture"
+rg -Fq 'CLOCK_MONOTONIC' "$time_bridge"
+rg -Fq 'clock_gettime' "$time_bridge"
+rg -Fq 'EsMonotonicTime::MonotonicTimestamp' "$time_bridge"
+rg -Fq 'NANOSECONDS_PER_MICROSECOND' "$clock_model"
+rg -Fq 'monotonic_elapsed_microseconds' "$clock_model"
+rg -Fq 'fractional_microseconds: u64' "$clock_model"
+rg -Fq 'include "../runtime/monotonic_time_model.elisa"' "$ir"
+rg -Fq 'include "../runtime/monotonic_time_model.elisa"' "$execution"
+rg -Fq 'elapsed_time_handles_nanosecond_borrow' "$clock_fixture"
+rg -Fq 'fractional_microseconds_round_up_for_deadline_safety' "$clock_fixture"
+rg -Fq 'elapsed_microsecond_conversion_is_bounded' "$clock_fixture"
 
 for boundary in \
     'session_stream_handle_valid' \
