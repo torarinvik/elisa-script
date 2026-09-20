@@ -2714,6 +2714,12 @@ Process waits use nonblocking `waitpid` polling and a 120-second deadline; a chi
 that exceeds the deadline is killed and reported as `ProcessError` rather than
 blocking the host indefinitely. Interrupted waits and one-millisecond poll
 sleeps retry through bounded `EINTR` budgets before becoming `ProcessError`.
+`run_process(executable, arguments, timeout_micros)` may override that deadline
+with a nonnegative `i64` microsecond value. Omitting the third argument retains
+the 120-second default; zero disables the caller deadline but not the hard
+poll-count safety ceiling. Negative values fail as `ProcessError`. Deadline
+checks occur at poll boundaries, so termination includes the polling interval
+and the bounded process-group cleanup grace.
 The parent-side `setpgid(child, child)` admission also retries `EINTR`; any
 other failure leaves `group_ready` false and retains direct-child-only cleanup.
 Child stdout/stderr/stdin redirection retries interrupted `dup2` calls before
