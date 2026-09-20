@@ -71,6 +71,12 @@ The current adapted fixes are tracked separately from the snapshot identity:
 
 - `07dfa7a9` / `0d92a608`: nested-module constant ownership and use-site lowering;
 - `10fdfaa6`: catch-all error binders and implicit value-returning block tails.
+- `a545f605`: apply the implicit non-void function-tail return contract in the
+  semantic initializer pass, so mismatched final expressions are diagnosed
+  before IR lowering.
+- `26cf09a9`: carry expected types through scoped expression-block tails and
+  restore their local type scope after checking; terminating block statements
+  do not cause an unreachable tail to be type-checked.
 - `2d44a99e`: short-circuit unequal `sview` lengths before the runtime byte walk,
   with a fallback for legacy non-aggregate lowering paths.
 - `a584ab52`: traverse the existing symbol-name chains for enum and unique
