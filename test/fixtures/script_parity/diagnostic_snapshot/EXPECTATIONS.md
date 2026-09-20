@@ -43,10 +43,11 @@ validation hold remains in force.
 
 The shell reference and Elisascript candidate both resolve an omitted or empty
 path relative to their own script locations. The public-launcher parity source
-also runs both no-argument forms with `/` as the working directory and compares
-their process results. That case intentionally has no checked-in golden tuple:
-its output depends on the current runner source, while its purpose is to verify
-script-relative default-path behavior outside the repository working directory.
+also runs both the omitted-argument and explicit-empty-argument forms with `/`
+as the working directory and compares their process results. These cases
+intentionally have no checked-in golden tuple: their output depends on the
+current runner source, while their purpose is to verify script-relative
+default-path behavior outside the repository working directory.
 
 `test/script_parity/diagnostic_snapshot_launcher_test.elisascript` automates
 the fixture table as a process comparison: `/bin/bash` runs the shell reference,
