@@ -89,6 +89,12 @@ valid UTF-8. Do not mutate the candidate's own self-audit needles as part of
 this parity matrix: the candidate is the executable under test, whereas the
 shell reference separately preflights that artifact.
 
+The model patterns `RecordAggregateEvent.Add` and
+`RecordAggregateEvent.AddValue` overlap: removing every occurrence of the
+former also removes occurrences of the latter. Cover the `AddValue` pattern
+with its own mutation, then cover `Add` with a coupled mutation that removes
+both; do not claim those two as independent negative cases.
+
 The shell checks all required paths before checking sizes, whereas the
 candidate checks each shared input's path and size as it proceeds. Therefore,
 combine neither a missing input with an oversized input nor multiple
@@ -100,8 +106,14 @@ errors is not currently claimed as parity.
 Always pass the same explicit root. With no operand, the shell reference
 defaults to its own repository while the candidate defaults to the process
 working directory; this convenience behavior is intentionally excluded from
-parity. The matrix requires a future bounded launcher that compares both
-process results against the tuples here. No compiler, launcher, shell audit,
-or parity case has been run for this contract, and the record-aggregate port
-is not accepted until that validation is explicitly reauthorized and safely
-completed.
+parity. The source harness at
+`test/script_parity/record_aggregate_launcher_test.elisascript` implements
+the explicit-root success, usage, missing-root, each single missing shared
+input, exact/over aggregate-byte boundary, and source-needle mutation cases.
+It pins the public launcher's digest before and after the matrix, passes both
+implementations the same sanitized environment, caps child output and timeout,
+and expects the bounded outer validation wrapper. That wrapper's process-tree
+RSS guard is sampled/reactive rather than a kernel-enforced memory cap. No
+compiler, launcher, shell audit, or parity case has been run for this contract,
+and the record-aggregate port is not accepted until validation is explicitly
+reauthorized and safely completed.

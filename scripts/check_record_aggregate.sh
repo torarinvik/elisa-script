@@ -12,7 +12,7 @@ repo_root_operand="$script_dir/.."
 if (($# == 1)); then
     repo_root_operand="$1"
 fi
-repo_root="$(CDPATH= cd -- "$repo_root_operand" && pwd)" || {
+repo_root="$(CDPATH= cd -- "$repo_root_operand" 2>/dev/null && pwd 2>/dev/null)" || {
     printf 'record aggregate audit: missing repository root\n' >&2
     exit 1
 }
