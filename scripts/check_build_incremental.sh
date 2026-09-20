@@ -33,6 +33,7 @@ for declaration in \
     'Phony' \
     'const enum BuildIncrementalDecision of u8:' \
     'struct BuildIncrementalTarget:' \
+    'struct BuildIncrementalResolvedManifest:' \
     'struct BuildIncrementalStaleOutput:' \
     'struct BuildIncrementalObservation:' \
     'error BuildIncrementalError:' \
@@ -85,8 +86,9 @@ for boundary in \
     'Limits::TOTAL_INPUTS - owners.count' \
     'Limits::TOTAL_OUTPUTS - owners.count' \
     'BuildIncrementalError.DuplicateInput if previous.path == current.path and previous.target_index == current.target_index' \
-    'build_incremental_path_owner_position(current_output_owners, output.path)' \
-    'build_incremental_path_owner_position(current_input_owners, output.path)' \
+    'build_incremental_path_owner_position(current_manifest.output_owners, output.path)' \
+    'build_incremental_path_owner_position(current_manifest.input_owners, output.path)' \
+    'current_manifest <- try build_incremental_manifest_resolution(current_targets)' \
     'def plan_build_incremental_cleanup(' \
     'current_recipe_fingerprint != target.recipe_fingerprint' \
     'build_incremental_observation_order(observations)' \
