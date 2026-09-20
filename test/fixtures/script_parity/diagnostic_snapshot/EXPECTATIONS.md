@@ -41,10 +41,12 @@ source-byte ceiling, field-count/name ceilings, and the extra-operand usage
 boundary. None of these expectations have been executed; the standing compiler
 validation hold remains in force.
 
-The shell command still resolves its omitted-path default relative to its own
-location. The Elisascript convenience default is relative to the caller's
-current directory; pass an explicit path outside the repository root. That
-no-argument path-location difference is not claimed as A03 parity.
+The shell reference and Elisascript candidate both resolve an omitted or empty
+path relative to their own script locations. The public-launcher parity source
+also runs both no-argument forms with `/` as the working directory and compares
+their process results. That case intentionally has no checked-in golden tuple:
+its output depends on the current runner source, while its purpose is to verify
+script-relative default-path behavior outside the repository working directory.
 
 `test/script_parity/diagnostic_snapshot_launcher_test.elisascript` automates
 the fixture table as a process comparison: `/bin/bash` runs the shell reference,
