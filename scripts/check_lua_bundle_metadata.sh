@@ -87,6 +87,7 @@ for boundary in \
 done
 
 rg -Fq 'command.working_directory <- "." if repo_root == "" else repo_root' "$model"
+rg -Fq 'capture_output_limit_bytes: Limits::HOST_OUTPUT_BYTES' "$model"
 rg -Fq 'def empty_repo_root_uses_current_directory' "$empty_repo_root_fixture"
 rg -Fq '"--repo-root", "", "--out-dir"' "$empty_repo_root_fixture"
 rg -Fq 'git.working_directory == "."' "$empty_repo_root_fixture"
