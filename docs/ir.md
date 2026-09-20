@@ -604,6 +604,10 @@ independently testable and can drive clean/no-op/incremental build comparisons.
 converts its target/dependency names into the canonical node indices and bound
 name-order index expected by `BuildGraph`; callers no longer need to maintain
 parallel hand-written name and index arrays.
+`classify_build_incremental_manifest` returns one deterministic decision per
+manifest target in manifest order. It derives each dependency's currentness
+from the already-classified earlier targets rather than accepting caller-made
+dependency flags, so staleness propagates through the DAG before dispatch.
 `plan_build_incremental_cleanup` reconciles a previously successful manifest
 with the current graph in deterministic target/output order. It returns a
 bounded list of outputs removed by a target deletion or rename, retains an

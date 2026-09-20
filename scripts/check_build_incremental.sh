@@ -38,7 +38,9 @@ for declaration in \
     'len(path) < Limits::PATH_BYTES' \
     'def validate_build_incremental_manifest(' \
     'def resolve_incremental_build_dependencies(' \
-    'def classify_build_incremental_target('; do
+    'def classify_build_incremental_target(' \
+    'def classify_build_incremental_manifest(' \
+    'def build_incremental_target_decision_validated('; do
     rg -Fq "$declaration" "$model"
 done
 
@@ -58,6 +60,7 @@ for boundary in \
     'BuildIncrementalError.OrphanedOutputInput' \
     'BuildIncrementalError.CleanupOutputLimitExceeded' \
     'BuildIncrementalError.DependencyOrderInvalid' \
+    'BuildIncrementalError.CurrentRecipeShapeInvalid' \
     'build_incremental_dependency_declared' \
     'build_incremental_output_owner_index' \
     'producer.outputs' \
@@ -66,6 +69,7 @@ for boundary in \
     'return try resolve_build_dependencies(node_names, dependency_names)' \
     'EsBuild::Limits::TOTAL_DEPENDENCIES - total_dependencies' \
     'try build_incremental_observations_valid(observations)' \
+    'decisions[dependency_index] == BuildIncrementalDecision.UpToDate' \
     'try build_incremental_dependencies_valid(dependencies)'; do
     rg -Fq "$boundary" "$model"
 done
@@ -74,6 +78,8 @@ rg -Fq 'include "../runtime/build_incremental_model.elisa"' "$ir"
 for fixture_check in \
     'typed_build_incremental_contract_distinguishes_noop_and_rebuild_reasons' \
     'resolve_incremental_build_dependencies(manifest)' \
+    'classify_build_incremental_manifest(manifest, changed_recipes, build_observations)' \
+    'BuildIncrementalDecision.DependencyDirty' \
     'attach_build_dependency_resolution(graph, resolution)' \
     'malformed_resolution_rejected' \
     'BuildIncrementalDecision.InputMissing' \
