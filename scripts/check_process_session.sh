@@ -9,10 +9,11 @@ model="$repo_root/src/runtime/process_session_model.elisa"
 process_model="$repo_root/src/runtime/process_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
+command_policy_fixture="$repo_root/test/driver/process_session_command_limits.elisascript"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$process_model" "$ir" "$fixture" "$docs" "$ledger"; do
+for required_file in "$model" "$process_model" "$ir" "$fixture" "$command_policy_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'process session audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -20,6 +21,7 @@ for declaration in \
     'module EsProcessSession:' \
     'PROCESS_SESSION_MAX_POLLS' \
     'PROCESS_SESSION_MAX_OUTPUT_BYTES' \
+    'def process_session_for_command(' \
     'const enum ProcessSessionState of u8:' \
     'const enum ProcessSessionEvent of u8:' \
     'struct ProcessSession:' \
@@ -46,11 +48,16 @@ for boundary in \
     'session.state == ProcessSessionState.Running or session.state == ProcessSessionState.Collecting' \
     'session.state == ProcessSessionState.Failed and session.result_kind != ProcessResultKind.HostIoFailure' \
     'session.state == ProcessSessionState.TimedOut' \
+    'session.max_output_bytes > session.command.capture_output_limit_bytes' \
     'ExitNotReady' \
     'CancelNotReady' \
     'AccountingInvalid'; do
     rg -Fq "$boundary" "$model"
 done
+
+rg -Fq 'session_inherits_the_command_capture_ceiling' "$command_policy_fixture"
+rg -Fq 'session_cannot_widen_the_command_capture_ceiling' "$command_policy_fixture"
+rg -Fq 'ProcessSessionError.InvalidLimit' "$command_policy_fixture"
 
 rg -Fq 'include "../runtime/process_session_model.elisa"' "$ir"
 rg -Fq 'using EsProcessSession' "$fixture"
