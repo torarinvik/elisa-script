@@ -20,15 +20,19 @@ for declaration in \
     'const module Limits:' \
     'Limits::NODES' \
     'Limits::DEPENDENCIES' \
+    'Limits::TOTAL_DEPENDENCIES' \
+    'Limits::NAME_BYTES' \
     'Limits::LOG_BYTES' \
     'const enum BuildNodeState of u8:' \
     'const enum BuildGraphState of u8:' \
     'BuildGraphState.Failing' \
     'const enum BuildGraphEvent of u8:' \
     'struct BuildNode:' \
+    'struct BuildDependencyNames:' \
     'struct BuildGraph:' \
     'error BuildContractError:' \
     'def validate_build_graph(' \
+    'def resolve_build_dependencies(' \
     'def advance_build_graph('; do
     rg -Fq "$declaration" "$model"
 done
@@ -36,6 +40,9 @@ done
 for boundary in \
     'DependencyOrderInvalid' \
     'DependencyListOrderInvalid' \
+    'DependencyShapeInvalid' \
+    'TOTAL_DEPENDENCIES - total_dependencies' \
+    'sview_len(name) < Limits::NAME_BYTES' \
     'DuplicateDependency' \
     'MissingDependency' \
     'InvalidParallelism' \
@@ -66,6 +73,7 @@ done
 
 rg -Fq 'include "../runtime/build_model.elisa"' "$ir"
 for fixture_pattern in \
+    'typed_build_dependency_resolution_maps_names_to_canonical_indices' \
     'typed_build_graph_contract_is_ordered_bounded_and_cancelable' \
     'BuildGraphEvent.NodeStart' \
     'BuildGraphEvent.NodeFailure' \
@@ -80,9 +88,13 @@ for fixture_pattern in \
     'graph_success_during_drain' \
     'cancel_after_failure' \
     'BuildContractError.DependencyOrderInvalid' \
-    'BuildContractError.DependencyListOrderInvalid'; do
+    'BuildContractError.DependencyListOrderInvalid' \
+    'BuildContractError.DependencyShapeInvalid'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
+rg -Fq 'BuildContractError.DependencyShapeInvalid' "$model"
+rg -Fq 'build_sort_name_indices(node_names, order, scratch)' "$model"
+rg -Fq 'build_sort_node_indices(node_dependencies, dependency_scratch)' "$model"
 
 rg -Fq 'BuildContractError.DuplicateDependency' "$fixture"
 rg -Fq 'for dependency_position in 0..<node.dependencies.count |node|' "$model"

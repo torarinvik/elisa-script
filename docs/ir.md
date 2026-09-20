@@ -548,12 +548,14 @@ bounded per-node/aggregate logs, and resolved dependency node indices. Each
 dependency index must refer to an earlier node; dependency lists are strictly
 ascending and duplicate-free, so edge validation and scheduler dependency
 readiness use direct bounded lookups without repeated dependency-name scans.
-The manifest/resolution layer is responsible for translating target names to
-those canonical indices. Target-name uniqueness and cache admission still use
-scans, so large-graph scaling remains unqualified. Validation rejects missing,
-duplicate, unordered, and cyclic dependencies and preserves process-command
-errors. `advance_build_graph` limits active nodes, records
-per-node completion or failure, and exposes cancellation acknowledgement so a
+The build-definition adapter can pass target and dependency names to
+`resolve_build_dependencies`, which uses a sorted name index and emits each
+edge list in canonical node-index order. The resolver bounds node names,
+per-node edges, and aggregate edges. Target-name uniqueness and cache admission
+still use scans, so large-graph scaling remains unqualified. Validation rejects
+missing, duplicate, unordered, and cyclic dependencies and preserves
+process-command errors. `advance_build_graph` limits active nodes and records
+per-node completion or failure. It exposes cancellation acknowledgement so a
 scheduler cannot silently overrun parallelism or abandon children. A node
 start is admitted only after every indexed dependency is `Succeeded`, so
 dependency readiness cannot be forged by an otherwise valid topological graph.

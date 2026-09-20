@@ -13,6 +13,8 @@ module EsBuild:
         const module Limits:
             NODES: usize = 4096
             DEPENDENCIES: usize = 4096
+            TOTAL_DEPENDENCIES: usize = 1048576
+            NAME_BYTES: usize = 4096
             LOG_BYTES: usize = 67108864
 
 
@@ -55,6 +57,12 @@ module EsBuild:
             log_bytes: usize = 0
 
 
+        # Name-based dependencies are the authoring/manifest form. Resolve
+        # these once before constructing BuildNode's canonical index edges.
+        struct BuildDependencyNames:
+            names: darray[sview] = []
+
+
         struct BuildGraph:
             nodes: darray[BuildNode] = []
             state: BuildGraphState = BuildGraphState.Planned
@@ -77,6 +85,7 @@ module EsBuild:
             DuplicateNode
             DuplicateDependency
             MissingDependency
+            DependencyShapeInvalid
             DependencyOrderInvalid
             DependencyListOrderInvalid
             DependencyNotReady
@@ -89,6 +98,12 @@ module EsBuild:
 
 
     private:
+        const enum BuildNameOrder of u8:
+            Before
+            Equal
+            After
+
+
         def build_node_state_valid(state: BuildNodeState) -> bool:
             return state in {BuildNodeState.Planned, BuildNodeState.Running, BuildNodeState.Succeeded, BuildNodeState.Failed, BuildNodeState.Cancelled}
 
@@ -102,10 +117,141 @@ module EsBuild:
 
 
         def build_name_valid(name: sview) -> bool:
-            return sview_len(name) != 0 and sview_len(name) < PROCESS_COMMAND_MAX_TEXT_BYTES and not sview_contains_byte(name, 0)
+            return sview_len(name) != 0 and sview_len(name) < Limits::NAME_BYTES and not sview_contains_byte(name, 0)
+
+
+        def build_name_order(left: sview, right: sview) -> BuildNameOrder:
+            left_length: usize = sview_len(left)
+            right_length: usize = sview_len(right)
+            common: usize = left_length if left_length < right_length else right_length
+            for offset in 0..<common |left, right|:
+                return BuildNameOrder.Before if sview_at(left, offset) < sview_at(right, offset)
+                return BuildNameOrder.After if sview_at(left, offset) > sview_at(right, offset)
+            return BuildNameOrder.Before if left_length < right_length
+            return BuildNameOrder.After if left_length > right_length
+            return BuildNameOrder.Equal
+
+
+        def build_sort_name_indices(node_names: darray[sview], order: mutable darray[usize]&, scratch: mutable darray[usize]&) -> void:
+            width: mutable usize = 1
+            while width < order.count:
+                start: mutable usize = 0
+                while start < order.count:
+                    middle: mutable usize = start + width
+                    middle <- order.count if middle > order.count
+                    end: mutable usize = middle + width
+                    end <- order.count if end > order.count
+                    left: mutable usize = start
+                    right: mutable usize = middle
+                    destination: mutable usize = start
+                    while destination < end:
+                        if left == middle:
+                            scratch[destination] <- order[right]
+                            right <- right + 1
+                        elif right == end:
+                            scratch[destination] <- order[left]
+                            left <- left + 1
+                        elif build_name_order(node_names[order[left]], node_names[order[right]]) != BuildNameOrder.After:
+                            scratch[destination] <- order[left]
+                            left <- left + 1
+                        else:
+                            scratch[destination] <- order[right]
+                            right <- right + 1
+                        destination <- destination + 1
+                    start <- end
+                for index in 0..<order.count |order, scratch|:
+                    order[index] <- scratch[index]
+                width <- order.count if width > order.count / 2 else width * 2
+
+
+        def build_sort_node_indices(indices: mutable darray[usize]&, scratch: mutable darray[usize]&) -> void:
+            width: mutable usize = 1
+            while width < indices.count:
+                start: mutable usize = 0
+                while start < indices.count:
+                    middle: mutable usize = start + width
+                    middle <- indices.count if middle > indices.count
+                    end: mutable usize = middle + width
+                    end <- indices.count if end > indices.count
+                    left: mutable usize = start
+                    right: mutable usize = middle
+                    destination: mutable usize = start
+                    while destination < end:
+                        if left == middle:
+                            scratch[destination] <- indices[right]
+                            right <- right + 1
+                        elif right == end:
+                            scratch[destination] <- indices[left]
+                            left <- left + 1
+                        elif indices[left] <= indices[right]:
+                            scratch[destination] <- indices[left]
+                            left <- left + 1
+                        else:
+                            scratch[destination] <- indices[right]
+                            right <- right + 1
+                        destination <- destination + 1
+                    start <- end
+                for index in 0..<indices.count |indices, scratch|:
+                    indices[index] <- scratch[index]
+                width <- indices.count if width > indices.count / 2 else width * 2
+
+
+        def build_find_node_index(node_names: darray[sview], order: darray[usize], name: sview) -> usize:
+            low: mutable usize = 0
+            high: mutable usize = order.count
+            while low < high:
+                middle: usize = low + (high - low) / 2
+                node_index: usize = order[middle]
+                name_order: BuildNameOrder = build_name_order(node_names[node_index], name)
+                return node_index if name_order == BuildNameOrder.Equal
+                low <- middle + 1 if name_order == BuildNameOrder.Before
+                high <- middle if name_order == BuildNameOrder.After
+            return node_names.count
 
 
     public:
+        # Resolve author-facing names to canonical earlier-node indices. Name
+        # lookup is O(log N) after one stable O(N log N) index sort; dependency
+        # lists are sorted once so subsequent graph validation remains linear
+        # in the number of edges.
+        def resolve_build_dependencies(node_names: darray[sview], dependency_names: darray[BuildDependencyNames]) -> darray[darray[usize]] error[BuildContractError] can[Memory.Allocate, Abort.Panic]:
+            raise BuildContractError.EmptyGraph if node_names.count == 0
+            raise BuildContractError.NodeLimitExceeded if node_names.count > Limits::NODES
+            raise BuildContractError.DependencyShapeInvalid if dependency_names.count != node_names.count
+            order: mutable darray[usize] = []
+            scratch: mutable darray[usize] = []
+            for index in 0..<node_names.count |node_names, order, scratch|:
+                raise BuildContractError.InvalidNodeName if not build_name_valid(node_names[index])
+                order.push(index)
+                scratch.push(0)
+            build_sort_name_indices(node_names, order, scratch)
+            for index in 1..<order.count |node_names, order|:
+                raise BuildContractError.DuplicateNode if build_name_order(node_names[order[index - 1]], node_names[order[index]]) == BuildNameOrder.Equal
+
+            resolved: mutable darray[darray[usize]] = []
+            total_dependencies: mutable usize = 0
+            for node_index in 0..<node_names.count |node_names, dependency_names, order, resolved, total_dependencies|:
+                named: BuildDependencyNames = dependency_names[node_index]
+                raise BuildContractError.DependencyLimitExceeded if named.names.count > Limits::DEPENDENCIES
+                raise BuildContractError.DependencyLimitExceeded if named.names.count > Limits::TOTAL_DEPENDENCIES - total_dependencies
+                total_dependencies <- total_dependencies + named.names.count
+                node_dependencies: mutable darray[usize] = []
+                for dependency_name in named.names |node_names, order, node_index, node_dependencies|:
+                    raise BuildContractError.InvalidNodeName if not build_name_valid(dependency_name)
+                    dependency_index: usize = build_find_node_index(node_names, order, dependency_name)
+                    raise BuildContractError.MissingDependency if dependency_index == node_names.count
+                    raise BuildContractError.DependencyOrderInvalid if dependency_index >= node_index
+                    node_dependencies.push(dependency_index)
+                dependency_scratch: mutable darray[usize] = []
+                for _ in 0..<node_dependencies.count |dependency_scratch|:
+                    dependency_scratch.push(0)
+                build_sort_node_indices(node_dependencies, dependency_scratch)
+                for index in 1..<node_dependencies.count |node_dependencies|:
+                    raise BuildContractError.DuplicateDependency if node_dependencies[index - 1] == node_dependencies[index]
+                resolved.push(node_dependencies)
+            return resolved
+
+
         def validate_build_graph(graph: BuildGraph&) -> bool error[BuildContractError]:
             raise BuildContractError.EmptyGraph if graph.nodes.count == 0
             raise BuildContractError.NodeLimitExceeded if graph.nodes.count > Limits::NODES
@@ -119,6 +265,7 @@ module EsBuild:
             terminal_nodes: mutable usize = 0
             failed_nodes: mutable usize = 0
             total_log_bytes: mutable usize = 0
+            total_dependencies: mutable usize = 0
             for index in 0..<graph.nodes.count |graph|:
                 node: BuildNode = graph.nodes[index]
                 raise BuildContractError.InvalidNodeName if not build_name_valid(node.name)
@@ -138,6 +285,8 @@ module EsBuild:
                     error failure:
                         raise BuildContractError.InvalidCommand
                 raise BuildContractError.DependencyLimitExceeded if node.dependencies.count > Limits::DEPENDENCIES
+                raise BuildContractError.DependencyLimitExceeded if node.dependencies.count > Limits::TOTAL_DEPENDENCIES - total_dependencies
+                total_dependencies <- total_dependencies + node.dependencies.count
                 # Canonical earlier-node indices permit direct bounded lookups
                 # and make duplicate detection linear in the edge count.
                 for dependency_position in 0..<node.dependencies.count |node|:
