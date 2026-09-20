@@ -1,0 +1,238 @@
+# Bounded deterministic JSON rendering for validated differential reports.
+#
+# This adapter deliberately serializes the typed report and repeat evidence as
+# data. It never infers outcome from summary text, process status, or messages.
+
+module EsDifferentialReportRender:
+    using EsDifferentialReport
+    using EsDifferentialStability
+
+    public:
+        const module Limits:
+            MAX_BYTES: usize = 33554432
+
+
+        error DifferentialReportRenderError:
+            InvalidLimit
+            InvalidFormat
+            InvalidEnum
+            OutputLimitExceeded
+
+
+    private:
+        const module Internal:
+            JSON_HEX: sview = "0123456789abcdef"
+
+
+        def report_render_append_byte(output: mutable darray[u8]&, byte: u8, limit: usize) -> void error[DifferentialReportRenderError] can[Memory.Allocate, Abort.Panic]:
+            raise DifferentialReportRenderError.OutputLimitExceeded if output.count >= limit
+            output.push(byte)
+
+
+        def report_render_append_text(output: mutable darray[u8]&, text: sview, limit: usize) -> void error[DifferentialReportRenderError] can[Memory.Allocate, Abort.Panic]:
+            raise DifferentialReportRenderError.OutputLimitExceeded if output.count > limit
+            raise DifferentialReportRenderError.OutputLimitExceeded if sview_len(text) > limit - output.count
+            for index in 0..<sview_len(text) |output, text, limit|:
+                output.push(sview_at(text, index))
+
+
+        def report_render_append_hex_byte(output: mutable darray[u8]&, value: u8, limit: usize) -> void error[DifferentialReportRenderError] can[Memory.Allocate, Abort.Panic]:
+            try report_render_append_text(output, "\\u00", limit)
+            try report_render_append_byte(output, sview_at(Internal::JSON_HEX, ((value >> 4) & 15u8).usize()), limit)
+            try report_render_append_byte(output, sview_at(Internal::JSON_HEX, (value & 15u8).usize()), limit)
+
+
+        def report_render_append_json_string(output: mutable darray[u8]&, value: sview, limit: usize) -> void error[DifferentialReportRenderError] can[Memory.Allocate, Abort.Panic]:
+            try report_render_append_byte(output, 34u8, limit)
+            for index in 0..<sview_len(value) |output, value, limit|:
+                byte: u8 = sview_at(value, index)
+                if byte == 34u8 or byte == 92u8:
+                    try report_render_append_byte(output, 92u8, limit)
+                    try report_render_append_byte(output, byte, limit)
+                elif byte == 8u8:
+                    try report_render_append_text(output, "\\b", limit)
+                elif byte == 9u8:
+                    try report_render_append_text(output, "\\t", limit)
+                elif byte == 10u8:
+                    try report_render_append_text(output, "\\n", limit)
+                elif byte == 12u8:
+                    try report_render_append_text(output, "\\f", limit)
+                elif byte == 13u8:
+                    try report_render_append_text(output, "\\r", limit)
+                elif byte < 32u8:
+                    try report_render_append_hex_byte(output, byte, limit)
+                else:
+                    # The report validator has already established UTF-8, so
+                    # non-ASCII code units can be copied without transcoding.
+                    try report_render_append_byte(output, byte, limit)
+            try report_render_append_byte(output, 34u8, limit)
+
+
+        def report_render_append_u64(output: mutable darray[u8]&, value: u64, limit: usize) -> void error[DifferentialReportRenderError] can[Memory.Allocate, Abort.Panic]:
+            digits: mutable darray[u8] = []
+            remaining: mutable u64 = value
+            if remaining == 0u64:
+                digits.push(48u8)
+            while remaining != 0u64:
+                digit: u8 = (remaining % 10u64).u8()
+                digits.push(48u8 + digit)
+                remaining <- remaining / 10u64
+            for index in 0..<digits.count |output, digits, limit|:
+                try report_render_append_byte(output, digits[digits.count - index - 1], limit)
+
+
+        def report_render_append_usize(output: mutable darray[u8]&, value: usize, limit: usize) -> void error[DifferentialReportRenderError] can[Memory.Allocate, Abort.Panic]:
+            try report_render_append_u64(output, value.u64(), limit)
+
+
+        def report_render_append_bool(output: mutable darray[u8]&, value: bool, limit: usize) -> void error[DifferentialReportRenderError] can[Memory.Allocate, Abort.Panic]:
+            if value:
+                try report_render_append_text(output, "true", limit)
+            else:
+                try report_render_append_text(output, "false", limit)
+
+
+        def report_render_status_name(status: DifferentialReportStatus) -> sview error[DifferentialReportRenderError]:
+            return "passed" if status == DifferentialReportStatus.Passed
+            return "failed" if status == DifferentialReportStatus.Failed
+            return "skipped" if status == DifferentialReportStatus.Skipped
+            return "inconclusive" if status == DifferentialReportStatus.Inconclusive
+            raise DifferentialReportRenderError.InvalidEnum
+
+
+        def report_render_category_name(category: DifferentialReportCategory) -> sview error[DifferentialReportRenderError]:
+            return "none" if category == DifferentialReportCategory.None
+            return "value_mismatch" if category == DifferentialReportCategory.ValueMismatch
+            return "error_mismatch" if category == DifferentialReportCategory.ErrorMismatch
+            return "observation_mismatch" if category == DifferentialReportCategory.ObservationMismatch
+            return "process_failure" if category == DifferentialReportCategory.ProcessFailure
+            return "timeout" if category == DifferentialReportCategory.Timeout
+            return "crash" if category == DifferentialReportCategory.Crash
+            return "artifact_failure" if category == DifferentialReportCategory.ArtifactFailure
+            return "invalid_input" if category == DifferentialReportCategory.InvalidInput
+            return "infrastructure_failure" if category == DifferentialReportCategory.InfrastructureFailure
+            return "flaky" if category == DifferentialReportCategory.Flaky
+            raise DifferentialReportRenderError.InvalidEnum
+
+
+        def report_render_stability_state_name(state: DifferentialStabilityState) -> sview error[DifferentialReportRenderError]:
+            return "planned" if state == DifferentialStabilityState.Planned
+            return "running" if state == DifferentialStabilityState.Running
+            return "completed" if state == DifferentialStabilityState.Completed
+            return "failed" if state == DifferentialStabilityState.Failed
+            return "cancelled" if state == DifferentialStabilityState.Cancelled
+            raise DifferentialReportRenderError.InvalidEnum
+
+
+        def report_render_stability_classification_name(classification: DifferentialStabilityClassification) -> sview error[DifferentialReportRenderError]:
+            return "unknown" if classification == DifferentialStabilityClassification.Unknown
+            return "stable_equal" if classification == DifferentialStabilityClassification.StableEqual
+            return "stable_mismatch" if classification == DifferentialStabilityClassification.StableMismatch
+            return "nondeterministic" if classification == DifferentialStabilityClassification.Nondeterministic
+            raise DifferentialReportRenderError.InvalidEnum
+
+
+        def report_render_nondeterminism_policy_name(policy: DifferentialNondeterminismPolicy) -> sview error[DifferentialReportRenderError]:
+            return "reject" if policy == DifferentialNondeterminismPolicy.Reject
+            return "report" if policy == DifferentialNondeterminismPolicy.Report
+            raise DifferentialReportRenderError.InvalidEnum
+
+
+        def report_render_append_fingerprint(output: mutable darray[u8]&, value: u64, limit: usize) -> void error[DifferentialReportRenderError] can[Memory.Allocate, Abort.Panic]:
+            # Fingerprints are decimal JSON strings to avoid lossy IEEE-754
+            # parsing by common consumers such as JavaScript.
+            temporary: mutable darray[u8] = []
+            try report_render_append_u64(temporary, value, 20)
+            try report_render_append_byte(output, 34u8, limit)
+            for index in 0..<temporary.count |output, temporary, limit|:
+                try report_render_append_byte(output, temporary[index], limit)
+            try report_render_append_byte(output, 34u8, limit)
+
+
+        def report_render_append_stability(output: mutable darray[u8]&, evidence: DifferentialStabilitySession&, limit: usize) -> void error[DifferentialReportRenderError] can[Memory.Allocate, Abort.Panic]:
+            try report_render_append_text(output, "{\"state\":", limit)
+            state_name: sview = try report_render_stability_state_name(evidence.state)
+            try report_render_append_json_string(output, state_name, limit)
+            try report_render_append_text(output, ",\"classification\":", limit)
+            classification_name: sview = try report_render_stability_classification_name(evidence.classification)
+            try report_render_append_json_string(output, classification_name, limit)
+            try report_render_append_text(output, ",\"policy\":{\"minimum_repeats\":", limit)
+            try report_render_append_usize(output, evidence.policy.minimum_repeats, limit)
+            try report_render_append_text(output, ",\"maximum_repeats\":", limit)
+            try report_render_append_usize(output, evidence.policy.maximum_repeats, limit)
+            try report_render_append_text(output, ",\"nondeterminism\":", limit)
+            nondeterminism_name: sview = try report_render_nondeterminism_policy_name(evidence.policy.nondeterminism)
+            try report_render_append_json_string(output, nondeterminism_name, limit)
+            try report_render_append_text(output, "},\"next_repeat\":", limit)
+            try report_render_append_usize(output, evidence.next_repeat, limit)
+            try report_render_append_text(output, ",\"has_baseline\":", limit)
+            try report_render_append_bool(output, evidence.has_baseline, limit)
+            try report_render_append_text(output, ",\"baseline_reference_fingerprint\":", limit)
+            try report_render_append_fingerprint(output, evidence.baseline_reference_fingerprint, limit)
+            try report_render_append_text(output, ",\"baseline_candidate_fingerprint\":", limit)
+            try report_render_append_fingerprint(output, evidence.baseline_candidate_fingerprint, limit)
+            try report_render_append_text(output, ",\"baseline_comparison_fingerprint\":", limit)
+            try report_render_append_fingerprint(output, evidence.baseline_comparison_fingerprint, limit)
+            try report_render_append_text(output, ",\"baseline_equal\":", limit)
+            try report_render_append_bool(output, evidence.baseline_equal, limit)
+            try report_render_append_text(output, ",\"stable_repeats\":", limit)
+            try report_render_append_usize(output, evidence.stable_repeats, limit)
+            try report_render_append_text(output, ",\"has_nondeterminism\":", limit)
+            try report_render_append_bool(output, evidence.has_nondeterminism, limit)
+            try report_render_append_text(output, ",\"observations\":[", limit)
+            for index in 0..<evidence.observations.count |output, evidence, limit|:
+                observation: DifferentialStabilityObservation = evidence.observations[index]
+                try report_render_append_text(output, "," if index != 0 else "", limit)
+                try report_render_append_text(output, "{\"repeat_index\":", limit)
+                try report_render_append_usize(output, observation.repeat_index, limit)
+                try report_render_append_text(output, ",\"reference_fingerprint\":", limit)
+                try report_render_append_fingerprint(output, observation.reference_fingerprint, limit)
+                try report_render_append_text(output, ",\"candidate_fingerprint\":", limit)
+                try report_render_append_fingerprint(output, observation.candidate_fingerprint, limit)
+                try report_render_append_text(output, ",\"comparison_fingerprint\":", limit)
+                try report_render_append_fingerprint(output, observation.comparison_fingerprint, limit)
+                try report_render_append_text(output, ",\"equal\":", limit)
+                try report_render_append_bool(output, observation.equal, limit)
+                try report_render_append_byte(output, 125u8, limit)
+            try report_render_append_text(output, "]}", limit)
+
+
+    public:
+        def render_differential_report_json(report: DifferentialReport&, max_bytes: usize = Limits::MAX_BYTES) -> darray[u8] error[DifferentialReportError, DifferentialReportRenderError] can[Memory.Allocate, Abort.Panic]:
+            raise DifferentialReportRenderError.InvalidLimit if max_bytes == 0 or max_bytes > Limits::MAX_BYTES
+            try validate_differential_report(report)
+            raise DifferentialReportRenderError.InvalidFormat if report.format != DifferentialReportFormat.Json
+            output: mutable darray[u8] = []
+            try report_render_append_text(output, "{\"version\":1,\"format\":\"json\",\"status\":", max_bytes)
+            status_name: sview = try report_render_status_name(report.status)
+            try report_render_append_json_string(output, status_name, max_bytes)
+            try report_render_append_text(output, ",\"category\":", max_bytes)
+            category_name: sview = try report_render_category_name(report.category)
+            try report_render_append_json_string(output, category_name, max_bytes)
+            try report_render_append_text(output, ",\"case_name\":", max_bytes)
+            try report_render_append_json_string(output, report.case_name, max_bytes)
+            try report_render_append_text(output, ",\"summary\":", max_bytes)
+            try report_render_append_json_string(output, report.summary, max_bytes)
+            try report_render_append_text(output, ",\"reference_engine\":", max_bytes)
+            try report_render_append_json_string(output, report.reference_engine, max_bytes)
+            try report_render_append_text(output, ",\"candidate_engine\":", max_bytes)
+            try report_render_append_json_string(output, report.candidate_engine, max_bytes)
+            try report_render_append_text(output, ",\"artifact_path\":", max_bytes)
+            try report_render_append_json_string(output, report.artifact_path, max_bytes)
+            try report_render_append_text(output, ",\"repeat_count\":", max_bytes)
+            try report_render_append_usize(output, report.repeat_count, max_bytes)
+            try report_render_append_text(output, ",\"deterministic\":", max_bytes)
+            try report_render_append_bool(output, report.deterministic, max_bytes)
+            try report_render_append_text(output, ",\"has_stability_evidence\":", max_bytes)
+            try report_render_append_bool(output, report.has_stability_evidence, max_bytes)
+            try report_render_append_text(output, ",\"stability_evidence\":", max_bytes)
+            if report.has_stability_evidence:
+                try report_render_append_stability(output, report.stability_evidence, max_bytes)
+            else:
+                try report_render_append_text(output, "null", max_bytes)
+            try report_render_append_text(output, ",\"messages\":[", max_bytes)
+            for index in 0..<report.messages.count |output, report, max_bytes|:
+                try report_render_append_text(output, "," if index != 0 else "", max_bytes)
+                try report_render_append_json_string(output, report.messages[index], max_bytes)
+            try report_render_append_text(output, "]}\n", max_bytes)
+            return output

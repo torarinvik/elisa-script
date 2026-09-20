@@ -764,6 +764,17 @@ passing parity claim. The record validator checks internal consistency only;
 the no-evidence path also requires a pristine planned session, but the model
 does not authenticate that a host actually ran the reported repeats.
 
+The EsDifferentialReportRender function
+render_differential_report_json now serializes a validated JSON-format report
+as deterministic UTF-8 bytes, including the full validated
+stability policy, baseline, and ordered observations. Text is JSON-escaped and
+the output has a separate 32 MiB cap; 64-bit fingerprints are decimal strings
+so consumers that use IEEE-754 numbers do not silently lose identity bits. The
+current formatter accepts only JSON requests. Human and JUnit byte formatting,
+host stdout/file writes, and end-to-end report consumption remain open; this
+source-level increment has not been compiled or executed and is not acceptance
+evidence.
+
 Each side's complete bounded process-facing payload can be persisted separately
 as an `ESPS` process-stream artifact with `make_differential_process_stream_artifact`.
 Version 2 binds the reference/candidate side, terminal outcome, signed exit

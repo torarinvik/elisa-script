@@ -6,12 +6,29 @@ set -euo pipefail
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 model="$repo_root/src/testing/report_model.elisa"
+renderer="$repo_root/src/testing/report_render_model.elisa"
 consumer="$repo_root/src/testing/differential.elisa"
 fixture="$repo_root/test/differential/elisascript_differential_test.elisa"
 docs="$repo_root/docs/differential-testing.md"
 
-for required_file in "$model" "$consumer" "$fixture" "$docs"; do
+for required_file in "$model" "$renderer" "$consumer" "$fixture" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'differential report audit: missing %s\n' "$required_file" >&2; exit 1; }
+done
+
+for renderer_boundary in \
+    'module EsDifferentialReportRender:' \
+    'const module Limits:' \
+    'MAX_BYTES: usize = 33554432' \
+    'def render_differential_report_json(' \
+    'validate_differential_report(report)' \
+    'report.format != DifferentialReportFormat.Json' \
+    'OutputLimitExceeded' \
+    'report_render_append_json_string' \
+    'report_render_append_stability' \
+    'baseline_reference_fingerprint' \
+    'comparison_fingerprint' \
+    'report.messages.count'; do
+    rg -Fq "$renderer_boundary" "$renderer"
 done
 
 for declaration in \
@@ -62,6 +79,7 @@ embedded_nul_scan_line="$(rg -n -m1 -F 'EmbeddedNul if sview_contains_byte(messa
 (( aggregate_preflight_line < embedded_nul_scan_line ))
 
 rg -Fq 'include "./report_model.elisa"' "$consumer"
+rg -Fq 'include "./report_render_model.elisa"' "$consumer"
 stability_include_line="$(rg -n -m1 -F 'include "./stability_model.elisa"' "$consumer" | cut -d: -f1)"
 report_include_line="$(rg -n -m1 -F 'include "./report_model.elisa"' "$consumer" | cut -d: -f1)"
 [[ -n "$stability_include_line" && -n "$report_include_line" ]]
@@ -105,7 +123,17 @@ for fixture_pattern in \
     fi
 done
 
+if ! rg -Uq '(?m)^@test\r?\ndef differential_report_json_renderer_is_deterministic_escaped_and_bounded\(\) -> void:' "$fixture"; then
+    printf 'differential report audit: JSON renderer regression is not registered\n' >&2
+    exit 1
+fi
+rg -Fq 'DifferentialReportRenderError.OutputLimitExceeded' "$fixture"
+rg -Fq 'sview_eq(rendered, expected)' "$fixture"
+rg -Fq '9007199254740993u64' "$fixture"
+rg -Fq 'differential_test_sview_contains(evidence_text' "$fixture"
+
 rg -Fq 'EsDifferentialReport::DifferentialReport' "$docs"
 rg -Fq 'merely setting a repeat count is insufficient' "$docs"
+rg -Fq 'render_differential_report_json' "$docs"
 
-printf 'differential report audit: typed reports bind repeat claims to validated stability evidence\n'
+printf 'differential report audit: typed reports bind repeat claims and render bounded JSON evidence\n'
