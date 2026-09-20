@@ -18,6 +18,7 @@ for declaration in \
     'module EsDifferentialReport:' \
     'using EsDifferentialStability' \
     'Limits::TEXT_BYTES' \
+    'Limits::TOTAL_TEXT_BYTES' \
     'Limits::MESSAGES' \
     'Limits::REPEATS' \
     'const enum DifferentialReportFormat of u8:' \
@@ -45,9 +46,17 @@ for boundary in \
     'report.stability_evidence.state != DifferentialStabilityState.Planned' \
     'DifferentialStabilityClassification.Nondeterministic' \
     'MessageLimitExceeded' \
+    'AggregateTextLimitExceeded' \
+    'EmbeddedNul' \
+    'differential_report_text_length_valid' \
+    'differential_report_text_total_add_fits' \
     'RepeatCountInvalid'; do
     rg -Fq "$boundary" "$model"
 done
+aggregate_preflight_line="$(rg -n -m1 -F 'differential_report_text_total_add_fits(total_text_bytes, message)' "$model" | cut -d: -f1)"
+embedded_nul_scan_line="$(rg -n -m1 -F 'EmbeddedNul if sview_contains_byte(message, 0)' "$model" | cut -d: -f1)"
+[[ -n "$aggregate_preflight_line" && -n "$embedded_nul_scan_line" ]]
+(( aggregate_preflight_line < embedded_nul_scan_line ))
 
 rg -Fq 'include "./report_model.elisa"' "$consumer"
 stability_include_line="$(rg -n -m1 -F 'include "./stability_model.elisa"' "$consumer" | cut -d: -f1)"
@@ -72,6 +81,10 @@ for fixture_pattern in \
     'DifferentialReportError.FlakyEvidenceInvalid' \
     'DifferentialReportError.NondeterministicClaimInvalid' \
     'has_stability_evidence: true' \
+    'aggregate_text_messages' \
+    'DifferentialReportError.AggregateTextLimitExceeded' \
+    'embedded_nul_message' \
+    'DifferentialReportError.EmbeddedNul' \
     'repeated_pass' \
     'mismatched_evidence_count' \
     'flaky_stability' \
