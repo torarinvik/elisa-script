@@ -16,19 +16,8 @@ extend Semantic:
                 match body[body.count - 1]:
                     Stmt.Expr(expression, line):
                         return if expression is Expr.Invalid
-                        table <- check_ternary_condition(expression, names, types, table)
-                        table <- check_operator_operands(expression, names, types, table)
-                        table <- check_value_match_exhaustive(expression, names, types, table)
-                        expected: sview = return_type_name if return_type_name != "" else interned_name(return_type_id, table)
-                        table <- check_value_against(expression, expected, "return", line.line, names, types, table) if expected != ""
-                        actual: InferType = infer_expression_type(expression, names, types, table)
-                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.TypeMismatch, name: "return", line: line.line, expected: expected, actual: "void"}) if actual.kind == SemTypeKind.Void and expected != ""
-                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.TypeMismatch, name: "return", line: line.line, expected: "non-null reference", actual: "null"}) if interned_kind(return_type_id, table) == SemTypeKind.Ref and expression_is_null(expression)
-                        if return_type_name == "" and interned_kind(return_type_id, table) == SemTypeKind.Container:
-                            actual_kind: mutable sview = literal_kind_of(expression)
-                            actual_kind <- infer_family(expression, names, types, table) if actual_kind == ""
-                            actual_scalar: bool = actual_kind == "int" or actual_kind == "float" or actual_kind == "bool" or actual_kind == "char" or actual_kind == "string"
-                            table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.TypeMismatch, name: "return", line: line.line, expected: expected, actual: actual_kind, detail: type_name_of_row(interned_elem(return_type_id, 0, table), table)}) if actual_scalar
+                        table <- check_nested_array_literal(expression, return_type_id, 0, names, types, table) if return_type_id != 0
+                        table <- check_value_block_against(expression, return_type_name, return_type_id, "return", line.line, return_type_name, return_type_id, names, types, table)
                     _:
                         pass
 
@@ -78,7 +67,11 @@ extend Semantic:
                             table <- check_ternary_condition(value, names, types, table)
                             table <- check_operator_operands(value, names, types, table)
                             table <- check_value_match_exhaustive(value, names, types, table)
-                            table <- check_value_against(value, type_name, name, line.line, names, types, table) if type_name != ""
+                            match value:
+                                Expr.Block(block_statements, block_value, block_captures, block_line):
+                                    table <- check_value_block_against(value, type_name, declared_type_id, name, line.line, return_type_name, return_type_id, names, types, table)
+                                _:
+                                    table <- check_value_against(value, type_name, name, line.line, names, types, table) if type_name != ""
                             # The initializer resolves in the enclosing lexical scope;
                             # publish the new binding only after all RHS checks complete.
                             note_local_type(names, types, name, type_name)
@@ -293,3 +286,35 @@ extend Semantic:
                             pass
                         Stmt.Continue(label, line):
                             pass
+
+
+        # Check a value against its contextual type while opening and closing
+        # ML-style expression-block scopes. The tail itself is checked with the
+        # destination type, so both the block's local names and contextual literal
+        # rules are available before lowering.
+        def check_value_block_against(value: Ast::Expr, expected_name: sview, expected_id: u32, declared_name: sview, line: u32, function_return_name: sview, function_return_id: u32, names: mutable darray[sview]&, types: mutable darray[sview]&, table: lmut SymbolTable) -> void:
+            can Memory.Allocate, Abort.Panic:
+                match value:
+                    Expr.Block(block_statements, block_value, block_captures, block_line):
+                        scope_mark: usize = names.count
+                        table <- check_variable_initializers(block_statements, function_return_name, function_return_id, names, types, table)
+                        table <- check_value_block_against(block_value, expected_name, expected_id, declared_name, line, function_return_name, function_return_id, names, types, table) if not statements_terminate(block_statements, table)
+                        table <- close_type_scope(scope_mark, names, types, table)
+                    _:
+                        expected: sview = expected_name if expected_name != "" else interned_name(expected_id, table)
+                        table <- check_value_against(value, expected, declared_name, line, names, types, table) if expected != ""
+                        actual: InferType = infer_expression_type(value, names, types, table)
+                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.TypeMismatch, name: declared_name, line: line, expected: expected, actual: "void"}) if actual.kind == SemTypeKind.Void and expected != ""
+                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.TypeMismatch, name: declared_name, line: line, expected: expected, actual: "null"}) if expression_is_null(value) and kind_cannot_hold_null(interned_kind(expected_id, table)) and expected != ""
+                        inferred_reference: InferType = infer_expression_type(value, names, types, table) if interned_kind(expected_id, table) == SemTypeKind.Ref else primitive_type(SemTypeKind.Unknown)
+                        reference_is_invalid: bool = interned_kind(expected_id, table) == SemTypeKind.Ref and inferred_reference.kind != SemTypeKind.Unknown and inferred_reference.kind != SemTypeKind.Ref and inferred_reference.kind != SemTypeKind.Optional and inferred_reference.kind != SemTypeKind.String
+                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.TypeMismatch, name: declared_name, line: line, expected: "non-null reference", actual: stage0_value_spelling(inferred_reference)}) if reference_is_invalid
+                        source_structural: u32 = structural_type_id_of(value, names, types, table)
+                        target_is_container: bool = interned_kind(expected_id, table) == SemTypeKind.Container
+                        source_is_container: bool = interned_kind(source_structural, table) == SemTypeKind.Container
+                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.TypeMismatch, name: declared_name, line: line, expected: interned_name(expected_id, table), actual: interned_name(source_structural, table)}) if target_is_container and source_is_container and not type_ids_compatible(expected_id, source_structural, table)
+                        if target_is_container and not source_is_container:
+                            actual_kind: mutable sview = literal_kind_of(value)
+                            actual_kind <- infer_family(value, names, types, table) if actual_kind == ""
+                            actual_scalar: bool = actual_kind == "int" or actual_kind == "float" or actual_kind == "bool" or actual_kind == "char" or actual_kind == "string"
+                            table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.TypeMismatch, name: declared_name, line: line, expected: interned_name(expected_id, table), actual: actual_kind, detail: type_name_of_row(interned_elem(expected_id, 0, table), table)}) if actual_scalar
