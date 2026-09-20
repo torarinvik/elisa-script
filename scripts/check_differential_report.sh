@@ -48,8 +48,10 @@ for boundary in \
     'MessageLimitExceeded' \
     'AggregateTextLimitExceeded' \
     'EmbeddedNul' \
+    'InvalidUtf8' \
     'differential_report_text_length_valid' \
     'differential_report_text_total_add_fits' \
+    'differential_report_text_utf8_valid' \
     'RepeatCountInvalid'; do
     rg -Fq "$boundary" "$model"
 done
@@ -85,6 +87,8 @@ for fixture_pattern in \
     'DifferentialReportError.AggregateTextLimitExceeded' \
     'embedded_nul_message' \
     'DifferentialReportError.EmbeddedNul' \
+    'invalid_utf8_text' \
+    'DifferentialReportError.InvalidUtf8' \
     'repeated_pass' \
     'mismatched_evidence_count' \
     'flaky_stability' \

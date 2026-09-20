@@ -749,10 +749,10 @@ failure category typed: a pass must use `None` and be deterministic, a failure
 must identify a concrete mismatch/process/timeout/crash/artifact category, and
 an inconclusive result is limited to flaky or infrastructure causes. Case and
 engine identities, bounded summaries/messages, repeat counts, and optional
-artifact paths are length/NUL checked before a renderer emits text. Renderers
-also share a 4 MiB aggregate text budget across identities, summary, messages,
-and artifact path; per-field bounds alone must not allow a many-message report
-to expand into an unbounded rendering allocation. Renderers
+artifact paths are length, UTF-8, and NUL checked before a renderer emits text.
+Renderers also share a 4 MiB aggregate text budget across identities, summary,
+messages, and artifact path; per-field bounds alone must not allow a many-message
+report to expand into an unbounded rendering allocation. Renderers
 must preserve these fields rather than reclassify failures from free-form
 stdout or exit codes. A flaky report must be inconclusive, explicitly
 nondeterministic, and carry a completed validated stability session whose
