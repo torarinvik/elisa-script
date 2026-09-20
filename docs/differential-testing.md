@@ -1228,9 +1228,11 @@ tuples classify as `StableEqual` or `StableMismatch`; any changed tuple is
 classified as `Nondeterministic` and can never be converted into an equality
 result. Validation derives the stable-repeat count and nondeterminism flag from
 the retained observations and rejects forged baseline or aggregate accounting.
-The state machine requires the minimum repeat count before completion, rejects
-out-of-order or missing fingerprints, and leaves execution, scheduler seeds,
-and host adapters outside the typed contract.
+The state machine and session validator both require the minimum repeat count
+before completion. Validation also binds `StableEqual` and `StableMismatch` to
+the baseline equality decision and rejects a completed nondeterministic result
+under the `Reject` policy. It rejects out-of-order or missing fingerprints and
+leaves execution, scheduler seeds, and host adapters outside the typed contract.
 checkpoints carry both state identities. The state machine records the first
 non-equal step as `Diverged`, seals only after every step is complete, and
 rejects out-of-order steps, duplicate checkpoint order, zero identities, and

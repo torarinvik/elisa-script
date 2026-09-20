@@ -921,7 +921,10 @@ ES-SCRIPT-013 | EsDifferentialStability supplies a bounded repeat session with
 minimum/maximum repeat policy, baseline fingerprint accounting, stable-equal and
 stable-mismatch classifications, and explicit nondeterminism rejection/reporting.
 Validation derives repeat accounting and the nondeterminism flag from retained
-observations, rejecting forged baselines and counters.
+observations, rejecting forged baselines and counters. It also independently
+requires the minimum repeat count for completed sessions, binds stable
+classifications to the baseline equality bit, and rejects a completed
+nondeterministic classification under the Reject policy.
 The focused differential fixture, namespace inclusion, documentation, and
 check_differential_stability.sh audit are static evidence; scheduler-seed
 control, host repeat execution, and fresh-environment qualification remain open.
