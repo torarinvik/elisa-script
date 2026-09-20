@@ -213,7 +213,8 @@ unexecuted under the validation hold.
 ## Required acceptance matrix
 
 The generated unsupported-type diagnostic also covers U+FEFF ZERO WIDTH
-NO-BREAK SPACE.
+NO-BREAK SPACE, selected supplementary format controls, a private-use scalar,
+Unicode noncharacters, U+1680 OGHAM SPACE MARK, and U+3000 IDEOGRAPHIC SPACE.
 
 Every case must compare the pinned Python reference and Elisascript adapter on
 decoded structured output or exact failure status/diagnostic. Also compare
@@ -224,7 +225,7 @@ only unless they are valid Elisa programs.
 | Case group | Required cases |
 | --- | --- |
 | Record shape | zero parameters, default/no return, explicit target, line numbers, source order, exact optional-key presence, permissive target-regex behavior |
-| ABI | every scalar mapping, `cstr`, `&`, `&&`, nullable, unsupported aggregate, modifier/whitespace normalization, greedy nested-signature suffix selection, Python-compatible diagnostic quoting for C1 controls, U+00AD SOFT HYPHEN, U+061C ARABIC LETTER MARK, U+200B ZERO WIDTH SPACE, U+200E LEFT-TO-RIGHT MARK, U+2060 WORD JOINER, and U+FEFF ZERO WIDTH NO-BREAK SPACE |
+| ABI | every scalar mapping, `cstr`, `&`, `&&`, nullable, unsupported aggregate, modifier/whitespace normalization, greedy nested-signature suffix selection, Python-compatible diagnostic quoting for C1 controls, U+00AD SOFT HYPHEN, U+061C ARABIC LETTER MARK, U+070F/U+0890/U+08E2 format controls, U+1680/U+3000 spaces, U+200B ZERO WIDTH SPACE, U+200E LEFT-TO-RIGHT MARK, U+2060/U+2065, U+FEFF ZERO WIDTH NO-BREAK SPACE, selected supplementary format controls, private-use scalars, and Unicode noncharacters |
 | Parameter scanner | nested delimiters including `{}`, quoted commas/equals, escapes, empty segments, missing colon, invalid name |
 | Link annotation | quoted/bare, blank/comment retention, overwrite, empty, dangling, reset by ordinary text, implicit-main exclusion |
 | `main` | implicit position and fields, repeated definitions, explicit-before/after behavior, duplicate line diagnostic |
@@ -289,15 +290,21 @@ implicit `main` before a later explicit duplicate, plus repeated implicit
 definitions that must yield only one row. The ordering cases include many
 ordinary lines between exports to exercise the maintained presence flag. A
 generated unsupported-type diagnostic containing U+009F, U+00AD, U+061C,
-U+070F, U+180E, U+200B, U+200E, U+202A, U+2060, and U+FEFF is compared with the pinned
-Python adapter to check C1, soft-hyphen, Arabic letter mark, format, zero-width,
-embedding, and zero-width-no-break-space `repr` escaping. The checked-in
+U+070F, U+180E, U+0890, U+08E2, U+200B, U+200E, U+202A, U+2060, U+2065,
+U+FEFF, U+110BD, U+E0001, a private-use scalar, and U+FDD0 is compared with
+the pinned Python adapter to check C1, soft-hyphen, format, zero-width,
+embedding, supplementary format, private-use, and noncharacter `repr` escaping.
+A malformed parameter-name diagnostic separately checks U+1680 and U+3000 in
+preserved text, because type normalization would remove those whitespace code
+points before rendering. The checked-in
 `unsupported_type.input` fixture carries U+FEFF, U+200E, U+061C, and U+2060 in
-the type span for public-launcher coverage. Newline-dense inputs check that 131,072
-lines reach the ordinary no-export diagnostic while 131,073 lines hit the
-candidate-only line-view cap, without entering Python. These are static source
-contracts, not executed evidence; the selected `repr` cases do not prove full
-Unicode printability parity. A candidate-only generated input also
+the type span for public-launcher coverage; `unicode_repr.input` adds process-
+level coverage for representative format/private-use/noncharacter scalars.
+Newline-dense inputs check that 131,072 lines reach the ordinary no-export
+diagnostic while 131,073 lines hit the candidate-only line-view cap, without
+entering Python. These are static source contracts, not executed evidence; the
+selected `repr` cases do not prove full Unicode printability parity. A
+candidate-only generated input also
 exercises rejection of 4,097 parameters before creating `Parameter` records,
 without entering Python. A candidate-only generated input also puts five
 exports at 4,096, 4,096, 4,096, 4,096, and one parameter respectively to check
@@ -331,9 +338,10 @@ source compares the configured launcher executable process against the pinned
 Python process across every checked-in top-level `.input` case, including
 positive output, target-regex compatibility, duplicate-export, greedy-header,
 ABI, and no-export failures, plus diamond, mixed-quote, missing, nested, and
-cyclic include graphs and the checked-in U+2028 line-separator fixture; the
-test first resolves each input to an absolute path and passes that single
-argument to both processes, matching the real caller's path shape. This checks
+cyclic include graphs and the checked-in U+2028 line-separator and
+`unicode_repr.input` fixtures. The test first resolves each input to an absolute
+path and passes that single argument to both processes, matching the real
+caller's path shape. This checks
 the CLI invocation contract only; it does not modify or prove caller adoption.
 The test requires
 `ELISASCRIPT_PUBLIC_LAUNCHER` to name an absolute path and
