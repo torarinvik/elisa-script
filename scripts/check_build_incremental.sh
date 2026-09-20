@@ -6,14 +6,18 @@ set -euo pipefail
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 model="$repo_root/src/runtime/build_incremental_model.elisa"
+build_model="$repo_root/src/runtime/build_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$ir" "$fixture" "$docs" "$ledger"; do
+for required_file in "$model" "$build_model" "$ir" "$fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'incremental build audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
+
+rg -Fq 'def attach_build_dependency_resolution(' "$build_model"
+rg -Fq 'resolution.dependencies[node_index]' "$build_model"
 
 for declaration in \
     'module EsBuildIncremental:' \
@@ -70,6 +74,8 @@ rg -Fq 'include "../runtime/build_incremental_model.elisa"' "$ir"
 for fixture_check in \
     'typed_build_incremental_contract_distinguishes_noop_and_rebuild_reasons' \
     'resolve_incremental_build_dependencies(manifest)' \
+    'attach_build_dependency_resolution(graph, resolution)' \
+    'malformed_resolution_rejected' \
     'BuildIncrementalDecision.InputMissing' \
     'BuildIncrementalDecision.OutputChanged' \
     'BuildIncrementalError.DuplicateInput' \

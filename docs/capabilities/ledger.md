@@ -741,6 +741,9 @@ reasons before scheduler dispatch. Phony targets that declare outputs are
 rejected before they can be treated as real artifacts. A target consuming another target's output
 must also declare that producer directly; undeclared output dependencies are
 rejected before scheduler dispatch so stale generated files cannot be consumed.
+Named dependencies from an incremental manifest can be resolved to canonical
+indices and attached to a fresh `BuildGraph` through a checked, pure adapter;
+malformed edge or name-index data is rejected before the graph is mutated.
 `plan_build_incremental_cleanup` reconciles a prior successful manifest with
 the current graph, returning bounded stale outputs in deterministic order for
 removed or renamed targets while retaining outputs adopted by another current

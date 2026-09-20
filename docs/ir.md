@@ -551,11 +551,15 @@ readiness use direct bounded lookups without repeated dependency-name scans.
 The build-definition adapter can pass target and dependency names to
 `resolve_build_dependencies`, which uses a sorted name index and emits each
 edge list in canonical node-index order. Its `BuildDependencyResolution` also
-returns the name-order index; attach this to `BuildGraph` so graph validation
-checks unique names linearly and cache lookups use binary search. The resolver
-bounds node names, per-node edges, and aggregate edges. Manual graphs without
-the index keep the legacy pairwise uniqueness check, and duplicate cache-entry
-validation remains pairwise, so large-graph scaling is still unqualified.
+returns the name-order index; `attach_build_dependency_resolution` checks the
+complete resolution against a fresh graph of command templates before
+attaching edges and the index. This avoids hand-copying parallel edge arrays
+and rejects malformed resolutions before graph mutation. Indexed graph
+validation then checks unique names linearly and cache lookups use binary
+search. The resolver bounds node names, per-node edges, and aggregate edges.
+Manual graphs without the index keep the legacy pairwise uniqueness check,
+and duplicate cache-entry validation remains pairwise, so large-graph scaling
+is still unqualified.
 Validation rejects missing, duplicate, unordered, and cyclic dependencies and
 preserves process-command errors. `advance_build_graph` limits active nodes and
 records per-node completion or failure. It exposes cancellation acknowledgement
