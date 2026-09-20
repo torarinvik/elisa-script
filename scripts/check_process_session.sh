@@ -11,6 +11,7 @@ time_bridge="$repo_root/src/runtime/time_posix.elisa"
 process_model="$repo_root/src/runtime/process_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 execution="$repo_root/src/ir/execution.elisa"
+interpreter="$repo_root/src/ir/interpret.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 command_policy_fixture="$repo_root/test/driver/process_session_command_limits.elisascript"
 exit_deadline_fixture="$repo_root/test/driver/process_session_exit_deadline.elisascript"
@@ -18,7 +19,7 @@ clock_fixture="$repo_root/test/driver/monotonic_time_model.elisascript"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$clock_model" "$time_bridge" "$process_model" "$ir" "$execution" "$fixture" "$command_policy_fixture" "$exit_deadline_fixture" "$clock_fixture" "$docs" "$ledger"; do
+for required_file in "$model" "$clock_model" "$time_bridge" "$process_model" "$ir" "$execution" "$interpreter" "$fixture" "$command_policy_fixture" "$exit_deadline_fixture" "$clock_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'process session audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -56,6 +57,14 @@ rg -Fq 'monotonic_elapsed_microseconds' "$clock_model"
 rg -Fq 'fractional_microseconds: u64' "$clock_model"
 rg -Fq 'include "../runtime/monotonic_time_model.elisa"' "$ir"
 rg -Fq 'include "../runtime/monotonic_time_model.elisa"' "$execution"
+rg -Fq 'MAX_RUNTIME_MICROS: u64 = 120000000u64' "$interpreter"
+rg -Fq 'def process_wait_clock_start(' "$interpreter"
+rg -Fq 'def process_wait_deadline_reached(' "$interpreter"
+rg -Fq 'if not waiter.clock_started and not process_wait_clock_start(waiter)' "$interpreter"
+rg -Fq 'return elapsed >= ProcessWait::MAX_RUNTIME_MICROS' "$interpreter"
+rg -Fq 'if process_wait_deadline_reached(waiter):' "$interpreter"
+rg -Fq 'waiter.timed_out <- true' "$interpreter"
+rg -Fq 'process_wait_terminate_group(waiter)' "$interpreter"
 rg -Fq 'elapsed_time_handles_nanosecond_borrow' "$clock_fixture"
 rg -Fq 'fractional_microseconds_round_up_for_deadline_safety' "$clock_fixture"
 rg -Fq 'elapsed_microsecond_conversion_is_bounded' "$clock_fixture"

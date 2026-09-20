@@ -324,6 +324,7 @@ extend EsIr:
             SIGNAL_KILL: int = 9
             POLL_MICROSECONDS: u32 = 1000
             TERM_GRACE_POLLS: u64 = 100
+            MAX_RUNTIME_MICROS: u64 = 120000000u64
             MAX_POLLS: u64 = 120000
 
 
@@ -353,6 +354,8 @@ extend EsIr:
             # Combined remaining budget for captured stdout plus stderr.
             output_limit: u64 = 0
             output_exceeded: mutable bool = false
+            started_at: mutable EsMonotonicTime::MonotonicTimestamp = EsMonotonicTime::MonotonicTimestamp{seconds: 0, nanoseconds: 0}
+            clock_started: mutable bool = false
             timed_out: mutable bool = false
             eintr_retries: mutable usize = 0
 
@@ -5639,11 +5642,51 @@ extend EsIr:
             return bounded_usleep(ProcessWait::POLL_MICROSECONDS)
 
 
+        def process_wait_clock_start(waiter: mutable ProcessWaiter&) -> bool can[Blocking.IO]:
+            sample: mutable EsMonotonicTime::MonotonicTimestamp = EsMonotonicTime::MonotonicTimestamp{seconds: 0, nanoseconds: 0}
+            return false if elisascript_posix_monotonic_time(sample) != 0
+            catch EsMonotonicTime::validate_monotonic_timestamp(sample):
+                ok value:
+                    pass
+                error failure:
+                    return false
+            waiter.started_at <- sample
+            waiter.clock_started <- true
+            return true
+
+
+        def process_wait_deadline_reached(waiter: mutable ProcessWaiter&) -> bool can[Blocking.IO]:
+            sample: mutable EsMonotonicTime::MonotonicTimestamp = EsMonotonicTime::MonotonicTimestamp{seconds: 0, nanoseconds: 0}
+            if elisascript_posix_monotonic_time(sample) != 0:
+                waiter.failed <- true
+                return false
+            elapsed: mutable u64 = 0u64
+            catch EsMonotonicTime::monotonic_elapsed_microseconds(waiter.started_at, sample):
+                ok value:
+                    elapsed <- value
+                error failure:
+                    waiter.failed <- true
+                    return false
+            return elapsed >= ProcessWait::MAX_RUNTIME_MICROS
+
+
         def process_wait_next(waiter: mutable ProcessWaiter&) -> ProcessWaitState can[Blocking.IO]:
+            if not waiter.clock_started and not process_wait_clock_start(waiter):
+                waiter.failed <- true
+                process_wait_terminate(waiter)
+                return ProcessWaitState.Error
             waited: int = elisascript_posix_waitpid(waiter.pid, waiter.status, ProcessWait::NOHANG)
             if waited == waiter.pid:
                 waiter.reaped <- true
                 waiter.eintr_retries <- 0
+                if process_wait_deadline_reached(waiter):
+                    waiter.timed_out <- true
+                    process_wait_terminate_group(waiter)
+                    waiter.failed <- true
+                    return ProcessWaitState.Error
+                if waiter.failed:
+                    process_wait_terminate_group(waiter)
+                    return ProcessWaitState.Error
                 # A short-lived child may finish between polls after producing
                 # its full output. Recheck both streams after reaping so the
                 # final sample cannot be skipped.
@@ -5672,6 +5715,14 @@ extend EsIr:
                 # `waited == 0` means the child is still live. Terminate it on
                 # output overflow and stream-inspection failure; otherwise a
                 # failed fseek/ftell could leave it writing after cleanup.
+                process_wait_terminate(waiter)
+                return ProcessWaitState.Error
+            if process_wait_deadline_reached(waiter):
+                waiter.timed_out <- true
+                process_wait_terminate(waiter)
+                waiter.failed <- true
+                return ProcessWaitState.Error
+            if waiter.failed:
                 process_wait_terminate(waiter)
                 return ProcessWaitState.Error
             if waiter.polls >= ProcessWait::MAX_POLLS:
