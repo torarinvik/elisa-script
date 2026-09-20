@@ -191,7 +191,10 @@ The corresponding `.elisascript` source candidate is
 argument when running through the public launcher. Its fixture matrix is in
 `test/fixtures/script_parity/builtin_surface/EXPECTATIONS.md`. The shell
 reference also accepts an optional source root so both implementations can be
-pointed at the same fixture tree. The candidate enforces a 1 MiB per-source
+pointed at the same fixture tree. With no root argument, both derive the
+repository root from their own script path, independent of the caller's current
+directory; the launcher parity matrix includes this case from `/`. The
+candidate enforces a 1 MiB per-source
 limit and a 65,536 raw-name-match limit. Source review and expected-output
 fixtures do not establish executable parity; compiler/script validation remains
 suspended. The source files are assumed to be stable checkout inputs: current

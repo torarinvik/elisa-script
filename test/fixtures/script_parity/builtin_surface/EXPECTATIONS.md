@@ -32,6 +32,12 @@ reference and Elisascript candidate share these 1 MiB per-file and 65,536
 raw-match ceilings. Unreadable files and concurrent source-file mutation remain
 outside the current parity fixtures.
 
+The process-level parity harness also invokes both scripts without a source-root
+argument while the child working directory is `/`. It compares reference and
+candidate status/stdout/stderr directly (rather than pinning checkout-specific
+counts) to ensure each implementation defaults to the repository containing
+its own script, not the caller's working directory.
+
 The launcher digest is checked against a caller-supplied SHA-256 before and
 after the matrix. This detects changes relative to that supplied value but
 does not establish trusted launcher build provenance.
