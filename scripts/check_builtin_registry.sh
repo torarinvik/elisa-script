@@ -1352,9 +1352,8 @@ if ! rg -q 'spec\.argument_types == "Executable,darray\[text\],i64"' "$lowerer_f
    ! rg -q 'spec\.argument_types == "Executable,darray\[text\],sview,Path,i64,i64" and \(index == 4 or index == 5\)' "$semantic_builtin_checker" || \
    ! rg -q 'spec\.argument_types == "Executable,darray\[text\],sview,dict\[sview,sview\],i64,i64" and \(index == 4 or index == 5\)' "$semantic_builtin_checker" || \
    ! rg -q 'spec\.argument_types == "Executable,darray\[text\],sview,Path,dict\[sview,sview\],i64,i64" and \(index == 5 or index == 6\)' "$semantic_builtin_checker" || \
-   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Executable,darray\[text\],sview,Path,i64,i64" and registry_spec\.opcode == "CaptureProcessResultInDirectory"' "$lowerer_file" || \
-   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Executable,darray\[text\],sview,dict\[sview,sview\],i64,i64" and registry_spec\.opcode == "CaptureProcessResultWithEnvironment"' "$lowerer_file" || \
-   ! rg -q 'registry_spec\.receiver == "global" and registry_spec\.argument_types == "Executable,darray\[text\],sview,Path,dict\[sview,sview\],i64,i64" and registry_spec\.opcode == "CaptureProcessResultInDirectoryWithEnvironment"' "$lowerer_file"; then
+   ! rg -q 'if callee_index == state\.function_names\.count and is_registry_process_result_capture_spec\(registry_spec\):' "$lowerer_file" || \
+   ! rg -q 'return lower_registry_process_result_capture\(callee_name, arguments, argument_names, pos, registry_spec, state\)' "$lowerer_file"; then
     printf 'builtin registry audit: process capture lowerers do not consume registry receiver/argument metadata\n' >&2
     exit 1
 fi
