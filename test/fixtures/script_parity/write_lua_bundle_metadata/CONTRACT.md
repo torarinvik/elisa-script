@@ -35,6 +35,12 @@ shape and status 2. The four scalar options (`--output`, `--bundle-type`,
 `--repo-root`, and `--out-dir`) also use argparse's last-occurrence-wins
 behavior.
 
+Empty scalar values remain valid argparse values. In particular,
+`Path(args.repo_root)` maps an empty `--repo-root` value to the current directory
+(`.`); the replacement's planned Git commands must therefore carry `.` as an
+explicit working directory instead of rejecting the empty spelling or
+implicitly inheriting cwd.
+
 The reference uses Python `argparse`: long options accept both the separated
 form (`--output PATH`) and the `--output=PATH` form, and unambiguous long-option
 abbreviations are accepted because `allow_abbrev=True` is the default.

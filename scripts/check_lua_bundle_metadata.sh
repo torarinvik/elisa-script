@@ -8,8 +8,9 @@ repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 model="$repo_root/src/runtime/lua_bundle_metadata_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
+empty_repo_root_fixture="$repo_root/test/driver/lua_bundle_metadata_empty_repo_root.elisascript"
 
-for required_file in "$model" "$ir" "$fixture"; do
+for required_file in "$model" "$ir" "$fixture" "$empty_repo_root_fixture"; do
     [[ -f "$required_file" ]] || { printf 'lua bundle metadata audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -85,6 +86,10 @@ for boundary in \
     rg -q "$boundary" "$model" "$fixture"
 done
 
+rg -Fq 'command.working_directory <- "." if repo_root == "" else repo_root' "$model"
+rg -Fq 'def empty_repo_root_uses_current_directory' "$empty_repo_root_fixture"
+rg -Fq '"--repo-root", "", "--out-dir"' "$empty_repo_root_fixture"
+rg -Fq 'git.working_directory == "."' "$empty_repo_root_fixture"
 rg -q 'include "\.\./runtime/lua_bundle_metadata_model\.elisa"' "$ir"
 rg -q 'using EsLuaBundleMetadata' "$fixture"
 
