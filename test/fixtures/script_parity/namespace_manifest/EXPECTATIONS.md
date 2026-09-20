@@ -16,10 +16,15 @@ matrix.
 | `unknown_using` | 1 | empty | `check_namespace_manifest: using imports undeclared module: MissingNamespace\n` |
 | `undeclared_extension` | 1 | empty | `check_namespace_manifest: extension targets undeclared module: MissingModule\n` |
 | `leaked_impl` | 1 | empty | `check_namespace_manifest: private POSIX _impl call leaked outside runtime:\n{SOURCE_ROOT}/leak.elisa:1:elisascript_posix_open_impl()\n` |
+| `abi_outside_runtime` | 1 | empty | `check_namespace_manifest: POSIX ABI declaration is outside EsRuntime: {SOURCE_ROOT}/runtime/posix.elisa\n` |
+| `bytecode_renderer_missing` | 1 | empty | `check_namespace_manifest: bytecode diagnostic renderer omits IssueKind.Missing\n` |
+| `lower_renderer_missing` | 1 | empty | `check_namespace_manifest: source diagnostic renderer omits LowerIssueKind.Missing\n` |
+| `diagnostic_reset_missing` | 1 | empty | `check_namespace_manifest: diagnostic reset omits stale\n` |
 | `missing_include` | 1 | empty | `check_namespace_manifest: missing include: {SOURCE_ROOT}/a.elisa -> missing_fragment.elisa\n` |
 | `public_abi` | 1 | `{SOURCE_ROOT}/runtime/posix.elisa: POSIX ABI declaration is not private at line 3\n` | empty |
 | nonexistent source root | 2 | empty | `check_namespace_manifest: source root does not exist: {SOURCE_ROOT}\n` |
 | missing parser-token source | 1 | empty | `check_namespace_manifest: parser token source is missing: {PARSER_SOURCE}\n` |
+| `missing_required_module` | 1 | empty | `check_namespace_manifest: required module is missing: EsArtifactCache\n` |
 | one extra CLI operand | 2 | empty | `usage: namespace manifest audit [source-root [parser-token-source]]\n` |
 
 These cases cover the initial A02 acceptance surface: a successful manifest,
@@ -36,9 +41,10 @@ each tuple against both programs and pins the public launcher's hash before
 and after the matrix. It is source-only and remains unexecuted while compiler
 validation is suspended.
 
-The full reference additionally checks bytecode/lowerer renderer exhaustiveness,
-diagnostic reset completeness, and the required-module set; those paths still
-need dedicated regression fixtures before acceptance.
+The added negative fixtures also cover a POSIX ABI declaration outside
+`EsRuntime`, both diagnostic renderer exhaustiveness checks, diagnostic reset
+completeness, and the required-module set. Full runtime parity remains
+unverified while compiler validation is held.
 
 The shell reference and candidate also resolve omitted or empty source-root and
 parser-token arguments relative to their own script directories. The launcher
