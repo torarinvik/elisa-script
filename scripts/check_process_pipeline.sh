@@ -9,7 +9,6 @@ model="$repo_root/src/runtime/process_model.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
 for required_file in "$model" "$fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'process pipeline audit: missing %s\n' "$required_file" >&2; exit 1; }
@@ -95,8 +94,5 @@ done
 
 rg -Fq '`ProcessPipeline`' "$docs"
 rg -Fq '`ProcessPipeline`' "$ledger"
-if [[ -f "$plan" ]]; then
-    rg -Fq 'P10 pipeline follow-up' "$plan"
-fi
 
 printf 'process pipeline audit: typed stages, drained receipts, bounded stream bytes, failure policy, and cancellation edges are present\n'

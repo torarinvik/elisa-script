@@ -13,9 +13,8 @@ fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 runner_fixture="$repo_root/test/ir/elisascript_runner_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$runner" "$execution" "$ir" "$fixture" "$runner_fixture" "$docs" "$ledger" "$plan"; do
+for required_file in "$model" "$runner" "$execution" "$ir" "$fixture" "$runner_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'script test audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -156,7 +155,5 @@ rg -Fq '`EsScriptTest` supplies' "$docs"
 rg -Fq 'The runner' "$docs"
 rg -Fq 'ES-TEST-002 | `EsScriptTest`' "$ledger"
 rg -Fq 'ES-TEST-005 | runner discovery and single-case invocation' "$ledger"
-rg -Fq 'In-process test state machine' "$plan"
-rg -Fq 'Runner discovery and single-case invocation' "$plan"
 
 printf 'script test audit: bounded discovery, ordered execution, failure diagnostics, and cancellation are present\n'

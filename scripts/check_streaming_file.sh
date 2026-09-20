@@ -9,9 +9,8 @@ stream="$repo_root/src/runtime/stream_posix.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 tests="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$stream" "$ir" "$tests" "$docs" "$plan"; do
+for required_file in "$stream" "$ir" "$tests" "$docs"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'streaming file audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -154,6 +153,5 @@ rg -q 'file_stream_cleanup_transition\(FileStreamCleanupState\.Closed, FileStrea
 rg -q 'file_stream_cleanup_transition\(FileStreamCleanupState\.Aborted, FileStreamCleanupEvent\.Commit\)' "$tests"
 rg -q 'file_stream_cleanup_transition\(FileStreamCleanupState\.Aborted, FileStreamCleanupEvent\.Abort\)' "$tests"
 rg -q 'typed streaming file handles|FileStream|file_stream_read_line' "$docs"
-rg -q 'Q06:.*FileStream|Q06:.*typed streaming' "$plan"
 
 printf 'streaming file audit: typed modes, bounded chunk/line operations, and close-state contract present\n'

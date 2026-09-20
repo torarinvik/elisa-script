@@ -10,9 +10,8 @@ ir="$repo_root/src/ir/ir.elisa"
 fixture_file="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger" "$plan"; do
+for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'record sort audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -63,6 +62,5 @@ done
 
 rg -q 'EsRecordSort::RecordSortSession' "$docs"
 rg -q 'ES-SCRIPT-024' "$ledger"
-rg -q 'P11 sort follow-up' "$plan"
 
 printf 'record sort audit: bounded typed keys, stable order, and lifecycle checks are present\n'

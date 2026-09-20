@@ -9,9 +9,8 @@ model="$repo_root/src/testing/sequence_model.elisa"
 differential="$repo_root/src/testing/differential.elisa"
 fixture="$repo_root/test/differential/elisascript_differential_test.elisa"
 docs="$repo_root/docs/differential-testing.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$differential" "$fixture" "$docs" "$plan"; do
+for required_file in "$model" "$differential" "$fixture" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'differential sequence audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -59,6 +58,5 @@ for fixture_pattern in \
 done
 
 rg -Fq '`EsDifferentialSequence::DifferentialSequence`' "$docs"
-rg -Fq 'P13 lockstep-sequence follow-up' "$plan"
 
 printf 'differential sequence audit: bounded lockstep steps, checkpoints, and first-divergence localization are present\n'

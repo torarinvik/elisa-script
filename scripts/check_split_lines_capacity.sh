@@ -11,9 +11,8 @@ interpreter_fixture="$repo_root/test/ir/elisascript_interpreter_test.elisa"
 bytecode_fixture="$repo_root/test/ir/elisascript_bytecode_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$interpreter" "$bytecode" "$interpreter_fixture" "$bytecode_fixture" "$docs" "$ledger" "$plan"; do
+for required_file in "$interpreter" "$bytecode" "$interpreter_fixture" "$bytecode_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || {
         printf 'split-lines capacity audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -53,6 +52,5 @@ rg -q 'split_lines' "$interpreter_fixture"
 rg -q 'splitlines' "$bytecode_fixture"
 rg -q 'Line splitting also counts its actual fields' "$docs"
 rg -q '`SplitLines` now applies the same exact-result admission' "$ledger"
-rg -q 'check_split_lines_capacity\.sh' "$plan"
 
 printf 'split-lines capacity audit: actual fields are preflighted before publication\n'

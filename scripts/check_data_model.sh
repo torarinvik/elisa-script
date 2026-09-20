@@ -9,9 +9,8 @@ model="$repo_root/src/runtime/data_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$ir" "$fixture" "$docs" "$plan"; do
+for required_file in "$model" "$ir" "$fixture" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'data model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -81,6 +80,5 @@ done
 
 rg -Fq '`EsData` is the format-neutral boundary' "$docs"
 rg -Fq 'legacy configurable single-byte terminator' "$docs"
-rg -Fq 'P8 structured-data follow-up' "$plan"
 
 printf 'data model audit: bounded policies, explicit CSV line endings, and decoder state transitions are present\n'

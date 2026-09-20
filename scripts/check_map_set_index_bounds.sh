@@ -11,9 +11,8 @@ interpreter_fixture="$repo_root/test/ir/elisascript_interpreter_test.elisa"
 bytecode_fixture="$repo_root/test/ir/elisascript_bytecode_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$interpreter" "$bytecode" "$interpreter_fixture" "$bytecode_fixture" "$docs" "$ledger" "$plan"; do
+for required_file in "$interpreter" "$bytecode" "$interpreter_fixture" "$bytecode_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'map set-index bounds audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -56,6 +55,5 @@ rg -q 'values.*two.*<-' "$interpreter_fixture"
 rg -q 'values.*two.*<-' "$bytecode_fixture"
 rg -q 'Indexed map updates search' "$docs"
 rg -q '`SetIndex` map updates also preflight' "$ledger"
-rg -q 'check_map_set_index_bounds\.sh' "$plan"
 
 printf 'map set-index bounds audit: reference and direct backends preflight map capacity before copying\n'

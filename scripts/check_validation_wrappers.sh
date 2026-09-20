@@ -17,6 +17,14 @@ done
 
 sh -n "$lowering" "$test_wrapper" "$stopper"
 
+for checker in "$script_dir"/check_*.sh; do
+    [[ "$checker" == "$script_dir/check_validation_wrappers.sh" ]] && continue
+    if rg -n 'IMPLEMENTATION_PLAN\.md|SCRIPT_TASKS\.md' "$checker"; then
+        printf 'validation wrapper audit: checker must not depend on gitignored planning files: %s\n' "$checker" >&2
+        exit 1
+    fi
+done
+
 for wrapper in "$lowering" "$test_wrapper"; do
     rg -q 'ELISASCRIPT_VALIDATION_REAUTHORIZED:-0' "$wrapper"
     rg -q 'elisascript-validation\.disabled' "$wrapper"

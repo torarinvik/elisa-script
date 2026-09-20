@@ -10,9 +10,8 @@ fixture="$repo_root/test/ir/elisascript_interpreter_test.elisa"
 bytecode_fixture="$repo_root/test/ir/elisascript_bytecode_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$interpreter" "$fixture" "$bytecode_fixture" "$docs" "$ledger" "$plan"; do
+for required_file in "$interpreter" "$fixture" "$bytecode_fixture" "$docs" "$ledger"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'interpreter path audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -85,6 +84,5 @@ rg -q 'All filesystem text and byte operations reject an empty path' "$docs"
 rg -q '4 KiB path admission|4096-byte path|interpreter.*path' "$docs"
 rg -q 'ES-FS-001' "$ledger"
 rg -q 'interpret\.elisa' "$ledger"
-rg -q 'interpreter.*path' "$plan"
 
 printf 'interpreter path audit: bounded path admission precedes C-string scans and host calls\n'

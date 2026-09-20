@@ -13,9 +13,8 @@ source_fixture="$repo_root/test/ir/elisascript_source_test.elisa"
 source_file_fixture="$repo_root/test/ir/elisascript_source_file_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$lowerer" "$source" "$source_file" "$fixture" "$source_fixture" "$source_file_fixture" "$docs" "$ledger" "$plan"; do
+for required_file in "$lowerer" "$source" "$source_file" "$fixture" "$source_fixture" "$source_file_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'test metadata audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -88,7 +87,5 @@ rg -Fq '`LowerResult.test_functions` is the first discovery side channel' "$docs
 rg -Fq 'Source/file loader wrappers preserve the compact' "$docs"
 rg -Fq 'ES-TEST-003 | `LowerResult.test_functions`' "$ledger"
 rg -Fq 'ES-TEST-004 | source/file test catalog wrappers' "$ledger"
-rg -Fq 'Lowerer test metadata' "$plan"
-rg -Fq 'Source/file test catalog wrappers' "$plan"
 
 printf 'test metadata audit: bounded top-level @test discovery metadata is present\n'

@@ -11,9 +11,8 @@ interpreter_fixture="$repo_root/test/ir/elisascript_interpreter_test.elisa"
 bytecode_fixture="$repo_root/test/ir/elisascript_bytecode_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$interpreter" "$bytecode" "$interpreter_fixture" "$bytecode_fixture" "$docs" "$ledger" "$plan"; do
+for required_file in "$interpreter" "$bytecode" "$interpreter_fixture" "$bytecode_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'map pop storage audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -60,6 +59,5 @@ rg -q 'bytecode_storage\.count == bytecode_storage_before_fallback \+ 2' "$bytec
 
 rg -q 'absent-key `PopMap`' "$docs"
 rg -q 'absent-key removal leaves flat storage unchanged' "$ledger"
-rg -q 'backend parity follow-up' "$plan"
 
 printf 'map pop storage audit: both backends search before allocation and fixtures bound absent-key storage growth\n'

@@ -10,9 +10,8 @@ bytecode="$repo_root/src/bytecode/bytecode.elisa"
 fixture="$repo_root/test/ir/elisascript_interpreter_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$interpreter" "$bytecode" "$fixture" "$docs" "$ledger" "$plan"; do
+for required_file in "$interpreter" "$bytecode" "$fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'path iterdir atomic audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -37,6 +36,5 @@ rg -q 'interpreter_executes_python_path_iterdir_with_hidden_entries' "$fixture"
 rg -q 'Path\.iterdir\(\).*validates every joined child path' "$docs"
 rg -q 'Path\.iterdir\(\)' "$ledger"
 rg -q 'failure-atomic' "$ledger"
-rg -q 'check_path_iterdir_atomic\.sh' "$plan"
 
 printf 'path iterdir atomic audit: late child-path failures roll back shared storage before publication\n'

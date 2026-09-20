@@ -14,9 +14,8 @@ interpreter_tests="$repo_root/test/ir/elisascript_interpreter_test.elisa"
 bytecode_tests="$repo_root/test/ir/elisascript_bytecode_test.elisa"
 semantics="$repo_root/docs/semantics.md"
 ir_docs="$repo_root/docs/ir.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$lowerer" "$interpreter" "$bytecode" "$lowering_tests" "$source_tests" "$interpreter_tests" "$bytecode_tests" "$semantics" "$ir_docs" "$plan"; do
+for required_file in "$lowerer" "$interpreter" "$bytecode" "$lowering_tests" "$source_tests" "$interpreter_tests" "$bytecode_tests" "$semantics" "$ir_docs"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'path line audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -57,6 +56,5 @@ rg -q 'bytecode_direct_tree_symlink_parent_rejection_matches_reference_interpret
 rg -q 'read_lines\(path\).*equivalent' "$semantics"
 rg -q 'trailing empty field' "$semantics"
 rg -q 'ReadText.*Split|Split.*Join.*WriteText' "$ir_docs"
-rg -q 'Q01:.*Path line/append' "$plan"
 
 printf 'path line audit: typed Path line lowering, split semantics, and interpreter/direct-bytecode fixtures present\n'

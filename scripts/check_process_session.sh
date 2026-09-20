@@ -11,9 +11,8 @@ ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$process_model" "$ir" "$fixture" "$docs" "$ledger" "$plan"; do
+for required_file in "$model" "$process_model" "$ir" "$fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'process session audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -70,6 +69,5 @@ rg -Fq 'session.exit_status == 17' "$fixture"
 
 rg -Fq 'EsProcessSession binds that command value to an adapter lifecycle' "$docs"
 rg -Fq 'ES-SCRIPT-007 | EsProcessSession' "$ledger"
-rg -Fq 'explicit EsProcessSession contract' "$plan"
 
 printf 'process session audit: distinct spawn handles, bounded streams/polls, typed outcomes, and cancellation are present\n'

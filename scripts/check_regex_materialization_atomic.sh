@@ -11,9 +11,8 @@ interpreter_fixture="$repo_root/test/ir/elisascript_interpreter_test.elisa"
 bytecode_fixture="$repo_root/test/ir/elisascript_bytecode_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$interpreter" "$bytecode" "$interpreter_fixture" "$bytecode_fixture" "$docs" "$ledger" "$plan"; do
+for required_file in "$interpreter" "$bytecode" "$interpreter_fixture" "$bytecode_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'regex materialization audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -58,6 +57,5 @@ rg -q 'exact result count' "$docs"
 rg -q 'failure-atomic' "$docs"
 rg -q 'exact result count' "$ledger"
 rg -q 'RegexSplit.*roll back' "$ledger"
-rg -q 'check_regex_materialization_atomic\.sh' "$plan"
 
 printf 'regex materialization audit: split/find preflight exact local span counts before publication\n'

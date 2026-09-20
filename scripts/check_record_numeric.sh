@@ -10,9 +10,8 @@ ir="$repo_root/src/ir/ir.elisa"
 fixture_file="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger" "$plan"; do
+for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'record numeric audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -69,6 +68,5 @@ done
 
 rg -q 'EsRecordNumeric::RecordNumericSession' "$docs"
 rg -q 'ES-SCRIPT-038' "$ledger"
-rg -q 'P11 numeric-field follow-up' "$plan"
 
 printf 'record numeric audit: bounded signed/unsigned/decimal lexical parsing is present\n'

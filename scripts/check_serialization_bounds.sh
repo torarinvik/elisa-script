@@ -11,9 +11,8 @@ artifact_cache="$repo_root/src/ir/artifact_cache.elisa"
 verifier="$repo_root/src/ir/ir_verify.elisa"
 type_table="$repo_root/src/ir/type_table.elisa"
 tests="$repo_root/test/ir/elisascript_ir_test.elisa"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$runtime_model" "$bytecode" "$artifact_cache" "$verifier" "$tests" "$plan"; do
+for required_file in "$runtime_model" "$bytecode" "$artifact_cache" "$verifier" "$tests"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'serialization bounds audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -172,5 +171,4 @@ rg -q 'bytes\[4\] != 4' "$repo_root/src/testing/differential.elisa" || rg -q 'by
 rg -q 'digest_manifest' "$repo_root/test/differential/elisascript_differential_test.elisa"
 rg -q 'malformed_manifest_length' "$repo_root/test/differential/elisascript_differential_test.elisa"
 rg -q 'differential_artifact_manifest_requires_migration' "$repo_root/test/differential/elisascript_differential_test.elisa"
-rg -q 'Q02a:' "$plan"
 printf 'serialization bounds audit: shared slice admission, TypeTable shape/order, bytecode reader, verifier, and fixture present\n'

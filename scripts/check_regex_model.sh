@@ -10,9 +10,8 @@ ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$ir" "$fixture" "$docs" "$ledger" "$plan"; do
+for required_file in "$model" "$ir" "$fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'regex model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -70,6 +69,5 @@ done
 
 rg -Fq 'EsRegex exposes the same limits as a public adapter contract' "$docs"
 rg -Fq 'ES-SCRIPT-012 | EsRegex' "$ledger"
-rg -Fq 'explicit EsRegex session contract' "$plan"
 
 printf 'regex model audit: operation identity, pattern/input/replacement limits, work/capture/output accounting, and cancellation are present\n'

@@ -9,9 +9,8 @@ model="$repo_root/src/testing/report_model.elisa"
 consumer="$repo_root/src/testing/differential.elisa"
 fixture="$repo_root/test/differential/elisascript_differential_test.elisa"
 docs="$repo_root/docs/differential-testing.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$consumer" "$fixture" "$docs" "$plan"; do
+for required_file in "$model" "$consumer" "$fixture" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'differential report audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -52,6 +51,5 @@ for fixture_pattern in \
 done
 
 rg -Fq 'EsDifferentialReport::DifferentialReport' "$docs"
-rg -Fq 'P13 report follow-up' "$plan"
 
 printf 'differential report audit: typed formats, statuses, failure categories, identities, and bounded messages are present\n'

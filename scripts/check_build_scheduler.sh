@@ -11,9 +11,8 @@ ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$build_model" "$ir" "$fixture" "$docs" "$ledger" "$plan"; do
+for required_file in "$model" "$build_model" "$ir" "$fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'build scheduler audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -92,6 +91,5 @@ done
 rg -Fq 'EsBuildScheduler adds the execution-facing queue contract' "$docs"
 rg -Fq 'cache entries for unknown graph nodes' "$docs"
 rg -Fq 'ES-SCRIPT-002 | EsBuildScheduler' "$ledger"
-rg -Fq 'explicit EsBuildScheduler contract' "$plan"
 
 printf 'build scheduler audit: deterministic queue, fail-draining, cache admission, bounded dispatch, and cancellation are present\n'

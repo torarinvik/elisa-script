@@ -10,9 +10,8 @@ ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$ir" "$fixture" "$docs" "$ledger" "$plan"; do
+for required_file in "$model" "$ir" "$fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'task model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -80,6 +79,5 @@ done
 
 rg -Fq 'EsTask::TaskScope' "$docs"
 rg -Fq 'EsTask::TaskScope' "$ledger"
-rg -Fq 'P12 concurrency follow-up' "$plan"
 
 printf 'task model audit: bounded scopes, child accounting, channel backpressure, and cancellation edges are present\n'

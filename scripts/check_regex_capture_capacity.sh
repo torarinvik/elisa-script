@@ -10,9 +10,8 @@ interpreter_fixture="$repo_root/test/ir/elisascript_interpreter_test.elisa"
 bytecode_fixture="$repo_root/test/ir/elisascript_bytecode_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$interpreter" "$interpreter_fixture" "$bytecode_fixture" "$docs" "$ledger" "$plan"; do
+for required_file in "$interpreter" "$interpreter_fixture" "$bytecode_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || {
         printf 'regex capture capacity audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -49,6 +48,5 @@ named_body="$(awk '
 }
 rg -q 'sizes the exact proven group/name result' "$docs"
 rg -q 'exact proven' "$ledger"
-rg -q 'check_regex_capture_capacity\.sh' "$plan"
 
 printf 'regex capture capacity audit: exact proven result slots are preflighted after matcher accounting\n'

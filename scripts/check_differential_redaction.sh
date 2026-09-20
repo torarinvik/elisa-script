@@ -9,9 +9,8 @@ model="$repo_root/src/testing/redaction_model.elisa"
 consumer="$repo_root/src/testing/differential.elisa"
 fixture="$repo_root/test/differential/elisascript_differential_test.elisa"
 docs="$repo_root/docs/differential-testing.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$consumer" "$fixture" "$docs" "$plan"; do
+for required_file in "$model" "$consumer" "$fixture" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'differential redaction audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -59,6 +58,5 @@ for fixture_pattern in \
 done
 
 rg -Fq 'EsDifferentialRedaction::DifferentialRedactionPolicy' "$docs"
-rg -Fq 'P13 redaction follow-up' "$plan"
 
 printf 'differential redaction audit: bounded explicit secret selection, value fingerprints, and omission are present\n'

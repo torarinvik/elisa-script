@@ -9,9 +9,8 @@ model="$repo_root/src/runtime/package_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$ir" "$fixture" "$docs" "$plan"; do
+for required_file in "$model" "$ir" "$fixture" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'package model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -61,6 +60,5 @@ for fixture_pattern in \
 done
 
 rg -Fq '`EsPackage` supplies that package-facing contract' "$docs"
-rg -Fq 'P14 package follow-up' "$plan"
 
 printf 'package model audit: typed manifests, ordered lockfiles, integrity identities, offline policy, and resolution checks are present\n'

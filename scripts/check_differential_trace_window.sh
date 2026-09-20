@@ -9,9 +9,8 @@ model="$repo_root/src/testing/trace_window_model.elisa"
 consumer="$repo_root/src/testing/differential.elisa"
 fixture="$repo_root/test/differential/elisascript_differential_test.elisa"
 docs="$repo_root/docs/differential-testing.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$consumer" "$fixture" "$docs" "$plan"; do
+for required_file in "$model" "$consumer" "$fixture" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'differential trace-window audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -58,6 +57,5 @@ for fixture_pattern in \
 done
 
 rg -Fq 'EsDifferentialTraceWindow::DifferentialTraceWindow' "$docs"
-rg -Fq 'P13 trace-window follow-up' "$plan"
 
 printf 'differential trace-window audit: bounded pre/anchor/post records and first-divergence context are present\n'

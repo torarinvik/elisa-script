@@ -9,9 +9,8 @@ model="$repo_root/src/testing/effect_trace_model.elisa"
 consumer="$repo_root/src/testing/differential.elisa"
 fixture="$repo_root/test/differential/elisascript_differential_test.elisa"
 docs="$repo_root/docs/differential-testing.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$consumer" "$fixture" "$docs" "$plan"; do
+for required_file in "$model" "$consumer" "$fixture" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'differential effect-trace audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -60,6 +59,5 @@ for fixture_pattern in \
 done
 
 rg -Fq 'EsDifferentialEffectTrace::DifferentialEffectTrace' "$docs"
-rg -Fq 'P13 effect-trace follow-up' "$plan"
 
 printf 'differential effect-trace audit: bounded operation identities, resumption counts, fingerprints, and first differences are present\n'

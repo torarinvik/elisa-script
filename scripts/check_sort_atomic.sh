@@ -11,9 +11,8 @@ interpreter_fixture="$repo_root/test/ir/elisascript_interpreter_test.elisa"
 bytecode_fixture="$repo_root/test/ir/elisascript_bytecode_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$interpreter" "$bytecode" "$interpreter_fixture" "$bytecode_fixture" "$docs" "$ledger" "$plan"; do
+for required_file in "$interpreter" "$bytecode" "$interpreter_fixture" "$bytecode_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'sort atomic audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -52,6 +51,5 @@ rg -q 'sorted\(\[1i64, 3i64, 2i64\]' "$bytecode_fixture"
 rg -q 'preflight' "$docs"
 rg -q 'scalar homogeneity' "$docs"
 rg -q '`SortArray` preflights scalar element homogeneity' "$ledger"
-rg -q 'check_sort_atomic\.sh' "$plan"
 
 printf 'sort atomic audit: both backends preflight scalar homogeneity before copying arrays\n'

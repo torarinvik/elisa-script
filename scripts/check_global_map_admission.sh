@@ -9,9 +9,8 @@ interpreter="$repo_root/src/ir/interpret.elisa"
 verifier="$repo_root/src/ir/ir_verify.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$interpreter" "$verifier" "$docs" "$ledger" "$plan"; do
+for required_file in "$interpreter" "$verifier" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || {
         printf 'global map admission audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -38,6 +37,5 @@ failure_line="$(printf '%s\n' "$global_body" | awk '/InterpretFailure\.InvalidCo
 rg -q 'module global map initializer must contain key/value pairs' "$verifier"
 rg -q 'fails closed on malformed odd-length map payloads' "$docs"
 rg -q 'rejects odd key/value payload lengths' "$ledger"
-rg -q 'check_global_map_admission\.sh' "$plan"
 
 printf 'global map admission audit: verifier and runtime reject odd key/value initializer payloads\n'

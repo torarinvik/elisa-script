@@ -9,9 +9,8 @@ source_file="$repo_root/src/ir/interpret.elisa"
 bytecode_file="$repo_root/src/bytecode/bytecode.elisa"
 fixture_file="$repo_root/test/ir/elisascript_interpreter_test.elisa"
 docs_file="$repo_root/docs/ir.md"
-plan_file="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$source_file" "$bytecode_file" "$fixture_file" "$docs_file" "$plan_file"; do
+for required_file in "$source_file" "$bytecode_file" "$fixture_file" "$docs_file"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'regex replacement audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -49,6 +48,5 @@ done
 
 rg -q 'interpreter_quotes_literal_regex_replacement_text' "$fixture_file"
 rg -q 'regex_quote_replacement' "$docs_file"
-rg -q 'P11 literal replacement follow-up' "$plan_file"
 
 printf 'regex replacement audit: literal quoting, escaped backslashes, and bounded output are present\n'

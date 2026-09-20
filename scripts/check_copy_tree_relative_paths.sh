@@ -9,9 +9,8 @@ interpreter="$repo_root/src/ir/interpret.elisa"
 fixture="$repo_root/test/ir/elisascript_interpreter_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$interpreter" "$fixture" "$docs" "$ledger" "$plan"; do
+for required_file in "$interpreter" "$fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || {
         printf 'copy-tree relative-path audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -31,6 +30,5 @@ rg -q 'copy_tree\(path\\"relative-source\\", path\\"relative-destination/\\"\)' 
 rg -q 'copy_tree\(path\\"relative-source\\", path\\"relative-plain-destination\\"\)' "$fixture"
 rg -q 'relative destination.*realpath' "$docs"
 rg -q 'relative and trailing-separator destination' "$ledger"
-rg -q 'copy-tree relative-path follow-up' "$plan"
 
 printf 'copy-tree relative-path audit: normalized relative/trailing destinations use a real current-directory parent before overlap checks\n'

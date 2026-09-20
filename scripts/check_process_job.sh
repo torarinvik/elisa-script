@@ -9,9 +9,8 @@ model="$repo_root/src/runtime/process_model.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$fixture" "$docs" "$ledger" "$plan"; do
+for required_file in "$model" "$fixture" "$docs" "$ledger"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'process job audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -46,6 +45,5 @@ done
 
 rg -Fq '`ProcessJob` and `advance_process_job`' "$docs"
 rg -Fq '`ProcessJob` adds a typed background-supervision state machine' "$ledger"
-rg -Fq 'P10 process-job follow-up' "$plan"
 
 printf 'process job audit: bounded retry, cancellation, and terminal-state transitions are present\n'

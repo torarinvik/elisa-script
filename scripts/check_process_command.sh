@@ -12,9 +12,8 @@ differential_source="$repo_root/src/testing/differential.elisa"
 differential_fixture="$repo_root/test/differential/elisascript_differential_test.elisa"
 differential_docs="$repo_root/docs/differential-testing.md"
 docs="$repo_root/docs/ir.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$ir" "$fixture" "$differential_source" "$differential_fixture" "$differential_docs" "$docs" "$plan"; do
+for required_file in "$model" "$ir" "$fixture" "$differential_source" "$differential_fixture" "$differential_docs" "$docs"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'process command audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -92,7 +91,6 @@ rg -q 'stdin_path: sview = ""' "$model"
 rg -q 'A `File` mode must carry its corresponding' "$docs"
 rg -q 'EsProcess::ProcessResult' "$docs"
 rg -q 'ProcessResultError' "$docs"
-rg -q 'P10 typed-command follow-up' "$plan"
 rg -q 'using EsProcess' "$differential_source"
 rg -q 'def differential_process_command_valid\(' "$differential_source"
 rg -q 'validate_process_command\(command\)' "$differential_source"

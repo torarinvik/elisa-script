@@ -8,9 +8,8 @@ repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 interpreter="$repo_root/src/ir/interpret.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$interpreter" "$docs" "$ledger" "$plan"; do
+for required_file in "$interpreter" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'aggregate literal atomic audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -47,6 +46,5 @@ global_rollbacks="$(printf '%s\n' "$global_body" | rg -c 'storage\.truncate\(sta
 
 rg -q 'rolls the shared storage cursor back' "$docs"
 rg -q 'Array/map literal and global initialization paths likewise roll back' "$ledger"
-rg -q 'check_aggregate_literal_atomic\.sh' "$plan"
 
 printf 'aggregate literal atomic audit: array, map, and global construction roll back partial storage on failure\n'

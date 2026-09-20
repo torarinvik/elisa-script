@@ -8,9 +8,8 @@ repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 source_file="$repo_root/src/testing/differential.elisa"
 fixture_file="$repo_root/test/differential/elisascript_differential_test.elisa"
 docs_file="$repo_root/docs/differential-testing.md"
-plan_file="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$source_file" "$fixture_file" "$docs_file" "$plan_file"; do
+for required_file in "$source_file" "$fixture_file" "$docs_file"; do
     [[ -f "$required_file" ]] || { printf 'differential shrink-trace audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -52,6 +51,5 @@ for fixture_pattern in \
 done
 
 rg -Fq 'DifferentialShrinkTrace' "$docs_file"
-rg -Fq 'P13 shrink-trace follow-up' "$plan_file"
 
 printf 'differential shrink-trace audit: bounded category-preserving steps and explicit minimality proof are present\n'

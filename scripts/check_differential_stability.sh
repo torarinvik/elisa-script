@@ -9,9 +9,8 @@ model="$repo_root/src/testing/stability_model.elisa"
 consumer="$repo_root/src/testing/differential.elisa"
 fixture="$repo_root/test/differential/elisascript_differential_test.elisa"
 docs="$repo_root/docs/differential-testing.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$consumer" "$fixture" "$docs" "$plan"; do
+for required_file in "$model" "$consumer" "$fixture" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'differential stability audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -62,6 +61,5 @@ done
 rg -Fq 'forged_stability_accounting' "$fixture"
 
 rg -Fq 'EsDifferentialStability::DifferentialStabilitySession' "$docs"
-rg -Fq 'P13 repeat-stability follow-up' "$plan"
 
 printf 'differential stability audit: bounded repeats, explicit stable classifications, and fail-closed nondeterminism policy are present\n'

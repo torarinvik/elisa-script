@@ -10,9 +10,8 @@ ir="$repo_root/src/ir/ir.elisa"
 fixture_file="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger" "$plan"; do
+for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'file lock audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -81,6 +80,5 @@ done
 
 rg -q 'EsFileLock::FileLockTable' "$docs"
 rg -q 'ES-FS-004' "$ledger"
-rg -q 'P9 file-lock follow-up' "$plan"
 
 printf 'file lock audit: bounded advisory shared/exclusive ownership and cleanup edges are present\n'

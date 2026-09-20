@@ -10,11 +10,10 @@ ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 contract="$repo_root/test/fixtures/script_parity/cli_launcher/CONTRACT.md"
 docs="$repo_root/docs/ir.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 driver="$repo_root/src/driver/elisascript.elisa"
 runner="$repo_root/src/ir/runner.elisa"
 
-for required_file in "$model" "$ir" "$fixture" "$contract" "$docs" "$plan" "$driver" "$runner"; do
+for required_file in "$model" "$ir" "$fixture" "$contract" "$docs" "$driver" "$runner"; do
     [[ -f "$required_file" ]] || { printf 'cli model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -89,6 +88,5 @@ rg -Fq 'strict_engine_diagnostic_rejects_interpreter_fallback' "$repo_root/test/
 rg -Fq 'cli_parser_resets_reused_request_state' "$repo_root/test/ir/elisascript_runner_test.elisa"
 rg -Fq 'bounded C-string scan' "$contract"
 rg -Fq 'ArgumentBytes' "$contract"
-rg -Fq 'P14 CLI follow-up' "$plan"
 
 printf 'cli model audit: typed modes and bounded options are present; --check validates without executing\n'

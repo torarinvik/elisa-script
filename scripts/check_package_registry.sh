@@ -11,9 +11,8 @@ ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$package_model" "$ir" "$fixture" "$docs" "$ledger" "$plan"; do
+for required_file in "$model" "$package_model" "$ir" "$fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'package registry audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -63,6 +62,5 @@ done
 
 rg -Fq 'EsPackageRegistry makes that adapter boundary explicit' "$docs"
 rg -Fq 'ES-SCRIPT-004 | EsPackageRegistry' "$ledger"
-rg -Fq 'explicit EsPackageRegistry contract' "$plan"
 
 printf 'package registry audit: bounded integrity candidates, deterministic ordering, sealed lookup, constraints, and cancellation are present\n'

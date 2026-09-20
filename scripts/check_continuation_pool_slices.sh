@@ -11,9 +11,8 @@ ir_tests="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 policy="$repo_root/docs/continuation-policy.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$interpreter" "$interpreter_tests" "$ir_tests" "$docs" "$policy" "$ledger" "$plan"; do
+for required_file in "$interpreter" "$interpreter_tests" "$ir_tests" "$docs" "$policy" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'continuation pool audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -62,7 +61,6 @@ done
 rg -q 'verifier_rejects_malformed_continuation_capture_metadata' "$ir_tests"
 rg -q 'Snapshot ids, values, handler names' "$docs"
 rg -q 'independent starts and counts for its SSA-id' "$policy"
-rg -q 'Continuation-pool slice increment' "$plan"
 rg -q 'ES-EFF-001' "$ledger"
 
 printf 'continuation pool audit: id/value starts, paired counts, replay indexing, and reclamation are present\n'

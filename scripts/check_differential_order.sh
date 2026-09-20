@@ -9,9 +9,8 @@ model="$repo_root/src/testing/order_model.elisa"
 consumer="$repo_root/src/testing/differential.elisa"
 fixture="$repo_root/test/differential/elisascript_differential_test.elisa"
 docs="$repo_root/docs/differential-testing.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$consumer" "$fixture" "$docs" "$plan"; do
+for required_file in "$model" "$consumer" "$fixture" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'differential order audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -62,6 +61,5 @@ for fixture_pattern in \
 done
 
 rg -Fq 'EsDifferentialOrder::DifferentialOrderSession' "$docs"
-rg -Fq 'P13 execution-order follow-up' "$plan"
 
 printf 'differential order audit: bounded dual-order execution, world restoration fingerprints, and contamination classification are present\n'

@@ -7,11 +7,10 @@ script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 interpreter="$repo_root/src/ir/interpret.elisa"
 process_audit="$repo_root/scripts/check_process_capture.sh"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$interpreter" "$process_audit" "$plan" "$docs" "$ledger"; do
+for required_file in "$interpreter" "$process_audit" "$docs" "$ledger"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'process timeout audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -74,7 +73,6 @@ assert_timeout_mapping evaluate_capture_process_result
 assert_timeout_mapping evaluate_capture_process_stream_with_stdin
 
 # Keep the existing deadlock/group-cleanup audit in the same compiler-free gate.
-rg -q 'Q07:.*process capture' "$plan"
 rg -q 'typed.*Time|InterpretFailure\.Time|timeout.*typed' "$docs" "$ledger"
 
 printf 'process timeout audit: bounded wait exhaustion maps to typed Time after output-limit precedence and cleanup\n'

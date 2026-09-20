@@ -13,9 +13,8 @@ integer_conversion="$repo_root/src/runtime/schema_integer_conversion.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$json_model" "$json_materializer" "$csv_materializer" "$integer_conversion" "$ir" "$fixture" "$docs" "$plan"; do
+for required_file in "$model" "$json_model" "$json_materializer" "$csv_materializer" "$integer_conversion" "$ir" "$fixture" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'schema model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -215,7 +214,5 @@ rg -Fq '`EsSchema`' "$docs"
 rg -Fq '`EsSchemaCsv` materializes completed CSV/TSV records' "$docs"
 rg -Fq '`validate_schema_json_record_against` rechecks those annotations' "$docs"
 rg -Fq 'header/positional projection once per call' "$docs"
-rg -Fq 'Latest P08 typed JSON schema follow-up' "$plan"
-rg -Fq 'Latest P08 recursive typed JSON schema follow-up' "$plan"
 
 printf 'schema model audit: recursively typed JSON values, typed schema binding, and bounded CSV row batches are present\n'

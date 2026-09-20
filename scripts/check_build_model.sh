@@ -9,9 +9,8 @@ model="$repo_root/src/runtime/build_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$ir" "$fixture" "$docs" "$plan"; do
+for required_file in "$model" "$ir" "$fixture" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'build model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -110,6 +109,5 @@ rg -Fq 'for dependency_position in 0..<node.dependencies.count |node|' "$model"
 rg -Fq 'earlier_dependency > dependency_index' "$model"
 
 rg -Fq '`EsBuild` is the shell-replacement boundary' "$docs"
-rg -Fq 'P10 build-graph follow-up' "$plan"
 
 printf 'build model audit: deterministic dependencies, bounded parallelism/logs, and fail-draining/cancellation are present\n'

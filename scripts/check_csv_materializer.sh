@@ -11,9 +11,8 @@ ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$csv_model" "$ir" "$fixture" "$docs" "$ledger" "$plan"; do
+for required_file in "$model" "$csv_model" "$ir" "$fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'csv materializer audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -78,6 +77,5 @@ done
 rg -Fq '`EsCsvMaterialize` gives CSV/TSV adapters a policy-bound borrowed-span' "$docs"
 rg -Fq 'exact configured' "$docs"
 rg -Fq 'ES-SCRIPT-009 | EsCsvMaterialize' "$ledger"
-rg -Fq 'explicit EsCsvMaterialize' "$plan"
 
 printf 'csv materializer audit: bounded spans, contiguous records, exact line endings, quote markers, shared ceilings, and validated slices are present\n'

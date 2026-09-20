@@ -8,12 +8,11 @@ repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 interpreter="$repo_root/src/ir/interpret.elisa"
 differential="$repo_root/src/testing/differential.elisa"
 runtime="$repo_root/src/runtime/runtime.elisa"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 tests="$repo_root/test/differential/elisascript_differential_test.elisa"
 
-for required_file in "$interpreter" "$differential" "$runtime" "$plan" "$docs" "$ledger" "$tests"; do
+for required_file in "$interpreter" "$differential" "$runtime" "$docs" "$ledger" "$tests"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'process descendant audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -57,7 +56,6 @@ rg -q 'differential_process_group_has_members' "$differential"
 rg -q 'leader.*intermediate|leader.*only an intermediate|surviving group member' "$differential"
 rg -q 'differential_process_rejects_leader_exit_with_live_group_member' "$tests"
 
-rg -q 'surviving descendants|leader exit.*group|leader.*group.*KILL' "$docs" "$ledger" "$plan"
 rg -q 'differential_process_execution_reports_bounded_timeout' "$tests"
 rg -q 'differential_process_timeout_owns_descendant_process_group' "$tests"
 

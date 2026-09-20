@@ -12,9 +12,8 @@ bytecode_fixture="$repo_root/test/ir/elisascript_bytecode_test.elisa"
 docs="$repo_root/docs/ir.md"
 semantics="$repo_root/docs/semantics.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$interpreter" "$bytecode" "$interpreter_fixture" "$bytecode_fixture" "$docs" "$semantics" "$ledger" "$plan"; do
+for required_file in "$interpreter" "$bytecode" "$interpreter_fixture" "$bytecode_fixture" "$docs" "$semantics" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'map delete storage audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -64,6 +63,5 @@ rg -q 'missing-key' "$docs"
 rg -q '`DeleteIndex` returns the original map' "$docs"
 rg -q 'flat map storage unchanged' "$semantics"
 rg -q 'search-before-allocation rule applies to no-op `DeleteIndex`' "$ledger"
-rg -q 'check_map_delete_storage\.sh' "$plan"
 
 printf 'map delete storage audit: both backends search before allocation and missing-key fixtures assert unchanged storage\n'

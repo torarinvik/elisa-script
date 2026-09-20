@@ -11,9 +11,8 @@ ir="$repo_root/src/ir/ir.elisa"
 fixture_file="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$record_model" "$ir" "$fixture_file" "$docs" "$ledger" "$plan"; do
+for required_file in "$model" "$record_model" "$ir" "$fixture_file" "$docs" "$ledger"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'record materializer audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -85,6 +84,5 @@ rg -Fq 'advance_record_materializer(empty, RecordMaterializerEvent.Seal)' "$fixt
 
 rg -q 'EsRecordMaterialize::RecordMaterializer' "$docs"
 rg -q 'ES-SCRIPT-023' "$ledger"
-rg -q 'P11 materialization follow-up' "$plan"
 
 printf 'record materializer audit: bounded ordered lifecycle and ownership checks are present\n'

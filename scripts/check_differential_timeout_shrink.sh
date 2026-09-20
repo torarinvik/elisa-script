@@ -9,9 +9,8 @@ source_file="$repo_root/src/testing/timeout_shrink_model.elisa"
 fixture_file="$repo_root/test/differential/elisascript_differential_test.elisa"
 docs_file="$repo_root/docs/differential-testing.md"
 ledger_file="$repo_root/docs/capabilities/ledger.md"
-plan_file="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$source_file" "$fixture_file" "$docs_file" "$ledger_file" "$plan_file"; do
+for required_file in "$source_file" "$fixture_file" "$docs_file" "$ledger_file"; do
     [[ -f "$required_file" ]] || { printf 'differential timeout-shrink audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -54,6 +53,5 @@ done
 
 rg -q 'EsDifferentialTimeout::DifferentialTimeoutSession' "$docs_file"
 rg -q 'ES-SCRIPT-028' "$ledger_file"
-rg -q 'P13 timeout-shrink follow-up' "$plan_file"
 
 printf 'differential timeout-shrink audit: monotonic rerun evidence and explicit exhaustion are present\n'

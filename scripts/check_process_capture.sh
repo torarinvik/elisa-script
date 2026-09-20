@@ -11,9 +11,8 @@ process_runtime="$repo_root/src/runtime/process_posix.elisa"
 source_file="$repo_root/src/ir/source_file.elisa"
 tests="$repo_root/test/differential/elisascript_differential_test.elisa"
 interpreter_tests="$repo_root/test/ir/elisascript_interpreter_test.elisa"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$interpreter" "$differential" "$process_runtime" "$source_file" "$tests" "$interpreter_tests" "$plan"; do
+for required_file in "$interpreter" "$differential" "$process_runtime" "$source_file" "$tests" "$interpreter_tests"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'process capture audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -80,6 +79,5 @@ rg -q 'process capture inputs exceed differential budget' "$tests"
 rg -q 'process capture inputs are structurally invalid' "$tests"
 rg -q 'interpreter_rejects_capture_before_descendant_group_quiescence' "$interpreter_tests"
 rg -q 'timeout' "$differential"
-rg -q 'Q07:.*process capture' "$plan"
 
 printf 'process capture audit: temporary-file streams, paired limits, bounded polling, and group cleanup are present\n'

@@ -10,9 +10,8 @@ ir="$repo_root/src/ir/ir.elisa"
 fixture_file="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger" "$plan"; do
+for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'deadline audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -61,6 +60,5 @@ done
 
 rg -q 'EsDeadline::DeadlineClock' "$docs"
 rg -q 'ES-SCRIPT-048' "$ledger"
-rg -q 'P12/P8 deadline follow-up' "$plan"
 
 printf 'deadline audit: monotonic host/virtual time, bounded waits, and due-fire transitions are present\n'

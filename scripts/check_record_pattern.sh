@@ -10,9 +10,8 @@ ir="$repo_root/src/ir/ir.elisa"
 fixture_file="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger" "$plan"; do
+for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'record pattern audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -74,6 +73,5 @@ rg -Fq 'sview_len(value) <= policy.max_text_bytes' "$model"
 
 rg -q 'EsRecordPattern::RecordPatternSession' "$docs"
 rg -q 'ES-SCRIPT-039' "$ledger"
-rg -q 'P11 pattern-action follow-up' "$plan"
 
 printf 'record pattern audit: bounded pattern/action and inclusive-range selection are present\n'

@@ -11,9 +11,8 @@ ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$resource_model" "$ir" "$fixture" "$docs" "$ledger" "$plan"; do
+for required_file in "$model" "$resource_model" "$ir" "$fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'handle audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -56,6 +55,5 @@ done
 
 rg -Fq 'EsHandle supplies the host-handle table' "$docs"
 rg -Fq 'ES-SCRIPT-006 | EsHandle' "$ledger"
-rg -Fq 'explicit EsHandle table contract' "$plan"
 
 printf 'handle audit: bounded raw identities, owner-token transfer, duplicate rejection, close/failure accounting, and abandonment are present\n'

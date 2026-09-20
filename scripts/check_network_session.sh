@@ -11,9 +11,8 @@ ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$network_model" "$ir" "$fixture" "$docs" "$ledger" "$plan"; do
+for required_file in "$model" "$network_model" "$ir" "$fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'network session audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -71,6 +70,5 @@ done
 
 rg -Fq 'EsNetworkSession binds those policies to one transport attempt' "$docs"
 rg -Fq 'ES-SCRIPT-011 | EsNetworkSession' "$ledger"
-rg -Fq 'explicit EsNetworkSession contract' "$plan"
 
 printf 'network session audit: ordered transport phases, bounded send/receive accounting, redirects, polls, outcomes, retry, and cancellation are present\n'

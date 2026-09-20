@@ -9,9 +9,8 @@ model="$repo_root/src/runtime/resource_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$ir" "$fixture" "$docs" "$plan"; do
+for required_file in "$model" "$ir" "$fixture" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'resource model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -51,6 +50,5 @@ for fixture_pattern in \
 done
 
 rg -Fq '`EsResource` is the ownership ledger' "$docs"
-rg -Fq 'P5 resource-ledger follow-up' "$plan"
 
 printf 'resource model audit: bounded ownership, owner tokens, close/failure edges, and double-close rejection are present\n'

@@ -10,9 +10,8 @@ ir="$repo_root/src/ir/ir.elisa"
 fixture_file="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger" "$plan"; do
+for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'structured task audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -72,6 +71,5 @@ rg -q 'forged_joining' "$fixture_file"
 
 rg -q 'EsStructuredTask::StructuredTaskScope' "$docs"
 rg -q 'ES-SCRIPT-046' "$ledger"
-rg -q 'P12 structured-concurrency follow-up' "$plan"
 
 printf 'structured task audit: child cleanup shielding, cancellation, and join ordering are present\n'

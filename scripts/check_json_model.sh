@@ -12,9 +12,8 @@ encoder="$repo_root/src/runtime/json_encode_model.elisa"
 lexer="$repo_root/src/runtime/json_lexer_model.elisa"
 parser="$repo_root/src/runtime/json_parse_model.elisa"
 docs="$repo_root/docs/ir.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$lexer" "$parser" "$encoder" "$ir" "$fixture" "$docs" "$plan"; do
+for required_file in "$model" "$lexer" "$parser" "$encoder" "$ir" "$fixture" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'json model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -231,6 +230,5 @@ for fixture_pattern in \
 done
 
 rg -Fq '`EsJson` is the namespaced owned-document boundary' "$docs"
-rg -Fq 'Latest P08 JSON adapter follow-up' "$plan"
 
 printf 'json model audit: namespaced owned scalar/key arenas and document lifecycle contracts are present\n'

@@ -9,9 +9,8 @@ interpreter="$repo_root/src/ir/interpret.elisa"
 bytecode="$repo_root/src/bytecode/bytecode.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$interpreter" "$bytecode" "$docs" "$ledger" "$plan"; do
+for required_file in "$interpreter" "$bytecode" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || {
         printf 'map concat capacity audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -47,6 +46,5 @@ assert_exact_preflight "$interpreter" 'def evaluate_concat'
 assert_exact_preflight "$bytecode" 'def bytecode_direct_concat'
 rg -q 'Map concatenation likewise counts only right-hand keys' "$docs"
 rg -q 'preflights only newly introduced right-hand keys' "$ledger"
-rg -q 'check_map_concat_capacity\.sh' "$plan"
 
 printf 'map concat capacity audit: duplicate-only merges do not require unused pair capacity\n'

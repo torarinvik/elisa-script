@@ -10,9 +10,8 @@ ir="$repo_root/src/ir/ir.elisa"
 fixture_file="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger" "$plan"; do
+for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'record model audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -69,6 +68,5 @@ done
 rg -q 'EsRecord::RecordStreamPolicy' "$docs"
 rg -q 'error\[RecordContractError\]' "$docs"
 rg -q 'EsRecord::RecordStreamPolicy' "$ledger"
-rg -q 'P11 record follow-up' "$plan"
 
 printf 'record model audit: bounded separator, field, metadata, and range contracts are present\n'

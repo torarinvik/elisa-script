@@ -9,9 +9,8 @@ model="$repo_root/src/runtime/install_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$ir" "$fixture" "$docs" "$plan"; do
+for required_file in "$model" "$ir" "$fixture" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'install model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -57,6 +56,5 @@ for fixture_pattern in \
 done
 
 rg -Fq '`EsInstall` makes release publication a typed state machine' "$docs"
-rg -Fq 'P15 install follow-up' "$plan"
 
 printf 'install model audit: typed artifact targets, integrity admission, publication transitions, and rollback are present\n'

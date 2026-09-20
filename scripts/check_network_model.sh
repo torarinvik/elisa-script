@@ -10,9 +10,8 @@ ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$ir" "$fixture" "$docs" "$ledger" "$plan"; do
+for required_file in "$model" "$ir" "$fixture" "$docs" "$ledger"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'network model audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -136,10 +135,5 @@ rg -Fq 'forged_completed_outcome' "$fixture"
 rg -Fq 'EsNetwork::NetworkRequest' "$docs"
 rg -Fq 'error[NetworkContractError]' "$docs"
 rg -Fq 'EsNetwork::NetworkRequest' "$ledger"
-rg -Fq 'P12 network follow-up' "$plan"
-rg -Fq 'P12 retry follow-up' "$plan"
-rg -Fq 'P12 lifecycle follow-up' "$plan"
-rg -Fq 'P12 TLS follow-up' "$plan"
-rg -Fq 'P12 streaming follow-up' "$plan"
 
 printf 'network model audit: bounded request/response, retry, streaming, cancellation, and lifecycle contracts are present\n'

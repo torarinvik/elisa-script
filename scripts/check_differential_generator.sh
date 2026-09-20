@@ -9,9 +9,8 @@ model="$repo_root/src/testing/generator_model.elisa"
 consumer="$repo_root/src/testing/differential.elisa"
 fixture="$repo_root/test/differential/elisascript_differential_test.elisa"
 docs="$repo_root/docs/differential-testing.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$consumer" "$fixture" "$docs" "$plan"; do
+for required_file in "$model" "$consumer" "$fixture" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'differential generator audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -56,6 +55,5 @@ for fixture_pattern in \
 done
 
 rg -Fq 'EsDifferentialGenerator::DifferentialGeneratorSession' "$docs"
-rg -Fq 'P13 generator follow-up' "$plan"
 
 printf 'differential generator audit: bounded reproducible case seeds, ordering, and aggregate payload limits are present\n'

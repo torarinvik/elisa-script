@@ -10,9 +10,8 @@ ir="$repo_root/src/ir/ir.elisa"
 fixture_file="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger" "$plan"; do
+for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'process batch audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -100,6 +99,5 @@ done
 
 rg -q 'EsProcessBatch::ProcessBatchSession' "$docs"
 rg -q 'ES-SCRIPT-033' "$ledger"
-rg -q 'P10 process-batch follow-up' "$plan"
 
 printf 'process batch audit: bounded parallel launch, retry, failure, and cancellation are present\n'

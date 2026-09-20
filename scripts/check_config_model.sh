@@ -10,8 +10,6 @@ ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
-tasks="$repo_root/SCRIPT_TASKS.md"
 
 for required_file in "$model" "$ir" "$fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'config audit: missing %s\n' "$required_file" >&2; exit 1; }
@@ -65,8 +63,5 @@ for fixture_check in \
 done
 
 rg -Fq '`EsConfig` is the pure configuration precedence boundary' "$docs"
-if [[ -f "$plan" && -f "$tasks" ]]; then
-    rg -Fq 'EsConfig' "$plan" "$tasks"
-fi
 
 printf 'config audit: bounded precedence, aggregate payload ceilings, and deterministic lookup are present\n'

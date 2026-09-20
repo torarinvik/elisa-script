@@ -11,9 +11,8 @@ ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
-plan="$repo_root/IMPLEMENTATION_PLAN.md"
 
-for required_file in "$model" "$cli_model" "$ir" "$fixture" "$docs" "$ledger" "$plan"; do
+for required_file in "$model" "$cli_model" "$ir" "$fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'cli workflow audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -69,6 +68,5 @@ done
 
 rg -Fq 'EsCliWorkflow separates planning from host execution' "$docs"
 rg -Fq 'ES-SCRIPT-008 | EsCliWorkflow' "$ledger"
-rg -Fq 'explicit EsCliWorkflow contract' "$plan"
 
 printf 'cli workflow audit: mode-specific step plans, ordering validation, completion, failure, and cancellation are present\n'
