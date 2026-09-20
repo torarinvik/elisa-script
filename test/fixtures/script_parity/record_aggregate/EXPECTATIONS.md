@@ -112,8 +112,10 @@ the explicit-root success, usage, missing-root, each single missing shared
 input, exact/over aggregate-byte boundary, and source-needle mutation cases.
 It pins the public launcher's digest before and after the matrix, passes both
 implementations the same sanitized environment, caps child output and timeout,
-and expects the bounded outer validation wrapper. That wrapper's process-tree
-RSS guard is sampled/reactive rather than a kernel-enforced memory cap. No
-compiler, launcher, shell audit, or parity case has been run for this contract,
-and the record-aggregate port is not accepted until validation is explicitly
-reauthorized and safely completed.
+preflights the five shared files to the 4 MiB aggregate bound, and separately
+caps the copied candidate source at 1 MiB. It expects the bounded outer
+validation wrapper. That wrapper's process-tree RSS guard is sampled/reactive
+rather than a kernel-enforced memory cap. No compiler, launcher, shell audit,
+or parity case has been run for this contract, and the record-aggregate port
+is not accepted until validation is explicitly reauthorized and safely
+completed.
