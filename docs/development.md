@@ -23,17 +23,27 @@ not standing approval. Do not launch a compiler or test wrapper unless the user
 explicitly reauthorizes validation in the active task.
 
 The latest self-hosted Elisa compiler source currently visible (read-only
-rechecked 2026-09-16) is the clean `main` checkout at `../Elisa-compiler`,
-revision `5329edfdbefa27b5c1c51253da0073256ed51058` (committed 2026-09-16). It
-includes the module-callee, private-extern, catch-binder, value-tail, and
-stage-compatibility fixes plus the recent wasm intrinsic/component-runtime
-corrections (including the wasm memory-intrinsic overload fix) and target-machine
-optimization-level matching (`5329edfd`) on top
-of the extern-resource ABI and lowering work. The upstream lexer buffer-return
-optimization (`c7c849c7`) is also represented by the focused Elisascript
-adaptation in `vendor/elisa-compiler/src/lexer`; the compatible target-machine
-level helper and wasm intrinsic overload fix are mirrored in
+rechecked 2026-09-20) is the clean local `main` checkout at `../Elisa-compiler`,
+revision `a51f3dd710dccde137141a41ce67b878f1181872` (one commit ahead of its
+checked `origin/main` at the time of observation). Since
+`5329edfdbefa27b5c1c51253da0073256ed51058`, it includes
+additional semantic lookup-index optimizations and compiler correctness and
+diagnostic fixes. The upstream lexer buffer-return optimization (`c7c849c7`)
+is represented by the focused Elisascript adaptation in
+`vendor/elisa-compiler/src/lexer`; the compatible target-machine level helper
+and wasm intrinsic overload fix are mirrored in
 `vendor/elisa-compiler/src/backend/{codegen_debug,codegen_declare}.elisa`.
+The September 20 semantic fast paths (`187a33ef`, `65842568`, `41d1e229`, and
+`7e6dde06`) now use Elisascript's already-present collision-safe symbol chain
+for value-block name resolution, enum-index struct classification, and
+positional-construction checks, and reuse the catch-line index rather than
+rescanning annotations. Exact names and symbol kinds are rechecked, and the
+value-block query preserves first-declaration lookup order without importing
+the upstream compiler's newer index tables. Upstream `15c54315`'s global
+integer constant folder also uses the vendor's shared character-literal decoder.
+A nearby upstream `44a9cf62` change also recognizes empty structs in a
+diagnostic predicate; it
+is kept separate because that is a behavior correction, not only a fast path.
 The vendored snapshot also carries the compatible semantic fast paths from
 `142d9b03` (direct `sview` length checks and one-time protocol indexing) and
 the backend disjointness-scan de-duplication from `9bf231e6`; newer allocator,
@@ -43,11 +53,12 @@ The remaining vendor tree is an adapted `e56d6f2d` snapshot, so refresh it
 deliberately rather than copying this checkout wholesale.
 
 The separate Go Elisa-core source checkout currently visible (read-only
-rechecked 2026-09-16) is clean at revision
-`3a5520d8fd56b86c430f39518a261e9030fa72ec` on its `main` branch at
+rechecked 2026-09-20) is clean at revision
+`90228b6ff38091324f1f19ec7b81bbd2f39825bf` on its `main` branch at
 `/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/Elisa-core`. It
-includes the latest stage0 alignment for value-returning and unannotated-void
-function tails. The explicitly safety-pinned `structpy-tree/compiler/bin/elisac`
+includes nested-expression effect inference and generic private-field
+validation fixes. It is five commits ahead of its checked `origin/main` at the
+time of observation. The explicitly safety-pinned `structpy-tree/compiler/bin/elisac`
 path is absent in this workspace; the ignored executable in the Elisa-core
 main-worktree was built from an older revision with `vcs.modified=true`, so it
 is neither a reproducible build of this revision nor an authorized validation

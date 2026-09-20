@@ -72,15 +72,21 @@ lowering, static-if module handling, and self-hosted extern-resource ABI support
 The vendored `e56d6f2d` tree is adapted, so this source requires a deliberate
 compatibility refresh rather than a wholesale copy.
 
-Latest self-hosted source recheck (2026-09-16; read-only): the clean `main`
-checkout now resolves to
-`5329edfdbefa27b5c1c51253da0073256ed51058`, adding the recent wasm
-intrinsic/component-runtime corrections (including the memory-intrinsic
-overload fix) and target-machine optimization-level matching on top of the
-`d6a693c0` module-callee, private-extern, catch-binder,
-value-tail, and stage compatibility fixes. The vendored `e56d6f2d` tree remains
-the known-compatible adapted snapshot; its target-machine helper now exposes a
-level-aware entry point, but no compiler was rebuilt or launched.
+Latest self-hosted source recheck (2026-09-20; read-only): the clean local
+`main` checkout now resolves to
+`a51f3dd710dccde137141a41ce67b878f1181872`, one commit ahead of its checked
+`origin/main` (`66b8ed02cd5075ec4d3e7559187e32937699a985`) at observation time.
+Since the `5329edfdbefa27b5c1c51253da0073256ed51058`
+source, it adds many semantic lookup-index optimizations and compiler
+correctness/diagnostic fixes. The vendored `e56d6f2d` tree remains the
+known-compatible adapted snapshot; it now also uses the existing collision-safe
+symbol chain for value-block name resolution, enum-index struct classification,
+and positional-construction checks, and the catch-line index for catch
+classification, mirroring upstream optimizations `187a33ef`, `65842568`,
+`41d1e229`, and `7e6dde06`. The integer constant folder also uses the vendor's
+existing character-literal decoder, adapting `15c54315`. The separate
+empty-struct diagnostic correction in `44a9cf62` remains under review because
+it changes behavior. No compiler was rebuilt or launched.
 
 An earlier Go Elisa-core source observation recorded
 `e85e8282c7b8dc588ba2ba53f0912d98769b1f1a` on `codex/structpy-tree`. Its work
@@ -89,10 +95,11 @@ IR artifacts on top of the earlier FFI, lowering, and region optimizations. The
 immutable Go commit was the source reference for the guarded validation path;
 the historical 601f7bcd executable identity is not claimed to represent it.
 
-Latest Go source recheck (2026-09-16; read-only): the clean `main` checkout at
+Latest Go source recheck (2026-09-20; read-only): the clean `main` checkout at
 `/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/Elisa-core`
-resolves to `3a5520d8fd56b86c430f39518a261e9030fa72ec`, including stage0
-alignment for value-returning and unannotated-void function tails. The
+resolves to `90228b6ff38091324f1f19ec7b81bbd2f39825bf`, including recent
+nested-expression effect inference and generic private-field validation fixes.
+It is five commits ahead of its checked `origin/main` at observation time. The
 explicitly safety-pinned `structpy-tree/compiler/bin/elisac` path is absent;
 the old executable in the Elisa-core main-worktree is stamped from a different
 revision with `vcs.modified=true`, so it is stale and remains unlaunched. A

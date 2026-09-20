@@ -38,22 +38,21 @@ typed-literal validation. Their rationale and tests are documented under `docs/`
 
 ## Latest upstream source observation
 
-On 2026-09-16 the latest self-hosted Elisa compiler source visible for a future
-adapted refresh was `5329edfdbefa27b5c1c51253da0073256ed51058` on the clean
-`main` checkout at `/Users/torarinvikbjarko/Documents/Coding Projects/Elisa Projects/Elisa-compiler`.
-It merges the recent catch-binder,
-value-returning-tail, module-callee, private-extern, and stage compatibility
-fixes plus wasm intrinsic/component-runtime corrections and target-machine
-optimization-level matching on top of the extern-resource ABI and lowering
-work. This source is
-materially newer than the vendored `e56d6f2d` snapshot, but the differences are
-too broad for an unreviewed wholesale replacement.
+On 2026-09-20 the latest self-hosted Elisa compiler source visible for a future
+adapted refresh was `a51f3dd7` on the clean local `main` checkout at
+`/Users/torarinvikbjarko/Documents/Coding Projects/Elisa Projects/Elisa-compiler`
+(one commit ahead of `origin/main` at observation time). Since
+`5329edfdbefa27b5c1c51253da0073256ed51058`, the source adds many semantic
+lookup-index optimizations and compiler correctness/diagnostic fixes. This
+source is materially newer than the vendored `e56d6f2d` snapshot, but the
+differences are too broad for an unreviewed wholesale replacement.
 
 The separate Go Elisa-core source checkout currently visible for the guarded
-validation path is clean at `3a5520d8fd56b86c430f39518a261e9030fa72ec` on its
+validation path is clean at `90228b6ff38091324f1f19ec7b81bbd2f39825bf` on its
 `main` branch at `/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/Elisa-core`.
-Its latest source commits align stage0 with value-returning and unannotated-void
-function tails. The explicitly pinned `structpy-tree/compiler/bin/elisac`
+It includes nested-expression effect inference and generic private-field
+validation fixes, and is five commits ahead of its checked `origin/main` at
+observation time. The explicitly pinned `structpy-tree/compiler/bin/elisac`
 path is absent in this workspace, and the old Elisa-core executable is a
 different main-worktree artifact; no executable is claimed or launched from
 either path. This immutable Go commit is the source reference for a future
@@ -102,6 +101,31 @@ The current adapted fixes are tracked separately from the snapshot identity:
   compatibility path for metadata/report callers. The excluded upstream driver
   still owns the policy that selects the level; no executable was rebuilt or
   launched here.
+- `187a33ef`: resolve value-block outer-name queries through the existing
+  collision-safe symbol-name chain instead of scanning every collected symbol.
+  The chain preserves declaration insertion order and still compares the full
+  name at each row, so the original first-match behavior is retained. This
+  optimization uses the already-adapted `symbol_chain_head` and
+  `symbol_name_next` index; it does not import the newer compiler's additional
+  semantic index structures.
+- `65842568`: use the same indexed declaration lookup when enum-tag analysis
+  determines whether a parameter type is a struct, replacing a recursive
+  declaration-tree scan for each parameter. The exact symbol name and
+  `SymbolKind.Struct` are rechecked.
+- `41d1e229`: use the indexed declaration lookup for positional-construction
+  checks instead of scanning the full symbol table for every call. Exact name
+  and kind checks preserve the previous admission rule.
+- `7e6dde06`: use the already-populated `catch_match_lines` index when the
+  catch out-of-set pass distinguishes catch matches from ordinary matches,
+  instead of rescanning all parser annotations for each match.
+- `15c54315`: fold character literals in integer global constants through the
+  vendor's existing `parse_char_literal_code` helper. The `handled` flag is
+  set only when that shared decoder accepts the literal, so unsupported forms
+  still decline constant folding rather than becoming a guessed integer.
+- `44a9cf62` was reviewed but is not represented as a pure optimization: its
+  upstream declaration-kind check also recognizes empty structs, whereas this
+  snapshot's field-row check does not. Keep that behavior change separate until
+  the intended empty-struct diagnostic is covered by a semantic regression.
 - `d7aead96`: mirror the WebAssembly memory-intrinsic overload correction in
   the compatible declaration backend. `memory.grow` and `memory.size` are
   overloaded by their i32 result, not by their two source parameters, so the
