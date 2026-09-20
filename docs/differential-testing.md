@@ -1122,8 +1122,8 @@ runtime default. It then clears one aggregate
 array/map slot at a time from each side's owned value pool, after validating
 every root, observation, and nested range; the original mismatch category must
 still survive, so an aggregate reduction cannot silently turn a value mismatch
-into a pass or a malformed-pool result. Process termination/timeout shrinking
-and replaying candidates against the original world remain separate follow-up
+into a pass or a malformed-pool result. Process-termination shrinking and
+replaying candidates against the original world remain separate follow-up
 layers. `DifferentialShrinkTrace`
 records each retained candidate fingerprint and reduction kind, requires the
 original mismatch category to survive, and only permits completion when the
@@ -1133,15 +1133,16 @@ as an evidence-bearing claim instead of an inference from an empty candidate
 list.
 
 `EsDifferentialTimeout::DifferentialTimeoutSession` records the timeout-shrink
-layer separately from process control. A host adapter proposes a strictly
-smaller reference or candidate poll budget, reruns the unchanged world, and
-submits a nonzero comparison fingerprint only when the original mismatch kind
-survives. Candidates are accepted in ordinal order under a bounded budget;
-validation replays retained candidate ordinals, mismatch kinds, fingerprints,
-and strictly decreasing budgets, reconciles the current budget with the last
-accepted candidate, and keeps pending metadata bounded. Completion requires an
-explicit exhausted marker, and no event in this contract launches, signals, or
-kills a process.
+layer separately from process control. A host adapter reruns the unchanged
+world at a smaller reference or candidate poll budget and submits the observed
+comparison kind and a nonzero fingerprint. `Accept` is allowed only when the
+original mismatch kind survives; `Reject` is allowed only when it does not, and
+both decisions are retained. Validation checks attempt ordinals, each attempt
+against the active accepted budget, accepted/rejected outcome consistency, and
+the final budget against the last accepted attempt. Completion still relies on
+the host's explicit search-exhausted declaration; this model cannot prove that
+the adapter explored every possible timeout or reran either side itself. No
+event in this contract launches, signals, or kills a process.
 
 Independent references use `DifferentialOracle`, which pairs a closed source
 language identity with a validated external runner. Python requires the typed

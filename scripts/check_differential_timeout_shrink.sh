@@ -32,11 +32,17 @@ for boundary in \
     'Limits::CANDIDATES' \
     'CandidateNotSmaller' \
     'CandidateOrderInvalid' \
+    'CandidateDecisionInvalid' \
     'MismatchCategory' \
     'MinimalityUnproven' \
     'session.exhausted and session.state != DifferentialTimeoutState.Complete' \
+    'expected_timeout_steps: mutable u64 = session.initial_timeout_steps' \
+    'candidate.timeout_steps >= expected_timeout_steps' \
+    'candidate.accepted and candidate.observed_kind != session.policy.mismatch_kind' \
+    'not candidate.accepted and candidate.observed_kind == session.policy.mismatch_kind' \
+    'session.current_timeout_steps != expected_timeout_steps' \
+    'session.candidates.push(session.pending)' \
     'session.pending.ordinal != session.candidates.count' \
-    'session.current_timeout_steps != session.candidates\[session.candidates.count - 1\].timeout_steps' \
     'comparison_fingerprint' \
     'DifferentialTimeoutEvent.Exhaust'; do
     rg -q "$boundary" "$source_file"
@@ -47,6 +53,11 @@ for fixture_pattern in \
     'using EsDifferentialTimeout' \
     'differential_timeout_shrinker_requires_monotonic_rerun_evidence' \
     'DifferentialTimeoutError.CandidateNotSmaller' \
+    'DifferentialTimeoutError.CandidateDecisionInvalid' \
+    'initial_timeout_steps: 16' \
+    'assert session.candidates.count == 1 and not session.candidates\[0\].accepted' \
+    'invalid_reject' \
+    'invalid_accept' \
     'forged_timeout_candidates'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
@@ -54,4 +65,4 @@ done
 rg -q 'EsDifferentialTimeout::DifferentialTimeoutSession' "$docs_file"
 rg -q 'ES-SCRIPT-028' "$ledger_file"
 
-printf 'differential timeout-shrink audit: monotonic rerun evidence and explicit exhaustion are present\n'
+printf 'differential timeout-shrink audit: accepted and rejected reruns are retained with explicit exhaustion\n'
