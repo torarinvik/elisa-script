@@ -1137,9 +1137,12 @@ layer separately from process control. A host adapter reruns the unchanged
 world at a smaller reference or candidate poll budget and submits the observed
 comparison kind and a nonzero fingerprint. `Accept` is allowed only when the
 original mismatch kind survives; `Reject` is allowed only when it does not, and
-both decisions are retained. Validation checks attempt ordinals, each attempt
-against the active accepted budget, accepted/rejected outcome consistency, and
-the final budget against the last accepted attempt. Completion still relies on
+both decisions are retained. Cancelling with a candidate awaiting its decision
+retains its fingerprint and observed kind as `Abandoned`; that terminal record
+does not change the active timeout and cannot be confused with acceptance or
+rejection. Validation checks attempt ordinals, each attempt against the active
+accepted budget, decision/outcome consistency, and the final budget against the
+last accepted attempt. Completion still relies on
 the host's explicit search-exhausted declaration; this model cannot prove that
 the adapter explored every possible timeout or reran either side itself. No
 event in this contract launches, signals, or kills a process.

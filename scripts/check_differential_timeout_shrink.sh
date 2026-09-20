@@ -20,12 +20,14 @@ for declaration in \
     'const enum DifferentialTimeoutSide of u8' \
     'const enum DifferentialTimeoutState of u8' \
     'const enum DifferentialTimeoutEvent of u8' \
+    'const enum DifferentialTimeoutDecision of u8' \
     'struct DifferentialTimeoutPolicy:' \
     'struct DifferentialTimeoutCandidate:' \
     'struct DifferentialTimeoutSession:' \
     'error DifferentialTimeoutError:' \
     'mismatch_kind: DifferentialDifferenceKind' \
     'observed_kind: DifferentialDifferenceKind' \
+    'def differential_timeout_decision_valid(' \
     'def differential_timeout_comparison_kind_valid(' \
     'def validate_differential_timeout\(' \
     'def advance_differential_timeout\('; do
@@ -42,11 +44,14 @@ for boundary in \
     'session.exhausted and session.state != DifferentialTimeoutState.Complete' \
     'expected_timeout_steps: mutable u64 = session.initial_timeout_steps' \
     'candidate.timeout_steps >= expected_timeout_steps' \
-    'candidate.accepted and candidate.observed_kind != session.policy.mismatch_kind' \
-    'not candidate.accepted and candidate.observed_kind == session.policy.mismatch_kind' \
+    'differential_timeout_decision_valid(candidate.decision)' \
+    'candidate.decision == DifferentialTimeoutDecision.Accepted and candidate.observed_kind != session.policy.mismatch_kind' \
+    'candidate.decision == DifferentialTimeoutDecision.Rejected and candidate.observed_kind == session.policy.mismatch_kind' \
+    'candidate.decision == DifferentialTimeoutDecision.Abandoned and (session.state != DifferentialTimeoutState.Cancelled or index + 1 != session.candidates.count)' \
     'policy.mismatch_kind != DifferentialDifferenceKind.Equal' \
     'session.current_timeout_steps != expected_timeout_steps' \
-    'session.candidates.push(session.pending)' \
+    'decision: DifferentialTimeoutDecision.Rejected' \
+    'decision: DifferentialTimeoutDecision.Abandoned' \
     'session.pending.ordinal != session.candidates.count' \
     'comparison_fingerprint' \
     'DifferentialTimeoutEvent.Exhaust'; do
@@ -62,7 +67,11 @@ for fixture_pattern in \
     'mismatch_kind: DifferentialDifferenceKind.Equal' \
     'DifferentialTimeoutError.PolicyInvalid' \
     'initial_timeout_steps: 16' \
-    'assert session.candidates.count == 1 and not session.candidates\[0\].accepted' \
+    'assert session.candidates.count == 1 and session.candidates\[0\].decision == DifferentialTimeoutDecision.Rejected' \
+    'DifferentialTimeoutDecision.Accepted' \
+    'DifferentialTimeoutDecision.Abandoned' \
+    'cancelled_pending.candidates\[0\].comparison_fingerprint == 96' \
+    'abandoned_while_running' \
     'invalid_reject' \
     'invalid_accept' \
     'forged_timeout_candidates'; do
@@ -72,4 +81,4 @@ done
 rg -q 'EsDifferentialTimeout::DifferentialTimeoutSession' "$docs_file"
 rg -q 'ES-SCRIPT-028' "$ledger_file"
 
-printf 'differential timeout-shrink audit: accepted and rejected reruns are retained with explicit exhaustion\n'
+printf 'differential timeout-shrink audit: accepted, rejected, and abandoned attempts are retained with explicit exhaustion\n'

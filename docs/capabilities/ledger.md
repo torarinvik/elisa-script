@@ -1254,10 +1254,12 @@ shrink evidence session. It records reference/candidate side identity,
 strictly smaller timeout attempts, ordinal order, typed `DifferentialDifferenceKind`
 observations with closed enum admission,
 nonzero rerun fingerprints, and retained accept/reject decisions without
-launching or signalling processes. Only accepted attempts change the active
-timeout, and acceptance requires the original mismatch kind; rejection requires
-a different observed kind. Validation reconstructs the active timeout from the
-initial budget and accepted attempts. Completion records a host-declared search
+launching or signalling processes. Cancelling with an undecided candidate retains
+its observed kind and fingerprint as an abandoned terminal attempt. Only
+accepted attempts change the active timeout, and acceptance requires the
+original mismatch kind; rejection requires a different observed kind.
+Validation reconstructs the active timeout from the initial budget and accepted
+attempts. Completion records a host-declared search
 exhaustion, not proof that every possible budget was tried. The focused
 differential fixture, documentation, and check_differential_timeout_shrink.sh
 audit are static evidence; host process control and fresh-world reruns remain
