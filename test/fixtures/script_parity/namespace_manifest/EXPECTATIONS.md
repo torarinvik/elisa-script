@@ -2,7 +2,7 @@
 
 Run both implementations with the same explicit source root. For the positive
 case, also pass its `parser_tokens.elisa` as the second argument so neither side
-uses its working-directory-relative default. Substitute the absolute
+depends on a parser-token default. Substitute the absolute
 `SOURCE_ROOT` path and, where present, the absolute `PARSER_SOURCE` path in the
 expected output below. These are static expectations; the compiler validation
 hold means neither implementation nor the candidate has been executed on this
@@ -31,3 +31,12 @@ dedicated regression fixtures before acceptance. The process-level harness at
 each tuple against both programs and pins the public launcher's hash before
 and after the matrix. It is source-only and remains unexecuted while compiler
 validation is suspended.
+
+The shell reference and candidate also resolve omitted or empty source-root and
+parser-token arguments relative to their own script directories. The launcher
+matrix invokes no arguments and an empty first argument from `/`, requiring
+both to produce a successful manifest with the expected header. It also passes
+the positive fixture root with an omitted and with an empty parser path; both
+must use the repository parser source and fail on its first unrendered variant,
+`UnexpectedToken`. These cases verify defaults outside the repository working
+directory without pinning checkout-dependent manifest paths.
