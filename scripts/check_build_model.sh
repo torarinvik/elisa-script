@@ -29,6 +29,8 @@ for declaration in \
     'const enum BuildGraphEvent of u8:' \
     'struct BuildNode:' \
     'struct BuildDependencyNames:' \
+    'struct BuildNodeNameIndex:' \
+    'struct BuildDependencyResolution:' \
     'struct BuildGraph:' \
     'error BuildContractError:' \
     'def validate_build_graph(' \
@@ -41,6 +43,8 @@ for boundary in \
     'DependencyOrderInvalid' \
     'DependencyListOrderInvalid' \
     'DependencyShapeInvalid' \
+    'NodeNameIndexInvalid' \
+    'NodeNameOrderInvalid' \
     'TOTAL_DEPENDENCIES - total_dependencies' \
     'sview_len(name) < Limits::NAME_BYTES' \
     'DuplicateDependency' \
@@ -93,6 +97,11 @@ for fixture_pattern in \
     rg -Fq "$fixture_pattern" "$fixture"
 done
 rg -Fq 'BuildContractError.DependencyShapeInvalid' "$model"
+rg -Fq 'graph.nodes[node_index].name != entry.name' "$model"
+rg -Fq 'graph.node_name_order.count != 0 and graph.node_name_order.count != graph.nodes.count' "$model"
+rg -Fq 'scheduler.graph.node_name_order.count == scheduler.graph.nodes.count' "$repo_root/src/runtime/build_scheduler_model.elisa"
+rg -Fq 'BuildContractError.NodeNameOrderInvalid' "$fixture"
+rg -Fq 'BuildContractError.NodeNameIndexInvalid' "$fixture"
 rg -Fq 'build_sort_name_indices(node_names, order, scratch)' "$model"
 rg -Fq 'build_sort_node_indices(node_dependencies, dependency_scratch)' "$model"
 

@@ -63,8 +63,21 @@ module EsBuild:
             names: darray[sview] = []
 
 
+        struct BuildNodeNameIndex:
+            name: sview
+            node_index: usize
+
+
+        struct BuildDependencyResolution:
+            dependencies: darray[darray[usize]] = []
+            node_name_order: darray[BuildNodeNameIndex] = []
+
+
         struct BuildGraph:
             nodes: darray[BuildNode] = []
+            # Optional canonical name index returned by
+            # resolve_build_dependencies. Empty retains a checked legacy path.
+            node_name_order: darray[BuildNodeNameIndex] = []
             state: BuildGraphState = BuildGraphState.Planned
             max_parallel: usize = 1
             active_nodes: usize = 0
@@ -89,6 +102,8 @@ module EsBuild:
             DependencyOrderInvalid
             DependencyListOrderInvalid
             DependencyNotReady
+            NodeNameIndexInvalid
+            NodeNameOrderInvalid
             InvalidCommand
             FingerprintMissing
             LogLimitExceeded
@@ -214,7 +229,7 @@ module EsBuild:
         # lookup is O(log N) after one stable O(N log N) index sort; dependency
         # lists are sorted once so subsequent graph validation remains linear
         # in the number of edges.
-        def resolve_build_dependencies(node_names: darray[sview], dependency_names: darray[BuildDependencyNames]) -> darray[darray[usize]] error[BuildContractError] can[Memory.Allocate, Abort.Panic]:
+        def resolve_build_dependencies(node_names: darray[sview], dependency_names: darray[BuildDependencyNames]) -> BuildDependencyResolution error[BuildContractError] can[Memory.Allocate, Abort.Panic]:
             raise BuildContractError.EmptyGraph if node_names.count == 0
             raise BuildContractError.NodeLimitExceeded if node_names.count > Limits::NODES
             raise BuildContractError.DependencyShapeInvalid if dependency_names.count != node_names.count
@@ -249,7 +264,10 @@ module EsBuild:
                 for index in 1..<node_dependencies.count |node_dependencies|:
                     raise BuildContractError.DuplicateDependency if node_dependencies[index - 1] == node_dependencies[index]
                 resolved.push(node_dependencies)
-            return resolved
+            node_name_index: mutable darray[BuildNodeNameIndex] = []
+            for node_index in order |node_names, node_name_index|:
+                node_name_index.push(BuildNodeNameIndex{name: node_names[node_index], node_index: node_index})
+            return BuildDependencyResolution{dependencies: resolved, node_name_order: node_name_index}
 
 
         def validate_build_graph(graph: BuildGraph&) -> bool error[BuildContractError]:
@@ -266,6 +284,7 @@ module EsBuild:
             failed_nodes: mutable usize = 0
             total_log_bytes: mutable usize = 0
             total_dependencies: mutable usize = 0
+            raise BuildContractError.NodeNameIndexInvalid if graph.node_name_order.count != 0 and graph.node_name_order.count != graph.nodes.count
             for index in 0..<graph.nodes.count |graph|:
                 node: BuildNode = graph.nodes[index]
                 raise BuildContractError.InvalidNodeName if not build_name_valid(node.name)
@@ -313,9 +332,24 @@ module EsBuild:
                 raise BuildContractError.NodeAccountingInvalid if graph.failed_nodes == 0 or graph.active_nodes != 0 or graph.completed_nodes != graph.nodes.count
             elif graph.state == BuildGraphState.Cancelled:
                 raise BuildContractError.NodeAccountingInvalid if graph.active_nodes != 0 or graph.completed_nodes != graph.nodes.count or graph.failed_nodes != 0 or cancelled_nodes == 0
-            for index in 0..<graph.nodes.count |graph|:
-                for earlier in 0..<index |graph|:
-                    raise BuildContractError.DuplicateNode if graph.nodes[earlier].name == graph.nodes[index].name
+            if graph.node_name_order.count == 0:
+                for index in 0..<graph.nodes.count |graph|:
+                    for earlier in 0..<index |graph|:
+                        raise BuildContractError.DuplicateNode if graph.nodes[earlier].name == graph.nodes[index].name
+            else:
+                for order_index in 0..<graph.node_name_order.count |graph|:
+                    entry: BuildNodeNameIndex = graph.node_name_order[order_index]
+                    node_index: usize = entry.node_index
+                    raise BuildContractError.NodeNameIndexInvalid if node_index >= graph.nodes.count
+                    raise BuildContractError.NodeNameIndexInvalid if graph.nodes[node_index].name != entry.name
+                    if order_index > 0:
+                        previous: BuildNodeNameIndex = graph.node_name_order[order_index - 1]
+                        previous_index: usize = previous.node_index
+                        raise BuildContractError.NodeNameIndexInvalid if previous_index >= graph.nodes.count
+                        raise BuildContractError.NodeNameIndexInvalid if graph.nodes[previous_index].name != previous.name
+                        name_order: BuildNameOrder = build_name_order(previous.name, entry.name)
+                        raise BuildContractError.DuplicateNode if name_order == BuildNameOrder.Equal
+                        raise BuildContractError.NodeNameOrderInvalid if name_order == BuildNameOrder.After
             return true
 
 

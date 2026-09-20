@@ -550,13 +550,16 @@ ascending and duplicate-free, so edge validation and scheduler dependency
 readiness use direct bounded lookups without repeated dependency-name scans.
 The build-definition adapter can pass target and dependency names to
 `resolve_build_dependencies`, which uses a sorted name index and emits each
-edge list in canonical node-index order. The resolver bounds node names,
-per-node edges, and aggregate edges. Target-name uniqueness and cache admission
-still use scans, so large-graph scaling remains unqualified. Validation rejects
-missing, duplicate, unordered, and cyclic dependencies and preserves
-process-command errors. `advance_build_graph` limits active nodes and records
-per-node completion or failure. It exposes cancellation acknowledgement so a
-scheduler cannot silently overrun parallelism or abandon children. A node
+edge list in canonical node-index order. Its `BuildDependencyResolution` also
+returns the name-order index; attach this to `BuildGraph` so graph validation
+checks unique names linearly and cache lookups use binary search. The resolver
+bounds node names, per-node edges, and aggregate edges. Manual graphs without
+the index keep the legacy pairwise uniqueness check, and duplicate cache-entry
+validation remains pairwise, so large-graph scaling is still unqualified.
+Validation rejects missing, duplicate, unordered, and cyclic dependencies and
+preserves process-command errors. `advance_build_graph` limits active nodes and
+records per-node completion or failure. It exposes cancellation acknowledgement
+so a scheduler cannot silently overrun parallelism or abandon children. A node
 start is admitted only after every indexed dependency is `Succeeded`, so
 dependency readiness cannot be forged by an otherwise valid topological graph.
 Aggregate counters are
