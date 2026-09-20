@@ -1251,7 +1251,8 @@ open.
 
 ES-SCRIPT-028 | EsDifferentialTimeout supplies a bounded timeout/termination
 shrink evidence session. It records reference/candidate side identity,
-strictly smaller timeout attempts, ordinal order, observed mismatch kinds,
+strictly smaller timeout attempts, ordinal order, typed `DifferentialDifferenceKind`
+observations with closed enum admission,
 nonzero rerun fingerprints, and retained accept/reject decisions without
 launching or signalling processes. Only accepted attempts change the active
 timeout, and acceptance requires the original mismatch kind; rejection requires

@@ -7,6 +7,8 @@
 # possible timeout was tested.
 
 module EsDifferentialTimeout:
+    using EsDifferential
+
     public:
         const module Limits:
             CANDIDATES: usize = 64
@@ -38,14 +40,14 @@ module EsDifferentialTimeout:
             side: DifferentialTimeoutSide
             minimum_steps: u64 = 1
             maximum_candidates: usize = Limits::CANDIDATES
-            mismatch_kind: u8
+            mismatch_kind: DifferentialDifferenceKind
 
 
         struct DifferentialTimeoutCandidate:
             ordinal: usize
             timeout_steps: u64
             comparison_fingerprint: u64
-            observed_kind: u8
+            observed_kind: DifferentialDifferenceKind
             accepted: bool = false
 
 
@@ -53,7 +55,7 @@ module EsDifferentialTimeout:
             policy: DifferentialTimeoutPolicy
             state: DifferentialTimeoutState = DifferentialTimeoutState.Planned
             current_timeout_steps: u64
-            pending: DifferentialTimeoutCandidate = DifferentialTimeoutCandidate{ordinal: 0, timeout_steps: 0, comparison_fingerprint: 0, observed_kind: 0}
+            pending: DifferentialTimeoutCandidate = DifferentialTimeoutCandidate{ordinal: 0, timeout_steps: 0, comparison_fingerprint: 0, observed_kind: DifferentialDifferenceKind.Equal}
             has_pending: bool = false
             candidates: darray[DifferentialTimeoutCandidate] = []
             exhausted: bool = false
@@ -73,6 +75,7 @@ module EsDifferentialTimeout:
             MinimalityUnproven
             CancelNotReady
             CandidateDecisionInvalid
+            ComparisonKindInvalid
 
 
     private:
@@ -88,8 +91,12 @@ module EsDifferentialTimeout:
             return event in {DifferentialTimeoutEvent.Begin, DifferentialTimeoutEvent.Propose, DifferentialTimeoutEvent.Accept, DifferentialTimeoutEvent.Reject, DifferentialTimeoutEvent.Exhaust, DifferentialTimeoutEvent.Cancel}
 
 
+        def differential_timeout_comparison_kind_valid(kind: DifferentialDifferenceKind) -> bool:
+            return kind in {DifferentialDifferenceKind.Equal, DifferentialDifferenceKind.Engine, DifferentialDifferenceKind.ExitStatus, DifferentialDifferenceKind.Error, DifferentialDifferenceKind.Stdout, DifferentialDifferenceKind.Stderr, DifferentialDifferenceKind.ReturnValue, DifferentialDifferenceKind.ObservationCount, DifferentialDifferenceKind.ObservationTrace, DifferentialDifferenceKind.ObservationValue, DifferentialDifferenceKind.Outcome, DifferentialDifferenceKind.CaseInvalid, DifferentialDifferenceKind.ObservationContract}
+
+
         def differential_timeout_policy_valid(policy: DifferentialTimeoutPolicy) -> bool:
-            return differential_timeout_side_valid(policy.side) and policy.minimum_steps != 0 and policy.maximum_candidates != 0 and policy.maximum_candidates <= Limits::CANDIDATES and policy.mismatch_kind != 0
+            return differential_timeout_side_valid(policy.side) and policy.minimum_steps != 0 and policy.maximum_candidates != 0 and policy.maximum_candidates <= Limits::CANDIDATES and differential_timeout_comparison_kind_valid(policy.mismatch_kind) and policy.mismatch_kind != DifferentialDifferenceKind.Equal
 
 
     public:
@@ -110,6 +117,7 @@ module EsDifferentialTimeout:
                 raise DifferentialTimeoutError.TimeoutInvalid if candidate.timeout_steps < session.policy.minimum_steps
                 raise DifferentialTimeoutError.CandidateNotSmaller if candidate.timeout_steps >= expected_timeout_steps
                 raise DifferentialTimeoutError.TimeoutInvalid if candidate.comparison_fingerprint == 0
+                raise DifferentialTimeoutError.ComparisonKindInvalid if not differential_timeout_comparison_kind_valid(candidate.observed_kind)
                 raise DifferentialTimeoutError.MismatchCategory if candidate.accepted and candidate.observed_kind != session.policy.mismatch_kind
                 raise DifferentialTimeoutError.CandidateDecisionInvalid if not candidate.accepted and candidate.observed_kind == session.policy.mismatch_kind
                 expected_timeout_steps <- candidate.timeout_steps if candidate.accepted
@@ -118,11 +126,12 @@ module EsDifferentialTimeout:
                 raise DifferentialTimeoutError.CandidateOrderInvalid if session.pending.ordinal != session.candidates.count
                 raise DifferentialTimeoutError.CandidateNotSmaller if session.pending.timeout_steps >= session.current_timeout_steps or session.pending.timeout_steps < session.policy.minimum_steps
                 raise DifferentialTimeoutError.TimeoutInvalid if session.pending.comparison_fingerprint == 0
+                raise DifferentialTimeoutError.ComparisonKindInvalid if not differential_timeout_comparison_kind_valid(session.pending.observed_kind)
                 raise DifferentialTimeoutError.CandidateDecisionInvalid if session.pending.accepted
             return true
 
 
-        def advance_differential_timeout(session: mutable DifferentialTimeoutSession&, event: DifferentialTimeoutEvent, candidate: DifferentialTimeoutCandidate = DifferentialTimeoutCandidate{ordinal: 0, timeout_steps: 0, comparison_fingerprint: 0, observed_kind: 0}) -> DifferentialTimeoutState error[DifferentialTimeoutError]:
+        def advance_differential_timeout(session: mutable DifferentialTimeoutSession&, event: DifferentialTimeoutEvent, candidate: DifferentialTimeoutCandidate = DifferentialTimeoutCandidate{ordinal: 0, timeout_steps: 0, comparison_fingerprint: 0, observed_kind: DifferentialDifferenceKind.Equal}) -> DifferentialTimeoutState error[DifferentialTimeoutError]:
             try validate_differential_timeout(session)
             raise DifferentialTimeoutError.InvalidEvent if not differential_timeout_event_valid(event)
             if event == DifferentialTimeoutEvent.Begin:
@@ -136,6 +145,7 @@ module EsDifferentialTimeout:
                 raise DifferentialTimeoutError.CandidateNotSmaller if candidate.timeout_steps >= session.current_timeout_steps or candidate.timeout_steps < session.policy.minimum_steps
                 raise DifferentialTimeoutError.CandidateDecisionInvalid if candidate.accepted
                 raise DifferentialTimeoutError.TimeoutInvalid if candidate.comparison_fingerprint == 0
+                raise DifferentialTimeoutError.ComparisonKindInvalid if not differential_timeout_comparison_kind_valid(candidate.observed_kind)
                 session.pending <- candidate
                 session.has_pending <- true
                 session.state <- DifferentialTimeoutState.CandidatePending
@@ -144,14 +154,14 @@ module EsDifferentialTimeout:
                 raise DifferentialTimeoutError.MismatchCategory if session.pending.observed_kind != session.policy.mismatch_kind
                 session.candidates.push(DifferentialTimeoutCandidate{ordinal: session.pending.ordinal, timeout_steps: session.pending.timeout_steps, comparison_fingerprint: session.pending.comparison_fingerprint, observed_kind: session.pending.observed_kind, accepted: true})
                 session.current_timeout_steps <- session.pending.timeout_steps
-                session.pending <- DifferentialTimeoutCandidate{ordinal: 0, timeout_steps: 0, comparison_fingerprint: 0, observed_kind: 0}
+                session.pending <- DifferentialTimeoutCandidate{ordinal: 0, timeout_steps: 0, comparison_fingerprint: 0, observed_kind: DifferentialDifferenceKind.Equal}
                 session.has_pending <- false
                 session.state <- DifferentialTimeoutState.Running
             elif event == DifferentialTimeoutEvent.Reject:
                 raise DifferentialTimeoutError.CandidateNotPending if session.state != DifferentialTimeoutState.CandidatePending or not session.has_pending
                 raise DifferentialTimeoutError.CandidateDecisionInvalid if session.pending.observed_kind == session.policy.mismatch_kind
                 session.candidates.push(session.pending)
-                session.pending <- DifferentialTimeoutCandidate{ordinal: 0, timeout_steps: 0, comparison_fingerprint: 0, observed_kind: 0}
+                session.pending <- DifferentialTimeoutCandidate{ordinal: 0, timeout_steps: 0, comparison_fingerprint: 0, observed_kind: DifferentialDifferenceKind.Equal}
                 session.has_pending <- false
                 session.state <- DifferentialTimeoutState.Running
             elif event == DifferentialTimeoutEvent.Exhaust:
@@ -160,7 +170,7 @@ module EsDifferentialTimeout:
                 session.state <- DifferentialTimeoutState.Complete
             elif event == DifferentialTimeoutEvent.Cancel:
                 raise DifferentialTimeoutError.CancelNotReady if session.state != DifferentialTimeoutState.Planned and session.state != DifferentialTimeoutState.Running and session.state != DifferentialTimeoutState.CandidatePending
-                session.pending <- DifferentialTimeoutCandidate{ordinal: 0, timeout_steps: 0, comparison_fingerprint: 0, observed_kind: 0}
+                session.pending <- DifferentialTimeoutCandidate{ordinal: 0, timeout_steps: 0, comparison_fingerprint: 0, observed_kind: DifferentialDifferenceKind.Equal}
                 session.has_pending <- false
                 session.state <- DifferentialTimeoutState.Cancelled
             return session.state

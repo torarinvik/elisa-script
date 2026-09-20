@@ -16,6 +16,7 @@ done
 
 for declaration in \
     'module EsDifferentialTimeout:' \
+    'using EsDifferential' \
     'const enum DifferentialTimeoutSide of u8' \
     'const enum DifferentialTimeoutState of u8' \
     'const enum DifferentialTimeoutEvent of u8' \
@@ -23,6 +24,9 @@ for declaration in \
     'struct DifferentialTimeoutCandidate:' \
     'struct DifferentialTimeoutSession:' \
     'error DifferentialTimeoutError:' \
+    'mismatch_kind: DifferentialDifferenceKind' \
+    'observed_kind: DifferentialDifferenceKind' \
+    'def differential_timeout_comparison_kind_valid(' \
     'def validate_differential_timeout\(' \
     'def advance_differential_timeout\('; do
     rg -q "$declaration" "$source_file"
@@ -40,6 +44,7 @@ for boundary in \
     'candidate.timeout_steps >= expected_timeout_steps' \
     'candidate.accepted and candidate.observed_kind != session.policy.mismatch_kind' \
     'not candidate.accepted and candidate.observed_kind == session.policy.mismatch_kind' \
+    'policy.mismatch_kind != DifferentialDifferenceKind.Equal' \
     'session.current_timeout_steps != expected_timeout_steps' \
     'session.candidates.push(session.pending)' \
     'session.pending.ordinal != session.candidates.count' \
@@ -54,6 +59,8 @@ for fixture_pattern in \
     'differential_timeout_shrinker_requires_monotonic_rerun_evidence' \
     'DifferentialTimeoutError.CandidateNotSmaller' \
     'DifferentialTimeoutError.CandidateDecisionInvalid' \
+    'mismatch_kind: DifferentialDifferenceKind.Equal' \
+    'DifferentialTimeoutError.PolicyInvalid' \
     'initial_timeout_steps: 16' \
     'assert session.candidates.count == 1 and not session.candidates\[0\].accepted' \
     'invalid_reject' \
