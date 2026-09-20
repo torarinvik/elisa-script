@@ -85,7 +85,8 @@ for boundary in \
     'Limits::TOTAL_INPUTS - owners.count' \
     'Limits::TOTAL_OUTPUTS - owners.count' \
     'BuildIncrementalError.DuplicateInput if previous.path == current.path and previous.target_index == current.target_index' \
-    'build_incremental_output_owner_index' \
+    'build_incremental_path_owner_position(current_output_owners, output.path)' \
+    'build_incremental_path_owner_position(current_input_owners, output.path)' \
     'def plan_build_incremental_cleanup(' \
     'current_recipe_fingerprint != target.recipe_fingerprint' \
     'build_incremental_observation_order(observations)' \
