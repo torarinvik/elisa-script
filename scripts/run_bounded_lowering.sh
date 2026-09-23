@@ -593,7 +593,10 @@ for source_file in "$@"; do
             kill_process_tree "$compiler_pid" "$compiler_pgid"
             break
         fi
-        sleep 1
+        # Sample at 20 Hz: the prior one-second gap allowed fast compiler
+        # allocations to overshoot the reactive threshold substantially. This
+        # remains a sampled guard, not an OS-enforced memory cap.
+        sleep 0.05
     done
 
     if [ -n "$compiler_pid" ]; then

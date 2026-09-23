@@ -36,6 +36,7 @@ for wrapper in "$lowering" "$test_wrapper"; do
     rg -Fq 'if [ "$compiler_path" != "$expected_compiler_path" ] || [ ! -f "$compiler_path" ] || [ ! -x "$compiler_path" ]; then' "$wrapper"
     rg -q 'refusing symlinked compiler path' "$wrapper"
     rg -q 'process_group_rss_kb' "$wrapper"
+    rg -Fq 'sleep 0.05' "$wrapper"
     rg -Fq 'source_limit_bytes=65536' "$wrapper"
     rg -Fq 'head -c "$((source_limit_bytes + 1))" <"$source_file" >"$source_snapshot"' "$wrapper"
     rg -Fq 'wc -c <"$source_snapshot" 2>/dev/null' "$wrapper"
