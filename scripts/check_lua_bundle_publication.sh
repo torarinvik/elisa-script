@@ -14,8 +14,9 @@ rename_failure_fixture="$repo_root/test/driver/lua_bundle_publication_rename_fai
 close_uncertain_fixture="$repo_root/test/driver/lua_bundle_publication_close_uncertain.elisascript"
 write_failure_fixture="$repo_root/test/driver/lua_bundle_publication_write_failure.elisascript"
 stage_remove_uncertain_fixture="$repo_root/test/driver/lua_bundle_publication_stage_remove_uncertain.elisascript"
+directory_sync_uncertain_fixture="$repo_root/test/driver/lua_bundle_publication_directory_sync_uncertain.elisascript"
 
-for required_file in "$model" "$file_bridge" "$posix_adapter" "$ir" "$fixture" "$rename_failure_fixture" "$close_uncertain_fixture" "$write_failure_fixture" "$stage_remove_uncertain_fixture"; do
+for required_file in "$model" "$file_bridge" "$posix_adapter" "$ir" "$fixture" "$rename_failure_fixture" "$close_uncertain_fixture" "$write_failure_fixture" "$stage_remove_uncertain_fixture" "$directory_sync_uncertain_fixture"; do
     [[ -f "$required_file" ]] || { printf 'lua bundle publication audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -80,6 +81,8 @@ rg -q 'PublicationEvent.WriteFailed' "$write_failure_fixture"
 rg -q 'retry_rejected' "$write_failure_fixture"
 rg -q 'PublicationEvent.StageRemoveOutcomeUnknown' "$stage_remove_uncertain_fixture"
 rg -q 'PublicationState.CleanupUncertain' "$stage_remove_uncertain_fixture"
+rg -q 'PublicationEvent.DirectorySyncUnknown' "$directory_sync_uncertain_fixture"
+rg -q 'session.rename_acknowledged or not session.stage_entry_removed' "$directory_sync_uncertain_fixture"
 
 rg -q 'include "\.\./runtime/lua_bundle_publication_model\.elisa"' "$ir"
 rg -q 'include "\.\./runtime/lua_bundle_publication_posix\.elisa"' "$ir"
@@ -138,6 +141,7 @@ rg -q 'DarwinPublicationErrno::EIO' "$posix_adapter"
 rg -q 'PublicationEvent.PublishFailed' "$posix_adapter"
 rg -q 'PublicationEvent.OutcomeUnknown' "$posix_adapter"
 rg -q 'PublicationEvent.PublishAck' "$posix_adapter"
+rg -q 'PublicationEvent.DirectorySyncUnknown' "$posix_adapter"
 rg -q 'PublicationPosixError.DirectorySyncFailed' "$posix_adapter"
 rg -q 'EIO: i32 = 5' "$posix_adapter"
 rg -q 'parent_fd < 0 or staging_fd < 0' "$posix_adapter"
