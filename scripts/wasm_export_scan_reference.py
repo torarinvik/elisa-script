@@ -220,24 +220,46 @@ def preflight_reference_input(
 
 
 def main(arguments: list[str]) -> int:
-    build_payload = bool(arguments) and arguments[0] == BUILD_PAYLOAD_OPTION
+    build_component_payload = bool(arguments) and arguments[0] == "--build-component-payload"
+    build_payload = bool(arguments) and (arguments[0] == BUILD_PAYLOAD_OPTION or build_component_payload)
     flatten_payload = bool(arguments) and arguments[0] == FLATTEN_PAYLOAD_OPTION
-    if build_payload or flatten_payload:
-        if len(arguments) != 2:
+    component_mode = bool(arguments) and (arguments[0] == "--component" or build_component_payload)
+    expected_json_argument: str | None = None
+    if component_mode and not build_component_payload:
+        if len(arguments) not in (2, 3):
             sys.stderr.write(
                 "usage: wasm export scan <source> [expected-json] "
-                "| --build-payload <source> | --flatten-payload <source>\n"
+                "| --component <source> [expected-json] "
+                "| --build-payload <source> | --build-component-payload <source> "
+                "| --flatten-payload <source>\n"
             )
             return 2
         source_argument = arguments[1]
+        if len(arguments) == 3:
+            expected_json_argument = arguments[2]
+    elif build_payload or flatten_payload:
+        if len(arguments) != 2:
+            sys.stderr.write(
+                "usage: wasm export scan <source> [expected-json] "
+                "| --component <source> [expected-json] "
+                "| --build-payload <source> | --build-component-payload <source> "
+                "| --flatten-payload <source>\n"
+            )
+            return 2
+        source_argument = arguments[1]
+
     else:
         if len(arguments) not in (1, 2):
             sys.stderr.write(
                 "usage: wasm export scan <source> [expected-json] "
-                "| --build-payload <source> | --flatten-payload <source>\n"
+                "| --component <source> [expected-json] "
+                "| --build-payload <source> | --build-component-payload <source> "
+                "| --flatten-payload <source>\n"
             )
             return 2
         source_argument = arguments[0]
+        if len(arguments) == 2:
+            expected_json_argument = arguments[1]
 
     source_path = Path(source_argument)
     try:
@@ -266,15 +288,15 @@ def main(arguments: list[str]) -> int:
     exports = []
     if not flatten_payload:
         try:
-            exports = scanner.parse_exports(source)
+            exports = scanner.parse_exports(source, component=component_mode)
         except scanner.WasmBuildError as error:
             return fail(str(error))
         except Exception as error:
             return fail(f"pinned scanner raised an unexpected error: {error}", 2)
 
-    if not build_payload and not flatten_payload and len(arguments) == 2:
+    if not build_payload and not flatten_payload and expected_json_argument is not None:
         try:
-            expected = json.loads(Path(arguments[1]).read_text(encoding="utf-8"))
+            expected = json.loads(Path(expected_json_argument).read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
             return fail(f"invalid checked-in expected JSON: {error}", 2)
         if exports != expected:

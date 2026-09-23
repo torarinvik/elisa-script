@@ -88,6 +88,12 @@ human-readable output.
   types ending in `&` (including `&&`) -> `(pointer,i32)`. Nullable types fail
   before other mapping checks. Every other type fails with the actionable
   `export a scalar or pointer adapter` diagnostic.
+- Component ABI mode matches the pinned parser's `component=True` behavior:
+  after nullable, `cstr`, pointer, and built-in scalar checks, any remaining
+  named type maps to `(scalar,i32)` for later WIT/component validation. The
+  candidate exposes this as `--component <source>` for the export array and
+  `--build-component-payload <source>` for the build payload. The ordinary
+  `--build-payload` remains strict and rejects unsupported types.
 - Parameter shape errors identify the exported function and original text.
   Invalid parameter names, nullable types, and unsupported ABI types preserve
   Python's exact message and validation order. If no export or implicit main
@@ -96,10 +102,11 @@ human-readable output.
 
 ## Candidate CLI process protocol
 
-The launcher accepts either
-`<launcher> scripts/wasm_export_scan.elisascript <absolute-source-path>` or
-`<launcher> scripts/wasm_export_scan.elisascript --build-payload <absolute-source-path>`
-or `<launcher> scripts/wasm_export_scan.elisascript --flatten-payload <absolute-source-path>`.
+The launcher accepts the default export-array form
+`<launcher> scripts/wasm_export_scan.elisascript <absolute-source-path>`, its
+component form `--component <absolute-source-path>`, and the payload forms
+`--build-payload <absolute-source-path>`, `--build-component-payload
+<absolute-source-path>`, or `--flatten-payload <absolute-source-path>`.
 These options are reserved in the first operand position. The build-payload
 form is a caller-migration seam: its compact JSON object has ordered
 fields `version`, `flattened_source`, and `exports`; `version` is integer `1`,
@@ -112,6 +119,11 @@ parameters. The optional host-side payload client applies the same aggregate
 ceiling before passing records to the build flow. These cardinality limits do
 not impose a hard RSS bound on the subprocess or on JSON decoding. All modes
 use the same bounded path loader.
+
+The component option is reserved in the first operand position, like the
+payload options. `--component` emits only the JSON export array;
+`--build-component-payload` emits the same ordered version-1 shape as
+`--build-payload`, with component ABI mappings enabled.
 
 The flatten-payload form does not require exports. Its ordered version-1 object
 contains only `version` and `flattened_source`, allowing callers to use the
@@ -127,11 +139,11 @@ appends one newline to stdout, and leaves stderr empty. Process failures are:
   `wasm export scan: MESSAGE\n`, where `MESSAGE` is the candidate/reference
   diagnostic for the case.
 - On an invalid mode/operand count: exit status `2`, empty stdout, and stderr
-  exactly `usage: wasm export scan <source> | --build-payload <source> | --flatten-payload <source>\n`.
+  exactly `usage: wasm export scan <source> | --component <source> | --build-payload <source> | --build-component-payload <source> | --flatten-payload <source>\n`.
 
 The launcher parity source compares status/stdout/stderr for the default
 single-source invocation and scanner cases. It also compares the build payload
-against the Python adapter for ordinary, nested, diamond, missing, and
+against the Python adapter for ordinary, component-enum, nested, diamond, missing, and
 Unicode-line-separator inputs, and checks the candidate's invalid-arity tuple
 for default and payload modes. The source fixture separately pins flatten-only
 include expansion order, including a file with no export-parser dependency.

@@ -1337,6 +1337,14 @@ line numbers; a separate U+2028-delimited include case covers include recognitio
 and splice behavior. This supplements the CRLF/bare-CR file-normalization cases;
 no fixture/compiler/audit execution ran.
 
+W09 now mirrors the pinned scanner's component ABI mode: named non-null types
+map to scalar `i32` after built-in, string, and pointer mappings, while the
+ordinary scanner mode remains strict. The candidate exposes `--component` and
+`--build-component-payload`; source differential and gated launcher fixtures
+cover named enum-like types. This is source-only compatibility work, not proof
+that the component/WIT caller can yet be migrated; compiler, fixtures, and
+audits remain unexecuted under the validation hold.
+
 A generated W09 link-name differential case also applies an empty quoted
 annotation after a nonempty one and checks that it clears the pending value and
 omits the optional JSON key, matching the pinned Python `group(1) or group(2)`
