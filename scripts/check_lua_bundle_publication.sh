@@ -6,10 +6,11 @@ set -euo pipefail
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 model="$repo_root/src/runtime/lua_bundle_publication_model.elisa"
+file_bridge="$repo_root/src/runtime/file_posix.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 
-for required_file in "$model" "$ir" "$fixture"; do
+for required_file in "$model" "$file_bridge" "$ir" "$fixture"; do
     [[ -f "$required_file" ]] || { printf 'lua bundle publication audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -60,6 +61,8 @@ done
 
 rg -q 'include "\.\./runtime/lua_bundle_publication_model\.elisa"' "$ir"
 rg -q 'using EsLuaBundlePublication' "$fixture"
+rg -q '@link_name\(renameat\)' "$file_bridge"
+rg -q 'def elisascript_posix_renameat\(' "$file_bridge"
 rg -q 'typed_lua_bundle_publication_requires_exclusive_staging' "$fixture"
 rg -q 'close_cannot_publish' "$fixture"
 rg -q 'parent_mismatch_rejected' "$fixture"
