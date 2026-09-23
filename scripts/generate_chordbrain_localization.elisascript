@@ -1,0 +1,236 @@
+# Bounded Elisascript port of ChordBrain's generate_localization.py.
+# It preserves Python dict insertion order, non-English key extension order,
+# English fallback, and exact generated source layout for the current .lang data.
+
+module EsChordBrainLocalizationGenerator:
+    private:
+        const module Limits:
+            LANGUAGE_BYTES: usize = 1048576
+            TOTAL_LANGUAGE_BYTES: usize = 6291456
+            LANGUAGE_COUNT: usize = 6
+
+
+        const module Messages:
+            USAGE: sview = "usage: generate_chordbrain_localization --input-dir DIR --output FILE"
+            LANGUAGE_READ_FAILED: sview = "localization generator: unable to read language input"
+            LANGUAGE_LIMIT: sview = "localization generator: language input exceeds size limit"
+            LANGUAGE_LITERAL_UNSUPPORTED: sview = "localization generator: unsupported quoted entry"
+            OUTPUT_WRITE_FAILED: sview = "localization generator: unable to write generated output"
+
+
+        struct LocalizationEntry:
+            key: sview
+            value: mutable sview
+
+
+        struct LocalizationSource:
+            code: sview
+            name: mutable sview
+            entries: darray[LocalizationEntry] = []
+
+
+        error LocalizationError:
+            InputReadFailed
+            InputLimitExceeded
+            UnsupportedLiteral
+
+
+        def localization_language_code(index: usize) -> sview:
+            return "en" if index == 0
+            return "de" if index == 1
+            return "es" if index == 2
+            return "fr" if index == 3
+            return "it" if index == 4
+            return "pt" if index == 5
+            return ""
+
+
+        def localization_language_name(index: usize) -> sview:
+            return "English" if index == 0
+            return "German" if index == 1
+            return "Spanish" if index == 2
+            return "French" if index == 3
+            return "Italian" if index == 4
+            return "Portuguese" if index == 5
+            return ""
+
+
+        def localization_entry_index(entries: darray[LocalizationEntry], key: sview) -> usize:
+            for index in 0..<entries.count |entries, key|:
+                return index if entries[index].key == key
+            return entries.count
+
+
+        def localization_parse_language(code: sview, contents: sview) -> LocalizationSource error[LocalizationError] can[Memory.Allocate, Abort.Panic]:
+            normalized: sview = contents.replace("\r\n", "\n").replace("\r", "\n")
+            lines: darray[sview] = split_lines(normalized)
+            entries: mutable darray[LocalizationEntry] = []
+            for line in lines |lines, entries|:
+                trimmed: sview = line.strip()
+                if not trimmed.startswith("\""):
+                    continue
+
+                # Current ChordBrain .lang values do not use Python string
+                # escapes or embedded quotes. Reject these explicitly instead
+                # of silently changing Python ast.literal_eval semantics.
+                pieces: darray[sview] = split(trimmed, "\"")
+                if pieces.count != 5 or pieces[0] != "" or pieces[4] != "" or pieces[2].strip() != "=":
+                    raise LocalizationError.UnsupportedLiteral if trimmed.index("=") >= 0
+                    continue
+                key: sview = pieces[1]
+                raw_value: sview = pieces[3]
+                raise LocalizationError.UnsupportedLiteral if key == "" or raw_value.index("\\") >= 0
+
+                # Own each key/value independently; no returned entry borrows
+                # the temporary read_text buffer or split-line views.
+                owned_key: sview = "" + key
+                owned_value: sview = "" + raw_value
+                existing: usize = localization_entry_index(entries, owned_key)
+                if existing == entries.count:
+                    entries.push(LocalizationEntry{key: owned_key, value: owned_value})
+                else:
+                    entries[existing].value <- owned_value
+            return LocalizationSource{code: code, name: "", entries: entries}
+
+
+        def localization_load_language(input_directory: Path, index: usize) -> LocalizationSource error[LocalizationError] can[Memory.Allocate, Abort.Panic, File.Read]:
+            code: sview = localization_language_code(index)
+            input_path: Path = input_directory.joinpath(code + ".lang")
+            original_size: usize = try file_size(input_path) else err:
+                raise LocalizationError.InputReadFailed
+            raise LocalizationError.InputLimitExceeded if original_size > Limits::LANGUAGE_BYTES
+
+            current_size: usize = try file_size(input_path) else err:
+                raise LocalizationError.InputReadFailed
+            raise LocalizationError.InputLimitExceeded if current_size > Limits::LANGUAGE_BYTES or current_size > original_size
+
+            contents: sview = try read_text(input_path) else err:
+                raise LocalizationError.InputReadFailed
+            raise LocalizationError.InputLimitExceeded if len(contents) > Limits::LANGUAGE_BYTES or len(contents) > original_size
+
+            parsed: LocalizationSource = try localization_parse_language(code, contents)
+            parsed.name <- localization_language_name(index)
+            return parsed
+
+
+        def localization_key_index(keys: darray[sview], key: sview) -> usize:
+            for index in 0..<keys.count |keys, key|:
+                return index if keys[index] == key
+            return keys.count
+
+
+        def localization_escape_elisa_string(value: sview) -> sview can[Memory.Allocate, Abort.Panic]:
+            escaped: sview = value.replace("\\", "\\\\")
+            escaped <- escaped.replace("\"", "\\\"")
+            escaped <- escaped.replace("\n", "\\n")
+            return "\"" + escaped + "\""
+
+
+        def localization_render(sources: darray[LocalizationSource]) -> sview can[Memory.Allocate, Abort.Panic]:
+            keys: mutable darray[sview] = []
+            english: LocalizationSource = sources[0]
+            for entry in english.entries |english, keys|:
+                keys.push(entry.key)
+            for source_index in 1..<sources.count |sources, english, keys|:
+                source: LocalizationSource = sources[source_index]
+                for entry in source.entries |source, english, keys|:
+                    in_english: bool = localization_entry_index(english.entries, entry.key) != english.entries.count
+                    already_added: bool = localization_key_index(keys, entry.key) != keys.count
+                    if not in_english and not already_added:
+                        keys.push(entry.key)
+
+            lines: mutable darray[sview] = [
+                "# Generated from the original ChordBrain Assets/Languages/*.lang files.",
+                "# Do not edit this file manually; run tools/generate_localization.py.",
+                ""
+            ]
+            for source_index in 0..<sources.count |sources, keys, lines|:
+                source: LocalizationSource = sources[source_index]
+                lines.push("def chordbrain_translate_" + source.code + "(key: u8&) -> u8&?:")
+                for key in keys |sources, keys, lines, source_index, source|:
+                    source_entry_index: usize = localization_entry_index(source.entries, key)
+                    english_entry_index: usize = localization_entry_index(english.entries, key)
+                    value_text: mutable sview = ""
+                    has_value: mutable bool = false
+                    if source_entry_index != source.entries.count:
+                        value_text <- source.entries[source_entry_index].value
+                        has_value <- true
+                    elif source_index != 0 and english_entry_index != english.entries.count:
+                        value_text <- english.entries[english_entry_index].value
+                        has_value <- true
+                    if has_value:
+                        value: sview = localization_escape_elisa_string(value_text)
+                        key_literal: sview = localization_escape_elisa_string(key)
+                        lines.push("    " + value + " return if cstr_equal(key, " + key_literal + ")")
+                lines.push("    return null")
+                lines.push("")
+
+            lines.push("def chordbrain_language_count_impl() -> i32:")
+            lines.push("    return 6")
+            lines.push("")
+            lines.push("def chordbrain_language_code_impl(language: i32) -> u8&?:")
+            for source_index in 0..<sources.count |sources, lines|:
+                lines.push(f"    \"{sources[source_index].code}\" return if language == {source_index}")
+            lines.push("    return null")
+            lines.push("")
+
+            lines.push("def chordbrain_language_name_impl(language: i32) -> u8&?:")
+            for source_index in 0..<sources.count |sources, lines|:
+                lines.push(f"    {localization_escape_elisa_string(sources[source_index].name)} return if language == {source_index}")
+            lines.push("    return null")
+            lines.push("")
+
+            lines.push("def chordbrain_translate_impl(language: i32, key: u8&) -> u8&?:")
+            for source_index in 0..<sources.count |sources, lines|:
+                lines.push(f"    return chordbrain_translate_{sources[source_index].code}(key) if language == {source_index}")
+            lines.push("    return chordbrain_translate_en(key)")
+            lines.push("")
+            lines.push("export fn chordbrain_language_count() -> i32 = chordbrain_language_count_impl")
+            lines.push("export fn chordbrain_language_code(language: i32) -> u8&? = chordbrain_language_code_impl")
+            lines.push("export fn chordbrain_language_name(language: i32) -> u8&? = chordbrain_language_name_impl")
+            lines.push("export fn chordbrain_translate(language: i32, key: u8&) -> u8&? = chordbrain_translate_impl")
+            return join(lines, "\n") + "\n"
+
+
+    public:
+        def generate(input_directory: Path) -> sview error[LocalizationError] can[Memory.Allocate, Abort.Panic, File.Read]:
+            sources: mutable darray[LocalizationSource] = []
+            total_bytes: mutable usize = 0
+            for index in 0..<Limits::LANGUAGE_COUNT |sources, total_bytes|:
+                code: sview = localization_language_code(index)
+                input_path: Path = input_directory.joinpath(code + ".lang")
+                input_size: usize = try file_size(input_path) else err:
+                    raise LocalizationError.InputReadFailed
+                raise LocalizationError.InputLimitExceeded if input_size > Limits::LANGUAGE_BYTES or input_size > Limits::TOTAL_LANGUAGE_BYTES - total_bytes
+                total_bytes <- total_bytes + input_size
+                source: LocalizationSource = try localization_load_language(input_directory, index)
+                sources.push(source)
+            return localization_render(sources)
+
+
+        def run(arguments: darray[sview]) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, Directory.Read, File.Read, File.Write]:
+            if arguments.count != 4 or arguments[0] != "--input-dir" or arguments[2] != "--output":
+                eprint(Messages::USAGE)
+                return 2i64
+            input_directory: Path = path(arguments[1])
+            output_path: Path = path(arguments[3])
+            generated: mutable sview = ""
+            catch generate(input_directory):
+                ok value:
+                    generated <- value
+                error failure:
+                    if failure == LocalizationError.InputLimitExceeded:
+                        eprint(Messages::LANGUAGE_LIMIT)
+                    elif failure == LocalizationError.UnsupportedLiteral:
+                        eprint(Messages::LANGUAGE_LITERAL_UNSUPPORTED)
+                    else:
+                        eprint(Messages::LANGUAGE_READ_FAILED)
+                    return 1i64
+            try write_text(output_path, generated) else err:
+                eprint(Messages::OUTPUT_WRITE_FAILED)
+                return 1i64
+            return 0i64
+
+
+def main(arguments: darray[sview]) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, Directory.Read, File.Read, File.Write]:
+    return EsChordBrainLocalizationGenerator::run(arguments)
