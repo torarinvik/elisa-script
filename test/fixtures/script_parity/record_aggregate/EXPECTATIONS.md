@@ -26,6 +26,7 @@ one final LF byte. Unless listed otherwise, stdout and stderr are empty.
 | --- | ---: | --- | --- |
 | Unmodified repository root | 0 | `record aggregate audit: bounded insertion-ordered groups and sealed lookup are present\n` | empty |
 | Nonexistent repository root | 1 | empty | `record aggregate audit: missing repository root\n` |
+| Existing regular file used as the repository root | 1 | empty | `record aggregate audit: missing repository root\n` |
 | Two script operands | 2 | empty | `usage: record aggregate audit [repository-root]\n` |
 | No root operand, launched by absolute script paths from `/` against the checkout containing both scripts | 0 | `record aggregate audit: bounded insertion-ordered groups and sealed lookup are present\n` | empty |
 
