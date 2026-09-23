@@ -55,11 +55,13 @@ the candidate cannot be launched for comparison.
 
 ## Aggregate byte boundary
 
-Starting from a valid generated root, add harmless trailing ASCII spaces to
+Starting from a valid generated root, add harmless trailing UTF-8 `é`
+characters (plus one ASCII space if needed for odd byte alignment) to
 `docs/ir.md` so that the sum of the five shared input sizes is exactly
 4,194,304 bytes. The candidate and reference must both accept this root with
-the same success tuple as the unmodified root. Add one more byte, leaving all
-other bytes unchanged; both must then return status 2, no stdout, and exactly
+the same success tuple as the unmodified root. Add one more ASCII byte,
+leaving all other bytes unchanged; both must then return status 2, no stdout,
+and exactly
 `record aggregate audit: source exceeds audit limit: {ROOT}/docs/ir.md\n` on
 stderr.
 
