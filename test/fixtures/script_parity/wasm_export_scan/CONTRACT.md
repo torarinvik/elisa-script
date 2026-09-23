@@ -338,7 +338,10 @@ output-byte, path, path-component-work, directive, depth, and unique-file
 ceilings; this
 avoids unbounded oracle reads while retaining the pinned loader as the
 accepted-input reference. It also normalizes host `OSError` read failures to
-the candidate's stable path diagnostic. This test source has not been run: it
+the candidate's stable path diagnostic. Checked-in expected JSON is opened as
+a no-follow regular file, read to a 1 MiB + 1 byte sentinel, and rejected above
+128 nested containers before `json.loads`; focused oversized/deep fixtures pin
+those bounds in source. This test source has not been run: it
 remains behind the disabled bounded compiler wrapper and does not yet cover
 aggregate include-graph bytes, structured-output overflow, unreadable input
 under a non-root user, or caller integration. The unique-file rejection is

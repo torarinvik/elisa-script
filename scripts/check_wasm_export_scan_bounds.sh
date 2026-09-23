@@ -82,6 +82,12 @@ if rg -Fq 'Path(expected_json_argument).read_text' "$reference"; then
     printf 'W09 bounds audit: expected JSON snapshots must not use an unbounded text read\n' >&2
     exit 1
 fi
+rg -Fq 'def python_expected_json_failure(source_path: sview, expected_json_path: sview, expected_stderr: sview)' "$fixture"
+rg -Fq 'def python_expected_json_bounds_match()' "$fixture"
+rg -Fq 'for _ in 0..<1048577 |oversized_bytes|' "$fixture"
+rg -Fq 'for _ in 0..<129 |deep_bytes|' "$fixture"
+rg -Fq 'expected JSON exceeds 1048576 byte limit' "$fixture"
+rg -Fq 'expected JSON nesting exceeds 128 levels' "$fixture"
 rg -Fq 'def wasm_export_scan_matches_component_scalar_enum_mode()' "$fixture"
 rg -Fq 'def launcher_payload_pair_matches(launcher: sview, source_path: sview, component: bool = false)' "$launcher_fixture"
 rg -Fq 'wasm_export_scan/component_enum.input' "$launcher_fixture"
