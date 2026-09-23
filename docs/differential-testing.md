@@ -173,7 +173,9 @@ and failure policy using `error[ProcessCommandError]`; a direct adapter caller c
 bypass duplicate-environment or aggregate terminated-byte admission. Binary stdin
 remains an explicit length-delimited side channel rather than being misrepresented as
 shell text. This keeps native and legacy-language oracle runners on the same typed
-shell-free command boundary.
+shell-free command boundary. The command validator admits vector counts and all
+individual/aggregate C-string lengths before scanning field bytes for NULs or
+duplicate environment names, so oversized commands fail before content scans.
 After the child is reaped and both streams are admitted, the adapter materializes
 `EsProcess::ProcessResult` so a normal exit and signal death retain distinct typed
 outcomes before conversion to the differential artifact. Spawn, timeout,
