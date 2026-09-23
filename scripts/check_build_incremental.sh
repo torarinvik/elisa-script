@@ -48,6 +48,7 @@ for declaration in \
     'def classify_build_incremental_target(' \
     'def classify_build_incremental_manifest(' \
     'def build_incremental_target_decision_validated(' \
+    'def build_incremental_target_valid(target)' \
     'def build_incremental_observation_order(' \
     'def build_sort_incremental_observation_indices('; do
     rg -Fq "$declaration" "$model"
@@ -82,7 +83,9 @@ for boundary in \
     'build_incremental_dependency_index_contains' \
     'build_incremental_dependency_index_contains(resolution.dependencies[input_owner.target_index], output_target_index)' \
     'build_incremental_path_owner_position' \
+    'build_incremental_path_owner_position(input_owners, output.path)' \
     'build_incremental_path_owner_order' \
+    'build_sort_incremental_path_owners(dependency_owners, dependency_scratch)' \
     'Limits::TOTAL_INPUTS - owners.count' \
     'Limits::TOTAL_OUTPUTS - owners.count' \
     'BuildIncrementalError.DuplicateInput if previous.path == current.path and previous.target_index == current.target_index' \
