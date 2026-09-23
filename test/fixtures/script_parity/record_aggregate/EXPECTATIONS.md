@@ -97,12 +97,13 @@ former also removes occurrences of the latter. Cover the `AddValue` pattern
 with its own mutation, then cover `Add` with a coupled mutation that removes
 both; do not claim those two as independent negative cases.
 
-The shell checks all required paths before checking sizes and only reads source
-contents after all size checks pass. The candidate now uses a presence
-preflight, an aggregate-size pass, then a source-read pass; a generated case
+The shell checks all required readable paths before checking sizes and only
+reads source contents after all size checks pass. The candidate now uses a
+readability preflight, an aggregate-size pass, then a source-read pass; a generated case
 combines an over-limit `docs/ir.md` with a missing final input and requires the
-missing-input result to win. Precedence for permission failures combined with
-size faults and other multiple-fault combinations is not claimed as parity.
+missing-input result to win. Permission-plus-size precedence remains
+unqualified because the current process fixtures do not inject permission
+failures portably.
 
 ## Invocation differences and execution status
 
