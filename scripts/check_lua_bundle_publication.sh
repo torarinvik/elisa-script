@@ -13,8 +13,9 @@ fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 rename_failure_fixture="$repo_root/test/driver/lua_bundle_publication_rename_failure.elisascript"
 close_uncertain_fixture="$repo_root/test/driver/lua_bundle_publication_close_uncertain.elisascript"
 write_failure_fixture="$repo_root/test/driver/lua_bundle_publication_write_failure.elisascript"
+stage_remove_uncertain_fixture="$repo_root/test/driver/lua_bundle_publication_stage_remove_uncertain.elisascript"
 
-for required_file in "$model" "$file_bridge" "$posix_adapter" "$ir" "$fixture" "$rename_failure_fixture" "$close_uncertain_fixture" "$write_failure_fixture"; do
+for required_file in "$model" "$file_bridge" "$posix_adapter" "$ir" "$fixture" "$rename_failure_fixture" "$close_uncertain_fixture" "$write_failure_fixture" "$stage_remove_uncertain_fixture"; do
     [[ -f "$required_file" ]] || { printf 'lua bundle publication audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -50,6 +51,7 @@ for boundary in \
     'publication_parent_proof_empty' \
     'publication_identity_proofs_valid' \
     'WriteLimitExceeded' \
+    'StageRemovalMissing' \
     'DirectorySyncMissing' \
     'DestinationNotPreserved' \
     'PublishedUncertain' \
@@ -76,6 +78,8 @@ rg -q 'InvalidEvent if not stage_close_succeeded or not parent_close_succeeded' 
 rg -q 'PublicationState.StageWriteFailed' "$model" "$write_failure_fixture"
 rg -q 'PublicationEvent.WriteFailed' "$write_failure_fixture"
 rg -q 'retry_rejected' "$write_failure_fixture"
+rg -q 'PublicationEvent.StageRemoveOutcomeUnknown' "$stage_remove_uncertain_fixture"
+rg -q 'PublicationState.CleanupUncertain' "$stage_remove_uncertain_fixture"
 
 rg -q 'include "\.\./runtime/lua_bundle_publication_model\.elisa"' "$ir"
 rg -q 'include "\.\./runtime/lua_bundle_publication_posix\.elisa"' "$ir"
@@ -104,6 +108,11 @@ rg -q 'DarwinErrno::EINTR' "$posix_adapter"
 rg -q 'def capture_publication_host_proof\(' "$posix_adapter"
 rg -q 'def revalidate_publication_host_proof\(' "$posix_adapter"
 rg -q 'def close_publication_descriptors\(' "$posix_adapter"
+rg -q 'def remove_publication_stage\(' "$posix_adapter"
+rg -q 'elisascript_posix_unlinkat_leaf\(parent_fd, leaf_name\)' "$posix_adapter"
+rg -q 'PublicationEvent.StageRemoveOutcomeUnknown' "$posix_adapter"
+rg -q 'DarwinPublicationErrno::ENOENT' "$posix_adapter"
+rg -q 'DarwinPublicationErrno::EIO' "$posix_adapter"
 rg -q 'elisascript_posix_close\(staging_fd\)' "$posix_adapter"
 rg -q 'elisascript_posix_close\(parent_fd\)' "$posix_adapter"
 rg -q 'PublicationEvent.CloseOutcomeUnknown' "$posix_adapter"

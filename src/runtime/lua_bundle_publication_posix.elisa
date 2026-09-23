@@ -41,6 +41,9 @@ module EsLuaBundlePublicationPosix:
             WriteLimitExceeded
             WriteFailed
             SyncFailed
+            StageRemoveNotReady
+            StageRemoveFailed
+            StageRemovalOutcomeUnknown
             RenameRejected
             PublicationOutcomeUnknown
             DirectorySyncFailed
@@ -48,8 +51,9 @@ module EsLuaBundlePublicationPosix:
 
     private:
         const module DarwinPublicationErrno:
-            # POSIX rename failure is not guaranteed to preserve the
-            # destination when errno is EIO.
+            # Keep the publication adapter's syscall error values explicitly
+            # 32-bit to match the platform errno reference type.
+            ENOENT: i32 = 2
             EIO: i32 = 5
 
 
@@ -162,7 +166,7 @@ module EsLuaBundlePublicationPosix:
         # CleanupUncertain instead of claiming cleanup or risking fd reuse.
         def close_publication_descriptors(session: mutable PublicationSession&, parent_fd: int, staging_fd: int) -> PublicationState error[PublicationPosixError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
             raise PublicationPosixError.InvalidDescriptor if parent_fd < 0 or staging_fd < 0 or parent_fd == staging_fd
-            raise PublicationPosixError.CloseNotReady if session.state != PublicationState.Staging and session.state != PublicationState.StageWriteFailed and session.state != PublicationState.Staged and session.state != PublicationState.Published and session.state != PublicationState.PublishedUncertain
+            raise PublicationPosixError.CloseNotReady if session.state != PublicationState.Staging and session.state != PublicationState.StageWriteFailed and session.state != PublicationState.Staged and session.state != PublicationState.StageRemoved and session.state != PublicationState.Published and session.state != PublicationState.PublishedUncertain
             raise PublicationPosixError.CloseNotReady if not session.parent_descriptor_owned or session.parent_descriptor_closed or not session.descriptor_owned or session.descriptor_closed
             raise PublicationPosixError.DescriptorProofMismatch if session.parent_proof.descriptor_token != parent_fd.u64() + 1u64 or session.staging_proof.descriptor_token != staging_fd.u64() + 1u64
             catch validate_publication(session):
@@ -185,6 +189,57 @@ module EsLuaBundlePublicationPosix:
                     return state
                 error failure:
                     raise PublicationPosixError.InvalidPublicationState
+
+
+        # Remove the admitted staging name before close. The caller must hold
+        # its declared exclusive directory-mutation lease for this operation;
+        # otherwise another writer could replace the name after revalidation.
+        def remove_publication_stage(session: mutable PublicationSession&, parent_fd: int, staging_fd: int, leaf_name: cstr) -> PublicationState error[PublicationPosixError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            raise PublicationPosixError.InvalidDescriptor if parent_fd < 0 or staging_fd < 0 or parent_fd == staging_fd
+            catch validate_publication(session):
+                ok:
+                    pass
+                error failure:
+                    raise PublicationPosixError.InvalidPublicationState
+            raise PublicationPosixError.StageRemoveNotReady if session.state != PublicationState.Staging and session.state != PublicationState.StageWriteFailed and session.state != PublicationState.Staged
+            raise PublicationPosixError.StageRemoveNotReady if not session.parent_descriptor_owned or session.parent_descriptor_closed or not session.descriptor_owned or session.descriptor_closed or session.stage_entry_removed
+            raise PublicationPosixError.DescriptorProofMismatch if session.parent_proof.descriptor_token != parent_fd.u64() + 1u64 or session.staging_proof.descriptor_token != staging_fd.u64() + 1u64
+            expected: PublicationHostProof = PublicationHostProof{parent: session.parent_proof, staging: session.staging_proof}
+            _ = try revalidate_publication_host_proof(parent_fd, staging_fd, leaf_name, session.parent_proof.owner_token, expected)
+
+            remove_status: mutable int = -1
+            catch elisascript_posix_unlinkat_leaf(parent_fd, leaf_name):
+                ok status:
+                    remove_status <- status
+                error failure:
+                    raise PublicationPosixError.InvalidLeafName
+            if remove_status == 0:
+                catch advance_publication(session, PublicationEvent.StageRemove):
+                    ok state:
+                        return state
+                    error failure:
+                        raise PublicationPosixError.InvalidPublicationState
+
+            errno: mutable i32& = elisascript_posix_errno()
+            if errno[0] == DarwinPublicationErrno::ENOENT:
+                # Under the caller's exclusive directory lease, ENOENT means
+                # there is no staging entry left to clean up.
+                catch advance_publication(session, PublicationEvent.StageRemove):
+                    ok state:
+                        return state
+                    error failure:
+                        raise PublicationPosixError.InvalidPublicationState
+            if errno[0] != DarwinPublicationErrno::EIO:
+                raise PublicationPosixError.StageRemoveFailed
+
+            _ = try close_publication_descriptors(session, parent_fd, staging_fd)
+            if session.state != PublicationState.CleanupUncertain:
+                catch advance_publication(session, PublicationEvent.StageRemoveOutcomeUnknown):
+                    ok state:
+                        pass
+                    error failure:
+                        raise PublicationPosixError.InvalidPublicationState
+            raise PublicationPosixError.StageRemovalOutcomeUnknown
 
 
         # Write all admitted bytes despite short writes and bounded EINTR.
