@@ -116,6 +116,7 @@ for boundary in \
     'NondeterministicClaimInvalid' \
     'FlakyEvidenceInvalid' \
     'StabilityEvidenceInvalid' \
+    'DetailOmissionInvalid' \
     'report.repeat_count < 2' \
     'validate_differential_stability(report.stability_evidence)' \
     'report.repeat_count != report.stability_evidence.observations.count' \
@@ -129,6 +130,8 @@ for boundary in \
     'differential_report_text_total_add_fits' \
     'differential_report_text_utf8_valid' \
     'not differential_report_text_utf8_valid(report.artifact_path)' \
+    'not differential_report_text_utf8_valid(report.reference_detail)' \
+    'not differential_report_text_utf8_valid(report.candidate_detail)' \
     'RepeatCountInvalid'; do
     rg -Fq "$boundary" "$model"
 done
@@ -218,6 +221,14 @@ if ! rg -Uq '(?m)^@test\r?\ndef differential_report_adapter_preserves_comparison
     exit 1
 fi
 rg -Fq 'make_differential_report(case, reference_run, candidate_run' "$fixture"
+rg -Fq 'reference_detail: comparison.reference_text' "$adapter"
+rg -Fq 'candidate_detail: comparison.candidate_text' "$adapter"
+rg -Fq '"reference_detail"' "$renderer"
+rg -Fq '"candidate_detail"' "$renderer"
+rg -Fq 'reference_detail_omitted' "$model"
+rg -Fq 'candidate_detail_omitted' "$model"
+rg -Fq 'sview_len(comparison.reference_text) >= Limits::TEXT_BYTES' "$adapter"
+rg -Fq 'sview_len(comparison.candidate_text) >= Limits::TEXT_BYTES' "$adapter"
 rg -Fq 'DifferentialReportStatus.Inconclusive' "$fixture"
 rg -Fq 'DifferentialReportCategory.ValueMismatch' "$fixture"
 
