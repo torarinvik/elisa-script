@@ -9,12 +9,28 @@ model="$repo_root/src/testing/report_model.elisa"
 renderer="$repo_root/src/testing/report_render_model.elisa"
 transport="$repo_root/src/testing/report_transport_model.elisa"
 transport_posix="$repo_root/src/testing/report_transport_posix.elisa"
+adapter="$repo_root/src/testing/report_adapter_model.elisa"
 consumer="$repo_root/src/testing/differential.elisa"
 fixture="$repo_root/test/differential/elisascript_differential_test.elisa"
 docs="$repo_root/docs/differential-testing.md"
 
-for required_file in "$model" "$renderer" "$transport" "$transport_posix" "$consumer" "$fixture" "$docs"; do
+for required_file in "$model" "$renderer" "$transport" "$transport_posix" "$adapter" "$consumer" "$fixture" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'differential report audit: missing %s\n' "$required_file" >&2; exit 1; }
+done
+
+for adapter_boundary in \
+    'module EsDifferentialReportAdapter:' \
+    'DifferentialReportAdapterError' \
+    'report_adapter_difference_kind_valid' \
+    'report_adapter_run_outcome_valid' \
+    'report_adapter_category' \
+    'def make_differential_report(' \
+    'DifferentialReportStatus.Passed' \
+    'DifferentialReportCategory.ValueMismatch' \
+    'DifferentialReportCategory.ObservationMismatch' \
+    'DifferentialReportCategory.Timeout' \
+    'validate_differential_report(report)'; do
+    rg -Fq "$adapter_boundary" "$adapter"
 done
 
 for transport_posix_boundary in \
@@ -123,6 +139,7 @@ rg -Fq 'include "./report_model.elisa"' "$consumer"
 rg -Fq 'include "./report_render_model.elisa"' "$consumer"
 rg -Fq 'include "./report_transport_model.elisa"' "$consumer"
 rg -Fq 'include "./report_transport_posix.elisa"' "$consumer"
+rg -Fq 'include "./report_adapter_model.elisa"' "$consumer"
 stability_include_line="$(rg -n -m1 -F 'include "./stability_model.elisa"' "$consumer" | cut -d: -f1)"
 report_include_line="$(rg -n -m1 -F 'include "./report_model.elisa"' "$consumer" | cut -d: -f1)"
 [[ -n "$stability_include_line" && -n "$report_include_line" ]]
@@ -194,6 +211,12 @@ if ! rg -Uq '(?m)^@test\r?\ndef differential_report_posix_transport_rejects_inva
     exit 1
 fi
 rg -Fq 'DifferentialReportTransportPosixError.InvalidDescriptor' "$fixture"
+if ! rg -Uq '(?m)^@test\r?\ndef differential_report_adapter_preserves_comparison_identity_and_category\(\) -> void:' "$fixture"; then
+    printf 'differential report audit: comparison adapter regression is not registered\n' >&2
+    exit 1
+fi
+rg -Fq 'make_differential_report(case, mismatch' "$fixture"
+rg -Fq 'DifferentialReportCategory.ValueMismatch' "$fixture"
 
 rg -Fq 'EsDifferentialReport::DifferentialReport' "$docs"
 rg -Fq 'merely setting a repeat count is insufficient' "$docs"

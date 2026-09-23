@@ -783,7 +783,10 @@ terminal typed states. `EsDifferentialReportTransportPosix` supplies the
 Darwin POSIX descriptor writer with bounded EINTR retries and a write-call
 ceiling; it never closes the caller-owned descriptor. This is still a
 source-level contract; it has not been compiled or executed and is not
-acceptance evidence.
+acceptance evidence. `EsDifferentialReportAdapter` now projects a validated
+`DifferentialComparison` into the report record, preserving runner names,
+artifact path, typed mismatch category, and the pass/fail distinction before
+formatting. The end-to-end case runner and CLI report selection remain open.
 
 Each side's complete bounded process-facing payload can be persisted separately
 as an `ESPS` process-stream artifact with `make_differential_process_stream_artifact`.
