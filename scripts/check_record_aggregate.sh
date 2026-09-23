@@ -61,6 +61,7 @@ launcher_parity="$repo_root/test/script_parity/record_aggregate_launcher_test.el
 rg -Fq 'def script_relative_default_matches(' "$launcher_parity"
 rg -Fq 'working_directory: "/"' "$launcher_parity"
 rg -Fq 'use_default_root: true' "$launcher_parity"
+rg -Fq 'missing_first_precedes_later' "$launcher_parity"
 rg -Fq 'missing_precedes_overflow' "$launcher_parity"
 rg -Fq 'unreadable_precedes_overflow' "$launcher_parity"
 rg -Fq 'original_docs_permissions <- mode & 4095u64' "$launcher_parity"

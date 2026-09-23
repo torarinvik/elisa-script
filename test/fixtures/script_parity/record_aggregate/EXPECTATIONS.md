@@ -55,6 +55,11 @@ Substitute the row's relative path for `{INPUT}`. Do not remove the candidate
 itself: the shell reference needs it as a source precondition, and without it
 the candidate cannot be launched for comparison.
 
+Also remove both the first required model input and the final ledger input in
+one generated-root case. Both implementations must report the first model
+input, confirming missing-file diagnostic precedence follows the declared
+input order; restore both files before continuing.
+
 ## Aggregate byte boundary
 
 Starting from a valid generated root, add harmless trailing UTF-8 `é`
