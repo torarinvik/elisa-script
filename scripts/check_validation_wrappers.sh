@@ -82,6 +82,7 @@ for wrapper in "$lowering" "$test_wrapper"; do
     rg -q '^kill_process_tree_immediately\(\)' "$wrapper"
     rg -q 'kill_process_tree_immediately "\$compiler_pid" "\$compiler_pgid"' "$wrapper"
     rg -q 'validation_lease' "$wrapper"
+    rg -Uq 'acquire_validation_lease\n\nif \[ -e "\$validation_disabled_file" \] \|\| \[ -L "\$validation_disabled_file" \]; then' "$wrapper"
     rg -Fq 'sh "$script_dir/validation_identity.sh"' "$wrapper"
     rg -q 'validation_compiler_binary_revision' "$wrapper"
     rg -q 'validation_compiler_binary_modified' "$wrapper"

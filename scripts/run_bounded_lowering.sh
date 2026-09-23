@@ -385,6 +385,15 @@ trap 'exit 130' INT TERM
 
 acquire_validation_lease
 
+# Close the startup race with stop_bounded_validation.sh: if it sets the
+# emergency latch before this lease becomes visible, the post-lease check must
+# observe it before compiler identity work or a launch can proceed. If the stop
+# arrives after this check, the stopper can verify and terminate this lease.
+if [ -e "$validation_disabled_file" ] || [ -L "$validation_disabled_file" ]; then
+    echo "run_bounded_lowering: validation emergency-stop latch is set; refusing to launch" >&2
+    exit 125
+fi
+
 validation_mode="lowered"
 if ! validation_identity_output="$(ELISA_LOCAL_COMPILER="$compiler_path" ELISASCRIPT_VALIDATION_OPT_LEVEL=O0 ELISASCRIPT_VALIDATION_TARGET=native ELISASCRIPT_VALIDATION_MODE="$validation_mode" sh "$script_dir/validation_identity.sh")"; then
     echo "run_bounded_lowering: unable to establish compiler/configuration identity; refusing to launch" >&2
