@@ -9,6 +9,9 @@ module EsLuaBundlePublicationPosix:
     public:
         const module Limits:
             STAT_EINTR_RETRIES: usize = 8
+            IO_EINTR_RETRIES: usize = 8
+            WRITE_CALLS: usize = 1048576
+            MAX_BYTES: usize = 67108864
 
 
         struct PublicationHostProof:
@@ -29,9 +32,26 @@ module EsLuaBundlePublicationPosix:
             StagingNotSingleLink
             StagingNameMismatch
             IdentityChanged
+            InvalidWriteBuffer
+            WriteLimitExceeded
+            WriteFailed
+            SyncFailed
 
 
     private:
+        const enum PublicationWriteState of u8:
+            Write
+            Done
+            Failed
+
+
+        struct PublicationWriteCursor:
+            state: PublicationWriteState = PublicationWriteState.Write
+            offset: usize = 0
+            calls: usize = 0
+            eintr_retries: usize = 0
+
+
         def publication_posix_stat_descriptor(descriptor: int, result: mutable ElisascriptStat&) -> bool can[Blocking.IO]:
             retries: mutable usize = 0
             while true:
@@ -120,3 +140,63 @@ module EsLuaBundlePublicationPosix:
             observed: PublicationHostProof = try capture_publication_host_proof(parent_fd, staging_fd, leaf_name, owner_token)
             raise PublicationPosixError.IdentityChanged if not publication_host_proof_equal(expected, observed)
             return observed
+
+
+        # Write all admitted bytes despite short writes and bounded EINTR.
+        # A failed partial write is surfaced; callers must leave the old
+        # destination untouched and clean up the private staging file.
+        def write_publication_stage_fully(fd: int, buffer: u8&, length: usize) -> usize error[PublicationPosixError] can[Blocking.IO]:
+            raise PublicationPosixError.InvalidDescriptor if fd < 0
+            raise PublicationPosixError.InvalidWriteBuffer if length != 0 and buffer == null
+            raise PublicationPosixError.WriteLimitExceeded if length > Limits::MAX_BYTES
+            cursor: mutable PublicationWriteCursor = PublicationWriteCursor{}
+            machine over cursor.state:
+                state Write
+                start Write
+
+                Write, PublicationWriteState.Write if cursor.offset >= length:
+                    cursor.state <- PublicationWriteState.Done
+                    -> Write
+                Write, PublicationWriteState.Write:
+                    if cursor.calls >= Limits::WRITE_CALLS:
+                        cursor.state <- PublicationWriteState.Failed
+                        -> Write
+                    remaining: usize = length - cursor.offset
+                    next_bytes: mutable u8& = buffer + cursor.offset
+                    amount: isize = elisascript_posix_write(fd, next_bytes.cast[void&], remaining)
+                    cursor.calls <- cursor.calls + 1
+                    if amount < 0:
+                        errno: mutable i32& = elisascript_posix_errno()
+                        if errno[0] == DarwinErrno::EINTR and cursor.eintr_retries < Limits::IO_EINTR_RETRIES:
+                            cursor.eintr_retries <- cursor.eintr_retries + 1
+                            -> Write
+                        cursor.state <- PublicationWriteState.Failed
+                        -> Write
+                    if amount == 0 or amount.usize() > remaining:
+                        cursor.state <- PublicationWriteState.Failed
+                        -> Write
+                    cursor.offset <- cursor.offset + amount.usize()
+                    cursor.eintr_retries <- 0
+                    -> Write
+
+                Write, PublicationWriteState.Done:
+                    break
+                Write, PublicationWriteState.Failed:
+                    break
+
+            raise PublicationPosixError.WriteFailed if cursor.state != PublicationWriteState.Done
+            return cursor.offset
+
+
+        # Make staging bytes durable before publication; retries only EINTR
+        # and are capped to keep a persistently interrupted host from looping.
+        def sync_publication_stage(fd: int) -> bool error[PublicationPosixError] can[Blocking.IO]:
+            raise PublicationPosixError.InvalidDescriptor if fd < 0
+            retries: mutable usize = 0
+            while true:
+                return true if elisascript_posix_fsync(fd) == 0
+                errno: mutable i32& = elisascript_posix_errno()
+                if errno[0] == DarwinErrno::EINTR and retries < Limits::IO_EINTR_RETRIES:
+                    retries <- retries + 1
+                    continue
+                raise PublicationPosixError.SyncFailed
