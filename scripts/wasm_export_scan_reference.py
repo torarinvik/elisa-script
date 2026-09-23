@@ -20,6 +20,7 @@ MAX_JSON_BYTES = 16 * 1024 * 1024
 # Expected snapshots are tiny checked-in contracts. Keep their decoded object
 # graph far below the 16 MiB maximum scanner output payload.
 MAX_EXPECTED_JSON_BYTES = 1 * 1024 * 1024
+MAX_EXPECTED_JSON_DEPTH = 128
 # Keep one byte for the final LF under the differential runner's 64 MiB cap.
 MAX_CALLER_PAYLOAD_BYTES = 64 * 1024 * 1024 - 1
 MAX_PATH_BYTES = 4096
@@ -97,7 +98,33 @@ def read_bounded_expected_json(path: Path) -> Any:
         raise ValueError(
             f"expected JSON exceeds {MAX_EXPECTED_JSON_BYTES} byte limit"
         )
+    check_expected_json_depth(payload)
     return json.loads(payload.decode("utf-8"))
+
+
+def check_expected_json_depth(payload: bytearray) -> None:
+    """Reject excessive container nesting before the recursive JSON decoder."""
+    depth = 0
+    in_string = False
+    escaped = False
+    for byte in payload:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif byte == 0x5C:  # backslash
+                escaped = True
+            elif byte == 0x22:  # quote
+                in_string = False
+        elif byte == 0x22:
+            in_string = True
+        elif byte == 0x5B or byte == 0x7B:  # [ or {
+            depth += 1
+            if depth > MAX_EXPECTED_JSON_DEPTH:
+                raise ValueError(
+                    f"expected JSON nesting exceeds {MAX_EXPECTED_JSON_DEPTH} levels"
+                )
+        elif byte == 0x5D or byte == 0x7D:  # ] or }
+            depth = max(0, depth - 1)
 
 
 def split_keepends(text: str) -> Iterator[str]:
