@@ -9,12 +9,14 @@
 module EsDifferentialReportAdapter:
     using EsDifferential
     using EsDifferentialReport
+    using EsDifferentialStability
 
     public:
         error DifferentialReportAdapterError:
             InvalidCase
             InvalidComparison
             ReplayEvidenceMismatch
+            StabilityEvidenceMismatch
 
 
     private:
@@ -74,8 +76,8 @@ module EsDifferentialReportAdapter:
             inconclusive: bool = not comparison.equal and (comparison.kind == DifferentialDifferenceKind.Engine or (comparison.kind == DifferentialDifferenceKind.Outcome and category == DifferentialReportCategory.InfrastructureFailure))
             status: DifferentialReportStatus = DifferentialReportStatus.Passed if comparison.equal else DifferentialReportStatus.Inconclusive if inconclusive else DifferentialReportStatus.Failed
             summary: sview = "differential comparison equal" if comparison.equal else comparison.reason if comparison.reason != "" else "differential comparison mismatch"
-            reference_detail_omitted: bool = sview_len(comparison.reference_text) >= Limits::TEXT_BYTES
-            candidate_detail_omitted: bool = sview_len(comparison.candidate_text) >= Limits::TEXT_BYTES
+            reference_detail_omitted: bool = sview_len(comparison.reference_text) >= EsDifferentialReport::Limits::TEXT_BYTES
+            candidate_detail_omitted: bool = sview_len(comparison.candidate_text) >= EsDifferentialReport::Limits::TEXT_BYTES
             report: mutable DifferentialReport = DifferentialReport{format: format, status: status, category: category, comparison_kind: comparison_kind, comparison_index: comparison.index, case_name: case.name, summary: summary, reference_engine: case.reference.name, candidate_engine: case.candidate.name, reference_detail: "" if reference_detail_omitted else comparison.reference_text, candidate_detail: "" if candidate_detail_omitted else comparison.candidate_text, reference_detail_omitted: reference_detail_omitted, candidate_detail_omitted: candidate_detail_omitted, artifact_path: artifact_path}
             try validate_differential_report(report)
             return report
@@ -103,3 +105,38 @@ module EsDifferentialReportAdapter:
             fresh_fingerprint: u64 = differential_comparison_artifact_fingerprint(fresh_artifact)
             raise DifferentialReportAdapterError.ReplayEvidenceMismatch if stored_fingerprint == 0 or fresh_fingerprint == 0 or stored_fingerprint != fresh_fingerprint
             return try report_adapter_project_comparison(case, fresh, format, artifact_path)
+
+
+        # Record only terminal replay sessions as repeat evidence. This binds
+        # each observation to the case manifest and the two replay run receipts
+        # rather than inviting callers to invent unrelated fingerprints.
+        def record_differential_case_replay_stability_observation(stability: mutable DifferentialStabilitySession&, case: DifferentialCase&, replay: DifferentialCaseReplaySession&) -> DifferentialStabilityState error[DifferentialRunnerError, DifferentialCaseReplayError, EsDifferentialReplay::DifferentialReplayError, DifferentialStabilityError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            try validate_differential_stability(stability)
+            raise DifferentialStabilityError.InvalidState if stability.state != DifferentialStabilityState.Running
+            raise DifferentialStabilityError.RepeatLimitExceeded if stability.next_repeat >= stability.policy.maximum_repeats
+            comparison: DifferentialComparison = try differential_case_replay_comparison(case, replay)
+            observation: DifferentialStabilityObservation = DifferentialStabilityObservation{repeat_index: stability.next_repeat, reference_fingerprint: replay.reference_run_fingerprint, candidate_fingerprint: replay.candidate_run_fingerprint, comparison_fingerprint: replay.replay.comparison_fingerprint, equal: comparison.equal}
+            return try advance_differential_stability(stability, DifferentialStabilityEvent.Observation, observation)
+
+
+        # The baseline must be the exact first completed replay represented in
+        # the stability record. Stable classifications preserve the ordinary
+        # comparison result; any varying repeat is explicitly inconclusive and
+        # can never surface as a pass or a definitive mismatch.
+        def make_differential_case_stability_report(case: DifferentialCase&, stability: DifferentialStabilitySession&, baseline: DifferentialCaseReplaySession&, format: DifferentialReportFormat = DifferentialReportFormat.Json, artifact_path: sview = "") -> DifferentialReport error[DifferentialReportError, DifferentialReportAdapterError, DifferentialRunnerError, DifferentialCaseReplayError, EsDifferentialReplay::DifferentialReplayError, DifferentialStabilityError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            try validate_differential_stability(stability)
+            raise DifferentialReportAdapterError.StabilityEvidenceMismatch if stability.state != DifferentialStabilityState.Completed or stability.observations.count == 0
+            comparison: DifferentialComparison = try differential_case_replay_comparison(case, baseline)
+            first: DifferentialStabilityObservation = stability.observations[0]
+            raise DifferentialReportAdapterError.StabilityEvidenceMismatch if first.reference_fingerprint != baseline.reference_run_fingerprint or first.candidate_fingerprint != baseline.candidate_run_fingerprint or first.comparison_fingerprint != baseline.replay.comparison_fingerprint or first.equal != comparison.equal
+            report: mutable DifferentialReport = try report_adapter_project_comparison(case, comparison, format, artifact_path)
+            report.repeat_count <- stability.observations.count
+            report.deterministic <- stability.classification != DifferentialStabilityClassification.Nondeterministic
+            report.has_stability_evidence <- true
+            report.stability_evidence <- stability
+            if stability.classification == DifferentialStabilityClassification.Nondeterministic:
+                report.status <- DifferentialReportStatus.Inconclusive
+                report.category <- DifferentialReportCategory.Flaky
+                report.summary <- "differential behavior varied across repeated runs"
+            try validate_differential_report(report)
+            return report

@@ -806,8 +806,14 @@ remains the locator for that evidence.
 The replay-session report entrypoint additionally requires the paired replay
 to reach its completed/restored state and verifies the stored comparison
 artifact fingerprint against a fresh comparison of the session-owned runs
-before projection. The end-to-end case runner, CLI report selection, and
-host-produced provenance remain open.
+before projection. Repeat stability can now record completed replay-session run
+and comparison receipts directly into `DifferentialStabilitySession`; its
+report adapter requires the first repeat to match the supplied baseline session.
+Stable results retain Passed/Failed, while detected variation is always an
+Inconclusive/Flaky result. The session's internally consistent fingerprints
+are still caller-constructible evidence, not cryptographic host provenance.
+The end-to-end repeat scheduler, CLI report selection, and host-produced
+provenance remain open.
 
 Each side's complete bounded process-facing payload can be persisted separately
 as an `ESPS` process-stream artifact with `make_differential_process_stream_artifact`.
