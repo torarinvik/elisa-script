@@ -32,6 +32,9 @@ module EsLuaBundlePublicationPosix:
             StagingNotSingleLink
             StagingNameMismatch
             IdentityChanged
+            InvalidPublicationState
+            CloseNotReady
+            DescriptorProofMismatch
             InvalidWriteBuffer
             WriteLimitExceeded
             WriteFailed
@@ -140,6 +143,38 @@ module EsLuaBundlePublicationPosix:
             observed: PublicationHostProof = try capture_publication_host_proof(parent_fd, staging_fd, leaf_name, owner_token)
             raise PublicationPosixError.IdentityChanged if not publication_host_proof_equal(expected, observed)
             return observed
+
+
+        # Close each owned descriptor exactly once. POSIX close errors can
+        # leave descriptor state ambiguous, so they are never retried; the
+        # publication machine records mixed/failed outcomes as terminal
+        # CleanupUncertain instead of claiming cleanup or risking fd reuse.
+        def close_publication_descriptors(session: mutable PublicationSession&, parent_fd: int, staging_fd: int) -> PublicationState error[PublicationPosixError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            raise PublicationPosixError.InvalidDescriptor if parent_fd < 0 or staging_fd < 0 or parent_fd == staging_fd
+            raise PublicationPosixError.CloseNotReady if session.state != PublicationState.Staging and session.state != PublicationState.Staged and session.state != PublicationState.Published and session.state != PublicationState.PublishedUncertain
+            raise PublicationPosixError.CloseNotReady if not session.parent_descriptor_owned or session.parent_descriptor_closed or not session.descriptor_owned or session.descriptor_closed
+            raise PublicationPosixError.DescriptorProofMismatch if session.parent_proof.descriptor_token != parent_fd.u64() + 1u64 or session.staging_proof.descriptor_token != staging_fd.u64() + 1u64
+            catch validate_publication(session):
+                ok:
+                    pass
+                error failure:
+                    raise PublicationPosixError.InvalidPublicationState
+
+            staging_close_status: int = elisascript_posix_close(staging_fd)
+            parent_close_status: int = elisascript_posix_close(parent_fd)
+            stage_close_succeeded: bool = staging_close_status == 0
+            parent_close_succeeded: bool = parent_close_status == 0
+            if stage_close_succeeded and parent_close_succeeded:
+                catch advance_publication(session, PublicationEvent.Close):
+                    ok state:
+                        return state
+                    error failure:
+                        raise PublicationPosixError.InvalidPublicationState
+            catch advance_publication(session, PublicationEvent.CloseOutcomeUnknown, stage_close_succeeded: stage_close_succeeded, parent_close_succeeded: parent_close_succeeded):
+                ok state:
+                    return state
+                error failure:
+                    raise PublicationPosixError.InvalidPublicationState
 
 
         # Write all admitted bytes despite short writes and bounded EINTR.
