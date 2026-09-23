@@ -73,6 +73,8 @@ for wrapper in "$lowering" "$test_wrapper"; do
     rg -q 'kill_process_tree "\$compiler_pid" "\$compiler_pgid"' "$wrapper"
     rg -q 'process_group_has_processes' "$wrapper"
     rg -q 'rss_measurement_failed' "$wrapper"
+    rg -Uq 'rss_measurement_failed[^\n]*\n[[:space:]]+kill_process_tree_immediately "\$compiler_pid" "\$compiler_pgid"' "$wrapper"
+    rg -Uq 'rss_guard[^\n]*\n[[:space:]]+kill_process_tree_immediately "\$compiler_pid" "\$compiler_pgid"' "$wrapper"
     rg -q 'kill -TERM -- "-\$process_group_id"' "$wrapper"
     rg -q 'kill_process_tree' "$wrapper"
     rg -q '^kill_process_tree_immediately\(\)' "$wrapper"
