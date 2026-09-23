@@ -23,6 +23,7 @@ for adapter_boundary in \
     'DifferentialReportAdapterError' \
     'report_adapter_difference_kind_valid' \
     'report_adapter_run_outcome_valid' \
+    'report_adapter_run_outcome_incomplete' \
     'report_adapter_comparison_kind' \
     'report_adapter_category' \
     'report_adapter_project_comparison' \
@@ -241,10 +242,13 @@ rg -Fq 'report.comparison_kind' "$renderer"
 rg -Fq 'report.comparison_index' "$renderer"
 rg -Fq 'reference_detail_omitted' "$model"
 rg -Fq 'candidate_detail_omitted' "$model"
-rg -Fq 'sview_len(comparison.reference_text) >= Limits::TEXT_BYTES' "$adapter"
-rg -Fq 'sview_len(comparison.candidate_text) >= Limits::TEXT_BYTES' "$adapter"
+rg -Fq 'sview_len(projected_comparison.reference_text) >= EsDifferentialReport::Limits::TEXT_BYTES' "$adapter"
+rg -Fq 'sview_len(projected_comparison.candidate_text) >= EsDifferentialReport::Limits::TEXT_BYTES' "$adapter"
 rg -Fq 'DifferentialReportStatus.Inconclusive' "$fixture"
 rg -Fq 'DifferentialReportCategory.ValueMismatch' "$fixture"
+rg -Fq 'both_timed_out.status == DifferentialReportStatus.Inconclusive' "$fixture"
+rg -Fq 'one_sided_timeout.status == DifferentialReportStatus.Failed' "$fixture"
+rg -Fq 'both_compile_failed.status == DifferentialReportStatus.Inconclusive' "$fixture"
 
 rg -Fq 'EsDifferentialReport::DifferentialReport' "$docs"
 rg -Fq 'merely setting a repeat count is insufficient' "$docs"

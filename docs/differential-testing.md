@@ -789,6 +789,14 @@ so callers cannot forge a contradictory comparison record into a pass. It
 preserves runner names, artifact path, and typed mismatch category. Engine
 qualification failures and output-limit or process-launch failures are
 inconclusive infrastructure outcomes; they do not claim a behavior mismatch.
+When both sides terminate without complete results (timeout, crash, spawn or
+compile failure, or output-limit exhaustion), report projection forces an
+inconclusive outcome even if the captured partial records happen to be equal.
+A single incomplete side against a completed result remains a failed
+divergence when the incomplete result is a timeout or crash. A one-sided spawn,
+compile, or output-limit failure remains inconclusive infrastructure evidence.
+Infrastructure outcomes take precedence over timeout or crash labels when both
+appear in a pair.
 Reports also preserve the exact typed comparator kind and its mismatch index;
 the broad report category remains useful for CI mapping, while consumers can
 distinguish (for example) an exit-status mismatch from stdout or a particular
