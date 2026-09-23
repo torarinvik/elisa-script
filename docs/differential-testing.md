@@ -794,7 +794,10 @@ compile failure, or output-limit exhaustion), report projection forces an
 inconclusive outcome even if the captured partial records happen to be equal.
 The core comparator also records paired incomplete outcomes as a non-equal
 `Outcome` difference, preserving both terminal outcomes; incomplete execution
-can never produce an `Equal` comparison artifact or parity pass.
+can never produce an `Equal` comparison artifact or parity pass. Artifact
+validation independently rejects a forged `Equal` comparison carrying either
+incomplete outcome, including artifacts created directly rather than through
+the comparator.
 A single incomplete side against a completed result remains a failed
 divergence when the incomplete result is a timeout or crash. A one-sided spawn,
 compile, or output-limit failure remains inconclusive infrastructure evidence.
