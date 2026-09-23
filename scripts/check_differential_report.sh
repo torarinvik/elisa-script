@@ -120,6 +120,8 @@ for boundary in \
     'differential_report_status_valid' \
     'differential_report_category_valid' \
     'StatusCategoryMismatch' \
+    'ComparisonStatusMismatch' \
+    'report.status == DifferentialReportStatus.Passed and report.comparison_kind != DifferentialReportDifferenceKind.Equal' \
     'NondeterministicPass' \
     'NondeterministicClaimInvalid' \
     'FlakyEvidenceInvalid' \
@@ -171,6 +173,8 @@ for fixture_pattern in \
     'DifferentialReportFormat.Json' \
     'DifferentialReportFormat.Junit' \
     'DifferentialReportError.StatusCategoryMismatch' \
+    'DifferentialReportError.ComparisonStatusMismatch' \
+    'comparison_kind: DifferentialReportDifferenceKind.ExitStatus' \
     'DifferentialReportError.NondeterministicPass' \
     'DifferentialReportError.FlakyEvidenceInvalid' \
     'DifferentialReportError.NondeterministicClaimInvalid' \
