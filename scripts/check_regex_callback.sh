@@ -40,6 +40,7 @@ for boundary in \
     'RegexCallbackError.ReplacementNotReady' \
     'RegexCallbackError.OutputLimitExceeded' \
     'RegexCallbackError.AccountingInvalid' \
+    'session.matches == 0 and (session.captures != 0 or session.has_last_zero)' \
     'not session.has_last_zero and session.last_zero_start != 0' \
     'session.has_last_zero and session.last_zero_start > session.input_bytes' \
     'session.state == RegexCallbackState.Complete and session.cursor != session.input_bytes' \
@@ -70,6 +71,8 @@ for fixture_pattern in \
     'forged_zero_marker' \
     'forged_zero_offset' \
     'forged_complete_cursor' \
+    'forged_complete_captures' \
+    'forged_complete_zero_marker' \
     'zero_capture_policy'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
