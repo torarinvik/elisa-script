@@ -22,36 +22,22 @@ commands, not authorization to run them; the environment variable is a manual ga
 not standing approval. Do not launch a compiler or test wrapper unless the user
 explicitly reauthorizes validation in the active task.
 
-The latest self-hosted Elisa compiler source currently visible (read-only
-rechecked 2026-09-20) is the clean local `main` checkout at `../Elisa-compiler`,
-revision `a51f3dd710dccde137141a41ce67b878f1181872` (one commit ahead of its
-checked `origin/main` at the time of observation). Since
-`5329edfdbefa27b5c1c51253da0073256ed51058`, it includes
-additional semantic lookup-index optimizations and compiler correctness and
-diagnostic fixes. The upstream lexer buffer-return optimization (`c7c849c7`)
-is represented by the focused Elisascript adaptation in
-`vendor/elisa-compiler/src/lexer`; the compatible target-machine level helper
-and wasm intrinsic overload fix are mirrored in
-`vendor/elisa-compiler/src/backend/{codegen_debug,codegen_declare}.elisa`.
-The September 20 semantic fast paths (`187a33ef`, `65842568`, `41d1e229`, and
-`7e6dde06`) now use Elisascript's already-present collision-safe symbol chain
-for value-block name resolution, enum-index struct classification, and
-positional-construction checks, and reuse the catch-line index rather than
-rescanning annotations. Exact names and symbol kinds are rechecked, and the
-value-block query preserves first-declaration lookup order without importing
-the upstream compiler's newer index tables. Upstream `15c54315`'s global
-integer constant folder also uses the vendor's shared character-literal decoder.
-Upstream `44a9cf62` is adapted separately as a diagnostic correctness fix: the
-named-struct predicate now recognizes empty and positional-only structs through
-declaration symbols, covering both named-type mismatch and invalid struct-cast
-classification, with a focused semantic regression fixture.
-The vendored snapshot also carries the compatible semantic fast paths from
-`142d9b03` (direct `sview` length checks and one-time protocol indexing) and
-the backend disjointness-scan de-duplication from `9bf231e6`; newer allocator,
-arena-cache, and ABI/backend changes remain deliberately unmerged until a
-compatibility refresh is reviewed.
-The remaining vendor tree is an adapted `e56d6f2d` snapshot, so refresh it
-deliberately rather than copying this checkout wholesale.
+The latest Elisa-compiler remote head was read-only verified on 2026-09-24 as
+`ec4c7b93e6b0ef849dc5001df964f860c485018b` (`Protect shared arena cache across
+threads`). The sibling `../Elisa-compiler` checkout is at
+`2e9d5bf5afb26aabbec15d1059b8f4c2abde82fd` and has an uncommitted change in
+`src/semantic/resolve_generic_call_types.elisa`; it is not treated as a clean,
+reproducible latest-source checkout. The remote-tip check is provenance only:
+no fetch, checkout, build, or compiler invocation was performed.
+
+`vendor/elisa-compiler` remains an adapted snapshot, not a mirror of that remote
+tip. It includes the focused lexer buffer-return optimization, compatible
+semantic lookup-index fast paths, and selected correctness fixes described by
+its source history; newer arena-cache, allocator, and ABI/backend changes have
+not been imported. Do not call the vendor tree current with upstream until a
+clean source revision is reconciled and each change is reviewed for compatibility.
+The separate Elisa-core source and the guarded local compiler path remain
+subject to the validation hold above; source freshness does not authorize a run.
 
 The separate Go Elisa-core source checkout currently visible (read-only
 rechecked 2026-09-20) is clean at revision
