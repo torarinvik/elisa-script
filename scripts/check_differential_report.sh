@@ -8,12 +8,25 @@ repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 model="$repo_root/src/testing/report_model.elisa"
 renderer="$repo_root/src/testing/report_render_model.elisa"
 transport="$repo_root/src/testing/report_transport_model.elisa"
+transport_posix="$repo_root/src/testing/report_transport_posix.elisa"
 consumer="$repo_root/src/testing/differential.elisa"
 fixture="$repo_root/test/differential/elisascript_differential_test.elisa"
 docs="$repo_root/docs/differential-testing.md"
 
-for required_file in "$model" "$renderer" "$transport" "$consumer" "$fixture" "$docs"; do
+for required_file in "$model" "$renderer" "$transport" "$transport_posix" "$consumer" "$fixture" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'differential report audit: missing %s\n' "$required_file" >&2; exit 1; }
+done
+
+for transport_posix_boundary in \
+    'module EsDifferentialReportTransportPosix:' \
+    'MAX_EINTR_RETRIES: usize = 8' \
+    'MAX_WRITE_CALLS: usize = 1048576' \
+    'write_differential_report_transport_fd(' \
+    'elisascript_posix_write' \
+    'DarwinErrno::EINTR' \
+    'WriteCallLimitExceeded' \
+    'DifferentialReportTransportEvent.Fail'; do
+    rg -Fq "$transport_posix_boundary" "$transport_posix"
 done
 
 for renderer_boundary in \
@@ -109,6 +122,7 @@ embedded_nul_scan_line="$(rg -n -m1 -F 'EmbeddedNul if sview_contains_byte(messa
 rg -Fq 'include "./report_model.elisa"' "$consumer"
 rg -Fq 'include "./report_render_model.elisa"' "$consumer"
 rg -Fq 'include "./report_transport_model.elisa"' "$consumer"
+rg -Fq 'include "./report_transport_posix.elisa"' "$consumer"
 stability_include_line="$(rg -n -m1 -F 'include "./stability_model.elisa"' "$consumer" | cut -d: -f1)"
 report_include_line="$(rg -n -m1 -F 'include "./report_model.elisa"' "$consumer" | cut -d: -f1)"
 [[ -n "$stability_include_line" && -n "$report_include_line" ]]
@@ -175,6 +189,11 @@ fi
 rg -Fq 'DifferentialReportTransportError.ShortWrite' "$fixture"
 rg -Fq 'peek_differential_report_chunk' "$fixture"
 rg -Fq 'transport.offset == transport.bytes.count' "$fixture"
+if ! rg -Uq '(?m)^@test\r?\ndef differential_report_posix_transport_rejects_invalid_descriptor_before_write\(\) -> void:' "$fixture"; then
+    printf 'differential report audit: POSIX transport regression is not registered\n' >&2
+    exit 1
+fi
+rg -Fq 'DifferentialReportTransportPosixError.InvalidDescriptor' "$fixture"
 
 rg -Fq 'EsDifferentialReport::DifferentialReport' "$docs"
 rg -Fq 'merely setting a repeat count is insufficient' "$docs"

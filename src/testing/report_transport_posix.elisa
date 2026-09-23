@@ -1,0 +1,107 @@
+# Darwin POSIX host adapter for differential report transport.
+#
+# This is the concrete writer edge: the typed transport still decides when a
+# chunk is consumed, while this adapter handles EINTR and positive short writes
+# until the complete chunk has reached one caller-owned file descriptor. It
+# never closes the descriptor or treats a partial/error write as a report
+# success.
+
+include "./report_transport_model.elisa"
+
+module EsDifferentialReportTransportPosix:
+    using EsDifferentialReportTransport
+    using EsRuntime
+
+    public:
+        const module Limits:
+            MAX_EINTR_RETRIES: usize = 8
+            MAX_WRITE_CALLS: usize = 1048576
+
+
+        error DifferentialReportTransportPosixError:
+            InvalidDescriptor
+            WriteFailed
+            WriteCallLimitExceeded
+
+
+    private:
+        const enum ReportTransportWriteState of u8:
+            Chunk
+            Write
+            Emit
+            Done
+            Failed
+
+
+        struct ReportTransportWriteCursor:
+            state: mutable ReportTransportWriteState = ReportTransportWriteState.Chunk
+            chunk: mutable sview = ""
+            chunk_length: mutable usize = 0
+            offset: mutable usize = 0
+            eintr_retries: mutable usize = 0
+            write_calls: mutable usize = 0
+            call_limit_hit: mutable bool = false
+
+
+    public:
+        def write_differential_report_transport_fd(transport: mutable DifferentialReportTransport&, fd: int) -> void error[DifferentialReportTransportError, DifferentialReportTransportPosixError] can[Blocking.IO, Unsafe.PointerCast]:
+            raise DifferentialReportTransportPosixError.InvalidDescriptor if fd < 0
+            _ = try advance_differential_report_transport(transport, DifferentialReportTransportEvent.Begin)
+            cursor: mutable ReportTransportWriteCursor = ReportTransportWriteCursor{}
+            machine over cursor.state:
+                state Write
+                start Write
+
+                Write, ReportTransportWriteState.Chunk if transport.state == DifferentialReportTransportState.Complete:
+                    cursor.state <- ReportTransportWriteState.Done
+                    -> Write
+
+                Write, ReportTransportWriteState.Chunk:
+                    cursor.chunk_length <- try peek_differential_report_chunk(transport, cursor.chunk)
+                    cursor.offset <- 0
+                    cursor.eintr_retries <- 0
+                    cursor.state <- ReportTransportWriteState.Write
+                    -> Write
+
+                Write, ReportTransportWriteState.Write if cursor.offset >= cursor.chunk_length:
+                    cursor.state <- ReportTransportWriteState.Emit
+                    -> Write
+
+                Write, ReportTransportWriteState.Write if cursor.write_calls >= Limits::MAX_WRITE_CALLS:
+                    cursor.call_limit_hit <- true
+                    cursor.state <- ReportTransportWriteState.Failed
+                    -> Write
+
+                Write, ReportTransportWriteState.Write:
+                    remaining: usize = cursor.chunk_length - cursor.offset
+                    next_bytes: mutable u8& = &cursor.chunk.data[cursor.offset]
+                    amount: isize = elisascript_posix_write(fd, next_bytes.cast[void&], remaining)
+                    cursor.write_calls <- cursor.write_calls + 1
+                    if amount < 0:
+                        errno: mutable i32& = elisascript_posix_errno()
+                        if errno[0] == DarwinErrno::EINTR and cursor.eintr_retries < Limits::MAX_EINTR_RETRIES:
+                            cursor.eintr_retries <- cursor.eintr_retries + 1
+                            -> Write
+                        cursor.state <- ReportTransportWriteState.Failed
+                        -> Write
+                    if amount == 0 or amount.usize() > remaining:
+                        cursor.state <- ReportTransportWriteState.Failed
+                        -> Write
+                    cursor.offset <- cursor.offset + amount.usize()
+                    cursor.eintr_retries <- 0
+                    -> Write
+
+                Write, ReportTransportWriteState.Emit:
+                    _ = try advance_differential_report_transport(transport, DifferentialReportTransportEvent.Emit, cursor.chunk_length)
+                    cursor.state <- ReportTransportWriteState.Chunk
+                    -> Write
+
+                Write, ReportTransportWriteState.Done:
+                    break
+
+                Write, ReportTransportWriteState.Failed:
+                    _ = try advance_differential_report_transport(transport, DifferentialReportTransportEvent.Fail)
+                    break
+
+            raise DifferentialReportTransportPosixError.WriteCallLimitExceeded if cursor.call_limit_hit
+            raise DifferentialReportTransportPosixError.WriteFailed if cursor.state == ReportTransportWriteState.Failed

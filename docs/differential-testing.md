@@ -779,8 +779,11 @@ stdout/file writes and end-to-end report consumption remain open. The
 `EsDifferentialReportTransport` boundary now owns a rendered report as one
 bounded byte document and exposes ordered, acknowledged chunks for a host
 writer: a short write leaves the chunk pending, and failure/cancellation are
-terminal typed states. This is still a source-level contract; it has not been
-compiled or executed and is not acceptance evidence.
+terminal typed states. `EsDifferentialReportTransportPosix` supplies the
+Darwin POSIX descriptor writer with bounded EINTR retries and a write-call
+ceiling; it never closes the caller-owned descriptor. This is still a
+source-level contract; it has not been compiled or executed and is not
+acceptance evidence.
 
 Each side's complete bounded process-facing payload can be persisted separately
 as an `ESPS` process-stream artifact with `make_differential_process_stream_artifact`.
