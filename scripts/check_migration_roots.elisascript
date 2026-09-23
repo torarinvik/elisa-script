@@ -1,0 +1,224 @@
+# Bounded Elisascript port of the AWK manifest checks and declared-root
+# containment audit in check_migration_roots.sh. It reads metadata only; it
+# never scans or executes anything inside a declared project root.
+
+module EsMigrationRootsAudit:
+    public:
+        error MigrationRootsError:
+            InputLimitExceeded
+            HeaderInvalid
+            RecordShapeInvalid
+            FieldInvalid
+            DuplicateName
+            DuplicatePath
+            EmptyManifest
+
+
+    private:
+        const module Limits:
+            MANIFEST_BYTES: usize = 1048576
+            ROWS: usize = 4096
+            FIELD_BYTES: usize = 65536
+            PATH_BYTES: usize = 4096
+
+
+        const module Syntax:
+            HEADER: sview = "# name\trelative_path\towner\treview_status"
+
+
+        const module Messages:
+            ROOT_MISSING: sview = "migration roots audit: coding-projects root does not exist: "
+            MANIFEST_MISSING: sview = "migration roots audit: manifest does not exist: "
+            ROOT_CANONICAL_FAILED: sview = "migration roots audit: unable to canonicalize coding-projects root"
+            MANIFEST_READ_FAILED: sview = "migration roots audit: unable to read manifest"
+            MANIFEST_TOO_LARGE: sview = "migration roots audit: manifest exceeds audit limit"
+            MANIFEST_INVALID: sview = "migration roots audit: malformed, duplicated, unsafe, or unowned reviewed row"
+            DECLARED_ROOT_MISSING: sview = "migration roots audit: declared root is missing: "
+            DECLARED_ROOT_CANONICAL_FAILED: sview = "migration roots audit: unable to canonicalize declared root: "
+            ROOT_ESCAPES: sview = "migration roots audit: declared root escapes coding-projects tree through a symlink: "
+
+
+        struct RootRow:
+            name: sview
+            relative_path: sview
+            owner: sview
+            review_status: sview
+
+
+        def relative_root_path_valid(value: sview) -> bool can[Memory.Allocate, Abort.Panic]:
+            return false if value == "" or len(value) >= Limits::PATH_BYTES
+            return false if path_is_absolute(path(value)) or value.startswith("./")
+            components: darray[sview] = split(value, "/")
+            for component in components:
+                return false if component == ".."
+            return true
+
+
+        def root_row_from_fields(fields: darray[sview]) -> RootRow error[MigrationRootsError] can[Memory.Allocate, Abort.Panic]:
+            raise MigrationRootsError.RecordShapeInvalid if fields.count != 4
+            for field in fields:
+                raise MigrationRootsError.FieldInvalid if field == "" or len(field) > Limits::FIELD_BYTES
+            raise MigrationRootsError.FieldInvalid if not relative_root_path_valid(fields[1])
+            raise MigrationRootsError.FieldInvalid if fields[3] != "pending" and fields[3] != "reviewed" and fields[3] != "blocked"
+            raise MigrationRootsError.FieldInvalid if fields[3] == "reviewed" and fields[2] == "unassigned"
+            return RootRow{name: fields[0], relative_path: fields[1], owner: fields[2], review_status: fields[3]}
+
+
+        def roots_have_duplicate_names(rows: darray[RootRow]) -> bool can[Memory.Allocate, Abort.Panic]:
+            names: mutable darray[sview] = []
+            for row in rows:
+                names.push(row.name)
+            ordered_names: darray[sview] = sorted(names)
+            for index in 1..<ordered_names.count |ordered_names|:
+                return true if ordered_names[index - 1] == ordered_names[index]
+            return false
+
+
+        def roots_have_duplicate_paths(rows: darray[RootRow]) -> bool can[Memory.Allocate, Abort.Panic]:
+            paths: mutable darray[sview] = []
+            for row in rows:
+                paths.push(row.relative_path)
+            ordered_paths: darray[sview] = sorted(paths)
+            for index in 1..<ordered_paths.count |ordered_paths|:
+                return true if ordered_paths[index - 1] == ordered_paths[index]
+            return false
+
+
+        def parse_root_records(contents: sview) -> darray[RootRow] error[MigrationRootsError] can[Memory.Allocate, Abort.Panic]:
+            lines: darray[sview] = split_lines(contents)
+            raise MigrationRootsError.HeaderInvalid if lines.count == 0 or lines[0] != Syntax::HEADER
+            rows: mutable darray[RootRow] = []
+
+            for index in 1..<lines.count |contents, lines, rows|:
+                line: sview = lines[index]
+                terminal_split_field: bool = index + 1 == lines.count and contents.endswith("\n") and line == ""
+                if line != "" and not terminal_split_field:
+                    raise MigrationRootsError.RecordShapeInvalid if rows.count >= Limits::ROWS
+                    tabs: mutable usize = 0
+                    for byte in line:
+                        tabs <- tabs + 1 if byte == 9u8
+                        raise MigrationRootsError.RecordShapeInvalid if tabs > 3
+                    raise MigrationRootsError.RecordShapeInvalid if tabs != 3
+                    fields: darray[sview] = split(line, "\t")
+                    rows.push(try root_row_from_fields(fields))
+
+            raise MigrationRootsError.EmptyManifest if rows.count == 0
+            raise MigrationRootsError.DuplicateName if roots_have_duplicate_names(rows)
+            raise MigrationRootsError.DuplicatePath if roots_have_duplicate_paths(rows)
+            return rows
+
+
+        def canonical_path_is_within(root: sview, candidate: sview) -> bool can[Memory.Allocate, Abort.Panic]:
+            return true if root == candidate
+            prefix: sview = "/" if root == "/" else root + "/"
+            return candidate.startswith(prefix)
+
+
+        def read_manifest(manifest_path: Path) -> sview error[MigrationRootsError] can[Memory.Allocate, Abort.Panic, File.Read]:
+            original_size: usize = try file_size(manifest_path) else err:
+                raise MigrationRootsError.RecordShapeInvalid
+            raise MigrationRootsError.InputLimitExceeded if original_size > Limits::MANIFEST_BYTES
+
+            current_size: usize = try file_size(manifest_path) else err:
+                raise MigrationRootsError.RecordShapeInvalid
+            raise MigrationRootsError.InputLimitExceeded if current_size > Limits::MANIFEST_BYTES or current_size > original_size
+
+            contents: sview = try read_text(manifest_path) else err:
+                raise MigrationRootsError.RecordShapeInvalid
+            raise MigrationRootsError.InputLimitExceeded if len(contents) > Limits::MANIFEST_BYTES or len(contents) > original_size
+            return contents
+
+
+    public:
+        def repository_root() -> Path error[MigrationRootsError] can[Memory.Allocate, Abort.Panic, Directory.Read]:
+            script_path: Path = Script::source_path()
+            script_directory: Path = try path_real(script_path.parent()) else err:
+                raise MigrationRootsError.RecordShapeInvalid
+            return script_directory.parent()
+
+
+        def validate_root_records(contents: sview) -> bool error[MigrationRootsError] can[Memory.Allocate, Abort.Panic]:
+            rows: darray[RootRow] = try parse_root_records(contents)
+            return rows.count > 0
+
+
+        def canonical_path_is_within_root(root: sview, candidate: sview) -> bool can[Memory.Allocate, Abort.Panic]:
+            return canonical_path_is_within(root, candidate)
+
+
+        def run(coding_projects_root: Path, manifest_path: Path) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, File.Read, Directory.Read]:
+            if not is_directory(coding_projects_root):
+                eprint(f"{Messages::ROOT_MISSING}{coding_projects_root}")
+                return 2i64
+            if not is_file(manifest_path):
+                eprint(f"{Messages::MANIFEST_MISSING}{manifest_path}")
+                return 2i64
+
+            canonical_root: Path = try path_real(coding_projects_root) else err:
+                eprint(Messages::ROOT_CANONICAL_FAILED)
+                return 2i64
+            canonical_root_text: sview = f"{canonical_root}"
+            manifest_contents: mutable sview = ""
+            read_ok: mutable bool = false
+            catch read_manifest(manifest_path):
+                ok value:
+                    manifest_contents <- value
+                    read_ok <- true
+                error failure:
+                    if failure == MigrationRootsError.InputLimitExceeded:
+                        eprint(Messages::MANIFEST_TOO_LARGE)
+                    else:
+                        eprint(f"{Messages::MANIFEST_READ_FAILED}: {manifest_path}")
+                    return 1i64
+            if not read_ok:
+                eprint(f"{Messages::MANIFEST_READ_FAILED}: {manifest_path}")
+                return 1i64
+
+            rows: mutable darray[RootRow] = []
+            catch parse_root_records(manifest_contents):
+                ok value:
+                    rows <- value
+                error failure:
+                    eprint(Messages::MANIFEST_INVALID)
+                    return 1i64
+
+            for row in rows |rows, canonical_root_text|:
+                root_path: Path = coding_projects_root.joinpath(row.relative_path)
+                if not is_directory(root_path):
+                    eprint(f"{Messages::DECLARED_ROOT_MISSING}{root_path}")
+                    return 1i64
+                canonical_declared_root: Path = try path_real(root_path) else err:
+                    eprint(f"{Messages::DECLARED_ROOT_CANONICAL_FAILED}{root_path}")
+                    return 1i64
+                canonical_declared_text: sview = f"{canonical_declared_root}"
+                if not canonical_path_is_within(canonical_root_text, canonical_declared_text):
+                    eprint(f"{Messages::ROOT_ESCAPES}{root_path}")
+                    return 1i64
+
+            println("migration roots audit: manifest shape, ownership, and declared directories are valid")
+            return 0i64
+
+
+        def run_default() -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, File.Read, Directory.Read]:
+            root: Path = try repository_root() else err:
+                eprint(Messages::ROOT_CANONICAL_FAILED)
+                return 2i64
+            coding_projects_root: Path = root.parent().parent()
+            manifest_path: Path = root.joinpath("docs").joinpath("migration-project-roots.tsv")
+            return run(coding_projects_root, manifest_path)
+
+
+def main(arguments: darray[sview]) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, File.Read, Directory.Read]:
+    if arguments.count > 2:
+        eprint("usage: check_migration_roots [CODING_PROJECTS_ROOT [MANIFEST]]")
+        return 2i64
+    default_root: Path = try EsMigrationRootsAudit::repository_root() else err:
+        eprint("migration roots audit: unable to canonicalize coding-projects root")
+        return 2i64
+    coding_projects_root: mutable Path = default_root.parent().parent()
+    manifest_path: mutable Path = default_root.joinpath("docs").joinpath("migration-project-roots.tsv")
+    if arguments.count >= 1:
+        coding_projects_root <- path(arguments[0])
+    if arguments.count == 2:
+        manifest_path <- path(arguments[1])
+    return EsMigrationRootsAudit::run(coding_projects_root, manifest_path)
