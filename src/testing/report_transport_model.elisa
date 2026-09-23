@@ -1,0 +1,126 @@
+# Typed host-write boundary for one differential report.
+#
+# Rendering owns the complete bounded byte document. This adapter owns the
+# state machine that exposes that document in ordered, acknowledged chunks;
+# the host remains responsible for the actual stdout/file write. A short write
+# never consumes a chunk, and cancellation/failure cannot be mistaken for a
+# complete report.
+
+module EsDifferentialReportTransport:
+    using EsDifferentialReport
+    using EsDifferentialReportRender
+
+    public:
+        const module Limits:
+            MAX_CHUNK_BYTES: usize = 1048576
+
+
+        const enum DifferentialReportTransportState of u8:
+            Ready
+            Streaming
+            Complete
+            Failed
+            Cancelling
+            Cancelled
+
+
+        const enum DifferentialReportTransportEvent of u8:
+            Begin
+            Emit
+            Fail
+            Cancel
+            CancelAck
+
+
+        struct DifferentialReportTransport:
+            bytes: mutable darray[u8] = []
+            max_bytes: usize = 0
+            chunk_bytes: usize = 0
+            state: mutable DifferentialReportTransportState = DifferentialReportTransportState.Ready
+            offset: mutable usize = 0
+            chunks: mutable usize = 0
+
+
+        error DifferentialReportTransportError:
+            InvalidState
+            InvalidEvent
+            InvalidLimit
+            InvalidChunk
+            FrameNotReady
+            ShortWrite
+            AccountingInvalid
+            CancelNotReady
+
+
+    private:
+        def report_transport_state_valid(state: DifferentialReportTransportState) -> bool:
+            return state in {DifferentialReportTransportState.Ready, DifferentialReportTransportState.Streaming, DifferentialReportTransportState.Complete, DifferentialReportTransportState.Failed, DifferentialReportTransportState.Cancelling, DifferentialReportTransportState.Cancelled}
+
+
+        def report_transport_event_valid(event: DifferentialReportTransportEvent) -> bool:
+            return event in {DifferentialReportTransportEvent.Begin, DifferentialReportTransportEvent.Emit, DifferentialReportTransportEvent.Fail, DifferentialReportTransportEvent.Cancel, DifferentialReportTransportEvent.CancelAck}
+
+
+        def report_transport_limits_valid(transport: DifferentialReportTransport&) -> bool:
+            return transport.max_bytes != 0 and transport.max_bytes <= EsDifferentialReportRender::Limits::MAX_BYTES and transport.chunk_bytes != 0 and transport.chunk_bytes <= Limits::MAX_CHUNK_BYTES and transport.chunk_bytes <= transport.max_bytes
+
+
+    public:
+        def validate_differential_report_transport(transport: DifferentialReportTransport&) -> bool error[DifferentialReportTransportError]:
+            raise DifferentialReportTransportError.InvalidState if not report_transport_state_valid(transport.state)
+            raise DifferentialReportTransportError.InvalidLimit if not report_transport_limits_valid(transport)
+            raise DifferentialReportTransportError.AccountingInvalid if transport.bytes.count > transport.max_bytes
+            raise DifferentialReportTransportError.AccountingInvalid if transport.offset > transport.bytes.count
+            if transport.state == DifferentialReportTransportState.Ready:
+                raise DifferentialReportTransportError.AccountingInvalid if transport.offset != 0 or transport.chunks != 0
+            elif transport.state == DifferentialReportTransportState.Streaming:
+                raise DifferentialReportTransportError.AccountingInvalid if transport.offset >= transport.bytes.count
+            elif transport.state == DifferentialReportTransportState.Complete:
+                raise DifferentialReportTransportError.AccountingInvalid if transport.offset != transport.bytes.count or transport.bytes.count == 0 or transport.chunks == 0
+            return true
+
+
+        def begin_differential_report_transport(report: DifferentialReport&, max_bytes: usize = EsDifferentialReportRender::Limits::MAX_BYTES, chunk_bytes: usize = Limits::MAX_CHUNK_BYTES) -> DifferentialReportTransport error[DifferentialReportError, DifferentialReportRenderError, DifferentialReportTransportError] can[Memory.Allocate, Abort.Panic]:
+            raise DifferentialReportTransportError.InvalidLimit if max_bytes == 0 or max_bytes > EsDifferentialReportRender::Limits::MAX_BYTES
+            raise DifferentialReportTransportError.InvalidChunk if chunk_bytes == 0 or chunk_bytes > Limits::MAX_CHUNK_BYTES or chunk_bytes > max_bytes
+            rendered: darray[u8] = try render_differential_report(report, max_bytes)
+            transport: mutable DifferentialReportTransport = DifferentialReportTransport{bytes: rendered, max_bytes: max_bytes, chunk_bytes: chunk_bytes}
+            try validate_differential_report_transport(transport)
+            return transport
+
+
+        def peek_differential_report_chunk(transport: DifferentialReportTransport&, chunk: mutable sview&) -> usize error[DifferentialReportTransportError] can[Unsafe.PointerCast]:
+            try validate_differential_report_transport(transport)
+            raise DifferentialReportTransportError.FrameNotReady if transport.state != DifferentialReportTransportState.Streaming
+            remaining: usize = transport.bytes.count - transport.offset
+            length: usize = transport.chunk_bytes if remaining > transport.chunk_bytes else remaining
+            base: u8& = (&transport.bytes[transport.offset]).cast[u8&]
+            chunk <- sview(base, 0, length.i64())
+            return length
+
+
+        def advance_differential_report_transport(transport: mutable DifferentialReportTransport&, event: DifferentialReportTransportEvent, written_bytes: usize = 0) -> DifferentialReportTransportState error[DifferentialReportTransportError] can[Unsafe.PointerCast]:
+            try validate_differential_report_transport(transport)
+            raise DifferentialReportTransportError.InvalidEvent if not report_transport_event_valid(event)
+            if event == DifferentialReportTransportEvent.Begin:
+                raise DifferentialReportTransportError.InvalidState if transport.state != DifferentialReportTransportState.Ready
+                transport.state <- DifferentialReportTransportState.Streaming
+            elif event == DifferentialReportTransportEvent.Emit:
+                raise DifferentialReportTransportError.InvalidState if transport.state != DifferentialReportTransportState.Streaming
+                expected: mutable sview = ""
+                expected_bytes: usize = try peek_differential_report_chunk(transport, expected)
+                raise DifferentialReportTransportError.ShortWrite if written_bytes != expected_bytes
+                transport.offset <- transport.offset + expected_bytes
+                transport.chunks <- transport.chunks + 1
+                transport.state <- DifferentialReportTransportState.Complete if transport.offset == transport.bytes.count
+            elif event == DifferentialReportTransportEvent.Fail:
+                raise DifferentialReportTransportError.InvalidState if transport.state != DifferentialReportTransportState.Ready and transport.state != DifferentialReportTransportState.Streaming
+                transport.state <- DifferentialReportTransportState.Failed
+            elif event == DifferentialReportTransportEvent.Cancel:
+                raise DifferentialReportTransportError.CancelNotReady if transport.state != DifferentialReportTransportState.Ready and transport.state != DifferentialReportTransportState.Streaming
+                transport.state <- DifferentialReportTransportState.Cancelling
+            elif event == DifferentialReportTransportEvent.CancelAck:
+                raise DifferentialReportTransportError.CancelNotReady if transport.state != DifferentialReportTransportState.Cancelling
+                transport.state <- DifferentialReportTransportState.Cancelled
+            try validate_differential_report_transport(transport)
+            return transport.state

@@ -7,11 +7,12 @@ script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 model="$repo_root/src/testing/report_model.elisa"
 renderer="$repo_root/src/testing/report_render_model.elisa"
+transport="$repo_root/src/testing/report_transport_model.elisa"
 consumer="$repo_root/src/testing/differential.elisa"
 fixture="$repo_root/test/differential/elisascript_differential_test.elisa"
 docs="$repo_root/docs/differential-testing.md"
 
-for required_file in "$model" "$renderer" "$consumer" "$fixture" "$docs"; do
+for required_file in "$model" "$renderer" "$transport" "$consumer" "$fixture" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'differential report audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -42,6 +43,20 @@ for renderer_boundary in \
     'comparison_fingerprint' \
     'report.messages.count'; do
     rg -Fq "$renderer_boundary" "$renderer"
+done
+
+for transport_boundary in \
+    'module EsDifferentialReportTransport:' \
+    'MAX_CHUNK_BYTES: usize = 1048576' \
+    'DifferentialReportTransportState' \
+    'DifferentialReportTransportEvent' \
+    'begin_differential_report_transport(' \
+    'validate_differential_report_transport(' \
+    'peek_differential_report_chunk(' \
+    'advance_differential_report_transport(' \
+    'ShortWrite' \
+    'CancelAck'; do
+    rg -Fq "$transport_boundary" "$transport"
 done
 
 for declaration in \
@@ -93,6 +108,7 @@ embedded_nul_scan_line="$(rg -n -m1 -F 'EmbeddedNul if sview_contains_byte(messa
 
 rg -Fq 'include "./report_model.elisa"' "$consumer"
 rg -Fq 'include "./report_render_model.elisa"' "$consumer"
+rg -Fq 'include "./report_transport_model.elisa"' "$consumer"
 stability_include_line="$(rg -n -m1 -F 'include "./stability_model.elisa"' "$consumer" | cut -d: -f1)"
 report_include_line="$(rg -n -m1 -F 'include "./report_model.elisa"' "$consumer" | cut -d: -f1)"
 [[ -n "$stability_include_line" && -n "$report_include_line" ]]
@@ -152,6 +168,13 @@ rg -Fq '<failure type=\"value_mismatch\" message=\"diff &amp; &lt;\"/>' "$fixtur
 rg -Fq 'DifferentialReportRenderError.XmlCharacterInvalid' "$fixture"
 rg -Fq 'render_differential_report(human_report)' "$fixture"
 rg -Fq 'inconclusive_evidence' "$fixture"
+if ! rg -Uq '(?m)^@test\r?\ndef differential_report_transport_requires_full_ordered_writes\(\) -> void:' "$fixture"; then
+    printf 'differential report audit: transport regression is not registered\n' >&2
+    exit 1
+fi
+rg -Fq 'DifferentialReportTransportError.ShortWrite' "$fixture"
+rg -Fq 'peek_differential_report_chunk' "$fixture"
+rg -Fq 'transport.offset == transport.bytes.count' "$fixture"
 
 rg -Fq 'EsDifferentialReport::DifferentialReport' "$docs"
 rg -Fq 'merely setting a repeat count is insufficient' "$docs"
