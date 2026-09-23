@@ -29,6 +29,8 @@ for adapter_boundary in \
     'DifferentialReportCategory.ValueMismatch' \
     'DifferentialReportCategory.ObservationMismatch' \
     'DifferentialReportCategory.Timeout' \
+    'DifferentialReportStatus.Inconclusive' \
+    'DifferentialRunOutcome.OutputLimit' \
     'validate_differential_report(report)'; do
     rg -Fq "$adapter_boundary" "$adapter"
 done
@@ -215,7 +217,8 @@ if ! rg -Uq '(?m)^@test\r?\ndef differential_report_adapter_preserves_comparison
     printf 'differential report audit: comparison adapter regression is not registered\n' >&2
     exit 1
 fi
-rg -Fq 'make_differential_report(case, mismatch' "$fixture"
+rg -Fq 'make_differential_report(case, reference_run, candidate_run' "$fixture"
+rg -Fq 'DifferentialReportStatus.Inconclusive' "$fixture"
 rg -Fq 'DifferentialReportCategory.ValueMismatch' "$fixture"
 
 rg -Fq 'EsDifferentialReport::DifferentialReport' "$docs"
