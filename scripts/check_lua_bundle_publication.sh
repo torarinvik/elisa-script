@@ -12,8 +12,9 @@ ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 rename_failure_fixture="$repo_root/test/driver/lua_bundle_publication_rename_failure.elisascript"
 close_uncertain_fixture="$repo_root/test/driver/lua_bundle_publication_close_uncertain.elisascript"
+write_failure_fixture="$repo_root/test/driver/lua_bundle_publication_write_failure.elisascript"
 
-for required_file in "$model" "$file_bridge" "$posix_adapter" "$ir" "$fixture" "$rename_failure_fixture" "$close_uncertain_fixture"; do
+for required_file in "$model" "$file_bridge" "$posix_adapter" "$ir" "$fixture" "$rename_failure_fixture" "$close_uncertain_fixture" "$write_failure_fixture"; do
     [[ -f "$required_file" ]] || { printf 'lua bundle publication audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -72,6 +73,9 @@ rg -q 'session.descriptor_owned or session.parent_descriptor_owned or session.pa
 rg -q 'PublicationError.CleanupUncertain' "$close_uncertain_fixture"
 rg -q 'PublicationEvent.CloseOutcomeUnknown' "$close_uncertain_fixture"
 rg -q 'InvalidEvent if not stage_close_succeeded or not parent_close_succeeded' "$model"
+rg -q 'PublicationState.StageWriteFailed' "$model" "$write_failure_fixture"
+rg -q 'PublicationEvent.WriteFailed' "$write_failure_fixture"
+rg -q 'retry_rejected' "$write_failure_fixture"
 
 rg -q 'include "\.\./runtime/lua_bundle_publication_model\.elisa"' "$ir"
 rg -q 'include "\.\./runtime/lua_bundle_publication_posix\.elisa"' "$ir"
@@ -103,11 +107,16 @@ rg -q 'PublicationPosixError\.IdentityChanged' "$posix_adapter"
 rg -q 'publication_host_proof_equal\(expected, observed\)' "$posix_adapter"
 rg -q 'WRITE_CALLS: usize = 1048576' "$posix_adapter"
 rg -q 'def write_publication_stage_fully\(' "$posix_adapter"
+rg -q 'def write_publication_stage\(' "$posix_adapter"
+rg -q 'PublicationEvent.WriteFailed' "$posix_adapter"
+rg -q 'advance_publication\(session, PublicationEvent.Write, written\)' "$posix_adapter"
 rg -q 'cursor\.calls >= Limits::WRITE_CALLS' "$posix_adapter"
 rg -q 'errno\[0\] == DarwinErrno::EINTR and cursor\.eintr_retries < Limits::IO_EINTR_RETRIES' "$posix_adapter"
 rg -q 'amount == 0 or amount\.usize\(\) > remaining' "$posix_adapter"
 rg -q 'PublicationPosixError\.WriteLimitExceeded' "$posix_adapter"
 rg -q 'def sync_publication_stage\(' "$posix_adapter"
+rg -q 'def sync_publication_stage_descriptor\(' "$posix_adapter"
+rg -q 'advance_publication\(session, PublicationEvent.Sync\)' "$posix_adapter"
 rg -q 'elisascript_posix_fsync\(fd\)' "$posix_adapter"
 rg -q 'retries < Limits::IO_EINTR_RETRIES' "$posix_adapter"
 rg -q 'PublicationPosixError\.SyncFailed' "$posix_adapter"

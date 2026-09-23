@@ -34,6 +34,8 @@ module EsLuaBundlePublicationPosix:
             IdentityChanged
             InvalidPublicationState
             CloseNotReady
+            WriteNotReady
+            SyncNotReady
             DescriptorProofMismatch
             InvalidWriteBuffer
             WriteLimitExceeded
@@ -151,7 +153,7 @@ module EsLuaBundlePublicationPosix:
         # CleanupUncertain instead of claiming cleanup or risking fd reuse.
         def close_publication_descriptors(session: mutable PublicationSession&, parent_fd: int, staging_fd: int) -> PublicationState error[PublicationPosixError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
             raise PublicationPosixError.InvalidDescriptor if parent_fd < 0 or staging_fd < 0 or parent_fd == staging_fd
-            raise PublicationPosixError.CloseNotReady if session.state != PublicationState.Staging and session.state != PublicationState.Staged and session.state != PublicationState.Published and session.state != PublicationState.PublishedUncertain
+            raise PublicationPosixError.CloseNotReady if session.state != PublicationState.Staging and session.state != PublicationState.StageWriteFailed and session.state != PublicationState.Staged and session.state != PublicationState.Published and session.state != PublicationState.PublishedUncertain
             raise PublicationPosixError.CloseNotReady if not session.parent_descriptor_owned or session.parent_descriptor_closed or not session.descriptor_owned or session.descriptor_closed
             raise PublicationPosixError.DescriptorProofMismatch if session.parent_proof.descriptor_token != parent_fd.u64() + 1u64 or session.staging_proof.descriptor_token != staging_fd.u64() + 1u64
             catch validate_publication(session):
@@ -223,9 +225,43 @@ module EsLuaBundlePublicationPosix:
             return cursor.offset
 
 
+        # Count bytes in the pure publication machine only after the complete
+        # host write succeeds. Descriptor token and current leaf identity are
+        # rechecked before touching the staging inode.
+        def write_publication_stage(session: mutable PublicationSession&, parent_fd: int, staging_fd: int, leaf_name: cstr, buffer: u8&, length: usize) -> usize error[PublicationPosixError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            raise PublicationPosixError.InvalidDescriptor if parent_fd < 0 or staging_fd < 0 or parent_fd == staging_fd
+            catch validate_publication(session):
+                ok:
+                    pass
+                error failure:
+                    raise PublicationPosixError.InvalidPublicationState
+            raise PublicationPosixError.WriteNotReady if session.state != PublicationState.Staging or not session.parent_descriptor_owned or session.parent_descriptor_closed or not session.descriptor_owned or session.descriptor_closed
+            raise PublicationPosixError.WriteLimitExceeded if length == 0 or length > session.request.bytes - session.bytes_written
+            raise PublicationPosixError.DescriptorProofMismatch if session.parent_proof.descriptor_token != parent_fd.u64() + 1u64 or session.staging_proof.descriptor_token != staging_fd.u64() + 1u64
+            expected: PublicationHostProof = PublicationHostProof{parent: session.parent_proof, staging: session.staging_proof}
+            _ = try revalidate_publication_host_proof(parent_fd, staging_fd, leaf_name, session.parent_proof.owner_token, expected)
+            written: mutable usize = 0
+            catch write_publication_stage_fully(staging_fd, buffer, length):
+                ok amount:
+                    written <- amount
+                error failure:
+                    if failure == PublicationPosixError.WriteFailed:
+                        catch advance_publication(session, PublicationEvent.WriteFailed):
+                            ok state:
+                                pass
+                            error transition_failure:
+                                raise PublicationPosixError.InvalidPublicationState
+                    raise failure
+            catch advance_publication(session, PublicationEvent.Write, written):
+                ok state:
+                    return written
+                error failure:
+                    raise PublicationPosixError.InvalidPublicationState
+
+
         # Make staging bytes durable before publication; retries only EINTR
         # and are capped to keep a persistently interrupted host from looping.
-        def sync_publication_stage(fd: int) -> bool error[PublicationPosixError] can[Blocking.IO]:
+        def sync_publication_stage_descriptor(fd: int) -> bool error[PublicationPosixError] can[Blocking.IO]:
             raise PublicationPosixError.InvalidDescriptor if fd < 0
             retries: mutable usize = 0
             while true:
@@ -235,3 +271,24 @@ module EsLuaBundlePublicationPosix:
                     retries <- retries + 1
                     continue
                 raise PublicationPosixError.SyncFailed
+
+
+        # Sync is an acknowledged model transition only after the host reports
+        # fsync success and the descriptor/name proof still matches admission.
+        def sync_publication_stage(session: mutable PublicationSession&, parent_fd: int, staging_fd: int, leaf_name: cstr) -> PublicationState error[PublicationPosixError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            raise PublicationPosixError.InvalidDescriptor if parent_fd < 0 or staging_fd < 0 or parent_fd == staging_fd
+            catch validate_publication(session):
+                ok:
+                    pass
+                error failure:
+                    raise PublicationPosixError.InvalidPublicationState
+            raise PublicationPosixError.SyncNotReady if session.state != PublicationState.Staging or not session.parent_descriptor_owned or session.parent_descriptor_closed or not session.descriptor_owned or session.descriptor_closed or session.bytes_written != session.request.bytes
+            raise PublicationPosixError.DescriptorProofMismatch if session.parent_proof.descriptor_token != parent_fd.u64() + 1u64 or session.staging_proof.descriptor_token != staging_fd.u64() + 1u64
+            expected: PublicationHostProof = PublicationHostProof{parent: session.parent_proof, staging: session.staging_proof}
+            _ = try revalidate_publication_host_proof(parent_fd, staging_fd, leaf_name, session.parent_proof.owner_token, expected)
+            _ = try sync_publication_stage_descriptor(staging_fd)
+            catch advance_publication(session, PublicationEvent.Sync):
+                ok state:
+                    return state
+                error failure:
+                    raise PublicationPosixError.InvalidPublicationState
