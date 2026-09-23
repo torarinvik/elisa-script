@@ -2,13 +2,17 @@
 
 This fixture binds W04 to the real Python manifest writer at
 `compiler/scripts/write_lua_bundle_metadata.py` in the pinned reference
-checkout (currently observed under `Go projects/effect-worktree/`). The
+checkout. That checkout is currently available at `Go projects/Elisa-core/`;
+the old `Go projects/effect-worktree/` location no longer exists. The
 machine-specific checkout path is deliberately not part of the contract. The
-current source pin is effect-worktree commit
+reference source pin is commit
 `5284109ca5805560a488c3b0a5d8cd4a1a45e317` and blob
-`3e5db6a091ea9b25af60deec5216d80e02674ef1`; a launcher must verify the pin
-before using the reference. The reference is inspected as source only; no
-Python process is launched by this contract. The eventual Elisascript
+`3e5db6a091ea9b25af60deec5216d80e02674ef1`. The clean current `main` checkout
+at `30e0c5f3dccd7460b3b43b65d4f591e5afa40d71` still contains that exact blob,
+so the pinned reference remains available despite the checkout relocation. A
+launcher must verify the source pin before using the reference. The reference
+is inspected as source only; no Python process is launched by this contract.
+The eventual Elisascript
 replacement must produce the same observable metadata for the accepted
 fixture matrix without importing or calling the Python file.
 
