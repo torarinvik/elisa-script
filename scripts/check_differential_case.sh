@@ -197,6 +197,20 @@ for boundary in 'differential_comparison_rejects_oversized_run_text' 'differenti
     fi
 done
 
+for boundary in 'differential_run_outcome_incomplete(reference.outcome)' 'differential_run_outcome_incomplete(candidate.outcome)' 'both runs terminated before producing complete results'; do
+    if ! rg -Fq "$boundary" "$source_file"; then
+        printf 'differential case audit: missing incomplete-outcome comparison rule %s\n' "$boundary" >&2
+        exit 1
+    fi
+done
+
+for boundary in 'timed_out_comparison' 'assert not timed_out_comparison.equal' 'assert timed_out_comparison.kind == DifferentialDifferenceKind.Outcome' 'both_timed_out.status == DifferentialReportStatus.Inconclusive'; do
+    if ! rg -Fq "$boundary" "$fixture_file"; then
+        printf 'differential case audit: missing paired incomplete-outcome fixture %s\n' "$boundary" >&2
+        exit 1
+    fi
+done
+
 for boundary in 'DifferentialArtifactDirectoryState.Staging' 'DifferentialArtifactDirectoryState.Ready' 'DifferentialArtifactDirectoryState.Published' 'DifferentialArtifactDirectoryIssue.InvalidPublicationState' 'DifferentialArtifactDirectoryIssue.InvalidTransition' 'make_differential_artifact_directory_plan' 'validate_differential_artifact_directory' 'advance_differential_artifact_directory'; do
     if ! rg -Fq "$boundary" "$source_file" "$fixture_file"; then
         printf 'differential case audit: missing boundary coverage %s\n' "$boundary" >&2

@@ -792,6 +792,9 @@ inconclusive infrastructure outcomes; they do not claim a behavior mismatch.
 When both sides terminate without complete results (timeout, crash, spawn or
 compile failure, or output-limit exhaustion), report projection forces an
 inconclusive outcome even if the captured partial records happen to be equal.
+The core comparator also records paired incomplete outcomes as a non-equal
+`Outcome` difference, preserving both terminal outcomes; incomplete execution
+can never produce an `Equal` comparison artifact or parity pass.
 A single incomplete side against a completed result remains a failed
 divergence when the incomplete result is a timeout or crash. A one-sided spawn,
 compile, or output-limit failure remains inconclusive infrastructure evidence.
