@@ -10,8 +10,9 @@ file_bridge="$repo_root/src/runtime/file_posix.elisa"
 posix_adapter="$repo_root/src/runtime/lua_bundle_publication_posix.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
+rename_failure_fixture="$repo_root/test/driver/lua_bundle_publication_rename_failure.elisascript"
 
-for required_file in "$model" "$file_bridge" "$posix_adapter" "$ir" "$fixture"; do
+for required_file in "$model" "$file_bridge" "$posix_adapter" "$ir" "$fixture" "$rename_failure_fixture"; do
     [[ -f "$required_file" ]] || { printf 'lua bundle publication audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -54,11 +55,16 @@ for boundary in \
     'PublicationUncertain' \
     'PublicationEvent.StageCreated' \
     'PublicationEvent.Close' \
+    'PublicationEvent.PublishFailed' \
     'session.state != PublicationState.Publishing' \
     'PublicationError.PublishNotReady' \
     'PublicationEvent.PublishAck'; do
     rg -q "$boundary" "$model" "$fixture"
 done
+
+rg -q 'PublicationEvent.PublishFailed' "$rename_failure_fixture"
+rg -q 'confirmed_rename_failure_is_retryable_as_failure' "$rename_failure_fixture"
+rg -q 'session.destination_preserved_on_failure' "$rename_failure_fixture"
 
 rg -q 'include "\.\./runtime/lua_bundle_publication_model\.elisa"' "$ir"
 rg -q 'include "\.\./runtime/lua_bundle_publication_posix\.elisa"' "$ir"
