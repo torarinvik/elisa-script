@@ -99,11 +99,14 @@ both; do not claim those two as independent negative cases.
 
 The shell checks all required readable paths before checking sizes and only
 reads source contents after all size checks pass. The candidate now uses a
-readability preflight, an aggregate-size pass, then a source-read pass; a generated case
-combines an over-limit `docs/ir.md` with a missing final input and requires the
-missing-input result to win. Permission-plus-size precedence remains
-unqualified because the current process fixtures do not inject permission
-failures portably.
+readability preflight, an aggregate-size pass, then a source-read pass; a
+generated case combines an over-limit `docs/ir.md` with a missing final input
+and requires the missing-input result to win. Permission-plus-size precedence
+is covered conditionally: when changing `docs/ir.md` to mode `000` makes it
+unreadable to the fixture process, combine that permission failure with the
+over-limit content and require the shell's missing-input result to win. The
+fixture restores the original mode before rewriting or cleaning up the file;
+platforms where mode `000` is still readable skip only this case.
 
 ## Invocation differences and execution status
 
