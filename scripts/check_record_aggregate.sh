@@ -41,6 +41,11 @@ done
 
 rg -Fq 'module EsRecordAggregateAudit:' "$candidate"
 rg -Fq 'def read_source(' "$candidate"
+rg -Fq 'current_size: usize = try file_size(input_path)' "$candidate"
+pre_read_size_line="$(rg -n -m1 -F 'current_size: usize = try file_size(input_path)' "$candidate" | cut -d: -f1)"
+read_text_line="$(rg -n -m1 -F 'source: sview = try read_text(input_path)' "$candidate" | cut -d: -f1)"
+[[ -n "$pre_read_size_line" && -n "$read_text_line" ]]
+(( pre_read_size_line < read_text_line ))
 rg -Fq 'def run(repository_root: sview)' "$candidate"
 rg -Fq 'def run_default()' "$candidate"
 rg -Fq 'Script::source_path()' "$candidate"

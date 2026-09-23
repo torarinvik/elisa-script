@@ -103,7 +103,8 @@ both; do not claim those two as independent negative cases.
 
 The shell checks all required readable paths before checking sizes and only
 reads source contents after all size checks pass. The candidate now uses a
-readability preflight, an aggregate-size pass, then a source-read pass; a
+readability preflight, an aggregate-size pass, then a source-read pass with an
+additional byte-size check immediately before each whole-file allocation; a
 generated case combines an over-limit `docs/ir.md` with a missing final input
 and requires the missing-input result to win. Permission-plus-size precedence
 is covered conditionally: when changing `docs/ir.md` to mode `000` makes it
