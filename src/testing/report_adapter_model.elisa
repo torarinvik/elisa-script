@@ -14,6 +14,7 @@ module EsDifferentialReportAdapter:
         error DifferentialReportAdapterError:
             InvalidCase
             InvalidComparison
+            ReplayEvidenceMismatch
 
 
     private:
@@ -63,12 +64,7 @@ module EsDifferentialReportAdapter:
             raise DifferentialReportAdapterError.InvalidComparison
 
 
-    public:
-        def make_differential_report(case: DifferentialCase&, reference: DifferentialRun&, candidate: DifferentialRun&, format: DifferentialReportFormat = DifferentialReportFormat.Json, artifact_path: sview = "") -> DifferentialReport error[DifferentialReportError, DifferentialReportAdapterError, DifferentialRunnerError] can[Memory.Allocate, Abort.Panic]:
-            case_check: DifferentialCaseCheck = validate_differential_case(case)
-            raise DifferentialReportAdapterError.InvalidCase if not case_check.valid
-            raise DifferentialReportAdapterError.InvalidComparison if not report_adapter_run_outcome_valid(reference.outcome) or not report_adapter_run_outcome_valid(candidate.outcome)
-            comparison: DifferentialComparison = try compare_differential_case_runs(case, reference, candidate)
+        def report_adapter_project_comparison(case: DifferentialCase&, comparison: DifferentialComparison&, format: DifferentialReportFormat, artifact_path: sview) -> DifferentialReport error[DifferentialReportError, DifferentialReportAdapterError]:
             raise DifferentialReportAdapterError.InvalidComparison if not report_adapter_difference_kind_valid(comparison.kind)
             raise DifferentialReportAdapterError.InvalidComparison if not report_adapter_run_outcome_valid(comparison.reference_outcome) or not report_adapter_run_outcome_valid(comparison.candidate_outcome)
             category: mutable DifferentialReportCategory = DifferentialReportCategory.None
@@ -83,3 +79,27 @@ module EsDifferentialReportAdapter:
             report: mutable DifferentialReport = DifferentialReport{format: format, status: status, category: category, comparison_kind: comparison_kind, comparison_index: comparison.index, case_name: case.name, summary: summary, reference_engine: case.reference.name, candidate_engine: case.candidate.name, reference_detail: "" if reference_detail_omitted else comparison.reference_text, candidate_detail: "" if candidate_detail_omitted else comparison.candidate_text, reference_detail_omitted: reference_detail_omitted, candidate_detail_omitted: candidate_detail_omitted, artifact_path: artifact_path}
             try validate_differential_report(report)
             return report
+
+
+    public:
+        def make_differential_report(case: DifferentialCase&, reference: DifferentialRun&, candidate: DifferentialRun&, format: DifferentialReportFormat = DifferentialReportFormat.Json, artifact_path: sview = "") -> DifferentialReport error[DifferentialReportError, DifferentialReportAdapterError, DifferentialRunnerError] can[Memory.Allocate, Abort.Panic]:
+            case_check: DifferentialCaseCheck = validate_differential_case(case)
+            raise DifferentialReportAdapterError.InvalidCase if not case_check.valid
+            raise DifferentialReportAdapterError.InvalidComparison if not report_adapter_run_outcome_valid(reference.outcome) or not report_adapter_run_outcome_valid(candidate.outcome)
+            comparison: DifferentialComparison = try compare_differential_case_runs(case, reference, candidate)
+            return try report_adapter_project_comparison(case, comparison, format, artifact_path)
+
+
+        # Prefer this entrypoint when a host has used the paired-world replay
+        # lifecycle. It refuses to publish a report until both worlds are
+        # restored, then confirms the stored comparison against a fresh compare
+        # of the session-owned runs before projecting it.
+        def make_differential_case_replay_report(case: DifferentialCase&, session: DifferentialCaseReplaySession&, format: DifferentialReportFormat = DifferentialReportFormat.Json, artifact_path: sview = "") -> DifferentialReport error[DifferentialReportError, DifferentialReportAdapterError, DifferentialRunnerError, DifferentialCaseReplayError, EsDifferentialReplay::DifferentialReplayError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            stored: DifferentialComparison = try differential_case_replay_comparison(case, session)
+            fresh: DifferentialComparison = compare_differential_case_runs(case, session.reference_run, session.candidate_run)
+            stored_artifact: DifferentialComparisonArtifact = try make_differential_comparison_artifact(session.manifest, stored)
+            fresh_artifact: DifferentialComparisonArtifact = try make_differential_comparison_artifact(session.manifest, fresh)
+            stored_fingerprint: u64 = differential_comparison_artifact_fingerprint(stored_artifact)
+            fresh_fingerprint: u64 = differential_comparison_artifact_fingerprint(fresh_artifact)
+            raise DifferentialReportAdapterError.ReplayEvidenceMismatch if stored_fingerprint == 0 or fresh_fingerprint == 0 or stored_fingerprint != fresh_fingerprint
+            return try report_adapter_project_comparison(case, fresh, format, artifact_path)

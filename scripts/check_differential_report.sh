@@ -25,7 +25,10 @@ for adapter_boundary in \
     'report_adapter_run_outcome_valid' \
     'report_adapter_comparison_kind' \
     'report_adapter_category' \
+    'report_adapter_project_comparison' \
     'def make_differential_report(' \
+    'def make_differential_case_replay_report(' \
+    'ReplayEvidenceMismatch' \
     'DifferentialReportStatus.Passed' \
     'DifferentialReportCategory.ValueMismatch' \
     'DifferentialReportCategory.ObservationMismatch' \
@@ -222,6 +225,7 @@ if ! rg -Uq '(?m)^@test\r?\ndef differential_report_adapter_preserves_comparison
     exit 1
 fi
 rg -Fq 'make_differential_report(case, reference_run, candidate_run' "$fixture"
+rg -Fq 'make_differential_case_replay_report(case, session' "$fixture"
 rg -Fq 'reference_detail: comparison.reference_text' "$adapter"
 rg -Fq 'candidate_detail: comparison.candidate_text' "$adapter"
 rg -Fq '"reference_detail"' "$renderer"

@@ -803,7 +803,11 @@ complete raw process streams remain in their separately persisted sidecar
 artifacts. Typed aggregate return value mismatches may have no inline detail
 because their roots can refer to run-owned value pools; the artifact path
 remains the locator for that evidence.
-The end-to-end case runner and CLI report selection remain open.
+The replay-session report entrypoint additionally requires the paired replay
+to reach its completed/restored state and verifies the stored comparison
+artifact fingerprint against a fresh comparison of the session-owned runs
+before projection. The end-to-end case runner, CLI report selection, and
+host-produced provenance remain open.
 
 Each side's complete bounded process-facing payload can be persisted separately
 as an `ESPS` process-stream artifact with `make_differential_process_stream_artifact`.
