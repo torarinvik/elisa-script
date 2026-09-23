@@ -78,11 +78,17 @@ fi
 
 # Candidate traversal and signal traversal must inspect the same bounded tree;
 # otherwise a dependency directory can bypass the census budget and reappear
-# in the emitted candidate stream. Keep the root-level Makefile classification
-# explicit because a shell case pattern containing `*/Makefile` alone misses
-# a Makefile directly at the scan root.
+# in the emitted candidate stream. The candidate scanner uses `find -name`
+# pruning while the signal scanner uses `find -path` pruning; check both
+# contracts, plus the shared Elisascript walker's typed exclusion list. Keep
+# root-level Makefile classification explicit because a shell case pattern
+# containing `*/Makefile` alone misses a Makefile directly at the scan root.
+signals_shell="$repo_root/scripts/inventory_signals.sh"
+walker_elisascript="$repo_root/scripts/inventory_walk.elisascript"
 for excluded_tree in '.git' 'node_modules' '.venv' '__pycache__' 'vendor' 'third_party'; do
-    if ! rg -q -- "--glob '!\*\*/${excluded_tree}/\*\*'" "$script_dir/inventory_candidates.sh"; then
+    if ! rg -Fq -- "-name '${excluded_tree}'" "$script_dir/inventory_candidates.sh" || \
+       ! rg -Fq -- "-path '*/${excluded_tree}'" "$signals_shell" || \
+       ! rg -Fq -- "name == \"${excluded_tree}\"" "$walker_elisascript"; then
         printf 'migration inventory audit: candidate scanner does not exclude %s consistently\n' "$excluded_tree" >&2
         exit 1
     fi
