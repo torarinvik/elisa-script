@@ -41,9 +41,18 @@ module EsLuaBundlePublicationPosix:
             WriteLimitExceeded
             WriteFailed
             SyncFailed
+            RenameRejected
+            PublicationOutcomeUnknown
+            DirectorySyncFailed
 
 
     private:
+        const module DarwinPublicationErrno:
+            # POSIX rename failure is not guaranteed to preserve the
+            # destination when errno is EIO.
+            EIO: i32 = 5
+
+
         const enum PublicationWriteState of u8:
             Write
             Done
@@ -161,7 +170,6 @@ module EsLuaBundlePublicationPosix:
                     pass
                 error failure:
                     raise PublicationPosixError.InvalidPublicationState
-
             staging_close_status: int = elisascript_posix_close(staging_fd)
             parent_close_status: int = elisascript_posix_close(parent_fd)
             stage_close_succeeded: bool = staging_close_status == 0
@@ -259,9 +267,9 @@ module EsLuaBundlePublicationPosix:
                     raise PublicationPosixError.InvalidPublicationState
 
 
-        # Make staging bytes durable before publication; retries only EINTR
-        # and are capped to keep a persistently interrupted host from looping.
-        def sync_publication_stage_descriptor(fd: int) -> bool error[PublicationPosixError] can[Blocking.IO]:
+        # Sync a retained descriptor with bounded EINTR retry. Staging and
+        # parent-directory callers interpret failure according to their phase.
+        def sync_publication_descriptor(fd: int) -> bool error[PublicationPosixError] can[Blocking.IO]:
             raise PublicationPosixError.InvalidDescriptor if fd < 0
             retries: mutable usize = 0
             while true:
@@ -286,8 +294,76 @@ module EsLuaBundlePublicationPosix:
             raise PublicationPosixError.DescriptorProofMismatch if session.parent_proof.descriptor_token != parent_fd.u64() + 1u64 or session.staging_proof.descriptor_token != staging_fd.u64() + 1u64
             expected: PublicationHostProof = PublicationHostProof{parent: session.parent_proof, staging: session.staging_proof}
             _ = try revalidate_publication_host_proof(parent_fd, staging_fd, leaf_name, session.parent_proof.owner_token, expected)
-            _ = try sync_publication_stage_descriptor(staging_fd)
+            _ = try sync_publication_descriptor(staging_fd)
             catch advance_publication(session, PublicationEvent.Sync):
+                ok state:
+                    return state
+                error failure:
+                    raise PublicationPosixError.InvalidPublicationState
+
+
+        # Rename the admitted staging sibling to a destination sibling. A
+        # non-EIO rename error is specified to leave the destination
+        # unaffected; EIO and a failed directory fsync are not reported as a
+        # clean rollback. Never retry rename after an error.
+        def publish_staged(session: mutable PublicationSession&, parent_fd: int, staging_fd: int, staging_leaf: cstr, destination_leaf: cstr) -> PublicationState error[PublicationPosixError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            raise PublicationPosixError.InvalidDescriptor if parent_fd < 0 or staging_fd < 0 or parent_fd == staging_fd
+            raise PublicationPosixError.InvalidLeafName if not elisascript_posix_leaf_name_valid(staging_leaf) or not elisascript_posix_leaf_name_valid(destination_leaf)
+            catch validate_publication(session):
+                ok:
+                    pass
+                error failure:
+                    raise PublicationPosixError.InvalidPublicationState
+            raise PublicationPosixError.InvalidPublicationState if session.state != PublicationState.Staged or not session.parent_descriptor_owned or session.parent_descriptor_closed or not session.descriptor_owned or session.descriptor_closed or not session.stage_synced
+            raise PublicationPosixError.DescriptorProofMismatch if session.parent_proof.descriptor_token != parent_fd.u64() + 1u64 or session.staging_proof.descriptor_token != staging_fd.u64() + 1u64
+            expected: PublicationHostProof = PublicationHostProof{parent: session.parent_proof, staging: session.staging_proof}
+            _ = try revalidate_publication_host_proof(parent_fd, staging_fd, staging_leaf, session.parent_proof.owner_token, expected)
+            catch advance_publication(session, PublicationEvent.Publish):
+                ok state:
+                    pass
+                error failure:
+                    raise PublicationPosixError.InvalidPublicationState
+
+            rename_status: mutable int = -1
+            catch elisascript_posix_renameat(parent_fd, staging_leaf, parent_fd, destination_leaf):
+                ok status:
+                    rename_status <- status
+                error failure:
+                    catch advance_publication(session, PublicationEvent.PublishFailed, destination_preserved: true):
+                        ok state:
+                            pass
+                        error transition_failure:
+                            raise PublicationPosixError.InvalidPublicationState
+                    raise PublicationPosixError.InvalidLeafName
+            if rename_status != 0:
+                errno: mutable i32& = elisascript_posix_errno()
+                if errno[0] == DarwinPublicationErrno::EIO:
+                    catch advance_publication(session, PublicationEvent.OutcomeUnknown, destination_preserved: false):
+                        ok state:
+                            pass
+                        error failure:
+                            raise PublicationPosixError.InvalidPublicationState
+                    raise PublicationPosixError.PublicationOutcomeUnknown
+                catch advance_publication(session, PublicationEvent.PublishFailed, destination_preserved: true):
+                    ok state:
+                        pass
+                    error failure:
+                        raise PublicationPosixError.InvalidPublicationState
+                raise PublicationPosixError.RenameRejected
+
+            directory_synced: bool = false
+            if session.request.require_directory_sync:
+                catch sync_publication_descriptor(parent_fd):
+                    ok synced:
+                        directory_synced <- synced
+                    error failure:
+                        catch advance_publication(session, PublicationEvent.OutcomeUnknown, destination_preserved: false):
+                            ok state:
+                                pass
+                            error transition_failure:
+                                raise PublicationPosixError.InvalidPublicationState
+                        raise PublicationPosixError.DirectorySyncFailed
+            catch advance_publication(session, PublicationEvent.PublishAck, directory_synced: directory_synced):
                 ok state:
                     return state
                 error failure:
