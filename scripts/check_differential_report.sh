@@ -23,6 +23,7 @@ for adapter_boundary in \
     'DifferentialReportAdapterError' \
     'report_adapter_difference_kind_valid' \
     'report_adapter_run_outcome_valid' \
+    'report_adapter_comparison_kind' \
     'report_adapter_category' \
     'def make_differential_report(' \
     'DifferentialReportStatus.Passed' \
@@ -225,6 +226,8 @@ rg -Fq 'reference_detail: comparison.reference_text' "$adapter"
 rg -Fq 'candidate_detail: comparison.candidate_text' "$adapter"
 rg -Fq '"reference_detail"' "$renderer"
 rg -Fq '"candidate_detail"' "$renderer"
+rg -Fq 'report.comparison_kind' "$renderer"
+rg -Fq 'report.comparison_index' "$renderer"
 rg -Fq 'reference_detail_omitted' "$model"
 rg -Fq 'candidate_detail_omitted' "$model"
 rg -Fq 'sview_len(comparison.reference_text) >= Limits::TEXT_BYTES' "$adapter"

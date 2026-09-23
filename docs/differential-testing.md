@@ -789,6 +789,10 @@ so callers cannot forge a contradictory comparison record into a pass. It
 preserves runner names, artifact path, and typed mismatch category. Engine
 qualification failures and output-limit or process-launch failures are
 inconclusive infrastructure outcomes; they do not claim a behavior mismatch.
+Reports also preserve the exact typed comparator kind and its mismatch index;
+the broad report category remains useful for CI mapping, while consumers can
+distinguish (for example) an exit-status mismatch from stdout or a particular
+observation mismatch without parsing the summary sentence.
 For textual mismatches, the report also preserves the comparator's reference
 and candidate detail strings in Human, JSON, and JUnit output when each fits the
 1 MiB per-field report bound. An oversized detail is emitted as empty with an
