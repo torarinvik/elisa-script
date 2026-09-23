@@ -7,10 +7,11 @@ script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 model="$repo_root/src/runtime/lua_bundle_publication_model.elisa"
 file_bridge="$repo_root/src/runtime/file_posix.elisa"
+posix_adapter="$repo_root/src/runtime/lua_bundle_publication_posix.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 
-for required_file in "$model" "$file_bridge" "$ir" "$fixture"; do
+for required_file in "$model" "$file_bridge" "$posix_adapter" "$ir" "$fixture"; do
     [[ -f "$required_file" ]] || { printf 'lua bundle publication audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -60,6 +61,7 @@ for boundary in \
 done
 
 rg -q 'include "\.\./runtime/lua_bundle_publication_model\.elisa"' "$ir"
+rg -q 'include "\.\./runtime/lua_bundle_publication_posix\.elisa"' "$ir"
 rg -q 'using EsLuaBundlePublication' "$fixture"
 rg -q '@link_name\(renameat\)' "$file_bridge"
 rg -q 'def posix_renameat_leaf_valid\(' "$file_bridge"
@@ -71,9 +73,23 @@ rg -q 'return false if byte == 47u8' "$file_bridge"
 rg -q 'if byte == 0u8:' "$file_bridge"
 rg -q 'PosixFileAtError\.InvalidLeafName' "$file_bridge"
 rg -q 'def elisascript_posix_renameat\(' "$file_bridge"
+rg -q 'def elisascript_posix_leaf_name_valid\(' "$file_bridge"
 rg -q 'def elisascript_posix_openat_private_file\(' "$file_bridge"
 rg -q 'DarwinOpenFlags::WRONLY \| DarwinOpenFlags::CREATE \| DarwinOpenFlags::EXCLUSIVE \| DarwinOpenFlags::NOFOLLOW \| DarwinOpenFlags::CLOSE_ON_EXEC' "$file_bridge"
 rg -q 'flags, 384u32' "$file_bridge"
+rg -q '^module EsLuaBundlePublicationPosix:' "$posix_adapter"
+rg -q 'STAT_EINTR_RETRIES: usize = 8' "$posix_adapter"
+rg -q 'DarwinErrno::EINTR' "$posix_adapter"
+rg -q 'def capture_publication_host_proof\(' "$posix_adapter"
+rg -q 'parent_fd < 0 or staging_fd < 0' "$posix_adapter"
+rg -q 'descriptor_token: parent_fd\.u64\(\) \+ 1u64' "$posix_adapter"
+rg -q 'descriptor_token: staging_fd\.u64\(\) \+ 1u64' "$posix_adapter"
+rg -q 'publication_posix_stat_descriptor\(parent_fd, parent_info\)' "$posix_adapter"
+rg -q 'publication_posix_stat_descriptor\(staging_fd, staging_info\)' "$posix_adapter"
+rg -q 'publication_posix_stat_name\(parent_fd, leaf_name, named_info\)' "$posix_adapter"
+rg -q 'elisascript_posix_fstat\(descriptor, result\)' "$posix_adapter"
+rg -q 'elisascript_posix_fstatat\(parent_fd, leaf_name, result, DarwinAtFlag::SYMLINK_NOFOLLOW\)' "$posix_adapter"
+rg -q 'StagingNameMismatch' "$posix_adapter"
 rg -q 'typed_lua_bundle_publication_requires_exclusive_staging' "$fixture"
 rg -q 'close_cannot_publish' "$fixture"
 rg -q 'parent_mismatch_rejected' "$fixture"

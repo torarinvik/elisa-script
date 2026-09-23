@@ -1,0 +1,104 @@
+# POSIX identity snapshot used to admit the Lua metadata staging descriptor.
+# The caller must recapture and compare this proof immediately before rename;
+# a proof is not a lock on a mutable directory entry.
+
+module EsLuaBundlePublicationPosix:
+    using EsRuntime
+    using EsLuaBundlePublication
+
+    public:
+        const module Limits:
+            STAT_EINTR_RETRIES: usize = 8
+
+
+        struct PublicationHostProof:
+            parent: PublicationParentProof
+            staging: PublicationStagingProof
+
+
+        error PublicationPosixError:
+            InvalidDescriptor
+            InvalidOwnerToken
+            InvalidLeafName
+            ParentStatFailed
+            StagingStatFailed
+            NameStatFailed
+            ParentNotDirectory
+            StagingNotRegular
+            StagingNotPrivate
+            StagingNotSingleLink
+            StagingNameMismatch
+
+
+    private:
+        def publication_posix_stat_descriptor(descriptor: int, result: mutable ElisascriptStat&) -> bool can[Blocking.IO]:
+            retries: mutable usize = 0
+            while true:
+                return true if elisascript_posix_fstat(descriptor, result) == 0
+                errno: mutable i32& = elisascript_posix_errno()
+                if errno[0] == DarwinErrno::EINTR and retries < Limits::STAT_EINTR_RETRIES:
+                    retries <- retries + 1
+                    continue
+                return false
+
+
+        def publication_posix_stat_name(parent_fd: int, leaf_name: cstr, result: mutable ElisascriptStat&) -> bool can[Blocking.IO]:
+            retries: mutable usize = 0
+            while true:
+                status: int = elisascript_posix_fstatat(parent_fd, leaf_name, result, DarwinAtFlag::SYMLINK_NOFOLLOW)
+                return true if status == 0
+                errno: mutable i32& = elisascript_posix_errno()
+                if errno[0] == DarwinErrno::EINTR and retries < Limits::STAT_EINTR_RETRIES:
+                    retries <- retries + 1
+                    continue
+                return false
+
+
+        def publication_posix_same_inode(left: ElisascriptStat, right: ElisascriptStat) -> bool:
+            return left.device == right.device and left.inode == right.inode
+
+
+        def publication_posix_directory(stat: ElisascriptStat) -> bool:
+            return (stat.mode & DarwinStatMode::MASK) == DarwinStatMode::DIRECTORY
+
+
+        def publication_posix_regular(stat: ElisascriptStat) -> bool:
+            return (stat.mode & DarwinStatMode::MASK) == DarwinStatMode::REGULAR
+
+
+        def publication_posix_private(stat: ElisascriptStat) -> bool:
+            # Group and other rwx bits must be clear. Owner permissions may be
+            # narrowed by the caller without weakening privacy.
+            return (stat.mode & 63u16) == 0u16
+
+
+    public:
+        # Confirm the stage fd, its current directory entry, and the parent fd
+        # all identify the same-filesystem private sibling. `owner_token` must
+        # be minted by the caller and retained for this descriptor pair.
+        # Call again just before rename and compare both returned proofs with
+        # the initially admitted proofs; concurrent mutation can invalidate a
+        # previous snapshot between operations.
+        def capture_publication_host_proof(parent_fd: int, staging_fd: int, leaf_name: cstr, owner_token: u64) -> PublicationHostProof error[PublicationPosixError] can[Blocking.IO]:
+            raise PublicationPosixError.InvalidDescriptor if parent_fd < 0 or staging_fd < 0 or parent_fd == staging_fd
+            raise PublicationPosixError.InvalidOwnerToken if owner_token == 0
+            raise PublicationPosixError.InvalidLeafName if not elisascript_posix_leaf_name_valid(leaf_name)
+
+            parent_info: mutable ElisascriptStat = ElisascriptStat{}
+            raise PublicationPosixError.ParentStatFailed if not publication_posix_stat_descriptor(parent_fd, parent_info)
+            raise PublicationPosixError.ParentNotDirectory if not publication_posix_directory(parent_info)
+
+            staging_info: mutable ElisascriptStat = ElisascriptStat{}
+            raise PublicationPosixError.StagingStatFailed if not publication_posix_stat_descriptor(staging_fd, staging_info)
+            raise PublicationPosixError.StagingNotRegular if not publication_posix_regular(staging_info)
+            raise PublicationPosixError.StagingNotPrivate if not publication_posix_private(staging_info)
+            raise PublicationPosixError.StagingNotSingleLink if staging_info.link_count != 1u16
+
+            named_info: mutable ElisascriptStat = ElisascriptStat{}
+            raise PublicationPosixError.NameStatFailed if not publication_posix_stat_name(parent_fd, leaf_name, named_info)
+            raise PublicationPosixError.StagingNameMismatch if not publication_posix_same_inode(staging_info, named_info) or not publication_posix_regular(named_info) or not publication_posix_private(named_info) or named_info.link_count != 1u16
+            raise PublicationPosixError.StagingNameMismatch if not publication_posix_same_inode(parent_info, staging_info)
+
+            parent_proof: PublicationParentProof = PublicationParentProof{device: parent_info.device.u64(), inode: parent_info.inode, descriptor_token: parent_fd.u64() + 1u64, owner_token: owner_token, directory: true}
+            staging_proof: PublicationStagingProof = PublicationStagingProof{device: staging_info.device.u64(), inode: staging_info.inode, parent_device: parent_info.device.u64(), parent_inode: parent_info.inode, descriptor_token: staging_fd.u64() + 1u64, owner_token: owner_token, link_count: staging_info.link_count.usize(), regular: true, private_mode: true}
+            return PublicationHostProof{parent: parent_proof, staging: staging_proof}
