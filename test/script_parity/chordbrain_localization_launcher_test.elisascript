@@ -1,0 +1,217 @@
+# Process-level differential acceptance for the ChordBrain localization
+# generator. Run only through the bounded validation wrapper after explicit
+# reauthorization; this source is intentionally not run during the validation
+# suspension.
+include "../../src/testing/differential.elisa"
+
+using EsDifferential
+
+
+module EsChordBrainLocalizationLauncherParity:
+    private:
+        const module Commands:
+            PYTHON: sview = "python3"
+            REFERENCE_SCRIPT: sview = "../ChordBrain/tools/generate_localization.py"
+            CANDIDATE_SCRIPT: sview = "scripts/generate_chordbrain_localization.elisascript"
+            INPUT_DIRECTORY: sview = "../ChordBrain/resources/languages"
+            SHA256_TOOL: sview = "/usr/bin/shasum"
+            PINNED_COMPILER: sview = "/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac"
+            REFERENCE_SHA256: sview = "b1fc3af22c6d083cebafe8947bbefe3168feb18fd09b3269b5f1bf82842f6f75"
+            CANDIDATE_SHA256: sview = "d8794787aa1e097b12f6c0c8d8a6c6c426fbb55a814d784560018c865ec72f32"
+            MAX_HASH_OUTPUT_BYTES: u64 = 8192
+            MAX_OUTPUT_BYTES: u64 = 65536
+            MAX_HASHED_FILE_BYTES: usize = 67108864
+            MAX_PINNED_SOURCE_BYTES: usize = 1048576
+            MAX_PINNED_TOTAL_BYTES: usize = 6291456
+            TIMEOUT_STEPS: u64 = 10000
+
+
+        struct PinnedInput:
+            path: sview
+            sha256: sview
+
+
+        def lowercase_sha256_hex_byte(value: u8) -> bool:
+            return value >= 48u8 and value <= 57u8 or value >= 97u8 and value <= 102u8
+
+
+        def file_has_expected_sha256(file_path: sview, expected_hex: sview, process_name: sview) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Unsafe.PointerCast]:
+            return false if len(expected_hex) != 64
+            input_path: Path = path(file_path)
+            return false if not is_file(input_path)
+            input_size: usize = try file_size(input_path) else err:
+                return false
+            return false if input_size == 0 or input_size > Commands::MAX_HASHED_FILE_BYTES
+
+            hash_runner: DifferentialRunner = DifferentialRunner{
+                kind: DifferentialRunnerKind.NativeProcess,
+                name: process_name,
+                target: Commands::SHA256_TOOL,
+                arguments: ["-a", "256", file_path],
+                environment_mode: EsProcess::ProcessEnvironmentMode.Clear,
+                timeout_steps: Commands::TIMEOUT_STEPS,
+                max_output_bytes: Commands::MAX_HASH_OUTPUT_BYTES
+            }
+            hash_run: mutable DifferentialRun = DifferentialRun{observations: []}
+            catch run_differential_process(hash_runner):
+                ok value:
+                    hash_run <- value
+                error failure:
+                    return false
+
+            return false if hash_run.outcome != DifferentialRunOutcome.Completed
+            return false if hash_run.exit_status != 0 or hash_run.stderr != ""
+            return false if hash_run.stdout != expected_hex + "  " + file_path + "\n"
+            for index in 0..<64 |hash_run, expected_hex|:
+                return false if not lowercase_sha256_hex_byte(sview_at(expected_hex, index))
+            return true
+
+
+        def pinned_inputs_match() -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Unsafe.PointerCast]:
+            inputs: darray[PinnedInput] = [
+                PinnedInput{path: "../ChordBrain/resources/languages/en.lang", sha256: "9f2555e65ae719cb46213d572e1bb5716d4f61b1eedf04a2fa87a725062f2768"},
+                PinnedInput{path: "../ChordBrain/resources/languages/de.lang", sha256: "c4d1cb4ad8ec0d4942daf2b86b74cae68ef98235eea43aedd259a6a51e80bca6"},
+                PinnedInput{path: "../ChordBrain/resources/languages/es.lang", sha256: "852f150e5e8cdcb9c9acf169891750aa0b11630f7612427058d4e03f9481784f5"},
+                PinnedInput{path: "../ChordBrain/resources/languages/fr.lang", sha256: "bf036149960d2c08af74faec5d7a0876920274e7ce4b41eb329f661202acbf17"},
+                PinnedInput{path: "../ChordBrain/resources/languages/it.lang", sha256: "5d18c11ed75004dfba7657558059d641e4742d66277f991f5e3eb4f4b484587f"},
+                PinnedInput{path: "../ChordBrain/resources/languages/pt.lang", sha256: "7f0dfb70e867dca507013c7644242041ba87e2c355528231bedc2fe10713cb52"}
+            ]
+            total_bytes: mutable usize = 0
+            for input in inputs |inputs, total_bytes|:
+                input_size: usize = try file_size(path(input.path)) else err:
+                    return false
+                return false if input_size == 0 or input_size > Commands::MAX_PINNED_SOURCE_BYTES or input_size > Commands::MAX_PINNED_TOTAL_BYTES - total_bytes
+                total_bytes <- total_bytes + input_size
+                return false if not file_has_expected_sha256(input.path, input.sha256, "chordbrain-localization-input-sha256")
+            return true
+
+
+        def output_file_cleanup(output_path: Path) -> bool can[Memory.Allocate, Abort.Panic, File.Read, File.Write]:
+            return true if not is_file(output_path)
+            return try remove_path(output_path) else false
+
+
+        def generated_files_match(launcher: sview) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, File.Read, File.Write, Directory.Read, Directory.Write, Unsafe.PointerCast]:
+            reference_script: Path = try path_real(path(Commands::REFERENCE_SCRIPT)) else err:
+                return false
+            candidate_script: Path = try path_real(path(Commands::CANDIDATE_SCRIPT)) else err:
+                return false
+            input_directory: Path = try path_real(path(Commands::INPUT_DIRECTORY)) else err:
+                return false
+            temporary: Path = try temp_directory("chordbrain-localization-parity") else err:
+                return false
+            reference_output: Path = temporary.joinpath("reference.elisa")
+            candidate_output: Path = temporary.joinpath("candidate.elisa")
+            reference_script_text: sview = f"{reference_script}"
+            candidate_script_text: sview = f"{candidate_script}"
+            input_directory_text: sview = f"{input_directory}"
+            reference_output_text: sview = f"{reference_output}"
+            candidate_output_text: sview = f"{candidate_output}"
+            environment: darray[DifferentialEnvironmentEntry] = [
+                DifferentialEnvironmentEntry{name: "PATH", value: "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"},
+                DifferentialEnvironmentEntry{name: "LC_ALL", value: "C"},
+                DifferentialEnvironmentEntry{name: "ELISA_LOCAL_COMPILER", value: Commands::PINNED_COMPILER},
+                DifferentialEnvironmentEntry{name: "ELISACORE_BIN", value: Commands::PINNED_COMPILER}
+            ]
+
+            reference_runner: DifferentialRunner = DifferentialRunner{
+                kind: DifferentialRunnerKind.PythonAdapter,
+                name: "pinned-python-chordbrain-localization-reference",
+                target: Commands::PYTHON,
+                entry: reference_script_text,
+                arguments: ["--input-dir", input_directory_text, "--output", reference_output_text],
+                environment: environment,
+                environment_mode: EsProcess::ProcessEnvironmentMode.Replace,
+                timeout_steps: Commands::TIMEOUT_STEPS,
+                max_output_bytes: Commands::MAX_OUTPUT_BYTES
+            }
+            reference_run: mutable DifferentialRun = DifferentialRun{observations: []}
+            catch run_differential_process(reference_runner):
+                ok value:
+                    reference_run <- value
+                error failure:
+                    eprint("ChordBrain Python localization reference process failed")
+
+            candidate_runner: DifferentialRunner = DifferentialRunner{
+                kind: DifferentialRunnerKind.NativeProcess,
+                name: "public-elisascript-chordbrain-localization-candidate",
+                target: launcher,
+                arguments: [candidate_script_text, "--input-dir", input_directory_text, "--output", candidate_output_text],
+                environment: environment,
+                environment_mode: EsProcess::ProcessEnvironmentMode.Replace,
+                timeout_steps: Commands::TIMEOUT_STEPS,
+                max_output_bytes: Commands::MAX_OUTPUT_BYTES
+            }
+            candidate_run: mutable DifferentialRun = DifferentialRun{observations: []}
+            catch run_differential_process(candidate_runner):
+                ok value:
+                    candidate_run <- value
+                error failure:
+                    eprint("ChordBrain Elisascript localization process failed")
+
+            files_equal: mutable bool = false
+            if reference_run.outcome == DifferentialRunOutcome.Completed and candidate_run.outcome == DifferentialRunOutcome.Completed and reference_run.exit_status == 0 and candidate_run.exit_status == 0 and reference_run.stdout == "" and candidate_run.stdout == "" and reference_run.stderr == "" and candidate_run.stderr == "":
+                reference_text: sview = try read_text(reference_output) else err:
+                    ""
+                candidate_text: sview = try read_text(candidate_output) else err:
+                    ""
+                files_equal <- reference_text != "" and reference_text == candidate_text
+            else:
+                eprint("ChordBrain localization process outcome mismatch")
+
+            reference_removed: bool = output_file_cleanup(reference_output)
+            candidate_removed: bool = output_file_cleanup(candidate_output)
+            directory_removed: bool = try remove_directory(temporary) else false
+            return files_equal and reference_removed and candidate_removed and directory_removed
+
+
+    public:
+        def pinned_compiler_path() -> sview:
+            return Commands::PINNED_COMPILER
+
+
+        def reference_script_hash_matches() -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Unsafe.PointerCast]:
+            reference_script: Path = try path_real(path(Commands::REFERENCE_SCRIPT)) else err:
+                return false
+            return file_has_expected_sha256(f"{reference_script}", Commands::REFERENCE_SHA256, "chordbrain-localization-reference-sha256")
+
+
+        def candidate_script_hash_matches() -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Unsafe.PointerCast]:
+            candidate_script: Path = try path_real(path(Commands::CANDIDATE_SCRIPT)) else err:
+                return false
+            return file_has_expected_sha256(f"{candidate_script}", Commands::CANDIDATE_SHA256, "chordbrain-localization-candidate-sha256")
+
+
+        def launcher_hash_matches(launcher: sview, expected_hex: sview) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Unsafe.PointerCast]:
+            return file_has_expected_sha256(launcher, expected_hex, "chordbrain-localization-launcher-sha256")
+
+
+        def process_parity_matches(launcher: sview) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, File.Read, File.Write, Directory.Read, Directory.Write, Unsafe.PointerCast]:
+            return pinned_inputs_match() and generated_files_match(launcher)
+
+
+@test
+def chordbrain_localization_generator_matches_pinned_python_output() -> void:
+    can Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, Environment.Read, File.Read, File.Write, Directory.Read, Directory.Write, Unsafe.PointerCast:
+        reauthorized: sview = try getenv("ELISASCRIPT_VALIDATION_REAUTHORIZED", "") else err:
+            ""
+        compiler: sview = try getenv("ELISA_LOCAL_COMPILER", "") else err:
+            ""
+        elisacore_bin: sview = try getenv("ELISACORE_BIN", "") else err:
+            ""
+        launcher: sview = try getenv("ELISASCRIPT_PUBLIC_LAUNCHER", "") else err:
+            ""
+        launcher_hash: sview = try getenv("ELISASCRIPT_PUBLIC_LAUNCHER_SHA256", "") else err:
+            ""
+        assert reauthorized == "1"
+        assert compiler == EsChordBrainLocalizationLauncherParity::pinned_compiler_path()
+        assert elisacore_bin == EsChordBrainLocalizationLauncherParity::pinned_compiler_path()
+        assert launcher != "" and launcher.startswith("/")
+        assert EsChordBrainLocalizationLauncherParity::launcher_hash_matches(launcher, launcher_hash)
+        assert EsChordBrainLocalizationLauncherParity::reference_script_hash_matches()
+        assert EsChordBrainLocalizationLauncherParity::candidate_script_hash_matches()
+        assert EsChordBrainLocalizationLauncherParity::process_parity_matches(launcher)
+        assert EsChordBrainLocalizationLauncherParity::reference_script_hash_matches()
+        assert EsChordBrainLocalizationLauncherParity::candidate_script_hash_matches()
+        assert EsChordBrainLocalizationLauncherParity::pinned_inputs_match()
+        assert EsChordBrainLocalizationLauncherParity::launcher_hash_matches(launcher, launcher_hash)
