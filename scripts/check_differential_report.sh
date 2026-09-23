@@ -130,6 +130,7 @@ for boundary in \
     'FlakyEvidenceInvalid' \
     'StabilityEvidenceInvalid' \
     'DetailOmissionInvalid' \
+    '((report.reference_detail_omitted or report.candidate_detail_omitted) and report.artifact_path == "")' \
     'report.repeat_count < 2' \
     'validate_differential_stability(report.stability_evidence)' \
     'report.repeat_count != report.stability_evidence.observations.count' \
@@ -194,6 +195,7 @@ for fixture_pattern in \
     'DifferentialReportError.InvalidUtf8' \
     'invalid_utf8_artifact_path' \
     'invalid_utf8_artifact_path_rejected' \
+    'orphan_omitted_detail_rejected' \
     'repeated_pass' \
     'mismatched_evidence_count' \
     'flaky_stability' \

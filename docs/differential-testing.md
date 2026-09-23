@@ -818,9 +818,11 @@ observation mismatch without parsing the summary sentence.
 For textual mismatches, the report also preserves the comparator's reference
 and candidate detail strings in Human, JSON, and JUnit output when each fits the
 1 MiB per-field report bound. An oversized detail is emitted as empty with an
-explicit side-specific `detail_omitted` flag; the report does not fail or
-silently truncate evidence. Details are the values selected by comparator
-policy (for example, normalized stdout when final-newline trimming is enabled);
+explicit side-specific `detail_omitted` flag; that omission is rejected unless
+the report supplies a nonempty artifact locator for the separately persisted
+raw evidence. The report does not silently truncate evidence. Details are the
+values selected by comparator policy (for example, normalized stdout when
+final-newline trimming is enabled);
 complete raw process streams remain in their separately persisted sidecar
 artifacts. Typed aggregate return value mismatches may have no inline detail
 because their roots can refer to run-owned value pools; the artifact path
