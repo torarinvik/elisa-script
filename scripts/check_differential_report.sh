@@ -122,6 +122,7 @@ for boundary in \
     'StatusCategoryMismatch' \
     'ComparisonStatusMismatch' \
     'report.status == DifferentialReportStatus.Passed and report.comparison_kind != DifferentialReportDifferenceKind.Equal' \
+    'report.status == DifferentialReportStatus.Failed and (report.comparison_kind == DifferentialReportDifferenceKind.Equal or report.comparison_kind == DifferentialReportDifferenceKind.Unavailable)' \
     'NondeterministicPass' \
     'NondeterministicClaimInvalid' \
     'FlakyEvidenceInvalid' \
@@ -175,6 +176,8 @@ for fixture_pattern in \
     'DifferentialReportError.StatusCategoryMismatch' \
     'DifferentialReportError.ComparisonStatusMismatch' \
     'comparison_kind: DifferentialReportDifferenceKind.ExitStatus' \
+    'comparison_kind: DifferentialReportDifferenceKind.Equal' \
+    'forged_failure_unavailable' \
     'DifferentialReportError.NondeterministicPass' \
     'DifferentialReportError.FlakyEvidenceInvalid' \
     'DifferentialReportError.NondeterministicClaimInvalid' \
