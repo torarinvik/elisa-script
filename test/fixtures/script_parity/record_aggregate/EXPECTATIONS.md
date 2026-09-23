@@ -6,7 +6,7 @@ This contract specifies future differential acceptance cases for
 evidence that either program or any fixture has run. The compiler-validation
 hold remains active.
 
-For every comparison, give both implementations the same explicit,
+For explicit-root comparisons, give both implementations the same
 canonicalized repository-root path. Use a stable checkout or generated root
 with no symlink components: the shell reference uses `pwd` while the candidate
 uses `path_real`, so symlink spelling is not part of this contract. The
@@ -27,10 +27,11 @@ one final LF byte. Unless listed otherwise, stdout and stderr are empty.
 | Unmodified repository root | 0 | `record aggregate audit: bounded insertion-ordered groups and sealed lookup are present\n` | empty |
 | Nonexistent repository root | 1 | empty | `record aggregate audit: missing repository root\n` |
 | Two script operands | 2 | empty | `usage: record aggregate audit [repository-root]\n` |
+| No root operand, launched by absolute script paths from `/` against the checkout containing both scripts | 0 | `record aggregate audit: bounded insertion-ordered groups and sealed lookup are present\n` | empty |
 
-The positive case is the only current stable-checkout semantic assertion. It
-does not establish that the source patterns are complete or that the port is
-correct for other source trees.
+The explicit-root and no-operand positive cases are the only current
+stable-checkout semantic assertions. They do not establish that the source
+patterns are complete or that the port is correct for other source trees.
 
 ## Isolated input failures
 
@@ -103,13 +104,14 @@ errors is not currently claimed as parity.
 
 ## Invocation differences and execution status
 
-Always pass the same explicit root. With no operand, the shell reference
-defaults to its own repository while the candidate defaults to the process
-working directory; this convenience behavior is intentionally excluded from
-parity. The source harness at
+No-operand invocation derives the root from each absolute script path rather
+than the process working directory. The source harness launches both programs
+from `/` against the checkout containing both scripts to ensure that default-
+root behavior stays independent of caller cwd. The source harness at
 `test/script_parity/record_aggregate_launcher_test.elisascript` implements
-the explicit-root success, usage, missing-root, each single missing shared
-input, exact/over aggregate-byte boundary, and source-needle mutation cases.
+the explicit-root success, no-operand default-root success, usage,
+missing-root, each single missing shared input, exact/over aggregate-byte
+boundary, and source-needle mutation cases.
 It pins the public launcher's digest before and after the matrix, passes both
 implementations the same sanitized environment, caps child output and timeout,
 preflights the five shared files to the 4 MiB aggregate bound, and separately
