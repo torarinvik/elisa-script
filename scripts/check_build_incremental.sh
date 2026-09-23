@@ -49,6 +49,8 @@ for declaration in \
     'def classify_build_incremental_manifest(' \
     'def build_incremental_target_decision_validated(' \
     'def build_incremental_target_valid(target)' \
+    'def build_incremental_dependency_order(' \
+    'def build_incremental_dependency_observation_position(' \
     'def build_incremental_observation_order(' \
     'def build_sort_incremental_observation_indices('; do
     rg -Fq "$declaration" "$model"
@@ -74,6 +76,7 @@ for boundary in \
     'BuildIncrementalError.TotalInputLimitExceeded' \
     'BuildIncrementalError.TotalOutputLimitExceeded' \
     'BuildIncrementalError.DependencyResolutionInvalid' \
+    'BuildIncrementalError.InvalidDependencyObservation' \
     'BuildContractError.DuplicateNode' \
     'BuildContractError.DuplicateDependency' \
     'build_incremental_target_shape_valid(target)' \
@@ -96,7 +99,8 @@ for boundary in \
     'current_recipe_fingerprint != target.recipe_fingerprint' \
     'build_incremental_observation_order(observations)' \
     'decisions[dependency_index] == BuildIncrementalDecision.UpToDate' \
-    'try build_incremental_dependencies_valid(dependencies)'; do
+    'build_sort_incremental_path_owners(owners, scratch)' \
+    'build_incremental_dependency_observation_position(dependency_order, dependency)'; do
     rg -Fq "$boundary" "$model"
 done
 
