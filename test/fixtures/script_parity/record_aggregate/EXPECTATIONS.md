@@ -36,9 +36,9 @@ patterns are complete or that the port is correct for other source trees.
 
 ## Isolated input failures
 
-Create a generated root containing all five valid, bounded inputs and the
-candidate copy. For explicit-root cases, launch the candidate copy from that
-same generated root; this pins the candidate source snapshot for the matrix.
+Create a generated root containing all five valid, bounded inputs and copies
+of both scripts. For explicit-root cases, launch both script copies from that
+same generated root; this pins their source snapshots for the matrix.
 In each row, make exactly the named file absent while leaving
 all other files valid. Missing-file parity is checked in the
 reference's declared order:
