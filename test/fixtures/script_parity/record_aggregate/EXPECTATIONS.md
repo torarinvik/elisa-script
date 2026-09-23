@@ -96,11 +96,12 @@ former also removes occurrences of the latter. Cover the `AddValue` pattern
 with its own mutation, then cover `Add` with a coupled mutation that removes
 both; do not claim those two as independent negative cases.
 
-The shell checks all required paths before checking sizes. The candidate now
-uses the same path-preflight phase; a generated case combines an over-limit
-`docs/ir.md` with a missing final input and requires the missing-input result
-to win. Precedence for other combinations of simultaneous faults is not claimed
-as parity.
+The shell checks all required paths before checking sizes and only reads source
+contents after all size checks pass. The candidate now uses a presence
+preflight, an aggregate-size pass, then a source-read pass; a generated case
+combines an over-limit `docs/ir.md` with a missing final input and requires the
+missing-input result to win. Precedence for permission failures combined with
+size faults and other multiple-fault combinations is not claimed as parity.
 
 ## Invocation differences and execution status
 
