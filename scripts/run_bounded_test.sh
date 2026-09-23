@@ -113,6 +113,7 @@ fi
 retained_log_budget_bytes=1073741824
 metadata_reserve_bytes=16384
 source_limit_bytes=65536
+rss_poll_interval_seconds=0.05
 if [ "$log_limit_bytes" -gt "$retained_log_budget_bytes" ]; then
     echo "run_bounded_test: ELISASCRIPT_LOG_LIMIT_BYTES must not exceed the 1 GiB evidence budget" >&2
     exit 2
@@ -513,7 +514,7 @@ for source_file in "$@"; do
         printf 'wrapper=run_bounded_test\nsource_path_hex=%s\n' "$source_path_hex"
         printf 'snapshot_path_hex=%s\n' "$snapshot_path_hex"
         printf 'working_directory_hex=%s\nstarted_epoch=%s\n' "$working_directory_hex" "$started_at"
-        printf 'source_bytes=%s\nsource_limit_bytes=%s\nrss_limit_kb=%s\ntime_limit_seconds=%s\nconfigured_log_limit_bytes=%s\neffective_log_limit_bytes=%s\nretained_log_budget_bytes=%s\n' "$source_bytes" "$source_limit_bytes" "$rss_limit_kb" "$time_limit_seconds" "$log_limit_bytes" "$effective_log_limit_bytes" "$retained_log_budget_bytes"
+        printf 'source_bytes=%s\nsource_limit_bytes=%s\nrss_limit_kb=%s\nrss_poll_interval_seconds=%s\ntime_limit_seconds=%s\nconfigured_log_limit_bytes=%s\neffective_log_limit_bytes=%s\nretained_log_budget_bytes=%s\n' "$source_bytes" "$source_limit_bytes" "$rss_limit_kb" "$rss_poll_interval_seconds" "$time_limit_seconds" "$log_limit_bytes" "$effective_log_limit_bytes" "$retained_log_budget_bytes"
         printf 'argv0=%s\nargv1=-O0\nargv2=-emit\nargv3=test\nargv4_hex=%s\n' "$compiler_path" "$snapshot_path_hex"
     } >"$metadata_file") 2>/dev/null; then
         echo "run_bounded_test: unable to create run metadata; refusing to launch" >&2
@@ -619,7 +620,7 @@ for source_file in "$@"; do
         # Sample at 20 Hz: the prior one-second gap allowed fast compiler
         # allocations to overshoot the reactive threshold substantially. This
         # remains a sampled guard, not an OS-enforced memory cap.
-        sleep 0.05
+        sleep "$rss_poll_interval_seconds"
     done
 
     if [ -n "$compiler_pid" ]; then
