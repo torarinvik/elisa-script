@@ -232,6 +232,29 @@ kill_process_tree() {
     esac
 }
 
+kill_process_tree_immediately() {
+    process_root_pid="$1"
+    process_group_id="$2"
+    process_tree_snapshot=""
+    if [ -n "$process_root_pid" ]; then
+        process_tree_snapshot="$(process_tree_pids "$process_root_pid")"
+    fi
+    case "$process_group_id" in
+        ''|0|*[!0-9]*) process_group_id="$(process_group_for_pid "$process_root_pid")" ;;
+    esac
+    case "$process_group_id" in
+        ''|0|*[!0-9]*) ;;
+        *)
+            if [ "$process_group_id" != "$validation_wrapper_pgid" ]; then
+                kill -KILL -- "-$process_group_id" 2>/dev/null || true
+            fi
+            ;;
+    esac
+    for process_tree_pid in $process_tree_snapshot; do
+        kill -KILL "$process_tree_pid" 2>/dev/null || true
+    done
+}
+
 compiler_pid=""
 compiler_pgid=""
 source_snapshot=""
@@ -539,10 +562,10 @@ for source_file in "$@"; do
             fi
             rss_guard=1
             if ! latch_validation_disabled "run_bounded_lowering rss_measurement_failed pid=$compiler_pid pgid=$compiler_pgid"; then
-                kill_process_tree "$compiler_pid" "$compiler_pgid"
+                kill_process_tree_immediately "$compiler_pid" "$compiler_pgid"
                 exit 125
             fi
-            kill_process_tree "$compiler_pid" "$compiler_pgid"
+            kill_process_tree_immediately "$compiler_pid" "$compiler_pgid"
             break
         fi
         rss_sample_count=$((rss_sample_count + 1))
@@ -552,10 +575,10 @@ for source_file in "$@"; do
         if [ "$rss_kb" -gt "$rss_limit_kb" ]; then
             rss_guard=1
             if ! latch_validation_disabled "run_bounded_lowering rss_guard pid=$compiler_pid rss_kb=$rss_kb limit_kb=$rss_limit_kb"; then
-                kill_process_tree "$compiler_pid" "$compiler_pgid"
+                kill_process_tree_immediately "$compiler_pid" "$compiler_pgid"
                 exit 125
             fi
-            kill_process_tree "$compiler_pid" "$compiler_pgid"
+            kill_process_tree_immediately "$compiler_pid" "$compiler_pgid"
             break
         fi
 
