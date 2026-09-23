@@ -353,7 +353,9 @@ def main(arguments: list[str]) -> int:
     if not build_payload and not flatten_payload and expected_json_argument is not None:
         try:
             expected = read_bounded_expected_json(Path(expected_json_argument))
-        except (OSError, UnicodeDecodeError, ValueError) as error:
+        except OSError:
+            return fail("invalid checked-in expected JSON: unable to read regular file", 2)
+        except (UnicodeDecodeError, ValueError) as error:
             return fail(f"invalid checked-in expected JSON: {error}", 2)
         if exports != expected:
             return fail("pinned Python output differs from the checked-in expected JSON", 2)
