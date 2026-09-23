@@ -11,8 +11,9 @@ posix_adapter="$repo_root/src/runtime/lua_bundle_publication_posix.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 rename_failure_fixture="$repo_root/test/driver/lua_bundle_publication_rename_failure.elisascript"
+close_uncertain_fixture="$repo_root/test/driver/lua_bundle_publication_close_uncertain.elisascript"
 
-for required_file in "$model" "$file_bridge" "$posix_adapter" "$ir" "$fixture" "$rename_failure_fixture"; do
+for required_file in "$model" "$file_bridge" "$posix_adapter" "$ir" "$fixture" "$rename_failure_fixture" "$close_uncertain_fixture"; do
     [[ -f "$required_file" ]] || { printf 'lua bundle publication audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -55,7 +56,6 @@ for boundary in \
     'PublicationUncertain' \
     'PublicationEvent.StageCreated' \
     'PublicationEvent.Close' \
-    'PublicationEvent.PublishFailed' \
     'session.state != PublicationState.Publishing' \
     'PublicationError.PublishNotReady' \
     'PublicationEvent.PublishAck'; do
@@ -65,6 +65,13 @@ done
 rg -q 'PublicationEvent.PublishFailed' "$rename_failure_fixture"
 rg -q 'confirmed_rename_failure_is_retryable_as_failure' "$rename_failure_fixture"
 rg -q 'session.destination_preserved_on_failure' "$rename_failure_fixture"
+rg -q 'PublicationState.CleanupUncertain' "$model" "$close_uncertain_fixture"
+rg -q 'parent_descriptor_close_uncertain' "$close_uncertain_fixture"
+rg -q 'stage_close_succeeded: true, parent_close_succeeded: false' "$close_uncertain_fixture"
+rg -q 'session.descriptor_owned or session.parent_descriptor_owned or session.parent_descriptor_closed' "$close_uncertain_fixture"
+rg -q 'PublicationError.CleanupUncertain' "$close_uncertain_fixture"
+rg -q 'PublicationEvent.CloseOutcomeUnknown' "$close_uncertain_fixture"
+rg -q 'InvalidEvent if not stage_close_succeeded or not parent_close_succeeded' "$model"
 
 rg -q 'include "\.\./runtime/lua_bundle_publication_model\.elisa"' "$ir"
 rg -q 'include "\.\./runtime/lua_bundle_publication_posix\.elisa"' "$ir"
