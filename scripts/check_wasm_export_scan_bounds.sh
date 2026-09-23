@@ -68,6 +68,16 @@ rg -Fq 'def parse_implicit_main(line: sview, line_number: usize, main_seen: bool
 rg -Fq 'if component:' "$candidate"
 rg -Fq 'return AbiBinding{binding: "scalar", wasm_type: "i32", failure: ""}' "$candidate"
 rg -Fq 'scanner.parse_exports(source, component=component_mode)' "$reference"
+rg -Fq 'MAX_EXPECTED_JSON_BYTES = 1 * 1024 * 1024' "$reference"
+rg -Fq 'def read_bounded_expected_json(path: Path) -> Any:' "$reference"
+rg -Fq 'os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)' "$reference"
+rg -Fq 'stat.S_ISREG(os.fstat(descriptor).st_mode)' "$reference"
+rg -Fq 'chunk = os.read(descriptor, remaining)' "$reference"
+rg -Fq 'expected = read_bounded_expected_json(Path(expected_json_argument))' "$reference"
+if rg -Fq 'Path(expected_json_argument).read_text' "$reference"; then
+    printf 'W09 bounds audit: expected JSON snapshots must not use an unbounded text read\n' >&2
+    exit 1
+fi
 rg -Fq 'def wasm_export_scan_matches_component_scalar_enum_mode()' "$fixture"
 rg -Fq 'def launcher_payload_pair_matches(launcher: sview, source_path: sview, component: bool = false)' "$launcher_fixture"
 rg -Fq 'wasm_export_scan/component_enum.input' "$launcher_fixture"

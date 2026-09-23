@@ -7,6 +7,7 @@ from collections.abc import Iterator
 import importlib.util
 import json
 import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -16,6 +17,9 @@ from types import ModuleType
 PINNED_COMMIT = "0019dfcfff405b98369dd1b51562619668e29707"
 MAX_SOURCE_BYTES = 8 * 1024 * 1024
 MAX_JSON_BYTES = 16 * 1024 * 1024
+# Expected snapshots are tiny checked-in contracts. Keep their decoded object
+# graph far below the 16 MiB maximum scanner output payload.
+MAX_EXPECTED_JSON_BYTES = 1 * 1024 * 1024
 # Keep one byte for the final LF under the differential runner's 64 MiB cap.
 MAX_CALLER_PAYLOAD_BYTES = 64 * 1024 * 1024 - 1
 MAX_PATH_BYTES = 4096
@@ -69,6 +73,31 @@ def load_pinned_reference() -> ModuleType:
 def fail(message: str, status: int = 1) -> int:
     sys.stderr.write(f"wasm export scan: {message}\n")
     return status
+
+
+def read_bounded_expected_json(path: Path) -> Any:
+    """Load a small regular snapshot without an unbounded text-file read."""
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+    )
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise OSError("expected JSON is not a regular file")
+        payload = bytearray()
+        while len(payload) <= MAX_EXPECTED_JSON_BYTES:
+            remaining = MAX_EXPECTED_JSON_BYTES + 1 - len(payload)
+            chunk = os.read(descriptor, remaining)
+            if not chunk:
+                break
+            payload.extend(chunk)
+    finally:
+        os.close(descriptor)
+    if len(payload) > MAX_EXPECTED_JSON_BYTES:
+        raise ValueError(
+            f"expected JSON exceeds {MAX_EXPECTED_JSON_BYTES} byte limit"
+        )
+    return json.loads(payload.decode("utf-8"))
 
 
 def split_keepends(text: str) -> Iterator[str]:
@@ -296,8 +325,8 @@ def main(arguments: list[str]) -> int:
 
     if not build_payload and not flatten_payload and expected_json_argument is not None:
         try:
-            expected = json.loads(Path(expected_json_argument).read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            expected = read_bounded_expected_json(Path(expected_json_argument))
+        except (OSError, UnicodeDecodeError, ValueError) as error:
             return fail(f"invalid checked-in expected JSON: {error}", 2)
         if exports != expected:
             return fail("pinned Python output differs from the checked-in expected JSON", 2)
