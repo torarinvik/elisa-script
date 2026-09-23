@@ -204,14 +204,14 @@ for boundary in 'differential_run_outcome_valid(reference.outcome)' 'differentia
     fi
 done
 
-for boundary in 'differential_run_outcome_incomplete(reference.outcome)' 'differential_run_outcome_incomplete(candidate.outcome)' 'both runs terminated before producing complete results' 'artifact.equal and (differential_run_outcome_incomplete(artifact.reference_outcome) or differential_run_outcome_incomplete(artifact.candidate_outcome))'; do
+for boundary in 'differential_run_outcome_incomplete(reference.outcome)' 'differential_run_outcome_incomplete(candidate.outcome)' 'return outcome in {DifferentialRunOutcome.SpawnFailure, DifferentialRunOutcome.Crash, DifferentialRunOutcome.Timeout, DifferentialRunOutcome.OutputLimit, DifferentialRunOutcome.CompileFailure}' 'both runs terminated before producing complete results' 'artifact.equal and (differential_run_outcome_incomplete(artifact.reference_outcome) or differential_run_outcome_incomplete(artifact.candidate_outcome))'; do
     if ! rg -Fq "$boundary" "$source_file"; then
         printf 'differential case audit: missing incomplete-outcome comparison rule %s\n' "$boundary" >&2
         exit 1
     fi
 done
 
-for boundary in 'timed_out_comparison' 'assert not timed_out_comparison.equal' 'assert timed_out_comparison.kind == DifferentialDifferenceKind.Outcome' 'forged_equal.equal <- true' 'canonical_differential_comparison_artifact_bytes(forged_equal).count == 0' 'both_timed_out.status == DifferentialReportStatus.Inconclusive'; do
+for boundary in 'differential_comparison_rejects_paired_incomplete_outcomes' 'comparison.reference_outcome == outcome' 'comparison.candidate_outcome == outcome' 'timed_out_comparison' 'assert not timed_out_comparison.equal' 'assert timed_out_comparison.kind == DifferentialDifferenceKind.Outcome' 'forged_equal.equal <- true' 'canonical_differential_comparison_artifact_bytes(forged_equal).count == 0' 'both_timed_out.status == DifferentialReportStatus.Inconclusive'; do
     if ! rg -Fq "$boundary" "$fixture_file"; then
         printf 'differential case audit: missing paired incomplete-outcome fixture %s\n' "$boundary" >&2
         exit 1
