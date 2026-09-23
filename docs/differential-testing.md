@@ -176,6 +176,10 @@ shell text. This keeps native and legacy-language oracle runners on the same typ
 shell-free command boundary. The command validator admits vector counts and all
 individual/aggregate C-string lengths before scanning field bytes for NULs or
 duplicate environment names, so oversized commands fail before content scans.
+Process-command environments are further bounded to 256 entries and 1,024 bytes
+per name, which caps exact duplicate-name and ordered-overlay work while leaving
+the larger argv ceiling independent. The post-overlay environment remains under
+the same entry ceiling as well.
 After the child is reaped and both streams are admitted, the adapter materializes
 `EsProcess::ProcessResult` so a normal exit and signal death retain distinct typed
 outcomes before conversion to the differential artifact. Spawn, timeout,
@@ -193,6 +197,8 @@ vectors above their one-million-entry caps before scanning or materializing any
 field, so callers cannot reuse it as a fail-open preflight. Runner validation
 checks those vector counts first, preserving the typed `TooManyArguments` and
 `TooManyEnvironmentEntries` diagnostics before field-length admission.
+These differential-invocation staging ceilings precede the stricter shared
+`ProcessCommand` environment count/name ceilings described above.
 Runner kinds are also admitted through an explicit closed-set predicate, so an
 unknown enum ordinal cannot fall through the generic entry/argument states and
 be accepted as a runnable differential side.
