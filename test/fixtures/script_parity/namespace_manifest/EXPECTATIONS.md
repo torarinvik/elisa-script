@@ -54,3 +54,8 @@ the positive fixture root with an omitted and with an empty parser path; both
 must use the repository parser source and fail on its first unrendered variant,
 `UnexpectedToken`. These cases verify defaults outside the repository working
 directory without pinning checkout-dependent manifest paths.
+
+Before allocating each complete source text, the candidate rechecks its byte
+size against the aggregate-pass snapshot, then validates the loaded size again.
+This narrows but does not eliminate the documented TOCTOU memory window for
+concurrently modified files; concurrent-tree parity remains out of scope.
