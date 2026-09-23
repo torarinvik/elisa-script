@@ -123,6 +123,8 @@ for boundary in \
     'ComparisonStatusMismatch' \
     'report.status == DifferentialReportStatus.Passed and report.comparison_kind != DifferentialReportDifferenceKind.Equal' \
     'report.status == DifferentialReportStatus.Failed and (report.comparison_kind == DifferentialReportDifferenceKind.Equal or report.comparison_kind == DifferentialReportDifferenceKind.Unavailable)' \
+    'report.status == DifferentialReportStatus.Skipped and (report.comparison_kind != DifferentialReportDifferenceKind.Unavailable or report.has_stability_evidence or report.repeat_count != 1)' \
+    'report.status == DifferentialReportStatus.Inconclusive and report.comparison_kind == DifferentialReportDifferenceKind.Equal and (report.category != DifferentialReportCategory.Flaky or not report.has_stability_evidence)' \
     'NondeterministicPass' \
     'NondeterministicClaimInvalid' \
     'FlakyEvidenceInvalid' \
@@ -178,6 +180,8 @@ for fixture_pattern in \
     'comparison_kind: DifferentialReportDifferenceKind.ExitStatus' \
     'comparison_kind: DifferentialReportDifferenceKind.Equal' \
     'forged_failure_unavailable' \
+    'skipped_with_comparison' \
+    'inconclusive_equal' \
     'DifferentialReportError.NondeterministicPass' \
     'DifferentialReportError.FlakyEvidenceInvalid' \
     'DifferentialReportError.NondeterministicClaimInvalid' \
