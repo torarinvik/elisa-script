@@ -161,6 +161,8 @@ for boundary in \
     'value: dependency_result.name' \
     'target_artifact: true' \
     'library_form_matches_requirement' \
+    'if requirement.library_form == BuildUsageLibraryForm.Path:' \
+    'not sview_contains_byte(requirement.value, 32)' \
     'left.library_form == right.library_form' \
     'left.target_artifact == right.target_artifact' \
     'target_artifact: entry.target_artifact' \
@@ -179,6 +181,9 @@ rg -Fq 'build_usage_public_private_interface_and_static_link_only_propagation' "
 rg -Fq 'build_usage_shared_dependency_contributes_its_artifact' "$usage_fixture"
 rg -Fq 'build_usage_distinguishes_target_artifacts_from_linker_names' "$usage_fixture"
 rg -Fq 'build_usage_rejects_mismatched_library_forms' "$usage_fixture"
+rg -Fq 'option_as_search_name' "$usage_fixture"
+rg -Fq 'whitespace_as_search_name' "$usage_fixture"
+rg -Fq 'bare_path_resolution' "$usage_fixture"
 rg -Fq 'build_usage_rejects_noncanonical_dependencies_and_interface_visibility' "$usage_fixture"
 rg -Fq 'build_usage_private_static_dependency_is_local_and_link_only_exported' "$usage_fixture"
 rg -Fq 'static_usage.exported_link[0].library_form == BuildUsageLibraryForm.LinkerArgument' "$usage_fixture"
