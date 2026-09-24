@@ -1,0 +1,6 @@
+#ifndef ELISASCRIPT_TARGET_USAGE_CORE_INTERNAL_H
+#define ELISASCRIPT_TARGET_USAGE_CORE_INTERNAL_H
+
+int helper_value(void);
+
+#endif
