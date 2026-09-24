@@ -175,37 +175,33 @@ module EsBuildIncrementalPosixExecutor:
             return false
 
 
-        # Validate the complete dirty-output set before deleting any artifact,
-        # so an unowned or modified file cannot cause a partial invalidation.
-        # A second fresh observation is performed by the leaf-removal adapter
-        # immediately before each unlink.
-        def invalidate_dirty_build_outputs_at(scratch: mutable Arena&, root_fd: int, previous_targets: darray[BuildIncrementalTarget], recipes: darray[BuildIncrementalRecipeTarget], observations: darray[BuildIncrementalObservation], plan: BuildIncrementalPlan) -> bool error[BuildIncrementalError, OutputInvalidationError, OpenError, ObserveError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
-            raise BuildIncrementalError.CurrentRecipeShapeInvalid if recipes.count != plan.decisions.count
-            for recipe_index in 0..<recipes.count |recipes, observations, previous_targets, plan|:
-                continue if plan.decisions[recipe_index] == BuildIncrementalDecision.UpToDate
-                for output_path in recipes[recipe_index].outputs |recipe_index, recipes, observations, previous_targets, plan|:
-                    observed: mutable BuildIncrementalObservation = BuildIncrementalObservation{}
-                    raise BuildIncrementalError.ObservationSetMismatch if not build_incremental_posix_find_observation(observations, output_path, observed)
-                    continue if not observed.present
-                    cached: mutable BuildIncrementalFile = BuildIncrementalFile{path: ""}
-                    if not build_incremental_posix_find_cached_output(previous_targets, output_path, cached):
-                        raise BuildIncrementalError.OutputInvalidationOwnershipMissing(output_path)
-                    matches_cache: bool = observed.fingerprint == cached.fingerprint and observed.fingerprint_word1 == cached.fingerprint_word1 and observed.fingerprint_word2 == cached.fingerprint_word2 and observed.fingerprint_word3 == cached.fingerprint_word3
-                    raise BuildIncrementalError.OutputInvalidationFingerprintChanged(output_path) if not matches_cache
+        # Validate one node's complete output set before deleting any of its
+        # artifacts. The caller invokes this immediately before that node's
+        # command, after dependencies have succeeded.
+        def invalidate_dirty_build_target_outputs_at(scratch: mutable Arena&, root_fd: int, target_index: usize, previous_targets: darray[BuildIncrementalTarget], recipes: darray[BuildIncrementalRecipeTarget], observations: darray[BuildIncrementalObservation]) -> bool error[BuildIncrementalError, OutputInvalidationError, OpenError, ObserveError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+            raise BuildIncrementalError.CurrentRecipeShapeInvalid if target_index >= recipes.count
+            recipe: BuildIncrementalRecipeTarget = recipes[target_index]
+            for output_path in recipe.outputs |recipe, observations, previous_targets|:
+                observed: mutable BuildIncrementalObservation = BuildIncrementalObservation{}
+                raise BuildIncrementalError.ObservationSetMismatch if not build_incremental_posix_find_observation(observations, output_path, observed)
+                continue if not observed.present
+                cached: mutable BuildIncrementalFile = BuildIncrementalFile{path: ""}
+                if not build_incremental_posix_find_cached_output(previous_targets, output_path, cached):
+                    raise BuildIncrementalError.OutputInvalidationOwnershipMissing(output_path)
+                matches_cache: bool = observed.fingerprint == cached.fingerprint and observed.fingerprint_word1 == cached.fingerprint_word1 and observed.fingerprint_word2 == cached.fingerprint_word2 and observed.fingerprint_word3 == cached.fingerprint_word3
+                raise BuildIncrementalError.OutputInvalidationFingerprintChanged(output_path) if not matches_cache
 
-            for recipe_index in 0..<recipes.count |recipes, observations, previous_targets, plan, scratch|:
-                continue if plan.decisions[recipe_index] == BuildIncrementalDecision.UpToDate
-                for output_path in recipes[recipe_index].outputs |recipe_index, recipes, observations, previous_targets, plan, scratch|:
-                    observed: mutable BuildIncrementalObservation = BuildIncrementalObservation{}
-                    raise BuildIncrementalError.ObservationSetMismatch if not build_incremental_posix_find_observation(observations, output_path, observed)
-                    cached: mutable BuildIncrementalFile = BuildIncrementalFile{path: ""}
-                    if build_incremental_posix_find_cached_output(previous_targets, output_path, cached):
-                        _ = try invalidate_build_incremental_output_at(scratch, root_fd, cached)
-                    elif observed.present:
-                        raise BuildIncrementalError.OutputInvalidationOwnershipMissing(output_path)
-                    else:
-                        current: BuildIncrementalObservation = try observe_build_incremental_file_at(scratch, root_fd, output_path)
-                        raise BuildIncrementalError.OutputInvalidationOwnershipMissing(output_path) if current.present
+            for output_path in recipe.outputs |recipe, observations, previous_targets, scratch|:
+                observed: mutable BuildIncrementalObservation = BuildIncrementalObservation{}
+                raise BuildIncrementalError.ObservationSetMismatch if not build_incremental_posix_find_observation(observations, output_path, observed)
+                cached: mutable BuildIncrementalFile = BuildIncrementalFile{path: ""}
+                if build_incremental_posix_find_cached_output(previous_targets, output_path, cached):
+                    _ = try invalidate_build_incremental_output_at(scratch, root_fd, cached)
+                elif observed.present:
+                    raise BuildIncrementalError.OutputInvalidationOwnershipMissing(output_path)
+                else:
+                    current: BuildIncrementalObservation = try observe_build_incremental_file_at(scratch, root_fd, output_path)
+                    raise BuildIncrementalError.OutputInvalidationOwnershipMissing(output_path) if current.present
             return true
 
 
@@ -217,6 +213,88 @@ module EsBuildIncrementalPosixExecutor:
                 raise ToolchainObservationError.ToolchainCommandMismatch(index) if resolution.command_executable != graph.nodes[index].command.executable
                 identities.push(try observe_build_recipe_toolchain_identity_at(scratch, root_fd, resolution.path))
             return identities
+
+
+        # Serial incremental dispatcher with a per-node invalidation boundary.
+        # A failed node therefore cannot erase outputs belonging to later dirty
+        # nodes which have not started.
+        def execute_build_graph_incremental_serial_at(scratch: mutable Arena&, root_fd: int, graph: mutable BuildGraph&, previous_targets: darray[BuildIncrementalTarget], recipes: darray[BuildIncrementalRecipeTarget], observations: darray[BuildIncrementalObservation], plan: BuildIncrementalPlan) -> BuildExecutionResult error[BuildExecutionError, BuildContractError, BuildIncrementalError, OutputInvalidationError, OpenError, ObserveError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Unsafe.PointerCast, Process.Run]:
+            valid_graph: mutable bool = false
+            catch validate_build_graph(graph):
+                ok value:
+                    valid_graph <- value
+                error failure:
+                    raise BuildExecutionError.GraphInvalid
+            raise BuildExecutionError.GraphInvalid if not valid_graph
+            raise BuildExecutionError.GraphNotPlanned if graph.state != BuildGraphState.Planned
+            raise BuildExecutionError.NodeResultLimitExceeded if graph.nodes.count > EsBuildExecutor::Limits::NODE_RESULTS
+            raise BuildExecutionError.GraphInvalid if plan.decisions.count != graph.nodes.count or recipes.count != graph.nodes.count
+
+            for node_index in 0..<graph.nodes.count |graph, plan|:
+                if plan.decisions[node_index] != BuildIncrementalDecision.UpToDate:
+                    raise BuildExecutionError.UnsupportedCommand if not build_executor_command_supported(graph.nodes[node_index].command)
+
+            results: mutable darray[BuildExecutionNodeResult] = []
+            for node in graph.nodes |results|:
+                results.push(BuildExecutionNodeResult{target_name: node.name})
+
+            _ = try advance_build_graph(graph, BuildGraphEvent.Start)
+            for node_index in 0..<graph.nodes.count |graph, results, plan, previous_targets, recipes, observations, scratch|:
+                if graph.state != BuildGraphState.Running:
+                    break
+                if plan.decisions[node_index] == BuildIncrementalDecision.UpToDate:
+                    _ = try advance_build_graph(graph, BuildGraphEvent.CacheHit, node_index)
+                    results[node_index].cache_hit <- true
+                else:
+                    catch invalidate_dirty_build_target_outputs_at(scratch, root_fd, node_index, previous_targets, recipes, observations):
+                        ok:
+                            pass
+                        error failure:
+                            _ = try advance_build_graph(graph, BuildGraphEvent.Cancel)
+                            _ = try advance_build_graph(graph, BuildGraphEvent.CancelAck)
+                            raise failure
+                    _ = try advance_build_graph(graph, BuildGraphEvent.NodeStart, node_index)
+                    results[node_index].started <- true
+                    remaining_log_bytes: usize = EsBuild::Limits::LOG_BYTES - graph.log_bytes
+                    command_limit: usize = graph.nodes[node_index].command.capture_output_limit_bytes
+                    effective_limit: usize = command_limit if command_limit < remaining_log_bytes else remaining_log_bytes
+                    process_error: mutable bool = false
+                    catch run_build_command(graph.nodes[node_index].command, effective_limit):
+                        ok value:
+                            results[node_index].exit_status <- value.exit_status
+                            results[node_index].stdout <- value.stdout
+                            results[node_index].stderr <- value.stderr
+                        error failure:
+                            process_error <- true
+
+                    node_log_bytes: mutable usize = 0
+                    if not process_error:
+                        stdout_bytes: usize = len(results[node_index].stdout)
+                        stderr_bytes: usize = len(results[node_index].stderr)
+                        if stdout_bytes > effective_limit:
+                            process_error <- true
+                        elif stderr_bytes > effective_limit - stdout_bytes:
+                            process_error <- true
+                        else:
+                            node_log_bytes <- stdout_bytes + stderr_bytes
+
+                    if process_error:
+                        results[node_index].failure <- BuildExecutionFailureKind.Invocation
+                        results[node_index].stdout <- ""
+                        results[node_index].stderr <- ""
+                        _ = try advance_build_graph(graph, BuildGraphEvent.NodeFailure, node_index)
+                        break
+
+                    raise BuildExecutionError.LogAccountingInvalid if node_log_bytes > EsBuild::Limits::LOG_BYTES - graph.log_bytes
+                    graph.nodes[node_index].log_bytes <- node_log_bytes
+                    graph.log_bytes <- graph.log_bytes + node_log_bytes
+                    if results[node_index].exit_status != 0:
+                        results[node_index].failure <- BuildExecutionFailureKind.NonzeroExit
+                        _ = try advance_build_graph(graph, BuildGraphEvent.NodeFailure, node_index)
+                        break
+                    _ = try advance_build_graph(graph, BuildGraphEvent.NodeSuccess, node_index)
+
+            return BuildExecutionResult{graph_state: graph.state, nodes: results, log_bytes: graph.log_bytes}
 
 
     private:
@@ -231,11 +309,7 @@ module EsBuildIncrementalPosixExecutor:
             graph <- signed.graph
             plan: BuildIncrementalPlan = try plan_build_incremental_graph_transition(previous_targets, graph, signed.recipes, observations)
             raise BuildExecutionError.NodeResultLimitExceeded if graph.nodes.count > EsBuildExecutor::Limits::NODE_RESULTS
-            for node_index in 0..<graph.nodes.count |graph, plan|:
-                continue if plan.decisions[node_index] == BuildIncrementalDecision.UpToDate
-                raise BuildExecutionError.UnsupportedCommand if not build_executor_command_supported(graph.nodes[node_index].command)
-            _ = try invalidate_dirty_build_outputs_at(scratch, root_fd, previous_targets, signed.recipes, observations, plan)
-            result: BuildExecutionResult = try execute_build_graph_serial_with_decisions(graph, plan.decisions, [])
+            result: BuildExecutionResult = try execute_build_graph_incremental_serial_at(scratch, root_fd, graph, previous_targets, signed.recipes, observations, plan)
             return BuildIncrementalPosixExecution{result: result, recipes: signed.recipes, pre_execution_observations: observations}
 
 
