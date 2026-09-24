@@ -16,8 +16,24 @@ for required_file in "$model" "$ir" "$fixture_file" "$runtime_fixture" "$docs" "
     [[ -f "$required_file" ]] || { printf 'archive audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
-rg -q 'entry.state == ArchiveEntryState.Accepted and existing.state == ArchiveEntryState.Accepted' "$model"
+rg -q 'id_index_slots: darray\[usize\]' "$model"
+rg -q 'path_index_slots: darray\[usize\]' "$model"
+rg -q 'def archive_entry_id_index\(' "$model"
+rg -q 'def archive_path_index\(' "$model"
+rg -q 'def archive_ensure_index_capacity\(' "$model"
+rg -q 'def validate_archive_header\(' "$model"
+rg -q 'try validate_archive_header\(session\)' "$model"
+rg -q 'INDEX_SLOTS: usize = 2097152' "$model"
+rg -q 'if entry.state == ArchiveEntryState.Accepted and session.policy.overwrite == ArchiveOverwritePolicy.Fail' "$model"
+rg -q 'archive_path_index\(session.entries, session.path_index_slots, entry.path\)' "$model"
+rg -q 'for stored in session.id_index_slots' "$model"
+rg -q 'for stored in session.path_index_slots' "$model"
+! rg -Fq 'for earlier in 0..<index' "$model"
 rg -q 'skipped_archive_paths_do_not_conflict_with_accepted_entries' "$runtime_fixture"
+rg -q 'archive_entry_indexes_preserve_order_across_collisions_and_growth' "$runtime_fixture"
+rg -q 'session.id_index_slots.count == 16 and session.path_index_slots.count == 16' "$runtime_fixture"
+rg -q 'ArchiveError.DuplicatePath' "$runtime_fixture"
+rg -q 'ArchiveError.DuplicateEntryId' "$runtime_fixture"
 rg -q 'ArchiveEntryState.Skipped' "$runtime_fixture"
 rg -q 'first_accepted.total_bytes == 3 and first_accepted.skipped_entries == 1' "$runtime_fixture"
 rg -q 'first_skipped.total_bytes == 3 and first_skipped.skipped_entries == 1' "$runtime_fixture"
@@ -76,4 +92,4 @@ done
 rg -q 'EsArchive::ArchiveSession' "$docs"
 rg -q 'ES-SCRIPT-050' "$ledger"
 
-printf 'archive audit: bounded path, byte, link-policy, and commit admission are present\n'
+printf 'archive audit: bounded path, byte, link-policy, indexed duplicate admission, and commit validation are present\n'

@@ -644,12 +644,15 @@ path checks; entry count, per-entry
 and subtraction-safe aggregate bytes, duplicate identities/paths, link policy, planned-state
 cleanliness, and commit/fail/cancel lifecycle are explicit. Skipped entries no
 longer conflict with accepted paths during incremental admission, matching full
-session validation; accepted duplicates still follow the overwrite policy. The
-focused IR/runtime fixtures, namespace inclusion, documentation, and
-check_archive.sh audit are compiler-free static evidence;
-format decoders, filesystem writes, overwrite/permission behavior, atomic
-publication, and extraction parity remain open. Failure is admitted only from
-active extraction; planned and already-failed sessions reject the edge.
+session validation; accepted duplicates still follow the overwrite policy.
+Separate bounded open-addressed ID and normalized-path indexes now retain
+original entry order while avoiding full duplicate rescans on each admission;
+full lifecycle validation audits their contents at lifecycle transitions. Collision-
+heavy throughput is not measured. The focused IR/runtime fixtures, namespace
+inclusion, documentation, and check_archive.sh audit are compiler-free static
+evidence; format decoders, filesystem writes, overwrite/permission behavior,
+atomic publication, and extraction parity remain open. Failure is admitted
+only from active extraction; planned and already-failed sessions reject the edge.
 
 ES-SCRIPT-051 | EsHash supplies a bounded incremental integrity contract.
 Algorithm identity (`Sha256`, `Sha512`, or `Fnv1a64`), input/chunk ceilings,

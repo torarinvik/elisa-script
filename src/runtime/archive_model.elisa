@@ -11,6 +11,8 @@ module EsArchive:
             PATH_BYTES: usize = 4096
             ENTRY_BYTES: usize = 1073741824
             TOTAL_BYTES: usize = 1099511627776
+            INDEX_SLOTS: usize = 2097152
+            INDEX_MINIMUM: usize = 8
 
 
         const enum ArchiveKind of u8:
@@ -78,6 +80,10 @@ module EsArchive:
             policy: ArchivePolicy
             state: ArchiveSessionState = ArchiveSessionState.Planned
             entries: darray[ArchiveEntry] = []
+            # ID slots index every entry. Path slots index accepted entries
+            # only; each table stores entry_index + 1, with zero as empty.
+            id_index_slots: darray[usize] = []
+            path_index_slots: darray[usize] = []
             total_bytes: usize = 0
             skipped_entries: usize = 0
 
@@ -191,21 +197,139 @@ module EsArchive:
             return left_end == right_end and left[0:left_end] == right[0:right_end]
 
 
-        def archive_entry_index(session: ArchiveSession&, entry_id: u64) -> usize:
-            for index in 0..<session.entries.count |session, entry_id|:
-                return index if session.entries[index].entry_id == entry_id
+        const module Hash:
+            FNV_OFFSET: u64 = 14695981039346656037u64
+            FNV_PRIME: u64 = 1099511628211u64
+
+
+        def archive_hash_entry_id(entry_id: u64) -> u64:
+            hash: mutable u64 = Hash::FNV_OFFSET
+            for shift in 0..<8 |entry_id, hash|:
+                byte: u8 = ((entry_id >> (shift * 8)) & 255u64).u8()
+                hash <- (hash ^ byte.u64()) * Hash::FNV_PRIME
+            return hash
+
+
+        def archive_hash_path(path: sview) -> u64:
+            hash: mutable u64 = Hash::FNV_OFFSET
+            finish: usize = archive_trim_trailing_separators(path)
+            for offset in 0..<finish |path, hash|:
+                hash <- (hash ^ sview_at(path, offset).u64()) * Hash::FNV_PRIME
+            return hash
+
+
+        def archive_index_capacity_limit(max_entries: usize) -> usize:
+            required: usize = max_entries * 2
+            capacity: mutable usize = Limits::INDEX_MINIMUM
+            while capacity < required:
+                capacity <- capacity * 2
+            return capacity
+
+
+        def archive_index_shape_valid(session: ArchiveSession&) -> bool:
+            if session.id_index_slots.count == 0:
+                return session.entries.count == 0 and session.path_index_slots.count == 0
+            return false if session.id_index_slots.count != session.path_index_slots.count or session.id_index_slots.count > Limits::INDEX_SLOTS
+            return false if session.id_index_slots.count < Limits::INDEX_MINIMUM or session.entries.count * 2 > session.id_index_slots.count
+            return (session.id_index_slots.count & (session.id_index_slots.count - 1)) == 0
+
+
+        def archive_entry_id_index(session: ArchiveSession&, entry_id: u64) -> usize error[ArchiveError]:
+            return session.entries.count if session.id_index_slots.count == 0
+            slot: mutable usize = (archive_hash_entry_id(entry_id) % session.id_index_slots.count.u64()).usize()
+            for probe in 0..<session.id_index_slots.count |session, entry_id, slot|:
+                stored: usize = session.id_index_slots[slot]
+                return session.entries.count if stored == 0
+                entry_index: usize = stored - 1
+                raise ArchiveError.AccountingInvalid if entry_index >= session.entries.count
+                return entry_index if session.entries[entry_index].entry_id == entry_id
+                slot <- 0 if slot + 1 == session.id_index_slots.count else slot + 1
             return session.entries.count
 
 
-    public:
-        def validate_archive_session(session: ArchiveSession&) -> bool error[ArchiveError]:
+        def archive_path_index(entries: darray[ArchiveEntry], slots: darray[usize], path: sview) -> usize error[ArchiveError]:
+            return entries.count if slots.count == 0
+            slot: mutable usize = (archive_hash_path(path) % slots.count.u64()).usize()
+            for probe in 0..<slots.count |entries, slots, path, slot|:
+                stored: usize = slots[slot]
+                return entries.count if stored == 0
+                entry_index: usize = stored - 1
+                raise ArchiveError.AccountingInvalid if entry_index >= entries.count
+                return entry_index if entries[entry_index].state == ArchiveEntryState.Accepted and archive_paths_equivalent(entries[entry_index].path, path)
+                slot <- 0 if slot + 1 == slots.count else slot + 1
+            return entries.count
+
+
+        def archive_place_id_index(entries: darray[ArchiveEntry], slots: mutable darray[usize]&, entry_index: usize) -> void error[ArchiveError]:
+            raise ArchiveError.AccountingInvalid if slots.count == 0 or entry_index >= entries.count
+            slot: mutable usize = (archive_hash_entry_id(entries[entry_index].entry_id) % slots.count.u64()).usize()
+            for probe in 0..<slots.count |entries, slots, entry_index, slot|:
+                if slots[slot] == 0:
+                    slots[slot] <- entry_index + 1
+                    return
+                stored_index: usize = slots[slot] - 1
+                raise ArchiveError.AccountingInvalid if stored_index >= entries.count
+                raise ArchiveError.DuplicateEntryId if entries[stored_index].entry_id == entries[entry_index].entry_id
+                slot <- 0 if slot + 1 == slots.count else slot + 1
+            raise ArchiveError.AccountingInvalid
+
+
+        def archive_place_path_index(entries: darray[ArchiveEntry], slots: mutable darray[usize]&, entry_index: usize) -> void error[ArchiveError]:
+            raise ArchiveError.AccountingInvalid if slots.count == 0 or entry_index >= entries.count or entries[entry_index].state != ArchiveEntryState.Accepted
+            slot: mutable usize = (archive_hash_path(entries[entry_index].path) % slots.count.u64()).usize()
+            for probe in 0..<slots.count |entries, slots, entry_index, slot|:
+                stored: usize = slots[slot]
+                if stored == 0:
+                    slots[slot] <- entry_index + 1
+                    return
+                stored_index: usize = stored - 1
+                raise ArchiveError.AccountingInvalid if stored_index >= entries.count
+                if entries[stored_index].state == ArchiveEntryState.Accepted and archive_paths_equivalent(entries[stored_index].path, entries[entry_index].path):
+                    slots[slot] <- entry_index + 1
+                    return
+                slot <- 0 if slot + 1 == slots.count else slot + 1
+            raise ArchiveError.AccountingInvalid
+
+
+        def archive_ensure_index_capacity(session: mutable ArchiveSession&) -> void error[ArchiveError]:
+            required: usize = (session.entries.count + 1) * 2
+            capacity: mutable usize = Limits::INDEX_MINIMUM if session.id_index_slots.count == 0 else session.id_index_slots.count
+            while capacity < required:
+                capacity <- capacity * 2
+            if capacity == session.id_index_slots.count:
+                return
+            raise ArchiveError.EntryLimitExceeded if capacity > archive_index_capacity_limit(session.policy.max_entries) or capacity > Limits::INDEX_SLOTS
+
+            id_slots: mutable darray[usize] = []
+            path_slots: mutable darray[usize] = []
+            for offset in 0..<capacity |id_slots, path_slots|:
+                id_slots.push(0)
+                path_slots.push(0)
+            for index in 0..<session.entries.count |session, id_slots, path_slots|:
+                try archive_place_id_index(session.entries, id_slots, index)
+                if session.entries[index].state == ArchiveEntryState.Accepted:
+                    try archive_place_path_index(session.entries, path_slots, index)
+            session.id_index_slots <- id_slots
+            session.path_index_slots <- path_slots
+
+
+        def validate_archive_header(session: ArchiveSession&) -> bool error[ArchiveError]:
             raise ArchiveError.InvalidPolicy if not archive_policy_valid(session.policy)
             raise ArchiveError.InvalidState if not archive_state_valid(session.state)
             raise ArchiveError.EntryLimitExceeded if session.entries.count > session.policy.max_entries
             raise ArchiveError.TotalLimitBytesExceeded if session.total_bytes > session.policy.max_total_bytes
+            raise ArchiveError.AccountingInvalid if session.skipped_entries > session.entries.count
             raise ArchiveError.AccountingInvalid if session.state == ArchiveSessionState.Planned and (session.entries.count != 0 or session.total_bytes != 0 or session.skipped_entries != 0)
+            return true
+
+
+    public:
+        def validate_archive_session(session: ArchiveSession&) -> bool error[ArchiveError]:
+            try validate_archive_header(session)
             skipped: mutable usize = 0
             accounted: mutable usize = 0
+            indexed_ids: mutable usize = 0
+            indexed_paths: mutable usize = 0
             for index in 0..<session.entries.count |session|:
                 entry: ArchiveEntry = session.entries[index]
                 raise ArchiveError.InvalidId if entry.entry_id == 0
@@ -222,26 +346,52 @@ module EsArchive:
                 raise ArchiveError.TargetInvalid if entry.kind != ArchiveEntryKind.Symlink and entry.kind != ArchiveEntryKind.Hardlink and entry.target != ""
                 raise ArchiveError.TargetInvalid if (entry.kind == ArchiveEntryKind.Symlink or entry.kind == ArchiveEntryKind.Hardlink) and not archive_relative_path_safe(entry.target, session.policy)
                 raise ArchiveError.LinkRejected if (entry.kind == ArchiveEntryKind.Symlink or entry.kind == ArchiveEntryKind.Hardlink) and session.policy.links == ArchiveLinkPolicy.Reject
-                for earlier in 0..<index |session, entry|:
-                    raise ArchiveError.DuplicateEntryId if session.entries[earlier].entry_id == entry.entry_id
-                    raise ArchiveError.DuplicatePath if session.policy.overwrite == ArchiveOverwritePolicy.Fail and archive_paths_equivalent(session.entries[earlier].path, entry.path) and entry.state == ArchiveEntryState.Accepted
                 skipped <- skipped + 1 if entry.state == ArchiveEntryState.Skipped
                 if entry.state == ArchiveEntryState.Accepted:
                     raise ArchiveError.TotalLimitBytesExceeded if accounted > session.policy.max_total_bytes
                     raise ArchiveError.TotalLimitBytesExceeded if entry.size > session.policy.max_total_bytes - accounted
                 accounted <- accounted + entry.size if entry.state == ArchiveEntryState.Accepted
             raise ArchiveError.AccountingInvalid if skipped != session.skipped_entries or accounted != session.total_bytes
+            raise ArchiveError.AccountingInvalid if not archive_index_shape_valid(session)
+            for stored in session.id_index_slots:
+                if stored != 0:
+                    entry_index: usize = stored - 1
+                    raise ArchiveError.AccountingInvalid if entry_index >= session.entries.count
+                    indexed_entry: usize = try archive_entry_id_index(session, session.entries[entry_index].entry_id)
+                    raise ArchiveError.AccountingInvalid if indexed_entry != entry_index
+                    indexed_ids <- indexed_ids + 1
+            for stored in session.path_index_slots:
+                if stored != 0:
+                    entry_index: usize = stored - 1
+                    raise ArchiveError.AccountingInvalid if entry_index >= session.entries.count
+                    raise ArchiveError.AccountingInvalid if session.entries[entry_index].state != ArchiveEntryState.Accepted
+                    indexed_path: usize = try archive_path_index(session.entries, session.path_index_slots, session.entries[entry_index].path)
+                    raise ArchiveError.AccountingInvalid if indexed_path != entry_index
+                    indexed_paths <- indexed_paths + 1
+            for index in 0..<session.entries.count |session|:
+                entry: ArchiveEntry = session.entries[index]
+                entry_id_index: usize = try archive_entry_id_index(session, entry.entry_id)
+                raise ArchiveError.DuplicateEntryId if entry_id_index != index
+                if entry.state == ArchiveEntryState.Accepted:
+                    path_index: usize = try archive_path_index(session.entries, session.path_index_slots, entry.path)
+                    raise ArchiveError.AccountingInvalid if path_index == session.entries.count
+                    raise ArchiveError.DuplicatePath if session.policy.overwrite == ArchiveOverwritePolicy.Fail and path_index != index
+                    raise ArchiveError.AccountingInvalid if path_index < index and session.policy.overwrite == ArchiveOverwritePolicy.Replace
+            raise ArchiveError.AccountingInvalid if indexed_ids != session.entries.count
+            raise ArchiveError.AccountingInvalid if indexed_paths > session.entries.count - session.skipped_entries
             return true
 
 
         def archive_admit_entry(session: mutable ArchiveSession&, entry: ArchiveEntry) -> bool error[ArchiveError]:
-            try validate_archive_session(session)
+            try validate_archive_header(session)
             raise ArchiveError.InvalidTransition if session.state != ArchiveSessionState.Extracting
+            raise ArchiveError.AccountingInvalid if not archive_index_shape_valid(session)
             raise ArchiveError.EntryLimitExceeded if session.entries.count >= session.policy.max_entries
             raise ArchiveError.InvalidId if entry.entry_id == 0
             raise ArchiveError.InvalidEntryKind if not archive_entry_kind_valid(entry.kind)
             raise ArchiveError.InvalidEntryState if not archive_entry_state_valid(entry.state)
-            raise ArchiveError.DuplicateEntryId if archive_entry_index(session, entry.entry_id) != session.entries.count
+            existing_id_index: usize = try archive_entry_id_index(session, entry.entry_id)
+            raise ArchiveError.DuplicateEntryId if existing_id_index != session.entries.count
             path_issue: ArchivePathIssue = archive_path_issue(entry.path, session.policy)
             raise ArchiveError.EmptyPath if path_issue == ArchivePathIssue.Empty
             raise ArchiveError.PathLimitExceeded if path_issue == ArchivePathIssue.TooLong
@@ -253,14 +403,23 @@ module EsArchive:
             raise ArchiveError.TargetInvalid if entry.kind != ArchiveEntryKind.Symlink and entry.kind != ArchiveEntryKind.Hardlink and entry.target != ""
             raise ArchiveError.LinkRejected if (entry.kind == ArchiveEntryKind.Symlink or entry.kind == ArchiveEntryKind.Hardlink) and session.policy.links == ArchiveLinkPolicy.Reject
             raise ArchiveError.TargetInvalid if (entry.kind == ArchiveEntryKind.Symlink or entry.kind == ArchiveEntryKind.Hardlink) and not archive_relative_path_safe(entry.target, session.policy)
-            for existing in session.entries:
-                raise ArchiveError.DuplicatePath if session.policy.overwrite == ArchiveOverwritePolicy.Fail and entry.state == ArchiveEntryState.Accepted and existing.state == ArchiveEntryState.Accepted and archive_paths_equivalent(existing.path, entry.path)
+            if entry.state == ArchiveEntryState.Accepted and session.policy.overwrite == ArchiveOverwritePolicy.Fail:
+                existing_path_index: usize = try archive_path_index(session.entries, session.path_index_slots, entry.path)
+                raise ArchiveError.DuplicatePath if existing_path_index != session.entries.count
             if entry.state == ArchiveEntryState.Skipped:
+                try archive_ensure_index_capacity(session)
+                entry_index: usize = session.entries.count
                 session.skipped_entries <- session.skipped_entries + 1
+                session.entries.push(entry)
+                try archive_place_id_index(session.entries, session.id_index_slots, entry_index)
             else:
                 raise ArchiveError.TotalLimitBytesExceeded if entry.size > session.policy.max_total_bytes - session.total_bytes
+                try archive_ensure_index_capacity(session)
+                entry_index: usize = session.entries.count
                 session.total_bytes <- session.total_bytes + entry.size
-            session.entries.push(entry)
+                session.entries.push(entry)
+                try archive_place_id_index(session.entries, session.id_index_slots, entry_index)
+                try archive_place_path_index(session.entries, session.path_index_slots, entry_index)
             return true
 
 
