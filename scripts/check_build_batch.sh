@@ -41,6 +41,7 @@ for invariant in \
     'session.reserved_output_bytes' \
     'EsBuild::Limits::LOG_BYTES' \
     'BuildSchedulerState.Failing' \
+    'expected_ready != session.scheduler.ready_queue.count' \
     'ProcessBatchState.Draining' \
     'ProcessBatchEvent.CancelAck' \
     'BuildSchedulerEvent.CancelAck'; do
@@ -56,6 +57,7 @@ for fixture_case in \
     'build_batch_dispatches_ready_nodes_and_refills_capacity' \
     'build_batch_failure_cancels_unstarted_nodes_and_drains_siblings' \
     'build_batch_cancellation_waits_for_host_reap_acknowledgement' \
+    'build_batch_rejects_omitted_ready_queue_entries' \
     'first_wave[0].node_index == 0 and first_wave[1].node_index == 2' \
     'ProcessBatchState.Draining' \
     'acknowledge_build_batch_stop(session)'; do
