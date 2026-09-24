@@ -47,7 +47,9 @@ stdin, per-process timeouts, and bounded output capture. The test removes only
 its generated temporary workspace. It is gated on explicit reauthorization and
 the RSS-supervised wrapper marker. The wrapper samples the compiler process
 group and descendant tree, including build-tool children, but this sampled RSS
-guard is not an OS-enforced memory cap.
+guard is not an OS-enforced memory cap. On a nonzero child exit, bounded stdout
+and stderr are included in the retained wrapper log to make failures
+diagnosable.
 
 ## Evidence status
 
