@@ -1,9 +1,9 @@
 # Bounded cache-boundary decisions for persisted IR and bytecode metadata.
 #
 # This module keeps admission and publication state beside bounded POSIX
-# adapters. The cache payload path has both a compatibility path API and a
-# descriptor-relative API; the latter avoids parent-path traversal during
-# lock, stage, publish, and cleanup operations.
+# adapters. Persistent incremental-cache operations use directory-relative
+# APIs to avoid parent-path traversal during lock, read, stage, publish, and
+# cleanup. Older IR/bytecode artifact APIs retain path compatibility.
 
 error ArtifactCacheIoError:
     NotAdmissible
@@ -164,6 +164,19 @@ module EsArtifactCache:
             interrupted: usize = 0
 
 
+        const enum CacheReadState of u8:
+            Read
+            Done
+            Failed
+
+
+        struct CacheReadCursor:
+            state: CacheReadState = CacheReadState.Read
+            offset: usize = 0
+            calls: usize = 0
+            interrupted: usize = 0
+
+
         def artifact_cache_write_descriptor_fully(descriptor: int, bytes: mutable darray[u8]&) -> bool can[Blocking.IO]:
             cursor: mutable StageWriteCursor = StageWriteCursor{}
             machine over cursor.state:
@@ -201,6 +214,44 @@ module EsArtifactCache:
             return cursor.state == StageWriteState.Done
 
 
+        def artifact_cache_read_descriptor_fully(descriptor: int, bytes: mutable darray[u8]&, expected_count: usize) -> bool can[Blocking.IO]:
+            cursor: mutable CacheReadCursor = CacheReadCursor{}
+            machine over cursor.state:
+                state Read
+                start Read
+
+                Read, CacheReadState.Read if cursor.offset >= expected_count:
+                    cursor.state <- CacheReadState.Done
+                    -> Read
+                Read, CacheReadState.Read:
+                    if cursor.calls >= expected_count + StageWriteLimits::EINTR_RETRIES:
+                        cursor.state <- CacheReadState.Failed
+                        -> Read
+                    remaining: usize = expected_count - cursor.offset
+                    destination: mutable u8& = bytes.items + cursor.offset
+                    amount: isize = elisascript_posix_read(descriptor, destination.cast[mutable void&], remaining)
+                    cursor.calls <- cursor.calls + 1
+                    if amount < 0:
+                        errno: mutable i32& = elisascript_posix_errno()
+                        if errno[0] == DarwinErrno::EINTR and cursor.interrupted < StageWriteLimits::EINTR_RETRIES:
+                            cursor.interrupted <- cursor.interrupted + 1
+                            -> Read
+                        cursor.state <- CacheReadState.Failed
+                        -> Read
+                    if amount == 0 or amount.usize() > remaining:
+                        cursor.state <- CacheReadState.Failed
+                        -> Read
+                    cursor.offset <- cursor.offset + amount.usize()
+                    bytes.count <- cursor.offset
+                    -> Read
+
+                Read, CacheReadState.Done:
+                    break
+                Read, CacheReadState.Failed:
+                    break
+            return cursor.state == CacheReadState.Done
+
+
         def artifact_cache_read_bounded_file(a: mutable Arena&, path: cstr, byte_limit: usize = Limits::BYTES) -> darray[u8] error[FileIoError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic]:
             raise FileIoError.ReadFailed(path) if not artifact_cache_path_terminated(path)
             raise FileIoError.ReadFailed(path) if byte_limit == 0 or byte_limit > Limits::PAYLOAD_BYTES
@@ -231,6 +282,24 @@ module EsArtifactCache:
             return false if directory_fd < 0
             info: mutable ElisascriptStat = ElisascriptStat{}
             return elisascript_posix_fstat(directory_fd, info) == 0 and (info.mode & DarwinStatMode::MASK) == DarwinStatMode::DIRECTORY
+
+
+        def artifact_cache_read_file_at(a: mutable Arena&, directory_fd: int, cache_name: cstr) -> darray[u8] error[FileIoError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            raise FileIoError.ReadFailed(cache_name) if not artifact_cache_directory_descriptor_valid(directory_fd) or not elisascript_posix_leaf_name_valid(cache_name)
+            flags: int = DarwinOpenFlags::RDONLY | DarwinOpenFlags::NONBLOCK | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC
+            descriptor: int = elisascript_posix_openat(directory_fd, cache_name, flags, 0u32)
+            raise FileIoError.ReadFailed(cache_name) if descriptor < 0
+            info: mutable ElisascriptStat = ElisascriptStat{}
+            if elisascript_posix_fstat(descriptor, info) != 0 or (info.mode & DarwinStatMode::MASK) != DarwinStatMode::REGULAR or info.size <= 0 or info.size.usize().i64() != info.size or info.size.usize() > Limits::PAYLOAD_BYTES:
+                _ = elisascript_posix_close(descriptor)
+                raise FileIoError.ReadFailed(cache_name)
+            expected_count: usize = info.size.usize()
+            bytes: mutable darray[u8] = []
+            _ = arena_da_reserve(a, bytes, expected_count)
+            read_complete: bool = artifact_cache_read_descriptor_fully(descriptor, bytes, expected_count)
+            close_status: int = elisascript_posix_close(descriptor)
+            raise FileIoError.ReadFailed(cache_name) if not read_complete or close_status != 0 or bytes.count != expected_count
+            return bytes
 
 
         def artifact_cache_write_staging_at(directory_fd: int, staging_name: cstr, bytes: mutable darray[u8]&, byte_limit: usize) -> void error[ArtifactCacheIoError] can[Blocking.IO]:
@@ -286,60 +355,6 @@ module EsArtifactCache:
                     error failure:
                         raise failure
             return artifact_cache_commit(publication)
-
-
-        # Build manifests are larger opaque cache payloads, but still share
-        # the existing staging, file sync, rename, directory sync, and
-        # lock protocol used by artifact metadata. The caller validates the
-        # payload format before entering this host boundary.
-        def artifact_cache_publish_payload_file(staging_path: cstr, destination_path: cstr, bytes: mutable darray[u8]&, byte_limit: usize, directory_path: cstr = "") -> ArtifactCachePayloadPublication error[ArtifactCacheIoError] can[Blocking.IO]:
-            raise ArtifactCacheIoError.PathTooLong(staging_path) if not artifact_cache_path_terminated(staging_path)
-            raise ArtifactCacheIoError.PathTooLong(destination_path) if not artifact_cache_path_terminated(destination_path)
-            raise ArtifactCacheIoError.PathTooLong(directory_path) if directory_path != "" and not artifact_cache_path_terminated(directory_path)
-            raise ArtifactCacheIoError.PathCollision(staging_path) if artifact_cache_path_equal(staging_path, destination_path)
-            raise ArtifactCacheIoError.StagingWriteFailed(staging_path) if byte_limit == 0 or byte_limit > Limits::PAYLOAD_BYTES or bytes.count == 0 or bytes.count > byte_limit
-            catch artifact_cache_write_staging(staging_path, bytes, byte_limit):
-                ok:
-                    pass
-                error failure:
-                    raise failure
-            if elisascript_posix_rename(staging_path.cast[u8&], destination_path.cast[u8&]) != 0:
-                _ = remove_file(staging_path)
-                raise ArtifactCacheIoError.PublishFailed(destination_path)
-            if directory_path != "":
-                catch artifact_cache_sync_directory(directory_path):
-                    ok:
-                        pass
-                    error failure:
-                        raise failure
-            return ArtifactCachePayloadPublication{state: ArtifactCacheLifecycle.Committed, bytes_count: bytes.count}
-
-
-        def artifact_cache_publish_payload_locked(lock: mutable ArtifactCacheWriterLock&, lock_path: cstr, owner_token: u64, staging_path: cstr, destination_path: cstr, bytes: mutable darray[u8]&, byte_limit: usize, directory_path: cstr = "") -> ArtifactCachePayloadPublication error[ArtifactCacheIoError] can[Blocking.IO]:
-            raise ArtifactCacheIoError.PathTooLong(lock_path) if not artifact_cache_path_terminated(lock_path)
-            raise ArtifactCacheIoError.PathTooLong(staging_path) if not artifact_cache_path_terminated(staging_path)
-            raise ArtifactCacheIoError.PathTooLong(destination_path) if not artifact_cache_path_terminated(destination_path)
-            raise ArtifactCacheIoError.PathTooLong(directory_path) if directory_path != "" and not artifact_cache_path_terminated(directory_path)
-            raise ArtifactCacheIoError.PathCollision(lock_path) if artifact_cache_path_equal(lock_path, staging_path) or artifact_cache_path_equal(lock_path, destination_path)
-            raise ArtifactCacheIoError.PathCollision(staging_path) if artifact_cache_path_equal(staging_path, destination_path)
-            _ = try artifact_cache_writer_lock_acquire(lock, lock_path, owner_token)
-            catch artifact_cache_publish_payload_file(staging_path, destination_path, bytes, byte_limit, directory_path):
-                ok publication:
-                    released: bool = false
-                    catch artifact_cache_writer_lock_release(lock, owner_token):
-                        ok status:
-                            released <- status
-                        error failure:
-                            raise failure
-                    raise ArtifactCacheIoError.LockFailed(lock_path) if not released
-                    return publication
-                error failure:
-                    catch artifact_cache_writer_lock_release(lock, owner_token):
-                        ok:
-                            pass
-                        error release_failure:
-                            pass
-                    raise failure
 
 
         def artifact_cache_publish_payload_at(directory_fd: int, lock_name: cstr, staging_name: cstr, destination_name: cstr, bytes: mutable darray[u8]&, byte_limit: usize) -> ArtifactCachePayloadPublication error[ArtifactCacheIoError] can[Blocking.IO]:
@@ -546,11 +561,16 @@ module EsArtifactCache:
             return try artifact_cache_publish_locked(lock, lock_path, owner_token, staging_path, destination_path, bytes, classify_bytecode_artifact_cache(bytes), directory_path)
 
 
-        # Build-cache files use a larger codec-specific envelope than compiler
-        # artifacts. Reads return the owning bytes (not borrowed decoded views);
-        # writes validate the whole manifest before taking a writer lock.
+        # Compatibility reader for older path-oriented callers. New persistent
+        # cache callers should use the descriptor-relative API below.
         def read_build_incremental_cache_file(a: mutable Arena&, path: cstr) -> darray[u8] error[FileIoError, BuildIncrementalCacheError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
             bytes: darray[u8] = try artifact_cache_read_bounded_file(a, path, EsBuildIncrementalCache::Limits::CACHE_BYTES)
+            _ = try decode_build_incremental_cache(bytes)
+            return bytes
+
+
+        def read_build_incremental_cache_at(a: mutable Arena&, directory_fd: int, cache_name: cstr) -> darray[u8] error[FileIoError, BuildIncrementalCacheError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            bytes: darray[u8] = try artifact_cache_read_file_at(a, directory_fd, cache_name)
             _ = try decode_build_incremental_cache(bytes)
             return bytes
 
