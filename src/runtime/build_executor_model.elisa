@@ -1,0 +1,146 @@
+# Serial host executor for the portable ProcessCommand subset used by builds.
+#
+# The graph remains data and all invocations pass through Process.Run without
+# shell parsing. This first adapter intentionally rejects command modes that
+# the current capture builtins cannot preserve exactly; it never silently
+# changes environment or stdio semantics.
+
+module EsBuildExecutor:
+    using EsBuild
+    using EsProcess
+    using EsExecutable
+
+    public:
+        const module Limits:
+            NODE_RESULTS: usize = EsBuild::Limits::NODES
+
+
+        struct BuildExecutionNodeResult:
+            target_name: sview
+            started: bool = false
+            process_error: bool = false
+            exit_status: i64 = 0
+            stdout: sview = ""
+            stderr: sview = ""
+
+
+        struct BuildExecutionResult:
+            graph_state: BuildGraphState = BuildGraphState.Planned
+            nodes: darray[BuildExecutionNodeResult] = []
+            log_bytes: usize = 0
+
+
+        error BuildExecutionError:
+            GraphInvalid
+            GraphNotPlanned
+            UnsupportedCommand
+            NodeResultLimitExceeded
+            LogAccountingInvalid
+
+
+    private:
+        def build_executor_command_supported_impl(command: ProcessCommand) -> bool:
+            valid: mutable bool = false
+            catch validate_process_command(command):
+                ok value:
+                    valid <- value
+                error failure:
+                    return false
+            return false if not valid
+            return false if command.environment_mode != ProcessEnvironmentMode.Inherit
+            # CaptureProcessResult sends an empty, closed input stream and
+            # captures both output streams. This build subset promises EOF to
+            # stdin consumers, not /dev/null descriptor identity; tools that
+            # inspect the underlying descriptor need a lower-level adapter.
+            # Reject all other modes rather than silently overriding them.
+            return false if command.stdin_mode != ProcessStdioMode.Null
+            return false if command.stdout_mode != ProcessStdioMode.Capture or command.stderr_mode != ProcessStdioMode.Capture
+            return false if command.stdin_path != "" or command.stdout_path != "" or command.stderr_path != ""
+            return false if command.failure_mode != ProcessFailureMode.Check
+            return false if command.timeout_micros == 0
+            return true
+
+
+        def execute_build_command(command: ProcessCommand, output_limit: usize) -> ProcessCapture error[ProcessError] can[Memory.Allocate, Abort.Panic, Process.Run]:
+            executable_value: Executable = try executable(command.executable)
+            environment: mutable dict[sview, sview] = {}
+            for offset in 0..<command.environment.count |command, environment|:
+                environment[command.environment[offset]] <- command.environment[offset + 1]
+            if command.working_directory == "":
+                return try capture_process_result_with_environment(executable_value, command.arguments, "", environment, command.timeout_micros.i64(), output_limit.i64())
+            return try capture_process_result_in_directory_with_environment(executable_value, command.arguments, "", path(command.working_directory), environment, command.timeout_micros.i64(), output_limit.i64())
+
+
+    public:
+        def build_executor_command_supported(command: ProcessCommand) -> bool:
+            return build_executor_command_supported_impl(command)
+
+
+        # Execute a validated graph in dependency order with fail-fast
+        # semantics. Each command's timeout/output policy remains explicit;
+        # the graph-wide retained log ceiling is enforced by reducing each
+        # invocation's capture budget to the remaining capacity.
+        def execute_build_graph_serial(graph: mutable BuildGraph&) -> BuildExecutionResult error[BuildExecutionError, BuildContractError] can[Memory.Allocate, Abort.Panic, Process.Run]:
+            valid_graph: mutable bool = false
+            catch validate_build_graph(graph):
+                ok value:
+                    valid_graph <- value
+                error failure:
+                    raise BuildExecutionError.GraphInvalid
+            raise BuildExecutionError.GraphInvalid if not valid_graph
+            raise BuildExecutionError.GraphNotPlanned if graph.state != BuildGraphState.Planned
+            raise BuildExecutionError.NodeResultLimitExceeded if graph.nodes.count > Limits::NODE_RESULTS
+
+            # Preflight the entire graph before the first external side effect.
+            for node in graph.nodes:
+                raise BuildExecutionError.UnsupportedCommand if not build_executor_command_supported_impl(node.command)
+
+            results: mutable darray[BuildExecutionNodeResult] = []
+            for node in graph.nodes |results|:
+                results.push(BuildExecutionNodeResult{target_name: node.name})
+
+            _ = try advance_build_graph(graph, BuildGraphEvent.Start)
+            for node_index in 0..<graph.nodes.count |graph, results|:
+                if graph.state != BuildGraphState.Running:
+                    break
+                _ = try advance_build_graph(graph, BuildGraphEvent.NodeStart, node_index)
+                results[node_index].started <- true
+                remaining_log_bytes: usize = EsBuild::Limits::LOG_BYTES - graph.log_bytes
+                command_limit: usize = graph.nodes[node_index].command.capture_output_limit_bytes
+                effective_limit: usize = command_limit if command_limit < remaining_log_bytes else remaining_log_bytes
+                process_error: mutable bool = false
+                catch execute_build_command(graph.nodes[node_index].command, effective_limit):
+                    ok value:
+                        results[node_index].exit_status <- value.exit_status
+                        results[node_index].stdout <- value.stdout
+                        results[node_index].stderr <- value.stderr
+                    error failure:
+                        process_error <- true
+
+                node_log_bytes: mutable usize = 0
+                if not process_error:
+                    stdout_bytes: usize = len(results[node_index].stdout)
+                    stderr_bytes: usize = len(results[node_index].stderr)
+                    if stdout_bytes > effective_limit:
+                        process_error <- true
+                    elif stderr_bytes > effective_limit - stdout_bytes:
+                        process_error <- true
+                    else:
+                        node_log_bytes <- stdout_bytes + stderr_bytes
+
+                if process_error:
+                    results[node_index].process_error <- true
+                    results[node_index].stdout <- ""
+                    results[node_index].stderr <- ""
+                    _ = try advance_build_graph(graph, BuildGraphEvent.NodeFailure, node_index)
+                    break
+
+                raise BuildExecutionError.LogAccountingInvalid if node_log_bytes > EsBuild::Limits::LOG_BYTES - graph.log_bytes
+                graph.nodes[node_index].log_bytes <- node_log_bytes
+                graph.log_bytes <- graph.log_bytes + node_log_bytes
+                if results[node_index].exit_status != 0:
+                    _ = try advance_build_graph(graph, BuildGraphEvent.NodeFailure, node_index)
+                    break
+                _ = try advance_build_graph(graph, BuildGraphEvent.NodeSuccess, node_index)
+
+            return BuildExecutionResult{graph_state: graph.state, nodes: results, log_bytes: graph.log_bytes}

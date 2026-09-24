@@ -10,9 +10,11 @@ ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 usage_model="$repo_root/src/runtime/build_usage_model.elisa"
 usage_fixture="$repo_root/test/runtime/build_usage_model_test.elisa"
+executor_model="$repo_root/src/runtime/build_executor_model.elisa"
+executor_fixture="$repo_root/test/runtime/build_executor_test.elisa"
 docs="$repo_root/docs/ir.md"
 
-for required_file in "$model" "$ir" "$fixture" "$usage_model" "$usage_fixture" "$docs"; do
+for required_file in "$model" "$ir" "$fixture" "$usage_model" "$usage_fixture" "$executor_model" "$executor_fixture" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'build model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -78,6 +80,7 @@ done
 
 rg -Fq 'include "../runtime/build_model.elisa"' "$ir"
 rg -Fq 'include "../runtime/build_usage_model.elisa"' "$ir"
+rg -Fq 'include "../runtime/build_executor_model.elisa"' "$ir"
 for fixture_pattern in \
     'typed_build_dependency_resolution_maps_names_to_canonical_indices' \
     'typed_build_graph_contract_is_ordered_bounded_and_cancelable' \
@@ -141,10 +144,34 @@ done
 rg -Fq 'build_usage_public_private_interface_and_static_link_only_propagation' "$usage_fixture"
 rg -Fq 'build_usage_rejects_noncanonical_dependencies_and_interface_visibility' "$usage_fixture"
 
+for declaration in \
+    'module EsBuildExecutor:' \
+    'struct BuildExecutionNodeResult:' \
+    'struct BuildExecutionResult:' \
+    'error BuildExecutionError:' \
+    'def build_executor_command_supported_impl(' \
+    'def execute_build_command(' \
+    'def execute_build_graph_serial('; do
+    rg -Fq "$declaration" "$executor_model"
+done
+
+for boundary in \
+    'ProcessEnvironmentMode.Inherit' \
+    'ProcessStdioMode.Null' \
+    'ProcessStdioMode.Capture' \
+    'command.timeout_micros == 0' \
+    'preflight the entire graph before the first external side effect' \
+    'BuildGraphEvent.NodeFailure' \
+    'LOG_BYTES - graph.log_bytes'; do
+    rg -Fq "$boundary" "$executor_model"
+done
+
+rg -Fq 'build_executor_preflights_supported_process_command_subset' "$executor_fixture"
+
 rg -Fq 'BuildContractError.DuplicateDependency' "$fixture"
 rg -Fq 'for dependency_position in 0..<node.dependencies.count |node|' "$model"
 rg -Fq 'earlier_dependency > dependency_index' "$model"
 
 rg -Fq '`EsBuild` is the shell-replacement boundary' "$docs"
 
-printf 'build model audit: bounded dependency graphs, usage propagation, parallelism/logs, and fail-draining/cancellation are present\n'
+printf 'build model audit: bounded graph, usage propagation, serial Process.Run execution, and fail-draining/cancellation are present\n'
