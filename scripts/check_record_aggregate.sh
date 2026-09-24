@@ -49,6 +49,8 @@ read_text_line="$(rg -n -m1 -F 'source: sview = try read_text(input_path)' "$can
 rg -Fq 'def run(repository_root: sview)' "$candidate"
 rg -Fq 'def run_default()' "$candidate"
 rg -Fq 'Script::source_path()' "$candidate"
+rg -Fq 'candidate_path: Path = try path_absolute(Script::source_path())' "$candidate"
+rg -Fq 'if not is_file(candidate_path) or not is_readable(candidate_path)' "$candidate"
 rg -Fq 'script_directory.parent()' "$candidate"
 rg -Fq 'if not is_directory(root_absolute)' "$candidate"
 rg -Fq "Match the shell reference's path/readability preflight" "$candidate"
@@ -77,6 +79,10 @@ size_admission_line="$(rg -n -m1 -F 'source_sizes.push(source_size)' "$candidate
 source_read_line="$(rg -n -m1 -F 'catch read_source(input_path, source_sizes[source_index])' "$candidate" | cut -d: -f1)"
 [[ -n "$size_admission_line" && -n "$source_read_line" ]]
 (( size_admission_line < source_read_line ))
+candidate_preflight_line="$(rg -n -m1 -F 'if not is_file(candidate_path) or not is_readable(candidate_path)' "$candidate" | cut -d: -f1)"
+source_admission_line="$(rg -n -m1 -F 'for relative in relative_paths |relative_paths, root_absolute, root_text, source_sizes, total_bytes|' "$candidate" | cut -d: -f1)"
+[[ -n "$candidate_preflight_line" && -n "$source_admission_line" ]]
+(( candidate_preflight_line < source_admission_line ))
 
 rg -q '^module EsRecordAggregate:' "$model"
 rg -q 'include "\.\./runtime/record_aggregate_model\.elisa"' "$ir"
