@@ -278,6 +278,7 @@ for fixture_check in \
 done
 
 for transition_check in \
+    'build_incremental_distinguishes_missing_and_changed_generated_outputs' \
     'build_incremental_transition_rebuilds_changed_and_new_targets' \
     'build_incremental_observation_paths_are_unique_and_sorted' \
     'build_incremental_observation_paths(recipes)' \
@@ -288,6 +289,8 @@ for transition_check in \
     'commit_build_incremental_success(previous, current, complete_observations)' \
     'BuildIncrementalDecision.RecipeChanged' \
     'BuildIncrementalDecision.DependencyDirty' \
+    'BuildIncrementalDecision.OutputChanged' \
+    'BuildIncrementalDecision.OutputMissing' \
     'BuildIncrementalError.ObservationSetMismatch' \
     'stale_outputs_after_success'; do
     rg -Fq "$transition_check" "$transition_fixture"
