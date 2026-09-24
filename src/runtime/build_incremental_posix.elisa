@@ -147,6 +147,17 @@ module EsBuildIncrementalPosix:
                 and current.change_time.nanoseconds == opened.change_time.nanoseconds
 
 
+        def build_incremental_opened_file_identity_matches(left: OpenedFile, right: OpenedFile) -> bool:
+            return left.present and right.present
+                and left.device == right.device
+                and left.inode == right.inode
+                and left.size == right.size
+                and left.modify_time.seconds == right.modify_time.seconds
+                and left.modify_time.nanoseconds == right.modify_time.nanoseconds
+                and left.change_time.seconds == right.change_time.seconds
+                and left.change_time.nanoseconds == right.change_time.nanoseconds
+
+
     public:
         # Resolve each path segment independently beneath `root_fd`. O_NOFOLLOW
         # therefore applies to every component, not merely the leaf. On success
@@ -223,8 +234,10 @@ module EsBuildIncrementalPosix:
         # Hash exactly the bytes read from the retained descriptor. Temporary
         # file contents live in the caller's scratch arena and are rewound
         # before returning; no per-file read buffer accumulates across a build.
-        # Metadata is captured before and after reading to reject concurrent
-        # modification rather than publishing a mixed-content fingerprint.
+        # Metadata is captured before and after reading, then the name is
+        # reopened beneath the same root capability and matched to the retained
+        # descriptor. This rejects ordinary mutation and path replacement
+        # rather than publishing a fingerprint for an object no longer named.
         def observe_build_incremental_file_at(scratch: mutable Arena&, root_fd: int, path: sview) -> BuildIncrementalObservation error[OpenError, ObserveError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
             opened: OpenedFile = try open_build_incremental_file_at(root_fd, path)
             return BuildIncrementalObservation{path: path} if not opened.present
@@ -248,13 +261,23 @@ module EsBuildIncrementalPosix:
                 fingerprint_word2 <- EsIr::canonical_bytes_sha256_word(bytes, 2)
                 fingerprint_word3 <- EsIr::canonical_bytes_sha256_word(bytes, 3)
                 digest_ok <- true
+            named_path_matches: mutable bool = false
+            named_path_close_ok: mutable bool = true
+            reopen_close_failed: mutable bool = false
+            catch open_build_incremental_file_at(root_fd, path):
+                ok named_file:
+                    named_path_matches <- build_incremental_opened_file_identity_matches(opened, named_file)
+                    if named_file.present:
+                        named_path_close_ok <- elisascript_posix_close(named_file.descriptor) == 0
+                error failure:
+                    reopen_close_failed <- failure == OpenError.CloseFailed(path)
             close_status: int = elisascript_posix_close(opened.descriptor)
             arena_rewind(scratch, mark)
-            raise OpenError.CloseFailed(path) if close_status != 0
+            raise OpenError.CloseFailed(path) if close_status != 0 or not named_path_close_ok or reopen_close_failed
             raise ObserveError.ReadIncomplete(path) if not read_ok and read_errno == 0
             raise ObserveError.ReadFailed(path, read_errno) if not read_ok
             raise ObserveError.MetadataFailed(path) if not metadata_ok
-            raise ObserveError.ChangedDuringRead(path) if not stable
+            raise ObserveError.ChangedDuringRead(path) if not stable or not named_path_matches
             raise ObserveError.ReadIncomplete(path) if bytes.count != opened.size
             raise ObserveError.HashFailed(path) if not digest_ok
             raise ObserveError.ZeroFingerprint(path) if fingerprint == 0 and fingerprint_word1 == 0 and fingerprint_word2 == 0 and fingerprint_word3 == 0
