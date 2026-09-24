@@ -11,8 +11,9 @@ artifact_cache="$repo_root/src/ir/artifact_cache.elisa"
 verifier="$repo_root/src/ir/ir_verify.elisa"
 type_table="$repo_root/src/ir/type_table.elisa"
 tests="$repo_root/test/ir/elisascript_ir_test.elisa"
+incremental_cache_adapter_tests="$repo_root/test/runtime/build_incremental_cache_adapter_test.elisa"
 
-for required_file in "$runtime_model" "$bytecode" "$artifact_cache" "$verifier" "$tests"; do
+for required_file in "$runtime_model" "$bytecode" "$artifact_cache" "$verifier" "$tests" "$incremental_cache_adapter_tests"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'serialization bounds audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -143,6 +144,9 @@ rg -q 'artifact_cache_read_descriptor_fully\(descriptor, bytes, expected_count\)
 rg -q 'arena_da_reserve\(a, bytes, expected_count\)' "$artifact_cache"
 rg -q '_ = try decode_build_incremental_cache\(bytes\)' "$artifact_cache"
 rg -q 'def publish_build_incremental_cache_at_locked' "$artifact_cache"
+rg -q 'incremental_cache_descriptor_io_rejects_invalid_directory_handles' "$incremental_cache_adapter_tests"
+rg -q 'read_build_incremental_cache_at\(arena, -1, "cache.bin"\)' "$incremental_cache_adapter_tests"
+rg -q 'publish_build_incremental_cache_at_locked\(lock, -1, "cache.lock", 7, "cache.tmp", "cache.bin", bytes\)' "$incremental_cache_adapter_tests"
 rg -q 'artifact_cache_publish_payload_at_locked\(lock, directory_fd, lock_name, owner_token, staging_name, destination_name, bytes, EsBuildIncrementalCache::Limits::CACHE_BYTES\)' "$artifact_cache"
 rg -q 'def artifact_cache_write_staging_at' "$artifact_cache"
 rg -q 'def artifact_cache_directory_descriptor_valid' "$artifact_cache"
