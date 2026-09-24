@@ -58,6 +58,10 @@ Before creating its external workspace, the harness also invokes the candidate
 with the existing repository root as the build-directory argument. It requires
 status 2, the exact source-tree refusal diagnostic, and empty stderr. This
 preflight case should not create, remove, or overwrite any repository path.
+Within its private workspace, the harness also places a symlink at the
+Elisascript target output path, points it at a sentinel file, and requires the
+candidate's exact status-2 refusal tuple while proving the sentinel bytes and
+symlink are unchanged before workspace cleanup.
 
 ## Evidence status
 
