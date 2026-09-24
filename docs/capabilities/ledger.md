@@ -1163,8 +1163,12 @@ snapshots must retain unfinished work, preventing a forged terminal snapshot
 from being relabelled as cancellation.
 Failures below the attempt ceiling remain retryable under `FailFast` until the
 explicit reap acknowledgement; only exhausted or already-draining failures
-latch terminal failure.
-The focused IR fixture, namespace inclusion, documentation, and
+latch terminal failure. `admit_next_process_batch_job` now combines
+deterministic admission with a `ProcessBatchDispatch` carrying the exact job
+index, stable job ID, and attempt token, avoiding host-side inference of which
+queued job was transitioned. Its retry fixture checks the token changes while
+the job identity stays fixed.
+The focused IR/runtime fixtures, namespace inclusion, documentation, and
 check_process_batch.sh audit are static evidence; scheduler ownership, actual
 pipe/process adapters, signal escalation, and execution evidence remain open.
 
