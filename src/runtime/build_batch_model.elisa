@@ -1,0 +1,290 @@
+# Dependency-aware bridge between the build graph scheduler and bounded
+# process-batch lifecycle. The host still owns process creation and reaping;
+# this module gives it deterministic launch requests and validates receipts.
+
+module EsBuildBatch:
+    using EsBuild
+    using EsBuildExecutor
+    using EsBuildScheduler
+    using EsProcess
+    using EsProcessBatch
+
+    public:
+        const module Limits:
+            NODES: usize = EsProcessBatch::Limits::JOBS
+            PARALLEL: usize = EsProcessBatch::Limits::PARALLEL
+
+
+        struct BuildBatchLaunch:
+            node_index: usize
+            target_name: sview
+            command: ProcessCommand
+            dispatch: ProcessBatchDispatch
+
+
+        struct BuildBatchNodeResult:
+            target_name: sview
+            dispatched: bool = false
+            published: bool = false
+            reserved_output_bytes: usize = 0
+            process: ProcessResult = ProcessResult{kind: ProcessResultKind.SpawnFailure}
+
+
+        struct BuildBatchSession:
+            scheduler: BuildScheduler
+            processes: ProcessBatchSession
+            results: darray[BuildBatchNodeResult] = []
+            reserved_output_bytes: usize = 0
+
+
+        error BuildBatchError:
+            InvalidSession
+            JobLimitExceeded
+            ParallelLimitExceeded
+            JobMappingInvalid
+            ResultInvalid
+            ResultAlreadyPublished
+            OutputLimitExceeded
+
+
+    private:
+        def build_batch_parallel_limit(graph_limit: usize) -> usize:
+            return Limits::PARALLEL if graph_limit > Limits::PARALLEL else graph_limit
+
+
+        def build_batch_result_kind_valid(kind: ProcessResultKind) -> bool:
+            return kind in {ProcessResultKind.Exited, ProcessResultKind.Signaled, ProcessResultKind.SpawnFailure, ProcessResultKind.TimedOut, ProcessResultKind.Cancelled, ProcessResultKind.OutputLimit, ProcessResultKind.HostIoFailure}
+
+
+        def build_batch_process_succeeded(result: ProcessResult) -> bool:
+            return result.kind == ProcessResultKind.Exited and result.exit_status == 0 and result.signal == 0
+
+
+        def build_batch_result_byte_count(result: ProcessResult, limit: usize) -> usize error[BuildBatchError]:
+            stdout_bytes: usize = len(result.stdout)
+            stderr_bytes: usize = len(result.stderr)
+            error_bytes: usize = len(result.error_text)
+            raise BuildBatchError.OutputLimitExceeded if stdout_bytes > limit
+            remaining: mutable usize = limit - stdout_bytes
+            raise BuildBatchError.OutputLimitExceeded if stderr_bytes > remaining
+            remaining <- remaining - stderr_bytes
+            raise BuildBatchError.OutputLimitExceeded if error_bytes > remaining
+            return stdout_bytes + stderr_bytes + error_bytes
+
+
+        def build_batch_job_matches_node_state(node_state: BuildNodeState, job_state: ProcessBatchJobState) -> bool:
+            return job_state == ProcessBatchJobState.Pending if node_state == BuildNodeState.Planned
+            return job_state == ProcessBatchJobState.Running if node_state == BuildNodeState.Running
+            return job_state == ProcessBatchJobState.Succeeded if node_state == BuildNodeState.Succeeded
+            return job_state == ProcessBatchJobState.Failed if node_state == BuildNodeState.Failed
+            return job_state == ProcessBatchJobState.Cancelled if node_state == BuildNodeState.Cancelled
+            return false
+
+
+    public:
+        def build_batch_session_for_graph(graph: BuildGraph) -> BuildBatchSession error[BuildContractError, BuildExecutionError, ProcessBatchError, BuildBatchError] can[Memory.Allocate, Abort.Panic]:
+            valid: bool = try validate_build_graph(graph)
+            raise BuildBatchError.InvalidSession if not valid or graph.state != BuildGraphState.Planned
+            raise BuildBatchError.JobLimitExceeded if graph.nodes.count > Limits::NODES
+            jobs: mutable darray[ProcessBatchJob] = []
+            results: mutable darray[BuildBatchNodeResult] = []
+            for index in 0..<graph.nodes.count |graph, jobs, results|:
+                raise BuildExecutionError.UnsupportedCommand if not build_executor_command_supported(graph.nodes[index].command)
+                jobs.push(ProcessBatchJob{id: (index + 1).u64()})
+                results.push(BuildBatchNodeResult{target_name: graph.nodes[index].name})
+
+            process_session: ProcessBatchSession = ProcessBatchSession{
+                policy: ProcessBatchPolicy{max_jobs: graph.nodes.count, max_parallel: build_batch_parallel_limit(graph.max_parallel), max_attempts: 1, failure_mode: ProcessBatchFailureMode.FailFast},
+                jobs: jobs
+            }
+            scheduler: mutable BuildScheduler = BuildScheduler{graph: graph}
+            scheduler.ready_queue.reserve(graph.nodes.count)
+            session: BuildBatchSession = BuildBatchSession{
+                scheduler: scheduler,
+                processes: process_session,
+                results: results
+            }
+            _ = try validate_build_batch_session(session)
+            return session
+
+
+        def validate_build_batch_session(session: BuildBatchSession) -> bool error[BuildContractError, BuildSchedulerError, ProcessBatchError, BuildBatchError]:
+            _ = try validate_build_scheduler(session.scheduler)
+            _ = try validate_process_batch(session.processes)
+            graph: BuildGraph = session.scheduler.graph
+            raise BuildBatchError.InvalidSession if graph.nodes.count == 0 or graph.nodes.count > Limits::NODES
+            raise BuildBatchError.InvalidSession if session.results.count != graph.nodes.count or session.processes.jobs.count != graph.nodes.count
+            raise BuildBatchError.InvalidSession if session.processes.policy.max_jobs != graph.nodes.count
+            raise BuildBatchError.InvalidSession if session.scheduler.cache.count != 0
+            raise BuildBatchError.ParallelLimitExceeded if session.processes.policy.max_parallel != build_batch_parallel_limit(graph.max_parallel)
+            raise BuildBatchError.InvalidSession if session.processes.policy.max_attempts != 1 or session.processes.policy.failure_mode != ProcessBatchFailureMode.FailFast
+            raise BuildBatchError.InvalidSession if session.reserved_output_bytes > EsBuild::Limits::LOG_BYTES
+            raise BuildBatchError.InvalidSession if session.reserved_output_bytes > EsBuild::Limits::LOG_BYTES - graph.log_bytes
+
+            reserved: mutable usize = 0
+            total_logs: mutable usize = 0
+            for index in 0..<graph.nodes.count |session, graph, reserved, total_logs|:
+                node: BuildNode = graph.nodes[index]
+                job: ProcessBatchJob = session.processes.jobs[index]
+                result: BuildBatchNodeResult = session.results[index]
+                raise BuildBatchError.JobMappingInvalid if job.id != (index + 1).u64() or result.target_name != node.name
+                raise BuildBatchError.JobMappingInvalid if not build_batch_job_matches_node_state(node.state, job.state)
+                raise BuildBatchError.JobMappingInvalid if result.dispatched != (job.attempts != 0)
+                raise BuildBatchError.JobMappingInvalid if job.attempts > 1
+                raise BuildBatchError.JobMappingInvalid if result.published and not result.dispatched
+                raise BuildBatchError.JobMappingInvalid if (node.state == BuildNodeState.Succeeded or node.state == BuildNodeState.Failed) and not result.published
+                raise BuildBatchError.JobMappingInvalid if result.published and node.state != BuildNodeState.Succeeded and node.state != BuildNodeState.Failed
+                if job.state == ProcessBatchJobState.Running:
+                    raise BuildBatchError.JobMappingInvalid if result.published
+                    raise BuildBatchError.JobMappingInvalid if result.reserved_output_bytes > node.command.capture_output_limit_bytes
+                    raise BuildBatchError.JobMappingInvalid if result.reserved_output_bytes > EsBuild::Limits::LOG_BYTES - reserved
+                    reserved <- reserved + result.reserved_output_bytes
+                else:
+                    raise BuildBatchError.JobMappingInvalid if result.reserved_output_bytes != 0
+                if result.published:
+                    raise BuildBatchError.ResultInvalid if not build_batch_result_kind_valid(result.process.kind)
+                    log_bytes: usize = try build_batch_result_byte_count(result.process, EsBuild::Limits::LOG_BYTES)
+                    raise BuildBatchError.OutputLimitExceeded if log_bytes > node.command.capture_output_limit_bytes
+                    raise BuildBatchError.InvalidSession if node.log_bytes != log_bytes
+                    raise BuildBatchError.InvalidSession if log_bytes > EsBuild::Limits::LOG_BYTES - total_logs
+                    total_logs <- total_logs + log_bytes
+                    raise BuildBatchError.ResultInvalid if node.state == BuildNodeState.Succeeded and not build_batch_process_succeeded(result.process)
+                    raise BuildBatchError.ResultInvalid if node.state == BuildNodeState.Failed and build_batch_process_succeeded(result.process)
+                else:
+                    raise BuildBatchError.InvalidSession if node.log_bytes != 0
+                    raise BuildBatchError.ResultInvalid if result.process.kind != ProcessResultKind.SpawnFailure or result.process.exit_status != 0 or result.process.signal != 0 or result.process.stdout != "" or result.process.stderr != "" or result.process.error_text != ""
+            raise BuildBatchError.InvalidSession if reserved != session.reserved_output_bytes or total_logs != graph.log_bytes
+
+            if session.scheduler.state == BuildSchedulerState.Ready:
+                raise BuildBatchError.InvalidSession if session.processes.state != ProcessBatchState.Planned
+            elif session.scheduler.state == BuildSchedulerState.Running:
+                raise BuildBatchError.InvalidSession if session.processes.state != ProcessBatchState.Running
+            elif session.scheduler.state == BuildSchedulerState.Failing:
+                raise BuildBatchError.InvalidSession if session.processes.state != ProcessBatchState.Draining and session.processes.state != ProcessBatchState.Cancelling
+            elif session.scheduler.state == BuildSchedulerState.Cancelling:
+                raise BuildBatchError.InvalidSession if session.processes.state != ProcessBatchState.Cancelling
+            elif session.scheduler.state == BuildSchedulerState.Complete:
+                raise BuildBatchError.InvalidSession if session.processes.state != ProcessBatchState.Succeeded
+            elif session.scheduler.state == BuildSchedulerState.Failed:
+                raise BuildBatchError.InvalidSession if session.processes.state != ProcessBatchState.Failed
+            elif session.scheduler.state == BuildSchedulerState.Cancelled:
+                raise BuildBatchError.InvalidSession if session.processes.state != ProcessBatchState.Cancelled
+            return true
+
+
+        def begin_build_batch(session: mutable BuildBatchSession&) -> BuildSchedulerState error[BuildContractError, BuildSchedulerError, ProcessBatchError, BuildBatchError]:
+            _ = try validate_build_batch_session(session)
+            raise BuildBatchError.InvalidSession if session.scheduler.state != BuildSchedulerState.Ready
+            _ = try advance_build_scheduler(session.scheduler, BuildSchedulerEvent.Begin)
+            _ = try advance_process_batch(session.processes, ProcessBatchEvent.Begin)
+            _ = try validate_build_batch_session(session)
+            return session.scheduler.state
+
+
+        # Return a deterministic ready wave, bounded both by the scheduler's
+        # graph limit and by the process adapter's tighter process cap. Output
+        # budget is reserved before any node transition so concurrent children
+        # cannot collectively exceed the graph's retained-log ceiling.
+        def dispatch_build_batch_ready(session: mutable BuildBatchSession&) -> darray[BuildBatchLaunch] error[BuildContractError, BuildExecutionError, BuildSchedulerError, ProcessBatchError, BuildBatchError] can[Memory.Allocate, Abort.Panic]:
+            _ = try validate_build_batch_session(session)
+            raise BuildBatchError.InvalidSession if session.scheduler.state != BuildSchedulerState.Running
+            available_parallel: usize = session.processes.policy.max_parallel - session.processes.active
+            candidates: mutable darray[usize] = []
+            candidates.reserve(available_parallel)
+            planned_reservation: mutable usize = session.reserved_output_bytes
+            ready_count: usize = session.scheduler.ready_queue.count
+            for offset in 0..<ready_count |session, candidates, planned_reservation|:
+                break if candidates.count >= available_parallel
+                node_index: usize = session.scheduler.ready_queue[offset]
+                node: BuildNode = session.scheduler.graph.nodes[node_index]
+                raise BuildExecutionError.UnsupportedCommand if not build_executor_command_supported(node.command)
+                remaining: usize = EsBuild::Limits::LOG_BYTES - session.scheduler.graph.log_bytes - planned_reservation
+                reservation: usize = node.command.capture_output_limit_bytes if node.command.capture_output_limit_bytes < remaining else remaining
+                candidates.push(node_index)
+                planned_reservation <- planned_reservation + reservation
+            launches: mutable darray[BuildBatchLaunch] = []
+            launches.reserve(candidates.count)
+            for node_index in candidates |session, launches|:
+                node: BuildNode = session.scheduler.graph.nodes[node_index]
+                reservation: mutable usize = node.command.capture_output_limit_bytes
+                remaining_before: usize = EsBuild::Limits::LOG_BYTES - session.scheduler.graph.log_bytes - session.reserved_output_bytes
+                reservation <- remaining_before if reservation > remaining_before
+                _ = try advance_build_scheduler(session.scheduler, BuildSchedulerEvent.Dispatch, node_index)
+                dispatch: ProcessBatchDispatch = try admit_process_batch_job(session.processes, node_index)
+                command: mutable ProcessCommand = node.command
+                command.capture_output_limit_bytes <- reservation
+                session.results[node_index].dispatched <- true
+                session.results[node_index].reserved_output_bytes <- reservation
+                session.reserved_output_bytes <- session.reserved_output_bytes + reservation
+                launches.push(BuildBatchLaunch{node_index: node_index, target_name: node.name, command: command, dispatch: dispatch})
+            _ = try validate_build_batch_session(session)
+            return launches
+
+
+        # A receipt is accepted only after the host has completed/reaped the
+        # process. Every nonzero, signaled, spawn, timeout, output-limit, or
+        # host-I/O result enters fail-fast drain; successful siblings may still
+        # complete while that drain is in progress.
+        def report_build_batch_result(session: mutable BuildBatchSession&, dispatch: ProcessBatchDispatch, process_result: ProcessResult) -> BuildSchedulerState error[BuildContractError, BuildSchedulerError, ProcessBatchError, BuildBatchError]:
+            _ = try validate_build_batch_session(session)
+            _ = try validate_process_batch_dispatch(session.processes, dispatch)
+            node_index: usize = dispatch.job_index
+            node: BuildNode = session.scheduler.graph.nodes[node_index]
+            prior: BuildBatchNodeResult = session.results[node_index]
+            raise BuildBatchError.ResultAlreadyPublished if prior.published
+            raise BuildBatchError.ResultInvalid if not build_batch_result_kind_valid(process_result.kind)
+            log_bytes: usize = try build_batch_result_byte_count(process_result, prior.reserved_output_bytes)
+            raise BuildBatchError.OutputLimitExceeded if log_bytes > node.command.capture_output_limit_bytes
+
+            session.scheduler.graph.nodes[node_index].log_bytes <- log_bytes
+            session.scheduler.graph.log_bytes <- session.scheduler.graph.log_bytes + log_bytes
+            session.reserved_output_bytes <- session.reserved_output_bytes - prior.reserved_output_bytes
+            session.results[node_index].reserved_output_bytes <- 0
+            session.results[node_index].published <- true
+            session.results[node_index].process <- process_result
+
+            succeeded: bool = build_batch_process_succeeded(process_result)
+            if succeeded:
+                _ = try advance_process_batch(session.processes, ProcessBatchEvent.Complete, node_index, dispatch.attempt_token)
+                _ = try advance_build_scheduler(session.scheduler, BuildSchedulerEvent.NodeComplete, node_index)
+                if session.scheduler.active_nodes == 0 and session.scheduler.completed_nodes == session.scheduler.graph.nodes.count:
+                    _ = try advance_build_scheduler(session.scheduler, BuildSchedulerEvent.Complete)
+            else:
+                _ = try advance_process_batch(session.processes, ProcessBatchEvent.Fail, node_index, dispatch.attempt_token)
+                _ = try advance_build_scheduler(session.scheduler, BuildSchedulerEvent.NodeFail, node_index)
+                _ = try advance_process_batch(session.processes, ProcessBatchEvent.ReapAck, node_index, dispatch.attempt_token)
+            _ = try validate_build_batch_session(session)
+            return session.scheduler.state
+
+
+        # Ask the host to stop exactly the currently active attempts. The host
+        # must confirm process-group termination and reap before ack can close
+        # either state machine.
+        def cancel_build_batch(session: mutable BuildBatchSession&) -> darray[ProcessBatchDispatch] error[BuildContractError, BuildSchedulerError, ProcessBatchError, BuildBatchError] can[Memory.Allocate, Abort.Panic]:
+            _ = try validate_build_batch_session(session)
+            raise BuildBatchError.InvalidSession if session.scheduler.state != BuildSchedulerState.Running and session.scheduler.state != BuildSchedulerState.Failing
+            active: mutable darray[ProcessBatchDispatch] = []
+            active.reserve(session.processes.active)
+            for index in 0..<session.processes.jobs.count |session, active|:
+                job: ProcessBatchJob = session.processes.jobs[index]
+                if job.state == ProcessBatchJobState.Running:
+                    active.push(ProcessBatchDispatch{job_index: index, job_id: job.id, attempt_token: job.attempt_token})
+            if session.scheduler.state == BuildSchedulerState.Running:
+                _ = try advance_build_scheduler(session.scheduler, BuildSchedulerEvent.Cancel)
+            _ = try advance_process_batch(session.processes, ProcessBatchEvent.Cancel)
+            _ = try validate_build_batch_session(session)
+            return active
+
+
+        def acknowledge_build_batch_stop(session: mutable BuildBatchSession&) -> BuildSchedulerState error[BuildContractError, BuildSchedulerError, ProcessBatchError, BuildBatchError]:
+            _ = try validate_build_batch_session(session)
+            raise BuildBatchError.InvalidSession if session.scheduler.state != BuildSchedulerState.Cancelling and session.scheduler.state != BuildSchedulerState.Failing
+            raise BuildBatchError.InvalidSession if session.processes.state != ProcessBatchState.Cancelling
+            _ = try advance_process_batch(session.processes, ProcessBatchEvent.CancelAck)
+            _ = try advance_build_scheduler(session.scheduler, BuildSchedulerEvent.CancelAck)
+            for index in 0..<session.results.count |session|:
+                if session.results[index].reserved_output_bytes != 0:
+                    session.reserved_output_bytes <- session.reserved_output_bytes - session.results[index].reserved_output_bytes
+                    session.results[index].reserved_output_bytes <- 0
+            _ = try validate_build_batch_session(session)
+            return session.scheduler.state

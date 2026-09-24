@@ -738,6 +738,12 @@ This remains a scheduler-state contract only: the current build host executor
 is serial, and `EsProcessSession`/`EsProcessBatch` do not yet launch or reap
 multiple children. No claim of bounded parallel process execution, CMake build
 parity, or runtime qualification follows from this entry.
+`EsBuildBatch` now pairs graph nodes with process-batch job identities,
+dispatches only dependency-ready nodes under both parallelism limits, reserves
+the graph-wide output budget before admission, and applies token-validated
+terminal receipts to both state machines. Its fixtures cover refill after a
+dependency completes, fail-fast sibling drain, and acknowledged cancellation;
+this remains a host-neutral contract, not child launch or runtime evidence.
 `EsBuildIncremental` adds the bounded pure manifest boundary for recipe,
 dependency, input, and output fingerprint classification, distinguishing no-op
 targets (including outputless `Phony` aggregate/test targets) from typed rebuild
