@@ -15,8 +15,23 @@ module EsBuildIncrementalPosixExecutor:
     using EsBuildRecipeSignature
     using EsArtifactCache
     using EsProcess
+    using EsRuntime
 
     public:
+        error OutputInvalidationError:
+            InvalidCachedOutput(path: sview)
+            CachedOutputChanged(path: sview)
+            ParentOpenFailed(path: sview, errno: i32)
+            RemoveFailed(path: sview, errno: i32)
+            RemovalOutcomeUnknown(path: sview)
+            OutputStillPresent(path: sview)
+            CloseFailed(path: sview)
+
+
+        const module OutputInvalidationErrno:
+            EIO: i32 = 5
+
+
         struct BuildIncrementalPosixExecution:
             result: BuildExecutionResult
             recipes: darray[BuildIncrementalRecipeTarget]
@@ -49,6 +64,100 @@ module EsBuildIncrementalPosixExecutor:
 
 
     private:
+        const module OutputInvalidationLimits:
+            OPEN_EINTR_RETRIES: usize = 8
+
+
+        def build_incremental_output_openat(directory_fd: int, component: cstr, flags: int, errno_out: mutable i32&) -> int can[Blocking.IO, Unsafe.PointerCast]:
+            retries: mutable usize = 0
+            while true:
+                descriptor: int = elisascript_posix_openat(directory_fd, component, flags, 0u32)
+                return descriptor if descriptor >= 0
+                errno: mutable i32& = elisascript_posix_errno()
+                errno_out[0] <- errno[0]
+                if errno[0] == DarwinErrno::EINTR and retries < OutputInvalidationLimits::OPEN_EINTR_RETRIES:
+                    retries <- retries + 1
+                    continue
+                return -1
+
+
+        def build_incremental_output_close_owned(descriptor: int, root_fd: int) -> bool can[Blocking.IO]:
+            return true if descriptor == root_fd
+            return elisascript_posix_close(descriptor) == 0
+
+
+        # This destructive primitive is private to the executor so it cannot
+        # be called outside the cache-locked transaction below.
+        def invalidate_build_incremental_output_at(scratch: mutable Arena&, root_fd: int, cached_output: BuildIncrementalFile) -> bool error[OutputInvalidationError, OpenError, ObserveError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+            path: sview = cached_output.path
+            raise OutputInvalidationError.InvalidCachedOutput(path) if not build_incremental_path_is_canonical_relative(path)
+            raise OutputInvalidationError.InvalidCachedOutput(path) if cached_output.fingerprint == 0 and cached_output.fingerprint_word1 == 0 and cached_output.fingerprint_word2 == 0 and cached_output.fingerprint_word3 == 0
+            current: BuildIncrementalObservation = try observe_build_incremental_file_at(scratch, root_fd, path)
+            return true if not current.present
+            matches_cached_content: bool = current.fingerprint == cached_output.fingerprint and current.fingerprint_word1 == cached_output.fingerprint_word1 and current.fingerprint_word2 == cached_output.fingerprint_word2 and current.fingerprint_word3 == cached_output.fingerprint_word3
+            raise OutputInvalidationError.CachedOutputChanged(path) if not matches_cached_content
+
+            path_length: usize = sview_len(path)
+            leaf_start: mutable usize = 0
+            for index in 0..<path_length:
+                leaf_start <- index + 1 if sview_at(path, index) == 47
+            leaf_storage: mutable u8[EsBuildIncremental::Limits::PATH_BYTES] = zeroed
+            component_storage: mutable u8[EsBuildIncremental::Limits::PATH_BYTES] = zeroed
+            leaf: mutable u8& = &leaf_storage[0]
+            component: mutable u8& = &component_storage[0]
+            leaf_length: usize = path_length - leaf_start
+            for index in 0..<leaf_length:
+                leaf[index] <- sview_at(path, leaf_start + index)
+            leaf[leaf_length] <- 0
+
+            parent_fd: mutable int = root_fd
+            segment_start: mutable usize = 0
+            parent_length: usize = leaf_start if leaf_start == 0 else leaf_start - 1
+            while segment_start < parent_length |component, parent_fd, segment_start|:
+                segment_end: mutable usize = segment_start
+                while segment_end < leaf_start and sview_at(path, segment_end) != 47:
+                    segment_end <- segment_end + 1
+                component_length: usize = segment_end - segment_start
+                for index in 0..<component_length |component, index|:
+                    component[index] <- sview_at(path, segment_start + index)
+                component[component_length] <- 0
+                errno_out: mutable i32 = 0
+                next_fd: int = build_incremental_output_openat(parent_fd, component.cast[cstr], DarwinOpenFlags::RDONLY | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::DIRECTORY | DarwinOpenFlags::CLOSE_ON_EXEC, errno_out)
+                if next_fd < 0:
+                    parent_close_ok: bool = build_incremental_output_close_owned(parent_fd, root_fd)
+                    raise OutputInvalidationError.CloseFailed(path) if not parent_close_ok
+                    raise OutputInvalidationError.ParentOpenFailed(path, errno_out[0])
+                parent_close_ok: bool = build_incremental_output_close_owned(parent_fd, root_fd)
+                if not parent_close_ok:
+                    _ = elisascript_posix_close(next_fd)
+                    raise OutputInvalidationError.CloseFailed(path)
+                parent_fd <- next_fd
+                segment_start <- segment_end + 1
+
+            remove_status: mutable int = -1
+            catch elisascript_posix_unlinkat_leaf(parent_fd, leaf.cast[cstr]):
+                ok status:
+                    remove_status <- status
+                error failure:
+                    parent_close_ok: bool = build_incremental_output_close_owned(parent_fd, root_fd)
+                    raise OutputInvalidationError.CloseFailed(path) if not parent_close_ok
+                    raise OutputInvalidationError.InvalidCachedOutput(path)
+            if remove_status != 0:
+                errno: mutable i32& = elisascript_posix_errno()
+                remove_errno: i32 = errno[0]
+                missing_after_race: bool = remove_errno == DarwinErrno::ENOENT
+                if not missing_after_race:
+                    parent_close_ok: bool = build_incremental_output_close_owned(parent_fd, root_fd)
+                    raise OutputInvalidationError.CloseFailed(path) if not parent_close_ok
+                    raise OutputInvalidationError.RemovalOutcomeUnknown(path) if remove_errno == OutputInvalidationErrno::EIO or remove_errno == DarwinErrno::EINTR
+                    raise OutputInvalidationError.RemoveFailed(path, remove_errno)
+            parent_close_ok: bool = build_incremental_output_close_owned(parent_fd, root_fd)
+            raise OutputInvalidationError.CloseFailed(path) if not parent_close_ok
+            after: BuildIncrementalObservation = try observe_build_incremental_file_at(scratch, root_fd, path)
+            raise OutputInvalidationError.OutputStillPresent(path) if after.present
+            return true
+
+
         def build_incremental_posix_find_observation(observations: darray[BuildIncrementalObservation], path: sview, output: mutable BuildIncrementalObservation&) -> bool:
             for observation in observations:
                 if observation.path == path:
