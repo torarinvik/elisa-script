@@ -89,6 +89,7 @@ done
 
 rg -Fq 'def execute_build_graph_incremental(' "$executor_model"
 rg -Fq 'def commit_build_incremental_execution(' "$executor_model"
+rg -Fq 'def build_incremental_observation_paths(' "$model"
 rg -Fq 'include "../runtime/build_incremental_cache_model.elisa"' "$ir"
 
 for cache_fixture_check in \
@@ -184,6 +185,8 @@ done
 
 for transition_check in \
     'build_incremental_transition_rebuilds_changed_and_new_targets' \
+    'build_incremental_observation_paths_are_unique_and_sorted' \
+    'build_incremental_observation_paths(recipes)' \
     'build_incremental_transition_plans_removed_outputs_only_after_success' \
     'build_incremental_success_commit_is_complete_and_atomic' \
     'plan_build_incremental_transition(previous, current, observations)' \
