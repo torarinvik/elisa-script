@@ -12,10 +12,16 @@ usage_model="$repo_root/src/runtime/build_usage_model.elisa"
 usage_fixture="$repo_root/test/runtime/build_usage_model_test.elisa"
 executor_model="$repo_root/src/runtime/build_executor_model.elisa"
 executor_fixture="$repo_root/test/runtime/build_executor_test.elisa"
+sequential_tools_root="$repo_root/test/fixtures/script_parity/sequential_tools"
+sequential_tools_reference="$sequential_tools_root/reference.sh"
+sequential_tools_candidate="$sequential_tools_root/candidate.elisascript"
+sequential_tools_expected="$sequential_tools_root/expected.txt"
+sequential_tools_contract="$sequential_tools_root/CONTRACT.md"
+sequential_tools_parity="$repo_root/test/script_parity/sequential_tools_launcher_test.elisascript"
 incremental_executor_fixture="$repo_root/test/runtime/build_incremental_executor_test.elisa"
 docs="$repo_root/docs/ir.md"
 
-for required_file in "$model" "$ir" "$fixture" "$usage_model" "$usage_fixture" "$executor_model" "$executor_fixture" "$incremental_executor_fixture" "$docs"; do
+for required_file in "$model" "$ir" "$fixture" "$usage_model" "$usage_fixture" "$executor_model" "$executor_fixture" "$sequential_tools_reference" "$sequential_tools_candidate" "$sequential_tools_expected" "$sequential_tools_contract" "$sequential_tools_parity" "$incremental_executor_fixture" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'build model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -208,6 +214,15 @@ rg -Fq 'execution.nodes.count == 3 and execution.log_bytes == len("prepared\n")'
 rg -Fq 'execution.nodes[0].stdout == "prepared\n"' "$executor_fixture"
 rg -Fq 'not execution.nodes[2].started' "$executor_fixture"
 rg -Fq 'graph.nodes[2].state == BuildNodeState.Cancelled and marker_absent' "$executor_fixture"
+rg -Fq 'sequential_tools_public_launcher_matches_shell_and_golden' "$sequential_tools_parity"
+rg -Fq 'ELISASCRIPT_BOUNDED_TEST_RSS_GUARD' "$sequential_tools_parity"
+rg -Fq 'return false if candidate_run.exit_status != 0 or candidate_run.stdout != golden' "$sequential_tools_parity"
+rg -Fq 'BuildExecutionFailureKind.NonzeroExit' "$sequential_tools_candidate"
+rg -Fq 'execution.nodes[2].started or graph.nodes[2].state != BuildNodeState.Cancelled' "$sequential_tools_candidate"
+rg -Fq "failure_stdout=\"\$(/usr/bin/false)\"" "$sequential_tools_reference"
+rg -Fq 'graph=failed' "$sequential_tools_expected"
+rg -Fq 'prepared' "$sequential_tools_expected"
+rg -Fq 'A07' "$sequential_tools_contract"
 rg -Fq 'graph.state == BuildGraphState.Failed' "$executor_fixture"
 rg -Fq 'execute_build_graph_incremental(' "$incremental_executor_fixture"
 rg -Fq 'incremental_executor_marks_up_to_date_nodes_as_cache_hits' "$incremental_executor_fixture"

@@ -1,0 +1,86 @@
+# A07 candidate: typed process sequencing, fail-fast dependencies, retained logs.
+include "../../../../src/runtime/build_executor_model.elisa"
+
+using EsBuild
+using EsBuildExecutor
+using EsProcess
+
+
+module EsSequentialToolsCandidate:
+    private:
+        const module Commands:
+            PRINTF: sview = "/usr/bin/printf"
+            FALSE: sview = "/usr/bin/false"
+            TIMEOUT_MICROS: u64 = 5000000u64
+            OUTPUT_LIMIT_BYTES: usize = 1024
+
+
+        def command(executable_path: sview, arguments: darray[sview]) -> ProcessCommand:
+            return ProcessCommand{
+                executable: executable_path,
+                arguments: arguments,
+                stdin_mode: ProcessStdioMode.Null,
+                stdout_mode: ProcessStdioMode.Capture,
+                stderr_mode: ProcessStdioMode.Capture,
+                timeout_micros: Commands::TIMEOUT_MICROS,
+                capture_output_limit_bytes: Commands::OUTPUT_LIMIT_BYTES
+            }
+
+
+        def append_text(output: mutable darray[u8]&, text: sview) can[Memory.Allocate, Abort.Panic]:
+            for byte in text |output|:
+                output.push(byte)
+
+
+        def failure_text(failure: BuildExecutionFailureKind) -> sview:
+            if failure == BuildExecutionFailureKind.None:
+                return "none"
+            elif failure == BuildExecutionFailureKind.NonzeroExit:
+                return "nonzero-exit"
+            elif failure == BuildExecutionFailureKind.Invocation:
+                return "invocation"
+            return "output-missing"
+
+
+        def append_node(output: mutable darray[u8]&, name: sview, node: BuildExecutionNodeResult) -> void can[Memory.Allocate, Abort.Panic]:
+            started: sview = "true" if node.started else "false"
+            append_text(output, "step=" + name + "\nstarted=" + started + "\nstatus=" + f"{node.exit_status}" + "\nfailure=" + failure_text(node.failure) + "\nstdout-begin\n")
+            append_text(output, node.stdout)
+            append_text(output, "stdout-end\nstderr-begin\n")
+            append_text(output, node.stderr)
+            append_text(output, "stderr-end\n")
+
+
+    public:
+        def run() -> i64 can[Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Process.Run, Console.Write]:
+            graph: mutable BuildGraph = BuildGraph{
+                nodes: [
+                    BuildNode{name: "prepare", command: command(Commands::PRINTF, ["prepared\n"]), fingerprint: 1u64},
+                    BuildNode{name: "fail", command: command(Commands::FALSE, []), dependencies: [0], fingerprint: 2u64},
+                    BuildNode{name: "dependent", command: command(Commands::PRINTF, ["unreachable\n"]), dependencies: [1], fingerprint: 3u64}
+                ],
+                max_parallel: 1
+            }
+            execution: BuildExecutionResult = catch execute_build_graph_serial(graph):
+                ok value:
+                    value
+                error failure:
+                    return 1i64
+
+            return 1i64 if execution.graph_state != BuildGraphState.Failed or execution.nodes.count != 3
+            return 1i64 if not execution.nodes[0].started or execution.nodes[0].exit_status != 0 or execution.nodes[0].stdout != "prepared\n"
+            return 1i64 if not execution.nodes[1].started or execution.nodes[1].exit_status == 0 or execution.nodes[1].failure != BuildExecutionFailureKind.NonzeroExit
+            return 1i64 if execution.nodes[2].started or graph.nodes[2].state != BuildNodeState.Cancelled
+
+            output: mutable darray[u8] = []
+            append_text(output, "graph=failed\n")
+            append_node(output, "prepare", execution.nodes[0])
+            append_node(output, "fail", execution.nodes[1])
+            append_node(output, "dependent", execution.nodes[2])
+            _ = write_stdout(bytes_view(output))
+            return 0i64
+
+
+def main(arguments: darray[sview]) -> i64 can[Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Process.Run, Console.Write]:
+    return 2i64 if arguments.count != 0
+    return EsSequentialToolsCandidate::run()
