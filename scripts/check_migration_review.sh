@@ -39,6 +39,10 @@ if ! grep -F 'include "../src/runtime/bounded_text_posix.elisa"' "$candidate_fil
     printf 'migration review audit: candidate does not use the shared bounded text reader\n' >&2
     exit 1
 fi
+if ! grep -F 'FILE_BYTES: usize = 1048576' "$candidate_file" >/dev/null 2>&1; then
+    printf 'migration review audit: candidate manifest byte ceiling differs from the reference\n' >&2
+    exit 1
+fi
 for bounded_read_invariant in \
     'MAX_BYTES: usize = 16777216' \
     'maximum_bytes - bytes.count' \
