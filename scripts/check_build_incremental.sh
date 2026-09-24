@@ -15,6 +15,7 @@ ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 transition_fixture="$repo_root/test/runtime/build_incremental_transition_test.elisa"
 posix_fixture="$repo_root/test/runtime/build_incremental_posix_test.elisa"
+posix_executor_fixture="$repo_root/test/runtime/build_incremental_posix_executor_test.elisa"
 recipe_signature="$repo_root/src/runtime/build_recipe_signature.elisa"
 recipe_signature_fixture="$repo_root/test/runtime/build_recipe_signature_test.elisa"
 cache_fixture="$repo_root/test/runtime/build_incremental_cache_test.elisa"
@@ -22,7 +23,7 @@ executor_fixture="$repo_root/test/runtime/build_incremental_executor_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$cache_model" "$build_model" "$executor_model" "$graph_model" "$posix_executor" "$ir" "$fixture" "$transition_fixture" "$posix_fixture" "$recipe_signature" "$recipe_signature_fixture" "$cache_fixture" "$executor_fixture" "$docs" "$ledger"; do
+for required_file in "$model" "$cache_model" "$build_model" "$executor_model" "$graph_model" "$posix_executor" "$ir" "$fixture" "$transition_fixture" "$posix_fixture" "$posix_executor_fixture" "$recipe_signature" "$recipe_signature_fixture" "$cache_fixture" "$executor_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'incremental build audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -97,6 +98,9 @@ rg -Fq 'build_recipe_signatures_for_actions(commands, recipes, toolchains)' "$gr
 rg -Fq 'def execute_build_graph_incremental_at(' "$posix_executor"
 rg -Fq 'def commit_build_incremental_execution_at(' "$posix_executor"
 rg -Fq 'ToolchainObservationError.ToolchainChanged' "$posix_executor"
+rg -Fq 'def validate_build_recipe_toolchain_paths(' "$posix_executor"
+rg -Fq 'ToolchainObservationError.ToolchainCommandMismatch' "$posix_executor"
+rg -Fq 'toolchain_resolution_must_match_graph_command_before_observation' "$posix_executor_fixture"
 rg -Fq 'graph.state != BuildGraphState.Planned' "$graph_model"
 rg -Fq 'def sign_build_incremental_graph(' "$recipe_signature"
 rg -Fq 'def build_recipe_signatures_for_actions(' "$recipe_signature"
