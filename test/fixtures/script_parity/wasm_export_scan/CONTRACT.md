@@ -201,9 +201,11 @@ unexecuted under the validation hold.
   taken before and after opening. It reads fixed-size chunks under the minimum
   of the per-file and remaining graph budgets, rejecting an overflow probe
   before retaining that chunk, and closes the descriptor on handled success and
-  failure. `O_NONBLOCK` prevents a final-component FIFO replacement from
-  waiting for a writer; `fstat` rejects opened non-regular objects before any
-  read. Device-specific open behavior remains platform-dependent. The identity
+  failure. `open`, `stat`, `fstat`, and `read` interruption retries are bounded
+  to four per operation. `O_NONBLOCK` prevents a final-component FIFO
+  replacement from waiting for a writer; `fstat` rejects opened non-regular
+  objects before any read. Device-specific open behavior remains
+  platform-dependent. The identity
   comparisons detect a regular-file replacement during the open/check window;
   after validation, reads stay attached to the opened descriptor even if the
   pathname is replaced. Source review indicates this avoids buffering an
