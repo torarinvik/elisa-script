@@ -16,6 +16,7 @@ module EsConfig:
             VALUE_BYTES: usize = 65536
             LAYER_BYTES: usize = 16777216
             OUTPUT_BYTES: usize = 16777216
+            INDEX_SLOTS: usize = 8192
 
 
         const enum ConfigSource of u8:
@@ -60,6 +61,7 @@ module EsConfig:
             ValueTooLong
             DuplicateKey
             InvalidValue
+            IndexInvalid
 
 
     private:
@@ -106,20 +108,49 @@ module EsConfig:
             return true
 
 
+        const module Hash:
+            FNV_OFFSET: u64 = 14695981039346656037u64
+            FNV_PRIME: u64 = 1099511628211u64
+
+
+        def config_key_hash(key: sview) -> u64:
+            hash: mutable u64 = Hash::FNV_OFFSET
+            for byte in key |key, hash|:
+                hash <- (hash ^ byte.u64()) * Hash::FNV_PRIME
+            return hash
+
+
+        def config_index_find(values: darray[ConfigValue], slots: darray[usize], key: sview) -> usize error[ConfigError]:
+            return values.count if slots.count == 0
+            slot: mutable usize = (config_key_hash(key) % slots.count.u64()).usize()
+            for probe in 0..<slots.count |values, slots, key, slot|:
+                stored: usize = slots[slot]
+                return values.count if stored == 0
+                value_index: usize = stored - 1
+                raise ConfigError.IndexInvalid if value_index >= values.count
+                return value_index if values[value_index].key == key
+                slot <- 0 if slot + 1 == slots.count else slot + 1
+            return values.count
+
+
+        def config_index_place(values: darray[ConfigValue], slots: mutable darray[usize]&, value_index: usize) -> void error[ConfigError]:
+            raise ConfigError.IndexInvalid if slots.count != Limits::INDEX_SLOTS or value_index >= values.count
+            slot: mutable usize = (config_key_hash(values[value_index].key) % slots.count.u64()).usize()
+            for probe in 0..<slots.count |values, slots, value_index, slot|:
+                if slots[slot] == 0:
+                    slots[slot] <- value_index + 1
+                    return
+                stored_index: usize = slots[slot] - 1
+                raise ConfigError.IndexInvalid if stored_index >= values.count
+                raise ConfigError.DuplicateKey if values[stored_index].key == values[value_index].key
+                slot <- 0 if slot + 1 == slots.count else slot + 1
+            raise ConfigError.IndexInvalid
+
+
         def config_value_index(values: darray[ConfigValue], key: sview) -> usize:
             for index in 0..<values.count |values, key|:
                 return index if values[index].key == key
             return values.count
-
-
-        def config_key_less(left: sview, right: sview) -> bool:
-            left_length: usize = sview_len(left)
-            right_length: usize = sview_len(right)
-            common: usize = left_length if left_length < right_length else right_length
-            for index in 0..<common |left, right|:
-                return true if sview_at(left, index) < sview_at(right, index)
-                return false if sview_at(left, index) > sview_at(right, index)
-            return left_length < right_length
 
 
         def config_layer_valid(layer: ConfigLayer) -> bool error[ConfigError] can[Memory.Allocate, Abort.Panic]:
@@ -172,15 +203,21 @@ module EsConfig:
         def resolve_config_layers(layers: darray[ConfigLayer]) -> darray[ConfigValue] error[ConfigError] can[Memory.Allocate, Abort.Panic]:
             try validate_config_layers(layers)
             result: mutable darray[ConfigValue] = []
+            index_slots: mutable darray[usize] = []
             result_bytes: mutable usize = 0
             for layer in layers:
                 for entry in layer.entries:
-                    index: usize = config_value_index(result, entry.key)
+                    index: usize = try config_index_find(result, index_slots, entry.key)
                     candidate: ConfigValue = ConfigValue{key: entry.key, value: entry.value, source: layer.source}
                     if index == result.count:
                         raise ConfigError.OutputLimitExceeded if result.count >= Limits::OUTPUTS
                         raise ConfigError.OutputBytesExceeded if not config_entry_fits(result_bytes, entry.key, entry.value, Limits::OUTPUT_BYTES)
+                        if index_slots.count == 0:
+                            index_slots.reserve(Limits::INDEX_SLOTS)
+                            for _ in 0..<Limits::INDEX_SLOTS |index_slots|:
+                                index_slots.push(0)
                         result.push(candidate)
+                        try config_index_place(result, index_slots, result.count - 1)
                         result_bytes <- result_bytes + config_entry_bytes(entry.key, entry.value)
                     elif config_source_priority(layer.source) > config_source_priority(result[index].source):
                         previous_bytes: usize = config_entry_bytes(result[index].key, result[index].value)
@@ -188,14 +225,16 @@ module EsConfig:
                         raise ConfigError.OutputBytesExceeded if not config_entry_fits(without_previous, entry.key, entry.value, Limits::OUTPUT_BYTES)
                         result[index] <- candidate
                         result_bytes <- without_previous + config_entry_bytes(entry.key, entry.value)
-            if result.count > 1:
-                for index in 1..<result.count |result|:
-                    current: ConfigValue = result[index]
-                    cursor: mutable usize = index
-                    while cursor > 0 and config_key_less(current.key, result[cursor - 1].key) |cursor, current, result|:
-                        result[cursor] <- result[cursor - 1]
-                        cursor <- cursor - 1
-                    result[cursor] <- current
+            keys: mutable darray[sview] = []
+            for value in result |keys|:
+                keys.push(value.key)
+            ordered_keys: darray[sview] = sorted(keys)
+            ordered_values: mutable darray[ConfigValue] = []
+            for key in ordered_keys |result, index_slots, key, ordered_values|:
+                index: usize = try config_index_find(result, index_slots, key)
+                raise ConfigError.IndexInvalid if index >= result.count
+                ordered_values.push(result[index])
+            result <- ordered_values
             return result
 
 
