@@ -55,6 +55,9 @@ for declaration in \
     'def build_incremental_recipe_shape_matches(' \
     'def build_incremental_materialize_recipe_targets(' \
     'def plan_build_incremental_transition(' \
+    'def plan_build_incremental_graph_transition(' \
+    'graph.state != BuildGraphState.Planned' \
+    'node.fingerprint != recipe.recipe_fingerprint' \
     'target_names: darray[sview]' \
     'recipe_fingerprints: darray[u64]' \
     'def build_incremental_observed_commit_file(' \

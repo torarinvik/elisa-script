@@ -83,6 +83,8 @@ done
 for incremental_fixture_check in \
     'incremental_plan_filters_scheduler_cache' \
     'incremental_plan_mismatch_preserves_scheduler_cache' \
+    'graph_aligned_incremental_plan_reaches_scheduler' \
+    'plan_build_incremental_graph_transition(previous, graph, recipes, observations)' \
     'admit_build_incremental_plan(scheduler, plan)' \
     'BuildSchedulerError.IncrementalPlanMismatch'; do
     rg -Fq "$incremental_fixture_check" "$incremental_fixture"
