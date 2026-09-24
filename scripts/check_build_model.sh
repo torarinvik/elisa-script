@@ -153,6 +153,12 @@ for boundary in \
     'TOTAL_INPUTS - total_inputs'; do
     rg -Fq "$boundary" "$usage_model"
 done
+rg -Fq 'ordered_dependencies: darray[usize] = sorted(dependency_indices)' "$usage_model"
+rg -Fq 'ordered_target_names: darray[sview] = sorted(target_names)' "$usage_model"
+rg -Fq 'for index in 0..<targets.count |targets, total_inputs, target_names|' "$usage_model"
+rg -Fq 'for dependency_index in 0..<target.dependencies.count |target, dependency_indices|' "$usage_model"
+rg -Fq 'ordered_dependencies[ordered_index - 1] == ordered_dependencies[ordered_index]' "$usage_model"
+rg -Fq 'ordered_target_names[name_index - 1] == ordered_target_names[name_index]' "$usage_model"
 
 rg -Fq 'build_usage_public_private_interface_and_static_link_only_propagation' "$usage_fixture"
 rg -Fq 'build_usage_rejects_noncanonical_dependencies_and_interface_visibility' "$usage_fixture"
