@@ -2891,11 +2891,14 @@ This is a bounded flat-JSON slice of A06.
 
 `EsConfigToml::parse_toml_config` adapts a bounded scalar-only TOML subset to
 the same owned File layer. It accepts bare/dotted keys, tables, comments,
-single-line basic and literal strings, booleans, and JSON-compatible decimal
-numbers. It explicitly rejects arrays, inline tables, array-of-table headers,
+single-line basic and literal strings, booleans, and TOML decimal, hexadecimal,
+octal, binary, floating-point, and special numeric spellings (with legal
+digit separators) while preserving their exact lexemes. It explicitly rejects
+arrays, inline tables, array-of-table headers,
 dates/times, multiline strings, Unicode escapes, and other unsupported values;
-quoted keys and TOML numeric extensions are not yet supported. Parsed key/value
-bytes are owned by the returned wrapper. `EsConfigTomlFilePosix` reads files
+quoted keys are not yet supported; the string-valued precedence layer does not
+perform typed numeric conversion. Parsed key/value bytes are owned by the
+returned wrapper. `EsConfigTomlFilePosix` reads files
 through the shared stable UTF-8 reader with a 16 MiB ceiling. Source fixtures
 cover scalar parsing and rejection boundaries, but remain unexecuted pending
 compiler-validation reauthorization. This is a deliberately small TOML slice of

@@ -934,10 +934,12 @@ entry ceiling before materialization and retaining exact number spellings and
 document-borrowed decoded scalar text; structures require the typed schema
 adapter. EsConfigToml parses an explicitly bounded scalar subset (bare/dotted
 keys, tables, comments, single-line basic and literal strings, booleans, and
-JSON-compatible decimal numbers) into an owned File layer. Arrays, inline
+TOML decimal/hexadecimal/octal/binary/float/special-number spellings with
+validated digit separators) into an owned File layer, preserving numeric
+lexemes exactly. It does not yet perform typed numeric conversion. Arrays, inline
 tables, array-of-table headers, date/time values, multiline strings, Unicode
-escapes, quoted keys, and TOML-specific numeric extensions remain unsupported
-and are rejected rather than misread. Its POSIX file adapter uses the shared
+escapes, and quoted keys remain unsupported and are rejected rather than
+misread. Its POSIX file adapter uses the shared
 stable bounded UTF-8 reader. Fixtures are static evidence only; direct runtime
 qualification remains disabled pending compiler-validation reauthorization.
 Process-global environment capture remains open.
