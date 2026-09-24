@@ -21,3 +21,9 @@ asserts that the raw collector and typed parser share their count and byte
 ceilings. The private host-ABI enum remains implementation detail; this
 contract is checked by `scripts/check_cli_model.sh` and is not an executable
 parity claim until compiler validation is explicitly reauthorized.
+
+`scripts/check_cli_model.elisascript` is a bounded source-only port of that
+audit. It reads the same seven inputs with per-file and aggregate byte caps,
+then checks the contract markers without launching `rg` or another child.
+Source presence is not yet shell/Elisascript parity evidence; the comparison
+remains gated by the explicit compiler-validation hold.

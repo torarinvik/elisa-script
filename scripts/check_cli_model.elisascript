@@ -1,0 +1,187 @@
+# Bounded Elisascript port of check_cli_model.sh.
+# This repository audit reads source/contracts only and never launches a child.
+
+include "../src/runtime/bounded_text_posix.elisa"
+
+using EsBoundedText
+
+
+module EsCliModelAudit:
+    private:
+        const module Limits:
+            SOURCE_BYTES: usize = 1048576
+            TOTAL_SOURCE_BYTES: usize = 8388608
+
+
+        const module Inputs:
+            MODEL: sview = "src/runtime/cli_model.elisa"
+            IR: sview = "src/ir/ir.elisa"
+            FIXTURE: sview = "test/ir/elisascript_ir_test.elisa"
+            CONTRACT: sview = "test/fixtures/script_parity/cli_launcher/CONTRACT.md"
+            DOCS: sview = "docs/ir.md"
+            DRIVER: sview = "src/driver/elisascript.elisa"
+            RUNNER: sview = "src/ir/runner.elisa"
+            RUNNER_FIXTURE: sview = "test/ir/elisascript_runner_test.elisa"
+
+
+        error AuditReadError:
+            Missing
+            LimitExceeded
+
+
+        def contains_all(source: sview, required: darray[sview]) -> bool:
+            for needle in required:
+                return false if source.index(needle) < 0
+            return true
+
+
+        def read_source(input_path: Path, maximum_bytes: usize) -> sview error[AuditReadError] can[Memory.Allocate, Abort.Panic, Blocking.IO, File.Read, Unsafe.PointerCast]:
+            current_size: usize = try file_size(input_path) else err:
+                raise AuditReadError.Missing
+            raise AuditReadError.LimitExceeded if current_size > maximum_bytes
+            source: sview = try EsBoundedText::read_utf8(input_path, maximum_bytes) else err:
+                raise AuditReadError.Missing
+            raise AuditReadError.LimitExceeded if len(source) > maximum_bytes
+            return source
+
+
+    private:
+        def run(repository_root: Path) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, Blocking.IO, File.Read, Directory.Read, Unsafe.PointerCast]:
+            if not is_directory(repository_root):
+                print("cli model audit: missing repository root")
+                return 2i64
+            root_absolute: Path = try path_real(path_absolute(repository_root)) else err:
+                print("cli model audit: missing repository root")
+                return 2i64
+
+            paths: darray[sview] = [Inputs::MODEL, Inputs::IR, Inputs::FIXTURE, Inputs::CONTRACT, Inputs::DOCS, Inputs::DRIVER, Inputs::RUNNER, Inputs::RUNNER_FIXTURE]
+            sizes: mutable darray[usize] = []
+            sources: mutable darray[sview] = []
+            total_bytes: mutable usize = 0
+            for relative in paths |paths, root_absolute, sizes, total_bytes|:
+                input_path: Path = path_join(root_absolute, relative)
+                display: sview = f"{input_path}"
+                if not is_file(input_path) or not is_readable(input_path):
+                    write_stderr("cli model audit: missing source file: " + display + "\n")
+                    return 2i64
+                size: usize = try file_size(input_path) else err:
+                    write_stderr("cli model audit: unable to inspect source file: " + display + "\n")
+                    return 2i64
+                if size > Limits::SOURCE_BYTES or size > Limits::TOTAL_SOURCE_BYTES - total_bytes:
+                    write_stderr("cli model audit: source file exceeds audit limit: " + display + "\n")
+                    return 2i64
+                total_bytes <- total_bytes + size
+                sizes.push(size)
+
+            for index in 0..<paths.count |paths, root_absolute, sizes, sources|:
+                input_path: Path = path_join(root_absolute, paths[index])
+                catch read_source(input_path, sizes[index]):
+                    ok source:
+                        sources.push(source)
+                    error failure:
+                        if failure == AuditReadError.LimitExceeded:
+                            write_stderr("cli model audit: source file exceeds audit limit: " + f"{input_path}" + "\n")
+                            return 2i64
+                        write_stderr("cli model audit: missing source file: " + f"{input_path}" + "\n")
+                        return 2i64
+
+            model: sview = sources[0]
+            ir: sview = sources[1]
+            fixture: sview = sources[2]
+            contract: sview = sources[3]
+            docs: sview = sources[4]
+            driver: sview = sources[5]
+            runner: sview = sources[6]
+            runner_fixture: sview = sources[7]
+
+            declarations: darray[sview] = [
+                "module EsCli:",
+                "const module Limits:",
+                "Limits::ARGUMENTS",
+                "Limits::TEXT_BYTES",
+                "Limits::SOURCE_PATH_BYTES",
+                "const enum CliMode of u8:",
+                "const enum CliColorMode of u8:",
+                "struct CliInvocation:",
+                "error CliContractError:",
+                "def validate_cli_invocation(",
+                "def parse_cli_arguments("
+            ]
+            boundaries: darray[sview] = [
+                "cli_mode_valid",
+                "cli_color_valid",
+                "cli_mode_requires_source",
+                "DuplicateMode",
+                "DuplicateOption",
+                "UnexpectedArgument",
+                "TestArgumentsUnsupported",
+                "InvalidSourceExtension",
+                "MissingOptionValue",
+                "ArgumentLimitExceeded",
+                "SourcePathLimitExceeded",
+                "option_end_seen",
+                "arguments[index] == \"--\" and not invocation.option_end_seen"
+            ]
+            if not contains_all(model, declarations) or not contains_all(model, boundaries):
+                return 1i64
+            if ir.index("include \"../runtime/cli_model.elisa\"") < 0:
+                return 1i64
+
+            fixture_patterns: darray[sview] = [
+                "typed_cli_contract_separates_launcher_options_from_script_arguments",
+                "typed_cli_launcher_budget_contract_matches_host_collector",
+                "CliMode.Check",
+                "CliColorMode.Never",
+                "CliContractError.DuplicateMode",
+                "CliContractError.UnknownOption",
+                "CliContractError.InvalidSourceExtension",
+                "CliContractError.UnexpectedArgument",
+                "CliContractError.DuplicateOption"
+            ]
+            if not contains_all(fixture, fixture_patterns):
+                return 1i64
+
+            contract_patterns: darray[sview] = [
+                "bounded C-string scan",
+                "ArgumentBytes",
+                "TestArgumentsUnsupported"
+            ]
+            if not contains_all(contract, contract_patterns):
+                return 1i64
+            return 1i64 if docs.index("`EsCli::CliInvocation`") < 0
+            return 1i64 if driver.index("using EsCli") < 0
+            return 1i64 if driver.index("request.mode <- invocation.mode") < 0
+            return 1i64 if driver.index("request.strict_engine <- invocation.strict_engine") < 0
+            return 1i64 if driver.index("HostArgumentFailure.ArgumentBytes") < 0
+            return 1i64 if driver.index("script arguments exceed aggregate byte limit") < 0
+            return 1i64 if driver.index("argument_limit < EsIr::ES_RUNTIME_DEFAULT_MAX_CSTRING_BYTES - 1") < 0
+            return 1i64 if driver.index("request.strict_engine:") < 0
+            return 1i64 if runner.index("result.mode <- CliMode.Run") < 0
+            return 1i64 if runner.index("result.option_end_seen <- false") < 0
+            return 1i64 if runner.index("def check_elisascript_program_file_diagnostic") < 0
+            return 1i64 if runner.index("request.mode == EsCli::CliMode.Check") < 0
+            return 1i64 if runner.index("requested launcher mode is not implemented") < 0
+            return 1i64 if runner.index("mode: mutable CliMode") < 0
+            return 1i64 if runner.index("ExecuteDirectOnly") < 0
+            return 1i64 if runner.index("execute_bytecode_direct_only") < 0
+            return 1i64 if runner.index("const enum ElisascriptProgramDiagnosticMode of u8:") < 0
+            return 1i64 if runner.index("return if mode == ElisascriptProgramDiagnosticMode.VerifyOnly") < 0
+            return 1i64 if runner_fixture.index("diagnostic_check_accepts_modules_without_main_and_never_executes") < 0
+            return 1i64 if runner_fixture.index("strict_engine_diagnostic_rejects_interpreter_fallback") < 0
+            return 1i64 if runner_fixture.index("cli_parser_resets_reused_request_state") < 0
+
+            print("cli model audit: typed modes and bounded options are present; --check validates without executing")
+            return 0i64
+
+
+    public:
+        def run_default() -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, Blocking.IO, File.Read, Directory.Read, Unsafe.PointerCast]:
+            script_path: Path = Script::source_path()
+            script_directory: Path = try path_real(path_absolute(script_path.parent())) else err:
+                print("cli model audit: missing repository root")
+                return 2i64
+            return run(script_directory.parent())
+
+
+def main(arguments: darray[sview]) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, Blocking.IO, File.Read, Directory.Read, Unsafe.PointerCast]:
+    return EsCliModelAudit::run_default()
