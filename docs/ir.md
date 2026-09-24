@@ -1826,7 +1826,8 @@ classified as `WorkingDirectoryError.EmbeddedNul` before ordinary path errors.
 `EsRegexCallback::RegexCallbackSession` is the callback-aware replacement
 boundary. The matcher submits non-overlapping spans and capture counts; the
 session accounts bounded input, unmatched prefixes, callback replacement bytes,
-preserved bytes skipped during zero-width progress, and the final suffix under one output ceiling. Global versus single replacement is explicit,
+the exact matcher-supplied byte span skipped after a zero-width match, and the
+final suffix under one output ceiling. Global versus single replacement is explicit,
 and capture budgets must be nonzero,
 zero-width matches must advance (including the EOF non-progress guard), and a
 callback cannot be re-entered while a replacement is pending. Match/capture/

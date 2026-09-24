@@ -61,7 +61,12 @@ done
 rg -Fq 'regex_callback_rejects_match_count_without_span_progress' "$runtime_fixture"
 rg -Fq 'regex_callback_rejects_zero_width_marker_ahead_of_cursor' "$runtime_fixture"
 rg -Fq 'regex_callback_accepts_empty_input_zero_width_match_at_eof' "$runtime_fixture"
-rg -Fq 'preserved: usize = 1 if session.pending_end == session.pending_start' "$model"
+rg -Fq 'regex_callback_uses_matcher_supplied_zero_width_advance' "$runtime_fixture"
+rg -Fq 'regex_callback_rejects_missing_or_oversized_zero_width_advance' "$runtime_fixture"
+rg -Fq 'zero_width_advance_bytes: usize = 0' "$model"
+rg -Fq 'raise RegexCallbackError.NonProgress if zero_width_advance_bytes == 0' "$model"
+rg -Fq 'session.cursor <- session.pending_start + preserved' "$model"
+rg -Fq 'zero_width_advance_bytes: 1' "$fixture_file"
 rg -Fq 'assert zero.output_bytes == 2' "$fixture_file"
 
 for fixture_pattern in \
