@@ -36,6 +36,13 @@ for toml_boundary in \
     'CONFIG_TOML_MAX_TOTAL_ARRAY_ITEMS' \
     'CONFIG_TOML_MAX_TOTAL_TABLE_FIELDS' \
     'CONFIG_TOML_MAX_ARRAY_TABLE_ROWS' \
+    'CONFIG_TOML_MAX_TOTAL_VALUE_NODES' \
+    'CONFIG_TOML_MAX_VALUE_DEPTH' \
+    'struct ConfigTomlNode:' \
+    'struct ConfigTomlNodeChild:' \
+    'def config_toml_parse_value_graph(' \
+    'def config_toml_value_graph_valid(' \
+    'InvalidValueGraph' \
     'struct ConfigTomlArrayTableInstance:' \
     'config_toml_append_array_table_ordinal(' \
     'config_toml_dotted_descendant(' \
@@ -181,6 +188,8 @@ rg -Fq 'ConfigTomlValueKind.InlineTable' "$toml_fixture"
 rg -Fq 'ConfigTomlTableField' "$toml_fixture"
 rg -Fq 'duplicate_inline_key_rejected' "$toml_fixture"
 rg -Fq 'array_table_rows_preserve_header_order_and_instance_indices' "$toml_fixture"
+rg -Fq 'nested_values: ConfigTomlLayer' "$toml_fixture"
+rg -Fq 'validate_toml_value_graph(nested_values.values[dependency_index].nodes' "$toml_fixture"
 rg -Fq 'parsed.array_tables.count == 3' "$toml_fixture"
 rg -Fq 'empty_rows.array_tables.count == 2' "$toml_fixture"
 rg -Fq 'ConfigTomlValueKind.Integer' "$toml_fixture"

@@ -501,14 +501,14 @@ configuration for text, arrays, and inline-table contents, so both the schema
 and resolution must outlive it. `materialize_toml_schema_table` selects one
 canonical dotted table path (or the document root) and binds only its immediate
 keys; sibling tables and dotted descendants are left for separate schemas.
-Schema type graphs can validate scalar array items and one-level inline-table
-fields, including required/unknown-field rules and exact numeric targets. The
-adapter caps resolved values, schema fields, types, and nested fields at 4,096
+Schema type graphs validate recursive array items and inline-table fields,
+including nested aliases, required/unknown-field rules, and exact numeric
+targets. The adapter caps resolved values, schema fields, types, and nested fields at 4,096
 before descriptor validation to keep work predictable. The
-current parser cannot represent recursively nested TOML arrays or inline
-tables, and the record retains those supported nested payloads by source
-reference instead of constructing an owned nested typed graph. Dates/times and
-typed cross-source merging also remain unsupported. Source fixtures and static
+recursive TOML value graph is traversed against array-item and object-field
+types. The record borrows those graph values by resolution index instead of
+constructing a second owned nested typed graph. Dates/times and typed
+cross-source merging remain unsupported. Source fixtures and static
 guards describe the behavior but are not runtime evidence while compiler
 validation is held.
 
@@ -2913,15 +2913,17 @@ This is a bounded flat-JSON slice of A06.
 `EsConfigToml::parse_toml_config` adapts a bounded TOML subset to the same
 owned File layer. It accepts bare/dotted keys, tables, comments, single-line
 basic and literal strings, booleans, TOML decimal/hexadecimal/octal/binary/
-floating-point/special numbers (with legal digit separators), and arrays of
-scalar values across physical lines, including comments and trailing commas.
-Numeric lexemes remain exact; array items additionally retain
-text/boolean/integer/float kinds through `ConfigTomlValue`, while the
-format-neutral precedence view keeps the original array spelling. One-level
-inline tables retain field names, scalar kinds, and scalar array contents in
-`ConfigTomlTableField`, while the precedence view keeps the original table
-spelling. Nested inline tables, nested arrays, dates/times, multiline strings,
-Unicode escapes, and quoted keys remain unsupported and are rejected.
+floating-point/special numbers (with legal digit separators), and recursive
+mixed arrays and inline tables across physical lines where arrays permit it.
+`ConfigTomlNode` and `ConfigTomlNodeChild` retain decoded scalar values,
+container kinds, ordinals, and inline-table keys in a structurally validated
+bounded graph;
+the format-neutral precedence view still preserves the original array/table
+spelling. A compatibility projection also provides flat `items`/`fields` for
+values representable by the former one-level subset. The graph is bounded to
+16 MiB of source, 262,144 nodes, depth 128, and the existing aggregate array
+item/table-field limits. Dates/times, multiline strings, Unicode escapes, and
+quoted keys remain unsupported and are rejected.
 Array-of-table headers are represented as zero-based numeric dotted key
 segments (for example `links.user.0.name`) and a
 typed row directory (`ConfigTomlArrayTableInstance`); nested regular tables are

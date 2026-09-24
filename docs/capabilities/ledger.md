@@ -934,14 +934,15 @@ entry ceiling before materialization and retaining exact number spellings and
 document-borrowed decoded scalar text; structures require the typed schema
 adapter. EsConfigToml parses bare/dotted keys, tables, comments, single-line
 basic/literal strings, booleans, TOML numeric forms with validated digit
-separators, and arrays of scalar values across physical lines with comments
-and trailing commas. Numeric lexemes remain exact; `ConfigTomlValue` preserves
-array item kinds while the generic precedence view keeps the original array
-spelling. One-level inline tables preserve typed scalar and scalar-array fields
-in `ConfigTomlTableField`; the generic layer retains the raw table spelling.
-This does not yet provide a general structured merge or typed numeric
-conversion. Nested inline tables, nested arrays, date/time values, multiline
-strings, Unicode escapes, and quoted keys remain unsupported and fail closed.
+separators, and recursive mixed arrays/inline tables across physical lines
+where arrays permit it. Numeric lexemes remain exact. `ConfigTomlNode` and
+`ConfigTomlNodeChild` preserve decoded scalars, container kinds, ordinals, and
+object keys in a validated owned graph; the generic layer retains raw spelling.
+Flat `items`/`fields` remain a compatibility projection for earlier shallow
+values. The graph is bounded by source bytes, depth, node count, per-array and
+aggregate item counts, and per-table and aggregate field counts. Structured
+cross-source merge, date/time values, multiline strings, Unicode escapes, and
+quoted keys remain unsupported and fail closed.
 Array-of-table rows are represented as zero-based numeric dotted key segments
 and a typed row directory (`ConfigTomlArrayTableInstance`), with nested regular
 tables scoped under the latest row; nested array-of-table graphs remain
@@ -1000,14 +1001,14 @@ constructors, and runtime qualification remain open.
 ES-SCRIPT-055 | EsSchemaToml binds resolved TOML values to the shared schema
 contract, either at the document root or within one canonical dotted table
 path. It applies aliases, requiredness, unknown-key rules, duplicate-key
-checks, scalar kinds, and exact numeric targets. Schema graphs validate scalar
-array items and fields of the currently supported one-level inline tables,
-including nested aliases and required/unknown policies. The record borrows the
-resolved TOML sidecar for retained strings and containers; it does not yet
-build an owned recursive value graph. It rejects more than 4,096 resolved
+checks, scalar kinds, and exact numeric targets. Schema graphs validate
+recursive arrays and inline tables, including nested aliases and
+required/unknown policies. The record borrows the resolved TOML sidecar for
+retained strings and containers; it does not yet build a second owned
+recursive typed value graph. It rejects more than 4,096 resolved
 values, top-level schema fields, type nodes, or nested fields before expensive
-descriptor validation. Recursively nested arrays/inline tables,
-typed structured overrides, and TOML date/time values remain unsupported.
+descriptor validation. Typed structured overrides and TOML date/time values
+remain unsupported.
 Focused fixtures and the compiler-free static audit are source-only; runtime
 and project-level parity qualification remain open under the validation hold.
 

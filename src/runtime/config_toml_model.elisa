@@ -1,6 +1,6 @@
 # Bounded TOML configuration subset with explicit rejection of unsupported
-# constructs. Parsed keys, scalar values, inline-table fields, and scalar array
-# items are owned by the result wrapper; none borrows the source buffer.
+# constructs. Keys and recursive typed value graphs are owned by the result
+# wrapper; none borrows the source buffer.
 
 module EsConfigToml:
     using EsConfig
@@ -12,6 +12,9 @@ module EsConfigToml:
         const CONFIG_TOML_MAX_TOTAL_ARRAY_ITEMS: usize = 65536
         const CONFIG_TOML_MAX_TOTAL_TABLE_FIELDS: usize = 65536
         const CONFIG_TOML_MAX_ARRAY_TABLE_ROWS: usize = 65536
+        const CONFIG_TOML_MAX_TOTAL_VALUE_NODES: usize = 262144
+        const CONFIG_TOML_MAX_VALUE_DEPTH: usize = 128
+        const CONFIG_TOML_NODE_INDEX_NONE: usize = 4294967295
 
 
         const enum ConfigTomlValueKind of u8:
@@ -35,12 +38,32 @@ module EsConfigToml:
             items: darray[ConfigTomlArrayItem] = []
 
 
+        # Recursive typed representation. Child edges are stored contiguously
+        # per node; object edges carry decoded key bytes and arrays carry an
+        # empty key. Flat items/fields below remain compatibility projections
+        # for values representable by the earlier one-level adapter.
+        struct ConfigTomlNode:
+            kind: ConfigTomlValueKind
+            text: darray[u8] = []
+            child_start: usize = CONFIG_TOML_NODE_INDEX_NONE
+            child_count: usize = 0
+
+
+        struct ConfigTomlNodeChild:
+            owner_index: usize
+            value_index: usize
+            ordinal: usize
+            key: darray[u8] = []
+
+
         struct ConfigTomlValue:
             key: sview
             kind: ConfigTomlValueKind
             text: darray[u8] = []
             items: darray[ConfigTomlArrayItem] = []
             fields: darray[ConfigTomlTableField] = []
+            nodes: darray[ConfigTomlNode] = []
+            children: darray[ConfigTomlNodeChild] = []
 
 
         struct ConfigTomlArrayTableInstance:
@@ -58,6 +81,8 @@ module EsConfigToml:
             text: darray[u8] = []
             items: darray[ConfigTomlArrayItem] = []
             fields: darray[ConfigTomlTableField] = []
+            nodes: darray[ConfigTomlNode] = []
+            children: darray[ConfigTomlNodeChild] = []
 
 
         struct ConfigTomlResolution:
@@ -79,6 +104,7 @@ module EsConfigToml:
         error ConfigTomlError:
             InputLimitExceeded
             InvalidUtf8
+            InvalidValueGraph
             InvalidTable
             DuplicateTable
             InvalidKey
@@ -400,6 +426,7 @@ module EsConfigToml:
         def config_toml_inline_value_end(source: sview, start: usize, end: usize) -> usize error[ConfigTomlError]:
             cursor: mutable usize = start
             array_depth: mutable usize = 0
+            table_depth: mutable usize = 0
             quote: mutable u8 = 0
             escaped: mutable bool = false
             while cursor < end:
@@ -419,10 +446,54 @@ module EsConfigToml:
                 elif byte == 93:
                     raise ConfigTomlError.UnsupportedValue if array_depth == 0
                     array_depth <- array_depth - 1
-                elif array_depth == 0 and (byte == 44 or byte == 125):
+                elif byte == 123:
+                    table_depth <- table_depth + 1
+                elif byte == 125:
+                    if table_depth == 0:
+                        return cursor
+                    table_depth <- table_depth - 1
+                elif array_depth == 0 and table_depth == 0 and byte == 44:
                     return cursor
                 cursor <- cursor + 1
             raise ConfigTomlError.UnsupportedValue
+
+
+        def config_toml_graph_item_end(source: sview, start: usize, end: usize) -> usize error[ConfigTomlError]:
+            cursor: mutable usize = start
+            array_depth: mutable usize = 0
+            table_depth: mutable usize = 0
+            quote: mutable u8 = 0
+            escaped: mutable bool = false
+            in_comment: mutable bool = false
+            while cursor < end:
+                byte: u8 = sview_at(source, cursor)
+                if in_comment:
+                    in_comment <- false if byte == 10
+                elif quote != 0:
+                    if quote == 34 and escaped:
+                        escaped <- false
+                    elif quote == 34 and byte == 92:
+                        escaped <- true
+                    elif byte == quote:
+                        quote <- 0
+                elif byte == 34 or byte == 39:
+                    quote <- byte
+                elif byte == 35:
+                    in_comment <- true
+                elif byte == 91:
+                    array_depth <- array_depth + 1
+                elif byte == 93:
+                    return cursor if array_depth == 0
+                    array_depth <- array_depth - 1
+                elif byte == 123:
+                    table_depth <- table_depth + 1
+                elif byte == 125:
+                    return cursor if table_depth == 0
+                    table_depth <- table_depth - 1
+                elif byte == 44 and array_depth == 0 and table_depth == 0:
+                    return cursor
+                cursor <- cursor + 1
+            return cursor
 
 
         def config_toml_inline_fields_unique(fields: darray[ConfigTomlTableField]) -> bool can[Memory.Allocate, Abort.Panic]:
@@ -525,6 +596,180 @@ module EsConfigToml:
             return items
 
 
+        def config_toml_graph_children_unique(children: darray[ConfigTomlNodeChild]) -> bool can[Memory.Allocate, Abort.Panic]:
+            names: mutable darray[sview] = []
+            for child in children |names|:
+                names.push(bytes_view(child.key))
+            ordered: darray[sview] = sorted(names)
+            for index in 1..<ordered.count |ordered|:
+                return false if ordered[index - 1] == ordered[index]
+            return true
+
+
+        def config_toml_parse_value_graph(source: sview, start: usize, end: usize, depth: usize, nodes: mutable darray[ConfigTomlNode]&, children: mutable darray[ConfigTomlNodeChild]&, total_nodes: mutable usize&, total_array_items: mutable usize&, total_table_fields: mutable usize&) -> usize error[ConfigTomlError] can[Memory.Allocate, Abort.Panic]:
+            raise ConfigTomlError.UnsupportedValue if start >= end or depth >= CONFIG_TOML_MAX_VALUE_DEPTH
+            raise ConfigTomlError.OutputLimitExceeded if total_nodes >= CONFIG_TOML_MAX_TOTAL_VALUE_NODES
+            kind: ConfigTomlValueKind = ConfigTomlValueKind.Array if sview_at(source, start) == 91 else ConfigTomlValueKind.InlineTable if sview_at(source, start) == 123 else config_toml_scalar_kind(source, start, end)
+            node_index: usize = nodes.count
+            nodes.push(ConfigTomlNode{kind: kind})
+            total_nodes <- total_nodes + 1
+            if kind == ConfigTomlValueKind.Array:
+                raise ConfigTomlError.UnsupportedValue if sview_at(source, end - 1) != 93
+                pending_children: mutable darray[ConfigTomlNodeChild] = []
+                cursor: mutable usize = start + 1
+                last_was_comma: mutable bool = false
+                while cursor < end - 1:
+                    config_toml_skip_array_trivia(source, cursor, end - 1)
+                    if cursor == end - 1:
+                        break
+                    raise ConfigTomlError.OutputLimitExceeded if pending_children.count >= CONFIG_TOML_MAX_ARRAY_ITEMS
+                    item_end: usize = try config_toml_graph_item_end(source, cursor, end - 1)
+                    item_start: usize = config_toml_trim_start(source, cursor, item_end)
+                    item_finish: usize = config_toml_trim_end(source, item_start, item_end)
+                    raise ConfigTomlError.UnsupportedValue if item_start >= item_finish
+                    child_index: usize = try config_toml_parse_value_graph(source, item_start, item_finish, depth + 1, nodes, children, total_nodes, total_array_items, total_table_fields)
+                    raise ConfigTomlError.OutputLimitExceeded if total_array_items >= CONFIG_TOML_MAX_TOTAL_ARRAY_ITEMS
+                    total_array_items <- total_array_items + 1
+                    pending_children.push(ConfigTomlNodeChild{owner_index: node_index, value_index: child_index, ordinal: pending_children.count})
+                    cursor <- item_finish
+                    cursor <- config_toml_trim_start(source, cursor, end - 1)
+                    if cursor < end - 1:
+                        raise ConfigTomlError.UnsupportedValue if sview_at(source, cursor) != 44
+                        cursor <- cursor + 1
+                        last_was_comma <- true
+                    else:
+                        last_was_comma <- false
+                raise ConfigTomlError.UnsupportedValue if last_was_comma and pending_children.count == 0
+                nodes[node_index].child_start <- children.count
+                nodes[node_index].child_count <- pending_children.count
+                for child in pending_children |children|:
+                    children.push(child)
+                return node_index
+            elif kind == ConfigTomlValueKind.InlineTable:
+                raise ConfigTomlError.UnsupportedValue if sview_at(source, end - 1) != 125
+                pending_children: mutable darray[ConfigTomlNodeChild] = []
+                cursor: mutable usize = start + 1
+                while cursor < end - 1:
+                    cursor <- config_toml_trim_start(source, cursor, end - 1)
+                    if cursor == end - 1:
+                        break
+                    raise ConfigTomlError.OutputLimitExceeded if pending_children.count >= EsConfig::Limits::ENTRIES_PER_LAYER
+                    key_end: mutable usize = cursor
+                    while key_end < end - 1 and sview_at(source, key_end) != 61:
+                        key_end <- key_end + 1
+                    raise ConfigTomlError.ExpectedEquals if key_end >= end - 1
+                    key: darray[u8] = try config_toml_parse_key_path(source, cursor, key_end)
+                    value_start: usize = config_toml_trim_start(source, key_end + 1, end - 1)
+                    value_end: usize = try config_toml_inline_value_end(source, value_start, end - 1)
+                    value_start <- config_toml_trim_start(source, value_start, value_end)
+                    value_end <- config_toml_trim_end(source, value_start, value_end)
+                    raise ConfigTomlError.UnsupportedValue if value_start >= value_end
+                    child_index: usize = try config_toml_parse_value_graph(source, value_start, value_end, depth + 1, nodes, children, total_nodes, total_array_items, total_table_fields)
+                    raise ConfigTomlError.OutputLimitExceeded if total_table_fields >= CONFIG_TOML_MAX_TOTAL_TABLE_FIELDS
+                    total_table_fields <- total_table_fields + 1
+                    pending_children.push(ConfigTomlNodeChild{owner_index: node_index, value_index: child_index, ordinal: pending_children.count, key: key})
+                    cursor <- value_end
+                    cursor <- config_toml_trim_start(source, cursor, end - 1)
+                    if cursor < end - 1:
+                        raise ConfigTomlError.UnsupportedValue if sview_at(source, cursor) != 44
+                        cursor <- cursor + 1
+                        cursor <- config_toml_trim_start(source, cursor, end - 1)
+                        raise ConfigTomlError.UnsupportedValue if cursor == end - 1
+                raise ConfigTomlError.DuplicateKey if not config_toml_graph_children_unique(pending_children)
+                nodes[node_index].child_start <- children.count
+                nodes[node_index].child_count <- pending_children.count
+                for child in pending_children |children|:
+                    children.push(child)
+                return node_index
+            else:
+                nodes[node_index].text <- try config_toml_parse_scalar(source, start, end)
+                return node_index
+
+
+        def config_toml_graph_legacy_projection_supported(root_index: usize, nodes: darray[ConfigTomlNode], children: darray[ConfigTomlNodeChild]) -> bool:
+            root: ConfigTomlNode = nodes[root_index]
+            if root.kind == ConfigTomlValueKind.Array:
+                for ordinal in 0..<root.child_count |nodes, children, root|:
+                    child_index: usize = children[root.child_start + ordinal].value_index
+                    return false if nodes[child_index].kind == ConfigTomlValueKind.Array or nodes[child_index].kind == ConfigTomlValueKind.InlineTable
+            elif root.kind == ConfigTomlValueKind.InlineTable:
+                for ordinal in 0..<root.child_count |nodes, children, root|:
+                    child_index: usize = children[root.child_start + ordinal].value_index
+                    child_node: ConfigTomlNode = nodes[child_index]
+                    return false if child_node.kind == ConfigTomlValueKind.InlineTable
+                    if child_node.kind == ConfigTomlValueKind.Array:
+                        for item_ordinal in 0..<child_node.child_count |nodes, children, child_node|:
+                            item_index: usize = children[child_node.child_start + item_ordinal].value_index
+                            return false if nodes[item_index].kind == ConfigTomlValueKind.Array or nodes[item_index].kind == ConfigTomlValueKind.InlineTable
+            return true
+
+
+        def config_toml_value_kind_valid(kind: ConfigTomlValueKind) -> bool:
+            return kind in {ConfigTomlValueKind.Text, ConfigTomlValueKind.Boolean, ConfigTomlValueKind.Integer, ConfigTomlValueKind.Float, ConfigTomlValueKind.Array, ConfigTomlValueKind.InlineTable}
+
+
+        def config_toml_value_graph_valid(nodes: darray[ConfigTomlNode], children: darray[ConfigTomlNodeChild]) -> bool can[Memory.Allocate, Abort.Panic]:
+            return false if nodes.count == 0 or nodes.count > CONFIG_TOML_MAX_TOTAL_VALUE_NODES
+            return false if children.count > CONFIG_TOML_MAX_TOTAL_ARRAY_ITEMS + CONFIG_TOML_MAX_TOTAL_TABLE_FIELDS
+            parent_counts: mutable darray[usize] = []
+            edge_counts: mutable darray[usize] = []
+            total_array_children: mutable usize = 0
+            total_table_children: mutable usize = 0
+            for _ in 0..<nodes.count |parent_counts, edge_counts|:
+                parent_counts.push(0)
+            for _ in 0..<children.count |edge_counts|:
+                edge_counts.push(0)
+            for node_index in 0..<nodes.count |nodes, children, parent_counts, edge_counts|:
+                node: ConfigTomlNode = nodes[node_index]
+                return false if not config_toml_value_kind_valid(node.kind)
+                if node.kind != ConfigTomlValueKind.Array and node.kind != ConfigTomlValueKind.InlineTable:
+                    return false if node.child_start != CONFIG_TOML_NODE_INDEX_NONE or node.child_count != 0
+                    if node.kind == ConfigTomlValueKind.Text:
+                        return false if not config_toml_utf8_valid(bytes_view(node.text))
+                    else:
+                        return false if node.text.count == 0
+                        scalar_view: sview = bytes_view(node.text)
+                        return false if config_toml_scalar_kind(scalar_view, 0, node.text.count) != node.kind
+                        return false if node.kind == ConfigTomlValueKind.Boolean and scalar_view != "true" and scalar_view != "false"
+                        return false if (node.kind == ConfigTomlValueKind.Integer or node.kind == ConfigTomlValueKind.Float) and not config_toml_number_valid(scalar_view, 0, node.text.count)
+                else:
+                    return false if node.text.count != 0
+                    return false if node.child_start == CONFIG_TOML_NODE_INDEX_NONE or node.child_start > children.count
+                    return false if node.child_count > children.count - node.child_start
+                    if node.kind == ConfigTomlValueKind.Array:
+                        return false if node.child_count > CONFIG_TOML_MAX_ARRAY_ITEMS
+                        return false if node.child_count > CONFIG_TOML_MAX_TOTAL_ARRAY_ITEMS - total_array_children
+                        total_array_children <- total_array_children + node.child_count
+                    else:
+                        return false if node.child_count > EsConfig::Limits::ENTRIES_PER_LAYER
+                        return false if node.child_count > CONFIG_TOML_MAX_TOTAL_TABLE_FIELDS - total_table_children
+                        total_table_children <- total_table_children + node.child_count
+                    key_names: mutable darray[sview] = []
+                    for ordinal in 0..<node.child_count |nodes, children, parent_counts, edge_counts, node_index, node, key_names|:
+                        edge_index: usize = node.child_start + ordinal
+                        edge: ConfigTomlNodeChild = children[edge_index]
+                        return false if edge.owner_index != node_index or edge.ordinal != ordinal or edge.value_index <= node_index or edge.value_index >= nodes.count
+                        return false if parent_counts[edge.value_index] != 0
+                        parent_counts[edge.value_index] <- 1
+                        edge_counts[edge_index] <- edge_counts[edge_index] + 1
+                        if node.kind == ConfigTomlValueKind.Array:
+                            return false if edge.key.count != 0
+                        else:
+                            return false if edge.key.count == 0 or sview_contains_byte(bytes_view(edge.key), 0)
+                            return false if not config_toml_utf8_valid(bytes_view(edge.key))
+                            key_names.push(bytes_view(edge.key))
+                    if node.kind == ConfigTomlValueKind.InlineTable:
+                        ordered_names: darray[sview] = sorted(key_names)
+                        for offset in 1..<ordered_names.count |ordered_names|:
+                            return false if ordered_names[offset - 1] == ordered_names[offset]
+            return false if parent_counts[0] != 0
+            for index in 1..<parent_counts.count |parent_counts|:
+                return false if parent_counts[index] != 1
+            for edge_index in 0..<edge_counts.count |edge_counts|:
+                return false if edge_counts[edge_index] != 1
+            return true
+
+
         def config_toml_copy_span(source: sview, start: usize, end: usize) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
             copied: mutable darray[u8] = []
             for offset in start..<end |source, copied|:
@@ -553,6 +798,20 @@ module EsConfigToml:
             return copied
 
 
+        def config_toml_copy_nodes(source: darray[ConfigTomlNode]) -> darray[ConfigTomlNode] can[Memory.Allocate, Abort.Panic]:
+            copied: mutable darray[ConfigTomlNode] = []
+            for node in source |source, copied|:
+                copied.push(ConfigTomlNode{kind: node.kind, text: config_toml_copy_bytes(node.text), child_start: node.child_start, child_count: node.child_count})
+            return copied
+
+
+        def config_toml_copy_node_children(source: darray[ConfigTomlNodeChild]) -> darray[ConfigTomlNodeChild] can[Memory.Allocate, Abort.Panic]:
+            copied: mutable darray[ConfigTomlNodeChild] = []
+            for child in source |source, copied|:
+                copied.push(ConfigTomlNodeChild{owner_index: child.owner_index, value_index: child.value_index, ordinal: child.ordinal, key: config_toml_copy_bytes(child.key)})
+            return copied
+
+
         def config_toml_utf8_valid(source: sview) -> bool:
             cursor: mutable Utf8Cursor = Utf8Cursor{}
             for offset in 0..<sview_len(source) |source, cursor|:
@@ -561,6 +820,10 @@ module EsConfigToml:
 
 
     public:
+        def validate_toml_value_graph(nodes: darray[ConfigTomlNode], children: darray[ConfigTomlNodeChild]) -> bool can[Memory.Allocate, Abort.Panic]:
+            return config_toml_value_graph_valid(nodes, children)
+
+
         def parse_toml_config(source: sview) -> ConfigTomlLayer error[ConfigTomlError, ConfigError] can[Memory.Allocate, Abort.Panic]:
             raise ConfigTomlError.InputLimitExceeded if sview_len(source) > CONFIG_TOML_MAX_BYTES
             raise ConfigTomlError.InvalidUtf8 if not config_toml_utf8_valid(source)
@@ -574,6 +837,9 @@ module EsConfigToml:
             layer_bytes: mutable usize = 0
             array_item_count: mutable usize = 0
             table_field_count: mutable usize = 0
+            value_node_count: mutable usize = 0
+            graph_array_item_count: mutable usize = 0
+            graph_table_field_count: mutable usize = 0
             line_start: mutable usize = 0
             while line_start <= sview_len(source):
                 line_end: mutable usize = line_start
@@ -662,20 +928,26 @@ module EsConfigToml:
                         typed_text: mutable darray[u8] = []
                         array_items: mutable darray[ConfigTomlArrayItem] = []
                         table_fields: mutable darray[ConfigTomlTableField] = []
+                        typed_nodes: mutable darray[ConfigTomlNode] = []
+                        typed_children: mutable darray[ConfigTomlNodeChild] = []
+                        root_node_index: usize = try config_toml_parse_value_graph(source, value_start, value_end, 0, typed_nodes, typed_children, value_node_count, graph_array_item_count, graph_table_field_count)
+                        raise ConfigTomlError.InvalidValueGraph if root_node_index != 0 or typed_nodes[0].kind != value_kind or not config_toml_value_graph_valid(typed_nodes, typed_children)
                         value: darray[u8] = []
                         if value_kind == ConfigTomlValueKind.Array:
-                            remaining_array_items: usize = CONFIG_TOML_MAX_TOTAL_ARRAY_ITEMS - array_item_count
-                            array_items <- try config_toml_parse_array(source, value_start, value_end, remaining_array_items)
-                            array_item_count <- array_item_count + array_items.count
                             value <- config_toml_copy_span(source, value_start, value_end)
+                            if config_toml_graph_legacy_projection_supported(root_node_index, typed_nodes, typed_children):
+                                remaining_array_items: usize = CONFIG_TOML_MAX_TOTAL_ARRAY_ITEMS - array_item_count
+                                array_items <- try config_toml_parse_array(source, value_start, value_end, remaining_array_items)
+                                array_item_count <- array_item_count + array_items.count
                         elif value_kind == ConfigTomlValueKind.InlineTable:
-                            remaining_array_items: usize = CONFIG_TOML_MAX_TOTAL_ARRAY_ITEMS - array_item_count
-                            remaining_table_fields: usize = CONFIG_TOML_MAX_TOTAL_TABLE_FIELDS - table_field_count
-                            table_fields <- try config_toml_parse_inline_table(source, value_start, value_end, remaining_array_items, remaining_table_fields)
-                            table_field_count <- table_field_count + table_fields.count
-                            for field in table_fields |table_fields, array_item_count|:
-                                array_item_count <- array_item_count + field.items.count
                             value <- config_toml_copy_span(source, value_start, value_end)
+                            if config_toml_graph_legacy_projection_supported(root_node_index, typed_nodes, typed_children):
+                                remaining_array_items: usize = CONFIG_TOML_MAX_TOTAL_ARRAY_ITEMS - array_item_count
+                                remaining_table_fields: usize = CONFIG_TOML_MAX_TOTAL_TABLE_FIELDS - table_field_count
+                                table_fields <- try config_toml_parse_inline_table(source, value_start, value_end, remaining_array_items, remaining_table_fields)
+                                table_field_count <- table_field_count + table_fields.count
+                                for field in table_fields |table_fields, array_item_count|:
+                                    array_item_count <- array_item_count + field.items.count
                         else:
                             typed_text <- try config_toml_parse_scalar(source, value_start, value_end)
                             value <- typed_text
@@ -693,7 +965,7 @@ module EsConfigToml:
                         key_view: sview = bytes_view(result.key_storage[result.key_storage.count - 1])
                         value_view: sview = bytes_view(result.value_storage[result.value_storage.count - 1])
                         result.layer.entries.push(ConfigEntry{key: key_view, value: value_view})
-                        result.values.push(ConfigTomlValue{key: key_view, kind: value_kind, text: typed_text, items: array_items, fields: table_fields})
+                        result.values.push(ConfigTomlValue{key: key_view, kind: value_kind, text: typed_text, items: array_items, fields: table_fields, nodes: typed_nodes, children: typed_children})
                 if line_end == sview_len(source):
                     break
                 line_start <- line_end + 1
@@ -716,7 +988,8 @@ module EsConfigToml:
                 override_text: mutable darray[u8] = []
                 for offset in 0..<sview_len(winner.value) |winner, override_text|:
                     override_text.push(sview_at(winner.value, offset))
-                return ConfigTomlResolvedValue{key: winner.key, raw_value: winner.value, source: winner.source, kind: ConfigTomlValueKind.Text, text: override_text}
+                override_nodes: darray[ConfigTomlNode] = [ConfigTomlNode{kind: ConfigTomlValueKind.Text, text: config_toml_copy_bytes(override_text)}]
+                return ConfigTomlResolvedValue{key: winner.key, raw_value: winner.value, source: winner.source, kind: ConfigTomlValueKind.Text, text: override_text, nodes: override_nodes}
             raise ConfigTomlError.TypedValueMissing if parsed.layer.source != ConfigSource.File
             entry_index: mutable usize = parsed.layer.entries.count
             for index in 0..<parsed.layer.entries.count |parsed, winner|:
@@ -726,10 +999,13 @@ module EsConfigToml:
             raise ConfigTomlError.TypedValueMissing if entry_index >= parsed.values.count
             raise ConfigTomlError.TypedValueMissing if parsed.values[entry_index].key != winner.key
             typed: ConfigTomlValue = parsed.values[entry_index]
+            raise ConfigTomlError.InvalidValueGraph if not config_toml_value_graph_valid(typed.nodes, typed.children)
             typed_text: darray[u8] = config_toml_copy_bytes(typed.text)
             typed_items: darray[ConfigTomlArrayItem] = config_toml_copy_array_items(typed.items)
             typed_fields: darray[ConfigTomlTableField] = config_toml_copy_table_fields(typed.fields)
-            return ConfigTomlResolvedValue{key: winner.key, raw_value: winner.value, source: winner.source, kind: typed.kind, text: typed_text, items: typed_items, fields: typed_fields}
+            typed_nodes: darray[ConfigTomlNode] = config_toml_copy_nodes(typed.nodes)
+            typed_children: darray[ConfigTomlNodeChild] = config_toml_copy_node_children(typed.children)
+            return ConfigTomlResolvedValue{key: winner.key, raw_value: winner.value, source: winner.source, kind: typed.kind, text: typed_text, items: typed_items, fields: typed_fields, nodes: typed_nodes, children: typed_children}
 
 
         def resolve_toml_config_layers(parsed: ConfigTomlLayer&, overrides: darray[ConfigLayer]) -> ConfigTomlResolution error[ConfigTomlError, ConfigError] can[Memory.Allocate, Abort.Panic]:

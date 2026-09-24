@@ -37,9 +37,8 @@ for declaration in \
     'schema_toml_key_is_direct_child(' \
     'schema_toml_integer_decimal_bytes(' \
     'schema_toml_separators_valid(' \
-    'schema_toml_type_value_valid(' \
-    'schema_toml_field_type_valid(' \
-    'schema_toml_table_fields_unique(' \
+    'schema_toml_node_type_valid(' \
+    'validate_toml_value_graph(' \
     'SchemaTomlValueKind.Missing' \
     'SchemaTomlValueKind.Array' \
     'SchemaTomlValueKind.Object' \
@@ -267,7 +266,7 @@ done
 rg -Fq '`EsSchema`' "$docs"
 rg -Fq '`EsSchemaCsv` materializes completed CSV/TSV records' "$docs"
 rg -Fq '`EsSchemaToml` binds resolved TOML configuration' "$docs"
-rg -Fq 'Schema type graphs can validate scalar array items' "$docs"
+rg -Fq 'Schema type graphs validate recursive array items' "$docs"
 rg -Fq '`validate_schema_json_record_against` rechecks those annotations' "$docs"
 rg -Fq 'header/positional projection once per call' "$docs"
 

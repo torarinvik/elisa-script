@@ -4,7 +4,8 @@
 # arrays, inline tables, and array-table rows stay borrowed from the resolved
 # TOML layer. Numeric targets are parsed into exact owned representations.
 # Callers retain the ConfigTomlResolution and SchemaDescriptor while using the
-# record. Recursive element/object schema validation is not provided here.
+# record. Nested array/object values are recursively validated against the
+# schema graph, while the result continues to borrow source values by index.
 
 module EsSchemaToml:
     using EsConfigToml
@@ -262,47 +263,26 @@ module EsSchemaToml:
             return schema.nested_fields.count
 
 
-        def schema_toml_table_fields_unique(fields: darray[ConfigTomlTableField]) -> bool can[Memory.Allocate, Abort.Panic]:
-            names: mutable darray[sview] = []
-            for field in fields |names|:
-                names.push(bytes_view(field.key))
-            ordered: darray[sview] = sorted(names)
-            for index in 1..<ordered.count |ordered|:
-                return false if ordered[index - 1] == ordered[index]
-            return true
-
-
-        def schema_toml_field_type_valid(schema: SchemaDescriptor&, type_index: usize, input_kind: ConfigTomlValueKind, text: darray[u8], items: darray[ConfigTomlArrayItem]) -> void error[SchemaContractError, SchemaTomlMaterializeError, SchemaIntegerError, SchemaDecimalError] can[Memory.Allocate, Abort.Panic]:
+        def schema_toml_node_type_valid(schema: SchemaDescriptor&, type_index: usize, nodes: darray[ConfigTomlNode], children: darray[ConfigTomlNodeChild], node_index: usize, source: ConfigSource, depth: usize) -> void error[SchemaContractError, SchemaTomlMaterializeError, SchemaIntegerError, SchemaDecimalError] can[Memory.Allocate, Abort.Panic]:
             raise SchemaContractError.InvalidTypeReference if type_index >= schema.types.count
+            raise SchemaTomlMaterializeError.SourceIndexInvalid if node_index >= nodes.count
+            raise SchemaTomlMaterializeError.InputLimitExceeded if depth >= CONFIG_TOML_MAX_VALUE_DEPTH
             type_node: SchemaTypeNode = schema.types[type_index]
-            if type_node.kind == SchemaValueKind.Array:
-                raise SchemaTomlMaterializeError.ValueKindMismatch if input_kind != ConfigTomlValueKind.Array
-                for item in items |schema, type_node|:
-                    try schema_toml_scalar_type_valid(schema, type_node.array_item_type_index, item.kind, item.text, ConfigSource.File)
-            elif type_node.kind == SchemaValueKind.Object:
-                # The current typed inline-table representation has no nested
-                # object payload on a table field, so fail closed here.
-                raise SchemaTomlMaterializeError.ValueKindMismatch
-            else:
-                try schema_toml_scalar_type_valid(schema, type_index, input_kind, text, ConfigSource.File)
-
-
-        def schema_toml_type_value_valid(schema: SchemaDescriptor&, type_index: usize, input_kind: ConfigTomlValueKind, text: darray[u8], items: darray[ConfigTomlArrayItem], fields: darray[ConfigTomlTableField], source: ConfigSource) -> void error[SchemaContractError, SchemaTomlMaterializeError, SchemaIntegerError, SchemaDecimalError] can[Memory.Allocate, Abort.Panic]:
-            raise SchemaContractError.InvalidTypeReference if type_index >= schema.types.count
-            type_node: SchemaTypeNode = schema.types[type_index]
-            if type_node.kind == SchemaValueKind.Array:
-                raise SchemaTomlMaterializeError.ValueKindMismatch if input_kind != ConfigTomlValueKind.Array
-                for item in items |schema, type_node|:
-                    try schema_toml_scalar_type_valid(schema, type_node.array_item_type_index, item.kind, item.text, ConfigSource.File)
-            elif type_node.kind == SchemaValueKind.Object:
-                raise SchemaTomlMaterializeError.ValueKindMismatch if input_kind != ConfigTomlValueKind.InlineTable
-                raise SchemaTomlMaterializeError.DuplicateField if not schema_toml_table_fields_unique(fields)
+            input_node: ConfigTomlNode = nodes[node_index]
+            if input_node.kind == ConfigTomlValueKind.Array:
+                raise SchemaTomlMaterializeError.ValueKindMismatch if type_node.kind != SchemaValueKind.Array
+                for ordinal in 0..<input_node.child_count |schema, nodes, children, type_node, node_index, depth|:
+                    child_index: usize = children[input_node.child_start + ordinal].value_index
+                    try schema_toml_node_type_valid(schema, type_node.array_item_type_index, nodes, children, child_index, ConfigSource.File, depth + 1)
+            elif input_node.kind == ConfigTomlValueKind.InlineTable:
+                raise SchemaTomlMaterializeError.ValueKindMismatch if type_node.kind != SchemaValueKind.Object
                 seen: mutable darray[bool] = []
                 for _ in 0..<schema.nested_fields.count |seen|:
                     seen.push(false)
                 nested_end: usize = type_node.object_field_start + type_node.object_field_count
-                for input_field in fields |schema, type_node, seen, nested_end|:
-                    input_name: sview = bytes_view(input_field.key)
+                for ordinal in 0..<input_node.child_count |schema, nodes, children, type_node, seen, nested_end, node_index, depth|:
+                    child_edge: ConfigTomlNodeChild = children[input_node.child_start + ordinal]
+                    input_name: sview = bytes_view(child_edge.key)
                     matched_index: usize = schema_toml_nested_field_index(schema, type_node, input_name)
                     if matched_index == schema.nested_fields.count:
                         raise SchemaTomlMaterializeError.UnknownField if not type_node.allow_unknown
@@ -310,11 +290,11 @@ module EsSchemaToml:
                         raise SchemaTomlMaterializeError.DuplicateField if seen[matched_index]
                         seen[matched_index] <- true
                         nested_field: SchemaNestedField = schema.nested_fields[matched_index]
-                        try schema_toml_field_type_valid(schema, nested_field.type_index, input_field.kind, input_field.text, input_field.items)
+                        try schema_toml_node_type_valid(schema, nested_field.type_index, nodes, children, child_edge.value_index, ConfigSource.File, depth + 1)
                 for nested_index in type_node.object_field_start..<nested_end |schema, seen, type_node|:
                     raise SchemaContractError.RequiredFieldMissing if schema.nested_fields[nested_index].required and not seen[nested_index]
             else:
-                try schema_toml_scalar_type_valid(schema, type_index, input_kind, text, source)
+                try schema_toml_scalar_type_valid(schema, type_index, input_node.kind, input_node.text, source)
 
 
         def schema_toml_materialize_value(schema: SchemaDescriptor&, field_index: usize, source_index: usize, resolution: ConfigTomlResolution&) -> SchemaTomlValue error[SchemaTomlMaterializeError, SchemaIntegerError, SchemaDecimalError] can[Memory.Allocate, Abort.Panic]:
@@ -325,7 +305,7 @@ module EsSchemaToml:
             raise SchemaTomlMaterializeError.ValueKindMismatch if not schema_toml_input_kind_matches(field.kind, input.kind, input.source)
             raise SchemaTomlMaterializeError.UnsupportedValueKind if field.kind == SchemaValueKind.Any or field.kind == SchemaValueKind.Null
             if field.type_index != SCHEMA_TYPE_INDEX_NONE:
-                try schema_toml_type_value_valid(schema, field.type_index, input.kind, input.text, input.items, input.fields, input.source)
+                try schema_toml_node_type_valid(schema, field.type_index, input.nodes, input.children, 0, input.source, 0)
             value: mutable SchemaTomlValue = SchemaTomlValue{field_index: field_index, source_value_index: source_index, kind: SchemaTomlValueKind.Text}
             if input.kind == ConfigTomlValueKind.Text:
                 if field.kind == SchemaValueKind.Bool:
@@ -388,10 +368,19 @@ module EsSchemaToml:
             raise SchemaTomlMaterializeError.InvalidSource if schema.source != SchemaSource.Toml
             raise SchemaTomlMaterializeError.InvalidSource if not schema_toml_table_path_valid(table_path)
 
-            for source_index in 0..<resolution.values.count |resolution|:
-                raise SchemaTomlMaterializeError.InvalidSource if resolution.values[source_index].source not in {ConfigSource.Defaults, ConfigSource.File, ConfigSource.Environment, ConfigSource.CommandLine}
+            total_value_nodes: mutable usize = 0
+            total_value_edges: mutable usize = 0
+            for source_index in 0..<resolution.values.count |resolution, total_value_nodes, total_value_edges|:
+                input: ConfigTomlResolvedValue = resolution.values[source_index]
+                raise SchemaTomlMaterializeError.InvalidSource if input.source not in {ConfigSource.Defaults, ConfigSource.File, ConfigSource.Environment, ConfigSource.CommandLine}
+                raise SchemaTomlMaterializeError.InputLimitExceeded if input.nodes.count > CONFIG_TOML_MAX_TOTAL_VALUE_NODES - total_value_nodes
+                raise SchemaTomlMaterializeError.InputLimitExceeded if input.children.count > CONFIG_TOML_MAX_TOTAL_ARRAY_ITEMS + CONFIG_TOML_MAX_TOTAL_TABLE_FIELDS - total_value_edges
+                raise SchemaTomlMaterializeError.InvalidSource if not validate_toml_value_graph(input.nodes, input.children)
+                raise SchemaTomlMaterializeError.InvalidSource if input.nodes[0].kind != input.kind
+                total_value_nodes <- total_value_nodes + input.nodes.count
+                total_value_edges <- total_value_edges + input.children.count
                 for earlier in 0..<source_index |resolution, source_index|:
-                    raise SchemaTomlMaterializeError.DuplicateField if resolution.values[earlier].key == resolution.values[source_index].key
+                    raise SchemaTomlMaterializeError.DuplicateField if resolution.values[earlier].key == input.key
 
             source_indices: mutable darray[usize] = []
             matched_inputs: mutable darray[bool] = []
