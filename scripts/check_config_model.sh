@@ -47,6 +47,8 @@ for toml_boundary in \
     'CONFIG_TOML_MAX_VALUE_DEPTH' \
     'struct ConfigTomlNode:' \
     'struct ConfigTomlNodeChild:' \
+    'def config_toml_line_endings_valid(' \
+    'ConfigTomlError.InvalidLineEnding' \
     'def config_toml_parse_value_graph(' \
     'def config_toml_value_graph_valid(' \
     'def parse_toml_config_layer(' \
@@ -259,6 +261,7 @@ rg -Fq 'unicode_escapes: ConfigTomlLayer' "$toml_fixture"
 rg -Fq 'unicode_surrogate_rejected' "$toml_fixture"
 rg -Fq 'unicode_out_of_range_rejected' "$toml_fixture"
 rg -Fq 'unicode_bad_hex_rejected' "$toml_fixture"
+rg -Fq 'toml_configuration_accepts_crlf_and_rejects_bare_carriage_returns' "$toml_fixture"
 rg -Fq '123.name' "$toml_fixture"
 rg -Fq 'bounded_toml_configuration_file_returns_owned_layer' "$toml_file_fixture"
 rg -Fq 'ConfigTomlValueKind.Array' "$toml_file_fixture"
