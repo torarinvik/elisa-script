@@ -111,6 +111,7 @@ for fixture_pattern in \
     'completed_during_drain' \
     'forged_cancelling_failure' \
     'planned_cancel_scheduler' \
+    'failed_during_drain' \
     'forged_queue_order' \
     'BuildSchedulerState.Complete' \
     'completed_cancel_rejected'; do
