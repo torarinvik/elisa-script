@@ -36,6 +36,7 @@ for declaration in \
     rg -q "$declaration" "$model"
 done
 rg -q 'def admit_next_process_batch_job\(' "$model"
+rg -q 'def validate_process_batch_dispatch\(' "$model"
 
 for boundary in \
     'Limits::JOBS' \
@@ -52,6 +53,7 @@ for boundary in \
     'ProcessBatchError.DuplicateJobId' \
     'ProcessBatchError.RetryNotReady' \
     'ProcessBatchError.StaleAttempt' \
+    'ProcessBatchError.DispatchMismatch' \
     'ProcessBatchError.ReapNotReady' \
     'attempt_token' \
     'reap_acknowledged' \
@@ -103,6 +105,8 @@ done
 for dispatch_fixture_pattern in \
     'process_batch_admission_returns_exact_retry_token' \
     'admit_next_process_batch_job(session)' \
+    'validate_process_batch_dispatch(session, first)' \
+    'forged_rejected' \
     'retried.attempt_token == 2'; do
     rg -Fq "$dispatch_fixture_pattern" "$dispatch_fixture"
 done

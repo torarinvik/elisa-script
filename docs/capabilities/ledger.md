@@ -1167,7 +1167,8 @@ latch terminal failure. `admit_next_process_batch_job` now combines
 deterministic admission with a `ProcessBatchDispatch` carrying the exact job
 index, stable job ID, and attempt token, avoiding host-side inference of which
 queued job was transitioned. Its retry fixture checks the token changes while
-the job identity stays fixed.
+the job identity stays fixed. `validate_process_batch_dispatch` rejects a
+forged job ID or stale token unless it matches a currently running job.
 The focused IR/runtime fixtures, namespace inclusion, documentation, and
 check_process_batch.sh audit are static evidence; scheduler ownership, actual
 pipe/process adapters, signal escalation, and execution evidence remain open.
