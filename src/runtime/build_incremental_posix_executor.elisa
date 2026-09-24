@@ -12,6 +12,7 @@ module EsBuildIncrementalPosixExecutor:
     using EsBuildIncrementalPosix
     using EsBuildExecutor
     using EsBuildRecipeSignature
+    using EsArtifactCache
     using EsProcess
 
     public:
@@ -27,6 +28,13 @@ module EsBuildIncrementalPosixExecutor:
         struct BuildIncrementalPosixCacheCommit:
             commit: BuildIncrementalCommit
             cache_bytes: darray[u8]
+
+
+        struct BuildIncrementalPosixCacheRun:
+            execution: BuildIncrementalPosixExecution
+            commit: BuildIncrementalCommit
+            reused_cache: bool = false
+            cache_published: bool = false
 
 
         def validate_build_recipe_toolchain_paths(graph: BuildGraph, resolutions: darray[BuildRecipeToolchainPath]) -> bool error[BuildContractError, ToolchainObservationError]:
@@ -85,3 +93,38 @@ module EsBuildIncrementalPosixExecutor:
             commit: BuildIncrementalCommit = try commit_build_incremental_execution_at(scratch, root_fd, execution, graph, previous_targets, toolchain_resolutions)
             cache_bytes: darray[u8] = try encode_build_incremental_cache(commit.targets)
             return BuildIncrementalPosixCacheCommit{commit: commit, cache_bytes: cache_bytes}
+
+
+    private:
+        # The caller-held lock covers the entire read/plan/execute/observe/
+        # publish interval. Invalid prior bytes admit a full rebuild; a lost
+        # lock, failed command graph, changed source, or failed publication
+        # never creates a reusable replacement manifest.
+        def execute_build_incremental_cache_under_lock_at(scratch: mutable Arena&, lock: ArtifactCacheWriterLock, owner_token: u64, cache_directory_fd: int, lock_name: cstr, cache_name: cstr, staging_name: cstr, root_fd: int, graph: mutable BuildGraph&, unsigned_recipes: darray[BuildIncrementalRecipeTarget], toolchain_resolutions: darray[BuildRecipeToolchainPath]) -> BuildIncrementalPosixCacheRun error[ArtifactCacheIoError, BuildExecutionError, BuildContractError, BuildIncrementalError, BuildRecipeSignatureError, BuildIncrementalCacheError, OpenError, ObserveError, ToolchainObservationError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Unsafe.PointerCast, Process.Run]:
+            admission: BuildIncrementalCacheAdmission = try admit_build_incremental_cache_at_held(scratch, lock, cache_directory_fd, lock_name, owner_token, cache_name)
+            execution: BuildIncrementalPosixExecution = try execute_build_graph_incremental_at(scratch, root_fd, graph, admission.previous_targets, unsigned_recipes, toolchain_resolutions)
+            return BuildIncrementalPosixCacheRun{execution: execution, commit: BuildIncrementalCommit{}, reused_cache: admission.reusable} if execution.result.graph_state != BuildGraphState.Succeeded
+            prepared: BuildIncrementalPosixCacheCommit = try commit_build_incremental_execution_cache_at(scratch, root_fd, execution, graph, admission.previous_targets, toolchain_resolutions)
+            _ = try publish_build_incremental_cache_at_held(lock, cache_directory_fd, lock_name, owner_token, staging_name, cache_name, prepared.cache_bytes)
+            return BuildIncrementalPosixCacheRun{execution: execution, commit: prepared.commit, reused_cache: admission.reusable, cache_published: true}
+
+
+    public:
+        # End-to-end persistent incremental execution for one build directory.
+        # The advisory lock is held from manifest admission through graph
+        # execution and atomic cache publication, and is released on every
+        # normal or typed-error path.
+        def execute_build_graph_incremental_cached_at(scratch: mutable Arena&, lock: mutable ArtifactCacheWriterLock&, owner_token: u64, cache_directory_fd: int, lock_name: cstr, cache_name: cstr, staging_name: cstr, root_fd: int, graph: mutable BuildGraph&, unsigned_recipes: darray[BuildIncrementalRecipeTarget], toolchain_resolutions: darray[BuildRecipeToolchainPath]) -> BuildIncrementalPosixCacheRun error[ArtifactCacheIoError, BuildExecutionError, BuildContractError, BuildIncrementalError, BuildRecipeSignatureError, BuildIncrementalCacheError, OpenError, ObserveError, ToolchainObservationError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Unsafe.PointerCast, Process.Run]:
+            _ = try artifact_cache_writer_lock_acquire_at(lock, cache_directory_fd, lock_name, owner_token)
+            catch execute_build_incremental_cache_under_lock_at(scratch, lock, owner_token, cache_directory_fd, lock_name, cache_name, staging_name, root_fd, graph, unsigned_recipes, toolchain_resolutions):
+                ok run:
+                    released: bool = try artifact_cache_writer_lock_release(lock, owner_token)
+                    raise ArtifactCacheIoError.LockFailed(lock_name) if not released
+                    return run
+                error failure:
+                    catch artifact_cache_writer_lock_release(lock, owner_token):
+                        ok status:
+                            pass
+                        error release_failure:
+                            pass
+                    raise failure

@@ -19,11 +19,12 @@ posix_executor_fixture="$repo_root/test/runtime/build_incremental_posix_executor
 recipe_signature="$repo_root/src/runtime/build_recipe_signature.elisa"
 recipe_signature_fixture="$repo_root/test/runtime/build_recipe_signature_test.elisa"
 cache_fixture="$repo_root/test/runtime/build_incremental_cache_test.elisa"
+cache_adapter_fixture="$repo_root/test/runtime/build_incremental_cache_adapter_test.elisa"
 executor_fixture="$repo_root/test/runtime/build_incremental_executor_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$cache_model" "$build_model" "$executor_model" "$graph_model" "$posix_executor" "$ir" "$fixture" "$transition_fixture" "$posix_fixture" "$posix_executor_fixture" "$recipe_signature" "$recipe_signature_fixture" "$cache_fixture" "$executor_fixture" "$docs" "$ledger"; do
+for required_file in "$model" "$cache_model" "$build_model" "$executor_model" "$graph_model" "$posix_executor" "$ir" "$fixture" "$transition_fixture" "$posix_fixture" "$posix_executor_fixture" "$recipe_signature" "$recipe_signature_fixture" "$cache_fixture" "$cache_adapter_fixture" "$executor_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'incremental build audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -98,6 +99,13 @@ rg -Fq 'def validate_build_incremental_graph_signatures(' "$graph_model"
 rg -Fq 'build_recipe_signatures_for_actions(commands, recipes, toolchains)' "$graph_model"
 rg -Fq 'def execute_build_graph_incremental_at(' "$posix_executor"
 rg -Fq 'def commit_build_incremental_execution_at(' "$posix_executor"
+rg -Fq 'def execute_build_graph_incremental_cached_at(' "$posix_executor"
+rg -Fq 'admit_build_incremental_cache_at_held(scratch, lock, cache_directory_fd, lock_name, owner_token, cache_name)' "$posix_executor"
+rg -Fq 'publish_build_incremental_cache_at_held(lock, cache_directory_fd, lock_name, owner_token, staging_name, cache_name, prepared.cache_bytes)' "$posix_executor"
+rg -Fq 'def artifact_cache_writer_lock_matches_at(' "$repo_root/src/ir/artifact_cache.elisa"
+rg -Fq 'elisascript_posix_flock(lock.descriptor, PosixLockOperations::EXCLUSIVE + PosixLockOperations::NONBLOCK)' "$repo_root/src/ir/artifact_cache.elisa"
+rg -Fq 'def admit_build_incremental_cache_at_held(' "$repo_root/src/ir/artifact_cache.elisa"
+rg -Fq 'def publish_build_incremental_cache_at_held(' "$repo_root/src/ir/artifact_cache.elisa"
 rg -Fq 'ToolchainObservationError.ToolchainChanged' "$posix_executor"
 rg -Fq 'validate_build_incremental_stable_sources(execution.recipes, execution.pre_execution_observations, observations)' "$posix_executor"
 rg -Fq 'BuildIncrementalPosixExecution{result: result, recipes: signed.recipes, pre_execution_observations: observations}' "$posix_executor"
@@ -186,6 +194,15 @@ for cache_fixture_check in \
     'decode_build_incremental_cache(encoded)' \
     'BuildIncrementalCacheError.ChecksumMismatch'; do
     rg -Fq "$cache_fixture_check" "$cache_fixture"
+done
+
+for cache_adapter_check in \
+    'incremental_cache_descriptor_io_rejects_invalid_directory_handles' \
+    'publish_build_incremental_cache_at_held(unrelated_lock' \
+    'read_build_incremental_cache_at_held(arena, unrelated_lock' \
+    'held_publish_rejected' \
+    'held_read_rejected'; do
+    rg -Fq "$cache_adapter_check" "$cache_adapter_fixture"
 done
 
 for executor_check in \
