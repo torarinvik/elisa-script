@@ -1,0 +1,179 @@
+# Bounded Elisascript port of check_resource_model.sh.
+# The shell version remains the reference until public-launcher parity is
+# qualified. This candidate reads source as data and never starts rg.
+
+include "../src/runtime/bounded_text_posix.elisa"
+
+using EsBoundedText
+
+
+module EsResourceAudit:
+    private:
+        const module Limits:
+            SOURCE_BYTES: usize = 16777216
+            TOTAL_SOURCE_BYTES: usize = 33554432
+
+
+        const module Inputs:
+            MODEL: sview = "src/runtime/resource_model.elisa"
+            IR: sview = "src/ir/ir.elisa"
+            FIXTURE: sview = "test/ir/elisascript_ir_test.elisa"
+            DOCS: sview = "docs/ir.md"
+
+
+        const module Declarations:
+            MODULE: sview = "module EsResource:"
+            MAX_ENTRIES: sview = "RESOURCE_MAX_ENTRIES"
+            KIND: sview = "const enum ResourceKind of u8:"
+            LEASE_STATE: sview = "const enum ResourceLeaseState of u8:"
+            EVENT: sview = "const enum ResourceEvent of u8:"
+            LEASE: sview = "struct ResourceLease:"
+            LEDGER: sview = "struct ResourceLedger:"
+            ERROR: sview = "error ResourceContractError:"
+            VALIDATE: sview = "def validate_resource_ledger("
+            ACQUIRE: sview = "def resource_ledger_acquire("
+            ADVANCE: sview = "def advance_resource_lease("
+
+
+        const module Boundaries:
+            OWNER_MISMATCH: sview = "OwnerMismatch"
+            DUPLICATE_ID: sview = "DuplicateId"
+            INVALID_TRANSITION: sview = "InvalidTransition"
+            ACCOUNTING_INVALID: sview = "AccountingInvalid"
+            RESOURCE_LIMIT: sview = "ResourceLimitExceeded"
+            ABANDON: sview = "Abandon"
+
+
+        const module FixturePatterns:
+            CONTRACT: sview = "typed_resource_ledger_contract_prevents_double_close_and_owner_confusion"
+            BEGIN_CLOSE: sview = "ResourceEvent.BeginClose"
+            ABANDON: sview = "ResourceEvent.Abandon"
+            OWNER_MISMATCH: sview = "ResourceContractError.OwnerMismatch"
+            INVALID_TRANSITION: sview = "ResourceContractError.InvalidTransition"
+
+
+        error AuditReadError:
+            Missing
+            LimitExceeded
+
+
+        def display_path(root: sview, relative: sview) -> sview:
+            return "/" + relative if root == "/"
+            return root + "/" + relative
+
+
+        def contains_all(source: sview, required: darray[sview]) -> bool:
+            for needle in required:
+                return false if source.index(needle) < 0
+            return true
+
+
+        def read_source(input_path: Path, source_size: usize) -> sview error[AuditReadError] can[Memory.Allocate, Abort.Panic, Blocking.IO, File.Read, Unsafe.PointerCast]:
+            current_size: usize = try file_size(input_path) else err:
+                raise AuditReadError.Missing
+            raise AuditReadError.LimitExceeded if current_size > source_size or current_size > Limits::SOURCE_BYTES
+            source: sview = try EsBoundedText::read_utf8(input_path, source_size) else err:
+                raise AuditReadError.Missing
+            raise AuditReadError.LimitExceeded if len(source) > source_size or len(source) > Limits::SOURCE_BYTES
+            return source
+
+
+    public:
+        def run(repository_root: Path) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, Blocking.IO, Directory.Read, File.Read, Unsafe.PointerCast]:
+            if not is_directory(repository_root):
+                eprint("resource model audit: missing repository root")
+                return 1i64
+            root_absolute: Path = try path_real(path_absolute(repository_root)) else err:
+                eprint("resource model audit: missing repository root")
+                return 1i64
+            root_text: sview = f"{root_absolute}"
+            relative_paths: darray[sview] = [Inputs::MODEL, Inputs::IR, Inputs::FIXTURE, Inputs::DOCS]
+            source_sizes: mutable darray[usize] = []
+            sources: mutable darray[sview] = []
+            total_bytes: mutable usize = 0
+
+            for relative in relative_paths |relative_paths, root_absolute, root_text|:
+                input_path: Path = path_join(root_absolute, relative)
+                if not is_file(input_path) or not is_readable(input_path):
+                    eprint(f"resource model audit: missing {display_path(root_text, relative)}")
+                    return 1i64
+
+            for relative in relative_paths |relative_paths, root_absolute, root_text, source_sizes, total_bytes|:
+                input_display: sview = display_path(root_text, relative)
+                input_path: Path = path_join(root_absolute, relative)
+                source_size: usize = try file_size(input_path) else err:
+                    eprint(f"resource model audit: missing {input_display}")
+                    return 1i64
+                if source_size > Limits::SOURCE_BYTES or source_size > Limits::TOTAL_SOURCE_BYTES - total_bytes:
+                    eprint(f"resource model audit: source exceeds audit limit: {input_display}")
+                    return 2i64
+                total_bytes <- total_bytes + source_size
+                source_sizes.push(source_size)
+
+            for relative in relative_paths |relative_paths, root_absolute, root_text, source_sizes, sources|:
+                input_display: sview = display_path(root_text, relative)
+                input_path: Path = path_join(root_absolute, relative)
+                source_index: usize = sources.count
+                catch read_source(input_path, source_sizes[source_index]):
+                    ok source:
+                        sources.push(source)
+                    error failure:
+                        if failure == AuditReadError.LimitExceeded:
+                            eprint(f"resource model audit: source exceeds audit limit: {input_display}")
+                            return 2i64
+                        eprint(f"resource model audit: missing {input_display}")
+                        return 1i64
+
+            model: sview = sources[0]
+            ir: sview = sources[1]
+            fixture: sview = sources[2]
+            docs: sview = sources[3]
+            declarations: darray[sview] = [
+                Declarations::MODULE,
+                Declarations::MAX_ENTRIES,
+                Declarations::KIND,
+                Declarations::LEASE_STATE,
+                Declarations::EVENT,
+                Declarations::LEASE,
+                Declarations::LEDGER,
+                Declarations::ERROR,
+                Declarations::VALIDATE,
+                Declarations::ACQUIRE,
+                Declarations::ADVANCE
+            ]
+            boundaries: darray[sview] = [
+                Boundaries::OWNER_MISMATCH,
+                Boundaries::DUPLICATE_ID,
+                Boundaries::INVALID_TRANSITION,
+                Boundaries::ACCOUNTING_INVALID,
+                Boundaries::RESOURCE_LIMIT,
+                Boundaries::ABANDON
+            ]
+            fixture_patterns: darray[sview] = [
+                FixturePatterns::CONTRACT,
+                FixturePatterns::BEGIN_CLOSE,
+                FixturePatterns::ABANDON,
+                FixturePatterns::OWNER_MISMATCH,
+                FixturePatterns::INVALID_TRANSITION
+            ]
+
+            return 1i64 if not contains_all(model, declarations)
+            return 1i64 if not contains_all(model, boundaries)
+            return 1i64 if ir.index("include \"../runtime/resource_model.elisa\"") < 0
+            return 1i64 if not contains_all(fixture, fixture_patterns)
+            return 1i64 if docs.index("`EsResource` is the ownership ledger") < 0
+
+            println("resource model audit: bounded ownership, owner tokens, close/failure edges, and double-close rejection are present")
+            return 0i64
+
+
+        def run_default() -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, Blocking.IO, Directory.Read, File.Read, Unsafe.PointerCast]:
+            script_path: Path = Script::source_path()
+            script_directory: Path = try path_real(path_absolute(script_path.parent())) else err:
+                eprint("resource model audit: missing repository root")
+                return 1i64
+            return run(script_directory.parent())
+
+
+def main(arguments: darray[sview]) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, Blocking.IO, Directory.Read, File.Read, Unsafe.PointerCast]:
+    return EsResourceAudit::run_default()
