@@ -1,0 +1,52 @@
+# POSIX transaction boundary for incremental build execution.
+#
+# This adapter binds fresh source/output observations and toolchain-file
+# identities to the signed graph before dispatch, then refreshes both before
+# cache publication. A caller supplies already-resolved toolchain paths under
+# the directory capability; this module never parses PATH or follows links.
+
+module EsBuildIncrementalPosixExecutor:
+    using EsBuild
+    using EsBuildIncremental
+    using EsBuildIncrementalPosix
+    using EsBuildExecutor
+    using EsBuildRecipeSignature
+    using EsProcess
+
+    public:
+        struct BuildIncrementalPosixExecution:
+            result: BuildExecutionResult
+            recipes: darray[BuildIncrementalRecipeTarget]
+
+
+    private:
+        def observe_build_recipe_toolchains_at(scratch: mutable Arena&, root_fd: int, paths: darray[sview], expected_count: usize) -> darray[BuildRecipeToolchainIdentity] error[OpenError, ObserveError, ToolchainObservationError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+            raise ToolchainObservationError.ToolchainPathCountMismatch if paths.count != expected_count
+            identities: mutable darray[BuildRecipeToolchainIdentity] = []
+            for path in paths |identities, scratch|:
+                identities.push(try observe_build_recipe_toolchain_identity_at(scratch, root_fd, path))
+            return identities
+
+
+    public:
+        # Observe the complete recipe file set and each resolved tool binary
+        # before signing. Toolchain identity is therefore tied to fresh bytes,
+        # not copied from the previous manifest or an unchecked string.
+        def execute_build_graph_incremental_at(scratch: mutable Arena&, root_fd: int, graph: mutable BuildGraph&, previous_targets: darray[BuildIncrementalTarget], unsigned_recipes: darray[BuildIncrementalRecipeTarget], resolved_toolchain_paths: darray[sview]) -> BuildIncrementalPosixExecution error[BuildExecutionError, BuildContractError, BuildIncrementalError, BuildRecipeSignatureError, OpenError, ObserveError, ToolchainObservationError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Process.Run]:
+            observations: darray[BuildIncrementalObservation] = try observe_build_incremental_recipes_at(scratch, root_fd, unsigned_recipes)
+            toolchains: darray[BuildRecipeToolchainIdentity] = try observe_build_recipe_toolchains_at(scratch, root_fd, resolved_toolchain_paths, unsigned_recipes.count)
+            signed: BuildRecipeSignedGraph = try sign_build_incremental_graph(graph, unsigned_recipes, toolchains)
+            graph <- signed.graph
+            result: BuildExecutionResult = try execute_build_graph_incremental(graph, previous_targets, signed.recipes, observations)
+            return BuildIncrementalPosixExecution{result: result, recipes: signed.recipes}
+
+
+        # Re-observe toolchain files and recipe inputs/outputs after a
+        # successful run. If the toolchain changed between planning and
+        # publication, refuse to create a reusable manifest.
+        def commit_build_incremental_execution_at(scratch: mutable Arena&, root_fd: int, execution: BuildIncrementalPosixExecution, graph: BuildGraph, previous_targets: darray[BuildIncrementalTarget], resolved_toolchain_paths: darray[sview]) -> BuildIncrementalCommit error[BuildExecutionError, BuildContractError, BuildIncrementalError, BuildRecipeSignatureError, OpenError, ObserveError, ToolchainObservationError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+            toolchains: darray[BuildRecipeToolchainIdentity] = try observe_build_recipe_toolchains_at(scratch, root_fd, resolved_toolchain_paths, execution.recipes.count)
+            for index in 0..<execution.recipes.count |execution, toolchains|:
+                raise ToolchainObservationError.ToolchainChanged(resolved_toolchain_paths[index]) if execution.recipes[index].toolchain_identity != toolchains[index]
+            observations: darray[BuildIncrementalObservation] = try observe_build_incremental_recipes_at(scratch, root_fd, execution.recipes)
+            return try commit_build_incremental_execution(execution.result, graph, previous_targets, execution.recipes, observations)

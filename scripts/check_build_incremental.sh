@@ -10,6 +10,7 @@ cache_model="$repo_root/src/runtime/build_incremental_cache_model.elisa"
 build_model="$repo_root/src/runtime/build_model.elisa"
 executor_model="$repo_root/src/runtime/build_executor_model.elisa"
 graph_model="$repo_root/src/runtime/build_incremental_graph_model.elisa"
+posix_executor="$repo_root/src/runtime/build_incremental_posix_executor.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 transition_fixture="$repo_root/test/runtime/build_incremental_transition_test.elisa"
@@ -21,7 +22,7 @@ executor_fixture="$repo_root/test/runtime/build_incremental_executor_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$cache_model" "$build_model" "$executor_model" "$graph_model" "$ir" "$fixture" "$transition_fixture" "$posix_fixture" "$recipe_signature" "$recipe_signature_fixture" "$cache_fixture" "$executor_fixture" "$docs" "$ledger"; do
+for required_file in "$model" "$cache_model" "$build_model" "$executor_model" "$graph_model" "$posix_executor" "$ir" "$fixture" "$transition_fixture" "$posix_fixture" "$recipe_signature" "$recipe_signature_fixture" "$cache_fixture" "$executor_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'incremental build audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -93,6 +94,9 @@ done
 rg -Fq 'def plan_build_incremental_graph_transition(' "$graph_model"
 rg -Fq 'def validate_build_incremental_graph_signatures(' "$graph_model"
 rg -Fq 'build_recipe_signatures_for_actions(commands, recipes, toolchains)' "$graph_model"
+rg -Fq 'def execute_build_graph_incremental_at(' "$posix_executor"
+rg -Fq 'def commit_build_incremental_execution_at(' "$posix_executor"
+rg -Fq 'ToolchainObservationError.ToolchainChanged' "$posix_executor"
 rg -Fq 'graph.state != BuildGraphState.Planned' "$graph_model"
 rg -Fq 'def sign_build_incremental_graph(' "$recipe_signature"
 rg -Fq 'def build_recipe_signatures_for_actions(' "$recipe_signature"
@@ -128,6 +132,7 @@ rg -Fq 'observe_build_recipe_toolchain_identity_at(scratch, -1, "usr/bin/compile
 rg -Fq 'include "../runtime/build_incremental_cache_model.elisa"' "$ir"
 rg -Fq 'include "../runtime/build_recipe_signature.elisa"' "$ir"
 rg -Fq 'include "../runtime/build_incremental_graph_model.elisa"' "$ir"
+rg -Fq 'include "../runtime/build_incremental_posix_executor.elisa"' "$ir"
 rg -Fq 'def build_recipe_signature(' "$recipe_signature"
 rg -Fq 'EsIr::canonical_bytes_sha256_word(bytes, 3)' "$recipe_signature"
 for signature_input in \
