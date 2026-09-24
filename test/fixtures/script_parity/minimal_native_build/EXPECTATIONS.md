@@ -31,21 +31,23 @@ stderr:      empty
 
 The CMake route registers `minimal-native-output` with CTest and checks the
 `answer=42` output. The ElisaScript route has a dependent run node that checks
-the same exit status and captured stdout. A parity harness should compare the
-two process results (status, stdout, stderr) and separately verify that both
-declared executable files exist and can be run.
+the same exit status and captured stdout. The parity harness additionally
+compares both executable process results (status, stdout, stderr) and verifies
+that both declared executable files exist and can be run.
 
-`test/script_parity/minimal_native_build_launcher_test.elisascript` implements
-the process-result comparison for prebuilt artifacts. Supply the absolute paths
-through `ELISASCRIPT_MINIMAL_NATIVE_CMAKE_BINARY` and
-`ELISASCRIPT_MINIMAL_NATIVE_ELISA_BINARY`; it rejects symlink paths, oversized
-files, paths inside the repository, and outputs sharing one directory. The
-fixture runs only those two executables, with an empty environment except for
-controlled locale and `PATH`, empty stdin, a fixed timeout, and a bounded
-combined output budget. The test is gated on explicit reauthorization and the
-RSS-supervised wrapper marker. It does not build either artifact and therefore
-does not attest build provenance; the caller must build them with the two
-recipes above before comparing their behavior.
+`test/script_parity/minimal_native_build_launcher_test.elisascript` is the
+end-to-end process parity harness. It accepts `ELISASCRIPT_MINIMAL_NATIVE_CMAKE`
+for the CMake executable, requires `ELISASCRIPT_PUBLIC_LAUNCHER` to resolve to
+the pinned local Elisa compiler, and creates distinct fresh CMake and
+ElisaScript build directories under a private `temp_directory`. It configures
+the reference with Unix Makefiles, builds serially, runs CTest, builds the
+ElisaScript target through the pinned public launcher, and compares the two
+executables. All commands use argv vectors, a controlled environment, empty
+stdin, per-process timeouts, and bounded output capture. The test removes only
+its generated temporary workspace. It is gated on explicit reauthorization and
+the RSS-supervised wrapper marker. The wrapper samples the compiler process
+group and descendant tree, including build-tool children, but this sampled RSS
+guard is not an OS-enforced memory cap.
 
 ## Evidence status
 
