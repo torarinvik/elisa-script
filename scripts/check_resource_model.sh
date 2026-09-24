@@ -11,7 +11,7 @@ fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 
 for required_file in "$model" "$ir" "$fixture" "$docs"; do
-    [[ -f "$required_file" ]] || { printf 'resource model audit: missing %s\n' "$required_file" >&2; exit 1; }
+    [[ -f "$required_file" && -r "$required_file" ]] || { printf 'resource model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
 for declaration in \
