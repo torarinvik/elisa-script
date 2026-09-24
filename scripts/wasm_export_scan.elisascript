@@ -4,8 +4,10 @@
 # full acceptance remain separate work.
 
 include "../src/runtime/encoding.elisa"
+include "../src/runtime/stream_posix.elisa"
 
 using EsEncoding
+using EsRuntime
 
 
 module EsWasmExportScan:
@@ -30,6 +32,7 @@ module EsWasmExportScan:
             HEADER_SUFFIX_SCAN_FACTOR: usize = 8
             HEADER_SUFFIX_FIXED_WORK: usize = 16
             EXPORT_NAME_COMPARE_WORK: usize = 1048576
+            SOURCE_READ_CHUNK_BYTES: usize = 16384
 
 
         const module Syntax:
@@ -93,6 +96,12 @@ module EsWasmExportScan:
         struct FlattenedSource:
             source: sview = ""
             failure: sview = ""
+
+
+        struct BoundedSourceRead:
+            source: sview = ""
+            failure: sview = ""
+            exceeded_limit: bool = false
 
 
         struct IncludeDirective:
@@ -164,6 +173,11 @@ module EsWasmExportScan:
         enum FlattenPhase of u8:
             ResolvePending
             ConsumeStack
+            Done
+
+
+        enum BoundedReadPhase of u8:
+            ReadChunk
             Done
 
 
@@ -796,6 +810,85 @@ module EsWasmExportScan:
             return bytes_view(output)
 
 
+        # Read only the admitted byte budget plus one overflow probe byte.
+        # `file_size` is intentionally not part of admission: a regular file
+        # may grow after stat, while FileStream enforces the actual bytes read.
+        def read_bounded_source(input_path: Path, maximum_bytes: usize) -> BoundedSourceRead can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+            return BoundedSourceRead{failure: "unable to read source/include: " + f"{input_path}"} if maximum_bytes >= FILE_STREAM_DEFAULT_MAX_BYTES
+
+            path_text: sview = f"{input_path}"
+            return BoundedSourceRead{failure: "unable to read source/include: " + path_text} if len(path_text) >= Limits::PATH_BYTES
+            path_bytes: mutable darray[u8] = []
+            for offset in 0..<len(path_text) |path_bytes, path_text|:
+                byte: u8 = sview_at(path_text, offset)
+                return BoundedSourceRead{failure: "unable to read source/include: " + path_text} if byte == 0u8
+                path_bytes.push(byte)
+            path_bytes.push(0u8)
+            path_pointer: cstr = (&path_bytes[0]).cast[cstr]
+
+            chunk: mutable darray[u8] = []
+            chunk.reserve(Limits::SOURCE_READ_CHUNK_BYTES)
+            for _ in 0..<Limits::SOURCE_READ_CHUNK_BYTES |chunk|:
+                chunk.push(0u8)
+            source: mutable darray[u8] = []
+            initial_source_capacity: usize = maximum_bytes if maximum_bytes < Limits::SOURCE_READ_CHUNK_BYTES else Limits::SOURCE_READ_CHUNK_BYTES
+            source.reserve(initial_source_capacity)
+
+            stream: mutable FileStream = try file_stream_open(path_pointer, FileStreamMode.ReadBinary, maximum_bytes + 1, FileStreamEncoding.Bytes) else err:
+                return BoundedSourceRead{failure: "unable to read source/include: " + path_text}
+            cleanup: mutable FileStreamCleanupGuard = file_stream_cleanup_begin()
+            phase: mutable BoundedReadPhase = BoundedReadPhase.ReadChunk
+
+            machine over phase while phase != BoundedReadPhase.Done:
+                state ReadChunk
+                start ReadChunk
+
+                ReadChunk, BoundedReadPhase.ReadChunk:
+                    remaining: usize = maximum_bytes - source.count
+                    probe_capacity: usize = remaining + 1
+                    capacity: usize = probe_capacity if probe_capacity < chunk.count else chunk.count
+                    chunk_pointer: mutable u8& = (&chunk[0]).cast[mutable u8&]
+                    read: FileStreamRead =
+                        try file_stream_read_chunk(stream, chunk_pointer, capacity)
+                        else err:
+                            catch file_stream_cleanup_abort(cleanup, stream):
+                                ok closed:
+                                    return BoundedSourceRead{failure: "unable to read source/include: " + path_text}
+                                error _:
+                                    return BoundedSourceRead{failure: "unable to read source/include: " + path_text}
+
+                    if read.count > capacity or (read.eof and read.count != 0) or (read.count == 0 and not read.eof):
+                        catch file_stream_cleanup_abort(cleanup, stream):
+                            ok closed:
+                                return BoundedSourceRead{failure: "unable to read source/include: " + path_text}
+                            error _:
+                                return BoundedSourceRead{failure: "unable to read source/include: " + path_text}
+
+                    if read.count > remaining:
+                        catch file_stream_cleanup_abort(cleanup, stream):
+                            ok closed:
+                                return BoundedSourceRead{exceeded_limit: true}
+                            error _:
+                                return BoundedSourceRead{exceeded_limit: true}
+
+                    for offset in 0..<read.count |source, chunk|:
+                        source.push(chunk[offset])
+
+                    if read.eof:
+                        phase <- BoundedReadPhase.Done
+                        catch file_stream_cleanup_commit(cleanup, stream):
+                            ok closed:
+                                return BoundedSourceRead{source: bytes_view(source)}
+                            error _:
+                                return BoundedSourceRead{failure: "unable to read source/include: " + path_text}
+                    -> ReadChunk
+
+                Done, BoundedReadPhase.Done:
+                    break
+
+            return BoundedSourceRead{failure: "unable to read source/include: " + path_text}
+
+
         def parse_include_directive(line: sview) -> IncludeDirective:
             not_found: IncludeDirective = IncludeDirective{}
             cursor: mutable usize = skip_python_space(line, 0)
@@ -985,7 +1078,7 @@ module EsWasmExportScan:
 
         # Expand a complete include graph with an explicit DFS frame stack so
         # include depth and total work are bounded independently of host stack.
-        def flatten_source_file(input_path: Path) -> FlattenedSource can[Memory.Allocate, Abort.Panic, File.Read, Directory.Read]:
+        def flatten_source_file(input_path: Path) -> FlattenedSource can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, File.Read, Directory.Read]:
             output: mutable darray[u8] = []
             frames: mutable darray[SourceFrame] = []
             active: mutable darray[Path] = []
@@ -1035,21 +1128,17 @@ module EsWasmExportScan:
                     active.push(current_path)
                     loaded_files <- loaded_files + 1
 
-                    source_size: usize = try file_size(current_path) else err:
-                        return FlattenedSource{failure: "unable to inspect source/include: " + f"{current_path}"}
-                    if source_size > Limits::SOURCE_BYTES:
-                        return FlattenedSource{failure: "WASM source exceeds Elisascript scan limit"}
-                    if source_size > Limits::INCLUDE_GRAPH_BYTES - loaded_bytes:
-                        return FlattenedSource{failure: "WASM include graph exceeds Elisascript scan limit"}
-                    loaded_bytes <- loaded_bytes + source_size
-                    raw_source: sview = try read_text(current_path) else err:
-                        return FlattenedSource{failure: "unable to read source/include: " + f"{current_path}"}
-                    if len(raw_source) > Limits::SOURCE_BYTES:
-                        return FlattenedSource{failure: "WASM source exceeds Elisascript scan limit"}
-                    accounted_before_read: usize = loaded_bytes - source_size
-                    if len(raw_source) > Limits::INCLUDE_GRAPH_BYTES - accounted_before_read:
-                        return FlattenedSource{failure: "WASM include graph exceeds Elisascript scan limit"}
-                    loaded_bytes <- accounted_before_read + len(raw_source)
+                    remaining_graph_bytes: usize = Limits::INCLUDE_GRAPH_BYTES - loaded_bytes
+                    read_limit: usize = Limits::SOURCE_BYTES
+                    limit_failure: sview = "WASM source exceeds Elisascript scan limit"
+                    if remaining_graph_bytes < read_limit:
+                        read_limit <- remaining_graph_bytes
+                        limit_failure <- "WASM include graph exceeds Elisascript scan limit"
+                    bounded_read: BoundedSourceRead = read_bounded_source(current_path, read_limit)
+                    return FlattenedSource{failure: limit_failure} if bounded_read.exceeded_limit
+                    return FlattenedSource{failure: bounded_read.failure} if bounded_read.failure != ""
+                    raw_source: sview = bounded_read.source
+                    loaded_bytes <- loaded_bytes + len(raw_source)
                     if not valid_utf8(raw_source):
                         return FlattenedSource{failure: "WASM source is not valid UTF-8"}
 
@@ -1484,13 +1573,13 @@ module EsWasmExportScan:
             return cli_response_frame(response.status, "", "wasm export scan: " + response.failure + "\n")
 
 
-        def source_path_response(input_path: Path, component: bool = false) -> SourceResponse can[Memory.Allocate, Abort.Panic, File.Read, Directory.Read]:
+        def source_path_response(input_path: Path, component: bool = false) -> SourceResponse can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, File.Read, Directory.Read]:
             flattened: FlattenedSource = flatten_source_file(input_path)
             return SourceResponse{failure: flattened.failure} if flattened.failure != ""
             return source_response(flattened.source, component)
 
 
-        def build_payload_path_response(input_path: Path, component: bool = false) -> SourceResponse can[Memory.Allocate, Abort.Panic, File.Read, Directory.Read]:
+        def build_payload_path_response(input_path: Path, component: bool = false) -> SourceResponse can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, File.Read, Directory.Read]:
             flattened: FlattenedSource = flatten_source_file(input_path)
             return SourceResponse{failure: flattened.failure} if flattened.failure != ""
             scanned: ScanResult = scan(flattened.source, component)
@@ -1500,7 +1589,7 @@ module EsWasmExportScan:
             return SourceResponse{status: 0, encoded: encoded}
 
 
-        def flatten_payload_path_response(input_path: Path) -> SourceResponse can[Memory.Allocate, Abort.Panic, File.Read, Directory.Read]:
+        def flatten_payload_path_response(input_path: Path) -> SourceResponse can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, File.Read, Directory.Read]:
             flattened: FlattenedSource = flatten_source_file(input_path)
             return SourceResponse{failure: flattened.failure} if flattened.failure != ""
             encoded: JsonEncodeResult = encode_flatten_payload(flattened.source)
@@ -1508,7 +1597,7 @@ module EsWasmExportScan:
             return SourceResponse{status: 0, encoded: encoded}
 
 
-        def source_path_response_frame(input_path: Path, component: bool = false) -> sview can[Memory.Allocate, Abort.Panic, File.Read, Directory.Read]:
+        def source_path_response_frame(input_path: Path, component: bool = false) -> sview can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, File.Read, Directory.Read]:
             response: SourceResponse = source_path_response(input_path, component)
             if response.status == 0:
                 return cli_response_frame(0, bytes_view(response.encoded.bytes) + "\n", "")
@@ -1523,25 +1612,25 @@ module EsWasmExportScan:
             return source_response_frame(source, component)
 
 
-        def differential_path_response(input_path: Path, component: bool = false) -> sview can[Memory.Allocate, Abort.Panic, File.Read, Directory.Read]:
+        def differential_path_response(input_path: Path, component: bool = false) -> sview can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, File.Read, Directory.Read]:
             return source_path_response_frame(input_path, component)
 
 
-        def differential_build_payload_response(input_path: Path, component: bool = false) -> sview can[Memory.Allocate, Abort.Panic, File.Read, Directory.Read]:
+        def differential_build_payload_response(input_path: Path, component: bool = false) -> sview can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, File.Read, Directory.Read]:
             response: SourceResponse = build_payload_path_response(input_path, component)
             if response.status == 0:
                 return cli_response_frame(0, bytes_view(response.encoded.bytes) + "\n", "")
             return cli_response_frame(response.status, "", "wasm export scan: " + response.failure + "\n")
 
 
-        def differential_flatten_payload_response(input_path: Path) -> sview can[Memory.Allocate, Abort.Panic, File.Read, Directory.Read]:
+        def differential_flatten_payload_response(input_path: Path) -> sview can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, File.Read, Directory.Read]:
             response: SourceResponse = flatten_payload_path_response(input_path)
             if response.status == 0:
                 return cli_response_frame(0, bytes_view(response.encoded.bytes) + "\n", "")
             return cli_response_frame(response.status, "", "wasm export scan: " + response.failure + "\n")
 
 
-        def main(arguments: darray[sview]) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, File.Read, Directory.Read]:
+        def main(arguments: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Write, File.Read, Directory.Read]:
             payload_mode: mutable bool = false
             flatten_mode: mutable bool = false
             component_mode: mutable bool = false
@@ -1568,5 +1657,5 @@ module EsWasmExportScan:
             return response.status
 
 
-def main(arguments: darray[sview]) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, File.Read, Directory.Read]:
+def main(arguments: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Write, File.Read, Directory.Read]:
     return EsWasmExportScan::main(arguments)

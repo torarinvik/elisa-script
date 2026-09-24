@@ -42,6 +42,24 @@ rg -Fq 'WASM include directive count exceeds Elisascript scan limit' "$candidate
 rg -Fq 'INCLUDE_FILES: usize = 4096' "$candidate"
 rg -Fq 'loaded_files >= Limits::INCLUDE_FILES' "$candidate"
 rg -Fq 'WASM include file count exceeds Elisascript scan limit' "$candidate"
+rg -Fq 'include "../src/runtime/stream_posix.elisa"' "$candidate"
+rg -Fq 'SOURCE_READ_CHUNK_BYTES: usize = 16384' "$candidate"
+rg -Fq 'def read_bounded_source(input_path: Path, maximum_bytes: usize) -> BoundedSourceRead' "$candidate"
+rg -Fq 'file_stream_read_chunk(stream, chunk_pointer, capacity)' "$candidate"
+rg -Fq 'if read.count > remaining:' "$candidate"
+rg -Fq 'file_stream_cleanup_commit(cleanup, stream)' "$candidate"
+rg -Fq 'file_stream_cleanup_abort(cleanup, stream)' "$candidate"
+if rg -Fq 'read_text(current_path)' "$candidate"; then
+    printf 'W09 bounds audit: include sources must not use unbounded whole-file reads\n' >&2
+    exit 1
+fi
+rg -Fq 'def oversized_source_file_is_rejected_by_bounded_reader()' "$fixture"
+rg -Fq 'for _ in 0..<8388609 |source_bytes|' "$fixture"
+rg -Fq 'wasm_export_scan_bounds_oversized_source_file_reads' "$fixture"
+rg -Fq 'def aggregate_include_graph_bytes_are_bounded()' "$fixture"
+rg -Fq 'for _ in 0..<8388608 |child_bytes|' "$fixture"
+rg -Fq 'WASM include graph exceeds Elisascript scan limit' "$fixture"
+rg -Fq 'wasm_export_scan_bounds_aggregate_include_graph_reads' "$fixture"
 rg -Fq 'PATH_SYMLINK_HOPS: usize = 128' "$candidate"
 rg -Fq 'symlink_hops > Limits::PATH_SYMLINK_HOPS' "$candidate"
 rg -Fq 'WASM symlink resolution exceeds Elisascript scan limit' "$candidate"

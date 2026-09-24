@@ -195,18 +195,18 @@ unexecuted under the validation hold.
   `splitlines(keepends=True)`. The Elisascript loader applies per-file and
   aggregate byte ceilings plus path-spelling, aggregate path-component work,
   include-file, directive, and depth ceilings; those bounded rejection cases
-  are Elisascript-specific safeguards. Its current whole-file `read_text`
-  follows a `file_size` preflight, so concurrent in-place growth can exceed the
-  byte ceilings in peak allocation before the post-read check rejects it. Do
-  not treat these checks as a hard memory bound. Acceptance of adversarial
-  memory safety requires opening the resolved file once, reading fixed-size
-  binary chunks under the remaining per-file and aggregate budget, and rejecting
-  the first byte beyond either ceiling before appending it to retained source.
-  Close the owned stream on both success and read/limit failure. A generated
-  growth-during-read fixture must mutate the already-open file and prove the
-  candidate rejects it as soon as bytes read exceed the configured ceiling,
-  without buffering the oversized file in full; a second `file_size` check is
-  not an equivalent guard.
+  are Elisascript-specific safeguards. The candidate now opens the resolved
+  file through a binary `FileStream`, reads fixed-size chunks under the minimum
+  of the per-file and remaining graph budgets, and rejects an overflow probe
+  before retaining that chunk. It closes the stream on success and handled
+  read/limit failures. Source review indicates this avoids buffering an
+  oversized file in full, but execution evidence is still required. The
+  candidate-only fixture writes a file one byte over the 8 MiB per-file ceiling
+  and expects rejection without invoking Python. Another candidate-only fixture
+  combines five individually admissible 8 MiB files to exceed the 32 MiB graph
+  budget, also without invoking Python. A growth-during-read fixture must still
+  mutate an already-open file and verify prompt rejection; no runtime
+  parity/safety evidence has been gathered.
 - Python `Path.read_text` universal-newline translation converts CRLF and bare
   CR to LF before `splitlines(keepends=True)`. The candidate makes that
   normalization explicit. Include directives are whole lines matching
