@@ -23,9 +23,12 @@ build routes must produce an executable that exits 0, writes exactly
 compile/link entries into argument vectors, and executes a declared-output
 build graph. It requires an existing absolute empty non-symlink build directory
 outside the repository. No command is passed through a shell.
-The usage-dependency edges propagate compile/link interfaces; explicit
-`LinkLibrary` requirements name the concrete target artifacts so the generated
-final link argv contains `core`, its link-only `helper`, and `m` in order.
+The usage-dependency edges propagate compile/link interfaces and name the
+concrete target artifacts. The final link closure must therefore include
+`core`, its private-static-dependency `helper` as a link-only requirement, and
+the `m` system library propagated through the public `api` interface. The
+candidate does not add a duplicate explicit `helper` link requirement, so the
+fixture depends on correct private dependency-edge propagation.
 
 `test/script_parity/target_usage_launcher_test.elisascript` runs the CMake
 configure/build/CTest route and the candidate build in separate fresh roots,
