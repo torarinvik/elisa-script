@@ -659,6 +659,9 @@ fails, the executor preflights and removes outputs of every node that started
 in the transaction; outputs of later, unstarted nodes and the previous cache
 manifest are retained when cleanup succeeds. This allows an ordinary observed
 failure to be retried without treating partial command output as a user edit.
+After each successful command, every declared output is observed before the
+node is marked successful or any dependent node can start; a missing output
+fails that node and triggers the same started-output cleanup path.
 The build root must remain exclusively owned during the transaction. A host
 kill or machine crash bypasses in-process cleanup; partial outputs then fail
 closed against the prior manifest and require explicit repair. After a

@@ -84,6 +84,13 @@ sentinel, and requires refusal without following or unlinking the link,
 changing sentinel bytes, or replacing the cache. Restoring the regular cached
 bytes must allow cleanup and recovery. This case is also source-only.
 
+The harness also replaces the main compiler with `/usr/bin/true`, which exits
+successfully but does not create its declared object output. The executor must
+fail `compile-main` immediately, before the dependent link target can start,
+remove outputs of started nodes, preserve the prior executable and cache bytes,
+and recover on a normal variant retry followed by a cache hit. This is a
+source-level check and has not been run.
+
 Finally, the harness asks the candidate to switch to the default generated
 header and uses AWK in place of the main compiler. The header generator
 succeeds, then AWK writes a partial object and exits unsuccessfully. Cleanup
