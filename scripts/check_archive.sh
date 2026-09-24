@@ -8,12 +8,19 @@ repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 model="$repo_root/src/runtime/archive_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture_file="$repo_root/test/ir/elisascript_ir_test.elisa"
+runtime_fixture="$repo_root/test/runtime/archive_model_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger"; do
+for required_file in "$model" "$ir" "$fixture_file" "$runtime_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'archive audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
+
+rg -q 'entry.state == ArchiveEntryState.Accepted and existing.state == ArchiveEntryState.Accepted' "$model"
+rg -q 'skipped_archive_paths_do_not_conflict_with_accepted_entries' "$runtime_fixture"
+rg -q 'ArchiveEntryState.Skipped' "$runtime_fixture"
+rg -q 'first_accepted.total_bytes == 3 and first_accepted.skipped_entries == 1' "$runtime_fixture"
+rg -q 'first_skipped.total_bytes == 3 and first_skipped.skipped_entries == 1' "$runtime_fixture"
 
 rg -q '^module EsArchive:' "$model"
 rg -q 'include "\.\./runtime/archive_model\.elisa"' "$ir"
