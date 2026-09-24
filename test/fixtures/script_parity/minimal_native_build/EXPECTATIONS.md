@@ -72,15 +72,17 @@ header with the distinct default template. Elisascript must fail before
 re-blessing or deleting those bytes; after restoring the variant bytes, the
 old cache must again be reusable.
 
-Finally, the harness asks the candidate to rebuild with the header generator
-replaced by `/usr/bin/false`. The generator must fail with its node-specific
-diagnostic, and only that generator's declared output may be removed: the
-existing main object and executable are outputs of later, not-yet-started
-nodes and must remain intact. The preserved executable must still run with the
+Finally, the harness asks the candidate to switch to the default generated
+header and uses AWK in place of the main compiler. The header generator
+succeeds, then AWK writes a partial object and exits unsuccessfully. Cleanup
+must remove the outputs of both started nodes (the generated header and partial
+object), while preserving the existing executable owned by the later,
+not-yet-started link node. The preserved executable must still run with the
 expected output, and the failed attempt must leave the prior cache bytes
 unchanged. A subsequent normal variant build must recreate the header, rebuild
 the dependent object and executable, and publish a reusable cache; the next
-invocation must be an up-to-date no-op.
+invocation must be an up-to-date no-op. This verifies ordinary observed
+process-failure recovery, not recovery after the host is killed mid-command.
 
 `test/script_parity/minimal_native_build_launcher_test.elisascript` is the
 end-to-end process parity harness. It accepts `ELISASCRIPT_MINIMAL_NATIVE_CMAKE`

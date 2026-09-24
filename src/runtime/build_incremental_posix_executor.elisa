@@ -88,14 +88,15 @@ module EsBuildIncrementalPosixExecutor:
 
         # This destructive primitive is private to the executor so it cannot
         # be called outside the cache-locked transaction below.
-        def invalidate_build_incremental_output_at(scratch: mutable Arena&, root_fd: int, cached_output: BuildIncrementalFile) -> bool error[OutputInvalidationError, OpenError, ObserveError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+        def invalidate_build_incremental_output_at(scratch: mutable Arena&, root_fd: int, cached_output: BuildIncrementalFile, require_cached_content: bool) -> bool error[OutputInvalidationError, OpenError, ObserveError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
             path: sview = cached_output.path
             raise OutputInvalidationError.InvalidCachedOutput(path) if not build_incremental_path_is_canonical_relative(path)
-            raise OutputInvalidationError.InvalidCachedOutput(path) if cached_output.fingerprint == 0 and cached_output.fingerprint_word1 == 0 and cached_output.fingerprint_word2 == 0 and cached_output.fingerprint_word3 == 0
+            raise OutputInvalidationError.InvalidCachedOutput(path) if require_cached_content and cached_output.fingerprint == 0 and cached_output.fingerprint_word1 == 0 and cached_output.fingerprint_word2 == 0 and cached_output.fingerprint_word3 == 0
             current: BuildIncrementalObservation = try observe_build_incremental_file_at(scratch, root_fd, path)
             return true if not current.present
-            matches_cached_content: bool = current.fingerprint == cached_output.fingerprint and current.fingerprint_word1 == cached_output.fingerprint_word1 and current.fingerprint_word2 == cached_output.fingerprint_word2 and current.fingerprint_word3 == cached_output.fingerprint_word3
-            raise OutputInvalidationError.CachedOutputChanged(path) if not matches_cached_content
+            if require_cached_content:
+                matches_cached_content: bool = current.fingerprint == cached_output.fingerprint and current.fingerprint_word1 == cached_output.fingerprint_word1 and current.fingerprint_word2 == cached_output.fingerprint_word2 and current.fingerprint_word3 == cached_output.fingerprint_word3
+                raise OutputInvalidationError.CachedOutputChanged(path) if not matches_cached_content
 
             path_length: usize = sview_len(path)
             leaf_start: mutable usize = 0
@@ -158,6 +159,25 @@ module EsBuildIncrementalPosixExecutor:
             return true
 
 
+        # Once a node has started, its declared outputs were absent at the
+        # dispatch boundary and any files now at those paths are command
+        # products. If the serial graph fails, discard all outputs of started
+        # nodes so the previous manifest can safely drive a retry. Unstarted
+        # nodes retain their prior cached outputs. This relies on the existing
+        # exclusive build-root ownership contract for the duration of a run.
+        def cleanup_failed_build_graph_outputs_at(scratch: mutable Arena&, root_fd: int, results: darray[BuildExecutionNodeResult], recipes: darray[BuildIncrementalRecipeTarget]) -> bool error[BuildIncrementalError, OutputInvalidationError, OpenError, ObserveError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+            raise BuildIncrementalError.CurrentRecipeShapeInvalid if results.count != recipes.count
+            for node_index in 0..<results.count |results, recipes, scratch|:
+                continue if not results[node_index].started
+                for output_path in recipes[node_index].outputs |scratch|:
+                    _ = try observe_build_incremental_file_at(scratch, root_fd, output_path)
+            for node_index in 0..<results.count |results, recipes, scratch|:
+                continue if not results[node_index].started
+                for output_path in recipes[node_index].outputs |scratch|:
+                    _ = try invalidate_build_incremental_output_at(scratch, root_fd, BuildIncrementalFile{path: output_path}, false)
+            return true
+
+
         def build_incremental_posix_find_observation(observations: darray[BuildIncrementalObservation], path: sview, output: mutable BuildIncrementalObservation&) -> bool:
             for observation in observations:
                 if observation.path == path:
@@ -196,7 +216,7 @@ module EsBuildIncrementalPosixExecutor:
                 raise BuildIncrementalError.ObservationSetMismatch if not build_incremental_posix_find_observation(observations, output_path, observed)
                 cached: mutable BuildIncrementalFile = BuildIncrementalFile{path: ""}
                 if build_incremental_posix_find_cached_output(previous_targets, output_path, cached):
-                    _ = try invalidate_build_incremental_output_at(scratch, root_fd, cached)
+                    _ = try invalidate_build_incremental_output_at(scratch, root_fd, cached, true)
                 elif observed.present:
                     raise BuildIncrementalError.OutputInvalidationOwnershipMissing(output_path)
                 else:
@@ -250,6 +270,7 @@ module EsBuildIncrementalPosixExecutor:
                         ok:
                             pass
                         error failure:
+                            _ = try cleanup_failed_build_graph_outputs_at(scratch, root_fd, results, recipes)
                             _ = try advance_build_graph(graph, BuildGraphEvent.Cancel)
                             _ = try advance_build_graph(graph, BuildGraphEvent.CancelAck)
                             raise failure
@@ -294,6 +315,8 @@ module EsBuildIncrementalPosixExecutor:
                         break
                     _ = try advance_build_graph(graph, BuildGraphEvent.NodeSuccess, node_index)
 
+            if graph.state == BuildGraphState.Failed:
+                _ = try cleanup_failed_build_graph_outputs_at(scratch, root_fd, results, recipes)
             return BuildExecutionResult{graph_state: graph.state, nodes: results, log_bytes: graph.log_bytes}
 
 
@@ -346,8 +369,19 @@ module EsBuildIncrementalPosixExecutor:
             admission: BuildIncrementalCacheAdmission = try admit_build_incremental_cache_at_held(scratch, lock, cache_directory_fd, lock_name, owner_token, cache_name)
             execution: BuildIncrementalPosixExecution = try execute_build_graph_incremental_at(scratch, root_fd, graph, admission.previous_targets, unsigned_recipes, toolchain_resolutions)
             return BuildIncrementalPosixCacheRun{execution: execution, commit: BuildIncrementalCommit{}, reused_cache: admission.reusable} if execution.result.graph_state != BuildGraphState.Succeeded
-            prepared: BuildIncrementalPosixCacheCommit = try commit_build_incremental_execution_cache_at(scratch, root_fd, execution, graph, admission.previous_targets, toolchain_resolutions)
-            _ = try publish_build_incremental_cache_at_held(lock, cache_directory_fd, lock_name, owner_token, staging_name, cache_name, prepared.cache_bytes)
+            prepared: mutable BuildIncrementalPosixCacheCommit = BuildIncrementalPosixCacheCommit{commit: BuildIncrementalCommit{}}
+            catch commit_build_incremental_execution_cache_at(scratch, root_fd, execution, graph, admission.previous_targets, toolchain_resolutions):
+                ok value:
+                    prepared <- value
+                error failure:
+                    _ = try cleanup_failed_build_graph_outputs_at(scratch, root_fd, execution.result.nodes, execution.recipes)
+                    raise failure
+            catch publish_build_incremental_cache_at_held(lock, cache_directory_fd, lock_name, owner_token, staging_name, cache_name, prepared.cache_bytes):
+                ok:
+                    pass
+                error failure:
+                    _ = try cleanup_failed_build_graph_outputs_at(scratch, root_fd, execution.result.nodes, execution.recipes)
+                    raise failure
             return BuildIncrementalPosixCacheRun{execution: execution, commit: prepared.commit, reused_cache: admission.reusable, cache_published: true}
 
 

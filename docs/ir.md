@@ -651,6 +651,20 @@ outputs are obsolete for cleanup purposes, while the scheduler-facing manifest
 validator still rejects an empty graph. The pure module never removes files
 itself.
 
+`EsBuildIncrementalPosixExecutor::execute_build_graph_incremental_cached_at`
+provides the POSIX cache-locked route. Before each dirty node starts, matching
+previously cached outputs are invalidated through a no-follow directory
+capability. If a command fails, or post-run validation/cache publication
+fails, the executor preflights and removes outputs of every node that started
+in the transaction; outputs of later, unstarted nodes and the previous cache
+manifest are retained when cleanup succeeds. This allows an ordinary observed
+failure to be retried without treating partial command output as a user edit.
+The build root must remain exclusively owned during the transaction. A host
+kill or machine crash bypasses in-process cleanup; partial outputs then fail
+closed against the prior manifest and require explicit repair. Removed-target
+stale-output cleanup candidates are still returned to the host and are not
+automatically deleted by this executor.
+
 `EsBuildExecutor::execute_build_graph_serial_with_outputs` is the fresh-build
 host route. It requires every declared absolute output path to be absent before
 the first command, then verifies that each output path resolves to a file
