@@ -53,6 +53,7 @@ for boundary in \
     'WorkLimitExceeded' \
     'OutputLimitExceeded' \
     'not session.request.global and session.matches != 0' \
+    'work_delta != 0 and capture_delta == 0 and output_delta == 0' \
     'EndNotReady' \
     'CancelNotReady'; do
     rg -Fq "$boundary" "$model"
@@ -60,6 +61,7 @@ done
 rg -Fq 'regex_request_global_policy_matches_operation_shape' "$runtime_fixture"
 rg -Fq 'find_all_without_global' "$runtime_fixture"
 rg -Fq 'split_without_global' "$runtime_fixture"
+rg -Fq 'zero_work_rejected' "$runtime_fixture"
 
 rg -Fq 'include "../runtime/regex_model.elisa"' "$ir"
 rg -Fq 'using EsRegex' "$fixture"
