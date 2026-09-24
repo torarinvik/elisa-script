@@ -46,6 +46,9 @@ module EsProcessBatch:
             Retry
             Cancel
             CancelAck
+            # Appended so dependency-aware hosts can admit a specific ready
+            # item without changing the identity of the original Launch tag.
+            LaunchAt
 
 
         struct ProcessBatchPolicy:
@@ -120,7 +123,7 @@ module EsProcessBatch:
 
 
         def process_batch_event_valid(event: ProcessBatchEvent) -> bool:
-            return event in {ProcessBatchEvent.Begin, ProcessBatchEvent.Launch, ProcessBatchEvent.Complete, ProcessBatchEvent.Fail, ProcessBatchEvent.ReapAck, ProcessBatchEvent.Retry, ProcessBatchEvent.Cancel, ProcessBatchEvent.CancelAck}
+            return event in {ProcessBatchEvent.Begin, ProcessBatchEvent.Launch, ProcessBatchEvent.Complete, ProcessBatchEvent.Fail, ProcessBatchEvent.ReapAck, ProcessBatchEvent.Retry, ProcessBatchEvent.Cancel, ProcessBatchEvent.CancelAck, ProcessBatchEvent.LaunchAt}
 
 
         def process_batch_failure_mode_valid(mode: ProcessBatchFailureMode) -> bool:
@@ -219,11 +222,16 @@ module EsProcessBatch:
             if event == ProcessBatchEvent.Begin:
                 raise ProcessBatchError.InvalidState if session.state != ProcessBatchState.Planned
                 session.state <- ProcessBatchState.Succeeded if session.jobs.count == 0 else ProcessBatchState.Running
-            elif event == ProcessBatchEvent.Launch:
+            elif event == ProcessBatchEvent.Launch or event == ProcessBatchEvent.LaunchAt:
                 raise ProcessBatchError.InvalidState if session.state != ProcessBatchState.Running and session.state != ProcessBatchState.Draining
                 raise ProcessBatchError.ParallelLimitExceeded if session.active >= session.policy.max_parallel
-                pending: usize = process_batch_pending_index(session)
-                raise ProcessBatchError.NoPendingJob if pending == session.jobs.count
+                pending: mutable usize = process_batch_pending_index(session)
+                if event == ProcessBatchEvent.LaunchAt:
+                    raise ProcessBatchError.InvalidJobIndex if job_index >= session.jobs.count
+                    pending <- job_index
+                    raise ProcessBatchError.InvalidJobState if session.jobs[pending].state != ProcessBatchJobState.Pending
+                else:
+                    raise ProcessBatchError.NoPendingJob if pending == session.jobs.count
                 raise ProcessBatchError.AttemptLimitExceeded if session.jobs[pending].attempts >= session.policy.max_attempts
                 session.jobs[pending].state <- ProcessBatchJobState.Running
                 session.jobs[pending].attempts <- session.jobs[pending].attempts + 1
@@ -318,6 +326,16 @@ module EsProcessBatch:
             _ = try advance_process_batch(session, ProcessBatchEvent.Launch)
             job: ProcessBatchJob = session.jobs[pending]
             return ProcessBatchDispatch{job_index: pending, job_id: job.id, attempt_token: job.attempt_token}
+
+
+        # Dependency-aware schedulers must call this only after proving the
+        # selected job is ready. This preserves the scheduler's chosen graph
+        # node instead of forcing global job-list order on the host.
+        def admit_process_batch_job(session: mutable ProcessBatchSession&, job_index: usize) -> ProcessBatchDispatch error[ProcessBatchError]:
+            _ = try validate_process_batch(session)
+            _ = try advance_process_batch(session, ProcessBatchEvent.LaunchAt, job_index)
+            job: ProcessBatchJob = session.jobs[job_index]
+            return ProcessBatchDispatch{job_index: job_index, job_id: job.id, attempt_token: job.attempt_token}
 
 
         # A dispatch value is ordinary typed data and can be copied or forged;

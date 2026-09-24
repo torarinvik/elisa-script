@@ -1169,6 +1169,9 @@ index, stable job ID, and attempt token, avoiding host-side inference of which
 queued job was transitioned. Its retry fixture checks the token changes while
 the job identity stays fixed. `validate_process_batch_dispatch` rejects a
 forged job ID or stale token unless it matches a currently running job.
+Dependency-aware hosts can use `admit_process_batch_job` to admit the exact
+ready queue entry selected by `EsBuildScheduler`, rather than being forced to
+dispatch the lowest pending batch index.
 The focused IR/runtime fixtures, namespace inclusion, documentation, and
 check_process_batch.sh audit are static evidence; scheduler ownership, actual
 pipe/process adapters, signal escalation, and execution evidence remain open.
