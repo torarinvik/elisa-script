@@ -9,6 +9,11 @@ The public header marks `answer` as default-visible while targets compile with
 hidden-by-default visibility. Successful shared-client linking and execution
 therefore exercise the exported symbol and dynamic loader path. Both clients
 must exit 0, print exactly `answer=42\n`, and emit no stderr.
+The implementation delegates through an undeclared `answer_component`
+symbol; the launcher compiles a probe that references it and requires linking
+against both shared libraries to fail with that symbol in the diagnostic.
+This checks hidden-by-default visibility independently of the successful
+public-symbol client.
 
 `CMakeLists.txt` is the independent CMake reference and registers both clients
 with CTest. `test/script_parity/native_libraries_launcher_test.elisascript` is
