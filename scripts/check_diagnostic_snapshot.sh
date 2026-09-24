@@ -20,6 +20,8 @@ fi
 [[ -f "$bounded_reader" ]] || { echo "diagnostic snapshot audit: missing shared bounded text reader" >&2; exit 1; }
 rg -Fq 'include "../src/runtime/bounded_text_posix.elisa"' "$candidate" || { echo "diagnostic snapshot audit: candidate does not use shared bounded text reader" >&2; exit 1; }
 rg -Fq 'EsBoundedText::read_utf8(input_path, Limits::SOURCE_BYTES)' "$candidate" || { echo "diagnostic snapshot audit: candidate does not use bounded UTF-8 read" >&2; exit 1; }
+rg -Fq 'if fields.count >= Limits::FIELDS:' "$candidate" || { echo "diagnostic snapshot audit: candidate does not bound field admission" >&2; exit 1; }
+rg -Fq 'fields.push(field_name)' "$candidate" || { echo "diagnostic snapshot audit: candidate does not retain parsed fields" >&2; exit 1; }
 for required in 'MAX_BYTES: usize = 16777216' 'maximum_bytes - bytes.count' 'probe_capacity: usize = remaining + 1' 'DarwinOpenFlags::NONBLOCK' 'ReadError.LimitExceeded' 'text_is_valid_utf8' 'stable_file(opened, final_opened)'; do
     rg -Fq "$required" "$bounded_reader" || { echo "diagnostic snapshot audit: shared reader is missing $required" >&2; exit 1; }
 done
