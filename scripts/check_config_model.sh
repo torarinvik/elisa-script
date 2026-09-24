@@ -33,6 +33,7 @@ done
 for toml_boundary in \
     'module EsConfigToml:' \
     'CONFIG_TOML_MAX_BYTES' \
+    'CONFIG_TOML_MAX_TOTAL_ARRAY_ITEMS' \
     'def parse_toml_config(' \
     'ArrayTableUnsupported' \
     'UnsupportedEscape' \
@@ -157,12 +158,18 @@ rg -Fq 'bounded_json_configuration_file_rejects_over_limit_before_reading' "$jso
 rg -Fq 'toml_configuration_parses_bounded_scalar_subset' "$toml_fixture"
 rg -Fq '0xDEAD_BEEF' "$toml_fixture"
 rg -Fq '+1_000' "$toml_fixture"
+rg -Fq 'ConfigTomlValueKind.Array' "$toml_fixture"
+rg -Fq 'ConfigTomlValueKind.Integer' "$toml_fixture"
+rg -Fq 'mixed_array' "$toml_fixture"
 rg -Fq 'toml_configuration_rejects_unsupported_values_and_escapes' "$toml_fixture"
 rg -Fq 'quoted_key_rejected' "$toml_fixture"
 rg -Fq '123.name' "$toml_fixture"
 rg -Fq 'bounded_toml_configuration_file_returns_owned_layer' "$toml_file_fixture"
+rg -Fq 'ConfigTomlValueKind.Array' "$toml_file_fixture"
+rg -Fq 'setuptools>=68' "$toml_file_fixture"
 rg -Fq 'bounded_toml_configuration_file_rejects_invalid_budget_before_reading' "$toml_file_fixture"
 rg -Fq 'mode = "release"' "$toml_file_data"
+rg -Fq 'dependencies = [' "$toml_file_data"
 rg -Fq '"name":"ElisaScript","count":23,"enabled":true' "$json_file_data"
 
 rg -Fq '`EsConfig` is the pure configuration precedence boundary' "$docs"

@@ -932,16 +932,18 @@ in deterministic bytewise key order; lookup never reads process-global state.
 EsConfigJson adapts one strict flat JSON object to the File layer, enforcing its
 entry ceiling before materialization and retaining exact number spellings and
 document-borrowed decoded scalar text; structures require the typed schema
-adapter. EsConfigToml parses an explicitly bounded scalar subset (bare/dotted
-keys, tables, comments, single-line basic and literal strings, booleans, and
-TOML decimal/hexadecimal/octal/binary/float/special-number spellings with
-validated digit separators) into an owned File layer, preserving numeric
-lexemes exactly. It does not yet perform typed numeric conversion. Arrays, inline
-tables, array-of-table headers, date/time values, multiline strings, Unicode
-escapes, and quoted keys remain unsupported and are rejected rather than
-misread. Its POSIX file adapter uses the shared
-stable bounded UTF-8 reader. Fixtures are static evidence only; direct runtime
-qualification remains disabled pending compiler-validation reauthorization.
+adapter. EsConfigToml parses bare/dotted keys, tables, comments, single-line
+basic/literal strings, booleans, TOML numeric forms with validated digit
+separators, and single-line arrays of scalar values. Numeric lexemes remain
+exact; `ConfigTomlValue` preserves array item kinds while the generic precedence
+view keeps the original array spelling. This does not yet provide a general
+structured merge or typed numeric conversion. Nested arrays,
+inline tables, array-of-table headers, date/time values, multiline
+arrays/strings, Unicode escapes, and quoted keys remain unsupported and fail
+closed. Array item counts are bounded per array and in aggregate. Its POSIX file
+adapter uses the shared stable bounded UTF-8 reader. Fixtures are static
+evidence only; direct runtime qualification remains disabled pending
+compiler-validation reauthorization.
 Process-global environment capture remains open.
 EsConfigJsonFilePosix reads bounded stable UTF-8 files and returns a
 document/layer wrapper preserving backing storage. It preflights decoder and
