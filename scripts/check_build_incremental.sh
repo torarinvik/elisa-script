@@ -101,7 +101,7 @@ rg -Fq 'def observe_build_incremental_recipes_at(' "$repo_root/src/runtime/build
 rg -Fq 'arena_rewind(scratch, mark)' "$repo_root/src/runtime/build_incremental_posix.elisa"
 rg -Fq 'def canonical_bytes_sha256_word(' "$repo_root/src/ir/serialize.elisa"
 rg -Fq 'schedule: mutable u64[64] = zeroed' "$repo_root/src/ir/serialize.elisa"
-rg -Fq 'CanonicalSha256::ROUND_CONSTANTS[index]' "$repo_root/src/ir/serialize.elisa"
+rg -Fq 'constants: u64[64] = [' "$repo_root/src/ir/serialize.elisa"
 rg -Fq 'incremental_file_fingerprint_uses_canonical_sha256_word' "$posix_fixture"
 rg -Fq 'DarwinOpenFlags::NOFOLLOW' "$repo_root/src/runtime/build_incremental_posix.elisa"
 rg -Fq 'include "../runtime/build_incremental_posix.elisa"' "$ir"
