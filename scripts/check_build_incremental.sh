@@ -32,7 +32,7 @@ for cache_declaration in \
     'def decode_build_incremental_cache(' \
     'BuildIncrementalCacheError.ChecksumMismatch' \
     'payload_end: usize = bytes.count - Limits::CHECKSUM_BYTES' \
-    'validate_build_incremental_manifest(targets)'; do
+    'validate_build_incremental_signed_manifest(targets)'; do
     rg -Fq "$cache_declaration" "$cache_model"
 done
 
@@ -136,6 +136,7 @@ done
 for recipe_signature_check in \
     'build_recipe_signature_binds_command_target_and_toolchain' \
     'sign_build_incremental_recipe' \
+    'split_arguments' \
     'changed_command' \
     'changed_recipe' \
     'changed_toolchain'; do
