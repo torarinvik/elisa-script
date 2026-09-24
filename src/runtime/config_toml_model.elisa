@@ -11,6 +11,7 @@ module EsConfigToml:
         const CONFIG_TOML_MAX_ARRAY_ITEMS: usize = 4096
         const CONFIG_TOML_MAX_TOTAL_ARRAY_ITEMS: usize = 65536
         const CONFIG_TOML_MAX_TOTAL_TABLE_FIELDS: usize = 65536
+        const CONFIG_TOML_MAX_ARRAY_TABLE_ROWS: usize = 65536
 
 
         const enum ConfigTomlValueKind of u8:
@@ -42,12 +43,18 @@ module EsConfigToml:
             fields: darray[ConfigTomlTableField] = []
 
 
+        struct ConfigTomlArrayTableInstance:
+            path: darray[u8] = []
+            index: usize
+
+
         struct ConfigTomlLayer:
             layer: ConfigLayer
             # Typed rows parallel to layer.entries. The latter remains the
             # format-neutral precedence view; typed consumers use these rows
             # when the selected source is TOML.
             values: darray[ConfigTomlValue] = []
+            array_tables: darray[ConfigTomlArrayTableInstance] = []
             key_storage: darray[darray[u8]] = []
             value_storage: darray[darray[u8]] = []
 
@@ -57,7 +64,6 @@ module EsConfigToml:
             InvalidUtf8
             InvalidTable
             DuplicateTable
-            ArrayTableUnsupported
             InvalidKey
             DuplicateKey
             ExpectedEquals
@@ -144,6 +150,41 @@ module EsConfigToml:
             for index in 1..<ordered.count |ordered|:
                 return false if ordered[index - 1] == ordered[index]
             return true
+
+
+        def config_toml_array_table_index(paths: darray[darray[u8]], path: darray[u8]) -> usize:
+            for index in 0..<paths.count |paths, path|:
+                return index if bytes_view(paths[index]) == bytes_view(path)
+            return paths.count
+
+
+        def config_toml_dotted_descendant(path: darray[u8], prefix: darray[u8]) -> bool:
+            return false if path.count <= prefix.count
+            for offset in 0..<prefix.count |path, prefix|:
+                return false if path[offset] != prefix[offset]
+            return path[prefix.count] == 46
+
+
+        def config_toml_array_table_parent(paths: darray[darray[u8]], path: darray[u8]) -> usize:
+            parent: mutable usize = paths.count
+            parent_bytes: mutable usize = 0
+            for index in 0..<paths.count |paths, path, parent, parent_bytes|:
+                if paths[index].count > parent_bytes and config_toml_dotted_descendant(path, paths[index]):
+                    parent <- index
+                    parent_bytes <- paths[index].count
+            return parent
+
+
+        def config_toml_append_array_table_ordinal(prefix: mutable darray[u8]&, ordinal: usize) can[Memory.Allocate, Abort.Panic]:
+            digits: mutable darray[u8] = []
+            remaining: mutable usize = ordinal
+            if remaining == 0:
+                digits.push(48u8)
+            while remaining != 0:
+                digits.push(48u8 + (remaining % 10).u8())
+                remaining <- remaining / 10
+            for offset in 0..<digits.count |digits, prefix|:
+                prefix.push(digits[digits.count - offset - 1])
 
 
         def config_toml_digit(byte: u8, radix: usize) -> bool:
@@ -487,6 +528,9 @@ module EsConfigToml:
             result: mutable ConfigTomlLayer = ConfigTomlLayer{layer: ConfigLayer{source: ConfigSource.File}}
             table_prefix: mutable darray[u8] = []
             declared_tables: mutable darray[darray[u8]] = []
+            array_table_paths: mutable darray[darray[u8]] = []
+            array_table_counts: mutable darray[usize] = []
+            array_table_rows: mutable usize = 0
             table_bytes: mutable usize = 0
             layer_bytes: mutable usize = 0
             array_item_count: mutable usize = 0
@@ -504,16 +548,58 @@ module EsConfigToml:
                 if start < end:
                     first: u8 = sview_at(source, start)
                     if first == 91:
-                        raise ConfigTomlError.ArrayTableUnsupported if start + 1 < end and sview_at(source, start + 1) == 91
-                        raise ConfigTomlError.InvalidTable if sview_at(source, end - 1) != 93
-                        parsed_table: darray[u8] = try config_toml_parse_key_path(source, start + 1, end - 1)
-                        raise ConfigTomlError.OutputLimitExceeded if declared_tables.count >= EsConfig::Limits::ENTRIES_PER_LAYER
-                        raise ConfigTomlError.OutputLimitExceeded if parsed_table.count >= EsConfig::Limits::KEY_BYTES
-                        remaining_table_bytes: mutable usize = EsConfig::Limits::LAYER_BYTES - table_bytes
-                        raise ConfigTomlError.OutputBytesExceeded if parsed_table.count > remaining_table_bytes
-                        table_bytes <- table_bytes + parsed_table.count
-                        declared_tables.push(parsed_table)
-                        table_prefix <- declared_tables[declared_tables.count - 1]
+                        is_array_table: bool = start + 1 < end and sview_at(source, start + 1) == 91
+                        if is_array_table:
+                            raise ConfigTomlError.InvalidTable if end - start < 4 or sview_at(source, end - 1) != 93 or sview_at(source, end - 2) != 93
+                            parsed_table: darray[u8] = try config_toml_parse_key_path(source, start + 2, end - 2)
+                            raise ConfigTomlError.OutputLimitExceeded if parsed_table.count >= EsConfig::Limits::KEY_BYTES
+                            raise ConfigTomlError.OutputLimitExceeded if array_table_rows >= CONFIG_TOML_MAX_ARRAY_TABLE_ROWS
+                            for existing_array_table_path in array_table_paths |array_table_paths, parsed_table|:
+                                raise ConfigTomlError.UnsupportedValue if config_toml_dotted_descendant(parsed_table, existing_array_table_path) or config_toml_dotted_descendant(existing_array_table_path, parsed_table)
+                            for declared in declared_tables |declared, parsed_table|:
+                                raise ConfigTomlError.InvalidTable if bytes_view(declared) == bytes_view(parsed_table)
+                            array_table_index: usize = config_toml_array_table_index(array_table_paths, parsed_table)
+                            array_table_ordinal: mutable usize = 0
+                            if array_table_index == array_table_paths.count:
+                                raise ConfigTomlError.OutputLimitExceeded if array_table_paths.count >= EsConfig::Limits::ENTRIES_PER_LAYER
+                                array_table_paths.push(parsed_table)
+                                array_table_counts.push(1)
+                            else:
+                                array_table_ordinal <- array_table_counts[array_table_index]
+                                array_table_counts[array_table_index] <- array_table_ordinal + 1
+                            array_table_rows <- array_table_rows + 1
+                            result.array_tables.push(ConfigTomlArrayTableInstance{path: parsed_table, index: array_table_ordinal})
+                            table_prefix <- []
+                            for byte in parsed_table |table_prefix|:
+                                table_prefix.push(byte)
+                            table_prefix.push(46u8)
+                            config_toml_append_array_table_ordinal(table_prefix, array_table_ordinal)
+                        else:
+                            raise ConfigTomlError.InvalidTable if sview_at(source, end - 1) != 93
+                            parsed_table: darray[u8] = try config_toml_parse_key_path(source, start + 1, end - 1)
+                            raise ConfigTomlError.OutputLimitExceeded if declared_tables.count >= EsConfig::Limits::ENTRIES_PER_LAYER
+                            raise ConfigTomlError.OutputLimitExceeded if parsed_table.count >= EsConfig::Limits::KEY_BYTES
+                            for array_table_path in array_table_paths |array_table_paths, parsed_table|:
+                                raise ConfigTomlError.InvalidTable if bytes_view(array_table_path) == bytes_view(parsed_table)
+                            array_parent: usize = config_toml_array_table_parent(array_table_paths, parsed_table)
+                            effective_table: mutable darray[u8] = []
+                            if array_parent < array_table_paths.count:
+                                parent_path: darray[u8] = array_table_paths[array_parent]
+                                for byte in parent_path |parent_path, effective_table|:
+                                    effective_table.push(byte)
+                                effective_table.push(46u8)
+                                latest_ordinal: usize = array_table_counts[array_parent] - 1
+                                config_toml_append_array_table_ordinal(effective_table, latest_ordinal)
+                                for offset in parent_path.count..<parsed_table.count |parsed_table, effective_table|:
+                                    effective_table.push(parsed_table[offset])
+                            else:
+                                for byte in parsed_table |parsed_table, effective_table|:
+                                    effective_table.push(byte)
+                            remaining_table_bytes: mutable usize = EsConfig::Limits::LAYER_BYTES - table_bytes
+                            raise ConfigTomlError.OutputBytesExceeded if effective_table.count > remaining_table_bytes
+                            table_bytes <- table_bytes + effective_table.count
+                            declared_tables.push(effective_table)
+                            table_prefix <- declared_tables[declared_tables.count - 1]
                     else:
                         equals: mutable usize = start
                         while equals < end and sview_at(source, equals) != 61:

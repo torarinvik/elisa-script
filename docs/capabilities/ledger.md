@@ -940,10 +940,14 @@ array item kinds while the generic precedence view keeps the original array
 spelling. One-level inline tables preserve typed scalar and scalar-array fields
 in `ConfigTomlTableField`; the generic layer retains the raw table spelling.
 This does not yet provide a general structured merge or typed numeric
-conversion. Nested inline tables, nested arrays, array-of-table headers,
-date/time values, multiline strings, Unicode escapes, and quoted keys remain
-unsupported and fail closed. Array item counts are bounded per array and in
-aggregate; inline table fields are bounded per table and in aggregate. Its POSIX file
+conversion. Nested inline tables, nested arrays, date/time values, multiline
+strings, Unicode escapes, and quoted keys remain unsupported and fail closed.
+Array-of-table rows are represented as zero-based numeric dotted key segments
+and a typed row directory (`ConfigTomlArrayTableInstance`), with nested regular
+tables scoped under the latest row; nested array-of-table graphs remain
+unsupported. Row count is bounded. Array item counts are
+bounded per array and in aggregate; inline table fields are bounded per table
+and in aggregate. Its POSIX file
 adapter uses the shared stable bounded UTF-8 reader. Fixtures are static
 evidence only; direct runtime qualification remains disabled pending
 compiler-validation reauthorization.

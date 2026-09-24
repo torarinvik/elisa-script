@@ -35,6 +35,10 @@ for toml_boundary in \
     'CONFIG_TOML_MAX_BYTES' \
     'CONFIG_TOML_MAX_TOTAL_ARRAY_ITEMS' \
     'CONFIG_TOML_MAX_TOTAL_TABLE_FIELDS' \
+    'CONFIG_TOML_MAX_ARRAY_TABLE_ROWS' \
+    'struct ConfigTomlArrayTableInstance:' \
+    'config_toml_append_array_table_ordinal(' \
+    'config_toml_dotted_descendant(' \
     'struct ConfigTomlTableField:' \
     'config_toml_array_value_end(' \
     'config_toml_skip_array_trivia(' \
@@ -42,7 +46,6 @@ for toml_boundary in \
     'DuplicateKey' \
     'def config_toml_parse_array(' \
     'def parse_toml_config(' \
-    'ArrayTableUnsupported' \
     'UnsupportedEscape' \
     'validate_config_layers([result.layer])'; do
     rg -Fq "$toml_boundary" "$toml_model"
@@ -174,6 +177,9 @@ rg -Fq 'ConfigTomlValueKind.Array' "$toml_fixture"
 rg -Fq 'ConfigTomlValueKind.InlineTable' "$toml_fixture"
 rg -Fq 'ConfigTomlTableField' "$toml_fixture"
 rg -Fq 'duplicate_inline_key_rejected' "$toml_fixture"
+rg -Fq 'array_table_rows_preserve_header_order_and_instance_indices' "$toml_fixture"
+rg -Fq 'parsed.array_tables.count == 3' "$toml_fixture"
+rg -Fq 'empty_rows.array_tables.count == 2' "$toml_fixture"
 rg -Fq 'ConfigTomlValueKind.Integer' "$toml_fixture"
 rg -Fq 'mixed_array' "$toml_fixture"
 rg -Fq 'toml_configuration_rejects_unsupported_values_and_escapes' "$toml_fixture"

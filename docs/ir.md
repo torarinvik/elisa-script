@@ -2899,9 +2899,13 @@ text/boolean/integer/float kinds through `ConfigTomlValue`, while the
 format-neutral precedence view keeps the original array spelling. One-level
 inline tables retain field names, scalar kinds, and scalar array contents in
 `ConfigTomlTableField`, while the precedence view keeps the original table
-spelling. Nested inline tables, nested arrays, array-of-table headers,
-dates/times, multiline strings, Unicode escapes, and quoted keys remain
-unsupported and are rejected. Array item counts are
+spelling. Nested inline tables, nested arrays, dates/times, multiline strings,
+Unicode escapes, and quoted keys remain unsupported and are rejected.
+Array-of-table headers are represented as zero-based numeric dotted key
+segments (for example `links.user.0.name`) and a
+typed row directory (`ConfigTomlArrayTableInstance`); nested regular tables are
+scoped under the latest row. Nested array-of-table graphs remain unsupported.
+Row count is bounded. Array item counts are
 bounded per array and in aggregate; inline table fields have per-table and
 aggregate limits. The text precedence layer does not do typed numeric
 conversion. `EsConfigTomlFilePosix` reads files through the shared
