@@ -9,10 +9,11 @@ model="$repo_root/src/runtime/build_scheduler_model.elisa"
 build_model="$repo_root/src/runtime/build_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
+incremental_fixture="$repo_root/test/runtime/build_incremental_scheduler_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$build_model" "$ir" "$fixture" "$docs" "$ledger"; do
+for required_file in "$model" "$build_model" "$ir" "$fixture" "$incremental_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'build scheduler audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -28,9 +29,22 @@ for declaration in \
     'struct BuildScheduler:' \
     'error BuildSchedulerError:' \
     'def validate_build_scheduler(' \
+    'def admit_build_incremental_plan(' \
+    'IncrementalPlanInvalid' \
+    'IncrementalPlanMismatch' \
     'def advance_build_scheduler(' \
     'def scheduler_rebuild_ready('; do
     rg -Fq "$declaration" "$model"
+done
+
+for integration_check in \
+    'using EsBuildIncremental' \
+    'plan.decisions.count != scheduler.graph.nodes.count' \
+    'plan.target_names[index] != scheduler.graph.nodes[index].name' \
+    'plan.recipe_fingerprints[index] != scheduler.graph.nodes[index].fingerprint' \
+    'plan.decisions[target_index] == BuildIncrementalDecision.UpToDate' \
+    'scheduler.cache <- admitted_cache'; do
+    rg -Fq "$integration_check" "$model"
 done
 
 for boundary in \
@@ -64,6 +78,14 @@ for boundary in \
     'scheduler.state <- BuildSchedulerState.Cancelled' \
     'scheduler.graph.state == BuildGraphState.Succeeded'; do
     rg -Fq "$boundary" "$model"
+done
+
+for incremental_fixture_check in \
+    'incremental_plan_filters_scheduler_cache' \
+    'incremental_plan_mismatch_preserves_scheduler_cache' \
+    'admit_build_incremental_plan(scheduler, plan)' \
+    'BuildSchedulerError.IncrementalPlanMismatch'; do
+    rg -Fq "$incremental_fixture_check" "$incremental_fixture"
 done
 
 rg -Fq 'include "../runtime/build_scheduler_model.elisa"' "$ir"

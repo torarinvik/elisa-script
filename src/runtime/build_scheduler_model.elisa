@@ -7,6 +7,7 @@
 
 module EsBuildScheduler:
     using EsBuild
+    using EsBuildIncremental
 
     public:
         const module Limits:
@@ -70,6 +71,8 @@ module EsBuildScheduler:
             NodeAccountingInvalid
             CompleteNotReady
             CancelNotReady
+            IncrementalPlanInvalid
+            IncrementalPlanMismatch
 
 
     private:
@@ -201,6 +204,38 @@ module EsBuildScheduler:
                 for earlier in 0..<index |scheduler, queued|:
                     raise BuildSchedulerError.DuplicateQueueEntry if scheduler.ready_queue[earlier] == queued
             raise BuildSchedulerError.NodeAccountingInvalid if scheduler.state == BuildSchedulerState.Ready and scheduler.ready_queue.count != 0
+            return true
+
+
+        # Apply a planner result before Begin. A cache entry is retained only
+        # when the corresponding current recipe is proven UpToDate and both
+        # target name and recipe fingerprint align with the graph. Build this
+        # filtered cache locally so any validation failure leaves the scheduler
+        # byte-for-byte unchanged. A missing cache entry remains a safe miss.
+        def admit_build_incremental_plan(scheduler: mutable BuildScheduler&, plan: BuildIncrementalPlan) -> bool error[BuildSchedulerError, BuildContractError] can[Memory.Allocate, Abort.Panic]:
+            try validate_build_scheduler(scheduler)
+            raise BuildSchedulerError.InvalidState if scheduler.state != BuildSchedulerState.Ready
+            raise BuildSchedulerError.IncrementalPlanInvalid if plan.decisions.count != scheduler.graph.nodes.count
+            raise BuildSchedulerError.IncrementalPlanInvalid if plan.target_names.count != scheduler.graph.nodes.count or plan.recipe_fingerprints.count != scheduler.graph.nodes.count
+            raise BuildSchedulerError.IncrementalPlanInvalid if plan.rebuild_target_indices.count > scheduler.graph.nodes.count
+            rebuild_position: mutable usize = 0
+            for index in 0..<scheduler.graph.nodes.count |scheduler, plan, rebuild_position|:
+                decision: BuildIncrementalDecision = plan.decisions[index]
+                raise BuildSchedulerError.IncrementalPlanInvalid if decision not in {BuildIncrementalDecision.UpToDate, BuildIncrementalDecision.RecipeChanged, BuildIncrementalDecision.DependencyMissing, BuildIncrementalDecision.DependencyDirty, BuildIncrementalDecision.ObservationMissing, BuildIncrementalDecision.InputMissing, BuildIncrementalDecision.InputChanged, BuildIncrementalDecision.OutputMissing, BuildIncrementalDecision.OutputChanged}
+                raise BuildSchedulerError.IncrementalPlanMismatch if plan.target_names[index] != scheduler.graph.nodes[index].name or plan.recipe_fingerprints[index] != scheduler.graph.nodes[index].fingerprint
+                raise BuildSchedulerError.IncrementalPlanInvalid if plan.recipe_fingerprints[index] == 0
+                if decision != BuildIncrementalDecision.UpToDate:
+                    raise BuildSchedulerError.IncrementalPlanInvalid if rebuild_position >= plan.rebuild_target_indices.count or plan.rebuild_target_indices[rebuild_position] != index
+                    rebuild_position <- rebuild_position + 1
+            raise BuildSchedulerError.IncrementalPlanInvalid if rebuild_position != plan.rebuild_target_indices.count
+
+            admitted_cache: mutable darray[BuildCacheEntry] = []
+            for entry in scheduler.cache |scheduler, plan, admitted_cache|:
+                target_index: usize = scheduler_node_index(scheduler, entry.node_name)
+                raise BuildSchedulerError.IncrementalPlanMismatch if target_index == scheduler.graph.nodes.count
+                if plan.decisions[target_index] == BuildIncrementalDecision.UpToDate and entry.fingerprint == plan.recipe_fingerprints[target_index]:
+                    admitted_cache.push(entry)
+            scheduler.cache <- admitted_cache
             return true
 
 

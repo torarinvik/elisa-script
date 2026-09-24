@@ -55,6 +55,8 @@ for declaration in \
     'def build_incremental_recipe_shape_matches(' \
     'def build_incremental_materialize_recipe_targets(' \
     'def plan_build_incremental_transition(' \
+    'target_names: darray[sview]' \
+    'recipe_fingerprints: darray[u64]' \
     'def build_incremental_observed_commit_file(' \
     'def commit_build_incremental_success(' \
     'def build_incremental_target_decision_validated(' \
