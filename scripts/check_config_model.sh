@@ -34,12 +34,18 @@ for toml_boundary in \
     'module EsConfigToml:' \
     'CONFIG_TOML_MAX_BYTES' \
     'CONFIG_TOML_MAX_TOTAL_ARRAY_ITEMS' \
+    'config_toml_array_value_end(' \
+    'config_toml_skip_array_trivia(' \
+    'def config_toml_parse_array(' \
     'def parse_toml_config(' \
     'ArrayTableUnsupported' \
     'UnsupportedEscape' \
     'validate_config_layers([result.layer])'; do
     rg -Fq "$toml_boundary" "$toml_model"
 done
+rg -Fq 'dependencies = [\n  "setuptools>=68", # build backend\n  "wheel",\n]' "$toml_fixture"
+rg -Fq 'across physical lines' "$docs"
+rg -Fq 'across physical lines' "$ledger"
 for toml_file_boundary in \
     'module EsConfigTomlFilePosix:' \
     'def read_config_toml_file(' \
