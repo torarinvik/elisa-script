@@ -20,9 +20,13 @@ sequential_tools_expected="$sequential_tools_root/expected.txt"
 sequential_tools_contract="$sequential_tools_root/CONTRACT.md"
 sequential_tools_parity="$repo_root/test/script_parity/sequential_tools_launcher_test.elisascript"
 incremental_executor_fixture="$repo_root/test/runtime/build_incremental_executor_test.elisa"
+minimal_native_root="$repo_root/test/fixtures/script_parity/minimal_native_build"
+minimal_native_candidate="$minimal_native_root/build.elisascript"
+minimal_native_cmake="$minimal_native_root/CMakeLists.txt"
+minimal_native_main="$minimal_native_root/src/main.c"
 docs="$repo_root/docs/ir.md"
 
-for required_file in "$model" "$ir" "$fixture" "$usage_model" "$usage_fixture" "$target_usage_candidate" "$executor_model" "$executor_fixture" "$sequential_tools_reference" "$sequential_tools_candidate" "$sequential_tools_expected" "$sequential_tools_contract" "$sequential_tools_parity" "$incremental_executor_fixture" "$docs"; do
+for required_file in "$model" "$ir" "$fixture" "$usage_model" "$usage_fixture" "$target_usage_candidate" "$executor_model" "$executor_fixture" "$sequential_tools_reference" "$sequential_tools_candidate" "$sequential_tools_expected" "$sequential_tools_contract" "$sequential_tools_parity" "$incremental_executor_fixture" "$minimal_native_candidate" "$minimal_native_cmake" "$minimal_native_main" "$minimal_native_root/include/generated_build_config.h.in" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'build model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -288,6 +292,20 @@ rg -Fq 'incremental_executor_marks_up_to_date_nodes_as_cache_hits' "$incremental
 rg -Fq 'commit_build_incremental_execution(result, graph, previous, recipes, observations)' "$incremental_executor_fixture"
 rg -Fq 'BuildExecutionError.ExecutionNotSuccessful' "$incremental_executor_fixture"
 
+# Keep the E06 fixture tied to the real CMake/custom-output shape: the
+# generated file is declared, and compilation is graph-dependent on it.
+rg -Fq 'configure_file(' "$minimal_native_cmake"
+rg -Fq 'include/generated_build_config.h.in' "$minimal_native_cmake"
+rg -Fq 'generated_build_config.h' "$minimal_native_cmake"
+rg -Fq '#include "generated_build_config.h"' "$minimal_native_main"
+rg -Fq 'executable: "/bin/cp"' "$minimal_native_candidate"
+rg -Fq 'arguments: [generated_header_input_text, generated_header_output_text]' "$minimal_native_candidate"
+rg -Fq '"-I", build_directory_text' "$minimal_native_candidate"
+rg -Fq 'BuildNode{name: "generate-config-header", command: generate_header_command, dependencies: [], fingerprint: 1u64}' "$minimal_native_candidate"
+rg -Fq 'BuildNode{name: Toolchain::TARGET_NAME, command: compile_command, dependencies: [0], fingerprint: 2u64}' "$minimal_native_candidate"
+rg -Fq 'BuildExecutionNodeOutputs{target_name: "generate-config-header", paths: [generated_header_output_text]}' "$minimal_native_candidate"
+rg -Fq 'execution.nodes.count != 3' "$minimal_native_candidate"
+
 rg -Fq 'BuildContractError.DuplicateDependency' "$fixture"
 rg -Fq 'for dependency_position in 0..<node.dependencies.count |node|' "$model"
 rg -Fq 'earlier_dependency > dependency_index' "$model"
@@ -295,4 +313,4 @@ rg -Fq 'earlier_dependency > dependency_index' "$model"
 rg -Fq '`EsBuild` is the shell-replacement boundary' "$docs"
 rg -Fq 'OutputAlreadyPresent' "$docs"
 
-printf 'build model audit: bounded graph, usage propagation, serial Process.Run execution, and fail-draining/cancellation are present\n'
+printf 'build model audit: bounded graph, generated-output ordering, usage propagation, serial Process.Run execution, and fail-draining/cancellation are present\n'
