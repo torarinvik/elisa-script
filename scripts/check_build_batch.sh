@@ -6,11 +6,12 @@ set -euo pipefail
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 model="$repo_root/src/runtime/build_batch_model.elisa"
+executor="$repo_root/src/runtime/build_executor_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/runtime/build_batch_model_test.elisa"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$ir" "$fixture" "$ledger"; do
+for required_file in "$model" "$executor" "$ir" "$fixture" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'build batch audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -56,11 +57,17 @@ for output_invariant in \
     'build_executor_output_sets_valid(graph, output_sets)' \
     'build_batch_first_missing_output(session.output_sets[dispatch.job_index])' \
     'BuildBatchError.OutputMissing' \
-    'session.output_sets.count != 0' \
+    'session.output_sets.count != 0'; do
+    rg -Fq "$output_invariant" "$model"
+done
+
+for executor_output_bound in \
     'Limits::OUTPUT_PATHS' \
     'Limits::OUTPUT_PATH_BYTES' \
-    'Limits::OUTPUT_INDEX_SLOTS'; do
-    rg -Fq "$output_invariant" "$model"
+    'Limits::OUTPUT_INDEX_SLOTS' \
+    'def build_executor_output_path_hash(' \
+    'slots.reserve(slot_count)'; do
+    rg -Fq "$executor_output_bound" "$executor"
 done
 
 rg -Fq 'BuildBatchError.StopAcknowledgementMismatch' "$model"
