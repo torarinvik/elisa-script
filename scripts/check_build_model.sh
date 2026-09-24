@@ -177,6 +177,7 @@ for declaration in \
     'struct BuildExecutionNodeResult:' \
     'struct BuildExecutionResult:' \
     'error BuildExecutionError:' \
+    'OutputAlreadyPresent' \
     'def build_executor_command_supported_impl(' \
     'def execute_build_command(' \
     'def execute_build_graph_serial('; do
@@ -201,6 +202,7 @@ for boundary in \
 done
 rg -Fq 'while offset < command.environment.count |command, environment, offset|' "$executor_model"
 rg -Fq 'offset <- offset + 2' "$executor_model"
+rg -Fq 'build_executor_first_present_output(output_set)' "$executor_model"
 
 rg -Fq 'build_executor_preflights_supported_process_command_subset' "$executor_fixture"
 rg -Fq 'using EsBuild' "$executor_fixture"
@@ -211,6 +213,9 @@ rg -Fq 'environment: ["LC_ALL", "C", "TZ", "UTC"]' "$executor_fixture"
 rg -Fq 'failure == BuildExecutionError.UnsupportedCommand' "$executor_fixture"
 rg -Fq 'marker_absent: bool = not is_file(marker)' "$executor_fixture"
 rg -Fq 'graph.state == BuildGraphState.Planned' "$executor_fixture"
+rg -Fq 'build_executor_rejects_preexisting_declared_output_before_launch' "$executor_fixture"
+rg -Fq 'failure == BuildExecutionError.OutputAlreadyPresent' "$executor_fixture"
+rg -Fq 'stale_bytes_preserved' "$executor_fixture"
 rg -Fq 'build_executor_nonzero_exit_cancels_dependent_launches' "$executor_fixture"
 rg -Fq 'executable: "/usr/bin/false"' "$executor_fixture"
 rg -Fq 'BuildExecutionFailureKind.NonzeroExit' "$executor_fixture"
@@ -240,5 +245,6 @@ rg -Fq 'for dependency_position in 0..<node.dependencies.count |node|' "$model"
 rg -Fq 'earlier_dependency > dependency_index' "$model"
 
 rg -Fq '`EsBuild` is the shell-replacement boundary' "$docs"
+rg -Fq 'OutputAlreadyPresent' "$docs"
 
 printf 'build model audit: bounded graph, usage propagation, serial Process.Run execution, and fail-draining/cancellation are present\n'

@@ -651,6 +651,15 @@ outputs are obsolete for cleanup purposes, while the scheduler-facing manifest
 validator still rejects an empty graph. The pure module never removes files
 itself.
 
+`EsBuildExecutor::execute_build_graph_serial_with_outputs` is the fresh-build
+host route. It requires every declared absolute output path to be absent before
+the first command, then verifies that each output path resolves to a file
+before admitting the producer's success transition. A pre-existing filesystem
+entry, including a symlink, is rejected as `OutputAlreadyPresent` while the
+graph remains planned; callers must clean prior outputs explicitly.
+Incremental execution has a separate observation/cache contract and does not
+inherit this fresh-output precondition.
+
 `EsResource` is the ownership ledger shared by runtime adapters. A lease names
 the resource kind, nonzero identity, and owner token; `ResourceLedger` keeps
 active/failed counts bounded and rejects duplicate identities. The close path is
