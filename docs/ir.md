@@ -2908,9 +2908,11 @@ scoped under the latest row. Nested array-of-table graphs remain unsupported.
 Row count is bounded. Array item counts are
 bounded per array and in aggregate; inline table fields have per-table and
 aggregate limits. The text precedence layer does not do typed numeric
-conversion. `bind_toml_config_winner` reconnects the winning generic
-`ConfigValue` to its typed TOML sidecar when the file layer wins; environment
-and command-line winners are returned as text without guessing a TOML type.
+conversion. `resolve_toml_config_layers` composes the TOML File layer with
+other explicit layers using `EsConfig::resolve_config_layers`, then restores
+typed file winners and leaves environment/command-line winners as text. It
+copies typed payloads and row-directory metadata; raw values still borrow the
+winning layer storage.
 `EsConfigTomlFilePosix` reads files through the shared
 stable UTF-8 reader with a 16 MiB ceiling. Source fixtures cover scalar and
 array parsing plus rejection boundaries, but remain unexecuted pending

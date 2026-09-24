@@ -947,9 +947,9 @@ and a typed row directory (`ConfigTomlArrayTableInstance`), with nested regular
 tables scoped under the latest row; nested array-of-table graphs remain
 unsupported. Row count is bounded. Array item counts are
 bounded per array and in aggregate; inline table fields are bounded per table
-and in aggregate. `bind_toml_config_winner` restores the typed TOML sidecar
-after generic precedence resolution, while non-file overrides remain text.
-Its POSIX file
+and in aggregate. `resolve_toml_config_layers` runs the generic precedence
+resolver, restores typed file winners, keeps non-file overrides as text, and
+copies typed payloads/row metadata; raw values borrow the source layers. Its POSIX file
 adapter uses the shared stable bounded UTF-8 reader. Fixtures are static
 evidence only; direct runtime qualification remains disabled pending
 compiler-validation reauthorization.
