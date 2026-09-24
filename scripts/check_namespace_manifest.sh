@@ -14,9 +14,34 @@ fi
 
 source_root="${1:-$script_dir/../src}"
 parser_tokens_file="${2:-$script_dir/../vendor/elisa-compiler/src/parser/parser_tokens.elisa}"
+candidate_file="$script_dir/check_namespace_manifest.elisascript"
 if [ ! -d "$source_root" ]; then
     echo "check_namespace_manifest: source root does not exist: $source_root" >&2
     exit 2
+fi
+
+# Pin the candidate's memory-safety contract independently of runtime parity:
+# the size preflight is not a substitute for an actually bounded read.
+if [ ! -f "$candidate_file" ]; then
+    echo "check_namespace_manifest: Elisascript candidate is missing" >&2
+    exit 1
+fi
+for bounded_read_invariant in \
+    'READ_CHUNK_BYTES: usize = 16384' \
+    'maximum_bytes - source.count' \
+    'probe_capacity: usize = remaining + 1' \
+    'DarwinOpenFlags::NONBLOCK' \
+    'elisascript_posix_fstat' \
+    'namespace_source_stable_file' \
+    'EsEncoding::utf8_feed'; do
+    if ! grep -F "$bounded_read_invariant" "$candidate_file" >/dev/null 2>&1; then
+        echo "check_namespace_manifest: candidate source read omits bounded-read invariant: $bounded_read_invariant" >&2
+        exit 1
+    fi
+done
+if grep -F 'read_text(' "$candidate_file" >/dev/null 2>&1; then
+    echo "check_namespace_manifest: candidate source read uses unbounded read_text" >&2
+    exit 1
 fi
 
 module_names="$(rg --no-filename '^module [A-Za-z_][A-Za-z0-9_]*:' "$source_root" -g '*.elisa' 2>/dev/null | awk '{name=$2; sub(/:$/, "", name); print name}' | sort)"
