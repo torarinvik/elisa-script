@@ -108,6 +108,11 @@ for boundary in \
     'KEY_BYTES: usize = 268435456' \
     'SUM: u64 = 67108864' \
     'INDEX_SLOTS: usize = 2097152' \
+    'sum: i64 = 0' \
+    '-> i64 error\[RecordAggregateError\]' \
+    '0 - session.policy.max_sum.i64()' \
+    'value > sum_limit or value < 0 - sum_limit' \
+    'value < 0 and session.groups\[index\].sum < 0 - sum_limit - value' \
     'record_aggregate_key_hash' \
     'record_aggregate_index_find' \
     'record_aggregate_index_place' \
@@ -152,7 +157,11 @@ done
 rg -q 'EsRecordAggregate::RecordAggregateSession' "$docs"
 rg -q 'ES-SCRIPT-027' "$ledger"
 rg -q 'record_aggregate_hash_index_preserves_order_and_rejects_damage' "$runtime_fixture"
+rg -q 'signed_aggregate' "$runtime_fixture"
+rg -q 'record_aggregate_group_sum\(signed_aggregate, "alpha"\) == -2' "$runtime_fixture"
+rg -q 'negative_sum_rejected' "$runtime_fixture"
 rg -q 'damaged.index_slots\[index\] <- 0' "$runtime_fixture"
 rg -q 'RecordAggregateError.AccountingInvalid' "$runtime_fixture"
+rg -q 'RecordAggregateError.SumLimitExceeded' "$runtime_fixture"
 
 printf 'record aggregate audit: bounded insertion-ordered groups and sealed lookup are present\n'
