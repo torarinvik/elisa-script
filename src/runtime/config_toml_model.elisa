@@ -107,6 +107,7 @@ module EsConfigToml:
             InvalidValueGraph
             InvalidTable
             DuplicateTable
+            ConflictingStructure
             InvalidKey
             DuplicateKey
             ExpectedEquals
@@ -606,6 +607,36 @@ module EsConfigToml:
             return true
 
 
+        def config_toml_view_before(left: sview, right: sview) -> bool:
+            left_length: usize = sview_len(left)
+            right_length: usize = sview_len(right)
+            common: usize = left_length if left_length < right_length else right_length
+            for offset in 0..<common |left, right|:
+                return true if sview_at(left, offset) < sview_at(right, offset)
+                return false if sview_at(left, offset) > sview_at(right, offset)
+            return left_length < right_length
+
+
+        def config_toml_dotted_key_structure_conflict(keys: darray[sview]) -> bool:
+            ordered: darray[sview] = sorted(keys)
+            for key in ordered |ordered|:
+                key_length: usize = sview_len(key)
+                for offset in 0..<key_length |key, ordered, key_length|:
+                    if sview_at(key, offset) == 46:
+                        prefix: sview = string_view_slice(key, 0, offset.i64())
+                        low: mutable usize = 0
+                        high: mutable usize = ordered.count
+                        while low < high:
+                            middle: usize = low + (high - low) / 2
+                            if ordered[middle] == prefix:
+                                return true
+                            if config_toml_view_before(ordered[middle], prefix):
+                                low <- middle + 1
+                            else:
+                                high <- middle
+            return false
+
+
         def config_toml_parse_value_graph(source: sview, start: usize, end: usize, depth: usize, nodes: mutable darray[ConfigTomlNode]&, children: mutable darray[ConfigTomlNodeChild]&, total_nodes: mutable usize&, total_array_items: mutable usize&, total_table_fields: mutable usize&) -> usize error[ConfigTomlError] can[Memory.Allocate, Abort.Panic]:
             raise ConfigTomlError.UnsupportedValue if start >= end or depth >= CONFIG_TOML_MAX_VALUE_DEPTH
             raise ConfigTomlError.OutputLimitExceeded if total_nodes >= CONFIG_TOML_MAX_TOTAL_VALUE_NODES
@@ -828,15 +859,36 @@ module EsConfigToml:
             return utf8_complete(cursor)
 
 
+        def config_toml_bind_typed_winner(layers: darray[ConfigTomlLayer], winner: ConfigValue) -> ConfigTomlResolvedValue error[ConfigTomlError] can[Memory.Allocate, Abort.Panic]:
+            for layer in layers |layers, winner|:
+                if layer.layer.source == winner.source:
+                    raise ConfigTomlError.TypedValueMissing if layer.values.count != layer.layer.entries.count
+                    for entry_index in 0..<layer.layer.entries.count |layer, winner|:
+                        entry: ConfigEntry = layer.layer.entries[entry_index]
+                        if entry.key == winner.key and entry.value == winner.value:
+                            raise ConfigTomlError.TypedValueMissing if layer.values[entry_index].key != winner.key
+                            typed: ConfigTomlValue = layer.values[entry_index]
+                            raise ConfigTomlError.InvalidValueGraph if not config_toml_value_graph_valid(typed.nodes, typed.children)
+                            raise ConfigTomlError.InvalidValueGraph if typed.nodes[0].kind != typed.kind
+                            typed_text: darray[u8] = config_toml_copy_bytes(typed.text)
+                            typed_items: darray[ConfigTomlArrayItem] = config_toml_copy_array_items(typed.items)
+                            typed_fields: darray[ConfigTomlTableField] = config_toml_copy_table_fields(typed.fields)
+                            typed_nodes: darray[ConfigTomlNode] = config_toml_copy_nodes(typed.nodes)
+                            typed_children: darray[ConfigTomlNodeChild] = config_toml_copy_node_children(typed.children)
+                            return ConfigTomlResolvedValue{key: winner.key, raw_value: winner.value, source: winner.source, kind: typed.kind, text: typed_text, items: typed_items, fields: typed_fields, nodes: typed_nodes, children: typed_children}
+            raise ConfigTomlError.TypedValueMissing
+
+
     public:
         def validate_toml_value_graph(nodes: darray[ConfigTomlNode], children: darray[ConfigTomlNodeChild]) -> bool can[Memory.Allocate, Abort.Panic]:
             return config_toml_value_graph_valid(nodes, children)
 
 
-        def parse_toml_config(source: sview) -> ConfigTomlLayer error[ConfigTomlError, ConfigError] can[Memory.Allocate, Abort.Panic]:
+        def parse_toml_config_layer(source: sview, layer_source: ConfigSource) -> ConfigTomlLayer error[ConfigTomlError, ConfigError] can[Memory.Allocate, Abort.Panic]:
             raise ConfigTomlError.InputLimitExceeded if sview_len(source) > CONFIG_TOML_MAX_BYTES
             raise ConfigTomlError.InvalidUtf8 if not config_toml_utf8_valid(source)
-            result: mutable ConfigTomlLayer = ConfigTomlLayer{layer: ConfigLayer{source: ConfigSource.File}}
+            raise ConfigTomlError.InvalidSource if layer_source not in {ConfigSource.Defaults, ConfigSource.File, ConfigSource.Environment, ConfigSource.CommandLine}
+            result: mutable ConfigTomlLayer = ConfigTomlLayer{layer: ConfigLayer{source: layer_source}}
             table_prefix: mutable darray[u8] = []
             declared_tables: mutable darray[darray[u8]] = []
             array_table_paths: mutable darray[darray[u8]] = []
@@ -983,10 +1035,20 @@ module EsConfigToml:
             return result
 
 
+        def parse_toml_config(source: sview) -> ConfigTomlLayer error[ConfigTomlError, ConfigError] can[Memory.Allocate, Abort.Panic]:
+            return try parse_toml_config_layer(source, ConfigSource.File)
+
+
         def lookup_toml_config_value(parsed: ConfigTomlLayer&, key: sview) -> usize:
             for index in 0..<parsed.values.count |parsed, key|:
                 return index if parsed.values[index].key == key
             return parsed.values.count
+
+
+        def lookup_resolved_toml_config_value(resolution: ConfigTomlResolution&, key: sview) -> usize:
+            for index in 0..<resolution.values.count |resolution, key|:
+                return index if resolution.values[index].key == key
+            return resolution.values.count
 
 
         # Restore TOML types after the generic precedence resolver has selected
@@ -1030,4 +1092,40 @@ module EsConfigToml:
                 resolution.values.push(try bind_toml_config_winner(parsed, winner))
             for array_table in parsed.array_tables |parsed, resolution|:
                 resolution.array_tables.push(ConfigTomlArrayTableInstance{path: config_toml_copy_bytes(array_table.path), index: array_table.index})
+            return resolution
+
+
+        # Resolve explicitly parsed TOML documents at every precedence level.
+        # Each key is a whole-value replacement: nested objects are not merged
+        # recursively. Array-of-table row grouping remains on the file-only
+        # compatibility resolver until its cross-source semantics are defined.
+        def resolve_toml_config_typed_layers(layers: darray[ConfigTomlLayer]) -> ConfigTomlResolution error[ConfigTomlError, ConfigError] can[Memory.Allocate, Abort.Panic]:
+            raise ConfigTomlError.InvalidSource if layers.count == 0
+            raise ConfigTomlError.InputLimitExceeded if layers.count > EsConfig::Limits::LAYERS
+            raw_layers: mutable darray[ConfigLayer] = []
+            total_nodes: mutable usize = 0
+            total_edges: mutable usize = 0
+            for layer in layers |layers, raw_layers, total_nodes, total_edges|:
+                raise ConfigTomlError.UnsupportedValue if layer.array_tables.count != 0
+                raise ConfigTomlError.TypedValueMissing if layer.values.count != layer.layer.entries.count
+                for value_index in 0..<layer.values.count |layer, value_index, total_nodes, total_edges|:
+                    input: ConfigTomlValue = layer.values[value_index]
+                    entry: ConfigEntry = layer.layer.entries[value_index]
+                    raise ConfigTomlError.TypedValueMissing if input.key != entry.key
+                    raise ConfigTomlError.InvalidValueGraph if not config_toml_value_graph_valid(input.nodes, input.children)
+                    raise ConfigTomlError.InvalidValueGraph if input.nodes[0].kind != input.kind
+                    raise ConfigTomlError.InputLimitExceeded if input.nodes.count > CONFIG_TOML_MAX_TOTAL_VALUE_NODES - total_nodes
+                    raise ConfigTomlError.InputLimitExceeded if input.children.count > CONFIG_TOML_MAX_TOTAL_ARRAY_ITEMS + CONFIG_TOML_MAX_TOTAL_TABLE_FIELDS - total_edges
+                    total_nodes <- total_nodes + input.nodes.count
+                    total_edges <- total_edges + input.children.count
+                raw_layers.push(layer.layer)
+            try validate_config_layers(raw_layers)
+            winners: darray[ConfigValue] = try resolve_config_layers(raw_layers)
+            winner_keys: mutable darray[sview] = []
+            for winner in winners |winners, winner_keys|:
+                winner_keys.push(winner.key)
+            raise ConfigTomlError.ConflictingStructure if config_toml_dotted_key_structure_conflict(winner_keys)
+            resolution: mutable ConfigTomlResolution = ConfigTomlResolution{}
+            for winner in winners |layers, winners, resolution|:
+                resolution.values.push(try config_toml_bind_typed_winner(layers, winner))
             return resolution

@@ -940,8 +940,8 @@ where arrays permit it. Numeric lexemes remain exact. `ConfigTomlNode` and
 object keys in a validated owned graph; the generic layer retains raw spelling.
 Flat `items`/`fields` remain a compatibility projection for earlier shallow
 values. The graph is bounded by source bytes, depth, node count, per-array and
-aggregate item counts, and per-table and aggregate field counts. Structured
-cross-source merge, dotted keys within inline tables, date/time values,
+aggregate item counts, and per-table and aggregate field counts. Recursive
+object merge, dotted keys within inline tables, date/time values,
 multiline strings, Unicode escapes, and quoted keys remain unsupported and fail
 closed. Top-level dotted keys remain supported. A source-only fixture snapshots
 the observed `WasmBrowser/Cargo.toml` workspace/dependency subset to exercise
@@ -958,6 +958,14 @@ copies typed payloads/row metadata; raw values borrow the source layers. Its POS
 adapter uses the shared stable bounded UTF-8 reader. Fixtures are static
 evidence only; direct runtime qualification remains disabled pending
 compiler-validation reauthorization.
+The opt-in `parse_toml_config_layer` and
+`resolve_toml_config_typed_layers` path preserves typed values across explicit
+Defaults/File/Environment/CommandLine TOML documents using whole-key
+replacement; it does not recursively merge inline objects. Array-of-table
+layers are rejected by this multi-source API until row-group override semantics
+are defined, and conflicting inline-object versus dotted-table paths are
+rejected instead of being combined ambiguously. Existing plain environment/CLI
+layers keep their scalar-text override behavior.
 Process-global environment capture remains open.
 EsConfigJsonFilePosix reads bounded stable UTF-8 files and returns a
 document/layer wrapper preserving backing storage. It preflights decoder and

@@ -43,6 +43,10 @@ for toml_boundary in \
     'struct ConfigTomlNodeChild:' \
     'def config_toml_parse_value_graph(' \
     'def config_toml_value_graph_valid(' \
+    'def parse_toml_config_layer(' \
+    'def resolve_toml_config_typed_layers(' \
+    'def lookup_resolved_toml_config_value(' \
+    'config_toml_bind_typed_winner(' \
     'InvalidValueGraph' \
     'struct ConfigTomlArrayTableInstance:' \
     'config_toml_append_array_table_ordinal(' \
@@ -192,6 +196,11 @@ rg -Fq 'dotted_inline_key_rejected' "$toml_fixture"
 rg -Fq 'array_table_rows_preserve_header_order_and_instance_indices' "$toml_fixture"
 rg -Fq 'nested_values: ConfigTomlLayer' "$toml_fixture"
 rg -Fq 'validate_toml_value_graph(nested_values.values[dependency_index].nodes' "$toml_fixture"
+rg -Fq 'toml_typed_layers_replace_whole_values_by_source_precedence' "$toml_fixture"
+rg -Fq 'lookup_resolved_toml_config_value' "$toml_fixture"
+rg -Fq 'resolve_toml_config_typed_layers([defaults, file, environment, command_line])' "$toml_fixture"
+rg -Fq 'ConfigTomlError.ConflictingStructure' "$toml_fixture"
+rg -Fq 'ConfigTomlError.UnsupportedValue' "$toml_model"
 rg -Fq 'deep_graph_nodes' "$toml_fixture"
 rg -Fq 'node_depths[node_index] >= CONFIG_TOML_MAX_VALUE_DEPTH - 1' "$toml_model"
 rg -Fq 'parsed.array_tables.count == 3' "$toml_fixture"

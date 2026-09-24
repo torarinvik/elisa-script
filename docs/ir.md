@@ -2940,6 +2940,14 @@ other explicit layers using `EsConfig::resolve_config_layers`, then restores
 typed file winners and leaves environment/command-line winners as text. It
 copies typed payloads and row-directory metadata; raw values still borrow the
 winning layer storage.
+The opt-in `parse_toml_config_layer` and
+`resolve_toml_config_typed_layers` APIs also accept fully parsed TOML documents
+for Defaults, File, Environment, and CommandLine sources, preserving the
+winning typed value by whole-key replacement; they do not recursively merge
+inline objects. This typed multi-source path rejects array-of-table inputs
+until grouped override semantics are defined, and rejects conflicting
+inline-object/dotted-table paths. The existing generic override path continues
+treating environment and command-line values as text.
 `EsConfigTomlFilePosix` reads files through the shared
 stable UTF-8 reader with a 16 MiB ceiling. Source fixtures cover scalar and
 array parsing plus rejection boundaries, but remain unexecuted pending
