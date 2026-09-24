@@ -118,6 +118,14 @@ rg -Fq 'def read_bounded_expected_json(path: Path) -> Any:' "$reference"
 rg -Fq 'os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)' "$reference"
 rg -Fq 'stat.S_ISREG(os.fstat(descriptor).st_mode)' "$reference"
 rg -Fq 'chunk = os.read(descriptor, remaining)' "$reference"
+rg -Fq 'def _read_bounded_regular_file(' "$reference"
+rg -Fq 'flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)' "$reference"
+rg -Fq 'opened_stat = os.fstat(descriptor)' "$reference"
+rg -Fq 'named_after_open = os.stat(path, follow_symlinks=False)' "$reference"
+rg -Fq 'chunk = os.read(descriptor, min(65536, remaining))' "$reference"
+rg -Fq 'graph_remaining = MAX_INCLUDE_GRAPH_BYTES - loaded_bytes' "$reference"
+rg -Fq 'read_limit = min(MAX_SOURCE_BYTES, graph_remaining)' "$reference"
+rg -Fq 'source_bytes = _read_bounded_regular_file(' "$reference"
 rg -Fq 'def check_expected_json_depth(payload: bytearray) -> None:' "$reference"
 rg -Fq 'check_expected_json_depth(payload)' "$reference"
 rg -Fq 'if depth > MAX_EXPECTED_JSON_DEPTH:' "$reference"
@@ -125,6 +133,10 @@ rg -Fq 'expected = read_bounded_expected_json(Path(expected_json_argument))' "$r
 rg -Fq 'invalid checked-in expected JSON: unable to read regular file' "$reference"
 if rg -Fq 'Path(expected_json_argument).read_text' "$reference"; then
     printf 'W09 bounds audit: expected JSON snapshots must not use an unbounded text read\n' >&2
+    exit 1
+fi
+if rg -Fq 'resolved_path.open("rb")' "$reference"; then
+    printf 'W09 bounds audit: reference preflight must read through a checked descriptor\n' >&2
     exit 1
 fi
 rg -Fq 'def python_expected_json_failure(source_path: sview, expected_json_path: sview, expected_stderr: sview)' "$fixture"

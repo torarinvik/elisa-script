@@ -147,6 +147,41 @@ def split_keepends(text: str) -> Iterator[str]:
         yield text[start:]
 
 
+def _same_file_identity(left: os.stat_result, right: os.stat_result) -> bool:
+    return left.st_dev == right.st_dev and left.st_ino == right.st_ino
+
+
+def _read_bounded_regular_file(
+    path: Path, expected_stat: os.stat_result, maximum_bytes: int
+) -> bytes:
+    """Read at most one overflow byte from the same regular file checked by stat."""
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        opened_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(opened_stat.st_mode) or not _same_file_identity(
+            expected_stat, opened_stat
+        ):
+            raise OSError("source changed while opening")
+
+        named_after_open = os.stat(path, follow_symlinks=False)
+        if not stat.S_ISREG(named_after_open.st_mode) or not _same_file_identity(
+            opened_stat, named_after_open
+        ):
+            raise OSError("source path changed while opening")
+
+        payload = bytearray()
+        while len(payload) <= maximum_bytes:
+            remaining = maximum_bytes + 1 - len(payload)
+            chunk = os.read(descriptor, min(65536, remaining))
+            if not chunk:
+                return bytes(payload)
+            payload.extend(chunk)
+        return bytes(payload)
+    finally:
+        os.close(descriptor)
+
+
 def preflight_reference_input(
     scanner: ModuleType, source_path: Path, source_spelling: str | None = None
 ) -> str | None:
@@ -217,9 +252,10 @@ def preflight_reference_input(
             return f"missing source/include: {resolved_path}"
 
         try:
-            file_size = resolved_path.stat().st_size
+            named_before_open = resolved_path.stat()
         except OSError:
             return f"unable to inspect source/include: {resolved_path}"
+        file_size = named_before_open.st_size
         if file_size > MAX_SOURCE_BYTES:
             return "WASM source exceeds Elisascript scan limit"
         if file_size > MAX_INCLUDE_GRAPH_BYTES - loaded_bytes:
@@ -228,18 +264,19 @@ def preflight_reference_input(
         seen.add(resolved_path)
         active.append(resolved_path)
         loaded_files += 1
-        loaded_bytes += file_size
         try:
-            with resolved_path.open("rb") as source_file:
-                source_bytes = source_file.read(MAX_SOURCE_BYTES + 1)
+            graph_remaining = MAX_INCLUDE_GRAPH_BYTES - loaded_bytes
+            read_limit = min(MAX_SOURCE_BYTES, graph_remaining)
+            source_bytes = _read_bounded_regular_file(
+                resolved_path, named_before_open, read_limit
+            )
         except OSError:
             return f"unable to read source/include: {resolved_path}"
         if len(source_bytes) > MAX_SOURCE_BYTES:
             return "WASM source exceeds Elisascript scan limit"
-        before_read = loaded_bytes - file_size
-        if len(source_bytes) > MAX_INCLUDE_GRAPH_BYTES - before_read:
+        if len(source_bytes) > graph_remaining:
             return "WASM include graph exceeds Elisascript scan limit"
-        loaded_bytes = before_read + len(source_bytes)
+        loaded_bytes += len(source_bytes)
         try:
             text = source_bytes.decode("utf-8")
         except UnicodeDecodeError:

@@ -362,8 +362,14 @@ output-byte, path, path-component-work, directive, depth, and unique-file
 ceilings; this
 avoids unbounded oracle reads while retaining the pinned loader as the
 accepted-input reference. It also normalizes host `OSError` read failures to
-the candidate's stable path diagnostic. Checked-in expected JSON is opened as
-a no-follow regular file, read to a 1 MiB + 1 byte sentinel, and rejected above
+the candidate's stable path diagnostic. Preflight source reads use
+`O_NONBLOCK | O_NOFOLLOW`, verify the opened descriptor and named path refer
+to the same regular file, and consume at most the smaller of the per-file and
+remaining graph budgets plus one byte in fixed-size chunks. This bounds a
+concurrent growth attempt and prevents waiting on a raced FIFO; it does not
+snapshot concurrent in-place writes, and the later pinned recursive read still
+assumes parity inputs stay immutable for the run. Checked-in expected JSON is
+opened as a no-follow regular file, read to a 1 MiB + 1 byte sentinel, and rejected above
 128 nested containers before `json.loads`; focused oversized/deep/symlink
 fixtures pin those bounds and the stable rejection in source. This test source has not been run: it
 remains behind the disabled bounded compiler wrapper and does not yet cover
