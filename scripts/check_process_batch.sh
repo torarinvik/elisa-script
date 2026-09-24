@@ -109,6 +109,7 @@ for dispatch_fixture_pattern in \
     'process_batch_admits_a_scheduler_selected_job' \
     'admit_next_process_batch_job(session)' \
     'admit_process_batch_job(session, 1)' \
+    'invalid_index_rejected' \
     'validate_process_batch_dispatch(session, first)' \
     'forged_rejected' \
     'retried.attempt_token == 2'; do
