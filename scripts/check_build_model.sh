@@ -12,9 +12,10 @@ usage_model="$repo_root/src/runtime/build_usage_model.elisa"
 usage_fixture="$repo_root/test/runtime/build_usage_model_test.elisa"
 executor_model="$repo_root/src/runtime/build_executor_model.elisa"
 executor_fixture="$repo_root/test/runtime/build_executor_test.elisa"
+incremental_executor_fixture="$repo_root/test/runtime/build_incremental_executor_test.elisa"
 docs="$repo_root/docs/ir.md"
 
-for required_file in "$model" "$ir" "$fixture" "$usage_model" "$usage_fixture" "$executor_model" "$executor_fixture" "$docs"; do
+for required_file in "$model" "$ir" "$fixture" "$usage_model" "$usage_fixture" "$executor_model" "$executor_fixture" "$incremental_executor_fixture" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'build model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -54,6 +55,7 @@ for boundary in \
     'MissingDependency' \
     'InvalidParallelism' \
     'DependencyNotReady' \
+    'BuildGraphEvent.CacheHit' \
     'FingerprintMissing' \
     'LogLimitExceeded' \
     'total_log_bytes > Limits::LOG_BYTES' \
@@ -163,13 +165,17 @@ for boundary in \
     'ProcessStdioMode.Null' \
     'ProcessStdioMode.Capture' \
     'command.timeout_micros == 0' \
-    'preflight the entire graph before the first external side effect' \
+    'Preflight every command that will execute before the first' \
+    'def execute_build_graph_incremental(' \
+    'BuildGraphEvent.CacheHit' \
     'BuildGraphEvent.NodeFailure' \
     'LOG_BYTES - graph.log_bytes'; do
     rg -Fq "$boundary" "$executor_model"
 done
 
 rg -Fq 'build_executor_preflights_supported_process_command_subset' "$executor_fixture"
+rg -Fq 'execute_build_graph_incremental(' "$incremental_executor_fixture"
+rg -Fq 'incremental_executor_marks_up_to_date_nodes_as_cache_hits' "$incremental_executor_fixture"
 
 rg -Fq 'BuildContractError.DuplicateDependency' "$fixture"
 rg -Fq 'for dependency_position in 0..<node.dependencies.count |node|' "$model"

@@ -7,13 +7,15 @@ script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 model="$repo_root/src/runtime/build_incremental_model.elisa"
 build_model="$repo_root/src/runtime/build_model.elisa"
+executor_model="$repo_root/src/runtime/build_executor_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 transition_fixture="$repo_root/test/runtime/build_incremental_transition_test.elisa"
+executor_fixture="$repo_root/test/runtime/build_incremental_executor_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$build_model" "$ir" "$fixture" "$transition_fixture" "$docs" "$ledger"; do
+for required_file in "$model" "$build_model" "$executor_model" "$ir" "$fixture" "$transition_fixture" "$executor_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'incremental build audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -69,6 +71,15 @@ for declaration in \
     'def build_incremental_observation_order(' \
     'def build_sort_incremental_observation_indices('; do
     rg -Fq "$declaration" "$model"
+done
+
+rg -Fq 'def execute_build_graph_incremental(' "$executor_model"
+
+for executor_check in \
+    'incremental_executor_marks_up_to_date_nodes_as_cache_hits' \
+    'execute_build_graph_incremental(graph, previous, recipes, observations)' \
+    'cache_hit and not result.nodes[0].started'; do
+    rg -Fq "$executor_check" "$executor_fixture"
 done
 
 for boundary in \

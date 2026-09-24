@@ -7,6 +7,7 @@
 
 module EsBuildExecutor:
     using EsBuild
+    using EsBuildIncremental
     using EsProcess
     using EsExecutable
 
@@ -24,6 +25,7 @@ module EsBuildExecutor:
         struct BuildExecutionNodeResult:
             target_name: sview
             started: bool = false
+            cache_hit: bool = false
             failure: BuildExecutionFailureKind = BuildExecutionFailureKind.None
             exit_status: i64 = 0
             stdout: sview = ""
@@ -82,11 +84,12 @@ module EsBuildExecutor:
             return build_executor_command_supported_impl(command)
 
 
+    private:
         # Execute a validated graph in dependency order with fail-fast
         # semantics. Each command's timeout/output policy remains explicit;
         # the graph-wide retained log ceiling is enforced by reducing each
         # invocation's capture budget to the remaining capacity.
-        def execute_build_graph_serial(graph: mutable BuildGraph&) -> BuildExecutionResult error[BuildExecutionError, BuildContractError] can[Memory.Allocate, Abort.Panic, Process.Run]:
+        def execute_build_graph_serial_with_decisions(graph: mutable BuildGraph&, decisions: darray[BuildIncrementalDecision]) -> BuildExecutionResult error[BuildExecutionError, BuildContractError] can[Memory.Allocate, Abort.Panic, Process.Run]:
             valid_graph: mutable bool = false
             catch validate_build_graph(graph):
                 ok value:
@@ -96,10 +99,13 @@ module EsBuildExecutor:
             raise BuildExecutionError.GraphInvalid if not valid_graph
             raise BuildExecutionError.GraphNotPlanned if graph.state != BuildGraphState.Planned
             raise BuildExecutionError.NodeResultLimitExceeded if graph.nodes.count > Limits::NODE_RESULTS
+            raise BuildExecutionError.GraphInvalid if decisions.count != 0 and decisions.count != graph.nodes.count
 
-            # Preflight the entire graph before the first external side effect.
-            for node in graph.nodes:
-                raise BuildExecutionError.UnsupportedCommand if not build_executor_command_supported_impl(node.command)
+            # Preflight every command that will execute before the first
+            # external side effect; cache-hit nodes are intentionally skipped.
+            for node_index in 0..<graph.nodes.count |graph, decisions|:
+                if decisions.count == 0 or decisions[node_index] != BuildIncrementalDecision.UpToDate:
+                    raise BuildExecutionError.UnsupportedCommand if not build_executor_command_supported_impl(graph.nodes[node_index].command)
 
             results: mutable darray[BuildExecutionNodeResult] = []
             for node in graph.nodes |results|:
@@ -109,45 +115,61 @@ module EsBuildExecutor:
             for node_index in 0..<graph.nodes.count |graph, results|:
                 if graph.state != BuildGraphState.Running:
                     break
-                _ = try advance_build_graph(graph, BuildGraphEvent.NodeStart, node_index)
-                results[node_index].started <- true
-                remaining_log_bytes: usize = EsBuild::Limits::LOG_BYTES - graph.log_bytes
-                command_limit: usize = graph.nodes[node_index].command.capture_output_limit_bytes
-                effective_limit: usize = command_limit if command_limit < remaining_log_bytes else remaining_log_bytes
-                process_error: mutable bool = false
-                catch execute_build_command(graph.nodes[node_index].command, effective_limit):
-                    ok value:
-                        results[node_index].exit_status <- value.exit_status
-                        results[node_index].stdout <- value.stdout
-                        results[node_index].stderr <- value.stderr
-                    error failure:
-                        process_error <- true
+                if decisions.count != 0 and decisions[node_index] == BuildIncrementalDecision.UpToDate:
+                    _ = try advance_build_graph(graph, BuildGraphEvent.CacheHit, node_index)
+                    results[node_index].cache_hit <- true
+                else:
+                    _ = try advance_build_graph(graph, BuildGraphEvent.NodeStart, node_index)
+                    results[node_index].started <- true
+                    remaining_log_bytes: usize = EsBuild::Limits::LOG_BYTES - graph.log_bytes
+                    command_limit: usize = graph.nodes[node_index].command.capture_output_limit_bytes
+                    effective_limit: usize = command_limit if command_limit < remaining_log_bytes else remaining_log_bytes
+                    process_error: mutable bool = false
+                    catch execute_build_command(graph.nodes[node_index].command, effective_limit):
+                        ok value:
+                            results[node_index].exit_status <- value.exit_status
+                            results[node_index].stdout <- value.stdout
+                            results[node_index].stderr <- value.stderr
+                        error failure:
+                            process_error <- true
 
-                node_log_bytes: mutable usize = 0
-                if not process_error:
-                    stdout_bytes: usize = len(results[node_index].stdout)
-                    stderr_bytes: usize = len(results[node_index].stderr)
-                    if stdout_bytes > effective_limit:
-                        process_error <- true
-                    elif stderr_bytes > effective_limit - stdout_bytes:
-                        process_error <- true
-                    else:
-                        node_log_bytes <- stdout_bytes + stderr_bytes
+                    node_log_bytes: mutable usize = 0
+                    if not process_error:
+                        stdout_bytes: usize = len(results[node_index].stdout)
+                        stderr_bytes: usize = len(results[node_index].stderr)
+                        if stdout_bytes > effective_limit:
+                            process_error <- true
+                        elif stderr_bytes > effective_limit - stdout_bytes:
+                            process_error <- true
+                        else:
+                            node_log_bytes <- stdout_bytes + stderr_bytes
 
-                if process_error:
-                    results[node_index].failure <- BuildExecutionFailureKind.Invocation
-                    results[node_index].stdout <- ""
-                    results[node_index].stderr <- ""
-                    _ = try advance_build_graph(graph, BuildGraphEvent.NodeFailure, node_index)
-                    break
+                    if process_error:
+                        results[node_index].failure <- BuildExecutionFailureKind.Invocation
+                        results[node_index].stdout <- ""
+                        results[node_index].stderr <- ""
+                        _ = try advance_build_graph(graph, BuildGraphEvent.NodeFailure, node_index)
+                        break
 
-                raise BuildExecutionError.LogAccountingInvalid if node_log_bytes > EsBuild::Limits::LOG_BYTES - graph.log_bytes
-                graph.nodes[node_index].log_bytes <- node_log_bytes
-                graph.log_bytes <- graph.log_bytes + node_log_bytes
-                if results[node_index].exit_status != 0:
-                    results[node_index].failure <- BuildExecutionFailureKind.NonzeroExit
-                    _ = try advance_build_graph(graph, BuildGraphEvent.NodeFailure, node_index)
-                    break
-                _ = try advance_build_graph(graph, BuildGraphEvent.NodeSuccess, node_index)
+                    raise BuildExecutionError.LogAccountingInvalid if node_log_bytes > EsBuild::Limits::LOG_BYTES - graph.log_bytes
+                    graph.nodes[node_index].log_bytes <- node_log_bytes
+                    graph.log_bytes <- graph.log_bytes + node_log_bytes
+                    if results[node_index].exit_status != 0:
+                        results[node_index].failure <- BuildExecutionFailureKind.NonzeroExit
+                        _ = try advance_build_graph(graph, BuildGraphEvent.NodeFailure, node_index)
+                        break
+                    _ = try advance_build_graph(graph, BuildGraphEvent.NodeSuccess, node_index)
 
             return BuildExecutionResult{graph_state: graph.state, nodes: results, log_bytes: graph.log_bytes}
+
+
+    public:
+        def execute_build_graph_serial(graph: mutable BuildGraph&) -> BuildExecutionResult error[BuildExecutionError, BuildContractError] can[Memory.Allocate, Abort.Panic, Process.Run]:
+            return try execute_build_graph_serial_with_decisions(graph, [])
+
+
+        # Classify against the current graph and observed filesystem snapshot,
+        # then skip only nodes that the pure planner admits as UpToDate.
+        def execute_build_graph_incremental(graph: mutable BuildGraph&, previous_targets: darray[BuildIncrementalTarget], current_recipes: darray[BuildIncrementalRecipeTarget], observations: darray[BuildIncrementalObservation]) -> BuildExecutionResult error[BuildExecutionError, BuildContractError, BuildIncrementalError] can[Memory.Allocate, Abort.Panic, Process.Run]:
+            plan: BuildIncrementalPlan = try plan_build_incremental_graph_transition(previous_targets, graph, current_recipes, observations)
+            return try execute_build_graph_serial_with_decisions(graph, plan.decisions)
