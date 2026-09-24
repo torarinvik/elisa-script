@@ -79,6 +79,10 @@ user, the candidate must fail without deleting them or replacing the cache. If
 the bytes are restored to the cached fingerprint, the candidate must remove
 the stale output, report the still-current graph as up to date, and publish a
 manifest without the removed target. This source-level case has not been run.
+It then recreates the removed target, replaces its output with a symlink to a
+sentinel, and requires refusal without following or unlinking the link,
+changing sentinel bytes, or replacing the cache. Restoring the regular cached
+bytes must allow cleanup and recovery. This case is also source-only.
 
 Finally, the harness asks the candidate to switch to the default generated
 header and uses AWK in place of the main compiler. The header generator
