@@ -91,6 +91,14 @@ remove outputs of started nodes, preserve the prior executable and cache bytes,
 and recover on a normal variant retry followed by a cache hit. This is a
 source-level check and has not been run.
 
+The byte-identical case snapshots the current main object as a bounded
+build-directory input, changes the compile recipe to copy those exact bytes to
+the declared object output, and requires the dirty compile/link nodes to
+rebuild successfully. It compares the rebuilt bytes with the seed, then
+requires the same recipe to become an up-to-date cache hit. The fixture
+restores the standard compiler recipe and removes only its private seed file.
+This case is source-only and unverified.
+
 Finally, the harness asks the candidate to switch to the default generated
 header and uses AWK in place of the main compiler. The header generator
 succeeds, then AWK writes a partial object and exits unsuccessfully. Cleanup
