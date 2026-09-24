@@ -2924,7 +2924,10 @@ values representable by the former one-level subset. The graph is bounded to
 16 MiB of source, 262,144 nodes, depth 128, and the existing aggregate array
 item/table-field limits. Dotted keys inside inline tables, dates/times,
 multiline strings, Unicode escapes, and quoted keys remain unsupported and are
-rejected; top-level dotted keys are supported.
+rejected; top-level dotted keys are supported. A source-only snapshot of the
+observed `WasmBrowser/Cargo.toml` workspace/dependency subset has a fixture for
+multiline member arrays, nested inline dependency values, and package aliases;
+it has not been executed and does not establish Cargo compatibility.
 Array-of-table headers are represented as zero-based numeric dotted key
 segments (for example `links.user.0.name`) and a
 typed row directory (`ConfigTomlArrayTableInstance`); nested regular tables are

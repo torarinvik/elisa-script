@@ -24,10 +24,11 @@ json_file_data="$repo_root/test/runtime/config_json_file_fixture.json"
 toml_fixture="$repo_root/test/runtime/config_toml_model_test.elisa"
 toml_file_fixture="$repo_root/test/runtime/config_toml_file_posix_test.elisa"
 toml_file_data="$repo_root/test/runtime/config_toml_file_fixture.toml"
+toml_cargo_data="$repo_root/test/runtime/config_toml_cargo_fixture.toml"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$json_model" "$environment_model" "$cli_model" "$json_file_model" "$toml_model" "$toml_file_model" "$ir" "$fixture" "$runtime_fixture" "$json_fixture" "$environment_fixture" "$cli_fixture" "$integration_fixture" "$json_file_fixture" "$json_file_data" "$toml_fixture" "$toml_file_fixture" "$toml_file_data" "$docs" "$ledger"; do
+for required_file in "$model" "$json_model" "$environment_model" "$cli_model" "$json_file_model" "$toml_model" "$toml_file_model" "$ir" "$fixture" "$runtime_fixture" "$json_fixture" "$environment_fixture" "$cli_fixture" "$integration_fixture" "$json_file_fixture" "$json_file_data" "$toml_fixture" "$toml_file_fixture" "$toml_file_data" "$toml_cargo_data" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'config audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 for toml_boundary in \
@@ -204,6 +205,11 @@ rg -Fq 'bounded_toml_configuration_file_returns_owned_layer' "$toml_file_fixture
 rg -Fq 'ConfigTomlValueKind.Array' "$toml_file_fixture"
 rg -Fq 'setuptools>=68' "$toml_file_fixture"
 rg -Fq 'bounded_toml_configuration_file_rejects_invalid_budget_before_reading' "$toml_file_fixture"
+rg -Fq 'cargo_workspace_manifest_preserves_nested_typed_values' "$toml_file_fixture"
+rg -Fq 'workspace.dependencies.wasmtime' "$toml_file_fixture"
+rg -Fq 'crates/wb-manifest' "$toml_cargo_data"
+rg -Fq 'sha2_11 = { package = "sha2", version = "0.11" }' "$toml_cargo_data"
+rg -Fq 'd69c6241c9f1768b45caa2965eb2c125af2826d97fd06ed3cd766691dbc2c1c1' "$toml_cargo_data"
 rg -Fq 'mode = "release"' "$toml_file_data"
 rg -Fq 'dependencies = [' "$toml_file_data"
 rg -Fq '"name":"ElisaScript","count":23,"enabled":true' "$json_file_data"

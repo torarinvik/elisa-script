@@ -943,7 +943,10 @@ values. The graph is bounded by source bytes, depth, node count, per-array and
 aggregate item counts, and per-table and aggregate field counts. Structured
 cross-source merge, dotted keys within inline tables, date/time values,
 multiline strings, Unicode escapes, and quoted keys remain unsupported and fail
-closed. Top-level dotted keys remain supported.
+closed. Top-level dotted keys remain supported. A source-only fixture snapshots
+the observed `WasmBrowser/Cargo.toml` workspace/dependency subset to exercise
+multiline member arrays, versioned inline dependencies, feature arrays, and a
+renamed package dependency; it is not runtime or compatibility evidence yet.
 Array-of-table rows are represented as zero-based numeric dotted key segments
 and a typed row directory (`ConfigTomlArrayTableInstance`), with nested regular
 tables scoped under the latest row; nested array-of-table graphs remain
