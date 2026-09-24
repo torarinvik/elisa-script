@@ -15,32 +15,42 @@ fi
 source_root="${1:-$script_dir/../src}"
 parser_tokens_file="${2:-$script_dir/../vendor/elisa-compiler/src/parser/parser_tokens.elisa}"
 candidate_file="$script_dir/check_namespace_manifest.elisascript"
+bounded_reader="$script_dir/../src/runtime/bounded_text_posix.elisa"
 if [ ! -d "$source_root" ]; then
     echo "check_namespace_manifest: source root does not exist: $source_root" >&2
     exit 2
 fi
 
-# Pin the candidate's memory-safety contract independently of runtime parity:
-# the size preflight is not a substitute for an actually bounded read.
+# Pin the shared reader's memory-safety contract independently of runtime
+# parity: the size preflight is not a substitute for an actually bounded read.
 if [ ! -f "$candidate_file" ]; then
     echo "check_namespace_manifest: Elisascript candidate is missing" >&2
     exit 1
 fi
+if [ ! -f "$bounded_reader" ]; then
+    echo "check_namespace_manifest: shared bounded text reader is missing" >&2
+    exit 1
+fi
+if ! grep -F 'include "../src/runtime/bounded_text_posix.elisa"' "$candidate_file" >/dev/null 2>&1 || ! grep -F 'EsBoundedText::read_utf8(input_path, maximum_bytes)' "$candidate_file" >/dev/null 2>&1; then
+    echo "check_namespace_manifest: candidate does not use the shared bounded text reader" >&2
+    exit 1
+fi
 for bounded_read_invariant in \
-    'READ_CHUNK_BYTES: usize = 16384' \
-    'maximum_bytes - source.count' \
+    'MAX_BYTES: usize = 16777216' \
+    'Limits::READ_CHUNK_BYTES' \
+    'maximum_bytes - bytes.count' \
     'probe_capacity: usize = remaining + 1' \
     'DarwinOpenFlags::NONBLOCK' \
     'elisascript_posix_fstat' \
-    'namespace_source_stable_file' \
-    'EsEncoding::utf8_feed'; do
-    if ! grep -F "$bounded_read_invariant" "$candidate_file" >/dev/null 2>&1; then
-        echo "check_namespace_manifest: candidate source read omits bounded-read invariant: $bounded_read_invariant" >&2
+    'stable_file(opened, final_opened)' \
+    'text_is_valid_utf8'; do
+    if ! grep -F "$bounded_read_invariant" "$bounded_reader" >/dev/null 2>&1; then
+        echo "check_namespace_manifest: shared source reader omits bounded-read invariant: $bounded_read_invariant" >&2
         exit 1
     fi
 done
-if grep -F 'read_text(' "$candidate_file" >/dev/null 2>&1; then
-    echo "check_namespace_manifest: candidate source read uses unbounded read_text" >&2
+if grep -F 'read_text(' "$candidate_file" "$bounded_reader" >/dev/null 2>&1; then
+    echo "check_namespace_manifest: source read uses unbounded read_text" >&2
     exit 1
 fi
 

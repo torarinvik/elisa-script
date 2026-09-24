@@ -11,6 +11,7 @@ if (( $# > 1 )); then
 fi
 review_file="${1:-$repo_root/docs/migration-review-current.tsv}"
 candidate_file="$script_dir/check_migration_review.elisascript"
+bounded_reader="$repo_root/src/runtime/bounded_text_posix.elisa"
 
 if [[ ! -f "$review_file" ]]; then
     printf 'migration review audit: missing %s\n' "$review_file" >&2
@@ -30,21 +31,29 @@ if [[ ! -f "$candidate_file" ]]; then
     printf 'migration review audit: missing Elisascript candidate\n' >&2
     exit 1
 fi
+if [[ ! -f "$bounded_reader" ]]; then
+    printf 'migration review audit: missing shared bounded text reader\n' >&2
+    exit 1
+fi
+if ! grep -F 'include "../src/runtime/bounded_text_posix.elisa"' "$candidate_file" >/dev/null 2>&1 || ! grep -F 'EsBoundedText::read_utf8(input_path, maximum_bytes)' "$candidate_file" >/dev/null 2>&1; then
+    printf 'migration review audit: candidate does not use the shared bounded text reader\n' >&2
+    exit 1
+fi
 for bounded_read_invariant in \
-    'FILE_BYTES: usize = 1048576' \
+    'MAX_BYTES: usize = 16777216' \
     'maximum_bytes - bytes.count' \
     'probe_capacity: usize = remaining + 1' \
     'DarwinOpenFlags::NONBLOCK' \
     'elisascript_posix_fstat' \
-    'migration_manifest_stable_file' \
-    'EsEncoding::utf8_feed'; do
-    if ! grep -F "$bounded_read_invariant" "$candidate_file" >/dev/null 2>&1; then
-        printf 'migration review audit: candidate source read omits bounded-read invariant: %s\n' "$bounded_read_invariant" >&2
+    'stable_file(opened, final_opened)' \
+    'text_is_valid_utf8'; do
+    if ! grep -F "$bounded_read_invariant" "$bounded_reader" >/dev/null 2>&1; then
+        printf 'migration review audit: shared source reader omits bounded-read invariant: %s\n' "$bounded_read_invariant" >&2
         exit 1
     fi
 done
-if grep -F 'read_text(' "$candidate_file" >/dev/null 2>&1; then
-    printf 'migration review audit: candidate source read uses unbounded read_text\n' >&2
+if grep -F 'read_text(' "$candidate_file" "$bounded_reader" >/dev/null 2>&1; then
+    printf 'migration review audit: source read uses unbounded read_text\n' >&2
     exit 1
 fi
 
