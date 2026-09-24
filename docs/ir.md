@@ -2895,7 +2895,8 @@ requested JSON limits/policy, and returns a wrapper retaining the document
 that owns the layer's borrowed views. It rejects a zero or over-ceiling input
 budget and invalid decoder/JSON policies before opening the path. File
 replacement/content-change protection is inherited from the shared reader;
-runtime qualification remains pending.
+the POSIX fixture asserts scalar materialization and early limit rejection but
+has not been executed, so runtime qualification remains pending.
 
 `EsConfigEnvironment::environment_config_layer` converts a validated sealed
 environment snapshot to the `Environment` layer without consulting or

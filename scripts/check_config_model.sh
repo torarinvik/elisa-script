@@ -17,10 +17,12 @@ json_fixture="$repo_root/test/runtime/config_json_model_test.elisa"
 environment_fixture="$repo_root/test/runtime/config_environment_model_test.elisa"
 cli_fixture="$repo_root/test/runtime/config_cli_model_test.elisa"
 integration_fixture="$repo_root/test/runtime/config_precedence_integration_test.elisa"
+json_file_fixture="$repo_root/test/runtime/config_json_file_posix_test.elisa"
+json_file_data="$repo_root/test/runtime/config_json_file_fixture.json"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$json_model" "$environment_model" "$cli_model" "$json_file_model" "$ir" "$fixture" "$runtime_fixture" "$json_fixture" "$environment_fixture" "$cli_fixture" "$integration_fixture" "$docs" "$ledger"; do
+for required_file in "$model" "$json_model" "$environment_model" "$cli_model" "$json_file_model" "$ir" "$fixture" "$runtime_fixture" "$json_fixture" "$environment_fixture" "$cli_fixture" "$integration_fixture" "$json_file_fixture" "$json_file_data" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'config audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 for json_file_boundary in \
@@ -126,6 +128,9 @@ rg -Fq 'declared_config_cli_options_preserve_empty_and_passthrough_values' "$cli
 rg -Fq 'declared_config_cli_options_reject_unknown_missing_and_duplicate_values' "$cli_fixture"
 rg -Fq 'ConfigCliError.EmbeddedNul' "$cli_fixture"
 rg -Fq 'config_precedence_composes_all_four_explicit_sources' "$integration_fixture"
+rg -Fq 'bounded_json_configuration_file_retains_layer_document_storage' "$json_file_fixture"
+rg -Fq 'bounded_json_configuration_file_rejects_over_limit_before_reading' "$json_file_fixture"
+rg -Fq '"name":"ElisaScript","count":23,"enabled":true' "$json_file_data"
 
 rg -Fq '`EsConfig` is the pure configuration precedence boundary' "$docs"
 
