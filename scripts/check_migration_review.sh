@@ -5,11 +5,22 @@ set -euo pipefail
 
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
-review_file="$repo_root/docs/migration-review-current.tsv"
+if (( $# > 1 )); then
+    printf 'usage: check_migration_review.sh [MANIFEST]\n' >&2
+    exit 2
+fi
+review_file="${1:-$repo_root/docs/migration-review-current.tsv}"
 candidate_file="$script_dir/check_migration_review.elisascript"
 
 if [[ ! -f "$review_file" ]]; then
     printf 'migration review audit: missing %s\n' "$review_file" >&2
+    exit 1
+fi
+
+readonly MAX_MANIFEST_BYTES=1048576
+manifest_bytes="$(LC_ALL=C wc -c < "$review_file")"
+if (( manifest_bytes > MAX_MANIFEST_BYTES )); then
+    printf 'migration review audit: manifest exceeds audit limit\n' >&2
     exit 1
 fi
 
