@@ -31,6 +31,9 @@ library propagated through the public `api` interface. The candidate does not
 add duplicate explicit `LinkLibrary` requirements for either target, so the
 fixture depends on correct target-artifact and private dependency-edge
 propagation.
+Resolved link entries preserve target-artifact identity separately from
+literal linker names, so equal spellings such as a target named `m` and the
+system library `m` cannot be deduplicated or emitted using the wrong form.
 
 `test/script_parity/target_usage_launcher_test.elisascript` runs the CMake
 configure/build/CTest route and the candidate build in separate fresh roots,

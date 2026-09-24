@@ -132,6 +132,7 @@ for declaration in \
     'struct BuildUsageDependency:' \
     'struct BuildUsageTarget:' \
     'struct BuildUsageTargetResult:' \
+    'target_artifact: bool = false' \
     'error BuildUsageError:' \
     'def validate_target_inputs(' \
     'def resolve_build_usage('; do
@@ -155,6 +156,9 @@ for boundary in \
     'dependency_target.kind == BuildUsageTargetKind.StaticLibrary' \
     'dependency_target.kind == BuildUsageTargetKind.SharedLibrary' \
     'value: dependency_result.name' \
+    'target_artifact: true' \
+    'left.target_artifact == right.target_artifact' \
+    'target_artifact: entry.target_artifact' \
     'raise BuildUsageError.TotalResolvedLimitExceeded if entries.count' \
     'TOTAL_INPUTS - total_inputs'; do
     rg -Fq "$boundary" "$usage_model"
@@ -168,6 +172,7 @@ rg -Fq 'ordered_target_names[name_index - 1] == ordered_target_names[name_index]
 
 rg -Fq 'build_usage_public_private_interface_and_static_link_only_propagation' "$usage_fixture"
 rg -Fq 'build_usage_shared_dependency_contributes_its_artifact' "$usage_fixture"
+rg -Fq 'build_usage_distinguishes_target_artifacts_from_linker_names' "$usage_fixture"
 rg -Fq 'build_usage_rejects_noncanonical_dependencies_and_interface_visibility' "$usage_fixture"
 rg -Fq 'build_usage_private_static_dependency_is_local_and_link_only_exported' "$usage_fixture"
 rg -Fq 'build_usage_interface_dependency_must_use_interface_visibility' "$usage_fixture"
@@ -178,7 +183,11 @@ rg -Fq 'app_usage.link[2].value == "-Wl,--as-needed"' "$usage_fixture"
 rg -Fq 'app_usage.link[0].value == "core"' "$usage_fixture"
 rg -Fq 'app_usage.link[3].value == "helper" and not app_usage.link[3].link_only' "$usage_fixture"
 rg -Fq 'wrapper_usage.exported_link[0].value == "shared"' "$usage_fixture"
+rg -Fq 'assert not app_usage.link[0].target_artifact' "$usage_fixture"
+rg -Fq 'assert app_usage.link[1].target_artifact' "$usage_fixture"
 rg -Fq 'BuildUsageError.InvalidDependencyTargetKind' "$usage_fixture"
+rg -Fq 'if entry.target_artifact:' "$target_usage_candidate"
+rg -Fq 'arguments.push("-l" + entry.value)' "$target_usage_candidate"
 if rg -n 'BuildUsageRequirement\{kind: BuildUsageKind.LinkLibrary, visibility: BuildUsageVisibility.Private, value: "(core|helper)"\}' "$target_usage_candidate"; then
     printf 'build model audit: target-usage parity candidate masks dependency propagation with an explicit core/helper link requirement\n' >&2
     exit 1
