@@ -195,7 +195,12 @@ unexecuted under the validation hold.
   `splitlines(keepends=True)`. The Elisascript loader applies per-file and
   aggregate byte ceilings plus path-spelling, aggregate path-component work,
   include-file, directive, and depth ceilings; those bounded rejection cases
-  are Elisascript-specific safeguards.
+  are Elisascript-specific safeguards. Its current whole-file `read_text`
+  follows a `file_size` preflight, so concurrent in-place growth can exceed the
+  byte ceilings in peak allocation before the post-read check rejects it. Do
+  not treat these checks as a hard memory bound. Acceptance of adversarial
+  memory safety requires a bounded chunk reader and a growth-during-read
+  rejection fixture.
 - Python `Path.read_text` universal-newline translation converts CRLF and bare
   CR to LF before `splitlines(keepends=True)`. The candidate makes that
   normalization explicit. Include directives are whole lines matching
