@@ -56,7 +56,10 @@ for output_invariant in \
     'build_executor_output_sets_valid(graph, output_sets)' \
     'build_batch_first_missing_output(session.output_sets[dispatch.job_index])' \
     'BuildBatchError.OutputMissing' \
-    'session.output_sets.count != 0'; do
+    'session.output_sets.count != 0' \
+    'Limits::OUTPUT_PATHS' \
+    'Limits::OUTPUT_PATH_BYTES' \
+    'Limits::OUTPUT_INDEX_SLOTS'; do
     rg -Fq "$output_invariant" "$model"
 done
 

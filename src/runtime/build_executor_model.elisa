@@ -16,6 +16,9 @@ module EsBuildExecutor:
     public:
         const module Limits:
             NODE_RESULTS: usize = EsBuild::Limits::NODES
+            OUTPUT_PATHS: usize = 65536
+            OUTPUT_PATH_BYTES: usize = 4096
+            OUTPUT_INDEX_SLOTS: usize = 131072
 
 
         const enum BuildExecutionFailureKind of u8:
@@ -94,18 +97,52 @@ module EsBuildExecutor:
             return try capture_process_result_in_directory_with_environment(executable_value, command.arguments, "", path(command.working_directory), environment, command.timeout_micros.i64(), output_limit.i64())
 
 
-        def build_executor_output_sets_valid_impl(graph: BuildGraph, output_sets: darray[BuildExecutionNodeOutputs]) -> bool:
+        const module OutputHash:
+            FNV_OFFSET: u64 = 14695981039346656037u64
+            FNV_PRIME: u64 = 1099511628211u64
+
+
+        def build_executor_output_path_hash(output_path: sview) -> u64:
+            hash: mutable u64 = OutputHash::FNV_OFFSET
+            for byte in output_path |output_path, hash|:
+                hash <- (hash ^ byte.u64()) * OutputHash::FNV_PRIME
+            return hash
+
+
+        def build_executor_output_sets_valid_impl(graph: BuildGraph, output_sets: darray[BuildExecutionNodeOutputs]) -> bool can[Memory.Allocate, Abort.Panic]:
             return true if output_sets.count == 0
             return false if output_sets.count != graph.nodes.count
+            total_paths: mutable usize = 0
             for index in 0..<output_sets.count |graph, output_sets|:
+                return false if output_sets[index].paths.count > Limits::OUTPUT_PATHS - total_paths
+                total_paths <- total_paths + output_sets[index].paths.count
                 for path_index in 0..<output_sets[index].paths.count |output_sets, index|:
                     output_path: sview = output_sets[index].paths[path_index]
-                    return false if output_path == "" or sview_contains_byte(output_path, 0) or not path_is_absolute(path(output_path))
-                    for prior_index in 0..<index |output_sets, output_path|:
-                        for prior_path in output_sets[prior_index].paths:
-                            return false if prior_path == output_path
-                    for earlier_path in 0..<path_index |output_sets, index, output_path|:
-                        return false if output_sets[index].paths[earlier_path] == output_path
+                    return false if output_path == "" or sview_len(output_path) > Limits::OUTPUT_PATH_BYTES or sview_contains_byte(output_path, 0) or not path_is_absolute(path(output_path))
+            return true if total_paths == 0
+
+            required_slots: usize = total_paths * 2
+            slot_count: mutable usize = 2
+            while slot_count < required_slots:
+                slot_count <- slot_count * 2
+            return false if slot_count > Limits::OUTPUT_INDEX_SLOTS
+            slots: mutable darray[sview] = []
+            slots.reserve(slot_count)
+            for _ in 0..<slot_count |slots|:
+                slots.push("")
+            for output_set in output_sets |output_sets, slots|:
+                for output_path in output_set.paths |output_set, slots, output_path|:
+                    slot: mutable usize = (build_executor_output_path_hash(output_path) % slots.count.u64()).usize()
+                    placed: mutable bool = false
+                    for _ in 0..<slots.count |slots, slot, placed, output_path|:
+                        if slots[slot] == "":
+                            slots[slot] <- output_path
+                            placed <- true
+                            break
+                        if slots[slot] == output_path:
+                            return false
+                        slot <- 0 if slot + 1 == slots.count else slot + 1
+                    return false if not placed
             return true
 
 
@@ -149,7 +186,7 @@ module EsBuildExecutor:
             return build_executor_command_supported_impl(command)
 
 
-        def build_executor_output_sets_valid(graph: BuildGraph, output_sets: darray[BuildExecutionNodeOutputs]) -> bool:
+        def build_executor_output_sets_valid(graph: BuildGraph, output_sets: darray[BuildExecutionNodeOutputs]) -> bool can[Memory.Allocate, Abort.Panic]:
             return build_executor_output_sets_valid_impl(graph, output_sets)
 
 
