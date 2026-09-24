@@ -932,10 +932,16 @@ in deterministic bytewise key order; lookup never reads process-global state.
 EsConfigJson adapts one strict flat JSON object to the File layer, enforcing its
 entry ceiling before materialization and retaining exact number spellings and
 document-borrowed decoded scalar text; structures require the typed schema
-adapter. TOML and environment/CLI capture are open.
-The focused IR fixture, namespace inclusion, documentation, and
-check_config_model.sh audit are static evidence; file/environment/CLI adapters,
-storage-lifetime enforcement, and compiler/runtime qualification remain open.
+adapter. TOML, process-global environment capture, and CLI parsing are open.
+EsConfigEnvironment converts a sealed explicit snapshot to the Environment
+layer, omitting unset tombstones and preserving present-empty overrides without
+global environment access; callers retain the borrowed snapshot storage. The
+snapshot count now uses the dedicated 256-entry process-environment ceiling,
+not the much larger process-argument limit.
+The focused IR/runtime fixtures, namespace inclusion, documentation, and
+check_config_model.sh audit are static evidence; file reads, process-global
+environment capture, CLI parsing, storage-lifetime enforcement, and
+compiler/runtime qualification remain open.
 
 ES-SCRIPT-009 | EsCsvMaterialize supplies bounded source field spans, contiguous
 policy-checked record layout, quote markers, shared field/record ceilings,

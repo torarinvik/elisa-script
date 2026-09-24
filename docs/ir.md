@@ -2887,8 +2887,14 @@ decoded strings and exact number lexemes, and represents booleans/null with
 their canonical JSON spellings. Its values borrow the `JsonDocument`; callers
 must retain that document while using the layer or resolved values. Nested
 arrays/objects are rejected and require the typed schema materializer instead.
-This is a bounded flat-JSON slice of A06, not complete JSON/TOML or host-source
-precedence integration.
+This is a bounded flat-JSON slice of A06, not complete JSON/TOML or process
+environment capture/CLI precedence integration.
+
+`EsConfigEnvironment::environment_config_layer` converts a validated sealed
+environment snapshot to the `Environment` layer without consulting or
+mutating process-global state. It omits unset tombstones so lower-priority file
+values remain eligible, preserves present-empty values, and borrows snapshot
+storage; the snapshot must remain alive and unchanged while its views are used.
 
 `EsDirectoryMutation` validates recursive copy/remove plans before a host
 adapter mutates the filesystem. Source and destination containment compares
