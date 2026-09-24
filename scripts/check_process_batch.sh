@@ -107,6 +107,7 @@ done
 for dispatch_fixture_pattern in \
     'process_batch_admission_returns_exact_retry_token' \
     'process_batch_admits_a_scheduler_selected_job' \
+    'fail_fast_waits_for_every_unreaped_child_before_becoming_failed' \
     'admit_next_process_batch_job(session)' \
     'admit_process_batch_job(session, 1)' \
     'invalid_index_rejected' \
