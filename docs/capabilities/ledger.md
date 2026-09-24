@@ -962,8 +962,9 @@ The opt-in `parse_toml_config_layer` and
 `resolve_toml_config_typed_layers` path preserves typed values across explicit
 Defaults/File/Environment/CommandLine TOML documents using whole-key
 replacement; it does not recursively merge inline objects. Array-of-table
-layers are rejected by this multi-source API until row-group override semantics
-are defined, and conflicting inline-object versus dotted-table paths are
+paths resolve as whole row groups, with the highest-precedence declaration
+replacing all rows for that path and other groups resolving independently.
+Nested array-table and conflicting inline-object versus dotted-table paths are
 rejected instead of being combined ambiguously. Existing plain environment/CLI
 layers keep their scalar-text override behavior.
 Process-global environment capture remains open.

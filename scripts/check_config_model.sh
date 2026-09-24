@@ -197,6 +197,8 @@ rg -Fq 'array_table_rows_preserve_header_order_and_instance_indices' "$toml_fixt
 rg -Fq 'nested_values: ConfigTomlLayer' "$toml_fixture"
 rg -Fq 'validate_toml_value_graph(nested_values.values[dependency_index].nodes' "$toml_fixture"
 rg -Fq 'toml_typed_layers_replace_whole_values_by_source_precedence' "$toml_fixture"
+rg -Fq 'array_table_environment' "$toml_fixture"
+rg -Fq 'second_row_name >= array_table_resolution.values.count' "$toml_fixture"
 rg -Fq 'lookup_resolved_toml_config_value' "$toml_fixture"
 rg -Fq 'resolve_toml_config_typed_layers([defaults, file, environment, command_line])' "$toml_fixture"
 rg -Fq 'ConfigTomlError.ConflictingStructure' "$toml_fixture"

@@ -2944,10 +2944,13 @@ The opt-in `parse_toml_config_layer` and
 `resolve_toml_config_typed_layers` APIs also accept fully parsed TOML documents
 for Defaults, File, Environment, and CommandLine sources, preserving the
 winning typed value by whole-key replacement; they do not recursively merge
-inline objects. This typed multi-source path rejects array-of-table inputs
-until grouped override semantics are defined, and rejects conflicting
-inline-object/dotted-table paths. The existing generic override path continues
-treating environment and command-line values as text.
+inline objects. Each array-of-table path is an indivisible row group: its
+highest-precedence declaration replaces all rows at that path, and groups at
+other paths resolve independently. A lower-precedence row never leaks through
+by matching the winner's numeric index. The resolver bounds aggregate row
+metadata and rejects conflicting inline-object/dotted-table or nested
+array-table paths. The existing generic override path continues treating
+environment and command-line values as text.
 `EsConfigTomlFilePosix` reads files through the shared
 stable UTF-8 reader with a 16 MiB ceiling. Source fixtures cover scalar and
 array parsing plus rejection boundaries, but remain unexecuted pending

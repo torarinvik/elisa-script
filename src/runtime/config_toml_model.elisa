@@ -210,6 +210,45 @@ module EsConfigToml:
             return path[prefix.count] == 46
 
 
+        def config_toml_key_descendant(key: sview, prefix: darray[u8]) -> bool:
+            return false if sview_len(key) <= prefix.count
+            return false if sview_at(key, prefix.count) != 46
+            for offset in 0..<prefix.count |key, prefix|:
+                return false if sview_at(key, offset) != prefix[offset]
+            return true
+
+
+        def config_toml_source_priority(source: ConfigSource) -> usize:
+            return 0 if source == ConfigSource.Defaults else 1 if source == ConfigSource.File else 2 if source == ConfigSource.Environment else 3
+
+
+        def config_toml_array_table_source(layers: darray[ConfigTomlLayer], path: darray[u8]) -> ConfigSource:
+            winner: mutable ConfigSource = ConfigSource.Defaults
+            found: mutable bool = false
+            for layer in layers |layers, path, winner, found|:
+                for row in layer.array_tables |layer, winner, found|:
+                    if bytes_view(row.path) == bytes_view(path):
+                        if not found or config_toml_source_priority(layer.layer.source) > config_toml_source_priority(winner):
+                            winner <- layer.layer.source
+                            found <- true
+            return winner
+
+
+        def config_toml_layer_declares_array_table(layer: ConfigTomlLayer, path: darray[u8]) -> bool:
+            for row in layer.array_tables |layer, path|:
+                return true if bytes_view(row.path) == bytes_view(path)
+            return false
+
+
+        def config_toml_typed_layer_entry_wins_array_group(layers: darray[ConfigTomlLayer], layer: ConfigTomlLayer, key: sview) -> bool error[ConfigTomlError]:
+            for candidate in layers |layers, layer, key|:
+                for group in candidate.array_tables |candidate, layer, key|:
+                    if config_toml_key_descendant(key, group.path):
+                        raise ConfigTomlError.ConflictingStructure if not config_toml_layer_declares_array_table(layer, group.path)
+                        return layer.layer.source == config_toml_array_table_source(layers, group.path)
+            return true
+
+
         def config_toml_array_table_parent(paths: darray[darray[u8]], path: darray[u8]) -> usize:
             parent: mutable usize = paths.count
             parent_bytes: mutable usize = 0
@@ -1097,17 +1136,39 @@ module EsConfigToml:
 
         # Resolve explicitly parsed TOML documents at every precedence level.
         # Each key is a whole-value replacement: nested objects are not merged
-        # recursively. Array-of-table row grouping remains on the file-only
-        # compatibility resolver until its cross-source semantics are defined.
+        # recursively. Each array-of-table path is replaced as one row group
+        # by its highest-precedence declaration; rows never merge by index.
         def resolve_toml_config_typed_layers(layers: darray[ConfigTomlLayer]) -> ConfigTomlResolution error[ConfigTomlError, ConfigError] can[Memory.Allocate, Abort.Panic]:
             raise ConfigTomlError.InvalidSource if layers.count == 0
             raise ConfigTomlError.InputLimitExceeded if layers.count > EsConfig::Limits::LAYERS
             raw_layers: mutable darray[ConfigLayer] = []
             total_nodes: mutable usize = 0
             total_edges: mutable usize = 0
-            for layer in layers |layers, raw_layers, total_nodes, total_edges|:
-                raise ConfigTomlError.UnsupportedValue if layer.array_tables.count != 0
+            total_array_table_rows: mutable usize = 0
+            for layer in layers |layers, raw_layers, total_nodes, total_edges, total_array_table_rows|:
                 raise ConfigTomlError.TypedValueMissing if layer.values.count != layer.layer.entries.count
+                raise ConfigTomlError.InputLimitExceeded if layer.array_tables.count > EsConfig::Limits::ENTRIES_PER_LAYER - total_array_table_rows
+                total_array_table_rows <- total_array_table_rows + layer.array_tables.count
+                for row_index in 0..<layer.array_tables.count |layer, row_index|:
+                    row: ConfigTomlArrayTableInstance = layer.array_tables[row_index]
+                    raise ConfigTomlError.InvalidTable if row.path.count == 0
+                    raise ConfigTomlError.ConflictingStructure if row.index >= CONFIG_TOML_MAX_ARRAY_TABLE_ROWS
+                    group_count: mutable usize = 0
+                    for prior_index in 0..<row_index |layer, row, prior_index|:
+                        prior: ConfigTomlArrayTableInstance = layer.array_tables[prior_index]
+                        if bytes_view(prior.path) == bytes_view(row.path):
+                            raise ConfigTomlError.ConflictingStructure if prior.index == row.index
+                        else:
+                            raise ConfigTomlError.ConflictingStructure if config_toml_dotted_descendant(row.path, prior.path) or config_toml_dotted_descendant(prior.path, row.path)
+                    for candidate_row in layer.array_tables |layer, row, group_count|:
+                        group_count <- group_count + 1 if bytes_view(candidate_row.path) == bytes_view(row.path)
+                    raise ConfigTomlError.ConflictingStructure if row.index >= group_count
+                for other_layer in layers |layers, layer|:
+                    if config_toml_source_priority(layer.layer.source) < config_toml_source_priority(other_layer.layer.source):
+                        for row in layer.array_tables |layer, other_layer|:
+                            for other_row in other_layer.array_tables |other_layer, row|:
+                                if bytes_view(other_row.path) != bytes_view(row.path):
+                                    raise ConfigTomlError.ConflictingStructure if config_toml_dotted_descendant(row.path, other_row.path) or config_toml_dotted_descendant(other_row.path, row.path)
                 for value_index in 0..<layer.values.count |layer, value_index, total_nodes, total_edges|:
                     input: ConfigTomlValue = layer.values[value_index]
                     entry: ConfigEntry = layer.layer.entries[value_index]
@@ -1118,7 +1179,12 @@ module EsConfigToml:
                     raise ConfigTomlError.InputLimitExceeded if input.children.count > CONFIG_TOML_MAX_TOTAL_ARRAY_ITEMS + CONFIG_TOML_MAX_TOTAL_TABLE_FIELDS - total_edges
                     total_nodes <- total_nodes + input.nodes.count
                     total_edges <- total_edges + input.children.count
-                raw_layers.push(layer.layer)
+                filtered: mutable ConfigLayer = ConfigLayer{source: layer.layer.source}
+                for entry in layer.layer.entries |layer, entry, filtered|:
+                    keep: bool = try config_toml_typed_layer_entry_wins_array_group(layers, layer, entry.key)
+                    if keep:
+                        filtered.entries.push(entry)
+                raw_layers.push(filtered)
             try validate_config_layers(raw_layers)
             winners: darray[ConfigValue] = try resolve_config_layers(raw_layers)
             winner_keys: mutable darray[sview] = []
@@ -1128,4 +1194,8 @@ module EsConfigToml:
             resolution: mutable ConfigTomlResolution = ConfigTomlResolution{}
             for winner in winners |layers, winners, resolution|:
                 resolution.values.push(try config_toml_bind_typed_winner(layers, winner))
+            for layer in layers |layers, resolution|:
+                for row in layer.array_tables |layer, resolution|:
+                    if config_toml_array_table_source(layers, row.path) == layer.layer.source:
+                        resolution.array_tables.push(ConfigTomlArrayTableInstance{path: config_toml_copy_bytes(row.path), index: row.index})
             return resolution
