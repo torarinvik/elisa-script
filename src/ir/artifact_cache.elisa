@@ -1,16 +1,19 @@
 # Bounded cache-boundary decisions for persisted IR and bytecode metadata.
 #
-# This module keeps admission and publication state beside a bounded POSIX
-# adapter.  The adapter writes a staged file, closes it through the typed
-# stream API, and publishes it with one rename edge; crash recovery and fsync
-# policy remain explicit host qualifications rather than hidden assumptions.
+# This module keeps admission and publication state beside bounded POSIX
+# adapters. The cache payload path has both a compatibility path API and a
+# descriptor-relative API; the latter avoids parent-path traversal during
+# lock, stage, publish, and cleanup operations.
 
 error ArtifactCacheIoError:
     NotAdmissible
+    InvalidDirectoryDescriptor
     StagingWriteFailed(path: cstr)
     PublishFailed(path: cstr)
     DirectorySyncFailed(path: cstr)
+    DirectoryDescriptorSyncFailed(descriptor: int)
     LockFailed(path: cstr)
+    InvalidLeafName(path: cstr)
     PathCollision(path: cstr)
     PathTooLong(path: cstr)
 
@@ -224,6 +227,31 @@ module EsArtifactCache:
                 raise ArtifactCacheIoError.StagingWriteFailed(staging_path)
 
 
+        def artifact_cache_directory_descriptor_valid(directory_fd: int) -> bool can[Blocking.IO]:
+            return false if directory_fd < 0
+            info: mutable ElisascriptStat = ElisascriptStat{}
+            return elisascript_posix_fstat(directory_fd, info) == 0 and (info.mode & DarwinStatMode::MASK) == DarwinStatMode::DIRECTORY
+
+
+        def artifact_cache_write_staging_at(directory_fd: int, staging_name: cstr, bytes: mutable darray[u8]&, byte_limit: usize) -> void error[ArtifactCacheIoError] can[Blocking.IO]:
+            raise ArtifactCacheIoError.InvalidDirectoryDescriptor if not artifact_cache_directory_descriptor_valid(directory_fd)
+            raise ArtifactCacheIoError.InvalidLeafName(staging_name) if not elisascript_posix_leaf_name_valid(staging_name)
+            raise ArtifactCacheIoError.StagingWriteFailed(staging_name) if byte_limit == 0 or byte_limit > Limits::PAYLOAD_BYTES or bytes.count == 0 or bytes.count > byte_limit or bytes.items == null
+            flags: int = DarwinOpenFlags::WRONLY | DarwinOpenFlags::CREATE | DarwinOpenFlags::EXCLUSIVE | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC
+            descriptor: int = elisascript_posix_openat(directory_fd, staging_name, flags, 384u32)
+            raise ArtifactCacheIoError.StagingWriteFailed(staging_name) if descriptor < 0
+            write_complete: bool = artifact_cache_write_descriptor_fully(descriptor, bytes)
+            sync_status: int = elisascript_posix_fsync(descriptor) if write_complete else -1
+            close_status: int = elisascript_posix_close(descriptor)
+            if not write_complete or sync_status != 0 or close_status != 0:
+                catch elisascript_posix_unlinkat_leaf(directory_fd, staging_name):
+                    ok status:
+                        pass
+                    error failure:
+                        pass
+                raise ArtifactCacheIoError.StagingWriteFailed(staging_name)
+
+
         def artifact_cache_sync_directory(directory_path: cstr) -> bool error[ArtifactCacheIoError] can[Blocking.IO, Memory.Release]:
             raise ArtifactCacheIoError.PathTooLong(directory_path) if not artifact_cache_path_terminated(directory_path)
             directory: mutable heap void&? = elisascript_posix_opendir(directory_path)
@@ -304,6 +332,53 @@ module EsArtifactCache:
                         error failure:
                             raise failure
                     raise ArtifactCacheIoError.LockFailed(lock_path) if not released
+                    return publication
+                error failure:
+                    catch artifact_cache_writer_lock_release(lock, owner_token):
+                        ok:
+                            pass
+                        error release_failure:
+                            pass
+                    raise failure
+
+
+        def artifact_cache_publish_payload_at(directory_fd: int, lock_name: cstr, staging_name: cstr, destination_name: cstr, bytes: mutable darray[u8]&, byte_limit: usize) -> ArtifactCachePayloadPublication error[ArtifactCacheIoError] can[Blocking.IO]:
+            raise ArtifactCacheIoError.InvalidDirectoryDescriptor if not artifact_cache_directory_descriptor_valid(directory_fd)
+            raise ArtifactCacheIoError.InvalidLeafName(lock_name) if not elisascript_posix_leaf_name_valid(lock_name)
+            raise ArtifactCacheIoError.InvalidLeafName(staging_name) if not elisascript_posix_leaf_name_valid(staging_name)
+            raise ArtifactCacheIoError.InvalidLeafName(destination_name) if not elisascript_posix_leaf_name_valid(destination_name)
+            raise ArtifactCacheIoError.PathCollision(lock_name) if artifact_cache_path_equal(lock_name, staging_name) or artifact_cache_path_equal(lock_name, destination_name)
+            raise ArtifactCacheIoError.PathCollision(staging_name) if artifact_cache_path_equal(staging_name, destination_name)
+            raise ArtifactCacheIoError.StagingWriteFailed(staging_name) if byte_limit == 0 or byte_limit > Limits::PAYLOAD_BYTES or bytes.count == 0 or bytes.count > byte_limit
+            try artifact_cache_write_staging_at(directory_fd, staging_name, bytes, byte_limit)
+            published: mutable bool = false
+            catch elisascript_posix_renameat(directory_fd, staging_name, directory_fd, destination_name):
+                ok status:
+                    published <- status == 0
+                error failure:
+                    pass
+            if not published:
+                catch elisascript_posix_unlinkat_leaf(directory_fd, staging_name):
+                    ok status:
+                        pass
+                    error failure:
+                        pass
+                raise ArtifactCacheIoError.PublishFailed(destination_name)
+            raise ArtifactCacheIoError.DirectoryDescriptorSyncFailed(directory_fd) if elisascript_posix_fsync(directory_fd) != 0
+            return ArtifactCachePayloadPublication{state: ArtifactCacheLifecycle.Committed, bytes_count: bytes.count}
+
+
+        def artifact_cache_publish_payload_at_locked(lock: mutable ArtifactCacheWriterLock&, directory_fd: int, lock_name: cstr, owner_token: u64, staging_name: cstr, destination_name: cstr, bytes: mutable darray[u8]&, byte_limit: usize) -> ArtifactCachePayloadPublication error[ArtifactCacheIoError] can[Blocking.IO]:
+            _ = try artifact_cache_writer_lock_acquire_at(lock, directory_fd, lock_name, owner_token)
+            catch artifact_cache_publish_payload_at(directory_fd, lock_name, staging_name, destination_name, bytes, byte_limit):
+                ok publication:
+                    released: bool = false
+                    catch artifact_cache_writer_lock_release(lock, owner_token):
+                        ok status:
+                            released <- status
+                        error failure:
+                            raise failure
+                    raise ArtifactCacheIoError.LockFailed(lock_name) if not released
                     return publication
                 error failure:
                     catch artifact_cache_writer_lock_release(lock, owner_token):
@@ -406,6 +481,22 @@ module EsArtifactCache:
             return true
 
 
+        def artifact_cache_writer_lock_acquire_at(lock: mutable ArtifactCacheWriterLock&, directory_fd: int, lock_name: cstr, owner_token: u64) -> bool error[ArtifactCacheIoError] can[Blocking.IO]:
+            raise ArtifactCacheIoError.InvalidDirectoryDescriptor if not artifact_cache_directory_descriptor_valid(directory_fd)
+            raise ArtifactCacheIoError.InvalidLeafName(lock_name) if not elisascript_posix_leaf_name_valid(lock_name)
+            raise ArtifactCacheIoError.LockFailed(lock_name) if owner_token == 0 or (lock.state != ArtifactCacheWriterLockState.Available and lock.state != ArtifactCacheWriterLockState.Released)
+            flags: int = DarwinOpenFlags::WRONLY | DarwinOpenFlags::CREATE | DarwinOpenFlags::NONBLOCK | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC
+            descriptor: int = elisascript_posix_openat(directory_fd, lock_name, flags, 384u32)
+            if descriptor < 0 or elisascript_posix_flock(descriptor, PosixLockOperations::EXCLUSIVE + PosixLockOperations::NONBLOCK) != 0:
+                _ = elisascript_posix_close(descriptor) if descriptor >= 0
+                raise ArtifactCacheIoError.LockFailed(lock_name)
+            lock.state <- artifact_cache_writer_lock_transition(lock.state, ArtifactCacheWriterLockEvent.Acquire)
+            lock.owner_token <- owner_token
+            lock.path <- lock_name
+            lock.descriptor <- descriptor
+            return true
+
+
         def artifact_cache_writer_lock_release(lock: mutable ArtifactCacheWriterLock&, owner_token: u64) -> bool error[ArtifactCacheIoError] can[Blocking.IO]:
             return false if owner_token == 0 or lock.state != ArtifactCacheWriterLockState.Held or lock.owner_token != owner_token
             descriptor: int = lock.descriptor
@@ -464,9 +555,12 @@ module EsArtifactCache:
             return bytes
 
 
-        def publish_build_incremental_cache_file_locked(lock: mutable ArtifactCacheWriterLock&, lock_path: cstr, owner_token: u64, staging_path: cstr, destination_path: cstr, bytes: mutable darray[u8]&, directory_path: cstr = "") -> ArtifactCachePayloadPublication error[ArtifactCacheIoError, BuildIncrementalCacheError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+        # This is the hardened persistence entry point: the caller supplies an
+        # already-open directory descriptor and single-component names, so all
+        # cache mutations remain anchored to that directory capability.
+        def publish_build_incremental_cache_at_locked(lock: mutable ArtifactCacheWriterLock&, directory_fd: int, lock_name: cstr, owner_token: u64, staging_name: cstr, destination_name: cstr, bytes: mutable darray[u8]&) -> ArtifactCachePayloadPublication error[ArtifactCacheIoError, BuildIncrementalCacheError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
             _ = try decode_build_incremental_cache(bytes)
-            return try artifact_cache_publish_payload_locked(lock, lock_path, owner_token, staging_path, destination_path, bytes, EsBuildIncrementalCache::Limits::CACHE_BYTES, directory_path)
+            return try artifact_cache_publish_payload_at_locked(lock, directory_fd, lock_name, owner_token, staging_name, destination_name, bytes, EsBuildIncrementalCache::Limits::CACHE_BYTES)
 
 
     public:
