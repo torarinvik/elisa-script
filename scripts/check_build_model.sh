@@ -10,6 +10,7 @@ ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 usage_model="$repo_root/src/runtime/build_usage_model.elisa"
 usage_fixture="$repo_root/test/runtime/build_usage_model_test.elisa"
+target_usage_candidate="$repo_root/test/fixtures/script_parity/target_usage/build.elisascript"
 executor_model="$repo_root/src/runtime/build_executor_model.elisa"
 executor_fixture="$repo_root/test/runtime/build_executor_test.elisa"
 sequential_tools_root="$repo_root/test/fixtures/script_parity/sequential_tools"
@@ -21,7 +22,7 @@ sequential_tools_parity="$repo_root/test/script_parity/sequential_tools_launcher
 incremental_executor_fixture="$repo_root/test/runtime/build_incremental_executor_test.elisa"
 docs="$repo_root/docs/ir.md"
 
-for required_file in "$model" "$ir" "$fixture" "$usage_model" "$usage_fixture" "$executor_model" "$executor_fixture" "$sequential_tools_reference" "$sequential_tools_candidate" "$sequential_tools_expected" "$sequential_tools_contract" "$sequential_tools_parity" "$incremental_executor_fixture" "$docs"; do
+for required_file in "$model" "$ir" "$fixture" "$usage_model" "$usage_fixture" "$target_usage_candidate" "$executor_model" "$executor_fixture" "$sequential_tools_reference" "$sequential_tools_candidate" "$sequential_tools_expected" "$sequential_tools_contract" "$sequential_tools_parity" "$incremental_executor_fixture" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'build model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -124,6 +125,7 @@ for declaration in \
     'TOTAL_INPUTS' \
     'TOTAL_RESOLVED_ENTRIES' \
     'const enum BuildUsageTargetKind of u8:' \
+    'SharedLibrary' \
     'const enum BuildUsageKind of u8:' \
     'const enum BuildUsageVisibility of u8:' \
     'struct BuildUsageRequirement:' \
@@ -139,6 +141,7 @@ done
 for boundary in \
     'InterfaceVisibilityRequired' \
     'DependencyOrderInvalid' \
+    'InvalidDependencyTargetKind' \
     'DuplicateDependency' \
     'BuildUsageTargetKind.StaticLibrary' \
     'BuildUsageVisibility.Public' \
@@ -149,6 +152,9 @@ for boundary in \
     'link_only: true' \
     'dependency_result.exported_compile' \
     'dependency_result.exported_link' \
+    'dependency_target.kind == BuildUsageTargetKind.StaticLibrary' \
+    'dependency_target.kind == BuildUsageTargetKind.SharedLibrary' \
+    'value: dependency_result.name' \
     'raise BuildUsageError.TotalResolvedLimitExceeded if entries.count' \
     'TOTAL_INPUTS - total_inputs'; do
     rg -Fq "$boundary" "$usage_model"
@@ -161,6 +167,7 @@ rg -Fq 'ordered_dependencies[ordered_index - 1] == ordered_dependencies[ordered_
 rg -Fq 'ordered_target_names[name_index - 1] == ordered_target_names[name_index]' "$usage_model"
 
 rg -Fq 'build_usage_public_private_interface_and_static_link_only_propagation' "$usage_fixture"
+rg -Fq 'build_usage_shared_dependency_contributes_its_artifact' "$usage_fixture"
 rg -Fq 'build_usage_rejects_noncanonical_dependencies_and_interface_visibility' "$usage_fixture"
 rg -Fq 'build_usage_private_static_dependency_is_local_and_link_only_exported' "$usage_fixture"
 rg -Fq 'build_usage_interface_dependency_must_use_interface_visibility' "$usage_fixture"
@@ -168,6 +175,14 @@ rg -Fq 'API_LEVEL=3' "$usage_fixture"
 rg -Fq 'core_usage.compile.count == 5' "$usage_fixture"
 rg -Fq 'include/internal' "$usage_fixture"
 rg -Fq 'app_usage.link[2].value == "-Wl,--as-needed"' "$usage_fixture"
+rg -Fq 'app_usage.link[0].value == "core"' "$usage_fixture"
+rg -Fq 'app_usage.link[3].value == "helper" and not app_usage.link[3].link_only' "$usage_fixture"
+rg -Fq 'wrapper_usage.exported_link[0].value == "shared"' "$usage_fixture"
+rg -Fq 'BuildUsageError.InvalidDependencyTargetKind' "$usage_fixture"
+if rg -n 'BuildUsageRequirement\{kind: BuildUsageKind.LinkLibrary, visibility: BuildUsageVisibility.Private, value: "(core|helper)"\}' "$target_usage_candidate"; then
+    printf 'build model audit: target-usage parity candidate masks dependency propagation with an explicit core/helper link requirement\n' >&2
+    exit 1
+fi
 
 for declaration in \
     'module EsBuildExecutor:' \
