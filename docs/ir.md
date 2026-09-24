@@ -2171,7 +2171,8 @@ interpreter and bytecode paths.
 Every `Work` event must charge at least one unit; a zero-cost work transition
 is rejected so an adapter cannot spin without consuming the request's work
 budget. Other events may report work together with their match or replacement
-result and are charged atomically.
+result and are charged atomically. A non-global request is also limited to one
+match in both live transitions and caller-supplied session states.
 
 `Map` is the closed aggregate counterpart to `Array`. Its `Type` descriptor carries
 one exact scalar key type and one recursively represented value type within the
