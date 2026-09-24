@@ -72,6 +72,13 @@ header with the distinct default template. Elisascript must fail before
 re-blessing or deleting those bytes; after restoring the variant bytes, the
 old cache must again be reusable.
 
+To prove the dirty-output guard runs before process dispatch, the harness backs
+up the cached main object, overwrites that output with the default header, and
+invokes a compile recipe whose command would create a marker with `/usr/bin/touch`.
+The attempt must fail while preserving the modified object and cache and leaving
+the marker absent. Restoring the exact cached object must make the ordinary
+variant build an up-to-date cache hit. This is source-only coverage.
+
 The harness then adds a declared `obsolete-config-copy` target whose output is
 copied from the generated header. Switching back to the graph without that
 target must treat its former output as stale. If those bytes were changed by a
