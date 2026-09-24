@@ -661,9 +661,13 @@ manifest are retained when cleanup succeeds. This allows an ordinary observed
 failure to be retried without treating partial command output as a user edit.
 The build root must remain exclusively owned during the transaction. A host
 kill or machine crash bypasses in-process cleanup; partial outputs then fail
-closed against the prior manifest and require explicit repair. Removed-target
-stale-output cleanup candidates are still returned to the host and are not
-automatically deleted by this executor.
+closed against the prior manifest and require explicit repair. After a
+successful graph and commit validation, removed-target stale outputs are
+preflighted against their previous complete fingerprints and removed through
+the same no-follow directory capability before the new cache manifest is
+published. A modified stale output is preserved and prevents cache publication;
+stale cleanup candidates are cleared from the returned commit only after their
+cleanup succeeds.
 
 `EsBuildExecutor::execute_build_graph_serial_with_outputs` is the fresh-build
 host route. It requires every declared absolute output path to be absent before

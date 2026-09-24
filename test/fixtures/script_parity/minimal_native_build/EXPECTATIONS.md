@@ -72,6 +72,14 @@ header with the distinct default template. Elisascript must fail before
 re-blessing or deleting those bytes; after restoring the variant bytes, the
 old cache must again be reusable.
 
+The harness then adds a declared `obsolete-config-copy` target whose output is
+copied from the generated header. Switching back to the graph without that
+target must treat its former output as stale. If those bytes were changed by a
+user, the candidate must fail without deleting them or replacing the cache. If
+the bytes are restored to the cached fingerprint, the candidate must remove
+the stale output, report the still-current graph as up to date, and publish a
+manifest without the removed target. This source-level case has not been run.
+
 Finally, the harness asks the candidate to switch to the default generated
 header and uses AWK in place of the main compiler. The header generator
 succeeds, then AWK writes a partial object and exits unsuccessfully. Cleanup
