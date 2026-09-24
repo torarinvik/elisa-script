@@ -11,6 +11,12 @@ runner="${1:-$repo_dir/src/ir/runner.elisa}"
 candidate="$script_dir/check_diagnostic_snapshot.elisascript"
 bounded_reader="$repo_dir/src/runtime/bounded_text_posix.elisa"
 
+if (( $# > 1 )); then
+    echo "usage: diagnostic snapshot audit [runner-source]" >&2
+    exit 2
+fi
+
+[[ -f "$candidate" ]] || { echo "diagnostic snapshot audit: missing Elisascript candidate" >&2; exit 1; }
 [[ -f "$bounded_reader" ]] || { echo "diagnostic snapshot audit: missing shared bounded text reader" >&2; exit 1; }
 rg -Fq 'include "../src/runtime/bounded_text_posix.elisa"' "$candidate" || { echo "diagnostic snapshot audit: candidate does not use shared bounded text reader" >&2; exit 1; }
 rg -Fq 'EsBoundedText::read_utf8(input_path, Limits::SOURCE_BYTES)' "$candidate" || { echo "diagnostic snapshot audit: candidate does not use bounded UTF-8 read" >&2; exit 1; }
@@ -20,11 +26,6 @@ done
 if rg -Fq 'read_text(' "$candidate" "$bounded_reader"; then
     echo "diagnostic snapshot audit: unbounded read_text API is forbidden" >&2
     exit 1
-fi
-
-if (( $# > 1 )); then
-    echo "usage: diagnostic snapshot audit [runner-source]" >&2
-    exit 2
 fi
 
 [[ -f "$runner" ]] || { echo "diagnostic snapshot audit: missing runner source" >&2; exit 1; }
