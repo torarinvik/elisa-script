@@ -199,8 +199,14 @@ unexecuted under the validation hold.
   follows a `file_size` preflight, so concurrent in-place growth can exceed the
   byte ceilings in peak allocation before the post-read check rejects it. Do
   not treat these checks as a hard memory bound. Acceptance of adversarial
-  memory safety requires a bounded chunk reader and a growth-during-read
-  rejection fixture.
+  memory safety requires opening the resolved file once, reading fixed-size
+  binary chunks under the remaining per-file and aggregate budget, and rejecting
+  the first byte beyond either ceiling before appending it to retained source.
+  Close the owned stream on both success and read/limit failure. A generated
+  growth-during-read fixture must mutate the already-open file and prove the
+  candidate rejects it as soon as bytes read exceed the configured ceiling,
+  without buffering the oversized file in full; a second `file_size` check is
+  not an equivalent guard.
 - Python `Path.read_text` universal-newline translation converts CRLF and bare
   CR to LF before `splitlines(keepends=True)`. The candidate makes that
   normalization explicit. Include directives are whole lines matching
