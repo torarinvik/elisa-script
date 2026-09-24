@@ -44,6 +44,8 @@ module EsBuildExecutor:
             UnsupportedCommand
             NodeResultLimitExceeded
             LogAccountingInvalid
+            ExecutionNotSuccessful
+            ExecutionResultMismatch
 
 
     private:
@@ -77,6 +79,35 @@ module EsBuildExecutor:
             if command.working_directory == "":
                 return try capture_process_result_with_environment(executable_value, command.arguments, "", environment, command.timeout_micros.i64(), output_limit.i64())
             return try capture_process_result_in_directory_with_environment(executable_value, command.arguments, "", path(command.working_directory), environment, command.timeout_micros.i64(), output_limit.i64())
+
+
+        def build_executor_incremental_execution_result_matches(result: BuildExecutionResult, graph: BuildGraph, recipes: darray[BuildIncrementalRecipeTarget]) -> bool:
+            return false if result.graph_state != BuildGraphState.Succeeded or graph.state != BuildGraphState.Succeeded
+            return false if result.nodes.count != graph.nodes.count or recipes.count != graph.nodes.count
+            return false if result.log_bytes > EsBuild::Limits::LOG_BYTES or graph.log_bytes != result.log_bytes
+            total_log_bytes: mutable usize = 0
+            for index in 0..<graph.nodes.count |result, graph, recipes, total_log_bytes|:
+                node_result: BuildExecutionNodeResult = result.nodes[index]
+                recipe: BuildIncrementalRecipeTarget = recipes[index]
+                return false if graph.nodes[index].state != BuildNodeState.Succeeded
+                return false if graph.nodes[index].name != recipe.name or graph.nodes[index].fingerprint != recipe.recipe_fingerprint
+                return false if node_result.target_name != recipe.name or node_result.failure != BuildExecutionFailureKind.None
+                return false if node_result.started == node_result.cache_hit or node_result.exit_status != 0
+                if node_result.cache_hit:
+                    return false if node_result.stdout != "" or node_result.stderr != "" or graph.nodes[index].log_bytes != 0
+                else:
+                    stdout_bytes: usize = len(node_result.stdout)
+                    stderr_bytes: usize = len(node_result.stderr)
+                    return false if stdout_bytes > EsBuild::Limits::LOG_BYTES - total_log_bytes
+                    total_log_bytes <- total_log_bytes + stdout_bytes
+                    return false if stderr_bytes > EsBuild::Limits::LOG_BYTES - total_log_bytes
+                    total_log_bytes <- total_log_bytes + stderr_bytes
+                    return false if graph.nodes[index].log_bytes != stdout_bytes + stderr_bytes
+                return false if graph.nodes[index].dependencies.count != recipe.dependencies.count
+                for dependency_position in 0..<graph.nodes[index].dependencies.count |graph, recipes, index, recipe|:
+                    dependency_index: usize = graph.nodes[index].dependencies[dependency_position]
+                    return false if graph.nodes[dependency_index].name != recipe.dependencies[dependency_position]
+            return total_log_bytes == result.log_bytes
 
 
     public:
@@ -173,3 +204,14 @@ module EsBuildExecutor:
         def execute_build_graph_incremental(graph: mutable BuildGraph&, previous_targets: darray[BuildIncrementalTarget], current_recipes: darray[BuildIncrementalRecipeTarget], observations: darray[BuildIncrementalObservation]) -> BuildExecutionResult error[BuildExecutionError, BuildContractError, BuildIncrementalError] can[Memory.Allocate, Abort.Panic, Process.Run]:
             plan: BuildIncrementalPlan = try plan_build_incremental_graph_transition(previous_targets, graph, current_recipes, observations)
             return try execute_build_graph_serial_with_decisions(graph, plan.decisions)
+
+
+        # Only a successful, aligned execution can create the next cache
+        # snapshot. The host must still obtain fresh post-success observations;
+        # persistence and stale-output deletion remain separate transactions.
+        def commit_build_incremental_execution(result: BuildExecutionResult, graph: BuildGraph, previous_targets: darray[BuildIncrementalTarget], current_recipes: darray[BuildIncrementalRecipeTarget], post_success_observations: darray[BuildIncrementalObservation]) -> BuildIncrementalCommit error[BuildExecutionError, BuildContractError, BuildIncrementalError] can[Memory.Allocate, Abort.Panic]:
+            graph_valid: bool = try validate_build_graph(graph)
+            raise BuildExecutionError.GraphInvalid if not graph_valid
+            raise BuildExecutionError.ExecutionNotSuccessful if result.graph_state != BuildGraphState.Succeeded
+            raise BuildExecutionError.ExecutionResultMismatch if not build_executor_incremental_execution_result_matches(result, graph, current_recipes)
+            return try commit_build_incremental_success(previous_targets, current_recipes, post_success_observations)

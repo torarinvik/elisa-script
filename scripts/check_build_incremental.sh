@@ -74,9 +74,11 @@ for declaration in \
 done
 
 rg -Fq 'def execute_build_graph_incremental(' "$executor_model"
+rg -Fq 'def commit_build_incremental_execution(' "$executor_model"
 
 for executor_check in \
     'incremental_executor_marks_up_to_date_nodes_as_cache_hits' \
+    'commit_build_incremental_execution(result, graph, previous, recipes, observations)' \
     'execute_build_graph_incremental(graph, previous, recipes, observations)' \
     'cache_hit and not result.nodes[0].started'; do
     rg -Fq "$executor_check" "$executor_fixture"

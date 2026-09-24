@@ -167,6 +167,10 @@ for boundary in \
     'command.timeout_micros == 0' \
     'Preflight every command that will execute before the first' \
     'def execute_build_graph_incremental(' \
+    'def commit_build_incremental_execution(' \
+    'ExecutionNotSuccessful' \
+    'ExecutionResultMismatch' \
+    'build_executor_incremental_execution_result_matches(' \
     'BuildGraphEvent.CacheHit' \
     'BuildGraphEvent.NodeFailure' \
     'LOG_BYTES - graph.log_bytes'; do
@@ -176,6 +180,8 @@ done
 rg -Fq 'build_executor_preflights_supported_process_command_subset' "$executor_fixture"
 rg -Fq 'execute_build_graph_incremental(' "$incremental_executor_fixture"
 rg -Fq 'incremental_executor_marks_up_to_date_nodes_as_cache_hits' "$incremental_executor_fixture"
+rg -Fq 'commit_build_incremental_execution(result, graph, previous, recipes, observations)' "$incremental_executor_fixture"
+rg -Fq 'BuildExecutionError.ExecutionNotSuccessful' "$incremental_executor_fixture"
 
 rg -Fq 'BuildContractError.DuplicateDependency' "$fixture"
 rg -Fq 'for dependency_position in 0..<node.dependencies.count |node|' "$model"
