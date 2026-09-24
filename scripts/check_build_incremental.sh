@@ -13,12 +13,14 @@ ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 transition_fixture="$repo_root/test/runtime/build_incremental_transition_test.elisa"
 posix_fixture="$repo_root/test/runtime/build_incremental_posix_test.elisa"
+recipe_signature="$repo_root/src/runtime/build_recipe_signature.elisa"
+recipe_signature_fixture="$repo_root/test/runtime/build_recipe_signature_test.elisa"
 cache_fixture="$repo_root/test/runtime/build_incremental_cache_test.elisa"
 executor_fixture="$repo_root/test/runtime/build_incremental_executor_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$cache_model" "$build_model" "$executor_model" "$ir" "$fixture" "$transition_fixture" "$posix_fixture" "$cache_fixture" "$executor_fixture" "$docs" "$ledger"; do
+for required_file in "$model" "$cache_model" "$build_model" "$executor_model" "$ir" "$fixture" "$transition_fixture" "$posix_fixture" "$recipe_signature" "$recipe_signature_fixture" "$cache_fixture" "$executor_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'incremental build audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -109,6 +111,34 @@ rg -Fq 'DarwinOpenFlags::NOFOLLOW' "$repo_root/src/runtime/build_incremental_pos
 rg -Fq 'include "../runtime/build_incremental_posix.elisa"' "$ir"
 rg -Fq 'incremental_file_open_rejects_invalid_capability_and_paths' "$posix_fixture"
 rg -Fq 'include "../runtime/build_incremental_cache_model.elisa"' "$ir"
+rg -Fq 'include "../runtime/build_recipe_signature.elisa"' "$ir"
+rg -Fq 'def build_recipe_signature(' "$recipe_signature"
+rg -Fq 'EsIr::canonical_bytes_sha256_word(bytes, 3)' "$recipe_signature"
+for signature_input in \
+    'toolchain.word3' \
+    'command.executable' \
+    'command.arguments' \
+    'command.working_directory' \
+    'command.environment_mode' \
+    'command.environment' \
+    'command.stdin_mode' \
+    'command.stdout_mode' \
+    'command.stderr_mode' \
+    'command.timeout_micros' \
+    'command.capture_output_limit_bytes' \
+    'command.failure_mode' \
+    'recipe.inputs' \
+    'recipe.outputs' \
+    'recipe.dependencies'; do
+    rg -Fq "$signature_input" "$recipe_signature"
+done
+for recipe_signature_check in \
+    'build_recipe_signature_binds_command_target_and_toolchain' \
+    'changed_command' \
+    'changed_recipe' \
+    'changed_toolchain'; do
+    rg -Fq "$recipe_signature_check" "$recipe_signature_fixture"
+done
 
 for cache_fixture_check in \
     'incremental_cache_codec_round_trips_a_valid_manifest' \

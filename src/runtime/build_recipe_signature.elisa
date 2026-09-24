@@ -1,0 +1,155 @@
+# Canonical identity for an incremental build action.
+#
+# The signature binds the command policy and declared graph shape to an
+# explicit toolchain identity. It is pure: hashing and serialization perform
+# no filesystem or process effects.
+
+module EsBuildRecipeSignature:
+    using EsBuild
+    using EsBuildIncremental
+    using EsProcess
+    using EsIr
+
+    public:
+        const module Limits:
+            ENCODED_BYTES: usize = 67108864
+
+
+        struct BuildRecipeToolchainIdentity:
+            word0: u64
+            word1: u64
+            word2: u64
+            word3: u64
+
+
+        struct BuildRecipeSignature:
+            word0: u64
+            word1: u64
+            word2: u64
+            word3: u64
+
+
+        error BuildRecipeSignatureError:
+            InvalidToolchainIdentity
+            InvalidRecipe
+            InvalidCommand
+            EncodingLimitExceeded
+            HashFailed
+
+
+    private:
+        const module Encoding:
+            DOMAIN_0: u8 = 69
+            DOMAIN_1: u8 = 83
+            DOMAIN_2: u8 = 82
+            DOMAIN_3: u8 = 67
+            VERSION: u8 = 1
+
+
+        def signature_append_byte(bytes: mutable darray[u8]&, value: u8) -> void error[BuildRecipeSignatureError] can[Memory.Allocate, Abort.Panic]:
+            raise BuildRecipeSignatureError.EncodingLimitExceeded if bytes.count >= Limits::ENCODED_BYTES
+            bytes.push(value)
+
+
+        def signature_append_u64(bytes: mutable darray[u8]&, value: u64) -> void error[BuildRecipeSignatureError] can[Memory.Allocate, Abort.Panic]:
+            for shift in 0..<8 |bytes, value|:
+                try signature_append_byte(bytes, (value >> (shift * 8)).u8())
+
+
+        def signature_append_count(bytes: mutable darray[u8]&, value: usize) -> void error[BuildRecipeSignatureError] can[Memory.Allocate, Abort.Panic]:
+            try signature_append_u64(bytes, value.u64())
+
+
+        def signature_append_text(bytes: mutable darray[u8]&, value: sview) -> void error[BuildRecipeSignatureError] can[Memory.Allocate, Abort.Panic]:
+            try signature_append_count(bytes, sview_len(value))
+            raise BuildRecipeSignatureError.EncodingLimitExceeded if sview_len(value) > Limits::ENCODED_BYTES - bytes.count
+            for byte in value |bytes|:
+                bytes.push(byte)
+
+
+        def signature_append_string_vector(bytes: mutable darray[u8]&, values: darray[sview]) -> void error[BuildRecipeSignatureError] can[Memory.Allocate, Abort.Panic]:
+            try signature_append_count(bytes, values.count)
+            for value in values |bytes|:
+                try signature_append_text(bytes, value)
+
+
+        def signature_toolchain_identity_valid(identity: BuildRecipeToolchainIdentity) -> bool:
+            return identity.word0 != 0 or identity.word1 != 0 or identity.word2 != 0 or identity.word3 != 0
+
+
+        def signature_encode_recipe(recipe: BuildIncrementalRecipeTarget, command: ProcessCommand, toolchain: BuildRecipeToolchainIdentity) -> darray[u8] error[BuildRecipeSignatureError] can[Memory.Allocate, Abort.Panic]:
+            command_valid: mutable bool = false
+            catch validate_process_command(command):
+                ok valid:
+                    command_valid <- valid
+                error failure:
+                    raise BuildRecipeSignatureError.InvalidCommand
+            raise BuildRecipeSignatureError.InvalidCommand if not command_valid
+
+            raise BuildRecipeSignatureError.InvalidToolchainIdentity if not signature_toolchain_identity_valid(toolchain)
+
+            bytes: mutable darray[u8] = []
+            try signature_append_byte(bytes, Encoding::DOMAIN_0)
+            try signature_append_byte(bytes, Encoding::DOMAIN_1)
+            try signature_append_byte(bytes, Encoding::DOMAIN_2)
+            try signature_append_byte(bytes, Encoding::DOMAIN_3)
+            try signature_append_byte(bytes, Encoding::VERSION)
+            try signature_append_byte(bytes, recipe.kind.u8())
+            try signature_append_text(bytes, recipe.name)
+            try signature_append_u64(bytes, toolchain.word0)
+            try signature_append_u64(bytes, toolchain.word1)
+            try signature_append_u64(bytes, toolchain.word2)
+            try signature_append_u64(bytes, toolchain.word3)
+
+            try signature_append_text(bytes, command.executable)
+            try signature_append_string_vector(bytes, command.arguments)
+            try signature_append_text(bytes, command.working_directory)
+            try signature_append_byte(bytes, command.environment_mode.u8())
+            try signature_append_string_vector(bytes, command.environment)
+            try signature_append_byte(bytes, command.stdin_mode.u8())
+            try signature_append_text(bytes, command.stdin_path)
+            try signature_append_byte(bytes, command.stdout_mode.u8())
+            try signature_append_text(bytes, command.stdout_path)
+            try signature_append_byte(bytes, command.stderr_mode.u8())
+            try signature_append_text(bytes, command.stderr_path)
+            try signature_append_u64(bytes, command.timeout_micros)
+            try signature_append_count(bytes, command.capture_output_limit_bytes)
+            try signature_append_byte(bytes, command.failure_mode.u8())
+
+            try signature_append_string_vector(bytes, recipe.inputs)
+            try signature_append_string_vector(bytes, recipe.outputs)
+            try signature_append_string_vector(bytes, recipe.dependencies)
+            return bytes
+
+
+    public:
+        def build_recipe_signature(recipes: darray[BuildIncrementalRecipeTarget], target_index: usize, command: ProcessCommand, toolchain: BuildRecipeToolchainIdentity) -> BuildRecipeSignature error[BuildRecipeSignatureError] can[Memory.Allocate, Abort.Panic]:
+            raise BuildRecipeSignatureError.InvalidRecipe if target_index >= recipes.count
+            recipes_for_validation: mutable darray[BuildIncrementalRecipeTarget] = []
+            for recipe in recipes |recipes_for_validation|:
+                recipes_for_validation.push(BuildIncrementalRecipeTarget{
+                    name: recipe.name,
+                    kind: recipe.kind,
+                    recipe_fingerprint: 1,
+                    inputs: recipe.inputs,
+                    outputs: recipe.outputs,
+                    dependencies: recipe.dependencies
+                })
+            recipe_valid: mutable bool = false
+            catch build_incremental_observation_paths(recipes_for_validation):
+                ok paths:
+                    _ = paths
+                    recipe_valid <- true
+                error failure:
+                    raise BuildRecipeSignatureError.InvalidRecipe
+            raise BuildRecipeSignatureError.InvalidRecipe if not recipe_valid
+            recipe: BuildIncrementalRecipeTarget = recipes[target_index]
+            bytes: darray[u8] = try signature_encode_recipe(recipe, command, toolchain)
+            signature: BuildRecipeSignature = BuildRecipeSignature{
+                word0: EsIr::canonical_bytes_sha256_word(bytes, 0),
+                word1: EsIr::canonical_bytes_sha256_word(bytes, 1),
+                word2: EsIr::canonical_bytes_sha256_word(bytes, 2),
+                word3: EsIr::canonical_bytes_sha256_word(bytes, 3)
+            }
+            raise BuildRecipeSignatureError.HashFailed if signature.word0 == 0 and signature.word1 == 0 and signature.word2 == 0 and signature.word3 == 0
+            return signature
