@@ -934,13 +934,13 @@ entry ceiling before materialization and retaining exact number spellings and
 document-borrowed decoded scalar text; structures require the typed schema
 adapter. EsConfigToml parses bare/dotted keys, tables, comments, single-line
 basic/literal strings, booleans, TOML numeric forms with validated digit
-separators, and single-line arrays of scalar values. Numeric lexemes remain
-exact; `ConfigTomlValue` preserves array item kinds while the generic precedence
-view keeps the original array spelling. This does not yet provide a general
-structured merge or typed numeric conversion. Nested arrays,
-inline tables, array-of-table headers, date/time values, multiline
-arrays/strings, Unicode escapes, and quoted keys remain unsupported and fail
-closed. Array item counts are bounded per array and in aggregate. Its POSIX file
+separators, and arrays of scalar values across physical lines with comments
+and trailing commas. Numeric lexemes remain exact; `ConfigTomlValue` preserves
+array item kinds while the generic precedence view keeps the original array
+spelling. This does not yet provide a general structured merge or typed numeric
+conversion. Nested arrays, inline tables, array-of-table headers, date/time
+values, multiline strings, Unicode escapes, and quoted keys remain unsupported
+and fail closed. Array item counts are bounded per array and in aggregate. Its POSIX file
 adapter uses the shared stable bounded UTF-8 reader. Fixtures are static
 evidence only; direct runtime qualification remains disabled pending
 compiler-validation reauthorization.
