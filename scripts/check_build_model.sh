@@ -185,8 +185,10 @@ rg -Fq 'app_usage.link[3].value == "helper" and not app_usage.link[3].link_only'
 rg -Fq 'wrapper_usage.exported_link[0].value == "shared"' "$usage_fixture"
 rg -Fq 'assert not app_usage.link[0].target_artifact' "$usage_fixture"
 rg -Fq 'assert app_usage.link[1].target_artifact' "$usage_fixture"
+rg -Fq 'value == "/opt/fixture/lib/libcustom.a"' "$usage_fixture"
 rg -Fq 'BuildUsageError.InvalidDependencyTargetKind' "$usage_fixture"
 rg -Fq 'if entry.target_artifact:' "$target_usage_candidate"
+rg -Fq 'elif entry.value.startswith("/"):' "$target_usage_candidate"
 rg -Fq 'arguments.push("-l" + entry.value)' "$target_usage_candidate"
 if rg -n 'BuildUsageRequirement\{kind: BuildUsageKind.LinkLibrary, visibility: BuildUsageVisibility.Private, value: "(core|helper)"\}' "$target_usage_candidate"; then
     printf 'build model audit: target-usage parity candidate masks dependency propagation with an explicit core/helper link requirement\n' >&2
