@@ -6,17 +6,31 @@ set -euo pipefail
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 model="$repo_root/src/runtime/build_incremental_model.elisa"
+cache_model="$repo_root/src/runtime/build_incremental_cache_model.elisa"
 build_model="$repo_root/src/runtime/build_model.elisa"
 executor_model="$repo_root/src/runtime/build_executor_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 transition_fixture="$repo_root/test/runtime/build_incremental_transition_test.elisa"
+cache_fixture="$repo_root/test/runtime/build_incremental_cache_test.elisa"
 executor_fixture="$repo_root/test/runtime/build_incremental_executor_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$build_model" "$executor_model" "$ir" "$fixture" "$transition_fixture" "$executor_fixture" "$docs" "$ledger"; do
+for required_file in "$model" "$cache_model" "$build_model" "$executor_model" "$ir" "$fixture" "$transition_fixture" "$cache_fixture" "$executor_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'incremental build audit: missing %s\n' "$required_file" >&2; exit 1; }
+done
+
+for cache_declaration in \
+    'module EsBuildIncrementalCache:' \
+    'CACHE_BYTES: usize' \
+    'FORMAT_VERSION: u8' \
+    'def encode_build_incremental_cache(' \
+    'def decode_build_incremental_cache(' \
+    'BuildIncrementalCacheError.ChecksumMismatch' \
+    'payload_end: usize = bytes.count - Limits::CHECKSUM_BYTES' \
+    'validate_build_incremental_manifest(targets)'; do
+    rg -Fq "$cache_declaration" "$cache_model"
 done
 
 rg -Fq 'def attach_build_dependency_resolution(' "$build_model"
@@ -75,6 +89,15 @@ done
 
 rg -Fq 'def execute_build_graph_incremental(' "$executor_model"
 rg -Fq 'def commit_build_incremental_execution(' "$executor_model"
+rg -Fq 'include "../runtime/build_incremental_cache_model.elisa"' "$ir"
+
+for cache_fixture_check in \
+    'incremental_cache_codec_round_trips_a_valid_manifest' \
+    'incremental_cache_codec_rejects_checksum_corruption' \
+    'decode_build_incremental_cache(encoded)' \
+    'BuildIncrementalCacheError.ChecksumMismatch'; do
+    rg -Fq "$cache_fixture_check" "$cache_fixture"
+done
 
 for executor_check in \
     'incremental_executor_marks_up_to_date_nodes_as_cache_hits' \

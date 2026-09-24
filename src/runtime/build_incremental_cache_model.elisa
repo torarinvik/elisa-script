@@ -1,0 +1,231 @@
+# Versioned, bounded persistence format for successful incremental manifests.
+#
+# The codec is pure. Decoded path/name views borrow the input byte buffer, so a
+# caller must retain that buffer for at least as long as the returned targets.
+# Wire v1 is: `ESBC`, version byte, u32 target count, then topologically ordered
+# target records (name, kind byte, recipe fingerprint, dependency texts, input
+# path/fingerprint pairs, output path/fingerprint pairs), followed by an FNV-1a
+# u64 over every preceding byte. All integers are little-endian. Host adapters
+# own file reads, locks, atomic publication, and corruption policy.
+
+module EsBuildIncrementalCache:
+    using EsBuildIncremental
+
+    public:
+        const module Limits:
+            CACHE_BYTES: usize = 268435456
+            FORMAT_VERSION: u8 = 1
+            HEADER_BYTES: usize = 9
+            CHECKSUM_BYTES: usize = 8
+
+
+        error BuildIncrementalCacheError:
+            InvalidManifest
+            InvalidHeader
+            UnsupportedVersion
+            InvalidCount
+            InvalidText
+            InvalidTargetKind
+            FingerprintMissing
+            Truncated
+            TrailingBytes
+            ChecksumMismatch
+            CacheSizeLimitExceeded
+
+
+    private:
+        const module Wire:
+            MAGIC_0: u8 = 69
+            MAGIC_1: u8 = 83
+            MAGIC_2: u8 = 66
+            MAGIC_3: u8 = 67
+            FNV_OFFSET: u64 = 14695981039346656037u64
+            FNV_PRIME: u64 = 1099511628211u64
+
+
+        def cache_hash_byte(hash: u64, value: u8) -> u64:
+            return (hash ^ value.u64()) * Wire::FNV_PRIME
+
+
+        def cache_hash(bytes: darray[u8]&, byte_count: usize) -> u64:
+            hash: mutable u64 = Wire::FNV_OFFSET
+            for index in 0..<byte_count |bytes, hash|:
+                hash <- cache_hash_byte(hash, bytes[index])
+            return hash
+
+
+        def cache_append_byte(output: mutable darray[u8]&, value: u8) -> void error[BuildIncrementalCacheError] can[Memory.Allocate, Abort.Panic]:
+            raise BuildIncrementalCacheError.CacheSizeLimitExceeded if output.count >= Limits::CACHE_BYTES - Limits::CHECKSUM_BYTES
+            output.push(value)
+
+
+        def cache_append_u32(output: mutable darray[u8]&, value: u32) -> void error[BuildIncrementalCacheError] can[Memory.Allocate, Abort.Panic]:
+            for shift in 0..<4 |output, value|:
+                try cache_append_byte(output, (value.u64() >> (shift * 8)).u8())
+
+
+        def cache_append_u64(output: mutable darray[u8]&, value: u64) -> void error[BuildIncrementalCacheError] can[Memory.Allocate, Abort.Panic]:
+            for shift in 0..<8 |output, value|:
+                try cache_append_byte(output, (value >> (shift * 8)).u8())
+
+
+        def cache_append_checksum(output: mutable darray[u8]&, value: u64) -> void error[BuildIncrementalCacheError] can[Memory.Allocate, Abort.Panic]:
+            raise BuildIncrementalCacheError.CacheSizeLimitExceeded if output.count > Limits::CACHE_BYTES - Limits::CHECKSUM_BYTES
+            for shift in 0..<8 |output, value|:
+                output.push((value >> (shift * 8)).u8())
+
+
+        def cache_append_text(output: mutable darray[u8]&, value: sview) -> void error[BuildIncrementalCacheError] can[Memory.Allocate, Abort.Panic]:
+            length: usize = sview_len(value)
+            raise BuildIncrementalCacheError.InvalidText if length > EsBuildIncremental::Limits::PATH_BYTES
+            raise BuildIncrementalCacheError.CacheSizeLimitExceeded if length.u32().usize() != length
+            try cache_append_u32(output, length.u32())
+            for byte in value |output|:
+                try cache_append_byte(output, byte)
+
+
+        def cache_read_u32(bytes: darray[u8]&, payload_end: usize, offset: mutable usize&) -> u32 error[BuildIncrementalCacheError]:
+            raise BuildIncrementalCacheError.Truncated if offset > payload_end or payload_end - offset < 4
+            value: mutable u32 = 0
+            for shift in 0..<4 |bytes, offset, value|:
+                value <- value | (bytes[offset + shift].u32() << (shift * 8))
+            offset <- offset + 4
+            return value
+
+
+        def cache_read_u64(bytes: darray[u8]&, payload_end: usize, offset: mutable usize&) -> u64 error[BuildIncrementalCacheError]:
+            raise BuildIncrementalCacheError.Truncated if offset > payload_end or payload_end - offset < 8
+            value: mutable u64 = 0
+            for shift in 0..<8 |bytes, offset, value|:
+                value <- value | (bytes[offset + shift].u64() << (shift * 8))
+            offset <- offset + 8
+            return value
+
+
+        def cache_read_count(bytes: darray[u8]&, payload_end: usize, offset: mutable usize&, limit: usize) -> usize error[BuildIncrementalCacheError]:
+            encoded: u32 = try cache_read_u32(bytes, payload_end, offset)
+            count: usize = encoded.usize()
+            raise BuildIncrementalCacheError.InvalidCount if count.u32() != encoded or count > limit
+            return count
+
+
+        def cache_text_view(bytes: darray[u8]&, start: usize, length: usize) -> sview can[Unsafe.PointerCast]:
+            return sview("", 0, 0) if length == 0
+            base: u8& = (&bytes[start]).cast[u8&]
+            return base[0:length]
+
+
+        def cache_read_text(bytes: darray[u8]&, payload_end: usize, offset: mutable usize&) -> sview error[BuildIncrementalCacheError] can[Unsafe.PointerCast]:
+            encoded_length: u32 = try cache_read_u32(bytes, payload_end, offset)
+            length: usize = encoded_length.usize()
+            raise BuildIncrementalCacheError.InvalidText if length.u32() != encoded_length or length > EsBuildIncremental::Limits::PATH_BYTES
+            raise BuildIncrementalCacheError.Truncated if offset > payload_end or length > payload_end - offset
+            text: sview = cache_text_view(bytes, offset, length)
+            offset <- offset + length
+            return text
+
+
+    public:
+        # Encode only a validated successful cache manifest. Target and file
+        # list order are preserved byte-for-byte; all integer fields are LE.
+        def encode_build_incremental_cache(targets: darray[BuildIncrementalTarget]) -> darray[u8] error[BuildIncrementalCacheError] can[Memory.Allocate, Abort.Panic]:
+            valid: bool = false
+            catch validate_build_incremental_manifest(targets):
+                ok value:
+                    valid <- value
+                error failure:
+                    raise BuildIncrementalCacheError.InvalidManifest
+            raise BuildIncrementalCacheError.InvalidManifest if not valid
+            raise BuildIncrementalCacheError.CacheSizeLimitExceeded if targets.count.u32().usize() != targets.count
+
+            output: mutable darray[u8] = []
+            try cache_append_byte(output, Wire::MAGIC_0)
+            try cache_append_byte(output, Wire::MAGIC_1)
+            try cache_append_byte(output, Wire::MAGIC_2)
+            try cache_append_byte(output, Wire::MAGIC_3)
+            try cache_append_byte(output, Limits::FORMAT_VERSION)
+            try cache_append_u32(output, targets.count.u32())
+            for target in targets |output|:
+                try cache_append_text(output, target.name)
+                try cache_append_byte(output, target.kind.u8())
+                try cache_append_u64(output, target.recipe_fingerprint)
+                raise BuildIncrementalCacheError.CacheSizeLimitExceeded if target.dependencies.count.u32().usize() != target.dependencies.count
+                try cache_append_u32(output, target.dependencies.count.u32())
+                for dependency in target.dependencies |output|:
+                    try cache_append_text(output, dependency)
+                raise BuildIncrementalCacheError.CacheSizeLimitExceeded if target.inputs.count.u32().usize() != target.inputs.count
+                try cache_append_u32(output, target.inputs.count.u32())
+                for input in target.inputs |output|:
+                    try cache_append_text(output, input.path)
+                    try cache_append_u64(output, input.fingerprint)
+                raise BuildIncrementalCacheError.CacheSizeLimitExceeded if target.outputs.count.u32().usize() != target.outputs.count
+                try cache_append_u32(output, target.outputs.count.u32())
+                for output_file in target.outputs |output|:
+                    try cache_append_text(output, output_file.path)
+                    try cache_append_u64(output, output_file.fingerprint)
+            checksum: u64 = cache_hash(output, output.count)
+            raise BuildIncrementalCacheError.CacheSizeLimitExceeded if output.count > Limits::CACHE_BYTES - Limits::CHECKSUM_BYTES
+            try cache_append_checksum(output, checksum)
+            return output
+
+
+        # Returned paths/names borrow `bytes`; retain that input while using
+        # the decoded manifest. Every count and span is bounded before access,
+        # and semantic graph validation runs before the manifest is returned.
+        def decode_build_incremental_cache(bytes: darray[u8]&) -> darray[BuildIncrementalTarget] error[BuildIncrementalCacheError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            raise BuildIncrementalCacheError.CacheSizeLimitExceeded if bytes.count > Limits::CACHE_BYTES
+            raise BuildIncrementalCacheError.InvalidHeader if bytes.count < Limits::HEADER_BYTES + Limits::CHECKSUM_BYTES
+            raise BuildIncrementalCacheError.InvalidHeader if bytes[0] != Wire::MAGIC_0 or bytes[1] != Wire::MAGIC_1 or bytes[2] != Wire::MAGIC_2 or bytes[3] != Wire::MAGIC_3
+            raise BuildIncrementalCacheError.UnsupportedVersion if bytes[4] != Limits::FORMAT_VERSION
+
+            payload_end: usize = bytes.count - Limits::CHECKSUM_BYTES
+            checksum_offset: mutable usize = payload_end
+            checksum: u64 = try cache_read_u64(bytes, bytes.count, checksum_offset)
+            raise BuildIncrementalCacheError.ChecksumMismatch if checksum != cache_hash(bytes, payload_end)
+            offset: mutable usize = 5
+            count: usize = try cache_read_count(bytes, payload_end, offset, EsBuildIncremental::Limits::TARGETS)
+            raise BuildIncrementalCacheError.InvalidManifest if count == 0
+            targets: mutable darray[BuildIncrementalTarget] = []
+            for _ in 0..<count |bytes, payload_end, offset, targets|:
+                name: sview = try cache_read_text(bytes, payload_end, offset)
+                raise BuildIncrementalCacheError.Truncated if offset >= payload_end
+                kind_byte: u8 = bytes[offset]
+                offset <- offset + 1
+                kind: mutable BuildIncrementalTargetKind = BuildIncrementalTargetKind.Phony
+                kind_valid: mutable bool = false
+                for candidate in [BuildIncrementalTargetKind.Executable, BuildIncrementalTargetKind.StaticLibrary, BuildIncrementalTargetKind.SharedLibrary, BuildIncrementalTargetKind.GeneratedFile, BuildIncrementalTargetKind.Phony] |kind_byte, kind, kind_valid|:
+                    if candidate.u8() == kind_byte:
+                        kind <- candidate
+                        kind_valid <- true
+                raise BuildIncrementalCacheError.InvalidTargetKind if not kind_valid
+                recipe_fingerprint: u64 = try cache_read_u64(bytes, payload_end, offset)
+                raise BuildIncrementalCacheError.FingerprintMissing if recipe_fingerprint == 0
+                dependency_count: usize = try cache_read_count(bytes, payload_end, offset, EsBuildIncremental::Limits::DEPENDENCIES)
+                dependencies: mutable darray[sview] = []
+                for _ in 0..<dependency_count |bytes, payload_end, offset, dependencies|:
+                    dependencies.push(try cache_read_text(bytes, payload_end, offset))
+                input_count: usize = try cache_read_count(bytes, payload_end, offset, EsBuildIncremental::Limits::INPUTS)
+                inputs: mutable darray[BuildIncrementalFile] = []
+                for _ in 0..<input_count |bytes, payload_end, offset, inputs|:
+                    path: sview = try cache_read_text(bytes, payload_end, offset)
+                    fingerprint: u64 = try cache_read_u64(bytes, payload_end, offset)
+                    raise BuildIncrementalCacheError.FingerprintMissing if fingerprint == 0
+                    inputs.push(BuildIncrementalFile{path: path, fingerprint: fingerprint})
+                output_count: usize = try cache_read_count(bytes, payload_end, offset, EsBuildIncremental::Limits::OUTPUTS)
+                outputs: mutable darray[BuildIncrementalFile] = []
+                for _ in 0..<output_count |bytes, payload_end, offset, outputs|:
+                    path: sview = try cache_read_text(bytes, payload_end, offset)
+                    fingerprint: u64 = try cache_read_u64(bytes, payload_end, offset)
+                    raise BuildIncrementalCacheError.FingerprintMissing if fingerprint == 0
+                    outputs.push(BuildIncrementalFile{path: path, fingerprint: fingerprint})
+                targets.push(BuildIncrementalTarget{name: name, kind: kind, recipe_fingerprint: recipe_fingerprint, inputs: inputs, outputs: outputs, dependencies: dependencies})
+
+            raise BuildIncrementalCacheError.TrailingBytes if offset != payload_end
+            valid_manifest: bool = false
+            catch validate_build_incremental_manifest(targets):
+                ok value:
+                    valid_manifest <- value
+                error failure:
+                    raise BuildIncrementalCacheError.InvalidManifest
+            raise BuildIncrementalCacheError.InvalidManifest if not valid_manifest
+            return targets
