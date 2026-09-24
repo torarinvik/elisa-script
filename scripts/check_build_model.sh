@@ -8,9 +8,11 @@ repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 model="$repo_root/src/runtime/build_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
+usage_model="$repo_root/src/runtime/build_usage_model.elisa"
+usage_fixture="$repo_root/test/runtime/build_usage_model_test.elisa"
 docs="$repo_root/docs/ir.md"
 
-for required_file in "$model" "$ir" "$fixture" "$docs"; do
+for required_file in "$model" "$ir" "$fixture" "$usage_model" "$usage_fixture" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'build model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -75,6 +77,7 @@ for boundary in \
 done
 
 rg -Fq 'include "../runtime/build_model.elisa"' "$ir"
+rg -Fq 'include "../runtime/build_usage_model.elisa"' "$ir"
 for fixture_pattern in \
     'typed_build_dependency_resolution_maps_names_to_canonical_indices' \
     'typed_build_graph_contract_is_ordered_bounded_and_cancelable' \
@@ -104,10 +107,44 @@ rg -Fq 'BuildContractError.NodeNameIndexInvalid' "$fixture"
 rg -Fq 'build_sort_name_indices(node_names, order, scratch)' "$model"
 rg -Fq 'build_sort_node_indices(node_dependencies, dependency_scratch)' "$model"
 
+for declaration in \
+    'module EsBuildUsage:' \
+    'const module Limits:' \
+    'TOTAL_INPUTS' \
+    'TOTAL_RESOLVED_ENTRIES' \
+    'const enum BuildUsageTargetKind of u8:' \
+    'const enum BuildUsageKind of u8:' \
+    'const enum BuildUsageVisibility of u8:' \
+    'struct BuildUsageRequirement:' \
+    'struct BuildUsageTarget:' \
+    'struct BuildUsageTargetResult:' \
+    'error BuildUsageError:' \
+    'def validate_target_inputs(' \
+    'def resolve_build_usage('; do
+    rg -Fq "$declaration" "$usage_model"
+done
+
+for boundary in \
+    'InterfaceVisibilityRequired' \
+    'DependencyOrderInvalid' \
+    'DuplicateDependency' \
+    'BuildUsageTargetKind.StaticLibrary' \
+    'BuildUsageVisibility.Public' \
+    'BuildUsageVisibility.Interface' \
+    'link_only: true' \
+    'dependency_result.exported_compile' \
+    'dependency_result.exported_link' \
+    'TOTAL_INPUTS - total_inputs'; do
+    rg -Fq "$boundary" "$usage_model"
+done
+
+rg -Fq 'build_usage_public_private_interface_and_static_link_only_propagation' "$usage_fixture"
+rg -Fq 'build_usage_rejects_noncanonical_dependencies_and_interface_visibility' "$usage_fixture"
+
 rg -Fq 'BuildContractError.DuplicateDependency' "$fixture"
 rg -Fq 'for dependency_position in 0..<node.dependencies.count |node|' "$model"
 rg -Fq 'earlier_dependency > dependency_index' "$model"
 
 rg -Fq '`EsBuild` is the shell-replacement boundary' "$docs"
 
-printf 'build model audit: deterministic dependencies, bounded parallelism/logs, and fail-draining/cancellation are present\n'
+printf 'build model audit: bounded dependency graphs, usage propagation, parallelism/logs, and fail-draining/cancellation are present\n'

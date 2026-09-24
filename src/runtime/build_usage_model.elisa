@@ -1,0 +1,205 @@
+# Bounded CMake-style target usage-requirement propagation.
+#
+# This is a pure model: a host supplies an ordered target graph, then uses the
+# resolved compile/link requirements when constructing explicit ProcessCommand
+# argv. It does not parse CMake or perform filesystem/process effects.
+
+module EsBuildUsage:
+    public:
+        const module Limits:
+            TARGETS: usize = 4096
+            REQUIREMENTS_PER_TARGET: usize = 4096
+            DEPENDENCIES_PER_TARGET: usize = 4096
+            TOTAL_INPUTS: usize = 1048576
+            TOTAL_RESOLVED_ENTRIES: usize = 1048576
+            NAME_BYTES: usize = 4096
+            VALUE_BYTES: usize = 65536
+
+
+        const enum BuildUsageTargetKind of u8:
+            Executable
+            StaticLibrary
+            SharedLibrary
+            InterfaceLibrary
+
+
+        const enum BuildUsageKind of u8:
+            IncludeDirectory
+            CompileDefinition
+            CompileOption
+            LinkLibrary
+            LinkOption
+
+
+        const enum BuildUsageVisibility of u8:
+            Private
+            Public
+            Interface
+
+
+        struct BuildUsageRequirement:
+            kind: BuildUsageKind
+            visibility: BuildUsageVisibility
+            value: sview
+
+
+        struct BuildUsageTarget:
+            name: sview
+            kind: BuildUsageTargetKind
+            # Dependencies refer to earlier target indices; this is the
+            # canonical, cycle-free graph form produced by build resolution.
+            dependencies: darray[usize] = []
+            requirements: darray[BuildUsageRequirement] = []
+
+
+        struct BuildUsageEntry:
+            kind: BuildUsageKind
+            value: sview
+            # A PRIVATE link dependency of a static library propagates for
+            # downstream linking only; it must not add compile usage.
+            link_only: bool = false
+
+
+        struct BuildUsageTargetResult:
+            name: sview
+            compile: darray[BuildUsageEntry] = []
+            link: darray[BuildUsageEntry] = []
+            exported_compile: darray[BuildUsageEntry] = []
+            exported_link: darray[BuildUsageEntry] = []
+
+
+        struct BuildUsageResolution:
+            targets: darray[BuildUsageTargetResult] = []
+            resolved_entries: usize = 0
+
+
+        error BuildUsageError:
+            EmptyGraph
+            TargetLimitExceeded
+            RequirementLimitExceeded
+            DependencyLimitExceeded
+            TotalInputLimitExceeded
+            TotalResolvedLimitExceeded
+            InvalidTargetKind
+            InvalidTargetName
+            DuplicateTarget
+            InvalidRequirementKind
+            InvalidVisibility
+            InvalidRequirementValue
+            InterfaceVisibilityRequired
+            DependencyIndexInvalid
+            DependencyOrderInvalid
+            DuplicateDependency
+
+
+    private:
+        def target_kind_valid(kind: BuildUsageTargetKind) -> bool:
+            return kind in {BuildUsageTargetKind.Executable, BuildUsageTargetKind.StaticLibrary, BuildUsageTargetKind.SharedLibrary, BuildUsageTargetKind.InterfaceLibrary}
+
+
+        def usage_kind_valid(kind: BuildUsageKind) -> bool:
+            return kind in {BuildUsageKind.IncludeDirectory, BuildUsageKind.CompileDefinition, BuildUsageKind.CompileOption, BuildUsageKind.LinkLibrary, BuildUsageKind.LinkOption}
+
+
+        def visibility_valid(visibility: BuildUsageVisibility) -> bool:
+            return visibility in {BuildUsageVisibility.Private, BuildUsageVisibility.Public, BuildUsageVisibility.Interface}
+
+
+        def usage_kind_is_compile(kind: BuildUsageKind) -> bool:
+            return kind == BuildUsageKind.IncludeDirectory or kind == BuildUsageKind.CompileDefinition or kind == BuildUsageKind.CompileOption
+
+
+        def usage_kind_is_link(kind: BuildUsageKind) -> bool:
+            return kind == BuildUsageKind.LinkLibrary or kind == BuildUsageKind.LinkOption
+
+
+        def usage_entry_equal(left: BuildUsageEntry, right: BuildUsageEntry) -> bool:
+            return left.kind == right.kind and left.value == right.value
+
+
+        def append_usage_entry(entries: mutable darray[BuildUsageEntry]&, candidate: BuildUsageEntry, resolved_count: mutable usize&) -> bool error[BuildUsageError] can[Memory.Allocate, Abort.Panic]:
+            for index in 0..<entries.count |entries|:
+                if usage_entry_equal(entries[index], candidate):
+                    # A normal link requirement subsumes link-only propagation.
+                    entries[index].link_only <- false if not candidate.link_only
+                    return false
+            raise BuildUsageError.RequirementLimitExceeded if entries.count >= Limits::TOTAL_RESOLVED_ENTRIES
+            raise BuildUsageError.TotalResolvedLimitExceeded if resolved_count >= Limits::TOTAL_RESOLVED_ENTRIES
+            entries.push(candidate)
+            resolved_count <- resolved_count + 1
+            return true
+
+
+        def validate_target_inputs(targets: darray[BuildUsageTarget]) -> bool error[BuildUsageError] can[Memory.Allocate, Abort.Panic]:
+            raise BuildUsageError.EmptyGraph if targets.count == 0
+            raise BuildUsageError.TargetLimitExceeded if targets.count > Limits::TARGETS
+            total_inputs: mutable usize = 0
+            for index in 0..<targets.count |targets, total_inputs|:
+                target: BuildUsageTarget = targets[index]
+                raise BuildUsageError.InvalidTargetKind if not target_kind_valid(target.kind)
+                raise BuildUsageError.InvalidTargetName if sview_len(target.name) == 0 or sview_len(target.name) >= Limits::NAME_BYTES or sview_contains_byte(target.name, 0)
+                raise BuildUsageError.RequirementLimitExceeded if target.requirements.count > Limits::REQUIREMENTS_PER_TARGET
+                raise BuildUsageError.DependencyLimitExceeded if target.dependencies.count > Limits::DEPENDENCIES_PER_TARGET
+                raise BuildUsageError.TotalInputLimitExceeded if target.requirements.count > Limits::TOTAL_INPUTS - total_inputs
+                total_inputs <- total_inputs + target.requirements.count
+                raise BuildUsageError.TotalInputLimitExceeded if target.dependencies.count > Limits::TOTAL_INPUTS - total_inputs
+                total_inputs <- total_inputs + target.dependencies.count
+                for earlier in 0..<index |targets, target|:
+                    raise BuildUsageError.DuplicateTarget if targets[earlier].name == target.name
+                for requirement in target.requirements:
+                    raise BuildUsageError.InvalidRequirementKind if not usage_kind_valid(requirement.kind)
+                    raise BuildUsageError.InvalidVisibility if not visibility_valid(requirement.visibility)
+                    raise BuildUsageError.InvalidRequirementValue if sview_len(requirement.value) == 0 or sview_len(requirement.value) > Limits::VALUE_BYTES or sview_contains_byte(requirement.value, 0)
+                    raise BuildUsageError.InterfaceVisibilityRequired if target.kind == BuildUsageTargetKind.InterfaceLibrary and requirement.visibility != BuildUsageVisibility.Interface
+                for dependency_index in 0..<target.dependencies.count |target|:
+                    dependency: usize = target.dependencies[dependency_index]
+                    raise BuildUsageError.DependencyIndexInvalid if dependency >= targets.count
+                    raise BuildUsageError.DependencyOrderInvalid if dependency >= index
+                    for earlier_dependency in 0..<dependency_index |target|:
+                        raise BuildUsageError.DuplicateDependency if target.dependencies[earlier_dependency] == dependency
+            return true
+
+
+    public:
+        # Targets are given in dependency order. Compile/link arrays retain
+        # first-seen target/requirement order and deduplicate exact kind/value
+        # pairs. Build-system-specific generator expressions and configuration
+        # conditions are intentionally outside this first portable contract.
+        def resolve_build_usage(targets: darray[BuildUsageTarget]) -> BuildUsageResolution error[BuildUsageError] can[Memory.Allocate, Abort.Panic]:
+            try validate_target_inputs(targets)
+            results: mutable darray[BuildUsageTargetResult] = []
+            resolved_count: mutable usize = 0
+            for target_index in 0..<targets.count |targets, results, resolved_count|:
+                target: BuildUsageTarget = targets[target_index]
+                result: mutable BuildUsageTargetResult = BuildUsageTargetResult{name: target.name}
+
+                for requirement in target.requirements |target, result, resolved_count|:
+                    is_compile: bool = usage_kind_is_compile(requirement.kind)
+                    is_link: bool = usage_kind_is_link(requirement.kind)
+                    local: bool = requirement.visibility != BuildUsageVisibility.Interface and target.kind != BuildUsageTargetKind.InterfaceLibrary
+                    exported: bool = requirement.visibility == BuildUsageVisibility.Public or requirement.visibility == BuildUsageVisibility.Interface
+                    entry: BuildUsageEntry = BuildUsageEntry{kind: requirement.kind, value: requirement.value}
+                    if is_compile and local:
+                        _ = try append_usage_entry(result.compile, entry, resolved_count)
+                    if is_link and local:
+                        _ = try append_usage_entry(result.link, entry, resolved_count)
+                    if is_compile and exported:
+                        _ = try append_usage_entry(result.exported_compile, entry, resolved_count)
+                    if is_link and exported:
+                        _ = try append_usage_entry(result.exported_link, entry, resolved_count)
+                    # CMake static libraries retain a PRIVATE link dependency
+                    # in their link interface, marked here as link-only.
+                    if is_link and requirement.kind == BuildUsageKind.LinkLibrary and requirement.visibility == BuildUsageVisibility.Private and target.kind == BuildUsageTargetKind.StaticLibrary:
+                        _ = try append_usage_entry(result.exported_link, BuildUsageEntry{kind: requirement.kind, value: requirement.value, link_only: true}, resolved_count)
+
+                for dependency_index in target.dependencies |target, results, result, resolved_count|:
+                    dependency_result: BuildUsageTargetResult = results[dependency_index]
+                    for entry in dependency_result.exported_compile:
+                        _ = try append_usage_entry(result.compile, entry, resolved_count)
+                        _ = try append_usage_entry(result.exported_compile, entry, resolved_count)
+                    for entry in dependency_result.exported_link:
+                        _ = try append_usage_entry(result.link, entry, resolved_count)
+                        _ = try append_usage_entry(result.exported_link, entry, resolved_count)
+
+                results.push(result)
+            return BuildUsageResolution{targets: results, resolved_entries: resolved_count}
