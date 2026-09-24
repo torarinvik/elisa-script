@@ -182,6 +182,9 @@ done
 for executor_check in \
     'incremental_executor_marks_up_to_date_nodes_as_cache_hits' \
     'command_mismatch_rejected' \
+    'BuildIncrementalObservation{path: "build/app", present: false}' \
+    'missing_output_rejected' \
+    'BuildIncrementalError.CommitOutputMissing' \
     'commit_build_incremental_execution(result, graph, previous, recipes, observations)' \
     'execute_build_graph_incremental(graph, previous, recipes, observations)' \
     'cache_hit and not result.nodes[0].started'; do
