@@ -16,6 +16,9 @@ module EsConfigCli:
             POSITIONALS: usize = 4096
             ARGUMENT_BYTES: usize = 65536
             INPUT_BYTES: usize = 16777216
+            COMMANDS: usize = 128
+            DESCRIPTION_BYTES: usize = 1024
+            HELP_TEXT_BYTES: usize = 1048576
 
 
         struct ConfigCliOption:
@@ -23,11 +26,29 @@ module EsConfigCli:
             option: sview
             takes_value: bool
             negative_option: sview = ""
+            short_option: sview = ""
+            description: sview = ""
 
 
         struct ConfigCliResult:
             layer: ConfigLayer
             positionals: darray[sview] = []
+            help_requested: bool = false
+
+
+        struct ConfigCliCommand:
+            name: sview
+            description: sview = ""
+            options: darray[ConfigCliOption] = []
+
+
+        struct ConfigCliCommandResult:
+            command: sview = ""
+            parsed: ConfigCliResult
+
+
+        struct ConfigCliHelp:
+            bytes: darray[u8] = []
 
 
         error ConfigCliError:
@@ -42,6 +63,11 @@ module EsConfigCli:
             MissingValue
             UnexpectedValue
             DuplicateOption
+            CommandLimitExceeded
+            InvalidCommandSchema
+            MissingCommand
+            UnknownCommand
+            HelpTextLimitExceeded
 
 
     private:
@@ -58,10 +84,42 @@ module EsConfigCli:
             return true
 
 
+        def config_cli_short_option_text_valid(option: sview) -> bool:
+            if option == "":
+                return true
+            if sview_len(option) != 2 or sview_at(option, 0) != 45:
+                return false
+            byte: u8 = sview_at(option, 1)
+            return (byte >= 48 and byte <= 57) or (byte >= 65 and byte <= 90) or (byte >= 97 and byte <= 122)
+
+
+        def config_cli_command_text_valid(name: sview) -> bool:
+            return false if sview_len(name) == 0 or sview_len(name) >= Limits::NAME_BYTES
+            for index in 0..<sview_len(name) |name|:
+                byte: u8 = sview_at(name, index)
+                alpha: bool = (byte >= 65 and byte <= 90) or (byte >= 97 and byte <= 122)
+                digit: bool = byte >= 48 and byte <= 57
+                return false if not alpha and not digit and byte != 45 and byte != 95
+                return false if index == 0 and not alpha
+            return true
+
+
+        def config_cli_description_valid(description: sview) -> bool:
+            return false if sview_len(description) > Limits::DESCRIPTION_BYTES
+            for index in 0..<sview_len(description) |description|:
+                byte: u8 = sview_at(description, index)
+                return false if byte < 32 or byte == 127
+            return true
+
+
+        def config_cli_aliases_conflict(left: ConfigCliOption&, right: ConfigCliOption&) -> bool:
+            return left.option == right.option or left.option == right.negative_option or left.option == right.short_option or (left.negative_option != "" and (left.negative_option == right.option or left.negative_option == right.negative_option or left.negative_option == right.short_option)) or (left.short_option != "" and (left.short_option == right.option or left.short_option == right.negative_option or left.short_option == right.short_option))
+
+
         def config_cli_match(options: darray[ConfigCliOption], candidate: sview) -> ConfigCliMatch:
             for index in 0..<options.count |options, candidate|:
                 spec: ConfigCliOption = options[index]
-                if candidate == spec.option:
+                if candidate == spec.option or (spec.short_option != "" and candidate == spec.short_option):
                     return ConfigCliMatch{index: index}
                 if spec.negative_option != "" and candidate == spec.negative_option:
                     return ConfigCliMatch{index: index, negative: true}
@@ -73,11 +131,11 @@ module EsConfigCli:
             for index in 0..<options.count |options|:
                 option: ConfigCliOption = options[index]
                 raise ConfigCliError.InvalidOptionSchema if not config_cli_option_text_valid(option.option)
+                raise ConfigCliError.InvalidOptionSchema if option.option == "--help" or not config_cli_short_option_text_valid(option.short_option) or option.short_option == "-h" or option.short_option == option.option
                 raise ConfigCliError.InvalidOptionSchema if option.negative_option != "" and (option.takes_value or not config_cli_option_text_valid(option.negative_option) or option.negative_option == option.option)
+                raise ConfigCliError.InvalidOptionSchema if option.negative_option == "--help" or option.short_option == option.negative_option or not config_cli_description_valid(option.description)
                 for earlier in 0..<index |options, option|:
-                    raise ConfigCliError.InvalidOptionSchema if options[earlier].option == option.option
-                    raise ConfigCliError.InvalidOptionSchema if options[earlier].negative_option != "" and (options[earlier].negative_option == option.option or options[earlier].negative_option == option.negative_option)
-                    raise ConfigCliError.InvalidOptionSchema if option.negative_option != "" and (option.negative_option == options[earlier].option or option.negative_option == options[earlier].negative_option)
+                    raise ConfigCliError.InvalidOptionSchema if config_cli_aliases_conflict(options[earlier], option)
             # Validate keys through the same public contract as every other
             # configuration source before accepting this option schema.
             defaults: mutable darray[ConfigEntry] = []
@@ -87,9 +145,7 @@ module EsConfigCli:
             return true
 
 
-    public:
-        def parse_config_cli(arguments: darray[sview], options: darray[ConfigCliOption]) -> ConfigCliResult error[ConfigCliError, ConfigError] can[Memory.Allocate, Abort.Panic]:
-            try config_cli_validate_options(options)
+        def config_cli_validate_raw_arguments(arguments: darray[sview]) -> bool error[ConfigCliError] can[Memory.Allocate, Abort.Panic]:
             raise ConfigCliError.ArgumentLimitExceeded if arguments.count > Limits::ARGUMENTS
             input_bytes: mutable usize = 0
             for argument in arguments |input_bytes|:
@@ -98,6 +154,93 @@ module EsConfigCli:
                 raise ConfigCliError.EmbeddedNul if sview_contains_byte(argument, 0)
                 raise ConfigCliError.InputBytesExceeded if input_bytes > Limits::INPUT_BYTES or length > Limits::INPUT_BYTES - input_bytes
                 input_bytes <- input_bytes + length
+            return true
+
+
+        def config_cli_validate_commands(commands: darray[ConfigCliCommand]) -> bool error[ConfigCliError, ConfigError] can[Memory.Allocate, Abort.Panic]:
+            raise ConfigCliError.CommandLimitExceeded if commands.count > Limits::COMMANDS
+            for index in 0..<commands.count |commands|:
+                command: ConfigCliCommand = commands[index]
+                raise ConfigCliError.InvalidCommandSchema if not config_cli_command_text_valid(command.name) or not config_cli_description_valid(command.description)
+                try config_cli_validate_options(command.options)
+                for earlier in 0..<index |commands, command|:
+                    raise ConfigCliError.InvalidCommandSchema if commands[earlier].name == command.name
+            return true
+
+
+        def config_cli_append_help(output: mutable darray[u8]&, text: sview) -> void error[ConfigCliError] can[Memory.Allocate, Abort.Panic]:
+            length: usize = sview_len(text)
+            raise ConfigCliError.HelpTextLimitExceeded if output.count > Limits::HELP_TEXT_BYTES or length > Limits::HELP_TEXT_BYTES - output.count
+            for index in 0..<length |output, text|:
+                output.push(sview_at(text, index))
+
+
+        def config_cli_validate_program_name(program_name: sview) -> bool error[ConfigCliError] can[Memory.Allocate, Abort.Panic]:
+            raise ConfigCliError.InvalidCommandSchema if sview_len(program_name) == 0 or sview_len(program_name) >= Limits::ARGUMENT_BYTES
+            for index in 0..<sview_len(program_name) |program_name|:
+                byte: u8 = sview_at(program_name, index)
+                raise ConfigCliError.InvalidCommandSchema if byte < 32 or byte == 127
+            return true
+
+
+        def config_cli_option_help(output: mutable darray[u8]&, option: ConfigCliOption) -> void error[ConfigCliError] can[Memory.Allocate, Abort.Panic]:
+            try config_cli_append_help(output, "  ")
+            try config_cli_append_help(output, option.option)
+            if option.short_option != "":
+                try config_cli_append_help(output, ", ")
+                try config_cli_append_help(output, option.short_option)
+            if option.takes_value:
+                try config_cli_append_help(output, " <VALUE>")
+            if option.negative_option != "":
+                try config_cli_append_help(output, ", ")
+                try config_cli_append_help(output, option.negative_option)
+            try config_cli_append_help(output, "\t")
+            try config_cli_append_help(output, option.description)
+            try config_cli_append_help(output, "\n")
+
+
+    public:
+        def config_cli_command_help(program_name: sview, command: ConfigCliCommand) -> ConfigCliHelp error[ConfigCliError, ConfigError] can[Memory.Allocate, Abort.Panic]:
+            try config_cli_validate_program_name(program_name)
+            try config_cli_validate_commands([command])
+            output: mutable darray[u8] = []
+            try config_cli_append_help(output, "Usage: ")
+            try config_cli_append_help(output, program_name)
+            try config_cli_append_help(output, " ")
+            try config_cli_append_help(output, command.name)
+            try config_cli_append_help(output, " [OPTIONS] [ARGS...]\n")
+            if command.description != "":
+                try config_cli_append_help(output, "\n")
+                try config_cli_append_help(output, command.description)
+                try config_cli_append_help(output, "\n")
+            try config_cli_append_help(output, "\nOptions:\n")
+            for option in command.options |output|:
+                try config_cli_option_help(output, option)
+            try config_cli_append_help(output, "  -h, --help\tShow this help\n")
+            return ConfigCliHelp{bytes: output}
+
+
+        def config_cli_root_help(program_name: sview, commands: darray[ConfigCliCommand]) -> ConfigCliHelp error[ConfigCliError, ConfigError] can[Memory.Allocate, Abort.Panic]:
+            try config_cli_validate_program_name(program_name)
+            try config_cli_validate_commands(commands)
+            output: mutable darray[u8] = []
+            try config_cli_append_help(output, "Usage: ")
+            try config_cli_append_help(output, program_name)
+            try config_cli_append_help(output, " <COMMAND> [OPTIONS] [ARGS...]\n\nCommands:\n")
+            for command in commands |output|:
+                try config_cli_append_help(output, "  ")
+                try config_cli_append_help(output, command.name)
+                try config_cli_append_help(output, "\t")
+                try config_cli_append_help(output, command.description)
+                try config_cli_append_help(output, "\n")
+            try config_cli_append_help(output, "\nOptions:\n  -h, --help\tShow this help\n")
+            return ConfigCliHelp{bytes: output}
+
+
+    public:
+        def parse_config_cli(arguments: darray[sview], options: darray[ConfigCliOption]) -> ConfigCliResult error[ConfigCliError, ConfigError] can[Memory.Allocate, Abort.Panic]:
+            try config_cli_validate_options(options)
+            try config_cli_validate_raw_arguments(arguments)
 
             layer: mutable ConfigLayer = ConfigLayer{source: ConfigSource.CommandLine}
             positionals: mutable darray[sview] = []
@@ -105,7 +248,9 @@ module EsConfigCli:
             index: mutable usize = 0
             while index < arguments.count:
                 argument: sview = arguments[index]
-                if options_enabled and argument == "--":
+                if options_enabled and (argument == "--help" or argument == "-h"):
+                    return ConfigCliResult{layer: layer, positionals: positionals, help_requested: true}
+                elif options_enabled and argument == "--":
                     options_enabled <- false
                     index <- index + 1
                 elif options_enabled and sview_len(argument) > 1 and sview_at(argument, 0) == 45:
@@ -144,3 +289,21 @@ module EsConfigCli:
                     index <- index + 1
             try validate_config_layers([layer])
             return ConfigCliResult{layer: layer, positionals: positionals}
+
+
+        def parse_config_cli_command(arguments: darray[sview], commands: darray[ConfigCliCommand]) -> ConfigCliCommandResult error[ConfigCliError, ConfigError] can[Memory.Allocate, Abort.Panic]:
+            try config_cli_validate_commands(commands)
+            try config_cli_validate_raw_arguments(arguments)
+            empty_layer: ConfigLayer = ConfigLayer{source: ConfigSource.CommandLine}
+            if arguments.count == 0:
+                raise ConfigCliError.MissingCommand
+            if arguments[0] == "--help" or arguments[0] == "-h":
+                return ConfigCliCommandResult{command: "", parsed: ConfigCliResult{layer: empty_layer, help_requested: true}}
+            for command in commands |arguments|:
+                if arguments[0] == command.name:
+                    remaining: mutable darray[sview] = []
+                    for index in 1..<arguments.count |arguments, remaining|:
+                        remaining.push(arguments[index])
+                    parsed: ConfigCliResult = parse_config_cli(remaining, command.options)
+                    return ConfigCliCommandResult{command: command.name, parsed: parsed}
+            raise ConfigCliError.UnknownCommand
