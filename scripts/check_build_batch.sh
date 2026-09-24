@@ -26,6 +26,7 @@ for declaration in \
     'def begin_build_batch(' \
     'def dispatch_build_batch_ready(' \
     'def report_build_batch_result(' \
+    'def build_batch_process_result_valid(' \
     'def cancel_build_batch(' \
     'def acknowledge_build_batch_stop('; do
     rg -Fq "$declaration" "$model"
@@ -59,6 +60,7 @@ for fixture_case in \
     'build_batch_cancellation_waits_for_host_reap_acknowledgement' \
     'build_batch_rejects_omitted_ready_queue_entries' \
     'build_batch_rejects_duplicate_terminal_receipts' \
+    'build_batch_rejects_malformed_process_result_without_consuming_reservation' \
     'build_batch_rejects_output_overrun_without_consuming_reservation' \
     'first_wave[0].node_index == 0 and first_wave[1].node_index == 2' \
     'ProcessBatchState.Draining' \

@@ -745,8 +745,10 @@ terminal receipts to both state machines. Its fixtures cover refill after a
 dependency completes, fail-fast sibling drain, and acknowledged cancellation;
 it also rejects integrated sessions whose ready queue omits a currently ready
 node, duplicate terminal receipts, and over-budget output without consuming
-the live reservation. This remains a host-neutral contract, not child launch or
-runtime evidence.
+the live reservation. Receipt admission also reuses `validate_process_result`
+to reject malformed status/signal combinations and invalid captured text before
+changing scheduler state or consuming reservations. This remains a host-neutral
+contract, not child launch or runtime evidence.
 `EsBuildIncremental` adds the bounded pure manifest boundary for recipe,
 dependency, input, and output fingerprint classification, distinguishing no-op
 targets (including outputless `Phony` aggregate/test targets) from typed rebuild
