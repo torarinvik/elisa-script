@@ -10,9 +10,33 @@ ir="$repo_root/src/ir/ir.elisa"
 fixture_file="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
+max_source_bytes=16777216
+max_total_source_bytes=33554432
 
 for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger"; do
     [[ -f "$required_file" && -r "$required_file" ]] || { printf 'hash audit: missing %s\n' "$required_file" >&2; exit 1; }
+done
+
+# Keep the shell oracle within the same per-file and aggregate source bounds as
+# the Elisascript port before ripgrep scans any content.
+total_source_bytes=0
+for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger"; do
+    if ! source_size="$(wc -c < "$required_file" | tr -d '[:space:]')"; then
+        printf 'hash audit: missing %s\n' "$required_file" >&2
+        exit 1
+    fi
+    case "$source_size" in
+        ''|*[!0-9]*)
+            printf 'hash audit: missing %s\n' "$required_file" >&2
+            exit 1
+            ;;
+    esac
+    source_size=$((10#$source_size))
+    if (( source_size > max_source_bytes || source_size > max_total_source_bytes - total_source_bytes )); then
+        printf 'hash audit: source exceeds audit limit: %s\n' "$required_file" >&2
+        exit 2
+    fi
+    total_source_bytes=$((total_source_bytes + source_size))
 done
 
 rg -q '^module EsHash:' "$model"
