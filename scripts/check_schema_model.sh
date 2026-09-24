@@ -47,6 +47,7 @@ for fixture_pattern in \
     'toml_schema_rejects_unknown_and_missing_required_fields' \
     'toml_schema_rejects_malformed_numeric_override_separators' \
     'toml_schema_binds_one_table_and_ignores_siblings_and_descendants' \
+    'source_name: "workers"' \
     'SchemaTomlValueKind.Integer' \
     'SchemaTomlValueKind.Decimal' \
     'SchemaTomlValueKind.Array' \
