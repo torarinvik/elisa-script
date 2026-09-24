@@ -72,6 +72,15 @@ header with the distinct default template. Elisascript must fail before
 re-blessing or deleting those bytes; after restoring the variant bytes, the
 old cache must again be reusable.
 
+Finally, the harness asks the candidate to rebuild with the header generator
+replaced by `/usr/bin/false`. The generator must fail with its node-specific
+diagnostic, and only that generator's declared output may be removed: the
+existing main object and executable are outputs of later, not-yet-started
+nodes and must remain intact. The preserved executable must still run with the
+expected output. A subsequent normal variant build must recreate the header,
+rebuild the dependent object and executable, and publish a reusable cache; the
+next invocation must be an up-to-date no-op.
+
 `test/script_parity/minimal_native_build_launcher_test.elisascript` is the
 end-to-end process parity harness. It accepts `ELISASCRIPT_MINIMAL_NATIVE_CMAKE`
 for the CMake executable, requires `ELISASCRIPT_PUBLIC_LAUNCHER` to resolve to
