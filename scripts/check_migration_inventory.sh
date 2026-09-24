@@ -116,6 +116,18 @@ if ! rg -Fq 'include "../src/runtime/bounded_text_posix.elisa"' "$script_dir/che
     printf 'migration inventory audit: Elisascript source reads are not descriptor-bounded\n' >&2
     exit 1
 fi
+inventory_candidate="$script_dir/check_migration_inventory.elisascript"
+if ! rg -Fq 'def write_diagnostic(message: sview) -> void can[Console.Write]:' "$inventory_candidate" || \
+   ! rg -Fq '_ = write_stderr(message + "\n")' "$inventory_candidate" || \
+   ! rg -Fq 'print("migration inventory audit: partition manifest and bounded read-only scanners present")' "$inventory_candidate"; then
+    printf 'migration inventory audit: candidate stdout/stderr contract is missing\n' >&2
+    exit 1
+fi
+stdout_print_count="$(rg -F -c 'print(' "$inventory_candidate" || true)"
+if [[ "$stdout_print_count" != "1" ]] || rg -Fq 'if arguments.count != 0:' "$inventory_candidate"; then
+    printf 'migration inventory audit: candidate must print only success and ignore unused arguments\n' >&2
+    exit 1
+fi
 for walker_invariant in 'openat' 'fstatat' 'DarwinStatMode::SYMLINK' 'DIRECTORY_ENTRIES' 'DIRECTORY_DEPTH' 'PATH_BYTES' 'elisascript_posix_closedir' 'Phase.Unwind'; do
     if ! rg -Fq "$walker_invariant" "$walker_file"; then
         printf 'migration inventory audit: shared walker is missing invariant %s\n' "$walker_invariant" >&2
