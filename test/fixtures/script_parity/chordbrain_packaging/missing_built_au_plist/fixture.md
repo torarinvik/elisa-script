@@ -1,0 +1,1 @@
+Fixture: source metadata and all built artifacts preceding the component plist are present, but the component Info.plist is absent. The parity runner expects CMake and Elisascript to report this first missing artifact.
