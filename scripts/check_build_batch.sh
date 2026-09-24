@@ -28,6 +28,7 @@ for declaration in \
     'def report_build_batch_result(' \
     'def build_batch_process_result_valid(' \
     'def cancel_build_batch(' \
+    'def build_batch_stop_acknowledgements_match(' \
     'def acknowledge_build_batch_stop('; do
     rg -Fq "$declaration" "$model"
 done
@@ -49,6 +50,8 @@ for invariant in \
     rg -Fq "$invariant" "$model"
 done
 
+rg -Fq 'BuildBatchError.StopAcknowledgementMismatch' "$model"
+
 if rg -n 'Process\.Run|elisascript_posix_fork|capture_process_result' "$model"; then
     printf 'build batch audit: host-neutral coordinator must not claim to launch children\n' >&2
     exit 1
@@ -65,7 +68,8 @@ for fixture_case in \
     'build_batch_rejects_output_overrun_without_consuming_reservation' \
     'first_wave[0].node_index == 0 and first_wave[1].node_index == 2' \
     'ProcessBatchState.Draining' \
-    'acknowledge_build_batch_stop(session)'; do
+    'incomplete_acknowledgement_rejected' \
+    'acknowledge_build_batch_stop(session, stop_requests)'; do
     rg -Fq "$fixture_case" "$fixture"
 done
 

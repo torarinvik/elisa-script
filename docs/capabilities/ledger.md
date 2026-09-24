@@ -744,6 +744,9 @@ the graph-wide output budget before admission, and applies token-validated
 terminal receipts to both state machines. Cancellation before Begin now closes
 both state machines immediately and returns no host-stop work; once execution
 has begun, cancellation still waits for host termination/reap acknowledgement.
+The acknowledgement API now requires an ordered, exact job/id/attempt-token
+receipt for every active dispatch and leaves cancellation state intact when any
+receipt is missing, extra, reordered, or stale.
 Its fixtures cover refill after a dependency completes, fail-fast sibling drain,
 and acknowledged cancellation;
 it also rejects integrated sessions whose ready queue omits a currently ready
