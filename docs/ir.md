@@ -2992,6 +2992,16 @@ are enforced before parsing; values remain borrowed from the caller's argv.
 Option keys also borrow the declared schema; both inputs must remain alive
 and unchanged while the result layer is used.
 
+Declared one-character alphanumeric aliases support `-x`, `-x=value`,
+`-xVALUE`, and `-x VALUE` when the option takes a value; short-option bundles
+such as `-abc` are not yet supported. `parse_config_cli_command` dispatches a
+first argv token to a declared subcommand schema and distinguishes missing,
+unknown, and root-help requests. The command parser exposes `help_requested`
+for `-h`/`--help`; `config_cli_root_help` and `config_cli_command_help` render
+deterministic owned bytes capped at 1 MiB. The focused model fixtures and
+compiler-free source guard describe these rules, but remain unexecuted under
+the explicit validation hold.
+
 The four-source precedence path has an integration fixture that composes
 explicit defaults, the strict JSON adapter, a sealed environment snapshot, and
 the application CLI parser, then checks winners, source attribution, explicit
@@ -3758,6 +3768,9 @@ Elisa value blocks lower their leading statements in a lexical binding scope and
 then yield the tail expression. This makes the idiomatic multiline `return if ...:`
 form executable while ensuring branch-local names do not leak past the value block;
 mutations of already-existing outer SSA bindings remain visible as expected.
+In a non-void ElisaScript function, a final expression also supplies the return
+value. Earlier `return` statements still exit immediately; the final expression
+is checked against the declared return type.
 
 Elisascript also accepts the ML-style bare block spelling on binding and mutation
 RHSs; no `do` introducer is required. A bare `=` introduces a fresh immutable

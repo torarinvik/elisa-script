@@ -981,8 +981,11 @@ not the much larger process-argument limit.
 EsConfigCli parses declared application options into the CommandLine layer,
 preserving explicit empty values, negatable booleans, positionals, and the
 post-`--` tail; it remains separate from the compiler-launcher parser.
-Subcommands, short aliases, help rendering, and direct runtime qualification
-remain open.
+Declared one-character aliases accept separated, equals-delimited, and
+attached values. A typed subcommand dispatcher and bounded root/per-command
+help renderers are specified and covered by focused fixtures. Short-option
+bundling and direct runtime qualification remain open under the validation
+hold.
 An integration fixture composes Defaults/File/Environment/CommandLine and
 asserts precedence, source attribution, present-empty values, fallback, and
 absence; its runtime result is not yet verified.
