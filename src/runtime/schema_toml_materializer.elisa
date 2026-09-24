@@ -59,6 +59,47 @@ module EsSchemaToml:
             return field.source_name
 
 
+        def schema_toml_key_matches_scoped_name(key: sview, table_path: sview, name: sview) -> bool:
+            path_length: usize = sview_len(table_path)
+            name_length: usize = sview_len(name)
+            key_length: usize = sview_len(key)
+            expected_length: usize = name_length if path_length == 0 else path_length + 1 + name_length
+            return false if key_length != expected_length
+            if path_length != 0:
+                for offset in 0..<path_length |key, table_path|:
+                    return false if sview_at(key, offset) != sview_at(table_path, offset)
+                return false if sview_at(key, path_length) != 46
+            name_start: usize = 0 if path_length == 0 else path_length + 1
+            for offset in 0..<name_length |key, name, name_start|:
+                return false if sview_at(key, name_start + offset) != sview_at(name, offset)
+            return true
+
+
+        def schema_toml_key_is_direct_child(key: sview, table_path: sview) -> bool:
+            path_length: usize = sview_len(table_path)
+            key_length: usize = sview_len(key)
+            child_start: usize = 0
+            if path_length != 0:
+                return false if key_length <= path_length + 1
+                for offset in 0..<path_length |key, table_path|:
+                    return false if sview_at(key, offset) != sview_at(table_path, offset)
+                return false if sview_at(key, path_length) != 46
+                child_start <- path_length + 1
+            for offset in child_start..<key_length |key|:
+                return false if sview_at(key, offset) == 46
+            return true
+
+
+        def schema_toml_table_path_valid(table_path: sview) -> bool:
+            return false if sview_len(table_path) >= SCHEMA_MAX_TOTAL_NAME_BYTES
+            return false if sview_contains_byte(table_path, 0)
+            return true if sview_len(table_path) == 0
+            return false if sview_at(table_path, 0) == 46 or sview_at(table_path, sview_len(table_path) - 1) == 46
+            for offset in 1..<sview_len(table_path) |table_path|:
+                return false if sview_at(table_path, offset) == 46 and sview_at(table_path, offset - 1) == 46
+            return true
+
+
         def schema_toml_input_kind_matches(schema_kind: SchemaValueKind, input_kind: ConfigTomlValueKind, source: ConfigSource) -> bool:
             if schema_kind == SchemaValueKind.Text:
                 return input_kind == ConfigTomlValueKind.Text
@@ -223,9 +264,17 @@ module EsSchemaToml:
 
     public:
         def materialize_toml_schema_record(schema: SchemaDescriptor&, resolution: ConfigTomlResolution&) -> SchemaTomlRecord error[SchemaContractError, SchemaTomlMaterializeError, SchemaIntegerError, SchemaDecimalError] can[Memory.Allocate, Abort.Panic]:
+            return try materialize_toml_schema_table(schema, resolution, "")
+
+
+        # Bind only immediate values in one TOML table. Dotted descendants
+        # belong to child tables and can be bound independently with their own
+        # schema. The empty path is the document root.
+        def materialize_toml_schema_table(schema: SchemaDescriptor&, resolution: ConfigTomlResolution&, table_path: sview) -> SchemaTomlRecord error[SchemaContractError, SchemaTomlMaterializeError, SchemaIntegerError, SchemaDecimalError] can[Memory.Allocate, Abort.Panic]:
             try validate_schema_descriptor(schema)
             raise SchemaTomlMaterializeError.InvalidSource if schema.source != SchemaSource.Toml
             raise SchemaContractError.InvalidSource if schema.types.count != 0 or schema.nested_fields.count != 0
+            raise SchemaTomlMaterializeError.InvalidSource if not schema_toml_table_path_valid(table_path)
             raise SchemaTomlMaterializeError.InputLimitExceeded if resolution.values.count > SCHEMA_TOML_MAX_VALUES
 
             for source_index in 0..<resolution.values.count |resolution|:
@@ -242,15 +291,15 @@ module EsSchemaToml:
 
             for field_index in 0..<schema.fields.count |schema, resolution, source_indices, matched_inputs|:
                 source_name: sview = schema_toml_source_name(schema.fields[field_index])
-                for source_index in 0..<resolution.values.count |resolution, source_indices, field_index, source_name|:
-                    if resolution.values[source_index].key == source_name:
+                for source_index in 0..<resolution.values.count |resolution, source_indices, field_index, source_name, table_path|:
+                    if schema_toml_key_matches_scoped_name(resolution.values[source_index].key, table_path, source_name):
                         source_indices[field_index] <- source_index
                         matched_inputs[source_index] <- true
                         break
                 raise SchemaContractError.RequiredFieldMissing if source_indices[field_index] == SCHEMA_TOML_INDEX_NONE and schema.fields[field_index].required
 
-            for source_index in 0..<resolution.values.count |resolution, matched_inputs, schema|:
-                raise SchemaTomlMaterializeError.UnknownField if not matched_inputs[source_index] and not schema.allow_unknown
+            for source_index in 0..<resolution.values.count |resolution, matched_inputs, schema, table_path|:
+                raise SchemaTomlMaterializeError.UnknownField if not matched_inputs[source_index] and schema_toml_key_is_direct_child(resolution.values[source_index].key, table_path) and not schema.allow_unknown
 
             record: mutable SchemaTomlRecord = SchemaTomlRecord{schema_name: schema.name}
             for field_index in 0..<schema.fields.count |schema, source_indices, resolution, record|:

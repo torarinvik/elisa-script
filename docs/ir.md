@@ -498,7 +498,10 @@ exact integer/decimal targets. TOML numbers retain exact source spelling until
 conversion; environment and CLI strings are parsed only when a field declares
 a boolean or numeric target. The resulting record refers to the resolved
 configuration for text, arrays, and inline-table contents, so both the schema
-and resolution must outlive it. This is currently a flat binding: recursive
+and resolution must outlive it. `materialize_toml_schema_table` selects one
+canonical dotted table path (or the document root) and binds only its immediate
+keys; sibling tables and dotted descendants are left for separate schemas.
+This is currently a flat binding: recursive
 array-item and nested object schemas, nested inline tables/arrays, dates/times,
 and typed cross-source merging remain unsupported. Source fixtures and static
 guards describe the behavior but are not runtime evidence while compiler
