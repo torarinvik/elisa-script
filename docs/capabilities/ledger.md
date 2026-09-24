@@ -941,8 +941,9 @@ object keys in a validated owned graph; the generic layer retains raw spelling.
 Flat `items`/`fields` remain a compatibility projection for earlier shallow
 values. The graph is bounded by source bytes, depth, node count, per-array and
 aggregate item counts, and per-table and aggregate field counts. Structured
-cross-source merge, date/time values, multiline strings, Unicode escapes, and
-quoted keys remain unsupported and fail closed.
+cross-source merge, dotted keys within inline tables, date/time values,
+multiline strings, Unicode escapes, and quoted keys remain unsupported and fail
+closed. Top-level dotted keys remain supported.
 Array-of-table rows are represented as zero-based numeric dotted key segments
 and a typed row directory (`ConfigTomlArrayTableInstance`), with nested regular
 tables scoped under the latest row; nested array-of-table graphs remain

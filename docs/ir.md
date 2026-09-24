@@ -2922,8 +2922,9 @@ the format-neutral precedence view still preserves the original array/table
 spelling. A compatibility projection also provides flat `items`/`fields` for
 values representable by the former one-level subset. The graph is bounded to
 16 MiB of source, 262,144 nodes, depth 128, and the existing aggregate array
-item/table-field limits. Dates/times, multiline strings, Unicode escapes, and
-quoted keys remain unsupported and are rejected.
+item/table-field limits. Dotted keys inside inline tables, dates/times,
+multiline strings, Unicode escapes, and quoted keys remain unsupported and are
+rejected; top-level dotted keys are supported.
 Array-of-table headers are represented as zero-based numeric dotted key
 segments (for example `links.user.0.name`) and a
 typed row directory (`ConfigTomlArrayTableInstance`); nested regular tables are
