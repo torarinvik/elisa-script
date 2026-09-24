@@ -81,8 +81,8 @@ fi
 # in the emitted candidate stream. The candidate scanner uses `find -name`
 # pruning while the signal scanner uses `find -path` pruning; check both
 # contracts, plus the shared Elisascript walker's typed exclusion list. Keep
-# root-level Makefile classification explicit because a shell case pattern
-# containing `*/Makefile` alone misses a Makefile directly at the scan root.
+# root-level CMakeLists.txt and Makefile classification explicit because a
+# shell case pattern containing only `*/...` misses a build file at the root.
 signals_shell="$repo_root/scripts/inventory_signals.sh"
 walker_elisascript="$repo_root/scripts/inventory_walk.elisascript"
 for excluded_tree in '.git' 'node_modules' '.venv' '__pycache__' 'vendor' 'third_party'; do
@@ -95,6 +95,13 @@ for excluded_tree in '.git' 'node_modules' '.venv' '__pycache__' 'vendor' 'third
 done
 if ! rg -q 'Makefile\|makefile\|\*/Makefile\|\*/makefile' "$script_dir/inventory_candidates.sh"; then
     printf 'migration inventory audit: candidate scanner misses root-level Makefiles\n' >&2
+    exit 1
+fi
+if ! rg -Fq 'CMakeLists.txt|*/CMakeLists.txt|*.cmake' "$script_dir/inventory_candidates.sh" || \
+   ! rg -Fq 'name == "CMakeLists.txt"' "$repo_root/scripts/inventory_candidates.elisascript" || \
+   ! rg -Fq 'exact_names: ["CMakeLists.txt", "Makefile", "makefile"]' "$repo_root/scripts/inventory_candidates.elisascript" || \
+   ! rg -Fq 'suffixes: [".cmake", ".py"' "$repo_root/scripts/inventory_candidates.elisascript"; then
+    printf 'migration inventory audit: candidate scanner misses CMakeLists.txt or .cmake files\n' >&2
     exit 1
 fi
 

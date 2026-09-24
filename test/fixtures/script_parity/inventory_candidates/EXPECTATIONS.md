@@ -4,8 +4,9 @@
 private temporary tree and passes its canonical absolute path to both
 `inventory_candidates.sh` and the public Elisascript launcher. The generated
 tree includes hidden and ignored-by-`.gitignore` files, spaces, a UTF-8 name,
-every recognized suffix family, root and nested Makefiles, classified risk and
-generated paths, all six pruned directory names, a file symlink, a directory
+every recognized suffix family including `CMakeLists.txt` and `.cmake`, root
+and nested Makefiles, classified risk and generated paths, all six pruned
+directory names, a file symlink, a directory
 symlink to an in-root directory, a directory symlink to a separately created
 outside-root candidate, and a shell-looking file that would create a marker if
 executed.

@@ -82,6 +82,7 @@ scan_root_name="${scan_root##*/}"
 candidate_kind() {
     candidate_path="$1"
     case "$candidate_path" in
+        CMakeLists.txt|*/CMakeLists.txt|*.cmake) printf '%s' cmake ;;
         Makefile|makefile|*/Makefile|*/makefile) printf '%s' makefile ;;
         *.py) printf '%s' python ;;
         *.pl|*.pm) printf '%s' perl ;;
