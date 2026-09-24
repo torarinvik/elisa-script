@@ -25,7 +25,7 @@ done
 for cache_declaration in \
     'module EsBuildIncrementalCache:' \
     'CACHE_BYTES: usize' \
-    'FORMAT_VERSION: u8' \
+    'FORMAT_VERSION: u8 = 2' \
     'def encode_build_incremental_cache(' \
     'def decode_build_incremental_cache(' \
     'BuildIncrementalCacheError.ChecksumMismatch' \
@@ -102,7 +102,9 @@ rg -Fq 'arena_rewind(scratch, mark)' "$repo_root/src/runtime/build_incremental_p
 rg -Fq 'def canonical_bytes_sha256_word(' "$repo_root/src/ir/serialize.elisa"
 rg -Fq 'schedule: mutable u64[64] = zeroed' "$repo_root/src/ir/serialize.elisa"
 rg -Fq 'constants: u64[64] = [' "$repo_root/src/ir/serialize.elisa"
-rg -Fq 'incremental_file_fingerprint_uses_canonical_sha256_word' "$posix_fixture"
+rg -Fq 'canonical_bytes_sha256_word(bytes, 3)' "$repo_root/src/runtime/build_incremental_posix.elisa"
+rg -Fq 'incremental_file_fingerprint_uses_complete_canonical_sha256' "$posix_fixture"
+rg -Fq 'fingerprint_word3' "$cache_model"
 rg -Fq 'DarwinOpenFlags::NOFOLLOW' "$repo_root/src/runtime/build_incremental_posix.elisa"
 rg -Fq 'include "../runtime/build_incremental_posix.elisa"' "$ir"
 rg -Fq 'incremental_file_open_rejects_invalid_capability_and_paths' "$posix_fixture"
@@ -111,6 +113,7 @@ rg -Fq 'include "../runtime/build_incremental_cache_model.elisa"' "$ir"
 for cache_fixture_check in \
     'incremental_cache_codec_round_trips_a_valid_manifest' \
     'incremental_cache_codec_rejects_checksum_corruption' \
+    'incremental_cache_codec_rejects_truncated_v1_records' \
     'decode_build_incremental_cache(encoded)' \
     'BuildIncrementalCacheError.ChecksumMismatch'; do
     rg -Fq "$cache_fixture_check" "$cache_fixture"
