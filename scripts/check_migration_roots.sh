@@ -20,6 +20,10 @@ if [[ ! -f "$roots_file" ]]; then
     printf 'migration roots audit: manifest does not exist: %s\n' "$roots_file" >&2
     exit 2
 fi
+if [[ ! -r "$roots_file" ]]; then
+    printf 'migration roots audit: unable to read manifest: %s\n' "$roots_file" >&2
+    exit 1
+fi
 
 canonical_coding_projects_root="$(CDPATH= cd -- "$coding_projects_root" && pwd -P)" || {
     printf 'migration roots audit: unable to canonicalize coding-projects root\n' >&2
