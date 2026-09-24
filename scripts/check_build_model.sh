@@ -24,9 +24,10 @@ minimal_native_root="$repo_root/test/fixtures/script_parity/minimal_native_build
 minimal_native_candidate="$minimal_native_root/build.elisascript"
 minimal_native_cmake="$minimal_native_root/CMakeLists.txt"
 minimal_native_main="$minimal_native_root/src/main.c"
+minimal_native_parity="$repo_root/test/script_parity/minimal_native_build_launcher_test.elisascript"
 docs="$repo_root/docs/ir.md"
 
-for required_file in "$model" "$ir" "$fixture" "$usage_model" "$usage_fixture" "$target_usage_candidate" "$executor_model" "$executor_fixture" "$sequential_tools_reference" "$sequential_tools_candidate" "$sequential_tools_expected" "$sequential_tools_contract" "$sequential_tools_parity" "$incremental_executor_fixture" "$minimal_native_candidate" "$minimal_native_cmake" "$minimal_native_main" "$minimal_native_root/include/generated_build_config.h.in" "$docs"; do
+for required_file in "$model" "$ir" "$fixture" "$usage_model" "$usage_fixture" "$target_usage_candidate" "$executor_model" "$executor_fixture" "$sequential_tools_reference" "$sequential_tools_candidate" "$sequential_tools_expected" "$sequential_tools_contract" "$sequential_tools_parity" "$incremental_executor_fixture" "$minimal_native_candidate" "$minimal_native_cmake" "$minimal_native_main" "$minimal_native_root/include/generated_build_config.h.in" "$minimal_native_parity" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'build model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -305,6 +306,10 @@ rg -Fq 'BuildNode{name: "generate-config-header", command: generate_header_comma
 rg -Fq 'BuildNode{name: Toolchain::TARGET_NAME, command: compile_command, dependencies: [0], fingerprint: 2u64}' "$minimal_native_candidate"
 rg -Fq 'BuildExecutionNodeOutputs{target_name: "generate-config-header", paths: [generated_header_output_text]}' "$minimal_native_candidate"
 rg -Fq 'execution.nodes.count != 3' "$minimal_native_candidate"
+rg -Fq 'def generated_header_artifacts_match(' "$minimal_native_parity"
+rg -Fq 'MAX_GENERATED_HEADER_BYTES: usize = 4096' "$minimal_native_parity"
+rg -Fq 'is_symlink(template) or is_symlink(cmake_header) or is_symlink(elisa_header)' "$minimal_native_parity"
+rg -Fq 'cmake_text == template_text and elisa_text == template_text' "$minimal_native_parity"
 
 rg -Fq 'BuildContractError.DuplicateDependency' "$fixture"
 rg -Fq 'for dependency_position in 0..<node.dependencies.count |node|' "$model"

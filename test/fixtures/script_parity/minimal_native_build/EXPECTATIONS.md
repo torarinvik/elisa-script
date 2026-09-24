@@ -40,9 +40,11 @@ stderr:      empty
 The CMake route registers `minimal-native-output` with CTest and checks the
 `answer=42` output. The ElisaScript route declares the generated header and
 executable as outputs of their respective nodes, then has a dependent run node
-that checks the same exit status and captured stdout. The parity harness
-additionally compares both executable process results (status, stdout, stderr)
-and verifies that both declared executable files exist and can be run.
+that checks the same exit status and captured stdout. The parity harness also
+requires both generated headers to match the template byte-for-byte, compares
+both executable process results (status, stdout, stderr), and verifies that
+both declared executable files exist and can be run. Header reads are bounded
+to the fixture's 4 KiB ceiling and reject symlink paths.
 
 `test/script_parity/minimal_native_build_launcher_test.elisascript` is the
 end-to-end process parity harness. It accepts `ELISASCRIPT_MINIMAL_NATIVE_CMAKE`
