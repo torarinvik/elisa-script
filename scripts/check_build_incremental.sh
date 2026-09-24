@@ -56,6 +56,7 @@ for declaration in \
     'struct BuildIncrementalResolvedManifest:' \
     'struct BuildIncrementalStaleOutput:' \
     'struct BuildIncrementalObservation:' \
+    'ObservationSetMismatch' \
     'error BuildIncrementalError:' \
     'len(name) < Limits::NAME_BYTES' \
     'len(path) < Limits::PATH_BYTES' \
@@ -77,6 +78,7 @@ for declaration in \
     'target_names: darray[sview]' \
     'recipe_fingerprints: darray[u64]' \
     'def build_incremental_observed_commit_file(' \
+    'def build_incremental_observations_match_paths(' \
     'def commit_build_incremental_success(' \
     'def build_incremental_target_decision_validated(' \
     'def build_incremental_target_valid(target)' \
@@ -187,13 +189,14 @@ for transition_check in \
     'build_incremental_transition_rebuilds_changed_and_new_targets' \
     'build_incremental_observation_paths_are_unique_and_sorted' \
     'build_incremental_observation_paths(recipes)' \
+    'BuildIncrementalError.ObservationSetMismatch' \
     'build_incremental_transition_plans_removed_outputs_only_after_success' \
     'build_incremental_success_commit_is_complete_and_atomic' \
     'plan_build_incremental_transition(previous, current, observations)' \
     'commit_build_incremental_success(previous, current, complete_observations)' \
     'BuildIncrementalDecision.RecipeChanged' \
     'BuildIncrementalDecision.DependencyDirty' \
-    'BuildIncrementalError.CommitObservationMissing' \
+    'BuildIncrementalError.ObservationSetMismatch' \
     'stale_outputs_after_success'; do
     rg -Fq "$transition_check" "$transition_fixture"
 done

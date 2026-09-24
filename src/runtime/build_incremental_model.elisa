@@ -127,6 +127,7 @@ module EsBuildIncremental:
             DependencyLimitExceeded
             ObservationLimitExceeded
             InvalidObservation
+            ObservationSetMismatch
             InvalidDependencyObservation
             CommitObservationMissing
             CommitInputMissing
@@ -321,6 +322,14 @@ module EsBuildIncremental:
                 low <- middle + 1 if path_order == BuildIncrementalPathOrder.Before
                 high <- middle if path_order == BuildIncrementalPathOrder.After
             return observations.count
+
+
+        def build_incremental_observations_match_paths(paths: darray[sview], observations: darray[BuildIncrementalObservation], sorted_indices: darray[usize]) -> bool error[BuildIncrementalError]:
+            raise BuildIncrementalError.ObservationSetMismatch if paths.count != observations.count
+            for path in paths |paths, observations, sorted_indices|:
+                observation_index: usize = build_incremental_observation_index(observations, sorted_indices, path)
+                raise BuildIncrementalError.ObservationSetMismatch if observation_index == observations.count
+            return true
 
 
         def build_incremental_dependency_order(observations: darray[BuildIncrementalDependencyObservation]) -> darray[BuildIncrementalPathOwner] error[BuildIncrementalError] can[Memory.Allocate, Abort.Panic]:
@@ -545,15 +554,7 @@ module EsBuildIncremental:
             return BuildIncrementalResolvedManifest{resolution: resolution, output_owners: output_owners, input_owners: input_owners}
 
 
-    public:
-        # Return the deterministic unique path set a host must observe before
-        # planning or after a successful build. Validation and graph ownership
-        # rules run before any host performs filesystem reads; shared inputs or
-        # producer/consumer paths appear exactly once in the result.
-        def build_incremental_observation_paths(recipes: darray[BuildIncrementalRecipeTarget]) -> darray[sview] error[BuildIncrementalError] can[Memory.Allocate, Abort.Panic]:
-            return [] if recipes.count == 0
-            targets: darray[BuildIncrementalTarget] = try build_incremental_materialize_recipe_targets(recipes)
-            manifest: BuildIncrementalResolvedManifest = try build_incremental_manifest_resolution(targets)
+        def build_incremental_observation_paths_from_manifest(manifest: BuildIncrementalResolvedManifest) -> darray[sview] error[BuildIncrementalError] can[Memory.Allocate, Abort.Panic]:
             owners: mutable darray[BuildIncrementalPathOwner] = []
             scratch: mutable darray[BuildIncrementalPathOwner] = []
             for owner in manifest.input_owners |owners, scratch|:
@@ -571,6 +572,18 @@ module EsBuildIncremental:
                     paths.push(owner.path)
                     previous_path <- owner.path
             return paths
+
+
+    public:
+        # Return the deterministic unique path set a host must observe before
+        # planning or after a successful build. Validation and graph ownership
+        # rules run before any host performs filesystem reads; shared inputs or
+        # producer/consumer paths appear exactly once in the result.
+        def build_incremental_observation_paths(recipes: darray[BuildIncrementalRecipeTarget]) -> darray[sview] error[BuildIncrementalError] can[Memory.Allocate, Abort.Panic]:
+            return [] if recipes.count == 0
+            targets: darray[BuildIncrementalTarget] = try build_incremental_materialize_recipe_targets(recipes)
+            manifest: BuildIncrementalResolvedManifest = try build_incremental_manifest_resolution(targets)
+            return try build_incremental_observation_paths_from_manifest(manifest)
 
 
         # Validate a complete target manifest before it is handed to the
@@ -626,7 +639,10 @@ module EsBuildIncremental:
         def commit_build_incremental_success(previous_targets: darray[BuildIncrementalTarget], current_recipes: darray[BuildIncrementalRecipeTarget], post_success_observations: darray[BuildIncrementalObservation]) -> BuildIncrementalCommit error[BuildIncrementalError] can[Memory.Allocate, Abort.Panic]:
             raise BuildIncrementalError.EmptyManifest if current_recipes.count == 0
             recipe_targets: darray[BuildIncrementalTarget] = try build_incremental_materialize_recipe_targets(current_recipes)
+            recipe_manifest: BuildIncrementalResolvedManifest = try build_incremental_manifest_resolution(recipe_targets)
+            observation_paths: darray[sview] = try build_incremental_observation_paths_from_manifest(recipe_manifest)
             sorted_observation_indices: darray[usize] = try build_incremental_observation_order(post_success_observations)
+            _ = try build_incremental_observations_match_paths(observation_paths, post_success_observations, sorted_observation_indices)
             committed_targets: mutable darray[BuildIncrementalTarget] = []
             for index in 0..<current_recipes.count |current_recipes, recipe_targets, post_success_observations, sorted_observation_indices, committed_targets|:
                 recipe: BuildIncrementalRecipeTarget = current_recipes[index]
@@ -666,9 +682,12 @@ module EsBuildIncremental:
         # not supplied by a caller that could accidentally admit a stale cache
         # hit. The returned decision at index i belongs to targets[i].
         def classify_build_incremental_manifest(targets: darray[BuildIncrementalTarget], current_recipe_fingerprints: darray[u64], observations: darray[BuildIncrementalObservation]) -> darray[BuildIncrementalDecision] error[BuildIncrementalError] can[Memory.Allocate, Abort.Panic]:
-            resolution: BuildDependencyResolution = try resolve_incremental_build_dependencies(targets)
+            manifest: BuildIncrementalResolvedManifest = try build_incremental_manifest_resolution(targets)
+            resolution: BuildDependencyResolution = manifest.resolution
             raise BuildIncrementalError.CurrentRecipeShapeInvalid if current_recipe_fingerprints.count != targets.count
             sorted_observation_indices: darray[usize] = try build_incremental_observation_order(observations)
+            expected_paths: darray[sview] = try build_incremental_observation_paths_from_manifest(manifest)
+            _ = try build_incremental_observations_match_paths(expected_paths, observations, sorted_observation_indices)
             decisions: mutable darray[BuildIncrementalDecision] = []
             for target_index in 0..<targets.count |targets, current_recipe_fingerprints, observations, resolution, decisions|:
                 current_recipe_fingerprint: u64 = current_recipe_fingerprints[target_index]
@@ -694,6 +713,8 @@ module EsBuildIncremental:
             if current_targets.count != 0:
                 current_manifest <- try build_incremental_manifest_resolution(current_targets)
             sorted_observation_indices: darray[usize] = try build_incremental_observation_order(observations)
+            observation_paths: darray[sview] = try build_incremental_observation_paths_from_manifest(current_manifest)
+            _ = try build_incremental_observations_match_paths(observation_paths, observations, sorted_observation_indices)
             decisions: mutable darray[BuildIncrementalDecision] = []
             target_names: mutable darray[sview] = []
             recipe_fingerprints: mutable darray[u64] = []
