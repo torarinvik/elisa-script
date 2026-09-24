@@ -42,17 +42,31 @@ rg -Fq 'WASM include directive count exceeds Elisascript scan limit' "$candidate
 rg -Fq 'INCLUDE_FILES: usize = 4096' "$candidate"
 rg -Fq 'loaded_files >= Limits::INCLUDE_FILES' "$candidate"
 rg -Fq 'WASM include file count exceeds Elisascript scan limit' "$candidate"
-rg -Fq 'include "../src/runtime/stream_posix.elisa"' "$candidate"
+rg -Fq 'include "../src/runtime/file_posix.elisa"' "$candidate"
+rg -Fq 'include "../src/runtime/directory_posix.elisa"' "$candidate"
+rg -Fq 'include "../src/runtime/stdio_posix.elisa"' "$candidate"
 rg -Fq 'SOURCE_READ_CHUNK_BYTES: usize = 16384' "$candidate"
+rg -Fq 'SOURCE_READ_EINTR_RETRIES: usize = 4' "$candidate"
 rg -Fq 'def read_bounded_source(input_path: Path, maximum_bytes: usize) -> BoundedSourceRead' "$candidate"
-rg -Fq 'FileStreamMode.ReadBinary, maximum_bytes + 1, FileStreamEncoding.Bytes' "$candidate"
+rg -Fq 'DarwinOpenFlags::RDONLY | DarwinOpenFlags::NONBLOCK | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC' "$candidate"
+rg -Fq 'def open_bounded_source_descriptor(path: cstr, flags: int) -> int' "$candidate"
+rg -Fq 'errno[0] == DarwinErrno::EINTR and retries < Limits::SOURCE_READ_EINTR_RETRIES' "$candidate"
+rg -Fq 'errno[0] == DarwinErrno::EINTR and interrupted_reads < Limits::SOURCE_READ_EINTR_RETRIES' "$candidate"
+rg -Fq 'elisascript_posix_stat(path_pointer, named_before_open)' "$candidate"
+rg -Fq 'elisascript_posix_stat(path_pointer, named_after_open)' "$candidate"
 rg -Fq 'probe_capacity: usize = remaining + 1' "$candidate"
 rg -Fq 'capacity: usize = probe_capacity if probe_capacity < chunk.count else chunk.count' "$candidate"
 rg -Fq 'source.reserve(initial_source_capacity)' "$candidate"
-rg -Fq 'file_stream_read_chunk(stream, chunk_pointer, capacity)' "$candidate"
-rg -Fq 'if read.count > remaining:' "$candidate"
-rg -Fq 'file_stream_cleanup_commit(cleanup, stream)' "$candidate"
-rg -Fq 'file_stream_cleanup_abort(cleanup, stream)' "$candidate"
+rg -Fq 'elisascript_posix_read(descriptor, chunk_pointer.cast[mutable void&], capacity)' "$candidate"
+rg -Fq 'if read_count > remaining:' "$candidate"
+rg -Fq 'elisascript_posix_fstat(descriptor, opened_stat)' "$candidate"
+rg -Fq 'source_file_identity_matches(named_before_open, opened_stat)' "$candidate"
+rg -Fq 'source_file_identity_matches(opened_stat, named_after_open)' "$candidate"
+rg -Fq 'elisascript_posix_close(descriptor)' "$candidate"
+if rg -Fq 'FileStream' "$candidate"; then
+    printf 'W09 bounds audit: source reads must not use a path-based stdio stream\n' >&2
+    exit 1
+fi
 if rg -Fq 'read_text(current_path)' "$candidate"; then
     printf 'W09 bounds audit: include sources must not use unbounded whole-file reads\n' >&2
     exit 1

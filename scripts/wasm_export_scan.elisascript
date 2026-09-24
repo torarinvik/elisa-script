@@ -4,7 +4,9 @@
 # full acceptance remain separate work.
 
 include "../src/runtime/encoding.elisa"
-include "../src/runtime/stream_posix.elisa"
+include "../src/runtime/file_posix.elisa"
+include "../src/runtime/directory_posix.elisa"
+include "../src/runtime/stdio_posix.elisa"
 
 using EsEncoding
 using EsRuntime
@@ -12,6 +14,10 @@ using EsRuntime
 
 module EsWasmExportScan:
     private:
+        @link_name(__error)
+        extern wasm_export_scan_errno() -> mutable i32& can[Blocking.IO]
+
+
         const module Limits:
             SOURCE_BYTES: usize = 8388608
             SOURCE_LINES: usize = 131072
@@ -33,6 +39,7 @@ module EsWasmExportScan:
             HEADER_SUFFIX_FIXED_WORK: usize = 16
             EXPORT_NAME_COMPARE_WORK: usize = 1048576
             SOURCE_READ_CHUNK_BYTES: usize = 16384
+            SOURCE_READ_EINTR_RETRIES: usize = 4
 
 
         const module Syntax:
@@ -810,12 +817,26 @@ module EsWasmExportScan:
             return bytes_view(output)
 
 
-        # Read only the admitted byte budget plus one overflow probe byte.
-        # `file_size` is intentionally not part of admission: a regular file
-        # may grow after stat, while FileStream enforces the actual bytes read.
-        def read_bounded_source(input_path: Path, maximum_bytes: usize) -> BoundedSourceRead can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
-            return BoundedSourceRead{failure: "unable to read source/include: " + f"{input_path}"} if maximum_bytes >= FILE_STREAM_DEFAULT_MAX_BYTES
+        def open_bounded_source_descriptor(path: cstr, flags: int) -> int can[Blocking.IO, Unsafe.PointerCast]:
+            retries: mutable usize = 0
+            while true:
+                descriptor: int = elisascript_posix_open(path, flags, 0u32)
+                return descriptor if descriptor >= 0
+                errno: mutable i32& = wasm_export_scan_errno()
+                if errno[0] == DarwinErrno::EINTR and retries < Limits::SOURCE_READ_EINTR_RETRIES:
+                    retries <- retries + 1
+                    continue
+                return -1
 
+
+        def source_file_identity_matches(left: ElisascriptStat, right: ElisascriptStat) -> bool:
+            return left.device == right.device and left.inode == right.inode
+
+
+        # Open nonblocking without following a replacement final symlink, then
+        # classify the object actually opened before reading it. `file_size` is
+        # intentionally not part of admission; actual bytes read are bounded.
+        def read_bounded_source(input_path: Path, maximum_bytes: usize) -> BoundedSourceRead can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
             path_text: sview = f"{input_path}"
             return BoundedSourceRead{failure: "unable to read source/include: " + path_text} if len(path_text) >= Limits::PATH_BYTES
             path_bytes: mutable darray[u8] = []
@@ -826,6 +847,10 @@ module EsWasmExportScan:
             path_bytes.push(0u8)
             path_pointer: cstr = (&path_bytes[0]).cast[cstr]
 
+            named_before_open: mutable ElisascriptStat = zeroed
+            if elisascript_posix_stat(path_pointer, named_before_open) != 0 or (named_before_open.mode & DarwinStatMode::MASK) != DarwinStatMode::REGULAR:
+                return BoundedSourceRead{failure: "unable to read source/include: " + path_text}
+
             chunk: mutable darray[u8] = []
             chunk.reserve(Limits::SOURCE_READ_CHUNK_BYTES)
             for _ in 0..<Limits::SOURCE_READ_CHUNK_BYTES |chunk|:
@@ -834,10 +859,22 @@ module EsWasmExportScan:
             initial_source_capacity: usize = maximum_bytes if maximum_bytes < Limits::SOURCE_READ_CHUNK_BYTES else Limits::SOURCE_READ_CHUNK_BYTES
             source.reserve(initial_source_capacity)
 
-            stream: mutable FileStream = try file_stream_open(path_pointer, FileStreamMode.ReadBinary, maximum_bytes + 1, FileStreamEncoding.Bytes) else err:
+            open_flags: int = DarwinOpenFlags::RDONLY | DarwinOpenFlags::NONBLOCK | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC
+            descriptor: int = open_bounded_source_descriptor(path_pointer, open_flags)
+            return BoundedSourceRead{failure: "unable to read source/include: " + path_text} if descriptor < 0
+            opened_stat: mutable ElisascriptStat = zeroed
+            if elisascript_posix_fstat(descriptor, opened_stat) != 0 or (opened_stat.mode & DarwinStatMode::MASK) != DarwinStatMode::REGULAR:
+                _ = elisascript_posix_close(descriptor)
                 return BoundedSourceRead{failure: "unable to read source/include: " + path_text}
-            cleanup: mutable FileStreamCleanupGuard = file_stream_cleanup_begin()
+            if not source_file_identity_matches(named_before_open, opened_stat):
+                _ = elisascript_posix_close(descriptor)
+                return BoundedSourceRead{failure: "unable to read source/include: " + path_text}
+            named_after_open: mutable ElisascriptStat = zeroed
+            if elisascript_posix_stat(path_pointer, named_after_open) != 0 or (named_after_open.mode & DarwinStatMode::MASK) != DarwinStatMode::REGULAR or not source_file_identity_matches(opened_stat, named_after_open):
+                _ = elisascript_posix_close(descriptor)
+                return BoundedSourceRead{failure: "unable to read source/include: " + path_text}
             phase: mutable BoundedReadPhase = BoundedReadPhase.ReadChunk
+            interrupted_reads: mutable usize = 0
 
             machine over phase while phase != BoundedReadPhase.Done:
                 state ReadChunk
@@ -848,39 +885,33 @@ module EsWasmExportScan:
                     probe_capacity: usize = remaining + 1
                     capacity: usize = probe_capacity if probe_capacity < chunk.count else chunk.count
                     chunk_pointer: mutable u8& = (&chunk[0]).cast[mutable u8&]
-                    read: FileStreamRead =
-                        try file_stream_read_chunk(stream, chunk_pointer, capacity)
-                        else err:
-                            catch file_stream_cleanup_abort(cleanup, stream):
-                                ok closed:
-                                    return BoundedSourceRead{failure: "unable to read source/include: " + path_text}
-                                error _:
-                                    return BoundedSourceRead{failure: "unable to read source/include: " + path_text}
+                    amount: isize = elisascript_posix_read(descriptor, chunk_pointer.cast[mutable void&], capacity)
+                    if amount < 0:
+                        errno: mutable i32& = wasm_export_scan_errno()
+                        if errno[0] == DarwinErrno::EINTR and interrupted_reads < Limits::SOURCE_READ_EINTR_RETRIES:
+                            interrupted_reads <- interrupted_reads + 1
+                            -> ReadChunk
+                        _ = elisascript_posix_close(descriptor)
+                        return BoundedSourceRead{failure: "unable to read source/include: " + path_text}
 
-                    if read.count > capacity or (read.eof and read.count != 0) or (read.count == 0 and not read.eof):
-                        catch file_stream_cleanup_abort(cleanup, stream):
-                            ok closed:
-                                return BoundedSourceRead{failure: "unable to read source/include: " + path_text}
-                            error _:
-                                return BoundedSourceRead{failure: "unable to read source/include: " + path_text}
-
-                    if read.count > remaining:
-                        catch file_stream_cleanup_abort(cleanup, stream):
-                            ok closed:
-                                return BoundedSourceRead{exceeded_limit: true}
-                            error _:
-                                return BoundedSourceRead{exceeded_limit: true}
-
-                    for offset in 0..<read.count |source, chunk|:
-                        source.push(chunk[offset])
-
-                    if read.eof:
+                    if amount == 0:
                         phase <- BoundedReadPhase.Done
-                        catch file_stream_cleanup_commit(cleanup, stream):
-                            ok closed:
-                                return BoundedSourceRead{source: bytes_view(source)}
-                            error _:
-                                return BoundedSourceRead{failure: "unable to read source/include: " + path_text}
+                        if elisascript_posix_close(descriptor) != 0:
+                            return BoundedSourceRead{failure: "unable to read source/include: " + path_text}
+                        return BoundedSourceRead{source: bytes_view(source)}
+
+                    read_count: usize = amount.usize()
+                    if read_count > capacity:
+                        _ = elisascript_posix_close(descriptor)
+                        return BoundedSourceRead{failure: "unable to read source/include: " + path_text}
+
+                    if read_count > remaining:
+                        _ = elisascript_posix_close(descriptor)
+                        return BoundedSourceRead{exceeded_limit: true}
+
+                    for offset in 0..<read_count |source, chunk|:
+                        source.push(chunk[offset])
+                    interrupted_reads <- 0
                     -> ReadChunk
 
                 Done, BoundedReadPhase.Done:
@@ -1078,7 +1109,7 @@ module EsWasmExportScan:
 
         # Expand a complete include graph with an explicit DFS frame stack so
         # include depth and total work are bounded independently of host stack.
-        def flatten_source_file(input_path: Path) -> FlattenedSource can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, File.Read, Directory.Read]:
+        def flatten_source_file(input_path: Path) -> FlattenedSource can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast, File.Read, Directory.Read]:
             output: mutable darray[u8] = []
             frames: mutable darray[SourceFrame] = []
             active: mutable darray[Path] = []

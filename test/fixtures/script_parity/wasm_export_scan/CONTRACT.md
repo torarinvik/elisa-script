@@ -196,24 +196,28 @@ unexecuted under the validation hold.
   aggregate byte ceilings plus path-spelling, aggregate path-component work,
   include-file, directive, and depth ceilings; those bounded rejection cases
   are Elisascript-specific safeguards. The candidate now opens the resolved
-  file through a binary `FileStream`, reads fixed-size chunks under the minimum
-  of the per-file and remaining graph budgets, and rejects an overflow probe
-  before retaining that chunk. It closes the stream on success and handled
-  read/limit failures. Source review indicates this avoids buffering an
+  path with `O_NONBLOCK | O_NOFOLLOW`, verifies with `fstat` that the opened
+  descriptor is a regular file, and compares its device/inode with path stats
+  taken before and after opening. It reads fixed-size chunks under the minimum
+  of the per-file and remaining graph budgets, rejecting an overflow probe
+  before retaining that chunk, and closes the descriptor on handled success and
+  failure. `O_NONBLOCK` prevents a final-component FIFO replacement from
+  waiting for a writer; `fstat` rejects opened non-regular objects before any
+  read. Device-specific open behavior remains platform-dependent. The identity
+  comparisons detect a regular-file replacement during the open/check window;
+  after validation, reads stay attached to the opened descriptor even if the
+  pathname is replaced. Source review indicates this avoids buffering an
   oversized file in full, but execution evidence is still required. The
   candidate-only fixture writes a file one byte over the 8 MiB per-file ceiling
   and expects rejection without invoking Python. Another candidate-only fixture
   combines five individually admissible 8 MiB files to exceed the 32 MiB graph
   budget, also without invoking Python. A growth-during-read fixture must still
   mutate an already-open file and verify prompt rejection; no runtime
-  parity/safety evidence has been gathered.
-  The candidate still classifies the path with `is_file` before a separate
-  `FileStream` path open. A concurrent replacement with a FIFO/device between
-  those operations can defeat the regular-file check and may block `fopen`; the
-  byte ceiling does not close this identity race. For adversarial path safety,
-  use a nonblocking descriptor open followed by `fstat` of that same descriptor
-  (or explicitly constrain the source tree to be immutable during the read),
-  then include path-replacement/no-hang coverage before claiming acceptance.
+  parity/safety evidence has been gathered. A dedicated path-replacement/no-
+  hang fixture is still required. The opened descriptor pins object identity,
+  but an in-place writer can still change the regular file during reading; the
+  byte budget is not a content snapshot. Parity runs must use immutable inputs
+  or add a synchronization/snapshot contract for concurrent writers.
 - Python `Path.read_text` universal-newline translation converts CRLF and bare
   CR to LF before `splitlines(keepends=True)`. The candidate makes that
   normalization explicit. Include directives are whole lines matching
